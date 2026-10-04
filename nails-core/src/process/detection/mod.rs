@@ -229,12 +229,48 @@ pub struct ProcSnapshot {
     entries: Vec<ProcEntry>,
 }
 
+// Counts calls to `ProcSnapshot::capture` on the current thread, so a test can
+// assert that an activation phase walks `/proc` once rather than once per target.
+//
+// Thread-local (not global) so the count is not polluted by the many other tests
+// that capture snapshots concurrently: the activation path captures on the
+// calling thread and spawns nothing that captures, so a per-thread count is exact
+// for the code under test.
+#[cfg(test)]
+thread_local! {
+    static CAPTURE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The number of [`ProcSnapshot::capture`] calls on this thread since the last
+/// [`reset_capture_count`].
+#[cfg(test)]
+pub(crate) fn capture_count() -> usize {
+    CAPTURE_COUNT.with(std::cell::Cell::get)
+}
+
+/// Reset this thread's [`capture_count`] to zero before exercising a phase.
+#[cfg(test)]
+pub(crate) fn reset_capture_count() {
+    CAPTURE_COUNT.with(|c| c.set(0));
+}
+
 impl ProcSnapshot {
+    /// An empty snapshot (no processes). Used where process detection is skipped
+    /// (test/mock runs) so a caller can pass a snapshot without walking `/proc`.
+    pub fn empty() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
     /// Walk `/proc` once and read each process's `cwd`, `root`, fds and maps.
     ///
     /// Returns an empty snapshot in test/test-like runtimes (where touching the
     /// host `/proc` must be avoided).
     pub fn capture() -> Result<Self> {
+        #[cfg(test)]
+        CAPTURE_COUNT.with(|c| c.set(c.get() + 1));
+
         if crate::runtime_safety::should_skip_host_interaction() {
             tracing::debug!("Skipping host /proc snapshot in test/test-like runtime");
             return Ok(Self {

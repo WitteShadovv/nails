@@ -209,6 +209,7 @@ fn subprocess_notification_dispatch_entrypoint() {
                     auto_accept_pivot: false,
                     skip_process_detection: false,
                 },
+                &nails_core::process::detection::ProcSnapshot::empty(),
             )
             .unwrap();
 

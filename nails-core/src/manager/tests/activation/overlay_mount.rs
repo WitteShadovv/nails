@@ -100,6 +100,42 @@ fn test_activate_auto_mode_overlays_all_non_excluded_dirs() {
 }
 
 #[test]
+fn test_activate_walks_proc_once_per_phase_not_per_target() {
+    // The mount phase must walk /proc a single time and classify every target
+    // against that one snapshot, rather than re-scanning /proc per target. With
+    // three overlays, a per-target scan would capture three times.
+    let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/home", "/etc", "/var"]);
+    let mock_hidden_vol = temp_dir.path();
+
+    let config = Config {
+        hidden_volume_root: mock_hidden_vol.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlay_mode: OverlayMode::Auto,
+        overlay_exclusions: vec![],
+        overlay_exclusions_remove: vec![],
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    crate::process::detection::reset_capture_count();
+    let result = manager.lock().unwrap().activate(true);
+    assert!(result.is_ok(), "Activation should succeed: {:?}", result);
+
+    assert_eq!(
+        crate::process::detection::capture_count(),
+        1,
+        "the mount phase must capture one /proc snapshot for all three targets, \
+         not one per target"
+    );
+}
+
+#[test]
 #[serial]
 fn test_activate_auto_mode_rollback_restarts_journald_and_nix_daemon_after_unmounts() {
     // When a later overlay fails after /nix and /var were mounted, activation

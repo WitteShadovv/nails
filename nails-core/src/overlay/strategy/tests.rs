@@ -55,6 +55,7 @@ fn test_vfat_boot_uses_snapshot_pivot_bypassing_no_pivot() {
         std::path::Path::new("/mnt/hidden/boot/.work"),
         std::path::Path::new("/boot"),
         &options,
+        &crate::process::detection::ProcSnapshot::empty(),
     );
 
     assert!(
@@ -91,6 +92,7 @@ fn test_exfat_target_uses_snapshot_pivot() {
         Path::new("/mnt/hidden/boot/.work"),
         Path::new("/boot"),
         &options,
+        &crate::process::detection::ProcSnapshot::empty(),
     );
 
     assert!(result.is_ok());
@@ -121,6 +123,7 @@ fn test_ext4_target_uses_direct_mount() {
         Path::new("/mnt/hidden/home/.work"),
         Path::new("/home"),
         &options,
+        &crate::process::detection::ProcSnapshot::empty(),
     );
 
     assert!(result.is_ok());
@@ -149,6 +152,7 @@ fn test_no_fstype_info_attempts_direct_mount() {
         Path::new("/mnt/hidden/data/.work"),
         Path::new("/data"),
         &options,
+        &crate::process::detection::ProcSnapshot::empty(),
     );
 
     assert!(result.is_ok());
@@ -181,6 +185,7 @@ fn test_ntfs_target_uses_snapshot_pivot() {
         Path::new("/mnt/hidden/windows/.work"),
         Path::new("/mnt/windows"),
         &options,
+        &crate::process::detection::ProcSnapshot::empty(),
     );
 
     assert!(result.is_ok());
@@ -222,6 +227,7 @@ fn test_mount_overlay_with_strategy_direct_mount_succeeds_when_no_fstype() {
         Path::new("/mnt/work"),
         Path::new("/data"),
         &options,
+        &crate::process::detection::ProcSnapshot::empty(),
     );
 
     assert!(result.is_ok());
@@ -257,6 +263,7 @@ fn test_direct_mount_fatal_errno_is_returned_without_pivot_fallback() {
         Path::new("/mnt/work"),
         Path::new("/data"),
         &options,
+        &crate::process::detection::ProcSnapshot::empty(),
     );
 
     assert!(result.is_err());
@@ -298,6 +305,7 @@ fn test_busy_direct_mount_without_pivot_returns_invalid_state() {
         Path::new("/mnt/work"),
         Path::new("/data"),
         &options,
+        &crate::process::detection::ProcSnapshot::empty(),
     );
 
     assert!(result.is_err());
@@ -341,6 +349,7 @@ fn test_busy_direct_mount_with_auto_accept_enters_pivot_fallback() {
         Path::new("/mnt/work"),
         Path::new("/data"),
         &options,
+        &crate::process::detection::ProcSnapshot::empty(),
     );
 
     // The pivot is entered: its staging directory is created and the staging

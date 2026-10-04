@@ -271,6 +271,11 @@ impl<F: Filesystem> NailsManager<F> {
         var_was_overlaid: &mut bool,
     ) -> Result<()> {
         let mut nix_overlay_succeeded = false;
+        // Walk /proc once for the whole mount phase. Every target classifies its
+        // blocking processes against this single snapshot instead of re-scanning
+        // /proc per target; the pivot fallback re-scans deliberately, to reflect
+        // the state left by the Phase-2 service stops and restarts.
+        let proc_snapshot = crate::process::detection::ProcSnapshot::capture()?;
         // Mounts created to keep host submounts visible under overlaid targets,
         // accumulated across the loop and persisted once the overlays are all in
         // place. Rollback of a mid-loop failure is driven by the tracker, which
@@ -384,6 +389,7 @@ impl<F: Filesystem> NailsManager<F> {
                 &overlay.work,
                 &overlay.target,
                 strategy_options,
+                &proc_snapshot,
             ) {
                 Ok(mount_result) => {
                     self.handle_mount_success(

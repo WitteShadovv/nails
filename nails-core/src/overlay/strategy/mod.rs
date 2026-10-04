@@ -96,10 +96,13 @@ fn restart_services_after_failure(services: &[String]) {
 /// ```no_run
 /// use nails_core::overlay::{mount_overlay_with_strategy, OverlayStrategyOptions, MountMethod};
 /// use nails_core::filesystem::RealFilesystem;
+/// use nails_core::process::detection::ProcSnapshot;
 /// use std::path::Path;
 ///
 /// let fs = RealFilesystem;
 /// let options = OverlayStrategyOptions::default();
+/// // One snapshot is captured per mount phase and shared across targets.
+/// let snapshot = ProcSnapshot::capture()?;
 ///
 /// let result = mount_overlay_with_strategy(
 ///     &fs,
@@ -108,6 +111,7 @@ fn restart_services_after_failure(services: &[String]) {
 ///     Path::new("/mnt/hidden/home/.work"),
 ///     Path::new("/home"),
 ///     &options,
+///     &snapshot,
 /// )?;
 ///
 /// match result.method {
@@ -130,6 +134,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     work: &Path,
     target: &Path,
     options: &OverlayStrategyOptions,
+    snapshot: &crate::process::detection::ProcSnapshot,
 ) -> Result<MountResult> {
     use crate::process::detect_processes_using;
     use crate::prompts::{display_abort_message, prompt_pivot_mount_acceptance};
@@ -206,7 +211,9 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
         target.display()
     );
 
-    let blocking = detect_processes_using(target)?;
+    // Classify against the one `/proc` snapshot captured for this whole mount
+    // phase, rather than walking `/proc` again for this target.
+    let blocking = snapshot.processes_using(target);
 
     if blocking.is_empty() {
         tracing::info!("  Found 0 processes ✓");
