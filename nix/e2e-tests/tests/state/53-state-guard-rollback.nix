@@ -109,6 +109,10 @@ in
     hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
     risky_services = "skip"
+    # The hidden data disk is only ~2 GB, below the 4 GB default rebuild floor.
+    # Lower it so the rollback under test comes from the failed session restart,
+    # not from the post-mount space guard that runs before it.
+    rebuild_space_mb = 64
 
     ${baseOs.toml}
     [[overlays]]

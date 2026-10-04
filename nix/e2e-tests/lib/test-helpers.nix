@@ -31,6 +31,10 @@ in
     # notification tests that use this config exercise everything around that
     # switch, so keep its failure non-fatal instead of rolling activation back.
     nixos_switch_required = false
+    # The hidden data disk is only ~2 GB, below the 4 GB default rebuild floor,
+    # and the hidden configurations these tests build are tiny. Lower the floor
+    # so the post-mount space guard lets the (real or stubbed) rebuild run.
+    rebuild_space_mb = 64
 
     [[overlays]]
     name = "etc"

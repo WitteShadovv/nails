@@ -69,6 +69,9 @@ in
     hidden_volume_root = "/mnt/data"
     overlay_mode = "explicit"
     risky_services = "skip"
+    # The hidden data disk is only ~2 GB, below the 4 GB default rebuild floor;
+    # lower it so the post-mount space guard lets the stubbed rebuild run.
+    rebuild_space_mb = 64
 
     [persona]
     mask_inherited = ["decoy-canary.timer"]

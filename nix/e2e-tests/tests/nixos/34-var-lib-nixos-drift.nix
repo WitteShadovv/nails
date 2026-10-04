@@ -112,6 +112,9 @@ in
             + 'hidden_volume_root = "/mnt/data"\n'
             + 'overlay_mode = "explicit"\n'
             + 'risky_services = "skip"\n'
+            # The hidden data disk is only ~2 GB, below the 4 GB default
+            # rebuild floor; the offline fixture build is tiny, so lower it.
+            + 'rebuild_space_mb = 64\n'
             + "".join(
                 f'\n[[overlays]]\nname = "{n}"\nlower = "/{n}"\n'
                 f'upper = "/mnt/data/{n}"\nwork = "/mnt/data/.work/{n}"\ntarget = "/{n}"\n'
