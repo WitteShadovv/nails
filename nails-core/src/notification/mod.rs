@@ -320,7 +320,22 @@ pub fn read_pending(hidden_volume_root: &Path) -> Result<Vec<(PathBuf, Notificat
         return Ok(Vec::new());
     }
 
-    let mut entries: Vec<_> = std::fs::read_dir(&dir)
+    // This dispatcher runs as root at login, so every file it opens is anchored
+    // under the hidden root through SafeRoot: a symlink planted at a `*.json`
+    // entry (or at the `notifications` component) is rejected by
+    // RESOLVE_NO_SYMLINKS/RESOLVE_BENEATH and O_NOFOLLOW rather than followed off
+    // the hidden volume. The directory listing only yields entry names and never
+    // opens them, so it stays a plain `read_dir`; the symlink-sensitive open of
+    // each file goes through `safe_root`.
+    let safe_root = SafeRoot::open(hidden_volume_root).map_err(|e| {
+        crate::NailsError::IoError(std::io::Error::other(format!(
+            "Failed to open hidden root {} for notifications: {e}",
+            hidden_volume_root.display()
+        )))
+    })?;
+    let rel_dir = Path::new("notifications");
+
+    let mut names: Vec<std::ffi::OsString> = std::fs::read_dir(&dir)
         .map_err(|e| {
             crate::NailsError::IoError(std::io::Error::new(
                 e.kind(),
@@ -328,16 +343,17 @@ pub fn read_pending(hidden_volume_root: &Path) -> Result<Vec<(PathBuf, Notificat
             ))
         })?
         .filter_map(|entry| entry.ok())
-        .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "json"))
+        .map(|entry| entry.file_name())
+        .filter(|name| Path::new(name).extension().is_some_and(|ext| ext == "json"))
         .collect();
 
     // Sort by filename (which starts with timestamp) for chronological order
-    entries.sort_by_key(|e| e.file_name());
+    names.sort();
 
     let mut results = Vec::new();
-    for entry in entries {
-        let path = entry.path();
-        match std::fs::read_to_string(&path) {
+    for name in names {
+        let path = dir.join(&name);
+        match safe_root.read_to_string(&rel_dir.join(&name)) {
             Ok(content) => match serde_json::from_str::<Notification>(&content) {
                 Ok(notification) => results.push((path, notification)),
                 Err(e) => {

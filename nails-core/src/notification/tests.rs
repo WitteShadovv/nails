@@ -676,3 +676,39 @@ fn runtime_environment_forwards_wayland_display() {
     assert!(env.contains(&("WAYLAND_DISPLAY", "wayland-0".to_string())));
     assert!(env.contains(&("XDG_RUNTIME_DIR", "/run/user/1001".to_string())));
 }
+
+#[test]
+fn test_read_pending_rejects_symlinked_entry() {
+    // A symlink planted in the notifications directory and named like a signal
+    // file must not be followed: read_pending opens each file through SafeRoot,
+    // which rejects the symlink (RESOLVE_NO_SYMLINKS / O_NOFOLLOW) instead of
+    // reading whatever it points at. Without this, a writer on the hidden volume
+    // could aim the root-privileged dispatcher at an arbitrary file.
+    let dir = TempDir::new().unwrap();
+    write_notification(dir.path(), &make_notification("Real", "real body")).unwrap();
+
+    // A valid notification JSON living outside the hidden root; if the symlink
+    // were followed this body would surface in the dispatched notifications.
+    let outside = TempDir::new().unwrap();
+    let secret = outside.path().join("secret.json");
+    std::fs::write(
+        &secret,
+        serde_json::to_string(&make_notification("Secret", "leaked")).unwrap(),
+    )
+    .unwrap();
+
+    let notif_dir = notifications_dir(dir.path());
+    std::os::unix::fs::symlink(&secret, notif_dir.join("00000000T000000000_evil.json")).unwrap();
+
+    let pending = read_pending(dir.path()).unwrap();
+    assert_eq!(
+        pending.len(),
+        1,
+        "symlinked entry must be skipped, not read"
+    );
+    assert_eq!(pending[0].1.title, "Real");
+    assert!(
+        pending.iter().all(|(_, n)| n.body != "leaked"),
+        "read_pending must not follow a symlink off the hidden volume"
+    );
+}
