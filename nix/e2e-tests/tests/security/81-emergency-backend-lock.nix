@@ -52,12 +52,12 @@ in
     ${testHelpers.readStatusJsonFn}
     ${emergency.prepareTty1ShellFn}
     ${emergency.waitForConsoleLogFn}
+    ${emergency.rebootAfterEmergencyFn}
     ${emergency.runEmergencyCommandFn}
     ${assertions.assertNoOverlaysFn}
 
     def run_lock_emergency():
         # Mirror run_emergency_command, but start the --lock-backend unit instead.
-        import time
         prepare_tty1_shell()
         console_start = len(machine.get_console_log())
         machine.send_key("alt-f1")

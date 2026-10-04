@@ -34,6 +34,7 @@ in
     import re
 
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.readStatusJsonFn}
     ${testHelpers.canonicalDeactivateFn}
     ${assertions.assertStatusStateFn}
     ${assertions.assertNoOverlaysFn}
