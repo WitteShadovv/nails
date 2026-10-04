@@ -106,11 +106,17 @@ in
         efivars = machine.succeed(
             "ls -1 /sys/firmware/efi/efivars 2>/dev/null | LC_ALL=C sort || true"
         )
+        # Hash the content, not stat metadata: NixOS rewrites every one of these
+        # files atomically on each boot, so the inode and mtime always change (and
+        # the deactivation phase spans a reboot), which made an inode/mtime
+        # comparison flag them on every run. A content hash ignores that churn
+        # while still catching a hidden switch that actually rewrote a file (e.g.
+        # added a user), which is the drift this invariant is about.
         vln = machine.succeed(
             "for f in declarative-users declarative-groups uid-map gid-map auto-subuid-map; do "
             "  p=/var/lib/nixos/$f; "
-            "  if [ -e \"$p\" ]; then stat -c '%n inode=%i mtime=%Y size=%s' \"$p\"; "
-            "  else echo \"$p MISSING\"; fi; "
+            "  if [ -e \"$p\" ]; then sha256sum \"$p\"; "
+            "  else echo \"MISSING $p\"; fi; "
             "done"
         )
         return {"esp": esp, "nvram": nvram, "efivars": efivars, "vln": vln}
