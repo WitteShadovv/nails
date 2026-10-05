@@ -175,6 +175,21 @@ pub(super) fn is_overlay_mounted(target: &Path) -> Result<bool> {
     }))
 }
 
+/// Whether the mount visible at `target` is mounted read-only.
+///
+/// Reads the per-mount VFS options of the topmost (last listed) mount at the
+/// path, so a filesystem the kernel remounted read-only after an I/O error is
+/// reported as such. Not a mount point reads as writable (`false`).
+pub(super) fn is_mount_read_only(target: &Path) -> Result<bool> {
+    let canonical = canonical_target(target);
+    Ok(read_mountinfo()?
+        .iter()
+        .rev()
+        .find(|e| e.mount_point == canonical)
+        .map(|e| e.read_only())
+        .unwrap_or(false))
+}
+
 /// Whether a mountinfo `major:minor` device string denotes the same device as a
 /// `stat` `st_dev`. A malformed device string never matches.
 fn mountinfo_dev_matches(dev_text: &str, st_dev: u64) -> bool {

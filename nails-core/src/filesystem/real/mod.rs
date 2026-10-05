@@ -90,6 +90,10 @@ impl Filesystem for RealFilesystem {
         mount_ops::is_overlay_mounted(target)
     }
 
+    fn is_mount_read_only(&self, target: &Path) -> Result<bool> {
+        mount_ops::is_mount_read_only(target)
+    }
+
     fn get_mount_info(&self, target: &Path) -> Option<MountInfo> {
         mount_ops::get_mount_info(target)
     }

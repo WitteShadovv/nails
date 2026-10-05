@@ -34,6 +34,10 @@ impl Filesystem for MockFilesystem {
         self.is_overlay_mounted_impl(target)
     }
 
+    fn is_mount_read_only(&self, target: &Path) -> Result<bool> {
+        Ok(self.mock_is_read_only_guarded(target))
+    }
+
     fn get_mount_info(&self, target: &Path) -> Option<MountInfo> {
         self.get_mount_info_impl(target)
     }

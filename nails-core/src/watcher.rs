@@ -122,6 +122,16 @@ pub fn probe_backend<F: Filesystem>(filesystem: &F, manifest: &RuntimeManifest) 
     if filesystem.list_directory(&manifest.hidden_root).is_err() {
         return false;
     }
+    // A device that fails in place keeps its dentry cache, so the directory read
+    // above still succeeds; the kernel's response is to remount the filesystem
+    // read-only on the I/O error. NAILS keeps the hidden volume writable, so a
+    // read-only hidden root means the backend has failed.
+    if filesystem
+        .is_mount_read_only(&manifest.hidden_root)
+        .unwrap_or(false)
+    {
+        return false;
+    }
     manifest
         .overlay_targets
         .iter()
@@ -316,6 +326,21 @@ mod tests {
         fs.mock_set_readable("/mnt/data", true);
         mounted(&fs, "/home", true);
         mounted(&fs, "/etc", true);
+
+        assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
+    }
+
+    #[test]
+    fn probe_fails_when_the_hidden_root_is_remounted_read_only() {
+        // A backend that fails in place keeps its dentry cache, so the readdir
+        // above still answers, but the kernel remounts the filesystem read-only on
+        // the I/O error. NAILS keeps the hidden volume writable, so a read-only
+        // hidden root is a failed backend and the probe must report it unhealthy.
+        let fs = MockFilesystem::new();
+        root_lists(&fs);
+        mounted(&fs, "/home", true);
+        mounted(&fs, "/etc", true);
+        fs.remount_read_only(Path::new("/mnt/data")).unwrap();
 
         assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
     }

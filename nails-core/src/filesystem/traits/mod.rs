@@ -148,6 +148,19 @@ pub trait Filesystem: Send + Sync + Clone {
     /// Check if a path has an overlayfs mount (not other mount types).
     fn is_overlay_mounted(&self, target: &Path) -> Result<bool>;
 
+    /// Whether the mount visible at `target` is mounted read-only.
+    ///
+    /// NAILS keeps the hidden volume writable (the overlay uppers live on it), so
+    /// a read-only hidden root is how a backend failure shows up: on an I/O error
+    /// the kernel remounts the filesystem read-only while its dentry cache still
+    /// answers directory reads, so a cache-served `list_directory` keeps
+    /// succeeding. The backend watcher reads this to notice a device that failed in
+    /// place. Defaults to `false` (writable) for filesystems that do not track
+    /// per-mount flags.
+    fn is_mount_read_only(&self, _target: &Path) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Get mount info for a currently mounted overlay.
     ///
     /// Retrieves mount metadata (lower, upper, work, target paths) for rollback support.
