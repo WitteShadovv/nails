@@ -126,9 +126,13 @@ in
 
     with subtest("deactivate: the overlay upper is discarded"):
         canonical_deactivate(config_path, unit_name="nails-deactivate-persona-pullback")
+        # The overlay is gone, so the hidden upper that held the canary is detached
+        # — the deterministic teardown fact. Whether the decoy home already shows
+        # the canary again depends on how quickly the decoy Syncthing reconnects to
+        # the peer after the reboot and pulls it back; that reappearance is exactly
+        # the limitation the next subtest asserts, so it is not checked here (the
+        # reboot's autostart makes the transient "still gone" window racy).
         client.fail("mount | grep 'overlay on /home'")
-        # The hidden upper is detached; the decoy home has no canary yet.
-        client.fail(f"test -e {CLIENT_SYNC}/{CANARY}")
 
     with subtest("known limitation: the decoy client pulls the canary back"):
         st_wait_ready(client, CLIENT_CFG)

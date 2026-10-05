@@ -25,6 +25,13 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
   nixStorePrefix = "/nix" + "/store/";
+  # The store directory is itself a mount under the overlaid /nix, so NAILS gives
+  # it its own nested writable overlay whose upper lives under the hidden root's
+  # submount staging area (encode_component turns the store mount point into
+  # "nix%2Fstore"), not under the /nix overlay upper. A hidden-session store write
+  # lands here, on the hidden volume — still off the decoy disk, which is what the
+  # test guards.
+  hiddenStoreUpper = "/mnt/data/.nails-submounts/nix%2Fstore/upper";
 
   # Copy `nix` and its closure out of the store, patch the RPATHs and interpreter
   # references to the copies, so the binary keeps working after /nix is overlaid
@@ -143,7 +150,7 @@ let
       assert_under_hidden_upper() {
         store_path=$1
         store_basename=''${store_path##*/}
-        if [ ! -e "/mnt/data${nixStorePrefix}$store_basename" ]; then
+        if [ ! -e "${hiddenStoreUpper}/$store_basename" ]; then
           echo "store path did not land in the hidden upper: $store_path" >&2
           exit 1
         fi
