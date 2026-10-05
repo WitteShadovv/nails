@@ -35,12 +35,18 @@ in
             assert_overlay_mounted(path)
 
     with subtest("phase 2: emergency deactivation logs reverse-order unmounting"):
+        # Emergency scrubs the volatile runtime journal at the end of the teardown,
+        # so its own log lines cannot be read back from the journal afterwards.
+        # Capture the unit's output to a file under /run (never overlaid) instead.
+        log_path = "/run/nails-overlay-order-test.log"
+        machine.succeed(f"rm -f {log_path}")
         machine.succeed(
             "systemd-run --unit nails-overlay-order-test --wait --collect --service-type=exec "
+            + f"-p StandardOutput=append:{log_path} -p StandardError=append:{log_path} "
             + "/bin/sh -lc "
             + shlex.quote(f"nails --config {config_path} emergency")
         )
-        log_text = machine.succeed("journalctl -u nails-overlay-order-test -o cat")
+        log_text = machine.succeed(f"cat {log_path}")
         clean_log_text = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", log_text)
         unmounted = []
         for line in clean_log_text.splitlines():

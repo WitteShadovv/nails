@@ -81,6 +81,9 @@
       # chicken-and-egg.
       "/var/lib/nixos" = {
         device = "/persist/var/lib/nixos";
+        # virtualisation.fileSystems entries have no fsType default (the qemu-vm
+        # module reads it unconditionally), so a bind must name it explicitly.
+        fsType = "none";
         options = [ "bind" ];
         depends = [ "/persist" ];
       };
