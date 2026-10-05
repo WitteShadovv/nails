@@ -177,17 +177,26 @@ pub(super) fn is_overlay_mounted(target: &Path) -> Result<bool> {
 
 /// Whether the mount visible at `target` is mounted read-only.
 ///
-/// Reads the per-mount VFS options of the topmost (last listed) mount at the
-/// path, so a filesystem the kernel remounted read-only after an I/O error is
-/// reported as such. Not a mount point reads as writable (`false`).
+/// Checks the topmost (last listed) mount at the path, reading both the per-mount
+/// VFS options (field 6) and the per-superblock options (after the ` - `). An
+/// ext4 (or similar) filesystem the kernel remounts read-only after an I/O error
+/// flips the *superblock* to `ro` while the per-mount flag can stay `rw`, so both
+/// must be consulted or a failed-in-place backend reads as writable. Not a mount
+/// point reads as writable (`false`).
 pub(super) fn is_mount_read_only(target: &Path) -> Result<bool> {
     let canonical = canonical_target(target);
     Ok(read_mountinfo()?
         .iter()
         .rev()
         .find(|e| e.mount_point == canonical)
-        .map(|e| e.read_only())
+        .map(|e| e.read_only() || super_opts_read_only(&e.super_opts))
         .unwrap_or(false))
+}
+
+/// Whether a mount's per-superblock option string marks the filesystem read-only
+/// (a bare `ro` token), as a kernel emergency remount-ro does.
+fn super_opts_read_only(super_opts: &str) -> bool {
+    super_opts.split(',').any(|opt| opt == "ro")
 }
 
 /// Whether a mountinfo `major:minor` device string denotes the same device as a
@@ -504,8 +513,19 @@ pub(super) fn unmount_bind(fs: &RealFilesystem, target: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dm_name_for, mountinfo_dev_matches, overlay_mount_options};
+    use super::{dm_name_for, mountinfo_dev_matches, overlay_mount_options, super_opts_read_only};
     use std::path::Path;
+
+    #[test]
+    fn super_opts_read_only_detects_an_emergency_remount() {
+        // A kernel emergency remount-ro flips the superblock options to `ro`.
+        assert!(super_opts_read_only("ro,errors=remount-ro,data=ordered"));
+        assert!(super_opts_read_only("ro"));
+        // A healthy, writable filesystem is not read-only; `relatime` is not `ro`.
+        assert!(!super_opts_read_only("rw,errors=remount-ro"));
+        assert!(!super_opts_read_only("rw,relatime"));
+        assert!(!super_opts_read_only(""));
+    }
 
     #[test]
     fn overlay_options_disable_index_metacopy_and_redirect_dir() {
