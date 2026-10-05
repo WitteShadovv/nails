@@ -550,7 +550,7 @@ fn fd_is_writable(proc_path: &Path, fd_name: &str) -> bool {
 }
 
 /// Parse the octal `flags:` value out of an fdinfo file's contents.
-fn parse_fdinfo_flags(content: &str) -> Option<u64> {
+pub(crate) fn parse_fdinfo_flags(content: &str) -> Option<u64> {
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("flags:") {
             return u64::from_str_radix(rest.trim(), 8).ok();

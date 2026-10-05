@@ -1043,6 +1043,18 @@ fn inspect_journald_journal_fds() -> JournaldFdCheck {
         if !target.to_string_lossy().starts_with("/var/log/journal/") {
             continue;
         }
+        // Only a *writable* fd can leak hidden-session records onto the decoy. On a
+        // persistent-journal decoy journald keeps the pre-existing journals open
+        // read-only; overlayfs serves those from the lower (the decoy device)
+        // without copy-up, so they are on the base device but are the decoy's own
+        // history, not a leak. The active journal journald writes to is what must
+        // land on the overlay, so judge the posture by the writable fds alone.
+        let Some(fd_name) = fd_path.file_name() else {
+            continue;
+        };
+        if !journald_fd_is_writable(pid, &fd_name.to_string_lossy()) {
+            continue;
+        }
         // Stat through /proc/<pid>/fd/<n> so the device belongs to the open file,
         // not to whatever currently occupies that path through the overlay.
         let Ok(meta) = std::fs::metadata(&fd_path) else {
@@ -1059,6 +1071,27 @@ fn inspect_journald_journal_fds() -> JournaldFdCheck {
     } else {
         JournaldFdCheck::Indeterminate
     }
+}
+
+/// Whether journald's open fd `fd` is writable, read from `/proc/<pid>/fdinfo`.
+///
+/// The `flags:` line holds the octal open flags; the low two bits are the access
+/// mode (`O_RDONLY` = 0, `O_WRONLY` = 1, `O_RDWR` = 2), so a non-zero access mode
+/// means the fd can be written. A missing or unparsable fdinfo reads as
+/// not-writable, so an unreadable fd is never treated as a leak.
+fn journald_fd_is_writable(pid: u32, fd: &str) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/fdinfo/{fd}"))
+        .ok()
+        .is_some_and(|content| fdinfo_is_writable(&content))
+}
+
+/// Whether a `/proc/<pid>/fdinfo/<n>` body describes a writable fd: the octal
+/// `flags:` line has a non-zero access mode (`O_WRONLY`/`O_RDWR`) or `O_APPEND`.
+/// A missing or unparsable `flags:` reads as not-writable, so an unreadable fd is
+/// never treated as a leak that would roll the activation back.
+fn fdinfo_is_writable(content: &str) -> bool {
+    crate::process::detection::parse_fdinfo_flags(content)
+        .is_some_and(|flags| flags & 0o3 != 0 || flags & 0o2000 != 0)
 }
 
 /// Find the PID of the first process whose `comm` matches `name`.
@@ -1081,6 +1114,28 @@ fn find_pid_by_comm(name: &str) -> Option<u32> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod fdinfo_tests {
+    use super::fdinfo_is_writable;
+
+    #[test]
+    fn writable_fds_are_detected_from_the_octal_flags_line() {
+        // O_WRONLY (0o1) and O_RDWR (0o2), with the usual extra flags, are writable.
+        assert!(fdinfo_is_writable(
+            "pos:\t0\nflags:\t0100002\nmnt_id:\t42\n"
+        ));
+        assert!(fdinfo_is_writable("flags:\t02100001\n"));
+        // O_RDONLY (low two bits zero) is not writable — the decoy's own journals
+        // journald keeps open for reading.
+        assert!(!fdinfo_is_writable(
+            "pos:\t0\nflags:\t0100000\nmnt_id:\t42\n"
+        ));
+        // A missing or unparsable flags line reads as not-writable.
+        assert!(!fdinfo_is_writable("pos:\t0\nmnt_id:\t42\n"));
+        assert!(!fdinfo_is_writable("flags:\tnope\n"));
+    }
 }
 
 #[cfg(test)]
