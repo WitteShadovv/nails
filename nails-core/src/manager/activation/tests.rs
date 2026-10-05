@@ -4,9 +4,9 @@
 use super::gate::ActivationGateTestGuard;
 use super::maybe_block_after_activating_state_transition;
 use super::{
-    INTEGRITY_VERIFIED_TARGETS, SessionRestartPhase, StepProgress, derive_security_label,
-    determine_session_restart_phase, is_protected_base_unit, overlay_status_body,
-    record_surviving_writers,
+    HiddenConfigOutcome, INTEGRITY_VERIFIED_TARGETS, SessionRestartPhase, StepProgress,
+    derive_security_label, determine_session_restart_phase, is_protected_base_unit,
+    overlay_status_body, record_surviving_writers,
 };
 use crate::DecoyWriter;
 use crate::Verbosity;
@@ -1065,7 +1065,14 @@ fn record_hidden_added_units_ignores_units_known_before_the_switch() {
         "NetworkManager.service".to_string(),
         "myhidden-agent.service".to_string(),
     ];
-    manager.record_hidden_added_units(&known_before, &active_after);
+    manager.record_hidden_added_units(
+        &HiddenConfigOutcome::Applied {
+            toplevel: None,
+            fast_path: false,
+        },
+        &known_before,
+        &active_after,
+    );
 
     let recorded = manager
         .cached_state
@@ -1094,7 +1101,14 @@ fn record_hidden_added_units_drops_protected_base_units() {
         "systemd-udevd.service".to_string(),
         "myhidden-agent.service".to_string(),
     ];
-    manager.record_hidden_added_units(&before, &after);
+    manager.record_hidden_added_units(
+        &HiddenConfigOutcome::Applied {
+            toplevel: None,
+            fast_path: false,
+        },
+        &before,
+        &after,
+    );
 
     let recorded = manager
         .cached_state
@@ -1104,6 +1118,84 @@ fn record_hidden_added_units_drops_protected_base_units() {
         .hidden_added_units
         .clone();
     assert_eq!(recorded, vec!["myhidden-agent.service".to_string()]);
+}
+
+#[test]
+fn record_hidden_added_units_records_nothing_when_the_before_snapshot_is_empty() {
+    // An empty "before" snapshot means the host's units could not be enumerated.
+    // Trusting the diff then would mark every active unit as hidden-added and have
+    // emergency stop the whole running system (the operator's shell and the live
+    // decoy with it). Record nothing instead.
+    let fs = MockFilesystem::new();
+    let config = Config::test_default();
+    let state_path = PathBuf::from("/mnt/data/state.json");
+    let manager = NailsManager::new(fs, config, state_path);
+    manager.seed_cached_state(crate::StateFile::default());
+
+    let before: Vec<String> = Vec::new();
+    let after = vec![
+        "backdoor.service".to_string(),
+        "sshd.service".to_string(),
+        "dhcpcd.service".to_string(),
+    ];
+    manager.record_hidden_added_units(
+        &HiddenConfigOutcome::Applied {
+            toplevel: None,
+            fast_path: false,
+        },
+        &before,
+        &after,
+    );
+
+    let recorded = manager
+        .cached_state
+        .borrow()
+        .as_ref()
+        .expect("cached state seeded")
+        .hidden_added_units
+        .clone();
+    assert!(
+        recorded.is_empty(),
+        "an empty before-snapshot must record no hidden-added units, got: {recorded:?}"
+    );
+}
+
+#[test]
+fn record_hidden_added_units_records_nothing_without_an_applied_switch() {
+    // An overlay-only run (no hidden NixOS switch) reports `NotRequested` and adds
+    // no units. Recording the active-unit snapshot there would mark the live decoy
+    // units as hidden-added and have emergency stop the running system, so an
+    // unapplied outcome must record nothing regardless of the diff.
+    let fs = MockFilesystem::new();
+    let config = Config::test_default();
+    let state_path = PathBuf::from("/mnt/data/state.json");
+    let manager = NailsManager::new(fs, config, state_path);
+    manager.seed_cached_state(crate::StateFile::default());
+
+    let before = vec!["cups.service".to_string()];
+    let after = vec![
+        "cups.service".to_string(),
+        "myhidden-agent.service".to_string(),
+    ];
+    for outcome in [
+        HiddenConfigOutcome::NotRequested,
+        HiddenConfigOutcome::Failed {
+            reason: "build failed".to_string(),
+        },
+    ] {
+        manager.record_hidden_added_units(&outcome, &before, &after);
+        let recorded = manager
+            .cached_state
+            .borrow()
+            .as_ref()
+            .expect("cached state seeded")
+            .hidden_added_units
+            .clone();
+        assert!(
+            recorded.is_empty(),
+            "{outcome:?} must record no hidden-added units, got: {recorded:?}"
+        );
+    }
 }
 
 #[test]

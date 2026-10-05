@@ -703,7 +703,7 @@ impl<F: Filesystem> NailsManager<F> {
         let hidden_config =
             guard.run_post_overlay_nixos_switch(&fast_path_toplevel, &new_fingerprint, verbosity);
         let units_after_switch = crate::manager::helpers::ServiceController::list_active_units();
-        guard.record_hidden_added_units(&units_before_switch, &units_after_switch);
+        guard.record_hidden_added_units(&hidden_config, &units_before_switch, &units_after_switch);
         if let HiddenConfigOutcome::Failed { reason } = &hidden_config
             && guard.config().nixos_switch_required
         {
@@ -874,7 +874,38 @@ impl<F: Filesystem> NailsManager<F> {
     /// `ServiceController::list_known_units`) in the cached state, so
     /// emergency teardown stops exactly those units instead of switching the
     /// whole decoy configuration back. A no-op when nothing was added.
-    pub(crate) fn record_hidden_added_units(&self, before: &[String], after: &[String]) {
+    ///
+    /// Only an applied hidden switch can introduce units for teardown to stop: an
+    /// overlay-only run (or any host without a declarative layer) reports
+    /// [`HiddenConfigOutcome::NotRequested`] and adds nothing, so recording is
+    /// skipped unless the switch actually applied. This keeps the overlay-only
+    /// path from ever recording the running decoy units and having emergency stop
+    /// the live system.
+    ///
+    /// The diff is also only trustworthy when the "before" snapshot actually
+    /// enumerated the host's units. An empty "before" means the enumeration
+    /// returned nothing (systemctl failed, or no units were listed), and then
+    /// every active unit would be mistaken for one the hidden switch introduced —
+    /// so emergency would stop the entire running system, the operator's session
+    /// and all. Treat an empty "before" as "unknown" and record nothing rather
+    /// than risk that: a genuine hidden service is better left running than the
+    /// whole decoy torn down.
+    pub(crate) fn record_hidden_added_units(
+        &self,
+        outcome: &HiddenConfigOutcome,
+        before: &[String],
+        after: &[String],
+    ) {
+        if !matches!(outcome, HiddenConfigOutcome::Applied { .. }) {
+            return;
+        }
+        if before.is_empty() {
+            tracing::warn!(
+                "Skipping the hidden-added unit snapshot: the pre-switch unit list was empty, \
+                 so the added-unit diff cannot be trusted"
+            );
+            return;
+        }
         let before_set: std::collections::HashSet<&str> =
             before.iter().map(String::as_str).collect();
         let added: Vec<String> = after
