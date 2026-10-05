@@ -10,7 +10,7 @@ in
   meta.tags = [ "nixos" ];
 
   nodes.machine =
-    { pkgs, ... }:
+    { lib, pkgs, ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [
@@ -21,6 +21,12 @@ in
         "nix-command"
         "flakes"
       ];
+      # The guest is offline. The hidden toplevel is a store path the flake
+      # produces with builtins.toFile, so the explicit `nix build` only has to
+      # realise an already-present path; configuring no substituters (mkForce over
+      # any profile or qemu-vm default) stops nix from querying an unreachable
+      # cache for it.
+      nix.settings.substituters = lib.mkForce [ ];
     };
 
   testScript = _: ''
@@ -142,8 +148,17 @@ in
       # needs the flake source (carrying the canary) copied into the store; this
       # minimal flake still drives both. The real build+switch path lives in
       # test 27 (activate-full-rebuild).
+      #
+      # nails builds the hidden toplevel explicitly (`nix build
+      # ...system.build.toplevel`) before it dispatches the switch to
+      # nixos-rebuild. Expose a trivial, nixpkgs-free toplevel the offline guest
+      # can realise with no build or fetch: a plain store path produced by
+      # `builtins.toFile`. The stubbed nixos-rebuild still performs the switch, so
+      # the toplevel content is never used — only its presence lets the explicit
+      # build step succeed while the flake stays input-less.
       outputs = { self }: {
-        nixosConfigurations.nails-e2e = { };
+        nixosConfigurations.nails-e2e.config.system.build.toplevel =
+          builtins.toFile "nixos-system-nails-e2e" "flake-override stub toplevel";
       };
     }
     EOF""")
