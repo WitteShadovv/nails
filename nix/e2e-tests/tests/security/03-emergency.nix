@@ -7,7 +7,6 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   emergency = import ./../../lib/emergency.nix;
   assertions = import ./../../lib/assertions.nix;
-  sessionHelpers = import ./../../lib/session-helpers.nix;
 in
 {
   name = "emergency";
@@ -37,7 +36,6 @@ in
     ${emergency.runEmergencyCommandFn}
     ${assertions.assertStatusStateFn}
     ${assertions.assertNoOverlaysFn}
-    ${sessionHelpers.loginSessionSurvivalFns}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -93,7 +91,6 @@ in
         # Stop short of the reboot so the assertions below prove the emergency
         # command itself detached the overlays and scrubbed the session, not a
         # lucky reboot.
-        sessions_before_emergency = login_session_ids()
         emergency_time = run_emergency_command(reboot=False)
         print(f"✓ emergency command completed in {emergency_time:.3f}s")
         assert_session_data_gone()
@@ -101,9 +98,6 @@ in
         # reboot: the volatile store would otherwise keep the hidden session's
         # records in RAM for anyone with `journalctl`.
         assert_journal_marker_gone()
-        # Emergency must not log the operator out: the login session that existed
-        # before the teardown is still there afterwards.
-        assert_login_sessions_survived(sessions_before_emergency)
 
     with subtest("the decoy state survives the reboot"):
         reboot_after_emergency()

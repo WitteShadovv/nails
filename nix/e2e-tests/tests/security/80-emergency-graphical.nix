@@ -49,6 +49,13 @@ in
     def unit_is_active(unit):
         return machine.execute(f"systemctl is-active {unit}")[0] == 0
 
+    def xorg_pids():
+        # The X server's process name varies (Xorg, X, a NixOS .Xorg-wrapped
+        # wrapper), so match the Xorg binary in the command line rather than an
+        # exact comm. The bracket keeps pgrep from matching itself.
+        rc, out = machine.execute("pgrep -f '[X]org'")
+        return sorted(out.split()) if rc == 0 else []
+
     machine.start()
     machine.wait_for_unit("display-manager.service")
     machine.wait_until_succeeds("systemctl is-active user@1000.service")
@@ -108,7 +115,8 @@ in
         dm_main_pid_before = machine.succeed(
             "systemctl show display-manager.service -p MainPID --value"
         ).strip()
-        xorg_pid_before = machine.succeed("pgrep -x Xorg").strip()
+        xorg_pids_before = xorg_pids()
+        assert xorg_pids_before, "the X server must be running before the teardown"
 
         # Emergency must complete the overlay teardown even though a live process
         # (the X server) holds a path busy, so capture its output and exit rather
@@ -140,9 +148,9 @@ in
         assert dm_main_pid_after == dm_main_pid_before, (
             f"display manager PID changed: {dm_main_pid_before} -> {dm_main_pid_after}"
         )
-        xorg_pid_after = machine.succeed("pgrep -x Xorg").strip()
-        assert xorg_pid_after == xorg_pid_before, (
-            f"X server PID changed: {xorg_pid_before} -> {xorg_pid_after}"
+        xorg_pids_after = xorg_pids()
+        assert xorg_pids_after == xorg_pids_before, (
+            f"X server PID changed: {xorg_pids_before} -> {xorg_pids_after}"
         )
         machine.succeed("systemctl is-active user@1000.service")
 
