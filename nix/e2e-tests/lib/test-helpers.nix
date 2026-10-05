@@ -14,7 +14,7 @@ in
   # read-only, since a hidden-session write there would reach the decoy disk, so
   # the explicit config must overlay them just as auto mode does.
   writeHeadlessConfigFn = ''
-    def write_headless_config(path):
+    def write_headless_config(path, overlay_var=False):
         import os
         import shlex
 
@@ -74,6 +74,23 @@ in
     ${baseOs.toml}
     EOF""" % path
         )
+        # Forensic tests that keep a persistent decoy journal need /var overlaid so
+        # the hidden session's journal does not land on the decoy disk: overlaying
+        # /var makes NAILS relinquish journald to the volatile /run store, which the
+        # teardown then scrubs. Appended as an extra overlay table (table order is
+        # irrelevant in TOML).
+        if overlay_var:
+            machine.succeed(
+                """cat >> %s <<'EOF'
+
+    [[overlays]]
+    name = "var"
+    lower = "/var"
+    upper = "/mnt/data/var"
+    work = "/mnt/data/.work/var"
+    target = "/var"
+    EOF""" % path
+            )
   '';
 
   # Python function to write an auto-mode config. Auto mode derives the overlay

@@ -110,6 +110,11 @@ in
         return (root_stat, top_level, links)
 
     with subtest("capture the decoy baseline (live and image)"):
+        # Create the hidden-volume mount point before the baseline. It is a
+        # legitimate, permanent part of the decoy; setupHiddenVolume would
+        # otherwise create it after the baseline and the new /mnt entry (and the
+        # root mtime bump) would read as drift.
+        machine.succeed("mkdir -p /mnt/data")
         initial_files = listed("/home /etc /var")
         initial_sums = summed("/home /etc")
         initial_os_root = os_root_fingerprint()

@@ -101,6 +101,14 @@ in
             "activate --overlay-only --session keep -y"
         )
         assert_overlay_mounted("/home")
+        # risky_services = "skip" leaves the decoy Syncthing running on the decoy
+        # home, so its index would stay on the decoy lower. Restart it onto the
+        # now-overlaid home: its database then lives in the overlay upper and is
+        # discarded on deactivation, so after the reboot the decoy client starts
+        # from its pre-session index and genuinely pulls the canary back (the
+        # limitation under test) instead of pushing a delete to the peer.
+        client.succeed("systemctl restart syncthing.service")
+        st_wait_ready(client, CLIENT_CFG)
 
     with subtest("the hidden session writes a canary into the synced folder"):
         # The new file lands on the overlay upper (the hidden volume), not the

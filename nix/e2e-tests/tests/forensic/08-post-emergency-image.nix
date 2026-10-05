@@ -49,7 +49,7 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
     headless_config = "/tmp/nails-headless.toml"
-    write_headless_config(headless_config)
+    write_headless_config(headless_config, overlay_var=True)
 
     with subtest("capture the decoy baseline image"):
         baseline = disk_forensics.snapshot(machine, "baseline")

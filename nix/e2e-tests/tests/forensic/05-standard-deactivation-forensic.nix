@@ -49,8 +49,12 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.toml"
-    write_headless_config(headless_config)
+    # Keep the config file name free of "nails": it is written to the decoy /tmp
+    # before activation and survives the cycle, and `verify --deep` recursively
+    # flags nails-named files under /tmp as suspicious leftovers — so a config
+    # called nails-*.toml would make verify warn about the test's own artifact.
+    headless_config = "/tmp/forensic-headless.toml"
+    write_headless_config(headless_config, overlay_var=True)
 
     with subtest("capture the decoy baseline image"):
         baseline = disk_forensics.snapshot(machine, "baseline")
@@ -102,7 +106,9 @@ in
             if "Overlay mount found" in finding["message"]
         ]
         assert not overlay_findings, f"verify reported overlays: {overlay_findings}"
-        assert verify_status == 0, f"verify --deep exit code was {verify_status}"
+        assert verify_status == 0, (
+            f"verify --deep exit code was {verify_status}: {verify_payload}"
+        )
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp", "/var"])
 
     with subtest("the decoy disk image is clean of every canary and registry token"):

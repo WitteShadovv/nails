@@ -48,35 +48,43 @@
       }
     ];
 
-    # The decoy root is a tmpfs: every write that is not explicitly persisted
-    # below vanishes on power-off. mkForce overrides the qemu-vm root device.
-    fileSystems."/" = lib.mkForce {
-      device = "tmpfs";
-      fsType = "tmpfs";
-      options = [ "mode=0755" ];
-    };
+    # Declared as one attrset so the three mounts share the `fileSystems` key.
+    # They must live under `virtualisation.fileSystems`, not a top-level
+    # `fileSystems`: the qemu-vm module replaces `fileSystems` with
+    # `mkVMOverride virtualisation.fileSystems`, so a top-level entry is dropped
+    # and would never be created.
+    fileSystems = {
+      # The decoy root is a tmpfs: every write that is not explicitly persisted
+      # below vanishes on power-off. mkForce overrides the qemu-vm root device.
+      "/" = lib.mkForce {
+        device = "tmpfs";
+        fsType = "tmpfs";
+        options = [ "mode=0755" ];
+      };
 
-    # The persistent volume for the trees that must outlive the tmpfs root. It is
-    # needed before the bind mounts below, so it mounts early.
-    fileSystems."/persist" = {
-      device = "/dev/disk/by-id/virtio-persist";
-      fsType = "ext4";
-      autoFormat = true;
-      neededForBoot = true;
-    };
-  };
+      # The persistent volume for the trees that must outlive the tmpfs root. It
+      # is needed before the bind mounts below, so it mounts early.
+      "/persist" = {
+        device = "/dev/disk/by-id/virtio-persist";
+        fsType = "ext4";
+        autoFormat = true;
+        neededForBoot = true;
+      };
 
-  # Persist the one tree switch-to-configuration rewrites. This bind is the only
-  # non-store write that survives a power-off, so a forensic diff of
-  # /persist/var/lib/nixos after deactivation is the decoy's real drift.
-  #
-  # It is left out of the stage-1 (neededForBoot) set so it mounts in stage-2 —
-  # by then the stage-1 unit below has created its source on the freshly
-  # formatted /persist, avoiding the bind-before-source chicken-and-egg.
-  fileSystems."/var/lib/nixos" = {
-    device = "/persist/var/lib/nixos";
-    options = [ "bind" ];
-    depends = [ "/persist" ];
+      # Persist the one tree switch-to-configuration rewrites. This bind is the
+      # only non-store write that survives a power-off, so a forensic diff of
+      # /persist/var/lib/nixos after deactivation is the decoy's real drift.
+      #
+      # It is left out of the stage-1 (neededForBoot) set so it mounts in
+      # stage-2 — by then the stage-1 unit below has created its source on the
+      # freshly formatted /persist, avoiding the bind-before-source
+      # chicken-and-egg.
+      "/var/lib/nixos" = {
+        device = "/persist/var/lib/nixos";
+        options = [ "bind" ];
+        depends = [ "/persist" ];
+      };
+    };
   };
 
   # /persist is mounted under /sysroot in stage-1 (neededForBoot); create the
