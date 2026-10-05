@@ -388,16 +388,6 @@ fn owner_pid_to_signal(
     }
 }
 
-/// Restart the display manager after an emergency teardown so the decoy greeter
-/// reappears. Best-effort; `None` (a non-graphical or non-emergency teardown)
-/// does nothing.
-fn restart_display_manager_after_emergency(display_manager: Option<String>) {
-    if let Some(display_manager) = display_manager {
-        tracing::info!(service = %display_manager, "Restarting display manager onto the decoy greeter");
-        start_service_and_socket(&display_manager);
-    }
-}
-
 fn build_cleanup_config<F: Filesystem>(
     manager: &NailsManager<F>,
     kind: ManagerDeactivationKind,
@@ -600,70 +590,39 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
-    /// Emergency only: run the pre-teardown session/service cleanup and return the
-    /// display manager to restart afterwards. A no-op returning `None` for the
+    /// Emergency only: run the pre-teardown service cleanup. A no-op for the
     /// normal and recovery kinds, which keep the thorough teardown order.
-    fn prepare_emergency_session_teardown(&self, kind: ManagerDeactivationKind) -> Option<String> {
+    fn prepare_emergency_pre_unmount_cleanup(&self, kind: ManagerDeactivationKind) {
         if kind != ManagerDeactivationKind::Emergency {
-            return None;
+            return;
         }
         let overlay_targets = self.emergency_overlay_targets();
-        self.terminate_hidden_session_before_teardown(&overlay_targets)
+        self.stop_hidden_units_before_teardown(&overlay_targets);
     }
 
-    /// Emergency only: end the hidden graphical session and the services the
-    /// hidden configuration added, before the overlays come down.
+    /// Emergency only: stop the service units the hidden configuration added, then
+    /// signal any process still able to write to the decoy *through an overlay
+    /// target*, before the overlays come down.
     ///
-    /// Order matters. The logind session (and its user) are terminated first so
-    /// every GUI app and user unit the operator left in that slice — including
-    /// those rooted in the overlays — is gone before unmount. The service units
-    /// the hidden switch recorded are then stopped, and finally any remaining
-    /// process still able to write through an overlay target is signalled. All of
-    /// it is best-effort. Returns the display manager to restart once the overlays
-    /// are gone (`Some` only when a graphical session was torn down).
-    fn terminate_hidden_session_before_teardown(
-        &self,
-        overlay_targets: &[PathBuf],
-    ) -> Option<String> {
+    /// It deliberately leaves the desktop looking unchanged: emergency never logs
+    /// the operator out (no logind session/user terminate) and never stops or
+    /// restarts the display manager or X server. Emergency detaches the overlays
+    /// from underneath the running session instead — lazily where a process still
+    /// holds a path busy — and the report then names any mount or backend that
+    /// could not be released. The overlay-rooted process signal is the targeted
+    /// anti-leak step (a process whose references resolve onto an overlay's own
+    /// device could re-dirty the decoy once the mount is lazily detached); it
+    /// spares the teardown's own session and never touches the display manager.
+    /// All of it is best-effort.
+    fn stop_hidden_units_before_teardown(&self, overlay_targets: &[PathBuf]) {
         use crate::manager::helpers::ServiceController;
 
-        let (hidden_session, added_units) = {
-            let cached = self.cached_state.borrow();
-            match cached.as_ref() {
-                Some(state_file) => (
-                    state_file.hidden_session.clone(),
-                    state_file.hidden_added_units.clone(),
-                ),
-                None => (None, Vec::new()),
-            }
-        };
-
-        let restart_dm = hidden_session.map(|session| {
-            tracing::info!(
-                uid = session.target_uid,
-                "Terminating the hidden graphical session before overlay teardown"
-            );
-            ServiceController::terminate_logind_session(
-                session.target_uid,
-                session.session_id.as_deref(),
-            );
-            let display_manager = session
-                .display_manager
-                .unwrap_or_else(|| "display-manager.service".to_string());
-            // Stop the display manager too, not just the logind session: the X
-            // server and greeter run in display-manager.service, outside the user's
-            // session, and the hidden session's X server holds its lock and socket
-            // on the overlay /tmp. Left running it keeps /tmp busy, so the overlay
-            // can only be lazily detached and the backend close then fails with
-            // EBUSY. Stopped here, /tmp is free before the unmount; it is restarted
-            // after teardown so a fresh greeter comes up on the decoy.
-            tracing::info!(
-                service = %display_manager,
-                "Stopping the display manager before overlay teardown"
-            );
-            ServiceController::stop_unit(&display_manager);
-            display_manager
-        });
+        let added_units = self
+            .cached_state
+            .borrow()
+            .as_ref()
+            .map(|state_file| state_file.hidden_added_units.clone())
+            .unwrap_or_default();
 
         for unit in &added_units {
             tracing::info!(unit, "Stopping a unit the hidden configuration added");
@@ -671,8 +630,6 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         self.kill_overlay_rooted_processes(overlay_targets);
-
-        restart_dm
     }
 
     /// Signal any process that can still write to the decoy through an overlay
@@ -967,15 +924,13 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
-        // Emergency only: before the overlays come down, end the hidden graphical
-        // session and the services the hidden configuration added. Killing the
-        // logind session and the hidden units first means GUI apps and hidden
-        // services rooted in the overlays are gone before unmount, so the overlays
-        // are no longer pinned and the backend can later be closed. Returns the
-        // display manager to restart once the overlays are gone (`Some` only when a
-        // graphical session was torn down), deferred until after unmount so the
-        // greeter comes from the decoy system.
-        let emergency_restart_dm = self.prepare_emergency_session_teardown(kind);
+        // Emergency only: before the overlays come down, stop the service units the
+        // hidden configuration added and signal any process still writing to the
+        // decoy through an overlay target. It never logs the operator out and never
+        // touches the display manager or X server — the desktop must look unchanged
+        // while the overlays are detached underneath it (lazily where a process
+        // holds a path busy).
+        self.prepare_emergency_pre_unmount_cleanup(kind);
 
         let cleanup_config = build_cleanup_config(self, kind);
 
@@ -1035,12 +990,6 @@ impl<F: Filesystem> NailsManager<F> {
             // base journal. Restarting forces it to reopen on the decoy's /var.
             restart_service_and_socket("systemd-journald");
         }
-
-        // Emergency only: now that the overlays are gone, restart the display
-        // manager so the login greeter comes up from the decoy system rather than
-        // the torn-down hidden session. Deferred to here so it never races the
-        // overlay teardown.
-        restart_display_manager_after_emergency(emergency_restart_dm);
 
         // Stop the in-session backend watcher and remove the RAM-backed runtime
         // copy on every teardown path. Runs before the orchestrator result is

@@ -11,6 +11,7 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
+  sessionHelpers = import ./../../lib/session-helpers.nix;
 in
 {
   name = "faults-hidden-disk-removed";
@@ -26,6 +27,7 @@ in
     ${assertions.assertStatusStateFn}
     ${assertions.assertOverlayMountedFn}
     ${assertions.assertNoOverlaysFn}
+    ${sessionHelpers.loginSessionSurvivalFns}
 
     overlay_targets = ["/etc", "/home", "/root", "/srv", "/tmp", "/usr", "/bin", "/lib64"]
 
@@ -59,6 +61,7 @@ in
         machine.succeed("dmsetup wipe_table --force data")
 
     with subtest("emergency detaches every overlay within the time bound"):
+        sessions_before_emergency = login_session_ids()
         # timeout caps the whole teardown so a wedge on the dead device is a
         # failure, not a hang that holds the shard until the global timeout.
         rc, output = machine.execute(
@@ -67,5 +70,7 @@ in
         assert rc in documented_codes, f"emergency exit {rc} is not documented: {output!r}"
         # The security-critical guarantee: no NAILS overlay survives the yank.
         assert_no_overlays(overlay_targets)
+        # Emergency detaches the overlays without logging the operator out.
+        assert_login_sessions_survived(sessions_before_emergency)
   '';
 }

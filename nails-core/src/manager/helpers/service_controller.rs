@@ -66,21 +66,6 @@ fn run_systemctl(args: &[&str]) -> std::result::Result<std::process::Output, std
     )
 }
 
-/// Run `loginctl` with the given arguments through the shared runner.
-///
-/// Resolved through the trust-checked host-tool resolver at call time, the same
-/// way `journalctl` is: logind control runs during teardown, after `/var` is
-/// overlaid, but `loginctl` lives outside `/var`. Bounded by a short deadline so
-/// a hung terminate cannot freeze the teardown.
-fn run_loginctl(args: &[&str]) -> std::result::Result<std::process::Output, std::io::Error> {
-    let path = super::command_cache::nixos_tool_path("loginctl");
-    run_command(
-        &ProcessCommand::exact(path)
-            .args(args)
-            .deadline(std::time::Duration::from_secs(15)),
-    )
-}
-
 /// Parse the unit names from `systemctl list-units … --no-legend --plain`
 /// output: the first whitespace-separated column of each non-empty line.
 fn parse_active_units(stdout: &[u8]) -> Vec<String> {
@@ -623,31 +608,6 @@ impl ServiceController {
                 false
             }
         }
-    }
-
-    /// Terminate a logind session and its owning user.
-    ///
-    /// Ends the hidden graphical session before the overlays come down: the
-    /// specific session (when its id is known) and then the whole user, so every
-    /// process the operator left behind in that slice — GUI apps rooted in the
-    /// overlays among them — is gone before unmount. Best-effort; a host without
-    /// logind simply has nothing to terminate.
-    pub fn terminate_logind_session(uid: u32, session_id: Option<&str>) {
-        if Self::should_skip() {
-            #[cfg(test)]
-            {
-                if let Some(id) = session_id {
-                    recorder::record(format!("terminate-session:{id}"));
-                }
-                recorder::record(format!("terminate-user:{uid}"));
-            }
-            return;
-        }
-
-        if let Some(id) = session_id {
-            let _ = run_loginctl(&["terminate-session", id]);
-        }
-        let _ = run_loginctl(&["terminate-user", &uid.to_string()]);
     }
 
     /// Best-effort restart of services that were stopped during overlay mounting

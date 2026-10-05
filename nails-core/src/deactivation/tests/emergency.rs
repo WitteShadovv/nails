@@ -567,7 +567,7 @@ fn test_normal_deactivate_removes_the_runtime_copy() {
 
 #[test]
 #[serial]
-fn test_emergency_stops_recorded_units_and_terminates_session_before_dm_restart() {
+fn test_emergency_stops_recorded_units_but_never_touches_the_session_or_dm() {
     let mut env = EnvGuard::lock();
     env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
@@ -633,14 +633,12 @@ fn test_emergency_stops_recorded_units_and_terminates_session_before_dm_restart(
     let actions = crate::manager::helpers::drain_recorded_service_actions();
 
     // The recorded hidden units are stopped: the service-level stop entries
-    // (ignoring the paired `.socket` steps and the display-manager stop, which is
-    // part of the graphical-session teardown) are precisely the two units the
-    // hidden switch added, and nothing else.
+    // (ignoring the paired `.socket` steps) are precisely the two units the hidden
+    // switch added, and nothing else.
     let service_stops: Vec<&str> = actions
         .iter()
         .filter_map(|a| a.strip_prefix("stop:"))
         .filter(|unit| !unit.ends_with(".socket"))
-        .filter(|unit| *unit != "display-manager.service")
         .collect();
     assert_eq!(
         service_stops,
@@ -648,37 +646,21 @@ fn test_emergency_stops_recorded_units_and_terminates_session_before_dm_restart(
         "emergency must stop exactly the recorded hidden units: {actions:?}"
     );
 
-    // The hidden graphical session's display manager is stopped before the
-    // overlays come down — the X server holds the overlay /tmp, so leaving it up
-    // would wedge the unmount and the backend close — and is restarted only after
-    // teardown, so the stop precedes the restart.
-    let dm_stop_idx = actions
-        .iter()
-        .position(|a| a == "stop:display-manager.service")
-        .expect("the display manager must be stopped before overlay teardown");
-
-    // The session and its user are terminated, and that happens before the
-    // display manager is restarted (which only runs after the overlays are gone).
-    let term_user_idx = actions
-        .iter()
-        .position(|a| a == "terminate-user:1000")
-        .expect("the hidden session's user must be terminated");
-    assert!(
-        actions.iter().any(|a| a == "terminate-session:c7"),
-        "the recorded session id must be terminated: {actions:?}"
-    );
-    let dm_restart_idx = actions
-        .iter()
-        .position(|a| a == "start:display-manager.service")
-        .expect("the display manager must be restarted after teardown");
-    assert!(
-        term_user_idx < dm_restart_idx,
-        "session termination must precede the post-unmount display-manager restart: {actions:?}"
-    );
-    assert!(
-        dm_stop_idx < dm_restart_idx,
-        "the display manager must be stopped before it is restarted: {actions:?}"
-    );
+    // Emergency must leave the desktop looking unchanged: it never logs the
+    // operator out and never touches the display manager. None of the logind
+    // terminate or display-manager actions may appear, even though the state
+    // recorded a graphical session with a display manager.
+    for forbidden in [
+        "terminate-session:c7",
+        "terminate-user:1000",
+        "stop:display-manager.service",
+        "start:display-manager.service",
+    ] {
+        assert!(
+            !actions.iter().any(|a| a == forbidden),
+            "emergency must not perform {forbidden:?}: {actions:?}"
+        );
+    }
 
     let guard = manager.lock().unwrap();
     assert_eq!(guard.current_state().unwrap(), SystemState::Inactive);

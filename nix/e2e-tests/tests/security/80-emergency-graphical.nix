@@ -2,9 +2,12 @@
 #
 # Activates from a real graphical session (lightdm autologin as testuser) with a
 # hidden configuration that adds a long-running service unit, then triggers
-# `nails emergency` and asserts the hidden session and the hidden-added service
-# are gone, the NAILS overlays are released, the display manager comes back for
-# the decoy greeter, and the backend can be unmounted and closed without EBUSY.
+# `nails emergency` and asserts the NAILS overlays are released and the
+# hidden-added service is stopped WHILE the desktop is left untouched: emergency
+# never logs the operator out and never stops or restarts the display manager or
+# X server, so nothing on screen hints at the teardown. The live X server keeps
+# the lazily detached overlay busy, so the backend cannot be closed yet — which
+# emergency reports honestly instead of force-closing it or failing the teardown.
 
 { self, pkgs, ... }:
 let
@@ -41,7 +44,6 @@ in
     ${assertions.assertOverlayMountedFn}
     ${assertions.assertNoOverlaysFn}
     ${sessionHelpers.readSystemdActiveEnterMonotonicFn}
-    ${sessionHelpers.waitForUnitRestartedFn}
     ${sessionHelpers.waitForActivationTransientUnitFn}
 
     def unit_is_active(unit):
@@ -74,7 +76,6 @@ in
     }
     EOF""")
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
-        display_manager_before = read_systemd_active_enter_monotonic("display-manager.service")
 
     with subtest("activate from the graphical session"):
         machine.succeed(
@@ -101,10 +102,23 @@ in
         # never added and the stop assertion below is simply vacuous.
         hidden_service_came_up = unit_is_active("hidden-marker.service")
 
-    with subtest("emergency tears the hidden session and services down"):
-        machine.succeed(f"nails --config {headless_config} emergency")
+    with subtest("emergency detaches the overlays and leaves the desktop untouched"):
+        # Snapshot the live desktop immediately before the teardown.
+        dm_active_enter_before = read_systemd_active_enter_monotonic("display-manager.service")
+        dm_main_pid_before = machine.succeed(
+            "systemctl show display-manager.service -p MainPID --value"
+        ).strip()
+        xorg_pid_before = machine.succeed("pgrep -x Xorg").strip()
 
-        # The hidden overlays are released and the hidden-added service is gone.
+        # Emergency must complete the overlay teardown even though a live process
+        # (the X server) holds a path busy, so capture its output and exit rather
+        # than demanding a clean exit.
+        emergency_rc, emergency_out = machine.execute(
+            f"nails --config {headless_config} emergency 2>&1"
+        )
+
+        # Every hidden overlay is released (lazily where the X server still held
+        # it), and the hidden-added service is stopped.
         assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
         assert not unit_is_active("hidden-marker.service"), (
             "emergency must stop the service the hidden configuration added"
@@ -112,18 +126,39 @@ in
         if hidden_service_came_up:
             machine.succeed("test ! -e /etc/nails-graphical-marker")
 
-        # The display manager is restarted, so the decoy greeter can come up.
-        wait_for_unit_restarted("display-manager.service", display_manager_before)
+        # The desktop is untouched: the display manager was neither stopped nor
+        # restarted (same activation timestamp and MainPID), the X server keeps the
+        # same PID, and the operator's user session is still running.
+        dm_active_enter_after = read_systemd_active_enter_monotonic("display-manager.service")
+        assert dm_active_enter_after == dm_active_enter_before, (
+            "emergency must not restart the display manager: "
+            f"{dm_active_enter_before} -> {dm_active_enter_after}"
+        )
+        dm_main_pid_after = machine.succeed(
+            "systemctl show display-manager.service -p MainPID --value"
+        ).strip()
+        assert dm_main_pid_after == dm_main_pid_before, (
+            f"display manager PID changed: {dm_main_pid_before} -> {dm_main_pid_after}"
+        )
+        xorg_pid_after = machine.succeed("pgrep -x Xorg").strip()
+        assert xorg_pid_after == xorg_pid_before, (
+            f"X server PID changed: {xorg_pid_before} -> {xorg_pid_after}"
+        )
+        machine.succeed("systemctl is-active user@1000.service")
 
         assert_status_state("inactive", config_path=headless_config)
 
-    with subtest("the backend unmounts and closes without EBUSY"):
-        # Nothing may still pin the hidden superblock: with the overlays released
-        # and the hidden session ended, a plain umount and cryptsetup close must
-        # succeed (a lazy umount or a failed close would mean a straggler still
-        # holds the backend and the key stays in RAM).
-        machine.succeed("umount /mnt/data")
-        machine.succeed("cryptsetup close data")
-        machine.fail("test -e /dev/mapper/data")
+    with subtest("the live session keeps the backend open, reported honestly"):
+        # The still-running X server holds the lazily detached overlay, so the
+        # hidden backend cannot be closed yet. Emergency must say so (rather than
+        # claim a clean close or force one under the live session), and the hidden
+        # root stays mounted for the operator to close by hand once it is safe.
+        lowered = emergency_out.lower()
+        assert ("forced detach" in lowered) or ("could not" in lowered) or (
+            "still" in lowered and "mount" in lowered
+        ) or ("cannot be closed" in lowered), (
+            f"emergency must report that the backend could not be released yet: {emergency_out!r}"
+        )
+        machine.succeed("mountpoint -q /mnt/data")
   '';
 }

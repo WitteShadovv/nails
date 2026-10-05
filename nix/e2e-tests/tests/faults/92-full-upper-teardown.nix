@@ -10,6 +10,7 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
+  sessionHelpers = import ./../../lib/session-helpers.nix;
 in
 {
   name = "faults-full-upper-teardown";
@@ -25,6 +26,7 @@ in
     ${assertions.assertStatusStateFn}
     ${assertions.assertOverlayMountedFn}
     ${assertions.assertNoOverlaysFn}
+    ${sessionHelpers.loginSessionSurvivalFns}
 
     overlay_targets = ["/etc", "/home", "/root", "/srv", "/tmp", "/usr", "/bin", "/lib64"]
 
@@ -63,8 +65,11 @@ in
         machine.fail("su - testuser -c 'dd if=/dev/zero of=$HOME/overflow bs=1M count=4'")
 
     with subtest("emergency completes and leaves no overlay behind on a full upper"):
+        sessions_before_emergency = login_session_ids()
         machine.succeed(f"nails --config {headless_config} emergency")
         assert_no_overlays(overlay_targets)
+        # Emergency detaches the overlays without logging the operator out.
+        assert_login_sessions_survived(sessions_before_emergency)
         assert_status_state("inactive", config_path=headless_config)
 
     with subtest("freeing space lets the backend close cleanly"):

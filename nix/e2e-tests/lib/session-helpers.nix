@@ -72,4 +72,21 @@
             f"Expected transient activation unit {unit} in system.slice, got {slice_name!r}"
         )
   '';
+
+  # Assert emergency never logs anyone out: the desktop (or console) must look
+  # untouched, so every login session that existed before the teardown must still
+  # exist after it. Snapshot with login_session_ids() before emergency and check
+  # with assert_login_sessions_survived(before) afterwards.
+  loginSessionSurvivalFns = ''
+    def login_session_ids():
+        out = machine.succeed("loginctl list-sessions --no-legend 2>/dev/null || true")
+        return {line.split()[0] for line in out.splitlines() if line.strip()}
+
+    def assert_login_sessions_survived(before):
+        after = login_session_ids()
+        lost = before - after
+        assert not lost, (
+            f"emergency must not log any session out; sessions lost: {sorted(lost)}"
+        )
+  '';
 }

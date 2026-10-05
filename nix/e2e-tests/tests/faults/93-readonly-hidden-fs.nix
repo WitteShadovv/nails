@@ -10,6 +10,7 @@ let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
+  sessionHelpers = import ./../../lib/session-helpers.nix;
 in
 {
   name = "faults-readonly-hidden-fs";
@@ -25,6 +26,7 @@ in
     ${assertions.assertStatusStateFn}
     ${assertions.assertOverlayMountedFn}
     ${assertions.assertNoOverlaysFn}
+    ${sessionHelpers.loginSessionSurvivalFns}
 
     overlay_targets = ["/etc", "/home", "/root", "/srv", "/tmp", "/usr", "/bin", "/lib64"]
     documented_codes = {0, 7}
@@ -49,11 +51,14 @@ in
         machine.succeed("blockdev --setro /dev/mapper/data")
 
     with subtest("emergency still tears every overlay down"):
+        sessions_before_emergency = login_session_ids()
         rc, output = machine.execute(
             f"timeout 30 nails --config {headless_config} emergency", timeout=60
         )
         assert rc in documented_codes, f"emergency exit {rc} is not documented: {output!r}"
         assert_no_overlays(overlay_targets)
+        # Emergency detaches the overlays without logging the operator out.
+        assert_login_sessions_survived(sessions_before_emergency)
 
     with subtest("restoring write access lets the backend close cleanly"):
         machine.succeed("blockdev --setrw /dev/mapper/data")

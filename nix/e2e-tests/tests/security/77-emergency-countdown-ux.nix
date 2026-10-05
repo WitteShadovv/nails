@@ -6,6 +6,7 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
   securityHelpers = import ./../../lib/security-helpers.nix;
+  sessionHelpers = import ./../../lib/session-helpers.nix;
 in
 {
   name = "emergency-countdown-ux";
@@ -23,6 +24,7 @@ in
     ${assertions.assertStatusStateFn}
     ${assertions.assertNoOverlaysFn}
     ${securityHelpers.capturedCommandFns}
+    ${sessionHelpers.loginSessionSurvivalFns}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -34,6 +36,7 @@ in
     with subtest("--countdown shows an abortable countdown and waits"):
         machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
 
+        sessions_before_emergency = login_session_ids()
         prefix = "/run/nails-tests/emergency-countdown-optin"
         started_at = now()
         result = run_shellless_transient_command(
@@ -63,6 +66,8 @@ in
         assert countdown_elapsed >= 3.0, f"Countdown completed too quickly: {countdown_elapsed:.3f}s"
         assert countdown_elapsed < 20.0, f"Countdown command took too long: {countdown_elapsed:.3f}s"
         assert_no_overlays(["/home", "/etc"])
+        # Emergency must not log the operator out while it tears the overlays down.
+        assert_login_sessions_survived(sessions_before_emergency)
         status = read_status_json(config_path=headless_config)
         assert_status_state("inactive", payload=status)
 

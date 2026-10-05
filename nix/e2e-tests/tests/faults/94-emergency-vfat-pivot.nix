@@ -10,6 +10,7 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   assertions = import ./../../lib/assertions.nix;
+  sessionHelpers = import ./../../lib/session-helpers.nix;
   overlayHelpers = import ./../../lib/overlay-helpers.nix;
 in
 {
@@ -29,6 +30,7 @@ in
   testScript = _: ''
     ${overlayHelpers.writeBootOnlyConfigFn}
     ${assertions.assertNoOverlaysFn}
+    ${sessionHelpers.loginSessionSurvivalFns}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -49,10 +51,13 @@ in
         machine.succeed("test -f /mnt/data/boot/hidden-boot.txt")
 
     with subtest("emergency detaches the pivot and removes the staging"):
+        sessions_before_emergency = login_session_ids()
         machine.succeed(f"nails --config {config_path} emergency")
         # No NAILS overlay is left at /boot and nothing stays mounted under the
         # pivot staging base.
         assert_no_overlays(["/boot"])
+        # Emergency detaches the overlays without logging the operator out.
+        assert_login_sessions_survived(sessions_before_emergency)
         machine.fail("findmnt -n /run/nails-pivot/boot")
         machine.fail("findmnt -n /run/nails-pivot/boot-snapshot")
         # The staging directories NAILS created are gone, so nothing points back
