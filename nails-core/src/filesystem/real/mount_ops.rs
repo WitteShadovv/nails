@@ -152,12 +152,40 @@ pub(super) fn get_filesystem_type(target: &Path) -> Result<Option<String>> {
         .map(|e| e.fstype))
 }
 
-/// Check if a path has an overlayfs mount.
+/// Check if a path has an overlayfs mount *visible at that path*.
+///
+/// Only the mount actually reachable at `target` counts. When a later mount on a
+/// parent path shadows an overlay still listed at this path — NAILS overlays
+/// `/nix`, which hides the `/nix/store` overlay underneath it — `mountinfo` keeps
+/// the shadowed entry, but the path now resolves onto the covering mount's
+/// device. Matching the entry's device against the device the kernel reports at
+/// the path drops the shadowed entry, so a fresh nested overlay is not wrongly
+/// refused as a double-mount. A genuine, visible overlay still matches (its
+/// device is what `stat` returns), so real double-mount detection is unchanged.
+/// When the path cannot be stat'd, fall back to the path+fstype match (fail-safe:
+/// treat a present entry as mounted).
 pub(super) fn is_overlay_mounted(target: &Path) -> Result<bool> {
+    use std::os::unix::fs::MetadataExt;
     let canonical = canonical_target(target);
-    Ok(read_mountinfo()?
-        .iter()
-        .any(|e| e.mount_point == canonical && e.fstype == "overlay"))
+    let visible_dev = std::fs::metadata(&canonical).ok().map(|meta| meta.dev());
+    Ok(read_mountinfo()?.iter().any(|e| {
+        e.mount_point == canonical
+            && e.fstype == "overlay"
+            && visible_dev.is_none_or(|dev| mountinfo_dev_matches(&e.dev, dev))
+    }))
+}
+
+/// Whether a mountinfo `major:minor` device string denotes the same device as a
+/// `stat` `st_dev`. A malformed device string never matches.
+fn mountinfo_dev_matches(dev_text: &str, st_dev: u64) -> bool {
+    let mut parts = dev_text.split(':');
+    let (Some(major), Some(minor), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    let (Ok(major), Ok(minor)) = (major.parse::<u64>(), minor.parse::<u64>()) else {
+        return false;
+    };
+    nix::sys::stat::makedev(major, minor) == st_dev
 }
 
 /// Get mount info for a currently mounted overlay.
@@ -461,7 +489,7 @@ pub(super) fn unmount_bind(fs: &RealFilesystem, target: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{dm_name_for, overlay_mount_options};
+    use super::{dm_name_for, mountinfo_dev_matches, overlay_mount_options};
     use std::path::Path;
 
     #[test]
@@ -494,5 +522,24 @@ mod tests {
     fn dm_name_is_none_for_a_plain_partition() {
         // A real block device is not a device-mapper device.
         assert_eq!(dm_name_for(Path::new("/dev/sdb1")), None);
+    }
+
+    #[test]
+    fn mountinfo_dev_matches_the_same_device() {
+        let dev = nix::sys::stat::makedev(0, 85);
+        assert!(mountinfo_dev_matches("0:85", dev));
+        // A shadowed overlay sitting at the same path but on a different device
+        // (the covering parent mount) must not match the visible device.
+        assert!(!mountinfo_dev_matches("0:41", dev));
+        assert!(!mountinfo_dev_matches("253:0", dev));
+    }
+
+    #[test]
+    fn mountinfo_dev_matches_rejects_malformed_device_strings() {
+        let dev = nix::sys::stat::makedev(0, 85);
+        assert!(!mountinfo_dev_matches("", dev));
+        assert!(!mountinfo_dev_matches("0", dev));
+        assert!(!mountinfo_dev_matches("0:85:1", dev));
+        assert!(!mountinfo_dev_matches("x:y", dev));
     }
 }
