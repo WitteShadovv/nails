@@ -435,6 +435,40 @@ pub fn execute(
         );
     }
 
+    // Refuse before taking the state lock or writing the residue baseline when the
+    // hidden root is not actually mounted. An overlay-only / `--session keep` run
+    // skips the pre-detach preflight above, and the core preflight inside
+    // `activate_with_options` runs only after the lock and the baseline are
+    // written — so without this gate a `.lock` and a `reports/` tree would land on
+    // what is really the decoy disk before the attach check ever refused. This is
+    // the same attach gate every write path consults; fail closed here.
+    {
+        let mgr = &manager;
+        match nails_core::HiddenRoot::verify_attached(
+            mgr.filesystem(),
+            &mgr.config().hidden_volume_root,
+            false,
+        ) {
+            Ok(nails_core::AttachState::Attached) => {}
+            Ok(nails_core::AttachState::Unattached(reason)) => {
+                return report_error(
+                    json,
+                    "activate",
+                    ExitStatus::PreflightRefused,
+                    ErrorBody::new("preflight", format!("hidden-root: {reason}")),
+                );
+            }
+            Err(e) => {
+                return report_error(
+                    json,
+                    "activate",
+                    ExitStatus::PreflightRefused,
+                    ErrorBody::new("preflight", e.to_string()),
+                );
+            }
+        }
+    }
+
     // Take the exclusive state lock (after any detach, so only the process that
     // performs the activation holds it). A concurrent operation fails fast here.
     let _state_lock = match super::acquire_state_lock_or_report(&lock_state_path, "activate", json)

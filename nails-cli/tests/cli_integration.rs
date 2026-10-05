@@ -776,6 +776,54 @@ fn test_activate_off_tty_without_yes_refuses_before_real_ops() {
 }
 
 #[test]
+fn test_activate_overlay_only_refuses_unmounted_hidden_root_without_writing() {
+    use std::io::Write;
+
+    // An overlay-only / `--session keep` activation skips the pre-detach preflight
+    // and the core preflight runs only after the state lock and residue baseline
+    // are written. The hidden root here is a bare directory that shares `/`'s
+    // device (nothing mounted), so activation must refuse before writing anything:
+    // no `.lock`, no `reports/` tree may land on what is really the decoy disk.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path().join("hidden-volume");
+    std::fs::create_dir_all(&hidden_root).unwrap();
+
+    let mut config_file = tempfile::NamedTempFile::new().unwrap();
+    writeln!(
+        config_file,
+        "hidden_volume_root = \"{}\"\noverlays = []",
+        hidden_root.display()
+    )
+    .unwrap();
+
+    std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "activate",
+            "--overlay-only",
+            "--session",
+            "keep",
+            "-y",
+        ])
+        .env("NAILS_UNSAFE_REAL_OPS", "1")
+        .assert()
+        .failure()
+        .code(4)
+        .stderr(predicates::str::contains("hidden-root"));
+
+    // Nothing was written onto the unmounted hidden root.
+    let entries: Vec<_> = std::fs::read_dir(&hidden_root)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "unmounted hidden root must be left empty, found: {entries:?}"
+    );
+}
+
+#[test]
 fn test_activate_kill_session_detaches_via_systemd_run() {
     use std::fs;
     use std::io::Write;
