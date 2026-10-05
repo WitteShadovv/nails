@@ -592,7 +592,7 @@ impl<F: Filesystem> NailsManager<F> {
         // is rolled back rather than leaking the hidden session. The mount is
         // already tracked above, so the rollback unmounts the /var overlay too.
         if overlay.target == Path::new("/var")
-            && let Err(e) = self.rehome_journald_onto_overlay()
+            && let Err(e) = self.rehome_journald_onto_overlay(&overlay.upper)
         {
             tracing::error!(
                 error = %e,
@@ -684,7 +684,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// rolls the activation back; an indeterminate result (journald absent, or its
     /// fds not inspectable) is logged and tolerated rather than aborting a
     /// legitimate activation.
-    fn rehome_journald_onto_overlay(&self) -> Result<()> {
+    fn rehome_journald_onto_overlay(&self, upper_dir: &Path) -> Result<()> {
         crate::manager::helpers::restart_service_and_socket("systemd-journald");
         tracing::info!(
             "Restarted systemd-journald after /var overlay mount (prevents log leakage)"
@@ -696,7 +696,7 @@ impl<F: Filesystem> NailsManager<F> {
             tracing::warn!(error = %err, "journalctl --flush after /var overlay failed");
         }
 
-        match journald_fds_resolve_into_overlay() {
+        match journald_fds_resolve_into_overlay(upper_dir) {
             JournaldFdCheck::InOverlay => {
                 tracing::debug!("journald journal fds resolve into the /var overlay upper");
                 Ok(())
@@ -990,8 +990,8 @@ pub(crate) fn set_forced_journald_fd_check(value: Option<JournaldFdCheck>) {
 /// In a test or runtime-safety context no host is touched: the check records that
 /// it ran and returns the forced outcome (if a test pinned one) or
 /// [`JournaldFdCheck::Indeterminate`]. On a real host it inspects journald's open
-/// file descriptors.
-fn journald_fds_resolve_into_overlay() -> JournaldFdCheck {
+/// file descriptors against `upper_dir`, the `/var` overlay's upper directory.
+fn journald_fds_resolve_into_overlay(upper_dir: &Path) -> JournaldFdCheck {
     if crate::runtime_safety::should_skip_host_interaction() {
         #[cfg(test)]
         {
@@ -1000,28 +1000,35 @@ fn journald_fds_resolve_into_overlay() -> JournaldFdCheck {
                 return forced;
             }
         }
+        let _ = upper_dir;
         return JournaldFdCheck::Indeterminate;
     }
 
-    inspect_journald_journal_fds()
+    inspect_journald_journal_fds(upper_dir)
 }
 
 /// Inspect systemd-journald's open persistent-journal fds on a real host.
 ///
 /// Finds journald by its process name, then compares the device of each open
 /// `/var/log/journal/...` fd — read through `/proc/<pid>/fd/<n>`, so it reflects
-/// the *open file*, not the path — against the device of the overlaid
-/// `/var/log/journal`. A pre-overlay fd still refers to the underlying base file
-/// (a different device) even though its symlink text is unchanged, so a device
-/// mismatch is a positive leak signal.
-fn inspect_journald_journal_fds() -> JournaldFdCheck {
+/// the *open file*, not the path — against the device of the overlay's upper
+/// directory (`upper_dir`), stat'ed directly rather than through the mount. A
+/// fd journald writes under the overlay resolves into the upper, so its backing
+/// inode is on the hidden-volume device; a fd still on the decoy's base `/var`
+/// is on a different device. The reference is the upper directory, not the
+/// overlaid `/var/log/journal` path: the overlay carries no `xino`, so an inode
+/// reports the real device of the layer that backs it, and on a
+/// persistent-journal decoy `/var/log/journal` is served from the lower (decoy)
+/// layer until copy-up, which would make the directory's device the decoy's and
+/// wrongly flag the correctly-upper journal fd as a leak.
+fn inspect_journald_journal_fds(upper_dir: &Path) -> JournaldFdCheck {
     use std::os::unix::fs::MetadataExt;
 
     let Some(pid) = find_pid_by_comm("systemd-journal") else {
         return JournaldFdCheck::Indeterminate;
     };
 
-    let overlay_dev = match std::fs::metadata("/var/log/journal") {
+    let overlay_dev = match std::fs::metadata(upper_dir) {
         Ok(meta) => meta.dev(),
         Err(_) => return JournaldFdCheck::Indeterminate,
     };
@@ -1032,7 +1039,7 @@ fn inspect_journald_journal_fds() -> JournaldFdCheck {
         Err(_) => return JournaldFdCheck::Indeterminate,
     };
 
-    let mut found_persistent_fd = false;
+    let mut writable_fd_devices = Vec::new();
     for entry in entries.flatten() {
         let fd_path = entry.path();
         let Ok(target) = std::fs::read_link(&fd_path) else {
@@ -1060,17 +1067,27 @@ fn inspect_journald_journal_fds() -> JournaldFdCheck {
         let Ok(meta) = std::fs::metadata(&fd_path) else {
             continue;
         };
-        found_persistent_fd = true;
-        if meta.dev() != overlay_dev {
-            return JournaldFdCheck::NotInOverlay;
-        }
+        writable_fd_devices.push(meta.dev());
     }
 
-    if found_persistent_fd {
-        JournaldFdCheck::InOverlay
-    } else {
-        JournaldFdCheck::Indeterminate
+    classify_journald_fd_devices(overlay_dev, &writable_fd_devices)
+}
+
+/// Classify journald's writable persistent-journal fds against the `/var`
+/// overlay's upper device.
+///
+/// With no writable persistent fd the posture is [`JournaldFdCheck::Indeterminate`]
+/// (journald may not have reopened its journal yet). Otherwise every writable fd
+/// must sit on the upper device; one on a different device is still writing to the
+/// decoy's base `/var` and is a leak ([`JournaldFdCheck::NotInOverlay`]).
+fn classify_journald_fd_devices(upper_dev: u64, writable_fd_devices: &[u64]) -> JournaldFdCheck {
+    if writable_fd_devices.is_empty() {
+        return JournaldFdCheck::Indeterminate;
     }
+    if writable_fd_devices.iter().any(|&dev| dev != upper_dev) {
+        return JournaldFdCheck::NotInOverlay;
+    }
+    JournaldFdCheck::InOverlay
 }
 
 /// Whether journald's open fd `fd` is writable, read from `/proc/<pid>/fdinfo`.
@@ -1118,7 +1135,39 @@ fn find_pid_by_comm(name: &str) -> Option<u32> {
 
 #[cfg(test)]
 mod fdinfo_tests {
-    use super::fdinfo_is_writable;
+    use super::{JournaldFdCheck, classify_journald_fd_devices, fdinfo_is_writable};
+
+    #[test]
+    fn journald_fds_judged_against_the_upper_device_not_the_overlaid_dir() {
+        const UPPER: u64 = 42;
+        const DECOY: u64 = 7;
+
+        // No writable persistent fd yet: journald may not have reopened its
+        // journal, so the posture is indeterminate rather than a leak.
+        assert_eq!(
+            classify_journald_fd_devices(UPPER, &[]),
+            JournaldFdCheck::Indeterminate
+        );
+        // The re-homed journal fd sits on the overlay upper (hidden-volume)
+        // device, so journald writes under the overlay. On a persistent-journal
+        // decoy the overlaid `/var/log/journal` directory is served from the decoy
+        // until copy-up; judging against the upper device avoids flagging this
+        // correctly-placed fd as a leak.
+        assert_eq!(
+            classify_journald_fd_devices(UPPER, &[UPPER]),
+            JournaldFdCheck::InOverlay
+        );
+        // A writable persistent fd still on the decoy's base `/var` is a genuine
+        // leak and must roll the activation back.
+        assert_eq!(
+            classify_journald_fd_devices(UPPER, &[DECOY]),
+            JournaldFdCheck::NotInOverlay
+        );
+        assert_eq!(
+            classify_journald_fd_devices(UPPER, &[UPPER, DECOY]),
+            JournaldFdCheck::NotInOverlay
+        );
+    }
 
     #[test]
     fn writable_fds_are_detected_from_the_octal_flags_line() {
