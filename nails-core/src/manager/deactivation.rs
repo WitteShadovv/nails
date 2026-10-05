@@ -1646,6 +1646,10 @@ impl DeactivationOrchestrator {
             page_cache_dropped = false;
         }
 
+        // Detach and remove any pivot staging the target unmount left behind, so a
+        // pivoted (VFAT) target leaves no mount or directory under the staging base.
+        self.cleanup_pivot_staging(&guard);
+
         let unmounted = unmount_outcome.unmounted;
         let force_detached = unmount_outcome.force_detached;
 
@@ -1831,6 +1835,10 @@ impl DeactivationOrchestrator {
             "emergency teardown",
             &unmount_outcome,
         )?;
+
+        // Detach and remove any pivot staging left behind (directories survive even
+        // when the staging mounts were already in the discovered unmount set).
+        self.cleanup_pivot_staging(&guard);
 
         let unmounted = unmount_outcome.unmounted.clone();
         let force_detached = unmount_outcome.force_detached.clone();
@@ -2018,6 +2026,49 @@ impl DeactivationOrchestrator {
     /// remounts: every target is attempted (graceful, then forced) and the
     /// per-target failures are collected so the caller can decide whether the
     /// teardown is complete or must be recorded as degraded.
+    /// Detach and remove any pivot staging left under the staging base.
+    ///
+    /// An overlay-incompatible target (VFAT `/boot`) is overlaid through a
+    /// snapshot pivot: a tmpfs snapshot at `/run/nails-pivot/<name>-snapshot`, an
+    /// overlay at `/run/nails-pivot/<name>` using it as the lower layer, and a bind
+    /// of that overlay onto the target. The main unmount only takes the target
+    /// bind down; the staging overlay and the snapshot tmpfs, and the directories
+    /// holding them, stay behind and keep the hidden upper on the backend busy.
+    ///
+    /// Discover whatever is still mounted under the staging base and detach it —
+    /// the staging overlay before the `-snapshot` tmpfs it stacks on — then remove
+    /// the staging directories NAILS created, so no mount or path points back at
+    /// the hidden session. Best-effort and a no-op when nothing pivoted.
+    fn cleanup_pivot_staging<F: Filesystem>(&self, manager: &NailsManager<F>) {
+        let fs = manager.filesystem();
+        let hidden_root = manager.config().hidden_volume_root.clone();
+
+        if let Ok(mounts) = fs.discover_nails_mounts(Some(&hidden_root)) {
+            let mut staging = mounts.pivot_binds.clone();
+            // The staging overlay stacks on the `-snapshot` tmpfs, so detach the
+            // overlay first and the snapshot last.
+            staging.sort_by_key(|p| {
+                p.file_name()
+                    .map(|n| n.to_string_lossy().ends_with("-snapshot"))
+                    .unwrap_or(false)
+            });
+            for target in &staging {
+                if fs.unmount(target, false).is_err() {
+                    let _ = fs.unmount(target, true);
+                }
+            }
+        }
+
+        // Remove the staging directories NAILS created. Best-effort: a non-empty
+        // or already-gone directory is skipped, and a missing base is a no-op.
+        let base = Path::new(crate::overlay::PIVOT_STAGING_BASE);
+        if let Ok(children) = fs.list_directory(base) {
+            for child in children {
+                let _ = fs.remove_directory(&child);
+            }
+        }
+    }
+
     fn unmount_overlays<F: Filesystem>(
         &self,
         manager: &NailsManager<F>,

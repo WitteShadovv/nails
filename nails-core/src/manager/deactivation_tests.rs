@@ -370,3 +370,60 @@ fn a_decoy_mount_point_left_after_its_overlay_is_not_a_leftover() {
     // Nothing mounted at all: not live.
     assert!(!still_nails_owned(false, true, None, boot));
 }
+
+#[test]
+fn cleanup_pivot_staging_detaches_and_removes_the_staging() {
+    use crate::{
+        CleanupConfig, Config, DeactivationOrchestrator, Filesystem, MockFilesystem, NailsManager,
+    };
+    use std::path::{Path, PathBuf};
+
+    // A VFAT /boot pivot leaves a staging overlay at /run/nails-pivot/boot and a
+    // snapshot tmpfs at /run/nails-pivot/boot-snapshot. Model both as mounts under
+    // the staging base (the classifier treats anything there as pivot staging) and
+    // give the base directory its two children.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/snap-src", true);
+    fs.mock_set_path_exists("/run/nails-pivot/boot", true);
+    fs.mock_set_path_exists("/run/nails-pivot/boot-snapshot", true);
+    fs.bind_mount(Path::new("/snap-src"), Path::new("/run/nails-pivot/boot"))
+        .unwrap();
+    fs.bind_mount(
+        Path::new("/snap-src"),
+        Path::new("/run/nails-pivot/boot-snapshot"),
+    )
+    .unwrap();
+    fs.mock_set_directory_contents(
+        Path::new("/run/nails-pivot"),
+        vec![
+            PathBuf::from("/run/nails-pivot/boot"),
+            PathBuf::from("/run/nails-pivot/boot-snapshot"),
+        ],
+    );
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/data"),
+        state_file_path: temp_dir.path().join("state.json"),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(fs, config, temp_dir.path().join("state.json"));
+
+    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
+    orchestrator.cleanup_pivot_staging(&manager);
+
+    // Both staging mounts are detached and their directories removed, so nothing
+    // under the pivot base points back at the hidden session.
+    let fs = manager.filesystem();
+    assert!(!fs.is_mounted(Path::new("/run/nails-pivot/boot")).unwrap());
+    assert!(
+        !fs.is_mounted(Path::new("/run/nails-pivot/boot-snapshot"))
+            .unwrap()
+    );
+    assert!(!fs.path_exists(Path::new("/run/nails-pivot/boot")).unwrap());
+    assert!(
+        !fs.path_exists(Path::new("/run/nails-pivot/boot-snapshot"))
+            .unwrap()
+    );
+}
