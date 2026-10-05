@@ -49,11 +49,16 @@ in
     def unit_is_active(unit):
         return machine.execute(f"systemctl is-active {unit}")[0] == 0
 
+    # NixOS's lightdm starts the server through its xserver wrapper, which execs
+    # ''${xorgserver}/bin/X, so the process is named "X" and its command line
+    # carries the lowercase store path "xorg-server". Match the executable's
+    # basename at the start of the command line (X, Xorg, or a .Xorg-wrapped
+    # wrapper) instead of a substring, so neither the comm nor the store path
+    # decides the match and the invoking shell never matches itself.
+    xorg_pgrep = "pgrep -f '^[^ ]*/(X|Xorg|[.]Xorg-wrapped)( |$)'"
+
     def xorg_pids():
-        # The X server's process name varies (Xorg, X, a NixOS .Xorg-wrapped
-        # wrapper), so match the Xorg binary in the command line rather than an
-        # exact comm. The bracket keeps pgrep from matching itself.
-        rc, out = machine.execute("pgrep -f '[X]org'")
+        rc, out = machine.execute(xorg_pgrep)
         return sorted(out.split()) if rc == 0 else []
 
     machine.start()
@@ -110,6 +115,14 @@ in
         hidden_service_came_up = unit_is_active("hidden-marker.service")
 
     with subtest("emergency detaches the overlays and leaves the desktop untouched"):
+        # Activation restarts the display manager to bring the hidden session up,
+        # and reaching Active does not wait for the new X server and autologin
+        # session to appear. Wait for both before snapshotting the desktop the
+        # teardown must leave alone.
+        machine.wait_for_unit("display-manager.service")
+        machine.wait_until_succeeds(xorg_pgrep, timeout=60)
+        machine.wait_until_succeeds("systemctl is-active user@1000.service", timeout=60)
+
         # Snapshot the live desktop immediately before the teardown.
         dm_active_enter_before = read_systemd_active_enter_monotonic("display-manager.service")
         dm_main_pid_before = machine.succeed(
