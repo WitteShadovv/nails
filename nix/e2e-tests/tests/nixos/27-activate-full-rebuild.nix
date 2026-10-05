@@ -27,6 +27,10 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   fixtureDir = ./../../fixtures/hidden-config;
   nixpkgsPath = pkgs.path;
+  # The hidden toplevel, built here against the guest's own nixpkgs so the store
+  # path matches what the in-guest flake build computes. Seeded into the guest
+  # store below so the offline build finds it already present.
+  hiddenToplevel = import ./../../lib/hidden-toplevel.nix { inherit pkgs; };
 in
 {
   name = "activate-full-rebuild";
@@ -39,7 +43,7 @@ in
   ];
 
   nodes.machine =
-    { ... }:
+    { lib, ... }:
     {
       imports = [ ./../../lib/impermanent-decoy.nix ];
       environment.systemPackages = [ self.packages.x86_64-linux.nails ];
@@ -48,11 +52,17 @@ in
         "flakes"
       ];
       # Force the hidden build fully offline: nothing may be substituted, so the
-      # toplevel must build from the seeded store alone.
-      nix.settings.substituters = [ ];
-      # Seed nixpkgs into the guest store so the hidden toplevel builds offline.
-      # With the on-disk store image this lands in that image.
-      virtualisation.additionalPaths = [ pkgs.path ];
+      # toplevel must build from the seeded store alone. mkForce so no profile or
+      # the qemu-vm defaults can reintroduce a substituter the offline guest would
+      # then try (and fail) to reach.
+      nix.settings.substituters = lib.mkForce [ ];
+      # Seed nixpkgs *and* the prebuilt hidden toplevel into the guest store so the
+      # hidden build finds its output already present and neither builds nor
+      # fetches anything. With the on-disk store image these land in that image.
+      virtualisation.additionalPaths = [
+        pkgs.path
+        hiddenToplevel
+      ];
     };
 
   testScript = _: ''

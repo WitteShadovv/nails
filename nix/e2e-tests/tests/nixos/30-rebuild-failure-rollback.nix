@@ -18,7 +18,7 @@ in
   meta.tags = [ "nixos" ];
 
   nodes.machine =
-    { pkgs, ... }:
+    { lib, pkgs, ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [
@@ -29,6 +29,13 @@ in
         "nix-command"
         "flakes"
       ];
+      # The VM is offline. The fixed hidden toplevel adds only a text file, so its
+      # closure is already in the guest's (host-shared) store, but nixos-rebuild
+      # would still query a substituter for the new output path and fail with no
+      # network. Configuring no substituters at all (mkForce over any profile or
+      # qemu-vm default) keeps the reapply build local without the per-invocation
+      # `--option substitute false` wrapper the test used to install.
+      nix.settings.substituters = lib.mkForce [ ];
     };
 
   testScript = _: ''
@@ -59,26 +66,6 @@ in
         lines = [line for line in text.splitlines() if line.strip()]
         assert lines, f"expected at least one output line, got: {text!r}"
         return json.loads(lines[-1])
-
-    def install_nixos_rebuild_wrapper(log_path):
-        real_nixos_rebuild = machine.succeed("bash -lc 'command -v nixos-rebuild'").strip()
-        # The VM is offline. Building the fixed hidden toplevel pulls in no new
-        # packages (it only adds a text file), so it is buildable from the local
-        # store, but nixos-rebuild would still query a substituter for the new
-        # output path and fail with no network. Force substitution off so the
-        # reapply build stays local; the broken-config run fails at evaluation
-        # before any build, so this does not affect it.
-        machine.succeed(
-            f"""mkdir -p /tmp/nails-wrapper/bin
-    rm -f {log_path}
-    cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
-    #!/bin/sh
-    printf '%s\\n' "$*" >> {log_path}
-    exec {real_nixos_rebuild} "$@" --option substitute false
-    EOF
-    chmod 755 /tmp/nails-wrapper/bin/nixos-rebuild"""
-        )
-        return "PATH=/tmp/nails-wrapper/bin:$PATH"
 
     def write_broken_hidden_config():
         # Parses cleanly (so the syntax-only nixos-config preflight passes and the
@@ -113,12 +100,11 @@ in
     with subtest("prepare a broken hidden configuration"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         write_broken_hidden_config()
-        wrapper_env = install_nixos_rebuild_wrapper("/run/nixos-rebuild-failure.log")
 
     with subtest("a failed switch exits 9 and reports success_with_warnings"):
         rc, stdout, stderr = run_command_capture(
             "rebuild-failure",
-            f"{wrapper_env} nails --config {headless_config} activate --session keep -y --json",
+            f"nails --config {headless_config} activate --session keep -y --json",
         )
         assert rc == 9, f"expected success-with-warnings exit code 9, got rc={rc} stderr={stderr!r}"
         result = last_json_line(stdout)
@@ -142,7 +128,7 @@ in
         write_fixed_hidden_config()
         rc, stdout, stderr = run_command_capture(
             "reapply",
-            f"{wrapper_env} nails --config {headless_config} reapply --json",
+            f"nails --config {headless_config} reapply --json",
         )
         assert rc == 0, f"expected reapply to succeed, got rc={rc} stdout={stdout!r} stderr={stderr!r}"
         result = last_json_line(stdout)

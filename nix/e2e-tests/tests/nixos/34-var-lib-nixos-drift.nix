@@ -43,6 +43,10 @@ let
   emergency = import ./../../lib/emergency.nix;
   fixtureDir = ./../../fixtures/hidden-config;
   nixpkgsPath = pkgs.path;
+  # The hidden toplevel, built here against the guest's own nixpkgs so the store
+  # path matches what the in-guest flake build computes. Seeded into the guest
+  # store below so the offline build finds it already present.
+  hiddenToplevel = import ./../../lib/hidden-toplevel.nix { inherit pkgs; };
   # The emergency runner bakes the config path into its unit; the test writes the
   # /var-overlaying config to this same path at runtime.
   varConfig = "/tmp/nails-var.toml";
@@ -58,7 +62,7 @@ in
   ];
 
   nodes.machine =
-    { ... }:
+    { lib, ... }:
     {
       imports = [ ./../../lib/impermanent-decoy.nix ];
       environment.systemPackages = [ self.packages.x86_64-linux.nails ];
@@ -69,10 +73,17 @@ in
         "nix-command"
         "flakes"
       ];
-      # Force the hidden build fully offline: nothing may be substituted.
-      nix.settings.substituters = [ ];
-      # Seed nixpkgs into the guest store so the hidden toplevel builds offline.
-      virtualisation.additionalPaths = [ pkgs.path ];
+      # Force the hidden build fully offline: nothing may be substituted. mkForce
+      # so no profile or the qemu-vm defaults can reintroduce a substituter the
+      # offline guest would then try (and fail) to reach.
+      nix.settings.substituters = lib.mkForce [ ];
+      # Seed nixpkgs *and* the prebuilt hidden toplevel into the guest store so the
+      # hidden build finds its output already present and neither builds nor
+      # fetches anything.
+      virtualisation.additionalPaths = [
+        pkgs.path
+        hiddenToplevel
+      ];
     };
 
   testScript = _: ''
