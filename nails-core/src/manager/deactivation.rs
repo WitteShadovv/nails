@@ -647,9 +647,22 @@ impl<F: Filesystem> NailsManager<F> {
                 session.target_uid,
                 session.session_id.as_deref(),
             );
-            session
+            let display_manager = session
                 .display_manager
-                .unwrap_or_else(|| "display-manager.service".to_string())
+                .unwrap_or_else(|| "display-manager.service".to_string());
+            // Stop the display manager too, not just the logind session: the X
+            // server and greeter run in display-manager.service, outside the user's
+            // session, and the hidden session's X server holds its lock and socket
+            // on the overlay /tmp. Left running it keeps /tmp busy, so the overlay
+            // can only be lazily detached and the backend close then fails with
+            // EBUSY. Stopped here, /tmp is free before the unmount; it is restarted
+            // after teardown so a fresh greeter comes up on the decoy.
+            tracing::info!(
+                service = %display_manager,
+                "Stopping the display manager before overlay teardown"
+            );
+            ServiceController::stop_unit(&display_manager);
+            display_manager
         });
 
         for unit in &added_units {

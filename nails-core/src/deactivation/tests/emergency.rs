@@ -632,19 +632,30 @@ fn test_emergency_stops_recorded_units_and_terminates_session_before_dm_restart(
 
     let actions = crate::manager::helpers::drain_recorded_service_actions();
 
-    // Exactly the recorded unit difference is stopped: the service-level stop
-    // entries (ignoring the paired `.socket` steps) are precisely the two units
-    // the hidden switch added, and nothing else.
+    // The recorded hidden units are stopped: the service-level stop entries
+    // (ignoring the paired `.socket` steps and the display-manager stop, which is
+    // part of the graphical-session teardown) are precisely the two units the
+    // hidden switch added, and nothing else.
     let service_stops: Vec<&str> = actions
         .iter()
         .filter_map(|a| a.strip_prefix("stop:"))
         .filter(|unit| !unit.ends_with(".socket"))
+        .filter(|unit| *unit != "display-manager.service")
         .collect();
     assert_eq!(
         service_stops,
         vec!["hidden-app.service", "hidden-config.service"],
         "emergency must stop exactly the recorded hidden units: {actions:?}"
     );
+
+    // The hidden graphical session's display manager is stopped before the
+    // overlays come down — the X server holds the overlay /tmp, so leaving it up
+    // would wedge the unmount and the backend close — and is restarted only after
+    // teardown, so the stop precedes the restart.
+    let dm_stop_idx = actions
+        .iter()
+        .position(|a| a == "stop:display-manager.service")
+        .expect("the display manager must be stopped before overlay teardown");
 
     // The session and its user are terminated, and that happens before the
     // display manager is restarted (which only runs after the overlays are gone).
@@ -663,6 +674,10 @@ fn test_emergency_stops_recorded_units_and_terminates_session_before_dm_restart(
     assert!(
         term_user_idx < dm_restart_idx,
         "session termination must precede the post-unmount display-manager restart: {actions:?}"
+    );
+    assert!(
+        dm_stop_idx < dm_restart_idx,
+        "the display manager must be stopped before it is restarted: {actions:?}"
     );
 
     let guard = manager.lock().unwrap();
