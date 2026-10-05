@@ -29,7 +29,6 @@ in
     ${testHelpers.canonicalDeactivateFn}
 
     import json
-    import shlex
     import uuid
 
     def read_status_json_local(config_path):
@@ -166,24 +165,17 @@ in
         assert_hidden_flake_absent_from_decoy(nix_store, "before any activation")
 
     with subtest("positive control: the leak detector fires on a planted copy"):
-        planted = f"{nix_store}/nails-leak-canary-test.txt"
-        # The decoy store is bind-mounted read-only, so plant (and later remove)
-        # the canary through a private mount namespace that remounts it writable.
-        # The write lands in the real store that the host's read-only view and the
-        # detector both read, without disturbing the host's read-only mount.
-        machine.succeed(
-            "unshare -m /bin/sh -c "
-            + shlex.quote(
-                f"mount -o remount,rw {nix_store} && "
-                f"printf '%s\\n' {HIDDEN_FLAKE_CANARY} > {planted}"
-            )
-        )
+        # The decoy store is an overlay mount that refuses remount,rw, so it cannot
+        # be written to directly. Plant the canary in root's Nix fetcher cache
+        # instead — the other decoy location the detector scans (see
+        # find_canary_in_decoy) and a real leak vector for a hidden flake's inputs.
+        planted_dir = "/root/.cache/nix"
+        planted = f"{planted_dir}/nails-leak-canary-test.txt"
+        machine.succeed(f"mkdir -p {planted_dir}")
+        machine.succeed(f"printf '%s\\n' {HIDDEN_FLAKE_CANARY} > {planted}")
         assert find_canary_in_decoy(nix_store, HIDDEN_FLAKE_CANARY), \
-            "detector must catch a deliberate hidden-flake copy on the decoy store"
-        machine.succeed(
-            "unshare -m /bin/sh -c "
-            + shlex.quote(f"mount -o remount,rw {nix_store} && rm -f {planted}")
-        )
+            "detector must catch a deliberate hidden-flake copy in the decoy fetcher cache"
+        machine.succeed(f"rm -f {planted}")
         assert_hidden_flake_absent_from_decoy(nix_store, "after removing the planted copy")
 
     with subtest("explicit flake override dispatches to nixos-rebuild --flake"):

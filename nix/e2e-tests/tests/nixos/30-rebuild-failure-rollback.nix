@@ -62,13 +62,19 @@ in
 
     def install_nixos_rebuild_wrapper(log_path):
         real_nixos_rebuild = machine.succeed("bash -lc 'command -v nixos-rebuild'").strip()
+        # The VM is offline. Building the fixed hidden toplevel pulls in no new
+        # packages (it only adds a text file), so it is buildable from the local
+        # store, but nixos-rebuild would still query a substituter for the new
+        # output path and fail with no network. Force substitution off so the
+        # reapply build stays local; the broken-config run fails at evaluation
+        # before any build, so this does not affect it.
         machine.succeed(
             f"""mkdir -p /tmp/nails-wrapper/bin
     rm -f {log_path}
     cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
     #!/bin/sh
     printf '%s\\n' "$*" >> {log_path}
-    exec {real_nixos_rebuild} "$@"
+    exec {real_nixos_rebuild} "$@" --option substitute false
     EOF
     chmod 755 /tmp/nails-wrapper/bin/nixos-rebuild"""
         )
