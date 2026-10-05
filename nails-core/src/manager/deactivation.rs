@@ -1113,29 +1113,35 @@ impl<F: Filesystem> NailsManager<F> {
     ///
     /// journald's volatile store at `/run/log/journal` holds the hidden session's
     /// records in RAM; `/run` is never overlaid, so without this they survive an
-    /// emergency teardown (which does not reboot). Runs only when `/var` was
-    /// overlaid and after journald has been restarted onto the decoy `/var`:
-    /// rotate first so journald closes the active runtime files, then remove them.
-    /// A teardown that does not reboot on its own (emergency, recovery) also raises
-    /// an honest warning that only a full power-off clears kernel and RAM residue.
+    /// emergency teardown (which does not reboot). Runs on every teardown — a
+    /// volatile-journal decoy keeps its records here whether or not `/var` was
+    /// overlaid, and the scrub only ever touches `/run/log/journal`, never the
+    /// decoy's persistent journal: rotate first so journald closes the active
+    /// runtime files, then remove them. A teardown that does not reboot on its own
+    /// (emergency, recovery) also raises an honest warning that only a full
+    /// power-off clears kernel and RAM residue.
     fn scrub_runtime_journal_and_warn(
         &self,
-        overlay_context: &OverlayContext,
+        _overlay_context: &OverlayContext,
         kind: ManagerDeactivationKind,
         report: &mut DeactivationReport,
     ) {
-        if overlay_context.var_was_overlaid {
-            if let Err(e) = crate::manager::helpers::ServiceController::rotate_journal() {
-                tracing::warn!(error = %e, "journalctl --rotate before runtime journal scrub failed");
-            }
-            let scrubber = CleanupManager::new(
-                self.filesystem.clone(),
-                CleanupConfig::default(),
-                CleanupMode::default(),
-            );
-            scrubber.scrub_runtime_journal(&mut report.cleanup_report);
-            report.runtime_journal_scrubbed = true;
+        // The runtime journal (`/run/log/journal`) is RAM-backed and is never one
+        // of the overlay targets, so the hidden session's records land there
+        // regardless of whether `/var` was overlaid — and on a volatile-journal
+        // decoy (`journald` Storage=volatile) it is the only place they land.
+        // Scrub it on every teardown, not just when `/var` was overlaid; it only
+        // ever removes `/run/log/journal`, never the decoy's persistent journal.
+        if let Err(e) = crate::manager::helpers::ServiceController::rotate_journal() {
+            tracing::warn!(error = %e, "journalctl --rotate before runtime journal scrub failed");
         }
+        let scrubber = CleanupManager::new(
+            self.filesystem.clone(),
+            CleanupConfig::default(),
+            CleanupMode::default(),
+        );
+        scrubber.scrub_runtime_journal(&mut report.cleanup_report);
+        report.runtime_journal_scrubbed = true;
 
         if !kind.reboots_on_success() {
             report.reboot_recommended = true;

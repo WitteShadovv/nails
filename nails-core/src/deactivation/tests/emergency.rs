@@ -740,3 +740,41 @@ fn test_emergency_order_unmount_then_cleanup_then_drop_page_cache() {
         "emergency must not secure-delete hidden-upper files: {ops:?}"
     );
 }
+
+#[test]
+#[serial]
+fn test_emergency_scrubs_the_runtime_journal_even_without_a_var_overlay() {
+    use crate::filesystem::PathKind;
+
+    // The decoy keeps a volatile journal, so the hidden session's records land in
+    // the RAM-backed /run/log/journal even though /var is not overlaid (the
+    // fixture overlays /home and /etc only). Emergency must scrub that runtime
+    // journal regardless, or `journalctl` keeps serving the hidden session.
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+
+    let fixture = setup_active_manager();
+    let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
+    let machine_dir = PathBuf::from("/run/log/journal/0a1b2c3d");
+    {
+        let guard = fixture.lock().unwrap();
+        let fs = guard.filesystem();
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+        mount_nails_overlay(fs, &hidden_root, Path::new("/etc"));
+        fs.mock_set_path_type("/run/log/journal", PathKind::Dir);
+        fs.mock_set_path_type(machine_dir.to_str().unwrap(), PathKind::Dir);
+        fs.mock_set_directory_contents(Path::new("/run/log/journal"), vec![machine_dir.clone()]);
+    }
+
+    let report = fixture.lock().unwrap().emergency_deactivate().unwrap();
+
+    assert!(
+        report.runtime_journal_scrubbed,
+        "emergency must scrub the runtime journal even with no /var overlay"
+    );
+    let guard = fixture.lock().unwrap();
+    assert!(
+        !guard.filesystem().path_exists(&machine_dir).unwrap(),
+        "the hidden session's runtime journal directory must be removed"
+    );
+}
