@@ -1134,7 +1134,7 @@ fn record_hidden_added_units_records_nothing_when_the_before_snapshot_is_empty()
 
     let before: Vec<String> = Vec::new();
     let after = vec![
-        "backdoor.service".to_string(),
+        "getty@tty1.service".to_string(),
         "sshd.service".to_string(),
         "dhcpcd.service".to_string(),
     ];
