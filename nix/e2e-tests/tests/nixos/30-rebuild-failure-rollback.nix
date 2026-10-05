@@ -75,9 +75,13 @@ in
         return "PATH=/tmp/nails-wrapper/bin:$PATH"
 
     def write_broken_hidden_config():
+        # Parses cleanly (so the syntax-only nixos-config preflight passes and the
+        # switch is actually attempted) but fails when nixos-rebuild evaluates it,
+        # which is what drives the success-with-warnings exit path.
         machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
     { ... }: {
-      environment.etc."nails-hidden-marker".text = ;
+      environment.etc."nails-hidden-marker".text =
+        builtins.throw "deliberately broken hidden configuration";
     }
     EOF""")
 

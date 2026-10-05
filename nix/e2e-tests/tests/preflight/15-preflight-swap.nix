@@ -73,9 +73,15 @@ in
         canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-swap-zram")
         assert_status_state("inactive", config_path=config_path)
         assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
-        machine.succeed("swapoff /dev/zram0")
+        # canonical_deactivate reboots, so the RAM-only zram swap is gone with the
+        # old boot; confirm it rather than running swapoff on a device that is no
+        # longer a swap area (which would fail with EINVAL).
+        machine.fail("grep -q '^/dev/zram0' /proc/swaps")
 
     with subtest("disabling swap restores a successful activation"):
+        # The reboot in the previous subtest also closed the hidden volume; reopen
+        # it before activating again.
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
         assert_status_state("active", config_path=config_path)
         assert_overlay_mounted("/home")

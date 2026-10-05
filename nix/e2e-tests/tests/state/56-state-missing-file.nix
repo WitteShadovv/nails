@@ -53,7 +53,9 @@ in
         assert_status_state("Inactive")
 
     with subtest("lazily unmounting the backend during an active session never reports decoy"):
-        # Re-activate so a genuine NAILS overlay is live again.
+        # canonical_deactivate rebooted, which closed the hidden volume; reopen it
+        # before re-activating so a genuine NAILS overlay is live again.
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         machine.succeed(
             f"nails --config {headless_config} activate --overlay-only --session keep -y"
         )

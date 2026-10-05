@@ -3,7 +3,7 @@
     def capture_command(label, command):
         import shlex
 
-        prefix = "/tmp/" + label
+        prefix = "/run/" + label
         machine.succeed(
             "bash -lc "
             + shlex.quote(
@@ -18,7 +18,7 @@
         return rc, stdout, stderr
 
     def run_detached_captured_command(unit_name, label, command):
-        prefix = "/tmp/" + label
+        prefix = "/run/" + label
         run_detached_command(
             unit_name,
             "set +e; "
@@ -29,7 +29,7 @@
     def wait_for_captured_command(label, timeout=120):
         import shlex
 
-        prefix = "/tmp/" + label
+        prefix = "/run/" + label
         machine.wait_until_succeeds(
             f"test -f {shlex.quote(prefix + '.rc')}",
             timeout=timeout,
