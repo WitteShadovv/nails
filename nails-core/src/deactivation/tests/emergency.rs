@@ -760,3 +760,36 @@ fn test_emergency_scrubs_the_runtime_journal_even_without_a_var_overlay() {
         "the hidden session's runtime journal directory must be removed"
     );
 }
+
+#[test]
+#[serial]
+fn test_emergency_detaches_overlays_even_when_the_final_state_write_fails() {
+    use crate::state::save_probe::{self, FailOn};
+
+    // A failed or read-only hidden backend cannot persist the final Inactive
+    // state, but the overlays must still be detached — the one thing that matters.
+    // Arm the save probe to fail the final DEACTIVATING->INACTIVE write and assert
+    // emergency still completes and detaches the overlay rather than erroring out
+    // (or rolling back to ACTIVE, whose write would also fail).
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+
+    let fixture = setup_active_manager();
+    let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
+    {
+        let guard = fixture.lock().unwrap();
+        mount_nails_overlay(guard.filesystem(), &hidden_root, Path::new("/home"));
+    }
+
+    save_probe::arm(&[FailOn::Inactive]);
+    let report = fixture.lock().unwrap().emergency_deactivate();
+    save_probe::disarm();
+
+    let report = report.expect("emergency must complete even when the final state write fails");
+    assert_eq!(report.final_state, SystemState::Inactive);
+    let guard = fixture.lock().unwrap();
+    assert!(
+        !guard.filesystem().is_mounted(Path::new("/home")).unwrap(),
+        "the overlay must be detached even though the state file could not be written"
+    );
+}

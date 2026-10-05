@@ -259,11 +259,13 @@ impl<F: Filesystem> NailsManager<F> {
             );
         }
 
-        // Save to disk with configured hidden volume root
-        state_file.save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)?;
-
-        // Update cache
+        // Save to disk with configured hidden volume root. Restore the cache to
+        // the forced state whether or not the write succeeds (see `update_state`),
+        // so a failed write never empties the cache; the error is still returned.
+        let save_result = state_file
+            .save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root);
         *cached = Some(state_file);
+        save_result?;
 
         Ok(())
     }
@@ -350,11 +352,14 @@ impl<F: Filesystem> NailsManager<F> {
         state_file.state = new_state;
         state_file.last_modified = Utc::now();
 
-        // Save to disk with configured hidden volume root
-        state_file.save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)?;
-
-        // Update cache
+        // Save to disk with configured hidden volume root. The in-memory cache is
+        // restored to the new state whether or not the write succeeds, so a failed
+        // write (a dead or read-only hidden backend) never leaves the cache empty
+        // and later reads keep working; the error is still returned to the caller.
+        let save_result = state_file
+            .save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root);
         *cached = Some(state_file);
+        save_result?;
 
         Ok(())
     }

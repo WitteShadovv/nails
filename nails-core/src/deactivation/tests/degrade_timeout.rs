@@ -99,7 +99,7 @@ fn deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
 }
 #[test]
 #[serial]
-fn emergency_deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
+fn emergency_completes_within_timeout_when_deactivating_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
     let (manager, _hidden_root, _env) = active_manager_no_profile();
@@ -112,11 +112,14 @@ fn emergency_deactivate_returns_err_within_timeout_when_deactivating_write_fails
         outcome
     });
 
+    // Emergency is the panic button: a failed ACTIVE->DEACTIVATING write (a dead
+    // or read-only backend) must not stop the teardown or roll the state back to
+    // ACTIVE. A normal deactivate still fails closed here (see the test above).
+    result.expect("emergency must complete even if the DEACTIVATING write fails");
     assert!(
-        result.is_err(),
-        "emergency deactivate must surface the failed ACTIVE->DEACTIVATING write"
+        !manager.lock().unwrap().current_state().unwrap().is_active(),
+        "emergency must not leave the state ACTIVE after tearing the session down"
     );
-    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
 }
 #[test]
 #[serial]
@@ -143,7 +146,7 @@ fn deactivate_returns_err_within_timeout_when_inactive_write_fails() {
 }
 #[test]
 #[serial]
-fn emergency_deactivate_returns_err_within_timeout_when_inactive_write_fails() {
+fn emergency_completes_within_timeout_when_inactive_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
     let (manager, _hidden_root, _env) = active_manager_no_profile();
@@ -156,11 +159,15 @@ fn emergency_deactivate_returns_err_within_timeout_when_inactive_write_fails() {
         outcome
     });
 
+    // The final DEACTIVATING->INACTIVE write lands on the hidden volume, which may
+    // be gone by the end of an emergency teardown. The overlays are already
+    // detached, so a failed write here must not fail the panic button or roll the
+    // state back to ACTIVE; a normal deactivate still fails closed (test above).
+    result.expect("emergency must complete even if the final INACTIVE write fails");
     assert!(
-        result.is_err(),
-        "emergency deactivate must surface the failed DEACTIVATING->INACTIVE write"
+        !manager.lock().unwrap().current_state().unwrap().is_active(),
+        "emergency must not leave the state ACTIVE after tearing the session down"
     );
-    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
 }
 #[test]
 #[serial]

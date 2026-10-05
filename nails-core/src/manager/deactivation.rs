@@ -1457,6 +1457,35 @@ impl DeactivationOrchestrator {
 
     /// Standard teardown driven by a trustworthy Active state and its recorded
     /// overlay list.
+    /// Persist a teardown state transition, tolerating a write failure in an
+    /// emergency.
+    ///
+    /// The state file lives on the hidden volume. A normal deactivation fails
+    /// closed if it cannot be written, but emergency is the panic button: a dead
+    /// or read-only backend must never stop it from detaching the overlays. In
+    /// emergency mode a failed write is logged and the teardown continues (the
+    /// in-memory cache still reflects the new state, so later reads keep working
+    /// and the committed guard does not roll back to ACTIVE).
+    fn persist_teardown_state_or_tolerate<F: Filesystem>(
+        &self,
+        guard: &mut StateGuard<'_, F>,
+        new_state: SystemState,
+        phase: &str,
+    ) -> Result<()> {
+        if let Err(e) = guard.update_state(new_state) {
+            if self.mode != DeactivationMode::Emergency {
+                return Err(e);
+            }
+            tracing::warn!(
+                error = %e,
+                phase,
+                "Emergency could not persist the teardown state (the hidden backend is \
+                 unavailable); the overlays are detached, so the teardown continues"
+            );
+        }
+        Ok(())
+    }
+
     fn run_from_trusted_state<F: Filesystem>(
         &self,
         manager: &mut NailsManager<F>,
@@ -1507,7 +1536,7 @@ impl DeactivationOrchestrator {
         let deactivating_state = SystemState::Deactivating {
             started_at: chrono::Utc::now(),
         };
-        guard.update_state(deactivating_state)?;
+        self.persist_teardown_state_or_tolerate(&mut guard, deactivating_state, "deactivating")?;
         maybe_block_after_deactivating_state_transition()?;
 
         // The emergency and normal teardowns differ in order. Emergency detaches
@@ -1622,7 +1651,7 @@ impl DeactivationOrchestrator {
         // Step 4: Clear overlay_status and transition to INACTIVE.
         guard.clear_overlay_status_in_cache()?;
         let inactive_state = guard.current_state()?.complete_deactivation()?;
-        guard.update_state(inactive_state)?;
+        self.persist_teardown_state_or_tolerate(&mut guard, inactive_state, "inactive")?;
 
         // Step 5: Point /run/current-system back at the decoy system profile.
         //
