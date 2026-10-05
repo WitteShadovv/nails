@@ -131,10 +131,11 @@ pub enum Program {
     ///
     /// Used where resolving from the caller's `PATH` is correct rather than a
     /// hijack risk: the Nix toolchain (`nix`, `nixos-rebuild`), whose VM tests
-    /// substitute stub builds by prepending a directory to `PATH`, and
-    /// `notify-send`, which runs in the operator's own login session (so their
-    /// `PATH` is theirs to choose, and tests stub it the same way). Moving either
-    /// to [`Program::Tool`] needs a different stub mechanism first.
+    /// substitute stub builds by prepending a directory to `PATH`, and the
+    /// login-time `notify-send` dispatch, which runs in the operator's own login
+    /// session (so their `PATH` is theirs to choose). The backend watcher's
+    /// immediate alert runs as root from a system unit instead and resolves
+    /// `notify-send` as a [`Program::Tool`].
     CallerPath(&'static str),
     /// An exact executable, such as a system generation's
     /// `switch-to-configuration` script.

@@ -741,3 +741,45 @@ fn test_clear_does_not_follow_a_symlink_off_the_volume() {
         "the planted symlink entry itself should be removed"
     );
 }
+
+#[test]
+fn immediate_alert_resolves_notify_send_from_the_system_tool_dirs() {
+    // The backend watcher raises this alert as root from a transient system unit
+    // whose PATH is minimal and not the operator's; a caller-PATH lookup there
+    // finds no notify-send, so the alert must resolve it as a host tool. It still
+    // targets the operator's session bus and stays neutrally attributed.
+    let notification = make_notification("Storage unavailable", "body");
+    let env = build_runtime_environment(Some(1000), Some(":0".to_string()), None);
+
+    let command = immediate_alert_command(&notification, &env);
+
+    let expected = crate::process::ProcessCommand::tool("notify-send")
+        .args(["--urgency", "normal", "--app-name", "System"])
+        .set_env("XDG_RUNTIME_DIR", "/run/user/1000")
+        .set_env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+        .set_env("DISPLAY", ":0")
+        .args([
+            "--icon",
+            "dialog-information",
+            "Storage unavailable",
+            "body",
+        ]);
+    assert_eq!(command, expected);
+}
+
+#[test]
+fn queued_dispatch_resolves_notify_send_from_the_operator_path() {
+    // Login-time dispatch runs as the operator in their own session, so their
+    // PATH is the right place to find notify-send.
+    let notification = make_notification("Queued", "body");
+    let env = build_runtime_environment(Some(1000), None, None);
+
+    let command = queued_notification_command(&notification, &env);
+
+    let expected = crate::process::ProcessCommand::caller_path("notify-send")
+        .args(["--urgency", "normal", "--app-name", "NAILS"])
+        .set_env("XDG_RUNTIME_DIR", "/run/user/1000")
+        .set_env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+        .args(["--icon", "dialog-information", "Queued", "body"]);
+    assert_eq!(command, expected);
+}

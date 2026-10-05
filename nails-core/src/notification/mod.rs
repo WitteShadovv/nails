@@ -549,15 +549,20 @@ fn notify_send_available() -> bool {
 /// reaches their bus rather than root's.
 #[cfg(not(test))]
 fn send_notification(notification: &Notification) -> Result<()> {
-    send_notification_as(notification, "NAILS")
+    run_notify_send(&queued_notification_command(
+        notification,
+        &notification_runtime_environment(),
+    ))
 }
+
+/// Application name the login-time queue dispatches under.
+const QUEUE_APP_NAME: &str = "NAILS";
 
 /// Neutral application name for immediate watcher alerts.
 ///
 /// The login-time queue identifies itself as the product, but an alert the
 /// in-session watcher raises when the backend fails must reveal nothing on screen
 /// to a shoulder-surfer, so it is attributed to a generic source instead.
-#[cfg(not(test))]
 const NEUTRAL_APP_NAME: &str = "System";
 
 /// Send a desktop notification immediately, bypassing the login-time file queue.
@@ -567,7 +572,10 @@ const NEUTRAL_APP_NAME: &str = "System";
 /// to a neutral application name so the alert does not name the tool on screen.
 #[cfg(not(test))]
 pub fn send_immediate(notification: &Notification) -> Result<()> {
-    send_notification_as(notification, NEUTRAL_APP_NAME)
+    run_notify_send(&immediate_alert_command(
+        notification,
+        &notification_runtime_environment(),
+    ))
 }
 
 /// Test build: immediate alerts never reach a real session bus.
@@ -576,18 +584,55 @@ pub fn send_immediate(_notification: &Notification) -> Result<()> {
     Ok(())
 }
 
-/// Invoke `notify-send` with an explicit application name.
-#[cfg(not(test))]
-fn send_notification_as(notification: &Notification, app_name: &str) -> Result<()> {
-    use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
+/// The `notify-send` command for a queued notification dispatched at login.
+///
+/// Dispatch runs as the operator from their own login session, so `notify-send`
+/// resolves from their `PATH` ([`Program::CallerPath`](crate::process::Program::CallerPath)).
+fn queued_notification_command(
+    notification: &Notification,
+    session_env: &[(&'static str, String)],
+) -> crate::process::ProcessCommand {
+    notify_send_command(
+        crate::process::ProcessCommand::caller_path("notify-send"),
+        notification,
+        QUEUE_APP_NAME,
+        session_env,
+    )
+}
 
-    let mut command = ProcessCommand::caller_path("notify-send")
+/// The `notify-send` command for an immediate backend-failure alert.
+///
+/// The backend watcher raises this as root from a transient system unit whose
+/// `PATH` is minimal and not the operator's, so a caller-`PATH` lookup finds
+/// nothing there; `notify-send` is a host tool resolved from the fixed system
+/// directories ([`Program::Tool`](crate::process::Program::Tool)) instead.
+fn immediate_alert_command(
+    notification: &Notification,
+    session_env: &[(&'static str, String)],
+) -> crate::process::ProcessCommand {
+    notify_send_command(
+        crate::process::ProcessCommand::tool("notify-send"),
+        notification,
+        NEUTRAL_APP_NAME,
+        session_env,
+    )
+}
+
+/// Add the notification payload, application name and the operator's session
+/// variables to a bare `notify-send` command.
+fn notify_send_command(
+    base: crate::process::ProcessCommand,
+    notification: &Notification,
+    app_name: &str,
+    session_env: &[(&'static str, String)],
+) -> crate::process::ProcessCommand {
+    let mut command = base
         .arg("--urgency")
         .arg(&notification.urgency)
         .arg("--app-name")
         .arg(app_name);
 
-    for (key, value) in notification_runtime_environment() {
+    for (key, value) in session_env {
         command = command.set_env(key, value);
     }
 
@@ -595,9 +640,15 @@ fn send_notification_as(notification: &Notification, app_name: &str) -> Result<(
         command = command.arg("--icon").arg(icon);
     }
 
-    command = command.arg(&notification.title).arg(&notification.body);
+    command.arg(&notification.title).arg(&notification.body)
+}
 
-    let output = RealProcessRunner.run(&command)?;
+/// Run a prepared `notify-send` command and turn a non-zero exit into an error.
+#[cfg(not(test))]
+fn run_notify_send(command: &crate::process::ProcessCommand) -> Result<()> {
+    use crate::process::{ProcessRunner, RealProcessRunner};
+
+    let output = RealProcessRunner.run(command)?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
