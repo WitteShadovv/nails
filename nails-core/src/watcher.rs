@@ -123,11 +123,20 @@ pub fn probe_backend<F: Filesystem>(filesystem: &F, manifest: &RuntimeManifest) 
         return false;
     }
     // A device that fails in place keeps its dentry cache, so the directory read
-    // above still succeeds; the kernel's response is to remount the filesystem
-    // read-only on the I/O error. NAILS keeps the hidden volume writable, so a
-    // read-only hidden root means the backend has failed.
+    // above still succeeds; the kernel's response to the I/O error is to remount
+    // the filesystem read-only. NAILS keeps the hidden volume writable, so the
+    // surest sign the backend has failed is that the hidden root can no longer be
+    // written: an actual create-and-remove probe returns EROFS on a read-only
+    // remount or EIO on a dead device, without depending on how the mount table
+    // reports the flags. (The cheaper mount-table check is kept as a fast path.)
     if filesystem
         .is_mount_read_only(&manifest.hidden_root)
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if !filesystem
+        .is_writable(&manifest.hidden_root)
         .unwrap_or(false)
     {
         return false;
@@ -326,6 +335,19 @@ mod tests {
         fs.mock_set_readable("/mnt/data", true);
         mounted(&fs, "/home", true);
         mounted(&fs, "/etc", true);
+
+        assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
+    }
+
+    #[test]
+    fn probe_fails_when_the_hidden_root_is_not_writable() {
+        // A write probe is the surest health signal: a remount-ro returns EROFS and
+        // a dead device EIO, independent of how the mount table reports the flags.
+        let fs = MockFilesystem::new();
+        root_lists(&fs);
+        mounted(&fs, "/home", true);
+        mounted(&fs, "/etc", true);
+        fs.mock_set_writable("/mnt/data", false);
 
         assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
     }
