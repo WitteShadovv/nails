@@ -11,6 +11,13 @@
 //! decoy; it never writes to it. The report itself is written to the hidden root
 //! (`<hidden-root>/reports/`), which is torn down with the session, so recording
 //! the baseline leaves nothing on the decoy.
+//!
+//! The scan is run through [`super::Verifier::scoped_to_decoy`], because the
+//! hidden volume is already attached for the activation about to start: without
+//! that scope a plain host scan would report the hidden volume's own mount,
+//! on-volume files and backing device as findings, so every baseline would claim
+//! "critical" about the tool's own hidden root — self-inflicted noise rather than
+//! decoy residue.
 
 use super::{VerifyResult, VerifyStatus};
 use crate::{Filesystem, Result};

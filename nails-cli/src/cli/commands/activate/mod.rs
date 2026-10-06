@@ -52,8 +52,12 @@ fn write_activation_residue_baseline(
 
     // Pre-activation: the system is Inactive, so the scan sees the decoy as it is
     // before overlays. Standard depth keeps activation responsive; the scanners
-    // and artifact checks run at either depth.
-    let verifier = Verifier::with_config(RealFilesystem, config, None, StateFileStatus::NotChecked);
+    // and artifact checks run at either depth. The scan is scoped to the decoy:
+    // the hidden volume is already attached for the activation about to start, so
+    // its own mount, on-volume files and backing device are deliberately attached,
+    // not residue, and must not show up as findings in the decoy baseline.
+    let verifier = Verifier::with_config(RealFilesystem, config, None, StateFileStatus::NotChecked)
+        .scoped_to_decoy();
     let result = match verifier.run(false) {
         Ok(result) => result,
         Err(e) => {

@@ -72,6 +72,7 @@ pub struct Verifier<F: Filesystem> {
     state: Option<StateFile>,
     state_file_status: StateFileStatus,
     context: VerifyContext,
+    scope_to_decoy: bool,
 }
 
 impl<F: Filesystem> Verifier<F> {
@@ -83,6 +84,7 @@ impl<F: Filesystem> Verifier<F> {
             state: None,
             state_file_status: StateFileStatus::NotChecked,
             context: VerifyContext::Host,
+            scope_to_decoy: false,
         }
     }
 
@@ -99,7 +101,27 @@ impl<F: Filesystem> Verifier<F> {
             state,
             state_file_status,
             context: VerifyContext::Host,
+            scope_to_decoy: false,
         }
+    }
+
+    /// Scope this live-host scan to the decoy, treating the configured hidden
+    /// volume and its backing device as out of scope.
+    ///
+    /// The pre-activation residue baseline runs *while the hidden volume is
+    /// deliberately attached* for the activation that is about to happen, so a
+    /// plain host scan would report the hidden volume's own mount, its on-volume
+    /// files (`config/nails.toml`, `state.json`, logs, reports) and its backing
+    /// crypt mapper as findings — self-inflicted noise that is not decoy residue.
+    /// In this mode those are suppressed: the hidden root being mounted is not
+    /// flagged, hidden-root artifact paths are skipped, the hidden-volume path and
+    /// its state file are not reported, and the hidden volume's own backing device
+    /// is not listed. A *second*, unexpected crypt mapper or loop device is still a
+    /// warning, and every decoy-side and runtime check runs unchanged, so a real
+    /// leak on the decoy is still caught.
+    pub fn scoped_to_decoy(mut self) -> Self {
+        self.scope_to_decoy = true;
+        self
     }
 
     /// Point this verifier at an offline image mounted read-only at `root`.
@@ -116,6 +138,14 @@ impl<F: Filesystem> Verifier<F> {
     /// Whether this run is scanning an offline image rather than the live host.
     fn is_offline(&self) -> bool {
         matches!(self.context, VerifyContext::Offline { .. })
+    }
+
+    /// Whether findings about the hidden volume itself are out of scope for this
+    /// run: an offline image scan (the hidden volume is not part of the decoy
+    /// image) or a decoy-scoped baseline (the hidden volume is deliberately
+    /// attached for the activation in progress).
+    fn excludes_hidden_root(&self) -> bool {
+        self.is_offline() || self.scope_to_decoy
     }
 
     /// Rebase an absolute path under the offline root, if any.
@@ -394,6 +424,14 @@ impl<F: Filesystem> Verifier<F> {
     fn check_hidden_root_mounted(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
+        // A decoy-scoped baseline runs while the hidden volume is deliberately
+        // attached for the activation about to start, so its mount is expected,
+        // not residue; reporting it would make every pre-activation baseline cry
+        // "critical" about the tool's own hidden root.
+        if self.scope_to_decoy {
+            return Ok(findings);
+        }
+
         let Some(hidden_root) = self.hidden_root() else {
             return Ok(findings);
         };
@@ -589,20 +627,22 @@ impl<F: Filesystem> Verifier<F> {
     /// single filesystem path and still exists. Absolute paths (runtime and
     /// decoy traces) are always checked; hidden-root paths are checked against
     /// the configured hidden volume root when a config is available. In an
-    /// offline image scan the hidden-root paths are skipped — the hidden volume
-    /// is not part of the decoy image, and finding its own files there is not the
-    /// point — while decoy and runtime paths are rebased under the image root.
+    /// offline image scan or a decoy-scoped baseline the hidden-root paths are
+    /// skipped — the hidden volume is not part of the decoy (it is either absent
+    /// from the image or deliberately attached for the activation in progress),
+    /// and finding its own files is not the point — while decoy and runtime paths
+    /// are still checked (rebased under the image root when offline).
     /// Content markers and bare basenames do not map to one path; they are
     /// covered by the base-config pre-flight check and the disk-image harness.
     fn check_artifact_files(&self) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         let hidden_root = self.hidden_root();
-        let offline = self.is_offline();
+        let skip_hidden_root = self.excludes_hidden_root();
 
         for artifact in artifacts::ARTIFACTS {
             let resolved = match artifact.kind {
                 ArtifactKind::HiddenRootPath => {
-                    if offline {
+                    if skip_hidden_root {
                         None
                     } else {
                         hidden_root.and_then(|root| artifact.resolve_path(root))
@@ -674,6 +714,11 @@ impl<F: Filesystem> Verifier<F> {
                 let is_own = own_sources
                     .iter()
                     .any(|source| source == &node || source.ends_with(&format!("/{mapper_name}")));
+                // A decoy-scoped baseline excludes the hidden volume's own backing
+                // device: it is attached on purpose for the activation in progress.
+                if is_own && self.scope_to_decoy {
+                    continue;
+                }
                 findings.push(block_device_finding(
                     is_own,
                     "dm-crypt mapper",
@@ -695,6 +740,9 @@ impl<F: Filesystem> Verifier<F> {
                 let is_own = own_sources
                     .iter()
                     .any(|source| source == &node || source == &backing);
+                if is_own && self.scope_to_decoy {
+                    continue;
+                }
                 findings.push(block_device_finding(is_own, "loop device", &backing, &node));
             }
         }
@@ -1002,6 +1050,11 @@ impl<F: Filesystem> Verifier<F> {
             .as_ref()
             .is_some_and(|state| matches!(state.state, crate::state::SystemState::Inactive));
 
+        // A decoy-scoped baseline runs while the hidden volume is deliberately
+        // attached, so — exactly as for the Inactive host context — its path being
+        // accessible and its state file existing are expected, not residue.
+        let suppress_hidden_volume = host_context_inactive || self.scope_to_decoy;
+
         // 1. Check config overlay mount points for residual mounts
         for overlay in &config.overlays {
             let mount_path = &overlay.target;
@@ -1051,7 +1104,7 @@ impl<F: Filesystem> Verifier<F> {
             crate::hidden_root::HiddenRoot::verify_attached(&self.filesystem, hidden_vol, true)?
                 .is_attached();
         let is_genuine_hidden_location = !is_binary_default || attached_marked_volume;
-        if !host_context_inactive
+        if !suppress_hidden_volume
             && is_genuine_hidden_location
             && self.filesystem.path_exists(hidden_vol)?
         {
@@ -1102,7 +1155,7 @@ impl<F: Filesystem> Verifier<F> {
         // 4. Check state file location
         let state_path = &config.state_file_path;
         paths_checked += 1;
-        if !host_context_inactive && self.filesystem.path_exists(state_path)? {
+        if !suppress_hidden_volume && self.filesystem.path_exists(state_path)? {
             findings.push(
                 Finding::new(
                     Severity::Warn,
@@ -1116,7 +1169,14 @@ impl<F: Filesystem> Verifier<F> {
             );
         }
 
-        if host_context_inactive {
+        if self.scope_to_decoy {
+            findings.push(Finding::new(
+                Severity::Info,
+                "context",
+                "Decoy-scoped baseline; findings about the hidden volume itself are suppressed \
+                 (it is deliberately attached for the activation in progress)",
+            ));
+        } else if host_context_inactive {
             findings.push(Finding::new(
                 Severity::Info,
                 "context",

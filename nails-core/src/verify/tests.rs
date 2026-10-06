@@ -1657,3 +1657,169 @@ fn test_mount_scan_without_config_ignores_foreign_overlays() {
     );
     assert!(scaffolding[0].message.contains("/opt"));
 }
+
+// ========================================================================
+// Decoy-Scoped Pre-Activation Baseline Tests
+// ========================================================================
+
+/// Fixture shared by the decoy-scope tests: a configured hidden root at
+/// `/mnt/hidden` that is attached (mounted on `/dev/mapper/data`) with its own
+/// on-volume files present, exactly as it is during a pre-activation baseline.
+#[cfg(test)]
+fn attached_hidden_volume_fs() -> (MockFilesystem, crate::config::Config) {
+    use crate::config::Config;
+    use std::path::{Path, PathBuf};
+
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/hidden"),
+        state_file_path: PathBuf::from("/mnt/hidden/state.json"),
+        ..Config::default()
+    };
+
+    // The hidden volume is mounted on its own crypt mapper for the activation.
+    fs.mock_set_mounted(Path::new("/mnt/hidden"), true);
+    fs.mock_set_path_exists("/mnt/hidden", true);
+    fs.mock_set_file_content(
+        "/proc/self/mountinfo",
+        "36 35 254:0 / /mnt/hidden rw,relatime shared:1 - ext4 /dev/mapper/data rw\n",
+    );
+
+    // Its own on-volume files exist (the registry's hidden-root artifacts).
+    fs.mock_set_path_exists("/mnt/hidden/config/nails.toml", true);
+    fs.mock_set_path_exists("/mnt/hidden/state.json", true);
+    fs.mock_set_path_exists("/mnt/hidden/logs/nails.log", true);
+    fs.mock_set_path_exists("/mnt/hidden/reports", true);
+
+    // /sys/block lists the hidden volume's own backing mapper.
+    fs.mock_set_directory_contents(
+        Path::new("/sys/block"),
+        vec![PathBuf::from("/sys/block/dm-0")],
+    );
+    fs.mock_set_file_content("/sys/block/dm-0/dm/uuid", "CRYPT-LUKS2-abc-data\n");
+    fs.mock_set_file_content("/sys/block/dm-0/dm/name", "data\n");
+
+    (fs, config)
+}
+
+#[test]
+fn test_plain_host_scan_reports_hidden_volume_as_self_inflicted() {
+    // A plain host scan of an attached hidden volume (state unknown) reports the
+    // hidden volume itself — the defect the decoy baseline must not reproduce.
+    let (fs, config) = attached_hidden_volume_fs();
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+
+    assert_eq!(result.status, VerifyStatus::Critical);
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|f| f.severity == Severity::Critical
+                && f.message.contains("hidden root still mounted")),
+        "plain scan is expected to self-report the mounted hidden root: {:?}",
+        result.findings
+    );
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|f| f.message.contains("Hidden volume path is accessible")),
+        "plain scan is expected to self-report the hidden volume path"
+    );
+}
+
+#[test]
+fn test_decoy_scoped_baseline_suppresses_self_inflicted_findings() {
+    // Scoping the same scan to the decoy must drop every finding about the hidden
+    // volume itself: its mount, its on-volume files, its path, its state file and
+    // its own backing device. Nothing is self-inflicted, so the baseline is clean.
+    let (fs, config) = attached_hidden_volume_fs();
+    let verifier =
+        Verifier::with_config(fs, config, None, StateFileStatus::NotChecked).scoped_to_decoy();
+    let result = verifier.run(false).unwrap();
+
+    assert_eq!(
+        result.status,
+        VerifyStatus::Secure,
+        "a decoy baseline over nothing but the attached hidden volume must be clean: {:?}",
+        result.findings
+    );
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|f| f.message.contains("hidden root still mounted")),
+        "the deliberately attached hidden root must not be flagged: {:?}",
+        result.findings
+    );
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|f| f.message.contains("Hidden volume path is accessible")
+                || f.message.contains("State file exists")),
+        "hidden-volume path and state file must be suppressed: {:?}",
+        result.findings
+    );
+    assert!(
+        !result
+            .findings
+            .iter()
+            .any(|f| f.category == "file" && f.message.contains("/mnt/hidden/")),
+        "hidden-root artifact files must be skipped: {:?}",
+        result.findings
+    );
+    assert!(
+        !result.findings.iter().any(|f| f.category == "block-device"),
+        "the hidden volume's own backing device must not be listed: {:?}",
+        result.findings
+    );
+}
+
+#[test]
+fn test_decoy_scoped_baseline_still_catches_real_decoy_leak_and_foreign_device() {
+    use std::path::{Path, PathBuf};
+
+    // The decoy scope only excludes the hidden volume itself: a genuine trace on
+    // the decoy and a *second*, unexpected crypt mapper are still reported.
+    let (fs, config) = attached_hidden_volume_fs();
+    // A runtime leftover on the decoy root.
+    fs.mock_set_path_exists("/run/nails", true);
+    // A second crypt mapper with an arbitrary neutral name (a different hidden
+    // volume), plus the own mapper that must stay suppressed.
+    fs.mock_set_directory_contents(
+        Path::new("/sys/block"),
+        vec![
+            PathBuf::from("/sys/block/dm-0"),
+            PathBuf::from("/sys/block/dm-1"),
+        ],
+    );
+    fs.mock_set_file_content("/sys/block/dm-1/dm/uuid", "CRYPT-LUKS2-def-vault\n");
+    fs.mock_set_file_content("/sys/block/dm-1/dm/name", "vault\n");
+
+    let verifier =
+        Verifier::with_config(fs, config, None, StateFileStatus::NotChecked).scoped_to_decoy();
+    let result = verifier.run(false).unwrap();
+
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|f| f.category == "file" && f.message.contains("/run/nails")),
+        "a decoy-side runtime leftover must still be reported: {:?}",
+        result.findings
+    );
+    let block: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "block-device")
+        .collect();
+    assert_eq!(
+        block.len(),
+        1,
+        "only the foreign mapper is reported, not the own one: {block:?}"
+    );
+    assert!(block[0].message.contains("/dev/mapper/vault"));
+    assert_eq!(block[0].severity, Severity::Warn);
+}
