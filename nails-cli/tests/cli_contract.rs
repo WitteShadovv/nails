@@ -674,6 +674,31 @@ fn emergency_schema_accepts_a_complete_teardown() {
     assert_matches_schema(&schema, &value);
 }
 
+#[test]
+fn emergency_schema_accepts_an_incomplete_teardown_with_its_followup() {
+    let schema = load_schema("emergency");
+    let value = serde_json::json!({
+        "schema_version": 1, "command": "emergency", "ok": false,
+        "error": {
+            "code": "teardown_incomplete",
+            "message": "REBOOT REQUIRED: could not remove every NAILS mount: /home",
+            "hint": "reboot"
+        },
+        "data": {
+            "status": "incomplete",
+            "remaining_mounts": ["/home"],
+            "hidden_root_still_mounted": true,
+            "hidden_root": "/mnt/data",
+            "backend_lock": null,
+            "backend_close_commands": [],
+            "power_action": "poweroff",
+            "power_result": "power off dispatched",
+            "recovery_guidance": ["Reboot to clear RAM."]
+        }
+    });
+    assert_matches_schema(&schema, &value);
+}
+
 // ---------------------------------------------------------------------------
 // Error envelope
 // ---------------------------------------------------------------------------

@@ -75,6 +75,19 @@ impl<T: Serialize> Envelope<T> {
         }
     }
 
+    /// A failure envelope that still carries typed `data`: what the command did
+    /// after the failure (an emergency's power action and backend close run on
+    /// every outcome, and a caller must learn whether they happened).
+    pub fn failure_with_data(command: &'static str, error: ErrorBody, data: T) -> Self {
+        Self {
+            schema_version: SCHEMA_VERSION,
+            command,
+            ok: false,
+            data: Some(data),
+            error: Some(error),
+        }
+    }
+
     /// Serialize to one compact line and print it on stdout.
     ///
     /// Tolerant of a broken pipe: a reader that has already exited must not turn

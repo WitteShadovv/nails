@@ -2,93 +2,285 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/emergency.schema.json",
   "title": "NAILS emergency --json",
-  "description": "Machine-readable emergency envelope: one document with schema_version, command, ok, and either data (a completed teardown) or error (the teardown could not start).",
+  "description": "Machine-readable emergency envelope: one document with schema_version, command, ok, and data (a completed teardown, or what still ran after an incomplete or failed one) and, on failure, error.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "command", "ok"],
+  "required": [
+    "schema_version",
+    "command",
+    "ok"
+  ],
   "properties": {
-    "schema_version": { "const": 1 },
-    "command": { "const": "emergency" },
-    "ok": { "type": "boolean" },
+    "schema_version": {
+      "const": 1
+    },
+    "command": {
+      "const": "emergency"
+    },
+    "ok": {
+      "type": "boolean"
+    },
     "data": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "status",
-        "detached_overlays",
-        "force_detached_overlays",
-        "cleanup_errors",
-        "state_write_errors",
-        "page_cache_dropped",
-        "runtime_journal_scrubbed",
-        "hidden_root_still_mounted",
-        "hidden_root",
-        "backend_close_commands",
-        "recovery_guidance"
-      ],
-      "properties": {
-        "status": { "const": "complete" },
-        "detached_overlays": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "force_detached_overlays": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "cleanup_errors": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "state_write_errors": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "page_cache_dropped": { "type": "boolean" },
-        "runtime_journal_scrubbed": { "type": "boolean" },
-        "history_truncation_verified": { "type": ["boolean", "null"] },
-        "hidden_root_still_mounted": { "type": "boolean" },
-        "hidden_root": { "type": "string", "minLength": 1 },
-        "backend_lock": {
-          "type": ["object", "null"],
+      "oneOf": [
+        {
+          "type": "object",
           "additionalProperties": false,
-          "required": ["unmounted", "dm_deferred", "close_command_dispatched", "errors"],
+          "required": [
+            "status",
+            "detached_overlays",
+            "force_detached_overlays",
+            "cleanup_errors",
+            "state_write_errors",
+            "page_cache_dropped",
+            "runtime_journal_scrubbed",
+            "hidden_root_still_mounted",
+            "hidden_root",
+            "backend_close_commands",
+            "recovery_guidance"
+          ],
           "properties": {
-            "unmounted": { "type": "boolean" },
-            "dm_deferred": {
-              "type": "array",
-              "items": { "type": "string", "minLength": 1 }
+            "status": {
+              "const": "complete"
             },
-            "close_command_dispatched": { "type": "boolean" },
-            "errors": {
+            "detached_overlays": {
               "type": "array",
-              "items": { "type": "string", "minLength": 1 }
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "force_detached_overlays": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "cleanup_errors": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "state_write_errors": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "page_cache_dropped": {
+              "type": "boolean"
+            },
+            "runtime_journal_scrubbed": {
+              "type": "boolean"
+            },
+            "history_truncation_verified": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            },
+            "hidden_root_still_mounted": {
+              "type": "boolean"
+            },
+            "hidden_root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "backend_lock": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": false,
+              "required": [
+                "unmounted",
+                "dm_deferred",
+                "close_command_dispatched",
+                "errors"
+              ],
+              "properties": {
+                "unmounted": {
+                  "type": "boolean"
+                },
+                "dm_deferred": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "close_command_dispatched": {
+                  "type": "boolean"
+                },
+                "errors": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "backend_close_commands": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "power_action": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "poweroff",
+                "reboot",
+                null
+              ]
+            },
+            "power_result": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "recovery_guidance": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          "title": "A completed teardown"
+        },
+        {
+          "title": "An incomplete or failed teardown (sent with ok=false and an error)",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "status",
+            "remaining_mounts",
+            "hidden_root_still_mounted",
+            "hidden_root",
+            "backend_close_commands",
+            "recovery_guidance"
+          ],
+          "properties": {
+            "status": {
+              "enum": [
+                "incomplete",
+                "failed"
+              ]
+            },
+            "remaining_mounts": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "hidden_root_still_mounted": {
+              "type": "boolean"
+            },
+            "hidden_root": {
+              "type": "string",
+              "minLength": 1
+            },
+            "backend_lock": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "additionalProperties": false,
+              "required": [
+                "unmounted",
+                "dm_deferred",
+                "close_command_dispatched",
+                "errors"
+              ],
+              "properties": {
+                "unmounted": {
+                  "type": "boolean"
+                },
+                "dm_deferred": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "close_command_dispatched": {
+                  "type": "boolean"
+                },
+                "errors": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "backend_close_commands": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "power_action": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "enum": [
+                "poweroff",
+                "reboot",
+                null
+              ]
+            },
+            "power_result": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "recovery_guidance": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           }
-        },
-        "backend_close_commands": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
-        },
-        "power_action": {
-          "type": ["string", "null"],
-          "enum": ["poweroff", "reboot", null]
-        },
-        "power_result": { "type": ["string", "null"] },
-        "recovery_guidance": {
-          "type": "array",
-          "items": { "type": "string", "minLength": 1 }
         }
-      }
+      ]
     },
     "error": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code", "message"],
+      "required": [
+        "code",
+        "message"
+      ],
       "properties": {
-        "code": { "type": "string", "minLength": 1 },
-        "message": { "type": "string", "minLength": 1 },
-        "hint": { "type": "string", "minLength": 1 }
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hint": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     }
   }

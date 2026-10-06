@@ -84,34 +84,32 @@ pub fn execute(
     // the opt-in comes from the `[emergency] lock_backend` config key.
     let lock_requested = args.lock_backend || manager.config().emergency.lock_backend;
 
-    match manager.emergency_deactivate() {
+    let outcome = manager.emergency_deactivate();
+    finish_emergency(settings, &manager, outcome, lock_requested, power_action)
+}
+
+/// Run the follow-up steps and render the result of an emergency teardown.
+fn finish_emergency<F: Filesystem>(
+    settings: &OutputSettings,
+    manager: &NailsManager<F>,
+    outcome: nails_core::Result<DeactivationReport>,
+    lock_requested: bool,
+    power_action: Option<PostTeardownPower>,
+) -> ExitStatus {
+    let json = settings.is_json();
+
+    // Everything after the teardown attempt runs on every outcome — complete,
+    // incomplete or failed: an operator who asked for the backend to be closed
+    // or the machine to power off must get it even when a mount survived,
+    // because powering off is then the only remaining way to clear the key and
+    // the session from RAM.
+    let followup = run_followup(manager, lock_requested, power_action);
+
+    match outcome {
         Ok(report) => {
-            // Opt-in: close the encrypted backend (lazy unmount + deferred
-            // device-mapper removal), wiping the key from RAM when the last
-            // reference drops. Off by default, so the hidden filesystem stays
-            // mounted until the operator closes it by hand.
-            let lock_outcome = lock_requested.then(|| perform_backend_lock(&manager));
-
-            let backend_commands = backend_close_commands(&manager);
-            let hidden_root = manager.config().hidden_volume_root.clone();
-            let still_mounted = manager
-                .filesystem()
-                .is_mounted(&hidden_root)
-                .unwrap_or(false);
-
-            // Dispatch the requested power action after the teardown completes.
-            // Powering off or rebooting is the only way to clear RAM, so it is
-            // offered only once the overlays are gone.
-            let power_note = dispatch_power_action(&manager, power_action);
-
             let view = EmergencyView {
                 report: &report,
-                backend_commands: &backend_commands,
-                lock_outcome: lock_outcome.as_ref(),
-                hidden_root: &hidden_root,
-                hidden_root_still_mounted: still_mounted,
-                power_action,
-                power_note: &power_note,
+                followup: &followup,
             };
 
             if json {
@@ -127,26 +125,153 @@ pub fn execute(
                 .map(|path| path.display().to_string())
                 .collect::<Vec<_>>()
                 .join(", ");
-            report_error(
-                json,
-                "emergency",
+            let error = ErrorBody::new(
+                "teardown_incomplete",
+                format!("REBOOT REQUIRED: could not remove every NAILS mount: {remaining}"),
+            )
+            .with_hint(
+                "processes still hold the mounts; reboot to clear them and the key from RAM",
+            );
+            report_emergency_failure(
+                settings,
                 ExitStatus::DegradedReboot,
-                ErrorBody::new(
-                    "teardown_incomplete",
-                    format!("REBOOT REQUIRED: could not remove every NAILS mount: {remaining}"),
-                )
-                .with_hint(
-                    "processes still hold the mounts; reboot to clear them and the key from RAM",
-                ),
+                error,
+                "incomplete",
+                &remaining_mounts,
+                &followup,
             )
         }
-        Err(e) => report_error(
-            json,
-            "emergency",
+        Err(e) => report_emergency_failure(
+            settings,
             ExitStatus::Failed,
             deactivate_error_body(&e),
+            "failed",
+            &[],
+            &followup,
         ),
     }
+}
+
+/// What ran after the teardown attempt, whatever its outcome: the opt-in
+/// backend close, the requested power action, and where the hidden root stands.
+struct Followup {
+    lock_outcome: Option<nails_core::backend_lock::BackendLockReport>,
+    backend_commands: Vec<String>,
+    hidden_root: std::path::PathBuf,
+    hidden_root_still_mounted: bool,
+    power_action: Option<PostTeardownPower>,
+    power_note: Option<String>,
+}
+
+/// Run the post-teardown steps on every outcome: close the backend when asked,
+/// work out how to close it by hand otherwise, and dispatch the power action
+/// last, once nothing else is left to do.
+fn run_followup<F: Filesystem>(
+    manager: &NailsManager<F>,
+    lock_requested: bool,
+    power_action: Option<PostTeardownPower>,
+) -> Followup {
+    // Opt-in: close the encrypted backend (lazy unmount + deferred device-mapper
+    // removal), wiping the key from RAM when the last reference drops. Off by
+    // default, so the hidden filesystem stays mounted until the operator closes
+    // it by hand.
+    let lock_outcome = lock_requested.then(|| perform_backend_lock(manager));
+
+    let backend_commands = backend_close_commands(manager);
+    let hidden_root = manager.config().hidden_volume_root.clone();
+    let hidden_root_still_mounted = manager
+        .filesystem()
+        .is_mounted(&hidden_root)
+        .unwrap_or(false);
+
+    // Powering off or rebooting is the only way to clear RAM, so it runs after
+    // the teardown attempt and the backend close, whatever their outcome.
+    let power_note = dispatch_power_action(manager, power_action);
+
+    Followup {
+        lock_outcome,
+        backend_commands,
+        hidden_root,
+        hidden_root_still_mounted,
+        power_action,
+        power_note,
+    }
+}
+
+/// The `data` payload of an emergency that did not complete: what still runs
+/// after a failed or incomplete teardown, so a caller learns whether the
+/// requested power action and backend close happened.
+#[derive(Debug, Serialize)]
+struct EmergencyFailureData {
+    /// What happened (`incomplete` or `failed`).
+    status: &'static str,
+    /// NAILS mounts still live (incomplete teardown only).
+    remaining_mounts: Vec<String>,
+    /// Whether the hidden root is still mounted.
+    hidden_root_still_mounted: bool,
+    /// The hidden-root path.
+    hidden_root: String,
+    /// The outcome of the opt-in backend close, when it was requested.
+    backend_lock: Option<BackendLockData>,
+    /// The exact commands to close the encrypted backend by hand.
+    backend_close_commands: Vec<String>,
+    /// The requested post-teardown power action, if any.
+    power_action: Option<&'static str>,
+    /// What the power action did (dispatched / skipped / failed), if requested.
+    power_result: Option<String>,
+    /// The recovery steps the operator should still take.
+    recovery_guidance: Vec<&'static str>,
+}
+
+/// Report an emergency that did not complete, including what the follow-up
+/// steps did. Returns `status`.
+fn report_emergency_failure(
+    settings: &OutputSettings,
+    status: ExitStatus,
+    error: ErrorBody,
+    kind: &'static str,
+    remaining_mounts: &[std::path::PathBuf],
+    followup: &Followup,
+) -> ExitStatus {
+    if settings.is_json() {
+        let data = EmergencyFailureData {
+            status: kind,
+            remaining_mounts: remaining_mounts
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect(),
+            hidden_root_still_mounted: followup.hidden_root_still_mounted,
+            hidden_root: followup.hidden_root.display().to_string(),
+            backend_lock: followup
+                .lock_outcome
+                .as_ref()
+                .map(BackendLockData::from_report),
+            backend_close_commands: followup.backend_commands.clone(),
+            power_action: power_action_name(followup.power_action),
+            power_result: followup.power_note.clone(),
+            recovery_guidance: EMERGENCY_RECOVERY_GUIDANCE.to_vec(),
+        };
+        Envelope::failure_with_data("emergency", error, data).print();
+        return status;
+    }
+
+    report_error(false, "emergency", status, error);
+    let mut out = Vec::new();
+    push_followup_lines(&mut out, settings, followup);
+    for line in &out {
+        crate::cli::output::eprintln_tolerating_broken_pipe(line);
+    }
+    status
+}
+
+/// Append the power action, backend close and hidden-root lines shared by the
+/// complete and the failed renderings.
+fn push_followup_lines(out: &mut Vec<String>, settings: &OutputSettings, followup: &Followup) {
+    push_backend_lock_outcome(out, followup);
+    if let Some(note) = &followup.power_note {
+        out.push(format!("  Power action: {note}"));
+    }
+    push_hidden_root_status(out, settings, followup);
 }
 
 /// Which post-teardown power action the operator requested, if any.
@@ -237,12 +362,7 @@ fn perform_backend_lock<F: Filesystem>(
 /// and JSON renderers stay in step.
 struct EmergencyView<'a> {
     report: &'a DeactivationReport,
-    backend_commands: &'a [String],
-    lock_outcome: Option<&'a nails_core::backend_lock::BackendLockReport>,
-    hidden_root: &'a Path,
-    hidden_root_still_mounted: bool,
-    power_action: Option<PostTeardownPower>,
-    power_note: &'a Option<String>,
+    followup: &'a Followup,
 }
 
 /// The `data` payload for a successful `emergency --json`.
@@ -317,6 +437,7 @@ fn power_action_name(action: Option<PostTeardownPower>) -> Option<&'static str> 
 /// Print the success envelope for a completed emergency teardown.
 fn print_emergency_json(view: &EmergencyView) {
     let report = view.report;
+    let followup = view.followup;
     let data = EmergencyData {
         status: "complete",
         detached_overlays: report.unmounted_overlays.clone(),
@@ -326,12 +447,15 @@ fn print_emergency_json(view: &EmergencyView) {
         page_cache_dropped: report.page_cache_dropped,
         runtime_journal_scrubbed: report.runtime_journal_scrubbed,
         history_truncation_verified: report.history_truncation_verified,
-        hidden_root_still_mounted: view.hidden_root_still_mounted,
-        hidden_root: view.hidden_root.display().to_string(),
-        backend_lock: view.lock_outcome.map(BackendLockData::from_report),
-        backend_close_commands: view.backend_commands.to_vec(),
-        power_action: power_action_name(view.power_action),
-        power_result: view.power_note.clone(),
+        hidden_root_still_mounted: followup.hidden_root_still_mounted,
+        hidden_root: followup.hidden_root.display().to_string(),
+        backend_lock: followup
+            .lock_outcome
+            .as_ref()
+            .map(BackendLockData::from_report),
+        backend_close_commands: followup.backend_commands.clone(),
+        power_action: power_action_name(followup.power_action),
+        power_result: followup.power_note.clone(),
         recovery_guidance: EMERGENCY_RECOVERY_GUIDANCE.to_vec(),
     };
     Envelope::success("emergency", data).print();
@@ -405,15 +529,7 @@ fn render_emergency_success(settings: &OutputSettings, view: &EmergencyView) {
         None => {}
     }
 
-    push_backend_lock_outcome(&mut out, view);
-
-    if let Some(note) = view.power_note {
-        out.push(format!("  Power action: {note}"));
-    } else if view.power_action.is_none() && !view.hidden_root_still_mounted {
-        out.push("  The decoy greeter will reappear".to_string());
-    }
-
-    push_hidden_root_status(&mut out, settings, view);
+    push_followup_lines(&mut out, settings, view.followup);
 
     for line in &out {
         crate::cli::output::println_tolerating_broken_pipe(line);
@@ -430,8 +546,8 @@ fn render_emergency_success(settings: &OutputSettings, view: &EmergencyView) {
 }
 
 /// Append the outcome of the opt-in backend close, loudly on any failure.
-fn push_backend_lock_outcome(out: &mut Vec<String>, view: &EmergencyView) {
-    let Some(outcome) = view.lock_outcome else {
+fn push_backend_lock_outcome(out: &mut Vec<String>, followup: &Followup) {
+    let Some(outcome) = &followup.lock_outcome else {
         return;
     };
 
@@ -457,7 +573,7 @@ fn push_backend_lock_outcome(out: &mut Vec<String>, view: &EmergencyView) {
 /// A still-mounted hidden root after an emergency is a Critical condition: the
 /// hidden filesystem is browsable and the key is still in RAM. The exact manual
 /// close sequence is printed so the operator can finish the job.
-fn push_hidden_root_status(out: &mut Vec<String>, settings: &OutputSettings, view: &EmergencyView) {
+fn push_hidden_root_status(out: &mut Vec<String>, settings: &OutputSettings, view: &Followup) {
     let style = settings.stdout_style();
     if view.hidden_root_still_mounted {
         out.push(String::new());
@@ -473,7 +589,7 @@ fn push_hidden_root_status(out: &mut Vec<String>, settings: &OutputSettings, vie
         );
         if !view.backend_commands.is_empty() {
             out.push("  Close the encrypted backend when it is safe to do so:".to_string());
-            for command in view.backend_commands {
+            for command in &view.backend_commands {
                 out.push(format!("    {command}"));
             }
         }
@@ -648,6 +764,67 @@ mod tests {
             stdout.contains("Power action") && stdout.contains("power off"),
             "stdout={stdout}"
         );
+    }
+
+    /// A manager whose host effects record power requests instead of touching
+    /// the host, for driving the post-teardown follow-up on any outcome.
+    fn recording_manager() -> (
+        nails_core::NailsManager<nails_core::MockFilesystem>,
+        std::sync::Arc<nails_core::SimulatedHostEffects>,
+    ) {
+        let config = nails_core::Config::test_default();
+        let state_path = config.state_file_path.clone();
+        let mut manager =
+            nails_core::NailsManager::new(nails_core::MockFilesystem::new(), config, state_path);
+        let recorder =
+            nails_core::SimulatedHostEffects::new(nails_core::SimulatedReboot::Dispatched);
+        manager.set_host_effects(nails_core::HostEffects::Simulated(recorder.clone()));
+        (manager, recorder)
+    }
+
+    #[test]
+    fn poweroff_runs_after_an_incomplete_teardown() {
+        // An incomplete teardown is exactly when powering off matters most: it is
+        // the only way left to clear the key and the session from RAM.
+        let (manager, recorder) = recording_manager();
+        let outcome = Err(nails_core::NailsError::DeactivationIncomplete {
+            remaining_mounts: vec![PathBuf::from("/home")],
+        });
+        let status = super::finish_emergency(
+            &OutputSettings::default(),
+            &manager,
+            outcome,
+            false,
+            Some(nails_core::PostTeardownPower::Poweroff),
+        );
+        assert_eq!(status, crate::cli::output::ExitStatus::DegradedReboot);
+        assert_eq!(recorder.power_requests(), 1);
+    }
+
+    #[test]
+    fn poweroff_runs_after_a_failed_teardown() {
+        let (manager, recorder) = recording_manager();
+        let outcome = Err(nails_core::NailsError::InvalidState("boom".to_string()));
+        let status = super::finish_emergency(
+            &OutputSettings::default(),
+            &manager,
+            outcome,
+            true,
+            Some(nails_core::PostTeardownPower::Reboot),
+        );
+        assert_eq!(status, crate::cli::output::ExitStatus::Failed);
+        assert_eq!(recorder.power_requests(), 1);
+    }
+
+    #[test]
+    fn incomplete_teardown_json_reports_the_power_action() {
+        let (manager, _recorder) = recording_manager();
+        let followup = super::run_followup(
+            &manager,
+            false,
+            Some(nails_core::PostTeardownPower::Poweroff),
+        );
+        assert_eq!(followup.power_note.as_deref(), Some("power off dispatched"));
     }
 
     #[test]
