@@ -126,12 +126,19 @@ pub fn report_error(
     if json {
         error_envelope(command, error).print();
     } else {
-        eprintln!("error: {}", error.message);
-        if let Some(hint) = error.hint {
-            eprintln!("  {hint}");
-        }
+        write_human_error(&mut std::io::stderr().lock(), &error);
     }
     status
+}
+
+/// Write the human form of `error` to `writer`, tolerating a broken pipe: the
+/// failure being reported must never turn into a panic because the reader of
+/// stderr is gone (an emergency severs its own journal stream).
+fn write_human_error<W: std::io::Write>(writer: &mut W, error: &ErrorBody) {
+    let _ = super::write_line_tolerating_broken_pipe(writer, &format!("error: {}", error.message));
+    if let Some(hint) = &error.hint {
+        let _ = super::write_line_tolerating_broken_pipe(writer, &format!("  {hint}"));
+    }
 }
 
 #[cfg(test)]
@@ -161,6 +168,25 @@ mod tests {
         assert_eq!(value["error"]["message"], "checks failed");
         assert_eq!(value["error"]["hint"], "mount the volume");
         assert!(value.get("data").is_none());
+    }
+
+    #[test]
+    fn human_error_survives_a_closed_stderr_pipe() {
+        // A real pipe whose reader is gone: the write fails with EPIPE, which must
+        // be swallowed rather than panic as eprintln! would.
+        let (reader, mut writer) = std::io::pipe().unwrap();
+        drop(reader);
+        write_human_error(
+            &mut writer,
+            &ErrorBody::new("teardown_incomplete", "busy").with_hint("reboot"),
+        );
+
+        let (mut reader, mut writer) = std::io::pipe().unwrap();
+        write_human_error(&mut writer, &ErrorBody::new("x", "boom").with_hint("retry"));
+        drop(writer);
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut reader, &mut text).unwrap();
+        assert_eq!(text, "error: boom\n  retry\n");
     }
 
     #[test]
