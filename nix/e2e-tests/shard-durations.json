@@ -14,6 +14,8 @@
   "config-inject-hardware-imports": 143,
   "config-unknown-key": 70,
   "contract-active-session": 300,
+  "decoy-journal-leak": 420,
+  "decoy-persistence-preflight": 160,
   "emergency": 174,
   "emergency-backend-lock": 200,
   "emergency-countdown-ux": 67,
