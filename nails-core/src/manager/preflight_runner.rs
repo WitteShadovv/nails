@@ -91,7 +91,8 @@ pub fn build_registry<F: Filesystem>(
         HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, MemoryWipeCheck,
         MountNamespaceCheck, NixOSBuildTargetCheck, OverlayCompatibilityCheck, OverlayTargetsCheck,
         SleepPolicyCheck, SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
-        SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck, WritableTreesCheck,
+        StrayMountsCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+        WritableTreesCheck,
     };
 
     let mut registry = PreFlightRegistry::new();
@@ -109,6 +110,12 @@ pub fn build_registry<F: Filesystem>(
     // the decoy — neither overlaid nor kept read-only — while the decoy session is
     // still intact, so the read-only invariant is enforced before any mount.
     registry.add_check(Box::new(WritableTreesCheck::new(config.clone())));
+
+    // Warns (never fails) about read-write disk mounts that are neither overlay
+    // targets nor on the hidden volume (a second disk, a Windows partition, a
+    // removable drive under /run/media): they stay writable on a real disk for
+    // the whole session.
+    registry.add_check(Box::new(StrayMountsCheck::new(config.clone())));
 
     // Runs before the session kill so a private mount namespace or a non-shared
     // root is caught while the decoy session is still intact.

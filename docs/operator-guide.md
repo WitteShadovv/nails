@@ -322,6 +322,9 @@ journal entries.
 [ ] Hidden volume mount survives session termination (kernel-managed, not
     session-scoped FUSE)
 [ ] backend-detect preflight warnings resolved or accepted (see backends.md)
+[ ] Other disks (a second drive, a Windows partition, /run/media automounts)
+    unmounted or remounted read-only; the stray-mounts check lists any left
+    read-write, because the session can write to them directly
 [ ] nails binary exists ONLY on the hidden volume; no copies on the decoy
 [ ] Reviewed inherited decoy state in `nails check` (autostart, user services,
     lingering, autologin); masked or accepted remote-linked clients

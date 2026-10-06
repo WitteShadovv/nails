@@ -192,6 +192,25 @@ fn assess<F: Filesystem>(fs: &F, root: &Path) -> CheckResult {
     }
 }
 
+/// The files behind any loop device in the stack under the hidden root mounted
+/// at `root` (a file container's path), empty when the root is not a mount point
+/// or not file-backed. `entries` is the parsed mount table.
+pub(crate) fn hidden_root_backing_files<F: Filesystem>(
+    fs: &F,
+    entries: &[MountEntry],
+    root: &Path,
+) -> Vec<PathBuf> {
+    let Some(mount) = mount_containing(entries, root).filter(|m| m.mount_point == root) else {
+        return Vec::new();
+    };
+    device_dir_for_mount(fs, mount)
+        .map(|top| device_stack(fs, top))
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|layer| layer.backing_file)
+        .collect()
+}
+
 // ============================================================================
 // Device-stack discovery (Filesystem reads only)
 // ============================================================================
@@ -328,7 +347,10 @@ fn parse_devname(uevent: &str) -> Option<String> {
 ///
 /// When several mounts share that mount point the last one in table order
 /// wins, because it is the one stacked on top and therefore visible.
-fn mount_containing<'a>(entries: &'a [MountEntry], path: &Path) -> Option<&'a MountEntry> {
+pub(crate) fn mount_containing<'a>(
+    entries: &'a [MountEntry],
+    path: &Path,
+) -> Option<&'a MountEntry> {
     entries
         .iter()
         .filter(|entry| path.starts_with(&entry.mount_point))
