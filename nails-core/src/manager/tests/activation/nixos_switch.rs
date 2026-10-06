@@ -13,9 +13,6 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
     let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
 
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content("/etc/nixos/hardware-configuration.nix", "{ ... }: { }");
     fs.mock_set_path_exists("/", true);
     fs.mock_set_path_exists("/etc", true);
     fs.mock_set_path_exists("/home", true);
@@ -33,31 +30,14 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
     fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
     fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
 
-    let bin_dir = hidden_root.join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let rebuild_script = bin_dir.join("nixos-rebuild");
-    std::fs::write(
-        &rebuild_script,
-        "#!/usr/bin/env sh\nprintf 'boom\\n' 1>&2\nexit 2\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&rebuild_script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&rebuild_script, perms).unwrap();
-    }
-
+    // The switch itself is scripted on the fake config layer: it fails with
+    // `boom`, as a fatal hidden-config build failure would.
     let builder = crate::nixos::NixOSBuilder::new_legacy(
         hidden_root.join("config/nixos/configuration.nix"),
         hidden_root.join("nails-system"),
-    )
-    .with_executor(Box::new(
-        crate::nixos::RealCommandExecutor::with_search_path(&bin_dir),
-    ));
+    );
 
-    let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
+    let manager = Arc::new(Mutex::new(fake_nixos_manager_with_builder_scripted(
         fs.clone(),
         Config {
             hidden_volume_root: hidden_root.to_path_buf(),
@@ -85,6 +65,7 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
         },
         state_path.clone(),
         builder,
+        FakeConfigLayer::new().with_apply_error("boom"),
     )));
 
     let result = manager.lock().unwrap().activate(true);
@@ -150,9 +131,6 @@ fn test_activation_non_fatal_switch_failures_do_not_roll_back() {
     let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
 
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content("/etc/nixos/hardware-configuration.nix", "{ ... }: { }");
     fs.mock_set_path_exists("/", true);
     fs.mock_set_path_exists("/etc", true);
     fs.mock_set_path_exists("/home", true);
@@ -261,9 +239,6 @@ fn test_switch_required_rolls_overlays_back_on_switch_failure() {
     let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
 
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content("/etc/nixos/hardware-configuration.nix", "{ ... }: { }");
     fs.mock_set_path_exists("/", true);
     fs.mock_set_path_exists("/etc", true);
     fs.mock_set_path_exists("/home", true);
@@ -277,33 +252,14 @@ fn test_switch_required_rolls_overlays_back_on_switch_failure() {
         fs.mock_set_path_exists(dir.to_str().unwrap(), true);
     }
 
-    // A legacy builder whose `nixos-rebuild test` fails fatally (not a non-fatal
-    // unit restart warning).
-    let bin_dir = hidden_root.join("bin");
-    std::fs::create_dir_all(&bin_dir).unwrap();
-    let rebuild_script = bin_dir.join("nixos-rebuild");
-    std::fs::write(
-        &rebuild_script,
-        "#!/usr/bin/env sh\nprintf 'boom\\n' 1>&2\nexit 2\n",
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mut perms = std::fs::metadata(&rebuild_script).unwrap().permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&rebuild_script, perms).unwrap();
-    }
-
+    // The switch itself is scripted on the fake config layer: it fails with
+    // `boom`, as a fatal hidden-config build failure would.
     let builder = crate::nixos::NixOSBuilder::new_legacy(
         hidden_root.join("config/nixos/configuration.nix"),
         hidden_root.join("nails-system"),
-    )
-    .with_executor(Box::new(
-        crate::nixos::RealCommandExecutor::with_search_path(&bin_dir),
-    ));
+    );
 
-    let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
+    let manager = Arc::new(Mutex::new(fake_nixos_manager_with_builder_scripted(
         fs.clone(),
         Config {
             hidden_volume_root: hidden_root.to_path_buf(),
@@ -331,6 +287,7 @@ fn test_switch_required_rolls_overlays_back_on_switch_failure() {
         },
         state_path.clone(),
         builder,
+        FakeConfigLayer::new().with_apply_error("boom"),
     )));
 
     let result = manager.lock().unwrap().activate(true);

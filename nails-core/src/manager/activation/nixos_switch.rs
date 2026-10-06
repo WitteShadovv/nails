@@ -203,7 +203,7 @@ mod tests {
 
     fn flake_builder(hidden_root: &Path, executor: StubExecutor) -> NixOSBuilder {
         NixOSBuilder::new_with_flake_ref(
-            "/etc/nixos#host".to_string(),
+            "/srv/flake#host".to_string(),
             hidden_root.join("nails-system"),
         )
         .with_executor(Box::new(executor))

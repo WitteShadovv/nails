@@ -8,11 +8,12 @@
 
 #![allow(clippy::field_reassign_with_default)]
 use super::*;
-use crate::filesystem::{Filesystem, MockOp, PathKind};
+use crate::filesystem::{Filesystem, PathKind};
+use crate::platform::{FakeConfigLayer, FakePlatform, FakeVerdict, HostTarget, LayerCall};
 use crate::test_support::EnvGuard;
 use crate::{
     MockFilesystem, OverlayConfig, OverlayInfo, StateFile, Stopwatch, SystemState, TestWorld,
-    Verbosity, config::DEFAULT_HIDDEN_VOLUME_ROOT, config::OverlayMode, inject_import_block,
+    Verbosity, config::DEFAULT_HIDDEN_VOLUME_ROOT, config::OverlayMode,
 };
 use chrono::Utc;
 use serial_test::serial;
@@ -28,45 +29,63 @@ mod preflight_runner;
 mod rollback;
 mod state_management;
 
-fn setup_nixos_config_check(fs: &MockFilesystem, hidden_root: &Path) {
-    // Base hardware-configuration.nix must exist
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
-    );
-    fs.mock_set_files_with_pattern(
-        "/etc/nixos",
-        ".nix",
-        &[Path::new("/etc/nixos/hardware-configuration.nix")],
-    );
-    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
+/// Run `manager` on a NixOS host served by a recording [`FakeConfigLayer`]
+/// with a discovered legacy build target, so the declarative half of
+/// activation (base-config gate, staging, config checks, `/etc` import, switch)
+/// runs without any `/etc/nixos` fixtures. Returns the layer handle for
+/// scripting steps and inspecting the calls.
+fn use_fake_nixos_layer(manager: &mut NailsManager<MockFilesystem>) -> FakeConfigLayer {
+    use_scripted_nixos_layer(manager, FakeConfigLayer::new())
+}
 
-    // Hidden overlay hardware config
-    let hidden_etc = hidden_root.join("etc/nixos");
-    let hidden_hw = hidden_etc.join("hardware-configuration.nix");
-    fs.mock_set_path_exists(hidden_etc.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_etc.to_str().unwrap(), PathKind::Dir);
-    fs.mock_set_writable(hidden_etc.to_str().unwrap(), true);
-    fs.mock_set_path_exists(hidden_hw.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_hw.to_str().unwrap(), PathKind::File);
-    fs.mock_set_file_content(
-        hidden_hw.to_str().unwrap(),
-        "{ config, lib, pkgs, ... }:\n{ imports = [ ./nails/configuration.nix ]; }",
+/// [`use_fake_nixos_layer`] with a layer the test has already scripted.
+fn use_scripted_nixos_layer(
+    manager: &mut NailsManager<MockFilesystem>,
+    layer: FakeConfigLayer,
+) -> FakeConfigLayer {
+    manager.set_fake_platform(
+        FakePlatform::nixos()
+            .with_fake_config_layer(layer.clone())
+            .with_build_target(HostTarget::Legacy(PathBuf::from("/cfg/configuration.nix"))),
     );
+    layer
+}
 
-    // Hidden config in new location
-    let hidden_config = hidden_root.join("config/nixos/configuration.nix");
-    fs.mock_set_path_exists(hidden_config.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_config.to_str().unwrap(), PathKind::File);
-    fs.mock_set_file_content(hidden_config.to_str().unwrap(), "{ }");
+/// A manager (no builder) on a fake-layer NixOS host; see [`use_fake_nixos_layer`].
+fn fake_nixos_manager(
+    fs: MockFilesystem,
+    config: Config,
+    state_path: PathBuf,
+) -> (NailsManager<MockFilesystem>, FakeConfigLayer) {
+    let mut manager = NailsManager::new(fs, config, state_path);
+    let layer = use_fake_nixos_layer(&mut manager);
+    (manager, layer)
+}
 
-    let nails_dir = hidden_root.join("etc/nixos/nails");
-    fs.mock_set_path_exists(nails_dir.to_str().unwrap(), true);
-    fs.mock_set_path_type(nails_dir.to_str().unwrap(), PathKind::Dir);
-    fs.mock_set_writable(nails_dir.to_str().unwrap(), true);
+/// A manager with a NixOS builder on a NixOS host served by an already
+/// scripted fake config layer.
+fn fake_nixos_manager_with_builder_scripted(
+    fs: MockFilesystem,
+    config: Config,
+    state_path: PathBuf,
+    builder: crate::NixOSBuilder,
+    layer: FakeConfigLayer,
+) -> NailsManager<MockFilesystem> {
+    let mut manager = NailsManager::with_nixos(fs, config, state_path, builder);
+    use_scripted_nixos_layer(&mut manager, layer);
+    manager
+}
+
+/// A manager with a NixOS builder on a fake-layer NixOS host.
+fn fake_nixos_manager_with_builder(
+    fs: MockFilesystem,
+    config: Config,
+    state_path: PathBuf,
+    builder: crate::NixOSBuilder,
+) -> (NailsManager<MockFilesystem>, FakeConfigLayer) {
+    let mut manager = NailsManager::with_nixos(fs, config, state_path, builder);
+    let layer = use_fake_nixos_layer(&mut manager);
+    (manager, layer)
 }
 
 fn create_test_manager() -> NailsManager<MockFilesystem> {
@@ -459,18 +478,18 @@ fn test_world_roots_under_tempdir_by_default() {
 #[test]
 fn test_world_stages_files_and_dirs() {
     let (manager, _tmp) = TestWorld::new()
-        .with_dir("/etc/nixos")
-        .with_file("/etc/nixos/configuration.nix", "{ }")
+        .with_dir("/srv/data")
+        .with_file("/srv/data/settings.conf", "{ }")
         .manager();
 
     let fs = manager.filesystem();
-    assert!(fs.is_directory(Path::new("/etc/nixos")).unwrap());
+    assert!(fs.is_directory(Path::new("/srv/data")).unwrap());
     assert!(
-        fs.path_exists(Path::new("/etc/nixos/configuration.nix"))
+        fs.path_exists(Path::new("/srv/data/settings.conf"))
             .unwrap()
     );
     assert_eq!(
-        fs.read_file_content(Path::new("/etc/nixos/configuration.nix"))
+        fs.read_file_content(Path::new("/srv/data/settings.conf"))
             .unwrap(),
         "{ }"
     );

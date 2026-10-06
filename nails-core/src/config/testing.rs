@@ -100,8 +100,8 @@ impl Config {
 /// use nails_core::TestWorld;
 ///
 /// let (manager, _tmp) = TestWorld::new()
-///     .with_dir("/etc/nixos")
-///     .with_file("/etc/nixos/configuration.nix", "{ }")
+///     .with_dir("/srv/data")
+///     .with_file("/srv/data/settings.conf", "{ }")
 ///     .manager();
 /// assert!(manager.config().hidden_volume_root.exists());
 /// ```
@@ -110,6 +110,7 @@ pub struct TestWorld {
     config: Option<Config>,
     root: Option<PathBuf>,
     nixos: Option<NixOSBuilder>,
+    platform: Option<crate::platform::FakePlatform>,
     state: Option<StateFile>,
     files: Vec<(String, String)>,
     dirs: Vec<String>,
@@ -124,6 +125,7 @@ impl TestWorld {
             config: None,
             root: None,
             nixos: None,
+            platform: None,
             state: None,
             files: Vec::new(),
             dirs: Vec::new(),
@@ -187,10 +189,11 @@ impl TestWorld {
         self
     }
 
-    /// Stage the decoy's base `hardware-configuration.nix`, which the NixOS
-    /// preflight and build checks read.
-    pub fn with_hardware_config(self, content: impl Into<String>) -> Self {
-        self.with_file("/etc/nixos/hardware-configuration.nix", content)
+    /// Run the manager against a [`FakePlatform`](crate::platform::FakePlatform)
+    /// (and, through it, a fake config layer) instead of an undetected host.
+    pub fn with_platform(mut self, platform: crate::platform::FakePlatform) -> Self {
+        self.platform = Some(platform);
+        self
     }
 
     /// Use a specific [`Config`] instead of the temp-dir-backed default.
@@ -235,10 +238,13 @@ impl TestWorld {
         }
 
         let state_path = config.state_file_path.clone();
-        let manager = match self.nixos {
+        let mut manager = match self.nixos {
             Some(builder) => NailsManager::with_nixos(self.fs, config, state_path, builder),
             None => NailsManager::new(self.fs, config, state_path),
         };
+        if let Some(platform) = self.platform {
+            manager.set_fake_platform(platform);
+        }
         if let Some(state) = self.state {
             manager.seed_cached_state(state);
         }
@@ -291,6 +297,15 @@ mod tests {
         let (manager, _tmp) = TestWorld::new().with_nixos(builder).manager();
         // The Debug output names the builder field only when one is attached.
         assert!(format!("{manager:?}").contains("nixos_builder"));
+    }
+
+    #[test]
+    fn with_platform_injects_the_fake() {
+        use crate::platform::{FakePlatform, PlatformKind};
+        let (manager, _tmp) = TestWorld::new()
+            .with_platform(FakePlatform::fhs())
+            .manager();
+        assert_eq!(manager.host_profile().unwrap().kind, PlatformKind::Fhs);
     }
 
     #[test]

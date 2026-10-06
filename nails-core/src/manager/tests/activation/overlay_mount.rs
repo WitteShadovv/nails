@@ -714,99 +714,78 @@ fn test_default_overlay_mode_is_auto() {
 
 // ========== /etc hardware-configuration import injection ==========
 
+/// An explicit-mode config overlaying each of `targets` from the hidden root,
+/// with the upper/work directories present on the mock.
+fn explicit_overlays_config(
+    fs: &MockFilesystem,
+    hidden_root: &Path,
+    state_path: &Path,
+    targets: &[&str],
+) -> Config {
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_type("/", PathKind::Dir);
+    let overlays = targets
+        .iter()
+        .map(|target| {
+            let name = target.trim_start_matches('/');
+            let upper = hidden_root.join(format!("overlays/{name}/upper"));
+            let work = hidden_root.join(format!("overlays/{name}/work"));
+            std::fs::create_dir_all(&upper).unwrap();
+            std::fs::create_dir_all(&work).unwrap();
+            fs.mock_set_path_exists(target, true);
+            fs.mock_set_path_exists(upper.to_str().unwrap(), true);
+            fs.mock_set_path_exists(work.to_str().unwrap(), true);
+            OverlayConfig {
+                name: name.to_string(),
+                lower: PathBuf::from("/"),
+                upper,
+                work,
+                target: PathBuf::from(target),
+            }
+        })
+        .collect();
+    Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.to_path_buf(),
+        overlay_mode: OverlayMode::Explicit,
+        overlays,
+        ..Config::test_default()
+    }
+}
+
+/// The import calls the layer recorded.
+fn import_calls(layer: &FakeConfigLayer) -> Vec<LayerCall> {
+    layer
+        .calls()
+        .into_iter()
+        .filter(|call| matches!(call, LayerCall::InjectImport { .. }))
+        .collect()
+}
+
+/// Once `/etc` is overlaid, activation runs the config layer's import exactly
+/// once, into the overlaid tree. (What the NixOS import writes is covered by the
+/// `inject_import_block` and `NixOsConfigLayer` tests.)
 #[test]
 fn test_activation_injects_import_block_into_overlayed_hardware_config() {
-    use crate::OverlayConfig;
-
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
-    let mock_hidden_vol = temp_dir.path();
-    std::fs::create_dir_all(mock_hidden_vol).unwrap();
-    let state_path = mock_hidden_vol.join("state.json");
-
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
-
-    // Base hardware config must exist and be clean
-    let base_content = r#"{ config, pkgs, modulesPath, ... }:
-{
-  imports = [
-    (modulesPath + "/installer/scan/not-detected.nix")
-  ];
-  boot.loader.grub.enable = true;
-}
-"#;
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content("/etc/nixos/hardware-configuration.nix", base_content);
-
-    // Overlay config for /etc
-    fs.mock_set_path_exists("/etc", true);
-    let upper_etc = mock_hidden_vol.join("etc");
-    let work_etc = mock_hidden_vol.join(".work/etc");
-    std::fs::create_dir_all(&upper_etc).unwrap();
-    std::fs::create_dir_all(&work_etc).unwrap();
-    fs.mock_set_path_exists(upper_etc.to_str().unwrap(), true);
-    fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
-    fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
-
-    // Initial state file
-    let initial_state = StateFile {
+    let config = explicit_overlays_config(&fs, hidden_root, &state_path, &["/etc"]);
+    StateFile {
         state: SystemState::Inactive,
         ..StateFile::default()
-    };
-    initial_state
-        .save_with_custom_root(&state_path, mock_hidden_vol)
-        .expect("Should save initial state");
+    }
+    .save_with_custom_root(&state_path, hidden_root)
+    .expect("Should save initial state");
 
-    let config = Config {
-        hidden_volume_root: mock_hidden_vol.to_path_buf(),
-        state_file_path: state_path.clone(),
-        overlay_mode: OverlayMode::Explicit,
-        overlays: vec![OverlayConfig {
-            name: "etc".to_string(),
-            lower: PathBuf::from("/etc"),
-            upper: upper_etc.clone(),
-            work: work_etc.clone(),
-            target: PathBuf::from("/etc"),
-        }],
-        ..Config::test_default()
-    };
+    let (mut manager, layer) = fake_nixos_manager(fs.clone(), config, state_path);
+    let result = manager.activate(true);
+    assert!(result.is_ok(), "Activation should succeed: {result:?}");
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        config,
-        state_path.clone(),
-    )));
-
-    let result = manager.lock().unwrap().activate(true);
-    assert!(result.is_ok(), "Activation should succeed: {:?}", result);
-
-    let written = fs
-        .get_written_content(&PathBuf::from("/etc/nixos/hardware-configuration.nix"))
-        .expect("Injection should write overlayed hardware config");
-
-    // The live hardware-configuration.nix becomes the fixed wrapper importing
-    // the preserved base and the hidden module.
-    assert!(
-        written.contains("./nails/configuration.nix"),
-        "wrapper should import the hidden module"
-    );
-    assert!(
-        written.contains("./hardware-configuration.base.nix"),
-        "wrapper should import the preserved base"
-    );
-    assert!(
-        !written.contains("installer/scan/not-detected.nix"),
-        "wrapper must not inline the original hardware config"
-    );
-
-    // The original content is preserved verbatim in the base file.
-    let base_written = fs
-        .get_written_content(&PathBuf::from("/etc/nixos/hardware-configuration.base.nix"))
-        .expect("Injection should preserve the original as the base file");
-    assert!(base_written.contains("installer/scan/not-detected.nix"));
-    assert!(
-        base_written.contains("boot.loader.grub.enable = true;"),
-        "Original hardware config should be preserved in the base file"
+    assert_eq!(
+        import_calls(&layer),
+        vec![LayerCall::InjectImport { etc_mounted: true }]
     );
 }
 
@@ -857,64 +836,36 @@ fn test_activate_explicit_mode_empty_overlays_fails() {
     );
 }
 
+/// A dirty base configuration (the layer's base-config gate fails) aborts
+/// activation before any side effect: no write, mount, history cleanup or config
+/// staging.
 #[test]
 fn test_activation_aborts_when_base_hardware_config_is_dirty() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let mock_hidden_vol = temp_dir.path();
-    let state_path = mock_hidden_vol.join("state.json");
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
     let _home = crate::cleanup::test_utils::set_safe_test_home();
     let bash_history = Path::new(crate::cleanup::test_utils::TEST_HOME).join(".bash_history");
-
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
-    );
-    fs.mock_set_files_with_pattern(
-        "/etc/nixos",
-        ".nix",
-        &[Path::new("/etc/nixos/hardware-configuration.nix")],
-    );
-
-    fs.mock_set_path_exists("/home", true);
-    let upper_home = mock_hidden_vol.join("overlays/home/upper");
-    let work_home = mock_hidden_vol.join("overlays/home/work");
-    std::fs::create_dir_all(&upper_home).unwrap();
-    std::fs::create_dir_all(&work_home).unwrap();
-    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
-    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+    let config = explicit_overlays_config(&fs, hidden_root, &state_path, &["/home"]);
     fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
     fs.mock_set_path_type(bash_history.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(bash_history.to_str().unwrap(), "nails activate\nls\n");
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        Config {
-            hidden_volume_root: mock_hidden_vol.to_path_buf(),
-            state_file_path: state_path.clone(),
-            overlay_mode: OverlayMode::Explicit,
-            overlays: vec![OverlayConfig {
-                name: "home".to_string(),
-                lower: PathBuf::from("/"),
-                upper: upper_home,
-                work: work_home,
-                target: PathBuf::from("/home"),
-            }],
-            ..Config::test_default()
-        },
-        state_path,
-    )));
+    let mut manager = NailsManager::new(fs.clone(), config, state_path);
+    let layer = use_scripted_nixos_layer(
+        &mut manager,
+        FakeConfigLayer::new().with_base_reference(FakeVerdict::Fail("dirty base".into())),
+    );
 
-    let err = manager.lock().unwrap().activate(false).unwrap_err();
+    let err = manager.activate(false).unwrap_err();
     // Behaviour: pre-flight blocks activation and names the responsible check.
     match err {
         NailsError::PreFlightCheckFailed(failures) => assert!(
             failures
                 .iter()
-                .any(|(name, _, _)| name == "suspicious-nails-reference"),
-            "suspicious-nails-reference failure should be reported"
+                .any(|(name, _, _)| name == crate::platform::FAKE_BASE_REFERENCE_CHECK),
+            "the base-config gate failure should be reported: {failures:?}"
         ),
         other => panic!("expected PreFlightCheckFailed, got {other:?}"),
     }
@@ -924,68 +875,41 @@ fn test_activation_aborts_when_base_hardware_config_is_dirty() {
     );
     assert!(
         fs.get_written_content(&bash_history).is_none(),
-        "pre-activation cleanup must not run before suspicious-reference failure"
+        "pre-activation cleanup must not run before the base-config gate"
     );
     assert!(
-        fs.mock_get_symlink_target(&mock_hidden_vol.join("etc/nixos/nails/configuration.nix"))
-            .is_none(),
-        "config symlink staging must not run before suspicious-reference failure"
+        layer.calls().is_empty(),
+        "config staging must not run before the base-config gate: {:?}",
+        layer.calls()
     );
-    assert_eq!(
-        manager.lock().unwrap().current_state().unwrap(),
-        SystemState::Inactive
-    );
+    assert_eq!(manager.current_state().unwrap(), SystemState::Inactive);
 }
 
+/// A base-config gate that cannot run (an unreadable base configuration)
+/// aborts activation with its error, before any side effect.
 #[test]
 fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let mock_hidden_vol = temp_dir.path();
-    let state_path = mock_hidden_vol.join("state.json");
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
     let _home = crate::cleanup::test_utils::set_safe_test_home();
     let bash_history = Path::new(crate::cleanup::test_utils::TEST_HOME).join(".bash_history");
-
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_files_with_pattern(
-        "/etc/nixos",
-        ".nix",
-        &[Path::new("/etc/nixos/hardware-configuration.nix")],
-    );
-    fs.mock_set_path_exists("/home", true);
-    let upper_home = mock_hidden_vol.join("overlays/home/upper");
-    let work_home = mock_hidden_vol.join("overlays/home/work");
-    std::fs::create_dir_all(&upper_home).unwrap();
-    std::fs::create_dir_all(&work_home).unwrap();
-    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
-    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
+    let config = explicit_overlays_config(&fs, hidden_root, &state_path, &["/home"]);
     fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
     fs.mock_set_path_type(bash_history.to_str().unwrap(), PathKind::File);
     fs.mock_set_file_content(bash_history.to_str().unwrap(), "nails activate\nls\n");
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        Config {
-            hidden_volume_root: mock_hidden_vol.to_path_buf(),
-            state_file_path: state_path.clone(),
-            overlay_mode: OverlayMode::Explicit,
-            overlays: vec![OverlayConfig {
-                name: "home".to_string(),
-                lower: PathBuf::from("/"),
-                upper: upper_home,
-                work: work_home,
-                target: PathBuf::from("/home"),
-            }],
-            ..Config::test_default()
-        },
-        state_path,
-    )));
+    let mut manager = NailsManager::new(fs.clone(), config, state_path);
+    let layer = use_scripted_nixos_layer(
+        &mut manager,
+        FakeConfigLayer::new().with_base_reference(FakeVerdict::Error("unreadable base".into())),
+    );
 
-    let err = manager.lock().unwrap().activate(false).unwrap_err();
+    let err = manager.activate(false).unwrap_err();
     assert!(
-        matches!(&err, NailsError::IoError(e) if e.kind() == std::io::ErrorKind::NotFound),
-        "expected a not-found I/O error, got: {err:?}"
+        matches!(&err, NailsError::IoError(e) if e.to_string().contains("unreadable base")),
+        "expected the gate's I/O error, got: {err:?}"
     );
     assert!(
         fs.mock_ops().is_empty(),
@@ -993,12 +917,12 @@ fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
     );
     assert!(
         fs.get_written_content(&bash_history).is_none(),
-        "pre-activation cleanup must not run before suspicious-reference read failure"
+        "pre-activation cleanup must not run before the base-config gate"
     );
     assert!(
-        fs.mock_get_symlink_target(&mock_hidden_vol.join("etc/nixos/nails/configuration.nix"))
-            .is_none(),
-        "config symlink staging must not run before suspicious-reference read failure"
+        layer.calls().is_empty(),
+        "config staging must not run before the base-config gate: {:?}",
+        layer.calls()
     );
 }
 
@@ -1009,12 +933,6 @@ fn test_activate_explicit_mode_rejects_critical_system_root_overlay_bin() {
     let state_path = mock_hidden_vol.join("state.json");
     let fs = MockFilesystem::new();
 
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
-    );
     fs.mock_set_path_exists("/bin", true);
     // A Debian/Ubuntu (FHS) host keeps /bin read-only, so overlaying it is refused
     // by the platform policy rather than a hardcoded block. /bin is the usr-merge
@@ -1056,61 +974,36 @@ fn test_activate_explicit_mode_rejects_critical_system_root_overlay_bin() {
     assert!(fs.mock_ops().is_empty());
 }
 
+/// A failed import after the `/etc` mount rolls the overlay back and leaves the
+/// system inactive.
 #[test]
 fn test_activation_rolls_back_when_import_injection_fails_after_etc_mount() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let mock_hidden_vol = temp_dir.path();
-    let state_path = mock_hidden_vol.join("state.json");
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
+    let config = explicit_overlays_config(&fs, hidden_root, &state_path, &["/etc"]);
 
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
+    let mut manager = NailsManager::new(fs.clone(), config, state_path);
+    let layer = use_scripted_nixos_layer(
+        &mut manager,
+        FakeConfigLayer::new().with_inject_error("import refused"),
     );
-    fs.mock_set_write_should_fail("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_exists("/", true);
-    fs.mock_set_path_exists("/etc", true);
 
-    let upper_etc = mock_hidden_vol.join("overlays/etc/upper");
-    let work_etc = mock_hidden_vol.join("overlays/etc/work");
-    std::fs::create_dir_all(&upper_etc).unwrap();
-    std::fs::create_dir_all(&work_etc).unwrap();
-    fs.mock_set_path_exists(upper_etc.to_str().unwrap(), true);
-    fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
-
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        Config {
-            hidden_volume_root: mock_hidden_vol.to_path_buf(),
-            state_file_path: state_path.clone(),
-            overlay_mode: OverlayMode::Explicit,
-            overlays: vec![OverlayConfig {
-                name: "etc".to_string(),
-                lower: PathBuf::from("/"),
-                upper: upper_etc,
-                work: work_etc,
-                target: PathBuf::from("/etc"),
-            }],
-            ..Config::test_default()
-        },
-        state_path,
-    )));
-
-    let err = manager.lock().unwrap().activate(true).unwrap_err();
+    let err = manager.activate(true).unwrap_err();
     assert!(
-        matches!(&err, NailsError::IoError(e) if e.kind() == std::io::ErrorKind::PermissionDenied),
-        "expected a permission-denied I/O error, got: {err:?}"
+        err.to_string().contains("import refused"),
+        "expected the import error, got: {err:?}"
+    );
+    assert_eq!(
+        import_calls(&layer),
+        vec![LayerCall::InjectImport { etc_mounted: true }]
     );
     assert!(
         !fs.is_mounted(Path::new("/etc")).unwrap(),
         "/etc should be rolled back"
     );
-    assert_eq!(
-        manager.lock().unwrap().current_state().unwrap(),
-        SystemState::Inactive
-    );
+    assert_eq!(manager.current_state().unwrap(), SystemState::Inactive);
 }
 
 #[test]
@@ -1121,12 +1014,6 @@ fn test_activate_explicit_mode_continues_when_clean_stale_network_config_fails()
     let state_path = mock_hidden_vol.join("state.json");
     let fs = MockFilesystem::new();
 
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
-    );
     fs.mock_set_path_exists("/", true);
     fs.mock_set_path_exists("/etc", true);
 
@@ -1140,23 +1027,26 @@ fn test_activate_explicit_mode_continues_when_clean_stale_network_config_fails()
     fs.mock_set_path_exists(resolv_conf.to_str().unwrap(), true);
     fs.mock_set_remove_should_fail(resolv_conf.to_str().unwrap(), true);
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        Config {
-            hidden_volume_root: mock_hidden_vol.to_path_buf(),
-            state_file_path: state_path.clone(),
-            overlay_mode: OverlayMode::Explicit,
-            overlays: vec![OverlayConfig {
-                name: "etc".to_string(),
-                lower: PathBuf::from("/"),
-                upper: upper_etc,
-                work: work_etc,
-                target: PathBuf::from("/etc"),
-            }],
-            ..Config::test_default()
-        },
-        state_path,
-    )));
+    let manager = Arc::new(Mutex::new(
+        fake_nixos_manager(
+            fs.clone(),
+            Config {
+                hidden_volume_root: mock_hidden_vol.to_path_buf(),
+                state_file_path: state_path.clone(),
+                overlay_mode: OverlayMode::Explicit,
+                overlays: vec![OverlayConfig {
+                    name: "etc".to_string(),
+                    lower: PathBuf::from("/"),
+                    upper: upper_etc,
+                    work: work_etc,
+                    target: PathBuf::from("/etc"),
+                }],
+                ..Config::test_default()
+            },
+            state_path,
+        )
+        .0,
+    ));
 
     let result = manager.lock().unwrap().activate(true);
     assert!(
@@ -1303,159 +1193,34 @@ fn test_activate_auto_mode_all_directories_excluded() {
 
 // ========== Import Injection Target ==========
 
-/// Injection targets the overlay path, leaving the hidden underlay clean:
-/// inject_import_block() targets `/etc/nixos/hardware-configuration.nix` (the overlayed
-/// path). The hidden underlay at `{hidden}/etc/nixos/hardware-configuration.nix` must
-/// remain unmodified (no import injected).
-///
-/// Verified by: running inject_import_block on a mock that serves a clean base config at
-/// `/etc/nixos/hardware-configuration.nix`, then confirming the MockFilesystem only
-/// modified that single path — the hidden underlay path is NOT written to.
-#[test]
-fn test_activation_inject_targets_overlayed_path_not_underlay() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden = temp_dir.path();
-    let fs = MockFilesystem::new();
-
-    // The overlayed (live) hardware config — no import yet (overlay is mounted, so this
-    // is what the OS sees at /etc/nixos/hardware-configuration.nix after mounting)
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
-    );
-
-    // The hidden underlay — also has no import initially
-    let underlay = hidden.join("etc/nixos/hardware-configuration.nix");
-    fs.mock_set_path_exists(underlay.to_str().unwrap(), true);
-    fs.mock_set_path_type(underlay.to_str().unwrap(), PathKind::File);
-    fs.mock_set_file_content(
-        underlay.to_str().unwrap(),
-        "{ config, lib, pkgs, ... }:\n{ }",
-    );
-
-    // inject_import_block writes to /etc/nixos/hardware-configuration.nix (overlayed path)
-    let result = inject_import_block(&fs);
-    assert!(
-        result.is_ok(),
-        "inject_import_block should succeed: {:?}",
-        result
-    );
-
-    // Overlayed path now contains the import
-    let overlayed_content = fs
-        .read_file_content(std::path::Path::new(
-            "/etc/nixos/hardware-configuration.nix",
-        ))
-        .unwrap();
-    assert!(
-        overlayed_content.contains("./nails/configuration.nix"),
-        "Overlayed hardware-configuration.nix should contain the injected import"
-    );
-
-    // Underlay path is UNTOUCHED — contains no import
-    let underlay_content = fs.read_file_content(&underlay).unwrap();
-    assert!(
-        !underlay_content.contains("./nails/configuration.nix"),
-        "Hidden underlay hardware-configuration.nix must NOT be modified by inject_import_block"
-    );
-
-    // Verify only the overlayed path was written
-    let ops = fs.mock_ops();
-    assert!(
-        ops.contains(&MockOp::WriteFile {
-            path: PathBuf::from("/etc/nixos/hardware-configuration.nix")
-        }),
-        "inject_import_block should write to the overlayed hardware config path"
-    );
-    assert!(
-        !ops.contains(&MockOp::WriteFile { path: underlay }),
-        "inject_import_block must not write to the hidden underlay path"
-    );
-}
-
-/// inject_import_block() must run AFTER the /etc overlay is mounted.
-/// This test verifies ordering by inspecting the MockFilesystem operation log.
+/// The import runs only once `/etc` is mounted, and not at all when `/etc` is
+/// not an overlay target.
 #[test]
 fn test_activation_inject_happens_after_etc_overlay_mount() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let mock_hidden_vol = temp_dir.path();
-    let state_path = mock_hidden_vol.join("state.json");
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
+    let config = explicit_overlays_config(&fs, hidden_root, &state_path, &["/home", "/etc"]);
 
-    // Base config clean so verify_base_config_clean() passes.
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
+    let (mut manager, layer) = fake_nixos_manager(fs.clone(), config, state_path);
+    let result = manager.activate(true);
+    assert!(result.is_ok(), "Activation should succeed: {result:?}");
+    assert_eq!(
+        import_calls(&layer),
+        vec![LayerCall::InjectImport { etc_mounted: true }],
+        "the import must run once, after /etc is mounted"
     );
 
-    // Overlay dirs
-    let upper_home = mock_hidden_vol.join("overlays/home/upper");
-    let work_home = mock_hidden_vol.join("overlays/home/work");
-    let upper_etc = mock_hidden_vol.join("overlays/etc/upper");
-    let work_etc = mock_hidden_vol.join("overlays/etc/work");
-
-    fs.mock_set_path_exists("/", true);
-    fs.mock_set_path_type("/", PathKind::Dir);
-    fs.mock_set_path_exists(upper_home.to_str().unwrap(), true);
-    fs.mock_set_path_exists(work_home.to_str().unwrap(), true);
-    fs.mock_set_path_exists(upper_etc.to_str().unwrap(), true);
-    fs.mock_set_path_exists(work_etc.to_str().unwrap(), true);
-
-    let config = Config {
-        hidden_volume_root: mock_hidden_vol.to_path_buf(),
-        state_file_path: state_path,
-        overlay_mode: crate::OverlayMode::Explicit,
-        overlays: vec![
-            crate::OverlayConfig {
-                name: "home".to_string(),
-                lower: PathBuf::from("/"),
-                upper: upper_home,
-                work: work_home,
-                target: PathBuf::from("/home"),
-            },
-            crate::OverlayConfig {
-                name: "etc".to_string(),
-                lower: PathBuf::from("/"),
-                upper: upper_etc,
-                work: work_etc,
-                target: PathBuf::from("/etc"),
-            },
-        ],
-        ..Config::test_default()
-    };
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        config,
-        mock_hidden_vol.join("state.json"),
-    )));
-
-    let result = manager.lock().unwrap().activate(true);
-    assert!(result.is_ok(), "Activation should succeed: {:?}", result);
-
-    let ops = fs.mock_ops();
-    let etc_mount_idx = ops.iter().position(
-        |op| matches!(op, MockOp::MountOverlay { target } if target == &PathBuf::from("/etc")),
-    );
-    let inject_idx = ops.iter().position(|op| {
-            matches!(op, MockOp::WriteFile { path } if path == &PathBuf::from("/etc/nixos/hardware-configuration.nix"))
-        });
-
-    assert!(
-        etc_mount_idx.is_some(),
-        "Expected /etc overlay mount operation in op log"
-    );
-    assert!(
-        inject_idx.is_some(),
-        "Expected inject_import_block write operation in op log"
-    );
-    assert!(
-        etc_mount_idx.unwrap() < inject_idx.unwrap(),
-        "inject_import_block must run after /etc overlay mount"
-    );
+    // Without /etc among the targets there is nothing to import into.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+    let config = explicit_overlays_config(&fs, hidden_root, &state_path, &["/home"]);
+    let (mut manager, layer) = fake_nixos_manager(fs, config, state_path);
+    manager.activate(true).expect("activation succeeds");
+    assert!(import_calls(&layer).is_empty(), "{:?}", layer.calls());
 }
 
 // ========== Read-only guard (T-083) ==========

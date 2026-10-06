@@ -713,7 +713,7 @@ mod platform_wiring_tests {
         );
         assert!(!m.hidden_switch_configured());
         m.set_nixos_builder(NixOSBuilder::new_legacy(
-            PathBuf::from("/etc/nixos/configuration.nix"),
+            PathBuf::from("/cfg/configuration.nix"),
             PathBuf::from("/nix/var/nix/profiles/nails-system"),
         ));
         assert!(m.hidden_switch_configured());

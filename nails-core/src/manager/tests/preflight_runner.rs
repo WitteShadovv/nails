@@ -22,7 +22,6 @@ fn test_preflight_all_checks_pass_activation_proceeds() {
     // Set up all paths for pre-flight checks to pass
     fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
     fs.mock_set_mounted(mock_hidden_vol, true);
-    setup_nixos_config_check(&fs, mock_hidden_vol);
 
     // Create expected directory structure
     let overlays_dir = mock_hidden_vol.join("overlays");
@@ -73,8 +72,6 @@ fn test_preflight_all_checks_pass_activation_proceeds() {
 
     // Disable swap
     fs.mock_set_swap_enabled(false);
-    setup_nixos_config_check(&fs, mock_hidden_vol);
-    setup_nixos_config_check(&fs, mock_hidden_vol);
 
     let config = Config {
         hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -90,11 +87,8 @@ fn test_preflight_all_checks_pass_activation_proceeds() {
         ..Config::test_default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        config,
-        state_path.clone(),
-    )));
+    let (manager, layer) = fake_nixos_manager(fs.clone(), config, state_path.clone());
+    let manager = Arc::new(Mutex::new(manager));
 
     // Activate with pre-flight checks (no_preflight = false)
     let result = manager.lock().unwrap().activate(false);
@@ -113,16 +107,13 @@ fn test_preflight_all_checks_pass_activation_proceeds() {
         SystemState::Active { .. }
     ));
 
-    // Verify hidden config symlink staged during activation
-    let symlink_path = mock_hidden_vol.join("etc/nixos/nails/configuration.nix");
+    // The hidden config was staged through the layer during activation.
     assert!(
-        fs.is_symlink(&symlink_path).unwrap(),
-        "Hidden config symlink should be staged during activation"
-    );
-    let expected_target = mock_hidden_vol.join("config/nixos/configuration.nix");
-    assert_eq!(
-        fs.mock_get_symlink_target(&symlink_path),
-        Some(expected_target)
+        layer.calls().contains(&LayerCall::Stage {
+            overlay_only: false
+        }),
+        "the hidden config should be staged during activation: {:?}",
+        layer.calls()
     );
 }
 
@@ -139,7 +130,6 @@ fn test_preflight_check_fails_activation_aborted() {
     // DON'T mount hidden volume - this will cause HiddenVolumeCheck to fail
     fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
     fs.mock_set_mounted(mock_hidden_vol, false); // NOT MOUNTED
-    setup_nixos_config_check(&fs, mock_hidden_vol);
 
     let config = Config {
         hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -148,11 +138,9 @@ fn test_preflight_check_fails_activation_aborted() {
         ..Config::test_default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        config,
-        state_path.clone(),
-    )));
+    let manager = Arc::new(Mutex::new(
+        fake_nixos_manager(fs.clone(), config, state_path.clone()).0,
+    ));
 
     // Verify initial state is Inactive
     assert_eq!(
@@ -205,7 +193,6 @@ fn test_preflight_success_creates_missing_state_json_not_state_directory() {
     fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
     fs.mock_set_supports_symlinks(hidden_root, true);
     fs.mock_set_swap_enabled(false);
-    setup_nixos_config_check(&fs, hidden_root);
 
     for rel in [
         "etc",
@@ -231,7 +218,7 @@ fn test_preflight_success_creates_missing_state_json_not_state_directory() {
         ..Config::test_default()
     };
 
-    let manager = NailsManager::new(fs, config, state_path.clone());
+    let (manager, _layer) = fake_nixos_manager(fs, config, state_path.clone());
 
     manager
         .run_preflight_checks(false, false)
@@ -261,7 +248,6 @@ fn test_preflight_rejects_state_path_directory() {
     fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
     fs.mock_set_supports_symlinks(hidden_root, true);
     fs.mock_set_swap_enabled(false);
-    setup_nixos_config_check(&fs, hidden_root);
 
     for rel in [
         "etc",
@@ -287,7 +273,7 @@ fn test_preflight_rejects_state_path_directory() {
         ..Config::test_default()
     };
 
-    let manager = NailsManager::new(fs, config, state_path.clone());
+    let (manager, _layer) = fake_nixos_manager(fs, config, state_path.clone());
     let err = manager.run_preflight_checks(false, false).unwrap_err();
 
     assert!(
@@ -310,7 +296,6 @@ fn test_preflight_multiple_checks_fail_all_reported() {
     // 1. Hidden volume not mounted
     fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
     fs.mock_set_mounted(mock_hidden_vol, false); // FAIL
-    setup_nixos_config_check(&fs, mock_hidden_vol);
 
     // 2. Swap enabled
     fs.mock_set_swap_enabled(true); // FAIL
@@ -322,7 +307,7 @@ fn test_preflight_multiple_checks_fail_all_reported() {
         ..Config::test_default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    let manager = Arc::new(Mutex::new(fake_nixos_manager(fs, config, state_path).0));
 
     // Activate with pre-flight checks
     let result = manager.lock().unwrap().activate(false);
@@ -364,7 +349,6 @@ fn test_preflight_warnings_only_activation_proceeds() {
     // Set up minimal passing conditions (may trigger warnings but not failures)
     fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
     fs.mock_set_mounted(mock_hidden_vol, true);
-    setup_nixos_config_check(&fs, mock_hidden_vol);
 
     // Create minimal directory structure (all required dirs for StorageReadinessCheck)
     let overlays_dir = mock_hidden_vol.join("overlays");
@@ -408,7 +392,7 @@ fn test_preflight_warnings_only_activation_proceeds() {
         ..Config::test_default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    let manager = Arc::new(Mutex::new(fake_nixos_manager(fs, config, state_path).0));
 
     // Activate with pre-flight checks
     let result = manager.lock().unwrap().activate(false);
@@ -443,7 +427,6 @@ fn test_preflight_skip_with_no_preflight_flag() {
     // Set up FAILING conditions (hidden volume not mounted)
     fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
     fs.mock_set_mounted(mock_hidden_vol, false); // This WOULD fail preflight
-    setup_nixos_config_check(&fs, mock_hidden_vol);
 
     let config = Config {
         hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -452,7 +435,7 @@ fn test_preflight_skip_with_no_preflight_flag() {
         ..Config::test_default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    let manager = Arc::new(Mutex::new(fake_nixos_manager(fs, config, state_path).0));
 
     // Activate with no_preflight = true (skip checks)
     let result = manager.lock().unwrap().activate(true);
@@ -485,7 +468,6 @@ fn test_preflight_no_filesystem_changes_on_failure() {
     // Set up failing condition
     fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
     fs.mock_set_mounted(mock_hidden_vol, false); // Preflight will fail
-    setup_nixos_config_check(&fs, mock_hidden_vol);
 
     // Set up overlay paths
     let upper_dir = mock_hidden_vol.join("overlays/home/upper");
@@ -508,11 +490,9 @@ fn test_preflight_no_filesystem_changes_on_failure() {
     };
 
     let fs_clone = fs.clone();
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs,
-        config,
-        state_path.clone(),
-    )));
+    let manager = Arc::new(Mutex::new(
+        fake_nixos_manager(fs, config, state_path.clone()).0,
+    ));
 
     // Attempt activation (will fail at preflight)
     let result = manager.lock().unwrap().activate(false);
@@ -543,11 +523,6 @@ fn test_suspicious_reference_preflight_fails_before_activation_state_or_mounts()
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
     fs.mock_set_mounted(hidden_root, true);
-    setup_nixos_config_check(&fs, hidden_root);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ imports = [ ./nails/configuration.nix ]; }",
-    );
 
     let config = Config {
         hidden_volume_root: hidden_root.to_path_buf(),
@@ -556,11 +531,13 @@ fn test_suspicious_reference_preflight_fails_before_activation_state_or_mounts()
         ..Config::test_default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        config,
-        state_path.clone(),
-    )));
+    // The layer's base-config gate reports a dirty base configuration.
+    let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
+    let layer = use_scripted_nixos_layer(
+        &mut manager,
+        FakeConfigLayer::new().with_base_reference(FakeVerdict::Fail("dirty base".into())),
+    );
+    let manager = Arc::new(Mutex::new(manager));
 
     let result = manager.lock().unwrap().activate(false);
     assert!(result.is_err(), "activation should fail in preflight");
@@ -570,8 +547,8 @@ fn test_suspicious_reference_preflight_fails_before_activation_state_or_mounts()
             assert!(
                 failures
                     .iter()
-                    .any(|(name, _, _)| name == "suspicious-nails-reference"),
-                "suspicious-nails-reference failure should be reported"
+                    .any(|(name, _, _)| name == crate::platform::FAKE_BASE_REFERENCE_CHECK),
+                "the base-config gate failure should be reported"
             );
         }
         other => panic!("Expected PreFlightCheckFailed error, got {:?}", other),
@@ -587,9 +564,9 @@ fn test_suspicious_reference_preflight_fails_before_activation_state_or_mounts()
         "preflight failure must not mount any activation overlays"
     );
     assert!(
-        fs.mock_get_symlink_target(&hidden_root.join("etc/nixos/nails/configuration.nix"))
-            .is_none(),
-        "preflight failure must happen before config symlink staging"
+        layer.calls().is_empty(),
+        "the gate must refuse before any config staging: {:?}",
+        layer.calls()
     );
 }
 
@@ -605,7 +582,6 @@ fn test_preflight_flake_builder_fails_when_default_flake_is_missing() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(mock_hidden_vol.to_str().unwrap(), true);
     fs.mock_set_mounted(mock_hidden_vol, true);
-    setup_nixos_config_check(&fs, mock_hidden_vol);
 
     let overlays_dir = mock_hidden_vol.join("overlays");
     let etc_dir = mock_hidden_vol.join("etc");
@@ -638,7 +614,6 @@ fn test_preflight_flake_builder_fails_when_default_flake_is_missing() {
     fs.mock_set_path_type(work_home.to_str().unwrap(), PathKind::Dir);
 
     fs.mock_set_swap_enabled(false);
-    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
 
     let config = Config {
         hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -648,9 +623,9 @@ fn test_preflight_flake_builder_fails_when_default_flake_is_missing() {
     };
 
     let builder = NixOSBuilder::new(nixos_dir.clone(), mock_hidden_vol.join("nails-system"));
-    let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
-        fs, config, state_path, builder,
-    )));
+    let manager = Arc::new(Mutex::new(
+        fake_nixos_manager_with_builder(fs, config, state_path, builder).0,
+    ));
 
     let result = manager.lock().unwrap().activate(false);
     assert!(
@@ -690,7 +665,6 @@ fn test_preflight_fails_when_explicit_flake_is_missing() {
         &explicit_flake_dir.join("flake.nix").to_string_lossy(),
         false,
     );
-    setup_nixos_config_check(&fs, mock_hidden_vol);
     fs.mock_set_swap_enabled(false);
 
     let config = Config {
@@ -705,9 +679,9 @@ fn test_preflight_fails_when_explicit_flake_is_missing() {
         format!("{}#host", explicit_flake_dir.display()),
         mock_hidden_vol.join("nails-system"),
     );
-    let manager = Arc::new(Mutex::new(NailsManager::with_nixos(
-        fs, config, state_path, builder,
-    )));
+    let manager = Arc::new(Mutex::new(
+        fake_nixos_manager_with_builder(fs, config, state_path, builder).0,
+    ));
 
     let result = manager.lock().unwrap().activate(false);
     assert!(

@@ -1037,76 +1037,30 @@ fn setup_active_with_home_overlay() -> (
     (manager, fs_clone, state_path, temp_dir)
 }
 
-/// Base config reverts after the /etc overlay unmounts:
-/// After deactivation, /etc overlay is unmounted, so /etc/nixos/hardware-configuration.nix
-/// reverts to the base (clean) file. verify_base_config_clean() is called post-unmount and
-/// confirms the base is clean. Deactivation succeeds.
+/// Deactivation never consults the config layer: the base-config safety gate
+/// runs at activation, so even a layer whose gate would refuse cannot fail a
+/// teardown late, and nothing is staged or imported on the way out.
 #[test]
 #[serial]
 fn test_deactivation_succeeds_when_base_config_clean_after_unmount() {
     let (manager, fs_clone, state_path, _temp_dir) = setup_active_with_etc_overlay();
-
-    // Simulate post-unmount view: base config is clean (no import, no hidden refs)
-    fs_clone.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs_clone.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs_clone.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
+    let layer = use_scripted_nixos_layer(
+        &mut manager.lock().unwrap(),
+        FakeConfigLayer::new().with_base_reference(FakeVerdict::Fail("dirty base".into())),
     );
 
     let result = manager.lock().unwrap().emergency_deactivate();
+    assert!(result.is_ok(), "Deactivation should succeed: {result:?}");
     assert!(
-        result.is_ok(),
-        "Deactivation should succeed when base config is clean: {:?}",
-        result
+        layer.calls().is_empty(),
+        "deactivation must not call into the config layer: {:?}",
+        layer.calls()
     );
 
-    // State must be Inactive
     assert_eq!(
         manager.lock().unwrap().current_state().unwrap(),
         SystemState::Inactive
     );
-
-    // State file on disk must be Inactive
-    let loaded = StateFile::load(&state_path).unwrap();
-    assert_eq!(loaded.state, SystemState::Inactive);
-
-    // /etc overlay must be unmounted
-    assert!(
-        !fs_clone.is_mounted(Path::new("/etc")).unwrap(),
-        "/etc overlay should be unmounted after deactivation"
-    );
-}
-
-/// Suspicious base-config references are now an activation-time preflight failure, not a
-/// late deactivation failure. Emergency deactivation should still finish cleanly even if the
-/// revealed base config is dirty, because the main safety gate already moved earlier.
-#[test]
-#[serial]
-fn test_deactivation_succeeds_when_base_config_dirty_after_unmount() {
-    let (manager, fs_clone, state_path, _temp_dir) = setup_active_with_etc_overlay();
-
-    // Simulate a dirty base config (contains a hidden path reference — should never happen
-    // in production on the base underlay, but if it does, deactivation must catch it).
-    fs_clone.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs_clone.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs_clone.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
-    );
-
-    let result = manager.lock().unwrap().emergency_deactivate();
-    assert!(
-        result.is_ok(),
-        "Deactivation should not fail late on suspicious base config references"
-    );
-
-    // Overlays were unmounted and deactivation completed.
-    assert_eq!(
-        manager.lock().unwrap().current_state().unwrap(),
-        SystemState::Inactive,
-        "State should be Inactive after deactivation"
-    );
     let loaded = StateFile::load(&state_path).unwrap();
     assert_eq!(loaded.state, SystemState::Inactive);
     assert!(
@@ -1115,18 +1069,14 @@ fn test_deactivation_succeeds_when_base_config_dirty_after_unmount() {
     );
 }
 
-/// Base config cleanliness check is only required when /etc overlay was mounted.
+/// The same holds when `/etc` was never overlaid.
 #[test]
 #[serial]
 fn test_deactivation_skips_base_check_when_etc_not_overlaid() {
-    let (manager, fs_clone, _state_path, _temp_dir) = setup_active_with_home_overlay();
-
-    // Dirty base config should not block deactivation when /etc wasn't overlaid.
-    fs_clone.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs_clone.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs_clone.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
+    let (manager, _fs_clone, _state_path, _temp_dir) = setup_active_with_home_overlay();
+    let layer = use_scripted_nixos_layer(
+        &mut manager.lock().unwrap(),
+        FakeConfigLayer::new().with_base_reference(FakeVerdict::Fail("dirty base".into())),
     );
 
     let result = manager.lock().unwrap().emergency_deactivate();
@@ -1134,7 +1084,7 @@ fn test_deactivation_skips_base_check_when_etc_not_overlaid() {
         result.is_ok(),
         "Deactivation should succeed when /etc overlay was not mounted"
     );
-
+    assert!(layer.calls().is_empty(), "{:?}", layer.calls());
     assert_eq!(
         manager.lock().unwrap().current_state().unwrap(),
         SystemState::Inactive,
@@ -1144,7 +1094,7 @@ fn test_deactivation_skips_base_check_when_etc_not_overlaid() {
 
 /// Integration coverage:
 /// Full activation → deactivation cycle.
-/// After deactivation the base config view is clean (no hidden import).
+/// The hidden import lands only in the overlaid /etc, which deactivation removes.
 /// Uses Explicit mode with a /home overlay (avoids Auto-mode overlay discovery complexity).
 #[test]
 #[serial]
@@ -1156,27 +1106,6 @@ fn test_full_cycle_base_config_clean_after_deactivation() {
 
     // Mock NixOS system profile for deactivation
     setup_deactivation_system_profile(&fs);
-
-    // Base hardware config: clean (pre-condition)
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
-    );
-
-    // Hidden config prerequisites for stage_hidden_config_symlink
-    let hidden_config = mock_hidden_vol.join("config/nixos/configuration.nix");
-    std::fs::create_dir_all(hidden_config.parent().unwrap()).unwrap();
-    std::fs::write(&hidden_config, "{ }").unwrap();
-    fs.mock_set_path_exists(hidden_config.to_str().unwrap(), true);
-    fs.mock_set_file_content(hidden_config.to_str().unwrap(), "{ }");
-
-    let nails_dir = mock_hidden_vol.join("etc/nixos/nails");
-    std::fs::create_dir_all(&nails_dir).unwrap();
-    let symlink_path = nails_dir.join("configuration.nix");
-    fs.mock_set_path_exists(nails_dir.to_str().unwrap(), true);
-    fs.mock_set_path_exists(symlink_path.to_str().unwrap(), true);
 
     // Overlay dirs for /home and /etc
     let upper_home = mock_hidden_vol.join("overlays/home/upper");
@@ -1216,11 +1145,8 @@ fn test_full_cycle_base_config_clean_after_deactivation() {
         ..Config::test_default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs.clone(),
-        config,
-        state_path.clone(),
-    )));
+    let (manager, layer) = fake_nixos_manager(fs.clone(), config, state_path.clone());
+    let manager = Arc::new(Mutex::new(manager));
 
     // === Activate ===
     let activate_result = manager.lock().unwrap().activate(true);
@@ -1234,12 +1160,12 @@ fn test_full_cycle_base_config_clean_after_deactivation() {
         "Should be Active after activation"
     );
 
-    // Simulate post-deactivation view: base config is clean
-    // (In production, unmounting /etc overlay makes the base file visible again;
-    //  here we set the mock content directly since MockFs doesn't simulate overlay mechanics)
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
+    // Activation imported into the overlaid /etc (the only place the hidden
+    // import may land), after staging the hidden config.
+    let calls_after_activation = layer.calls();
+    assert!(
+        calls_after_activation.contains(&LayerCall::InjectImport { etc_mounted: true }),
+        "{calls_after_activation:?}"
     );
 
     // === Deactivate ===
@@ -1257,16 +1183,10 @@ fn test_full_cycle_base_config_clean_after_deactivation() {
         "State should be Inactive after deactivation"
     );
 
-    // Base config must still be clean (verify_base_config_clean passed)
-    let base_content = fs
-        .read_file_content(std::path::Path::new(
-            "/etc/nixos/hardware-configuration.nix",
-        ))
-        .unwrap();
-    assert!(
-        !base_content.contains("./nails/configuration.nix"),
-        "Base hardware-configuration.nix must remain clean after full cycle"
-    );
+    // Deactivation made no further layer call, and the /etc overlay holding
+    // the import is gone, so the base view is clean again.
+    assert_eq!(layer.calls(), calls_after_activation);
+    assert!(!fs.is_mounted(Path::new("/etc")).unwrap());
 }
 
 // ========== emergency_deactivate() on an untrusted (corrupt) state ==========

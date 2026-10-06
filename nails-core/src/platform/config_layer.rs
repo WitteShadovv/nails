@@ -497,6 +497,75 @@ mod tests {
     }
 }
 
+/// The NixOS layer's own steps against NixOS host fixtures. Manager tests drive
+/// the layer through a `FakeConfigLayer` instead; what the real layer writes and
+/// checks is pinned here.
+#[cfg(test)]
+mod nixos_layer_tests {
+    use super::*;
+    use crate::filesystem::{MockFilesystem, MockOp, PathKind};
+    use std::path::PathBuf;
+
+    const LIVE_HARDWARE: &str = "/etc/nixos/hardware-configuration.nix";
+
+    /// The import targets the overlaid live path; the hidden underlay copy of the
+    /// hardware configuration is never written.
+    #[test]
+    fn inject_import_targets_the_overlaid_path_not_the_underlay() {
+        let fs = MockFilesystem::new();
+        let clean = "{ config, lib, pkgs, ... }:\n{ }";
+        fs.mock_set_path_type(LIVE_HARDWARE, PathKind::File);
+        fs.mock_set_file_content(LIVE_HARDWARE, clean);
+        let underlay = PathBuf::from("/mnt/hidden/etc/nixos/hardware-configuration.nix");
+        fs.mock_set_path_type(underlay.to_str().unwrap(), PathKind::File);
+        fs.mock_set_file_content(underlay.to_str().unwrap(), clean);
+
+        ConfigLayer::<MockFilesystem>::inject_import(&NixOsConfigLayer, &fs).unwrap();
+
+        let live = fs.read_file_content(Path::new(LIVE_HARDWARE)).unwrap();
+        assert!(live.contains("./nails/configuration.nix"), "{live}");
+        assert_eq!(fs.read_file_content(&underlay).unwrap(), clean);
+        let ops = fs.mock_ops();
+        assert!(ops.contains(&MockOp::WriteFile {
+            path: PathBuf::from(LIVE_HARDWARE)
+        }));
+        assert!(!ops.contains(&MockOp::WriteFile { path: underlay }));
+    }
+
+    /// The layer's base-config gate refuses a base configuration that already
+    /// references the hidden environment, and passes a clean one.
+    #[test]
+    fn base_reference_check_refuses_a_dirty_base() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type(LIVE_HARDWARE, PathKind::File);
+        fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[Path::new(LIVE_HARDWARE)]);
+        let gate = ConfigLayer::<MockFilesystem>::base_reference_check(
+            &NixOsConfigLayer,
+            Path::new("/mnt/hidden"),
+        );
+        assert_eq!(gate.name(), "suspicious-nails-reference");
+
+        fs.mock_set_file_content(LIVE_HARDWARE, "{ config, lib, pkgs, ... }:\n{ }");
+        assert!(gate.run(&fs).unwrap().is_pass());
+
+        fs.mock_set_file_content(
+            LIVE_HARDWARE,
+            "{ imports = [ /mnt/hidden/nixos/configuration.nix ]; }",
+        );
+        assert!(gate.run(&fs).unwrap().is_fail());
+    }
+
+    #[test]
+    fn preflight_checks_validate_the_staged_hidden_config() {
+        let checks = ConfigLayer::<MockFilesystem>::preflight_checks(
+            &NixOsConfigLayer,
+            Path::new("/mnt/hidden"),
+        );
+        let names: Vec<_> = checks.iter().map(|check| check.name()).collect();
+        assert_eq!(names, vec!["nixos-config"]);
+    }
+}
+
 #[cfg(test)]
 mod plan_tests {
     use super::*;

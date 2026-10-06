@@ -370,12 +370,17 @@ mod tests {
     /// the requested device layout. `root` exists and is writable; `/` reports
     /// `slash_device` and `root` reports `root_device`. Returns the manager and a
     /// clone of its filesystem for assertions. Overlays are empty under explicit
-    /// mode so the overlay-target floor passes without extra setup.
+    /// mode so the overlay-target floor passes without extra setup. The host is a
+    /// NixOS fake whose config layer records every staging call, returned last.
     fn attach_gate_manager(
         root: &std::path::Path,
         root_device: u64,
         slash_device: u64,
-    ) -> (NailsManager<MockFilesystem>, MockFilesystem) {
+    ) -> (
+        NailsManager<MockFilesystem>,
+        MockFilesystem,
+        crate::platform::FakeConfigLayer,
+    ) {
         use std::path::Path;
         let fs = MockFilesystem::new();
         fs.mock_set_path_exists(root.to_str().unwrap(), true);
@@ -391,8 +396,12 @@ mod tests {
             ..Config::test_default()
         };
         let state_path = config.state_file_path.clone();
-        let manager = NailsManager::new(fs.clone(), config, state_path);
-        (manager, fs)
+        let mut manager = NailsManager::new(fs.clone(), config, state_path);
+        let layer = crate::platform::FakeConfigLayer::new();
+        manager.set_fake_platform(
+            crate::platform::FakePlatform::nixos().with_fake_config_layer(layer.clone()),
+        );
+        (manager, fs, layer)
     }
 
     /// A hidden root that shares `/`'s device is an unmounted mount point, not a
@@ -400,7 +409,7 @@ mod tests {
     #[test]
     fn attach_gate_rejects_a_root_that_shares_slash_device() {
         let root = std::path::PathBuf::from("/mnt/data");
-        let (manager, _fs) = attach_gate_manager(&root, 7, 7);
+        let (manager, _fs, _layer) = attach_gate_manager(&root, 7, 7);
 
         match manager.enforce_hidden_root_attached().unwrap_err() {
             NailsError::PreFlightCheckFailed(failures) => {
@@ -417,20 +426,19 @@ mod tests {
     #[test]
     fn attach_gate_accepts_a_root_on_its_own_device() {
         let root = std::path::PathBuf::from("/mnt/data");
-        let (manager, _fs) = attach_gate_manager(&root, 42, 7);
+        let (manager, _fs, _layer) = attach_gate_manager(&root, 42, 7);
         manager
             .enforce_hidden_root_attached()
             .expect("a root on its own device is attached");
     }
 
     /// A normal `activate` must refuse an unattached root before anything is
-    /// written: the preflight phase errors with `hidden-root` and no config is
-    /// staged into the hidden `/etc/nixos` tree.
+    /// written: the preflight phase errors with `hidden-root` and the config
+    /// layer stages nothing.
     #[test]
     fn preflight_phase_refuses_before_staging_when_root_is_unattached() {
         let root = std::path::PathBuf::from("/mnt/data");
-        let (manager, fs) = attach_gate_manager(&root, 7, 7);
-        let staged = root.join("etc/nixos/nails/configuration.nix");
+        let (manager, _fs, layer) = attach_gate_manager(&root, 7, 7);
 
         match manager
             .run_preflight_phase(false, true, Verbosity::Normal, false, false)
@@ -446,8 +454,9 @@ mod tests {
         }
 
         assert!(
-            !fs.is_symlink(&staged).unwrap(),
-            "no config may be staged onto an unattached hidden root"
+            layer.calls().is_empty(),
+            "no config may be staged onto an unattached hidden root: {:?}",
+            layer.calls()
         );
     }
 
@@ -456,169 +465,121 @@ mod tests {
     #[test]
     fn preflight_phase_skips_staging_for_unattached_root_under_no_preflight() {
         let root = std::path::PathBuf::from("/mnt/data");
-        let (manager, fs) = attach_gate_manager(&root, 7, 7);
-        let staged = root.join("etc/nixos/nails/configuration.nix");
+        let (manager, _fs, layer) = attach_gate_manager(&root, 7, 7);
 
         manager
             .run_preflight_phase(true, true, Verbosity::Normal, false, false)
             .expect("--no-preflight never fails the preflight phase");
 
         assert!(
-            !fs.is_symlink(&staged).unwrap(),
+            layer.calls().is_empty(),
             "an unattached root must not be staged even with --no-preflight"
         );
     }
 
     /// With `--no-preflight` and an attached root, staging proceeds: the gate's
-    /// positive branch is reached and the hidden config symlink is created. This
-    /// proves the skip above is the gate acting, not staging failing anyway. The
-    /// run is not overlay-only, because overlay-only is "no config layer" and so
-    /// stages nothing; with no detected host profile the manager assumes the NixOS
-    /// seam, so a config layer is present.
+    /// positive branch is reached and the layer stages the hidden config symlink.
+    /// This proves the skip above is the gate acting, not staging failing anyway.
+    /// The run is not overlay-only, because overlay-only is "no config layer" and
+    /// so stages nothing.
     #[test]
     fn preflight_phase_stages_for_attached_root_under_no_preflight() {
-        use crate::filesystem::PathKind;
+        use crate::platform::LayerCall;
 
         let root = std::path::PathBuf::from("/mnt/data");
-        let (manager, fs) = attach_gate_manager(&root, 42, 7);
+        let (manager, _fs, layer) = attach_gate_manager(&root, 42, 7);
 
-        // Pre-create the hidden layout dirs so staging only has to create the
-        // symlink; this keeps the test off the mock's parent-creation rules.
-        for dir in ["/mnt/data/config/nixos", "/mnt/data/etc/nixos/nails"] {
-            fs.mock_set_path_exists(dir, true);
-            fs.mock_set_path_type(dir, PathKind::Dir);
-            fs.mock_set_writable(dir, true);
-        }
-
-        let staged = root.join("etc/nixos/nails/configuration.nix");
         manager
             .run_preflight_phase(true, false, Verbosity::Normal, false, false)
             .expect("an attached root passes the preflight phase");
 
-        assert!(
-            fs.is_symlink(&staged).unwrap(),
-            "an attached root must be staged under --no-preflight"
-        );
+        assert_eq!(layer.calls(), vec![LayerCall::StageSymlink]);
     }
 
     /// Overlay-only activation is "no config layer", so the `--no-preflight` path
-    /// stages nothing even when the hidden root is attached: no `/etc/nixos`
-    /// symlink is created.
+    /// stages nothing even when the hidden root is attached.
     #[test]
     fn preflight_phase_overlay_only_stages_nothing_under_no_preflight() {
         let root = std::path::PathBuf::from("/mnt/data");
-        let (manager, fs) = attach_gate_manager(&root, 42, 7);
-        let staged = root.join("etc/nixos/nails/configuration.nix");
+        let (manager, _fs, layer) = attach_gate_manager(&root, 42, 7);
 
         manager
             .run_preflight_phase(true, true, Verbosity::Normal, false, false)
             .expect("overlay-only --no-preflight passes the preflight phase");
 
         assert!(
-            !fs.is_symlink(&staged).unwrap(),
+            layer.calls().is_empty(),
             "overlay-only is no config layer, so nothing may be staged"
         );
     }
 
     /// A Debian/FHS host has no config layer, so even a full (not overlay-only)
-    /// `--no-preflight` run stages nothing: no `/etc/nixos` symlink is created on
-    /// the attached hidden root.
+    /// `--no-preflight` run stages nothing on the attached hidden root.
     #[test]
     fn preflight_phase_fhs_host_stages_nothing() {
         let root = std::path::PathBuf::from("/mnt/data");
-        let (mut manager, fs) = attach_gate_manager(&root, 42, 7);
+        let (mut manager, _fs, layer) = attach_gate_manager(&root, 42, 7);
         manager.set_fake_platform(crate::platform::FakePlatform::fhs());
-        let staged = root.join("etc/nixos/nails/configuration.nix");
 
         manager
             .run_preflight_phase(true, false, Verbosity::Normal, false, false)
             .expect("an FHS host passes the preflight phase");
 
-        assert!(
-            !fs.is_symlink(&staged).unwrap(),
-            "an FHS host has no config layer, so nothing may be staged"
-        );
+        assert!(manager.config_layer().is_none());
+        assert!(layer.calls().is_empty());
     }
 
     /// The public pre-detach staging entry point stages through the config layer:
-    /// on the default NixOS seam (no detected profile) with an attached root it
-    /// creates the `/etc/nixos` symlink, matching the pre-flight phase's own gate.
+    /// a full (not overlay-only) stage, matching the pre-flight phase. What the
+    /// NixOS layer writes is covered by the `nixos::config` staging tests.
     #[test]
     fn stage_hidden_config_stages_on_nixos_seam() {
-        use crate::filesystem::PathKind;
+        use crate::platform::LayerCall;
 
         let root = std::path::PathBuf::from("/mnt/data");
-        let (manager, fs) = attach_gate_manager(&root, 42, 7);
-        for dir in [
-            "/mnt/data/config/nixos",
-            "/mnt/data/etc/nixos",
-            "/mnt/data/etc/nixos/nails",
-        ] {
-            fs.mock_set_path_exists(dir, true);
-            fs.mock_set_path_type(dir, PathKind::Dir);
-            fs.mock_set_writable(dir, true);
-        }
-        // Full staging (overlay_only = false) also seeds the hardware wrapper from
-        // the decoy hardware config, so it must be readable.
-        fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-        fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-        fs.mock_set_file_content(
-            "/etc/nixos/hardware-configuration.nix",
-            "{ config, lib, pkgs, ... }:\n{ }",
-        );
-        let staged = root.join("etc/nixos/nails/configuration.nix");
+        let (manager, _fs, layer) = attach_gate_manager(&root, 42, 7);
 
         manager
             .stage_hidden_config(false)
             .expect("staging succeeds on the NixOS seam");
 
-        assert!(
-            fs.is_symlink(&staged).unwrap(),
-            "the NixOS seam stages the hidden config symlink"
-        );
-        assert!(
-            fs.path_exists(&root.join("etc/nixos/hardware-configuration.nix"))
-                .unwrap(),
-            "the NixOS seam stages the hardware wrapper"
+        assert_eq!(
+            layer.calls(),
+            vec![LayerCall::Stage {
+                overlay_only: false
+            }]
         );
     }
 
     /// The pre-detach staging entry point skips entirely in overlay-only mode:
-    /// overlay-only is "no config layer", so nothing is written to `/etc/nixos`.
+    /// overlay-only is "no config layer", so nothing is staged.
     #[test]
     fn stage_hidden_config_skips_overlay_only() {
         let root = std::path::PathBuf::from("/mnt/data");
-        let (manager, fs) = attach_gate_manager(&root, 42, 7);
-        let staged = root.join("etc/nixos/nails/configuration.nix");
+        let (manager, _fs, layer) = attach_gate_manager(&root, 42, 7);
 
         manager
             .stage_hidden_config(true)
             .expect("overlay-only staging is a no-op that succeeds");
 
-        assert!(
-            !fs.is_symlink(&staged).unwrap(),
-            "overlay-only is no config layer, so nothing may be staged"
-        );
+        assert!(layer.calls().is_empty());
     }
 
     /// The pre-detach staging entry point skips on a Debian/FHS host: with no
-    /// config layer the hidden `/etc/nixos` tree is never touched, so the CLI
-    /// parent process stages nothing before detaching.
+    /// config layer nothing is staged, so the CLI parent process stages nothing
+    /// before detaching.
     #[test]
     fn stage_hidden_config_skips_on_fhs_host() {
         let root = std::path::PathBuf::from("/mnt/data");
-        let (mut manager, fs) = attach_gate_manager(&root, 42, 7);
+        let (mut manager, _fs, layer) = attach_gate_manager(&root, 42, 7);
         manager.set_fake_platform(crate::platform::FakePlatform::fhs());
-        let staged = root.join("etc/nixos/nails/configuration.nix");
 
         manager
             .stage_hidden_config(false)
             .expect("an FHS host stages nothing and succeeds");
 
-        assert!(
-            !fs.is_symlink(&staged).unwrap(),
-            "an FHS host has no config layer, so nothing may be staged"
-        );
+        assert!(manager.config_layer().is_none());
+        assert!(layer.calls().is_empty());
     }
 
     /// The matched patterns and the per-file results name the very commands this

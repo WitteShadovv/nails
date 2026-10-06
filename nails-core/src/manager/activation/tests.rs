@@ -161,11 +161,6 @@ fn test_explicit_nix_overlay_restores_nix_store_bind_mount() {
         )],
     );
     fs.mock_set_path_exists("/persist/nix/store", true);
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }: { imports = [ ./hardware-configuration.nix ]; }",
-    );
     fs.mock_set_path_exists(upper_dir.to_str().expect("upper str"), true);
     fs.mock_set_path_exists(work_dir.to_str().expect("work str"), true);
 
@@ -886,7 +881,7 @@ fn rebuild_space_manager(
     };
 
     let builder = NixOSBuilder::new_with_flake_ref(
-        "/etc/nixos#host".to_string(),
+        "/srv/flake#host".to_string(),
         PathBuf::from(hidden_root).join("nails-system"),
     );
 

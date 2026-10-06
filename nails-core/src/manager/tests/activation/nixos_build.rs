@@ -156,7 +156,6 @@ fn plan_manager(
 ) -> NailsManager<MockFilesystem> {
     use crate::NixOSBuilder;
 
-    setup_nixos_config_check(fs, hidden_root);
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_mount_should_fail("/home", true);
     fs.mock_set_path_exists("/", true);
