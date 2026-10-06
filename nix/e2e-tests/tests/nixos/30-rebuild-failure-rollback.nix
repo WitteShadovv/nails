@@ -79,8 +79,16 @@ in
     EOF""")
 
     def write_fixed_hidden_config():
+        # Import the decoy's own configuration so the fixed hidden system is the
+        # running decoy system plus one /etc file. Its closure is then already in
+        # the guest's (host-shared) store, so the offline `nixos-rebuild test` only
+        # realises that small delta — it never has to rebuild nixpkgs/stdenv from
+        # source, which with no substituters configured would fail. A bare module
+        # (no decoy import) evaluates a different system whose closure is not all
+        # present, which is what pulled in a full from-source bootstrap before.
         machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
     { ... }: {
+      imports = [ /etc/nixos/configuration.nix ];
       environment.etc."nails-hidden-marker".text = "present";
     }
     EOF""")

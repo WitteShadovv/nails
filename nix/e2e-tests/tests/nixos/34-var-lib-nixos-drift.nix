@@ -243,6 +243,30 @@ in
         machine.succeed("nix flake lock --offline /mnt/data/nixos")
         assert_state("Inactive", var_config)
 
+    with subtest("the seeded toplevel is what the guest computes (nothing left to build)"):
+        # The offline rebuild only works because the guest computes the *same*
+        # toplevel store path the host seeded into the store
+        # (virtualisation.additionalPaths). A divergence would make `nails activate`
+        # rebuild the whole closure from source with no substituters — long enough
+        # to blow the global timeout, whose only symptom is an opaque driver
+        # "[Errno 9] Bad file descriptor". Surface it here, fast: a dry-run
+        # evaluation of the toplevel must schedule no builds and no fetches.
+        toplevel_attr = (
+            "/mnt/data/nixos#nixosConfigurations.nails-e2e.config.system.build.toplevel"
+        )
+        rc, plan = machine.execute(
+            "nix build --dry-run --offline --impure --no-link "
+            + shlex.quote(toplevel_attr)
+            + " 2>&1"
+        )
+        print(f"nix build --dry-run of the hidden toplevel exited rc={rc}; plan follows:")
+        print(plan)
+        assert rc == 0, f"evaluating the hidden toplevel failed offline:\n{plan}"
+        assert "will be built" not in plan and "will be fetched" not in plan, (
+            "the seeded hidden toplevel does not match the guest-computed one, so "
+            f"the offline activation would rebuild from source:\n{plan}"
+        )
+
     control_drift = set()
     with subtest("control: a plain reboot without NAILS establishes the boot-noise drift"):
         baseline = snapshot_nixos_state()

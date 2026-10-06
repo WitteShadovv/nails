@@ -179,6 +179,27 @@ in
         assert_state("Inactive", headless_config)
         baseline_nixos_state = snapshot_nixos_state()
 
+    with subtest("the seeded toplevel is what the guest computes (nothing left to build)"):
+        # The offline rebuild only works because the guest computes the *same*
+        # toplevel store path the host seeded into the store
+        # (virtualisation.additionalPaths). If the two diverge, `nails activate`
+        # would rebuild the whole closure from source with no substituters — long
+        # enough to blow the global timeout, whose only symptom is an opaque driver
+        # "[Errno 9] Bad file descriptor". Surface any divergence here, fast: a
+        # dry-run evaluation of the toplevel must schedule no builds and no fetches.
+        rc, plan = machine.execute(
+            "nix build --dry-run --offline --impure --no-link "
+            + shlex.quote(toplevel_attr)
+            + " 2>&1"
+        )
+        print(f"nix build --dry-run of the hidden toplevel exited rc={rc}; plan follows:")
+        print(plan)
+        assert rc == 0, f"evaluating the hidden toplevel failed offline:\n{plan}"
+        assert "will be built" not in plan and "will be fetched" not in plan, (
+            "the seeded hidden toplevel does not match the guest-computed one, so "
+            f"the offline activation would rebuild from source:\n{plan}"
+        )
+
     first_toplevel = None
     with subtest("first activation builds the hidden toplevel offline and switches to it"):
         rc, out = run_capture(
