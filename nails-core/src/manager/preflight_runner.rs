@@ -350,7 +350,7 @@ impl<F: Filesystem> NailsManager<F> {
             discovered_target: self.discover_host_target(overlay_only)?,
             // Resolve the operator best-effort so the inherited-autostart check
             // can inspect the decoy state; an unresolved operator simply skips it.
-            operator: crate::TargetUser::resolve().ok(),
+            operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
             accept_persistent_decoy,
         };
 

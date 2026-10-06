@@ -35,7 +35,7 @@ impl<F: Filesystem> NailsManager<F> {
             return Ok(());
         }
 
-        let user = TargetUser::resolve()?;
+        let user = TargetUser::resolve_with(self.runtime_env())?;
         self.bind_persona_home_over(tracker, &user, verbosity)
     }
 

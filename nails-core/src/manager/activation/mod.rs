@@ -270,7 +270,7 @@ fn prepare_notification_autostart_before_session_restart<F: Filesystem>(manager:
     // Attach the operator so the autostart entry is written symlink-safe and
     // owned by them. If the operator cannot be resolved the integration still
     // runs, degrading to a best-effort root-owned write.
-    match crate::TargetUser::resolve() {
+    match crate::TargetUser::resolve_with(manager.runtime_env()) {
         Ok(user) => shell = shell.with_target_user(user),
         Err(e) => {
             tracing::warn!(
@@ -877,10 +877,12 @@ impl<F: Filesystem> NailsManager<F> {
         if crate::runtime_safety::should_skip_host_interaction() {
             return;
         }
-        let user = crate::TargetUser::resolve().ok().map(|user| SessionUser {
-            uid: user.uid,
-            name: user.name,
-        });
+        let user = crate::TargetUser::resolve_with(self.runtime_env())
+            .ok()
+            .map(|user| SessionUser {
+                uid: user.uid,
+                name: user.name,
+            });
         match push_pending(
             &self.config().hidden_volume_root,
             user.as_ref(),

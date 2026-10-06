@@ -138,11 +138,25 @@ impl TargetUser {
         }
     }
 
-    /// Resolve the target user from the real environment, passwd database and
-    /// logind. Returns an error when no source identifies an account; it never
-    /// falls back to root.
+    /// Resolve the target user from the given startup environment snapshot,
+    /// passwd database and logind. Returns an error when no source identifies an
+    /// account; it never falls back to root.
+    ///
+    /// The environment is taken from the [`RuntimeEnv`](crate::RuntimeEnv)
+    /// `main` captured once, not re-read here, so every subsystem that resolves
+    /// the operator agrees on the same escalation context.
+    pub fn resolve_with(env: &crate::RuntimeEnv) -> Result<TargetUser> {
+        resolve_from(env, &SystemPasswd, &SystemSessionOwner)
+    }
+
+    /// Resolve the target user from the live process environment.
+    ///
+    /// Equivalent to [`Self::resolve_with`] with a fresh
+    /// [`RuntimeEnv::from_process_env`](crate::RuntimeEnv::from_process_env).
+    /// Call sites that already hold the startup snapshot use
+    /// [`Self::resolve_with`] so the escalation context is read exactly once.
     pub fn resolve() -> Result<TargetUser> {
-        resolve_from(&SystemEnv, &SystemPasswd, &SystemSessionOwner)
+        Self::resolve_with(&crate::RuntimeEnv::from_process_env())
     }
 
     /// Resolve using injected sources. Available to unit tests so they can drive
@@ -242,6 +256,12 @@ pub(crate) trait EnvSource {
     fn var(&self, key: &str) -> Option<String>;
 }
 
+impl EnvSource for crate::RuntimeEnv {
+    fn var(&self, key: &str) -> Option<String> {
+        self.lookup(key).map(str::to_string)
+    }
+}
+
 /// Passwd-database lookup, injectable for tests.
 pub(crate) trait PasswdSource {
     fn by_uid(&self, uid: u32) -> Option<PasswdEntry>;
@@ -251,14 +271,6 @@ pub(crate) trait PasswdSource {
 /// Active-session owner lookup, injectable for tests.
 pub(crate) trait SessionOwnerSource {
     fn seat0_active_uid(&self) -> Option<u32>;
-}
-
-struct SystemEnv;
-
-impl EnvSource for SystemEnv {
-    fn var(&self, key: &str) -> Option<String> {
-        std::env::var(key).ok()
-    }
 }
 
 struct SystemPasswd;

@@ -164,6 +164,14 @@ pub struct NailsManager<F: Filesystem> {
     /// the CLI replaces it with the surface-specific reporter (terminal spinner,
     /// plain lines, JSON events, or silent when detached).
     reporter: crate::reporter::progress::SharedReporter,
+
+    /// The startup environment snapshot (`HOME`, the escalation variables, the
+    /// display/session variables, the NAILS_* knobs). The CLI reads it once in
+    /// `main` and attaches it with [`with_runtime_env`](Self::with_runtime_env);
+    /// activation reads the operator and session off it instead of re-reading the
+    /// process environment. Defaults to a fresh snapshot so every constructor and
+    /// test keeps working; tests inject a built [`RuntimeEnv`](crate::RuntimeEnv).
+    runtime_env: crate::RuntimeEnv,
 }
 
 // Manual Debug implementation because NixOSBuilder contains trait objects
@@ -228,6 +236,7 @@ impl<F: Filesystem> NailsManager<F> {
             verbosity: crate::verbosity::Verbosity::default(),
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
             reporter: crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
+            runtime_env: crate::RuntimeEnv::from_process_env(),
         }
     }
 
@@ -281,6 +290,7 @@ impl<F: Filesystem> NailsManager<F> {
             verbosity: crate::verbosity::Verbosity::default(),
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
             reporter: crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
+            runtime_env: crate::RuntimeEnv::from_process_env(),
         }
     }
 
@@ -585,6 +595,22 @@ impl<F: Filesystem> NailsManager<F> {
     /// Reference to the configuration
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    /// Attach the startup environment snapshot the CLI read once in `main`.
+    ///
+    /// Activation resolves the operator and session off this snapshot (via
+    /// [`runtime_env`](Self::runtime_env)) instead of re-reading the process
+    /// environment, so every subsystem agrees on one set of values.
+    #[must_use]
+    pub fn with_runtime_env(mut self, runtime_env: crate::RuntimeEnv) -> Self {
+        self.runtime_env = runtime_env;
+        self
+    }
+
+    /// The attached startup environment snapshot.
+    pub fn runtime_env(&self) -> &crate::RuntimeEnv {
+        &self.runtime_env
     }
 
     /// The outcome of the most recent activation-scope overlay rollback.
