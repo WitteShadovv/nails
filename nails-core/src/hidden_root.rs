@@ -139,13 +139,17 @@ impl HiddenRoot {
 ///
 /// Integration tests exercise the real write paths against a temp directory,
 /// which shares `/`'s device, so they could never look attached. When this build
-/// carries the test hooks *and* `NAILS_TEST_FORCE_ATTACHED` is set, the device
-/// comparison is skipped and existence (plus any required marker) decides. The
-/// hook is compiled out of release builds entirely, so production always runs
-/// the real device check regardless of the environment.
+/// carries the test hooks *and* `NAILS_TEST_FORCE_ATTACHED` was set in the
+/// installed startup snapshot, the device comparison is skipped and existence
+/// (plus any required marker) decides. The hook is compiled out of release builds
+/// entirely, so production always runs the real device check regardless of the
+/// environment.
 #[cfg(any(test, feature = "test-hooks"))]
 fn attach_device_check_bypassed() -> bool {
-    std::env::var_os("NAILS_TEST_FORCE_ATTACHED").is_some()
+    crate::runtime_env::current()
+        .test_hooks
+        .force_attached
+        .is_some()
 }
 
 #[cfg(not(any(test, feature = "test-hooks")))]

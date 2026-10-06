@@ -7,7 +7,6 @@ use std::sync::{Arc, Mutex};
 use super::{StdoutFormat, logging_init_line};
 use crate::cli::output::OutputSettings;
 use nails_core::Verbosity;
-use nails_core::test_support::EnvGuard;
 
 #[derive(Clone, Default)]
 struct SharedBuffer(Arc<Mutex<Vec<u8>>>);
@@ -183,14 +182,14 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
         // which every temp directory does. The test binary is built with the
         // attach-gate test hook compiled in, so this env var makes the gate skip
         // the device comparison and judge the temp root attached by existence
-        // alone, exercising the real file-logging path.
+        // alone, exercising the real file-logging path. The child reads it into
+        // its startup snapshot, as `main` does.
         .env("NAILS_TEST_FORCE_ATTACHED", "1");
 
     if let Some(path) = config_path {
         command.env("NAILS_LOGGING_SUBPROCESS_CONFIG", path);
     }
 
-    let _env = EnvGuard::lock();
     command
         .output()
         .expect("failed to run logging subprocess test")
@@ -201,6 +200,10 @@ fn subprocess_logging_entrypoint() {
     let Ok(case) = std::env::var("NAILS_LOGGING_SUBPROCESS_CASE") else {
         return;
     };
+
+    // Stand in for the CLI entry point: read the environment the parent prepared
+    // once and install it for the leaf helpers (the attach gate among them).
+    nails_core::runtime_env::install(nails_core::RuntimeEnv::from_process_env());
 
     let config_override =
         std::env::var_os("NAILS_LOGGING_SUBPROCESS_CONFIG").map(std::path::PathBuf::from);
@@ -458,7 +461,7 @@ fn emit_logging_init_message_no_color_error_uses_unicode_without_ansi() {
 // covered deterministically by the subprocess file-layer tests above, which can
 // set NAILS_TEST_FORCE_ATTACHED per child process. An in-process equivalent
 // cannot: a temp directory may or may not share `/`'s device depending on the
-// host, and mutating the environment from one test thread would race the others.
+// host.
 
 #[test]
 fn init_file_layer_gracefully_returns_none_for_missing_hidden_volume() {

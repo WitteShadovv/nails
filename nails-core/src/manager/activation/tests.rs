@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::gate::ActivationGateTestGuard;
 use super::maybe_block_after_activating_state_transition;
 use super::step_progress::StepProgress;
 use super::{
@@ -12,7 +11,6 @@ use super::{
 use crate::DecoyWriter;
 use crate::Verbosity;
 use crate::overlay::SurvivingWriter;
-use crate::test_support::EnvGuard;
 use crate::{
     Config, Filesystem, MockFilesystem, NailsError, NailsManager, OverlayConfig, SystemState,
 };
@@ -21,20 +19,13 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Takes the environment lock with the activation gate variables pointing at
-/// the given paths, or removed when `None`; dropping the guard restores them.
-fn activation_gate_env(gate_path: Option<&Path>, entered_path: Option<&Path>) -> EnvGuard {
-    let mut env = EnvGuard::lock();
-    for (key, value) in [
-        ("NAILS_TEST_ACTIVATING_GATE_PATH", gate_path),
-        ("NAILS_TEST_ACTIVATING_ENTERED_PATH", entered_path),
-    ] {
-        match value {
-            Some(path) => env.set(key, path),
-            None => env.remove(key),
-        };
-    }
-    env
+/// A snapshot arming the activation gate at the given paths (unarmed for `None`).
+fn activation_gate_env(gate_path: Option<&Path>, entered_path: Option<&Path>) -> crate::RuntimeEnv {
+    crate::RuntimeEnv::empty().with_test_hooks(crate::runtime_env::TestHooks {
+        activating_gate_path: gate_path.map(Path::to_path_buf),
+        activating_entered_path: entered_path.map(Path::to_path_buf),
+        ..Default::default()
+    })
 }
 
 fn spawn_gate_releaser(gate_path: PathBuf, entered_path: PathBuf) -> std::thread::JoinHandle<()> {
@@ -56,24 +47,22 @@ fn spawn_gate_releaser(gate_path: PathBuf, entered_path: PathBuf) -> std::thread
 #[test]
 #[serial]
 fn test_activation_gate_returns_immediately_when_disabled() {
-    let _gate_guard = ActivationGateTestGuard::enable();
-    let _env = activation_gate_env(None, None);
+    let env = activation_gate_env(None, None);
 
-    assert!(maybe_block_after_activating_state_transition().is_ok());
+    assert!(maybe_block_after_activating_state_transition(&env).is_ok());
 }
 
 #[test]
 #[serial]
 fn test_activation_gate_writes_default_entered_marker() {
-    let _gate_guard = ActivationGateTestGuard::enable();
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("activation.gate");
     let entered_path = PathBuf::from(format!("{}.entered", gate_path.display()));
     std::fs::write(&gate_path, []).expect("gate file");
-    let _env = activation_gate_env(Some(&gate_path), None);
+    let env = activation_gate_env(Some(&gate_path), None);
 
     let releaser = spawn_gate_releaser(gate_path.clone(), entered_path.clone());
-    maybe_block_after_activating_state_transition().expect("gate should be released");
+    maybe_block_after_activating_state_transition(&env).expect("gate should be released");
     releaser.join().expect("releaser thread should finish");
 
     assert!(
@@ -86,15 +75,14 @@ fn test_activation_gate_writes_default_entered_marker() {
 #[test]
 #[serial]
 fn test_activation_gate_writes_custom_entered_marker_and_creates_parent_dirs() {
-    let _gate_guard = ActivationGateTestGuard::enable();
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("activation.gate");
     let entered_path = temp_dir.path().join("nested/markers/entered.marker");
     std::fs::write(&gate_path, []).expect("gate file");
-    let _env = activation_gate_env(Some(&gate_path), Some(&entered_path));
+    let env = activation_gate_env(Some(&gate_path), Some(&entered_path));
 
     let releaser = spawn_gate_releaser(gate_path.clone(), entered_path.clone());
-    maybe_block_after_activating_state_transition().expect("gate should be released");
+    maybe_block_after_activating_state_transition(&env).expect("gate should be released");
     releaser.join().expect("releaser thread should finish");
 
     assert!(
@@ -110,29 +98,27 @@ fn test_activation_gate_writes_custom_entered_marker_and_creates_parent_dirs() {
 #[test]
 #[serial]
 fn test_activation_gate_reports_directory_creation_failures() {
-    let _gate_guard = ActivationGateTestGuard::enable();
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let blocker = temp_dir.path().join("not-a-directory");
     let gate_path = temp_dir.path().join("activation.gate");
     let entered_path = blocker.join("entered.marker");
     std::fs::write(&blocker, b"blocker").expect("blocker file");
-    let _env = activation_gate_env(Some(&gate_path), Some(&entered_path));
+    let env = activation_gate_env(Some(&gate_path), Some(&entered_path));
 
-    let err = maybe_block_after_activating_state_transition().expect_err("should fail");
+    let err = maybe_block_after_activating_state_transition(&env).expect_err("should fail");
     assert!(matches!(err, NailsError::NixOSError(_)), "{err:?}");
 }
 
 #[test]
 #[serial]
 fn test_activation_gate_reports_marker_write_failures() {
-    let _gate_guard = ActivationGateTestGuard::enable();
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("activation.gate");
     let entered_path = temp_dir.path().join("entered-directory");
     std::fs::create_dir_all(&entered_path).expect("entered dir");
-    let _env = activation_gate_env(Some(&gate_path), Some(&entered_path));
+    let env = activation_gate_env(Some(&gate_path), Some(&entered_path));
 
-    let err = maybe_block_after_activating_state_transition().expect_err("should fail");
+    let err = maybe_block_after_activating_state_transition(&env).expect_err("should fail");
     assert!(matches!(err, NailsError::NixOSError(_)), "{err:?}");
 }
 

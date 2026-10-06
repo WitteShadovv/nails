@@ -3,18 +3,29 @@
 
 use super::process_teardown::merge_protected_pids;
 use super::reboot::{
-    PostDeactivationReboot, REBOOT_BINARY_OVERRIDE_ENV, SYSTEMCTL_REBOOT_OVERRIDE_ENV,
-    dispatch_reboot_candidates, reboot_candidates, reboot_then_restore_decoy_on_failure,
-    request_reboot,
+    PostDeactivationReboot, dispatch_reboot_candidates, reboot_candidates,
+    reboot_then_restore_decoy_on_failure, request_reboot,
 };
-use crate::NailsError;
 use crate::nixos::SwitchAction;
-use crate::test_support::EnvGuard;
+use crate::runtime_env::TestHooks;
+use crate::{NailsError, RuntimeEnv};
 use serial_test::serial;
 use std::cell::Cell;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+
+/// A snapshot carrying the fake `systemctl` and `reboot` paths.
+fn reboot_overrides(
+    systemctl: Option<&std::path::Path>,
+    reboot: Option<&std::path::Path>,
+) -> RuntimeEnv {
+    RuntimeEnv::empty().with_test_hooks(TestHooks {
+        systemctl_path: systemctl.map(|path| path.as_os_str().to_os_string()),
+        reboot_path: reboot.map(|path| path.as_os_str().to_os_string()),
+        ..TestHooks::default()
+    })
+}
 
 fn write_executable_script(path: &std::path::Path, body: &str) {
     fs::write(path, body).expect("write test script");
@@ -38,11 +49,9 @@ fn request_reboot_uses_configured_systemctl_override() {
         ),
     );
 
-    let mut env = EnvGuard::lock();
-    env.set(SYSTEMCTL_REBOOT_OVERRIDE_ENV, &systemctl)
-        .remove(REBOOT_BINARY_OVERRIDE_ENV);
+    let env = reboot_overrides(Some(&systemctl), None);
 
-    dispatch_reboot_candidates(reboot_candidates()).expect("override systemctl should be used");
+    dispatch_reboot_candidates(reboot_candidates(&env)).expect("override systemctl should be used");
 
     assert_eq!(fs::read_to_string(marker).unwrap(), "reboot");
 }
@@ -64,11 +73,9 @@ fn request_reboot_falls_back_to_override_reboot_binary_when_systemctl_fails() {
         &format!("#!/usr/bin/env bash\n: > '{}'\nexit 0\n", marker.display()),
     );
 
-    let mut env = EnvGuard::lock();
-    env.set(SYSTEMCTL_REBOOT_OVERRIDE_ENV, &systemctl)
-        .set(REBOOT_BINARY_OVERRIDE_ENV, &reboot);
+    let env = reboot_overrides(Some(&systemctl), Some(&reboot));
 
-    dispatch_reboot_candidates(reboot_candidates()).expect("reboot fallback should succeed");
+    dispatch_reboot_candidates(reboot_candidates(&env)).expect("reboot fallback should succeed");
 
     assert!(marker.exists(), "reboot fallback should have been invoked");
 }
@@ -76,7 +83,8 @@ fn request_reboot_falls_back_to_override_reboot_binary_when_systemctl_fails() {
 #[test]
 #[serial]
 fn request_reboot_fails_closed_in_test_runtime() {
-    let err = request_reboot().expect_err("request_reboot must be blocked in tests");
+    let err =
+        request_reboot(&RuntimeEnv::empty()).expect_err("request_reboot must be blocked in tests");
     assert!(matches!(err, NailsError::RebootFailed(_)), "{err:?}");
 }
 
@@ -91,11 +99,9 @@ fn reboot_override_never_falls_back_to_real_host_commands() {
         "#!/usr/bin/env bash\nprintf 'override failed\n' >&2\nexit 1\n",
     );
 
-    let mut env = EnvGuard::lock();
-    env.set(SYSTEMCTL_REBOOT_OVERRIDE_ENV, &broken_systemctl)
-        .remove(REBOOT_BINARY_OVERRIDE_ENV);
+    let env = reboot_overrides(Some(&broken_systemctl), None);
 
-    let err = dispatch_reboot_candidates(reboot_candidates())
+    let err = dispatch_reboot_candidates(reboot_candidates(&env))
         .expect_err("broken override must not fall back to host binaries");
     assert!(matches!(&err, NailsError::RebootFailed(_)), "{err:?}");
     // Behaviour: the override's own failure is surfaced, proving no fallback to

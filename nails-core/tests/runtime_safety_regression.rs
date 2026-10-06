@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use nails_core::test_support::EnvGuard;
+use nails_core::RuntimeEnv;
+use nails_core::runtime_env::{ScopedRuntimeEnv, TestHooks};
 use nails_core::{
     ProcessInfo, SessionContext, SessionKind, detect_processes_using,
     prompt_pivot_mount_acceptance, prompt_risky_process_restart, prompt_session_kill_confirmation,
@@ -15,12 +16,13 @@ const SUBPROCESS_TEST_NAME: &str = "subprocess_runtime_safety_entrypoint";
 ///
 /// The runtime-safety skip is no longer inferred from the executable's path; a
 /// build carrying the test hooks honours it only when `NAILS_TEST_RUNTIME` is
-/// set. The guard sets it under the environment lock and restores it afterwards,
-/// so no other test depends on whether this one ran first.
-fn test_runtime_env() -> EnvGuard {
-    let mut env = EnvGuard::lock();
-    env.set("NAILS_TEST_RUNTIME", "1");
-    env
+/// set in the startup snapshot. The guard scopes such a snapshot to this test's
+/// thread, so no other test depends on whether this one ran first.
+fn test_runtime_env() -> ScopedRuntimeEnv {
+    ScopedRuntimeEnv::new(RuntimeEnv::empty().with_test_hooks(TestHooks {
+        test_runtime: Some("1".into()),
+        ..TestHooks::default()
+    }))
 }
 
 fn run_subprocess(case: &str) -> std::process::Output {
@@ -108,6 +110,10 @@ fn subprocess_runtime_safety_entrypoint() {
     let Ok(case) = std::env::var("NAILS_RUNTIME_SAFETY_SUBPROCESS_CASE") else {
         return;
     };
+
+    // Stand in for the CLI entry point: read the environment the parent prepared
+    // once and install it for the leaf helpers.
+    nails_core::runtime_env::install(RuntimeEnv::from_process_env());
 
     match case.as_str() {
         "explicit-test-runtime" => {

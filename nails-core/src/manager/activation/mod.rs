@@ -614,7 +614,7 @@ impl<F: Filesystem> NailsManager<F> {
         // Record the graphical session we took over (if any) so emergency teardown
         // can end the same logind session and bring its display manager back.
         guard.record_hidden_session(&restart_plan);
-        maybe_block_after_activating_state_transition()?;
+        maybe_block_after_activating_state_transition(guard.runtime_env())?;
 
         // Step 6: Compute the hidden configuration metadata (no rebuild yet). The
         // call is cheap and returns nothing to apply off NixOS, but its progress

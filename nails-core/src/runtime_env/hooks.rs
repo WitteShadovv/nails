@@ -16,8 +16,9 @@
 //! This module only exists in builds that carry the `test-hooks` feature (and
 //! this crate's own unit tests); a shipped binary carries none of these names.
 
+use crate::{NailsError, Result};
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The test-only override knobs, each the verbatim value of its variable.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -87,9 +88,89 @@ impl TestHooks {
     }
 }
 
+/// Block while an armed test gate file exists.
+///
+/// Writes the `entered` marker (defaulting to `<gate>.entered`) so the harness
+/// knows the run reached the gate, then waits until the harness removes the gate
+/// file. A no-op when no gate is armed. `label` names the run in errors;
+/// `engaged` is the log line written when the gate engages.
+pub(crate) fn wait_at_gate(
+    gate: Option<&Path>,
+    entered: Option<&Path>,
+    label: &str,
+    engaged: &str,
+) -> Result<()> {
+    let Some(gate_path) = gate else {
+        return Ok(());
+    };
+    let entered_path = entered
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(format!("{}.entered", gate_path.display())));
+
+    if let Some(parent) = entered_path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            NailsError::NixOSError(format!(
+                "Failed to prepare {label} test marker directory {}: {}",
+                parent.display(),
+                e
+            ))
+        })?;
+    }
+
+    std::fs::write(&entered_path, []).map_err(|e| {
+        NailsError::NixOSError(format!(
+            "Failed to write {label} test marker {}: {}",
+            entered_path.display(),
+            e
+        ))
+    })?;
+
+    tracing::info!(
+        gate_path = %gate_path.display(),
+        entered_path = %entered_path.display(),
+        "{engaged}"
+    );
+
+    while gate_path.exists() {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unarmed_gate_returns_immediately() {
+        wait_at_gate(None, None, "activation", "engaged").unwrap();
+    }
+
+    #[test]
+    fn armed_gate_writes_marker_and_waits_for_release() {
+        let dir = tempfile::tempdir().unwrap();
+        let gate = dir.path().join("gate");
+        std::fs::write(&gate, []).unwrap();
+        let entered = dir.path().join("sub/entered");
+
+        let gate_for_thread = gate.clone();
+        let entered_for_thread = entered.clone();
+        let handle = std::thread::spawn(move || {
+            wait_at_gate(
+                Some(&gate_for_thread),
+                Some(&entered_for_thread),
+                "activation",
+                "engaged",
+            )
+        });
+
+        while !entered.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::fs::remove_file(&gate).unwrap();
+        handle.join().unwrap().unwrap();
+    }
 
     #[test]
     fn unsafe_real_ops_requires_exactly_one() {

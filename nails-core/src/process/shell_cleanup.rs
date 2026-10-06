@@ -17,7 +17,8 @@ use std::path::Path;
 const SHELL_NAMES: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh"];
 
 /// Service-scoped shell processes that must never be killed, named by the E2E
-/// harness through a test-hooks-only environment variable.
+/// harness through a test-hooks-only knob (`NAILS_SHELL_CLEANUP_PROTECTED_SERVICES`,
+/// read from the installed startup snapshot).
 ///
 /// The NixOS test-driver guest agent (its unit carries the test harness
 /// connection) must survive cleanup for emergency E2E validation to work, but it
@@ -25,7 +26,10 @@ const SHELL_NAMES: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh
 /// services and read no such variable: the whole mechanism is compiled out.
 #[cfg(all(not(test), feature = "test-hooks"))]
 fn protected_service_names() -> Vec<String> {
-    std::env::var("NAILS_SHELL_CLEANUP_PROTECTED_SERVICES")
+    crate::runtime_env::current()
+        .test_hooks
+        .shell_cleanup_protected_services
+        .as_deref()
         .map(|value| {
             value
                 .split(',')

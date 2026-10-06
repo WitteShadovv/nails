@@ -32,6 +32,8 @@ mod installed;
 mod hooks;
 
 #[cfg(any(test, feature = "test-hooks"))]
+pub(crate) use hooks::wait_at_gate;
+#[cfg(any(test, feature = "test-hooks"))]
 pub use hooks::{SHELL_CLEANUP_PROTECTED_PIDS_ENV, SYSTEMD_RUN_PATH_ENV, TestHooks};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use installed::ScopedRuntimeEnv;

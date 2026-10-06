@@ -9,15 +9,12 @@
 //! real HOME. History cleanup in this crate's tests resolves to that fixed home,
 //! never to the invoking account's, so no test can touch real history files.
 
-use super::test_gate::{
-    DeactivationGateTestGuard, maybe_block_after_deactivating_state_transition,
-};
+use super::test_gate::maybe_block_after_deactivating_state_transition;
 use super::{DeactivationReport, PostUnmountCleanupReport};
 use crate::DeactivationOrchestrator;
 use crate::cleanup::test_utils::{TEST_HOME, assert_path_is_safe};
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 use crate::filesystem::{Filesystem, PathKind};
-use crate::test_support::EnvGuard;
 use crate::{
     CleanupConfig, CleanupMode, CleanupReport, Config, MockFilesystem, NailsError, NailsManager,
     StateFile, SystemState,
@@ -36,20 +33,16 @@ fn logs_contain(s: &str) -> bool {
     tracing_test::internal::logs_with_scope_contain("", s)
 }
 
-/// Takes the environment lock with the deactivation gate variables pointing at
-/// the given paths, or removed when `None`; dropping the guard restores them.
-fn deactivation_gate_env(gate_path: Option<&Path>, entered_path: Option<&Path>) -> EnvGuard {
-    let mut env = EnvGuard::lock();
-    for (key, value) in [
-        ("NAILS_TEST_DEACTIVATING_GATE_PATH", gate_path),
-        ("NAILS_TEST_DEACTIVATING_ENTERED_PATH", entered_path),
-    ] {
-        match value {
-            Some(path) => env.set(key, path),
-            None => env.remove(key),
-        };
-    }
-    env
+/// A snapshot arming the deactivation gate at the given paths (unarmed for `None`).
+fn deactivation_gate_env(
+    gate_path: Option<&Path>,
+    entered_path: Option<&Path>,
+) -> crate::RuntimeEnv {
+    crate::RuntimeEnv::empty().with_test_hooks(crate::runtime_env::TestHooks {
+        deactivating_gate_path: gate_path.map(Path::to_path_buf),
+        deactivating_entered_path: entered_path.map(Path::to_path_buf),
+        ..Default::default()
+    })
 }
 
 fn spawn_deactivation_gate_releaser(

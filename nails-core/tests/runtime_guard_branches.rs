@@ -1,10 +1,11 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use nails_core::RuntimeEnv;
 use nails_core::notification::{Notification, dispatch_all, write_notification};
 use nails_core::overlay::{OverlayStrategyOptions, mount_overlay_with_strategy};
 use nails_core::process::{ProcessInfo, detect_processes_using};
-use nails_core::test_support::EnvGuard;
+use nails_core::runtime_env::{ScopedRuntimeEnv, TestHooks};
 use nails_core::{
     MockFilesystem, prompt_pivot_mount_acceptance, prompt_risky_process_restart, prompt_yes_no,
 };
@@ -21,10 +22,11 @@ use std::process::Command;
 /// is now keyed on `NAILS_TEST_RUNTIME` rather than the executable path. The
 /// subprocess tests that exercise the real path strip the variable from the
 /// child, so the opt-in never leaks into them.
-fn test_runtime_env() -> EnvGuard {
-    let mut env = EnvGuard::lock();
-    env.set("NAILS_TEST_RUNTIME", "1");
-    env
+fn test_runtime_env() -> ScopedRuntimeEnv {
+    ScopedRuntimeEnv::new(RuntimeEnv::empty().with_test_hooks(TestHooks {
+        test_runtime: Some("1".into()),
+        ..TestHooks::default()
+    }))
 }
 
 fn sample_process() -> ProcessInfo {

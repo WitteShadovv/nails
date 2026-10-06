@@ -10,13 +10,9 @@
 use super::ManagerDeactivationKind;
 use std::path::{Path, PathBuf};
 
-// The protected-PID handoff is a test-only injection point; nothing sets it in
-// production, so it is compiled in only alongside the other hooks.
-#[cfg(all(not(test), feature = "test-hooks"))]
-pub(super) const SHELL_CLEANUP_PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PIDS";
-
 /// Merge this process's ancestry with any PIDs handed across the `systemd-run`
-/// boundary by the detached invocation (via `SHELL_CLEANUP_PROTECTED_PIDS_ENV`),
+/// boundary by the detached invocation (via `NAILS_SHELL_CLEANUP_PROTECTED_PIDS`,
+/// a test-only injection point nothing sets in production),
 /// de-duplicating while preserving order.
 ///
 /// The merged set is the shells that must survive deactivation: the process
@@ -44,13 +40,17 @@ pub(super) fn merge_protected_pids(
 /// handoff set. Computed once per deactivation and passed explicitly to
 /// [`kill_user_shells`], replacing the previous global environment variable.
 #[cfg(not(test))]
-pub(super) fn collect_protected_shell_pids() -> Vec<u32> {
-    // The handoff env var exists only in test-hooks builds; shipped builds protect
-    // the teardown's own process tree and nothing else.
+pub(super) fn collect_protected_shell_pids(env: &crate::RuntimeEnv) -> Vec<u32> {
+    // The handoff knob exists only in test-hooks builds (read from the startup
+    // snapshot); shipped builds protect the teardown's own process tree and
+    // nothing else.
     #[cfg(feature = "test-hooks")]
-    let handoff = std::env::var_os(SHELL_CLEANUP_PROTECTED_PIDS_ENV);
+    let handoff = env.test_hooks.shell_cleanup_protected_pids.clone();
     #[cfg(not(feature = "test-hooks"))]
-    let handoff: Option<std::ffi::OsString> = None;
+    let handoff: Option<std::ffi::OsString> = {
+        let _ = env;
+        None
+    };
 
     let mut protected = merge_protected_pids(current_process_ancestry(), handoff.as_deref());
 

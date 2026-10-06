@@ -606,7 +606,7 @@ impl<F: Filesystem> NailsManager<F> {
         let cleanup_config = build_cleanup_config(self, kind);
 
         #[cfg(not(test))]
-        if should_skip_shell_cleanup_before_deactivation_gate() {
+        if should_skip_shell_cleanup_before_deactivation_gate(self.runtime_env()) {
             tracing::info!(
                 "Skipping pre-unmount shell cleanup because the deactivation test gate is armed"
             );
@@ -614,7 +614,7 @@ impl<F: Filesystem> NailsManager<F> {
             tracing::info!(
                 "Killing every interactive shell (including root's) immediately before overlay teardown"
             );
-            let protected = process_teardown::collect_protected_shell_pids();
+            let protected = process_teardown::collect_protected_shell_pids(self.runtime_env());
             // Teardown kills root's decoy shell too, so its in-memory history is
             // never flushed; only the teardown's own invocation stays protected —
             // its ancestry plus any sibling sharing its session or process group,
@@ -851,7 +851,7 @@ impl<F: Filesystem> NailsManager<F> {
     pub fn run_post_teardown_power(&self, action: PostTeardownPower) -> Result<bool> {
         let host_effects = self.host_effects.clone();
         Ok(matches!(
-            host_effects.run_post_teardown_power(action)?,
+            host_effects.run_post_teardown_power(action, self.runtime_env())?,
             reboot::PowerDispatch::Dispatched
         ))
     }

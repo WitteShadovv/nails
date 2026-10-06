@@ -3,7 +3,6 @@
 
 use super::*;
 use nails_core::filesystem::PathKind;
-use nails_core::test_support::EnvGuard;
 use nails_core::{
     Config, Filesystem, MockFilesystem, NailsManager, StateFile, SystemState,
     stage_hidden_nixos_config,
@@ -16,15 +15,18 @@ use tempfile::TempDir;
 /// Opt the calling test into test-runtime mode until the guard is dropped.
 ///
 /// `nails-core` is linked here as a plain dependency, so its `cfg(test)` is not
-/// active and the runtime-safety skip is keyed solely on `NAILS_TEST_RUNTIME`.
-/// Tests that drive a real activation (and therefore the host preflight checks)
-/// set it so those checks are bypassed, exactly as the E2E harness does. It is
-/// scoped to the test rather than set once for the binary, so no other test's
-/// behaviour depends on whether an init test happened to run before it.
-fn test_runtime_env() -> EnvGuard {
-    let mut env = EnvGuard::lock();
-    env.set("NAILS_TEST_RUNTIME", "1");
-    env
+/// active and the runtime-safety skip is keyed solely on `NAILS_TEST_RUNTIME` in
+/// the startup snapshot. Tests that drive a real activation (and therefore the
+/// host preflight checks) set it so those checks are bypassed, exactly as the
+/// E2E harness does. The snapshot is scoped to the test's own thread, so no
+/// other test's behaviour depends on whether an init test happened to run first.
+fn test_runtime_env() -> nails_core::runtime_env::ScopedRuntimeEnv {
+    nails_core::runtime_env::ScopedRuntimeEnv::new(nails_core::RuntimeEnv::empty().with_test_hooks(
+        nails_core::runtime_env::TestHooks {
+            test_runtime: Some("1".into()),
+            ..Default::default()
+        },
+    ))
 }
 
 fn write_test_base_hardware_config(tmp: &TempDir) -> PathBuf {

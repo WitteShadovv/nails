@@ -12,15 +12,6 @@ use crate::nixos::SwitchAction;
 use crate::process::{ProcessCommand, ProcessRunner, Program, RealProcessRunner};
 use crate::{Filesystem, NailsError, Result};
 
-// Test-only reboot-dispatch overrides. Compiled in only under the `test-hooks`
-// feature (and this crate's own `cfg(test)` builds), so a shipped binary carries
-// neither the strings nor the branch that reads them, and always dispatches the
-// real reboot commands.
-#[cfg(any(test, feature = "test-hooks"))]
-pub(super) const SYSTEMCTL_REBOOT_OVERRIDE_ENV: &str = "NAILS_SYSTEMCTL_PATH";
-#[cfg(any(test, feature = "test-hooks"))]
-pub(super) const REBOOT_BINARY_OVERRIDE_ENV: &str = "NAILS_REBOOT_PATH";
-
 #[derive(Debug, Clone)]
 pub(super) struct RebootCommand {
     program: Program,
@@ -74,26 +65,32 @@ impl RebootCommand {
     }
 }
 
-pub(super) fn reboot_candidates() -> Vec<RebootCommand> {
+/// The reboot commands to try, in order.
+///
+/// A `test-hooks` build honours the fake `systemctl`/`reboot` paths the E2E
+/// harness sets (`NAILS_SYSTEMCTL_PATH`, `NAILS_REBOOT_PATH`), taken from the
+/// startup snapshot `env`; a shipped binary carries neither the knobs nor the
+/// branch that reads them, and always dispatches the real reboot commands.
+pub(super) fn reboot_candidates(env: &crate::RuntimeEnv) -> Vec<RebootCommand> {
     #[cfg(any(test, feature = "test-hooks"))]
     {
-        let systemctl_override = std::env::var_os(SYSTEMCTL_REBOOT_OVERRIDE_ENV);
-        let reboot_override = std::env::var_os(REBOOT_BINARY_OVERRIDE_ENV);
-
-        if systemctl_override.is_some() || reboot_override.is_some() {
+        let hooks = &env.test_hooks;
+        if hooks.systemctl_path.is_some() || hooks.reboot_path.is_some() {
             let mut candidates = Vec::new();
 
-            if let Some(path) = systemctl_override {
+            if let Some(path) = &hooks.systemctl_path {
                 candidates.push(RebootCommand::systemctl(Program::Exact(path.into())));
             }
 
-            if let Some(path) = reboot_override {
+            if let Some(path) = &hooks.reboot_path {
                 candidates.push(RebootCommand::reboot(Program::Exact(path.into())));
             }
 
             return candidates;
         }
     }
+    #[cfg(not(any(test, feature = "test-hooks")))]
+    let _ = env;
 
     // The runner resolves each tool from the fixed system directories (which lead
     // with `/run/current-system/sw/bin`), so a single `systemctl`/`reboot` covers
@@ -169,14 +166,14 @@ pub(super) fn dispatch_reboot_candidates(candidates: Vec<RebootCommand>) -> Resu
     }
 }
 
-pub(super) fn request_reboot() -> Result<()> {
+pub(super) fn request_reboot(env: &crate::RuntimeEnv) -> Result<()> {
     if crate::runtime_safety::should_skip_host_interaction() {
         return Err(NailsError::RebootFailed(
             "Refusing to trigger reboot in test or runtime-safety mode".to_string(),
         ));
     }
 
-    dispatch_reboot_candidates(reboot_candidates())
+    dispatch_reboot_candidates(reboot_candidates(env))
 }
 
 pub(super) fn poweroff_candidates() -> Vec<RebootCommand> {
@@ -322,9 +319,10 @@ impl HostEffects {
                     return Ok(PostDeactivationReboot::Skipped);
                 }
 
-                reboot_then_restore_decoy_on_failure(request_reboot, || {
-                    switch_to_decoy_for_session(filesystem, env)
-                })
+                reboot_then_restore_decoy_on_failure(
+                    || request_reboot(env),
+                    || switch_to_decoy_for_session(filesystem, env),
+                )
             }
             #[cfg(any(test, feature = "test-hooks"))]
             Self::Simulated(simulated) => simulated.record_reboot_request(),
@@ -342,6 +340,7 @@ impl HostEffects {
     pub(crate) fn run_post_teardown_power(
         &self,
         action: PostTeardownPower,
+        env: &crate::RuntimeEnv,
     ) -> Result<PowerDispatch> {
         match self {
             Self::Real => {
@@ -355,7 +354,7 @@ impl HostEffects {
 
                 let candidates = match action {
                     PostTeardownPower::Poweroff => poweroff_candidates(),
-                    PostTeardownPower::Reboot => reboot_candidates(),
+                    PostTeardownPower::Reboot => reboot_candidates(env),
                 };
                 dispatch_reboot_candidates(candidates).map(|()| PowerDispatch::Dispatched)
             }

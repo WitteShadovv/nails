@@ -5,8 +5,9 @@
 //!
 //! The decision is a compile-time constant in shipped builds. Only a build that
 //! carries the `test-hooks` feature — or this crate's own `cfg(test)` unit tests
-//! — compiles in any environment check, and even then it skips host interaction
-//! only when `NAILS_TEST_RUNTIME` is set. A shipped binary therefore always
+//! — compiles in any check, and even then it skips host interaction only when
+//! `NAILS_TEST_RUNTIME` was set in the startup snapshot `main` installed (see
+//! [`crate::runtime_env::current`]). A shipped binary therefore always
 //! performs real host operations: there is no environment variable, executable
 //! name or path layout that can turn them off.
 
@@ -14,15 +15,21 @@
 ///
 /// In this crate's own unit tests the answer is always true. In any other build
 /// that carries the `test-hooks` feature (integration tests and the packaged
-/// `nails-e2e` binary) it is true only when `NAILS_TEST_RUNTIME` is set, so the
-/// E2E harness can still drive real operations by leaving that variable unset.
+/// `nails-e2e` binary) it is true only when `NAILS_TEST_RUNTIME` was set in the
+/// installed startup snapshot, so the E2E harness can still drive real
+/// operations by leaving that variable unset. It is read through the installed
+/// snapshot because this switch sits below every handler, at dozens of call
+/// sites with no handler state in hand.
 #[cfg(any(test, feature = "test-hooks"))]
 pub(crate) fn should_skip_host_interaction() -> bool {
     if cfg!(test) {
         return true;
     }
 
-    std::env::var_os("NAILS_TEST_RUNTIME").is_some()
+    crate::runtime_env::current()
+        .test_hooks
+        .test_runtime
+        .is_some()
 }
 
 /// Shipped builds never skip host interaction: the check is a compile-time

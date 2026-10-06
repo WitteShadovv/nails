@@ -198,7 +198,7 @@ impl DeactivationOrchestrator {
             started_at: chrono::Utc::now(),
         };
         self.persist_teardown_state_or_tolerate(&mut guard, deactivating_state, "deactivating")?;
-        maybe_block_after_deactivating_state_transition()?;
+        maybe_block_after_deactivating_state_transition(guard.runtime_env())?;
 
         // The emergency and normal teardowns differ in order. Emergency detaches
         // the overlays FIRST — the one step that matters — then runs best-effort
