@@ -84,4 +84,18 @@ in
 
         return json.loads(machine.succeed("cat " + shlex.quote(path)))
   '';
+
+  # The per-activation runtime scaffolding root has a random name under /run, so
+  # tests read it from the state file instead of hard-coding a path. Capture it
+  # while the hidden volume is still mounted (before deactivate/emergency).
+  nailsRuntimeRootFn = ''
+    def nails_runtime_root(path="/mnt/data/state.json"):
+        import json
+        import shlex
+
+        data = json.loads(machine.succeed("cat " + shlex.quote(path)))
+        root = data.get("runtime_root")
+        assert root, "state.json recorded no runtime_root: %r" % (data,)
+        return root
+  '';
 }

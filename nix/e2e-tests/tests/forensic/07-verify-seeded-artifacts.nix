@@ -39,9 +39,11 @@ in
         return [finding["message"] for finding in payload["findings"]]
 
     with subtest("seed one instance of each single-path artifact class"):
-        # Runtime (Warn): the per-activation runtime directory.
+        # Runtime (Warn): the fixed runtime directory used by earlier builds.
+        # Current builds use a random per-activation tmpfs, so a leftover here is
+        # a prior version's teardown failure that verify must still flag.
         machine.succeed("mkdir -p /run/nails")
-        # Runtime (Warn): the pivot staging base on the /run tmpfs.
+        # Runtime (Warn): the fixed pivot staging base used by earlier builds.
         machine.succeed("mkdir -p /run/nails-pivot")
         # Decoy (Critical): the pivot staging base used by earlier builds, which
         # must never appear on the persistent decoy root.
