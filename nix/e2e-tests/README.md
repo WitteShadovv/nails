@@ -244,22 +244,34 @@ Layout:
   the one place to edit.**
 - `lib/distro-vm.nix`: the single call into `nix-vm-test` (`buildVmTest`), so a
   change in its attribute layout is a one-line fix.
-- `lib/hidden-root.nix`: the loop-backed ext4 (or LUKS, when `cryptsetup` ships)
-  hidden root, mirroring `e2e-tests/lib/backends.nix`, and the volatile-journald
-  switch the preflight needs.
+- `lib/hidden-root.nix`: the hidden root (ext4 on a loop device, or LUKS when
+  `cryptsetup` ships) backed by an image file on a dedicated tmpfs, so it never
+  touches the single decoy disk the forensic check images, with the layout of
+  `e2e-tests/lib/backends.nix`; and the switch to a volatile journal (plus
+  masking an active rsyslog) that the decoy-persistence preflight needs.
 - `tests/smoke.nix`: the smoke scenario, generated once per image-table entry.
 - `default.nix`: maps the scenario over the table and exposes the metadata.
 
-Each smoke scenario copies the static musl `nails` binary into the guest; asserts
-platform detection selects the overlay-only Debian-family backend; runs the
-decoy-persistence preflight (a stock persistent journal is refused, and passes
-once journald is volatile); activates overlay-only over `/home`, `/etc`, `/srv`,
-`/opt`, `/var`, `/tmp` and `/usr`, writing canaries; asserts a write under
-`/usr`/`/usr/local` fails read-only (checked against a negative control that
-leaves `/usr` writable); runs `status`, `verify`, `emergency` and
-`deactivate` with a reboot; and runs the host-side decoy disk-image check
-(`lib/disk_forensics.py`, shared with the NixOS suite) with null and positive
-controls.
+Each smoke scenario shares the static musl `nails` binary into the guest over
+9p (on `/run`, off the decoy disk); asserts platform detection selects the
+overlay-only Debian-family backend; images the decoy as booted for a baseline;
+runs the decoy-persistence preflight (a stock persistent journal is refused, and
+passes once the decoy is amnesic); activates overlay-only over `/home`, `/etc`,
+`/srv`, `/opt`, `/var` and `/tmp`, writing canaries, with `/usr` kept read-only
+by the FHS guard rather than overlaid; asserts a write under `/usr`/`/usr/local`
+fails read-only (checked against a negative control that leaves `/usr`
+writable); runs `status`, `verify` (which must flag the active session),
+`emergency` and `deactivate` with a reboot; and runs the host-side decoy
+disk-image check (`lib/disk_forensics.py`, shared with the NixOS suite) with
+null and positive controls.
+
+`nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
+guest writes vanish when QEMU exits and there is no root qcow2 for the forensic
+helpers. The scenario therefore runs its lifecycle in one QEMU process started
+with `allow_reboot=True` (the deactivation reboot keeps the disk) and, before
+each image, mirrors the live disk into `<state_dir>/vm.qcow2` over QMP, where
+`disk_forensics.snapshot` picks it up. The 9p share is mounted only once by
+`nix-vm-test`, so the scenario remounts it after every boot.
 
 ### Adding a distribution
 
