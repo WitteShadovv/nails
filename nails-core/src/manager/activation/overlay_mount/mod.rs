@@ -97,6 +97,47 @@ fn overlay_progress_message(target: &Path, index: usize, total: usize) -> String
     format!("mounting {} ({index}/{total})", target.display())
 }
 
+/// Move this process's working directory to `/` before any mount, and return a
+/// warning when the invoking shell's cwd (which this process inherited) was not
+/// already `/`.
+///
+/// An open directory — including a process's `cwd` — resolves to the inode it was
+/// opened against, not to whatever is later mounted over it. If nails kept its
+/// cwd inside a soon-to-be-overlaid decoy directory it would itself become a decoy
+/// writer; `chdir("/")` removes that reference before the first overlay goes up.
+///
+/// The operator's own shell holds the same cwd and nails cannot change it from
+/// here, so when that cwd is off `/` the returned message tells the operator to
+/// `cd /` — otherwise anything written from that shell (or a program launched in
+/// it) after activation lands on the decoy.
+///
+/// A no-op in test/runtime-safety builds: changing the test process's cwd would
+/// corrupt sibling tests, and there is no real shell to warn about.
+fn chdir_root_before_mount() -> Option<String> {
+    if crate::runtime_safety::should_skip_host_interaction() {
+        return None;
+    }
+    let cwd = std::env::current_dir().ok();
+    if let Err(e) = std::env::set_current_dir(Path::new("/")) {
+        tracing::warn!(error = %e, "could not move to / before mounting overlays");
+    }
+    cwd.as_deref().and_then(decoy_cwd_warning)
+}
+
+/// The decoy-cwd warning for an invoking shell sitting off `/`, or `None` when its
+/// cwd is the root and there is nothing to warn about.
+fn decoy_cwd_warning(cwd: &Path) -> Option<String> {
+    if cwd == Path::new("/") {
+        return None;
+    }
+    Some(format!(
+        "the shell that started this is in {} — after activation that directory still \
+         resolves to the decoy, so anything written from that shell (or a program \
+         launched in it) lands on the decoy. Run `cd /` in it.",
+        cwd.display()
+    ))
+}
+
 impl<F: Filesystem> NailsManager<F> {
     /// Mount persistent and ephemeral overlays.
     ///
@@ -116,6 +157,13 @@ impl<F: Filesystem> NailsManager<F> {
     ) -> Result<OverlayMountOutcome> {
         if verbosity >= Verbosity::Normal {
             tracing::info!("Mounting overlays...");
+        }
+
+        // Before the first mount, drop nails's own cwd to / so it never holds a
+        // reference into a soon-to-be-overlaid decoy directory, and warn when the
+        // invoking shell is sitting off / (that shell keeps writing to the decoy).
+        if let Some(warning) = chdir_root_before_mount() {
+            tracing::warn!("{warning}");
         }
 
         // The tracker is the mid-mount safety net: if any mount below fails it
@@ -835,6 +883,25 @@ mod progress_tests {
             overlay_progress_message(Path::new("/nix"), 5, 5),
             "mounting /nix (5/5)"
         );
+    }
+}
+
+#[cfg(test)]
+mod cwd_tests {
+    use super::decoy_cwd_warning;
+    use std::path::Path;
+
+    #[test]
+    fn a_root_cwd_produces_no_warning() {
+        assert_eq!(decoy_cwd_warning(Path::new("/")), None);
+    }
+
+    #[test]
+    fn a_cwd_off_root_warns_and_names_the_directory_and_the_fix() {
+        let warning = decoy_cwd_warning(Path::new("/home/op/notes")).expect("expected a warning");
+        assert!(warning.contains("/home/op/notes"), "{warning}");
+        assert!(warning.contains("cd /"), "{warning}");
+        assert!(warning.contains("decoy"), "{warning}");
     }
 }
 
