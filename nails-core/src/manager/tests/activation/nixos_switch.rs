@@ -357,3 +357,71 @@ fn test_switch_required_rolls_overlays_back_on_switch_failure() {
     assert!(matches!(loaded.state, SystemState::Inactive));
     assert!(loaded.overlay_status.is_empty());
 }
+
+#[test]
+#[serial]
+fn test_reapply_clears_stale_switch_warning_on_success() {
+    use crate::manager::state_management::reconcile_mounts_override;
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+
+    // On-disk state: verifiably active on NixOS, but carrying a switch warning
+    // left behind by an earlier failed hidden rebuild.
+    let mut initial_state = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
+        },
+        ..StateFile::default()
+    };
+    initial_state.set_switch_warning(Some(
+        "NixOS operation failed: building the hidden NixOS toplevel: throw".to_string(),
+    ));
+    initial_state
+        .save_with_custom_root(&state_path, hidden_root)
+        .unwrap();
+    assert!(
+        StateFile::load(&state_path)
+            .unwrap()
+            .last_switch_warning()
+            .is_some(),
+        "precondition: the persisted state carries a stale switch warning"
+    );
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    // No config layer / builder: the reapply switch is NotRequested and therefore
+    // clean, so a successful reapply must clear the stale warning. The manager
+    // starts with an empty state cache, exactly as the CLI builds it.
+    let manager = NailsManager::new(MockFilesystem::new(), config, state_path.clone());
+
+    // The kernel confirms /home is a NAILS persistent overlay, so reconcile
+    // reports VerifiedActive and reapply proceeds.
+    let mounts = crate::filesystem::NailsMounts {
+        persistent_overlays: vec![PathBuf::from("/home")],
+        ..Default::default()
+    };
+    let _mounts_guard = reconcile_mounts_override::arm(mounts);
+
+    manager
+        .reapply_hidden_config()
+        .expect("reapply on a verifiably active system succeeds");
+
+    let reloaded = StateFile::load(&state_path).unwrap();
+    assert_eq!(
+        reloaded.last_switch_warning(),
+        None,
+        "a successful reapply must clear the persisted hidden-config warning"
+    );
+    assert!(
+        matches!(reloaded.state, SystemState::Active { .. }),
+        "reapply leaves the system active"
+    );
+}

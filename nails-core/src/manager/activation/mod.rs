@@ -829,6 +829,16 @@ impl<F: Filesystem> NailsManager<F> {
             }
         }
 
+        // Populate the in-memory state cache from disk before building and
+        // switching. `reconcile_state` above reads the state file directly and
+        // does not seed the cache, so without this every persistence step on the
+        // reapply path — the fast-path fingerprint/toplevel lookup, recording the
+        // new generation, and clearing the switch warning — would operate on an
+        // empty cache and silently no-op. In particular a clean reapply must clear
+        // any stale `last_switch_warning` from the earlier failed switch so
+        // `nails status` stops reporting the hidden configuration as unapplied.
+        self.current_state()?;
+
         let verbosity = self.verbosity;
         let (fast_path_toplevel, new_fingerprint) = self.build_nixos_profile(verbosity)?;
         let hidden_config =
