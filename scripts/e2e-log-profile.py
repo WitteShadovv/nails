@@ -27,7 +27,9 @@ Usage:
   e2e-log-profile.py --top 25 --markdown LOG...
 
 When a test appears in several logs, the last log given wins, so list older
-runs first.
+runs first. A file without `vm-test-run-<test>> ` prefixes (the output of
+`nix log` for one test) is read as the log of the test its name gives,
+`<test>.log`.
 """
 
 from __future__ import annotations
@@ -81,11 +83,18 @@ def split_tests(paths: list[Path]) -> dict[str, list[str]]:
     tests: dict[str, list[str]] = {}
     for path in paths:
         per_file: dict[str, list[str]] = defaultdict(list)
+        plain: list[str] = []
         with path.open(errors="replace") as handle:
             for line in handle:
                 match = PREFIX.match(line.rstrip("\n"))
                 if match:
                     per_file[match["test"]].append(match["body"])
+                else:
+                    plain.append(line.rstrip("\n"))
+        if not per_file:
+            # `nix log <test>` prints one test's log without the derivation
+            # prefix; name it after the file (`<test>.log`).
+            per_file[path.name.removesuffix(".log")] = plain
         for name, lines in per_file.items():
             if any("run the VM test script" in ln for ln in lines):
                 tests[name] = lines

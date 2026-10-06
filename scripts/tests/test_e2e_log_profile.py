@@ -73,6 +73,19 @@ class ProfileTest(unittest.TestCase):
         self.assertEqual(row["forensic"], 7.25)
         self.assertAlmostEqual(row["unlogged"], 70 - 30 - 3 - 4 - 1 - 2 - 1.5 - 7.25)
 
+    def test_an_unprefixed_nix_log_is_named_after_its_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "demo.log"
+            log.write_text(BODY, encoding="utf-8")
+            completed = subprocess.run(
+                [sys.executable, str(SCRIPT), "--json", str(log)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        row = json.loads(completed.stdout)
+        self.assertEqual((row["test"], row["total"], row["boot"]), ("demo", 70.0, 30.0))
+
 
 if __name__ == "__main__":
     unittest.main()
