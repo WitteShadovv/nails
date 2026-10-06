@@ -13,6 +13,7 @@ fn writer(pid: u32, name: &str, service: Option<&str>, targets: &[&str]) -> Deco
         name: name.to_string(),
         service: service.map(str::to_string),
         targets: targets.iter().map(PathBuf::from).collect(),
+        kind: WriterKind::Surviving,
     }
 }
 
@@ -80,6 +81,37 @@ fn test_decoy_writer_label_and_display() {
         nm.to_string(),
         "NetworkManager (NetworkManager.service, PID 600) on /etc, /var"
     );
+}
+
+#[test]
+fn test_decoy_writer_kind_adds_a_note_in_display() {
+    let mut stale = writer(900, "code", None, &["/home"]);
+    stale.kind = WriterKind::StaleLower;
+    assert_eq!(
+        stale.to_string(),
+        "code (PID 900) on /home (still on the decoy after the mount)"
+    );
+
+    let mut foreign = writer(901, "unknown", None, &["/var"]);
+    foreign.kind = WriterKind::Unverifiable;
+    assert_eq!(
+        foreign.to_string(),
+        "unknown (PID 901) on /var (unverifiable: outside the host namespace)"
+    );
+}
+
+#[test]
+fn test_decoy_writer_kind_survives_a_round_trip_and_defaults_to_surviving() {
+    let mut w = writer(812, "tail", None, &["/var"]);
+    w.kind = WriterKind::StaleLower;
+    let back: DecoyWriter = serde_json::from_str(&serde_json::to_string(&w).unwrap()).unwrap();
+    assert_eq!(back.kind, WriterKind::StaleLower);
+
+    // A writer serialized before the field existed reads back as Surviving.
+    let legacy = r#"{"pid":1,"name":"a","service":null,"targets":["/var"]}"#;
+    let w: DecoyWriter = serde_json::from_str(legacy).unwrap();
+    assert_eq!(w.kind, WriterKind::Surviving);
+    assert_eq!(w.kind.note(), None);
 }
 
 #[test]

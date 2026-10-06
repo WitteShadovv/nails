@@ -336,12 +336,14 @@ fn surviving_writers_keep_their_identity_across_targets() {
                 name: "NetworkManager".to_string(),
                 service: Some("NetworkManager".to_string()),
                 targets: vec![PathBuf::from("/etc"), PathBuf::from("/var")],
+                kind: crate::WriterKind::Surviving,
             },
             DecoyWriter {
                 pid: 812,
                 name: "tail".to_string(),
                 service: None,
                 targets: vec![PathBuf::from("/var")],
+                kind: crate::WriterKind::Surviving,
             },
         ]
     );

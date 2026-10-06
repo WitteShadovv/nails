@@ -699,6 +699,7 @@ fn tail_on_var() -> crate::DecoyWriter {
         name: "tail".to_string(),
         service: None,
         targets: vec![PathBuf::from("/var")],
+        kind: crate::WriterKind::Surviving,
     }
 }
 

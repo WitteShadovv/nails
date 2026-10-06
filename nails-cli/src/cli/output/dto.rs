@@ -144,6 +144,19 @@ pub struct DecoyWriterJson {
     pub service: Option<String>,
     /// Overlay targets it still writes to through the decoy.
     pub targets: Vec<String>,
+    /// How the writer was classified: `surviving` (left running before the
+    /// mount), `stale_lower` (caught by the post-mount rescan still on the decoy),
+    /// or `unverifiable` (chrooted or foreign mount namespace).
+    pub kind: &'static str,
+}
+
+/// The machine-stable name for a [`WriterKind`].
+fn writer_kind_str(kind: nails_core::WriterKind) -> &'static str {
+    match kind {
+        nails_core::WriterKind::Surviving => "surviving",
+        nails_core::WriterKind::StaleLower => "stale_lower",
+        nails_core::WriterKind::Unverifiable => "unverifiable",
+    }
 }
 
 impl From<&DecoyWriter> for DecoyWriterJson {
@@ -157,6 +170,7 @@ impl From<&DecoyWriter> for DecoyWriterJson {
                 .iter()
                 .map(|target| target.display().to_string())
                 .collect(),
+            kind: writer_kind_str(writer.kind),
         }
     }
 }
@@ -188,12 +202,14 @@ mod tests {
                     name: "tail".to_string(),
                     service: None,
                     targets: vec![PathBuf::from("/var")],
+                    kind: nails_core::WriterKind::StaleLower,
                 },
                 DecoyWriter {
                     pid: 600,
                     name: "NetworkManager".to_string(),
                     service: Some("NetworkManager".to_string()),
                     targets: vec![PathBuf::from("/etc"), PathBuf::from("/var")],
+                    kind: nails_core::WriterKind::Surviving,
                 },
             ],
         };
@@ -202,12 +218,13 @@ mod tests {
         assert_eq!(
             value,
             serde_json::json!([
-                {"pid": 812, "name": "tail", "targets": ["/var"]},
+                {"pid": 812, "name": "tail", "targets": ["/var"], "kind": "stale_lower"},
                 {
                     "pid": 600,
                     "name": "NetworkManager",
                     "service": "NetworkManager",
-                    "targets": ["/etc", "/var"]
+                    "targets": ["/etc", "/var"],
+                    "kind": "surviving"
                 }
             ])
         );

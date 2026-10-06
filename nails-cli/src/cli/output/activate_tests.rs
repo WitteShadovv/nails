@@ -119,6 +119,7 @@ fn tail_writer() -> nails_core::DecoyWriter {
         name: "tail".to_string(),
         service: None,
         targets: vec![PathBuf::from("/var")],
+        kind: nails_core::WriterKind::Surviving,
     }
 }
 
@@ -210,7 +211,7 @@ fn test_json_success_lists_writers_left_on_the_decoy() {
     assert_eq!(json["state"]["kind"], "active");
     assert_eq!(
         json["decoy_writers"],
-        serde_json::json!([{"pid": 812, "name": "tail", "targets": ["/var"]}])
+        serde_json::json!([{"pid": 812, "name": "tail", "targets": ["/var"], "kind": "surviving"}])
     );
 }
 

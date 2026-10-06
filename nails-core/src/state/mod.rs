@@ -336,13 +336,52 @@ impl SubmountAttachment {
     }
 }
 
+/// How a decoy writer came to be recorded.
+///
+/// Lets the operator tell a process deliberately left running before the mount
+/// from one the post-mount rescan caught still holding a decoy-lower reference
+/// after the overlay went up, and from one whose access cannot be verified
+/// against the host at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WriterKind {
+    /// Classified before the mount as a writer that was not restarted, so it
+    /// keeps writing to the decoy for as long as it runs. The historical default,
+    /// so a state file written before this field existed reads back as `Surviving`.
+    #[default]
+    Surviving,
+    /// Found by the post-mount rescan to still reference the decoy lower tree
+    /// after the overlay went up: its `cwd`, root, a writable/directory fd or a
+    /// shared-writable mapping did not migrate onto the overlay.
+    StaleLower,
+    /// Cannot be verified against the host mount namespace (chrooted, or in a
+    /// different mount namespace than PID 1), so whether it writes to the decoy is
+    /// unknowable from the host view. Reported rather than silently trusted.
+    Unverifiable,
+}
+
+impl WriterKind {
+    /// A short parenthetical note for the non-default kinds, appended after the
+    /// writer's targets in human output. `Surviving` has none, so a writer left
+    /// running prints exactly as it always has.
+    pub fn note(self) -> Option<&'static str> {
+        match self {
+            WriterKind::Surviving => None,
+            WriterKind::StaleLower => Some("still on the decoy after the mount"),
+            WriterKind::Unverifiable => Some("unverifiable: outside the host namespace"),
+        }
+    }
+}
+
 /// A process that still referenced the decoy lower tree after activation.
 ///
 /// A process that opened an overlay target before the mount keeps resolving the
 /// original inodes, so whatever it writes lands on the decoy rather than the
 /// hidden volume. Activation restarts the writers it can; the ones it cannot (or
 /// was told to leave running) are recorded with their identity so the activation
-/// outcome, the login notification and `status` can name them.
+/// outcome, the login notification and `status` can name them. The post-mount
+/// rescan adds any process still holding a decoy reference once the overlays are
+/// up, tagged with its [`WriterKind`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DecoyWriter {
     /// Process ID at activation time.
@@ -354,6 +393,10 @@ pub struct DecoyWriter {
     pub service: Option<String>,
     /// Overlay targets the process still references through the decoy.
     pub targets: Vec<PathBuf>,
+    /// How this writer was classified. Defaults to [`WriterKind::Surviving`] so a
+    /// state file written before this field existed still deserializes.
+    #[serde(default)]
+    pub kind: WriterKind,
 }
 
 impl DecoyWriter {
@@ -369,7 +412,8 @@ impl DecoyWriter {
 
 impl std::fmt::Display for DecoyWriter {
     /// The label followed by the targets it still writes to:
-    /// `tail (PID 812) on /var`.
+    /// `tail (PID 812) on /var`. A non-default [`WriterKind`] adds a trailing
+    /// note, e.g. `… on /var (unverifiable: outside the host namespace)`.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let targets = self
             .targets
@@ -377,7 +421,11 @@ impl std::fmt::Display for DecoyWriter {
             .map(|target| target.display().to_string())
             .collect::<Vec<_>>()
             .join(", ");
-        write!(f, "{} on {}", self.label(), targets)
+        write!(f, "{} on {}", self.label(), targets)?;
+        if let Some(note) = self.kind.note() {
+            write!(f, " ({note})")?;
+        }
+        Ok(())
     }
 }
 

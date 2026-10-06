@@ -209,6 +209,7 @@ fn record_surviving_writers(
                 name: survivor.name.clone(),
                 service: survivor.service.clone(),
                 targets: vec![target.to_path_buf()],
+                kind: crate::WriterKind::Surviving,
             }),
         }
     }

@@ -219,12 +219,14 @@ fn active_report_with_decoy_writers() -> StatusReport {
                 name: "tail".to_string(),
                 service: None,
                 targets: vec![PathBuf::from("/var")],
+                kind: nails_core::WriterKind::StaleLower,
             },
             nails_core::DecoyWriter {
                 pid: 600,
                 name: "NetworkManager".to_string(),
                 service: Some("NetworkManager".to_string()),
                 targets: vec![PathBuf::from("/etc"), PathBuf::from("/var")],
+                kind: nails_core::WriterKind::Unverifiable,
             },
         ],
     };
@@ -243,6 +245,10 @@ fn test_status_json_lists_decoy_writers() {
         value["decoy_writers"][1]["targets"],
         serde_json::json!(["/etc", "/var"])
     );
+    // The post-mount classification is carried through to JSON so a consumer can
+    // tell a stale-lower writer from an unverifiable one.
+    assert_eq!(value["decoy_writers"][0]["kind"], "stale_lower");
+    assert_eq!(value["decoy_writers"][1]["kind"], "unverifiable");
 }
 
 #[test]
@@ -266,13 +272,15 @@ fn test_posture_lines_report_writers_still_on_the_decoy() {
         "{lines:?}"
     );
     assert!(
-        lines.iter().any(|l| l == "    - tail (PID 812) on /var"),
+        lines
+            .iter()
+            .any(|l| l == "    - tail (PID 812) on /var (still on the decoy after the mount)"),
         "{lines:?}"
     );
     assert!(
-        lines
-            .iter()
-            .any(|l| l == "    - NetworkManager (NetworkManager.service, PID 600) on /etc, /var"),
+        lines.iter().any(|l| l
+            == "    - NetworkManager (NetworkManager.service, PID 600) on /etc, /var \
+                (unverifiable: outside the host namespace)"),
         "{lines:?}"
     );
     assert!(
