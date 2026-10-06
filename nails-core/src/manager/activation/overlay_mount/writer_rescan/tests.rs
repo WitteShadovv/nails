@@ -31,7 +31,7 @@ fn read_only_consumer_is_not_recorded() {
     let mut writers = Vec::new();
     let mut reader = proc(100, "less");
     reader.has_open_fds_in_target = true; // read-only fd only
-    merge_target_writers(&mut writers, Path::new("/var"), &[reader]);
+    merge_target_writers(&mut writers, Path::new("/var"), &[reader], &|_| true);
     assert!(writers.is_empty(), "{writers:?}");
 }
 
@@ -41,7 +41,7 @@ fn writable_fd_holder_is_recorded_as_stale_lower() {
     let mut writer = proc(200, "tail");
     writer.has_open_fds_in_target = true;
     writer.has_writable_fd_in_target = true;
-    merge_target_writers(&mut writers, Path::new("/var"), &[writer]);
+    merge_target_writers(&mut writers, Path::new("/var"), &[writer], &|_| true);
     assert_eq!(writers.len(), 1);
     assert_eq!(writers[0].pid, 200);
     assert_eq!(writers[0].kind, WriterKind::StaleLower);
@@ -59,7 +59,7 @@ fn cwd_directory_fd_and_shared_map_all_block() {
         let mut writers = Vec::new();
         let mut holder = proc(300, "proc");
         mutate(&mut holder);
-        merge_target_writers(&mut writers, Path::new("/home"), &[holder]);
+        merge_target_writers(&mut writers, Path::new("/home"), &[holder], &|_| true);
         assert_eq!(writers.len(), 1, "blocking reference was not recorded");
         assert_eq!(writers[0].kind, WriterKind::StaleLower);
     }
@@ -70,7 +70,7 @@ fn foreign_namespace_holder_is_unverifiable() {
     let mut writers = Vec::new();
     let mut holder = proc(400, "unknown");
     holder.is_unverifiable_writer = true;
-    merge_target_writers(&mut writers, Path::new("/etc"), &[holder]);
+    merge_target_writers(&mut writers, Path::new("/etc"), &[holder], &|_| true);
     assert_eq!(writers.len(), 1);
     assert_eq!(writers[0].kind, WriterKind::Unverifiable);
 }
@@ -86,7 +86,7 @@ fn an_existing_surviving_pid_keeps_its_kind_and_gains_the_target() {
     }];
     let mut holder = proc(500, "NetworkManager");
     holder.has_writable_fd_in_target = true;
-    merge_target_writers(&mut writers, Path::new("/var"), &[holder]);
+    merge_target_writers(&mut writers, Path::new("/var"), &[holder], &|_| true);
     assert_eq!(writers.len(), 1, "the PID was duplicated");
     assert_eq!(
         writers[0].kind,
@@ -117,4 +117,23 @@ fn an_empty_snapshot_adds_no_writers() {
         writers.is_empty(),
         "capture() is empty in test builds, so nothing should be added"
     );
+}
+
+#[test]
+fn a_holder_whose_references_are_all_on_the_overlay_is_not_a_writer() {
+    // A process that opened its files through the new overlay uses the hidden
+    // session; flagging it StaleLower would be a false alarm.
+    let mut writers = Vec::new();
+    let mut holder = proc(500, "journald");
+    holder.has_writable_fd_in_target = true;
+    merge_target_writers(&mut writers, Path::new("/var"), &[holder.clone()], &|_| {
+        false
+    });
+    assert!(writers.is_empty(), "{writers:?}");
+
+    // An unverifiable holder is still recorded: its mount ids prove nothing.
+    holder.is_unverifiable_writer = true;
+    merge_target_writers(&mut writers, Path::new("/var"), &[holder], &|_| false);
+    assert_eq!(writers.len(), 1);
+    assert_eq!(writers[0].kind, WriterKind::Unverifiable);
 }

@@ -43,20 +43,55 @@ pub(super) fn rescan_post_mount_writers(writers: &mut Vec<DecoyWriter>, targets:
             return;
         }
     };
+    let entries = crate::filesystem::read_mountinfo().unwrap_or_default();
     for target in targets {
         if is_integrity_verified(target) {
             continue;
         }
-        merge_target_writers(writers, target, &snapshot.processes_using(target));
+        // A holder whose references under the target all carry the overlay's
+        // mount id opened them through the overlay (it started after the mount,
+        // or reopened its files): it uses the hidden session, not the decoy. Only
+        // a reference off the overlay mount is a stale lower writer. Without the
+        // overlay's mount id the path match stands, so nothing is waved through.
+        let overlay_ids = crate::process::mount_refs::overlay_ids_at(&entries, target);
+        let references_lower = |pid: u32| {
+            overlay_ids.is_empty()
+                || crate::process::mount_refs::references_under_target_outside(
+                    pid,
+                    target,
+                    &overlay_ids,
+                )
+        };
+        merge_target_writers(
+            writers,
+            target,
+            &snapshot.processes_using(target),
+            &references_lower,
+        );
     }
 }
 
 /// The testable core: classify every write-blocking holder of a single `target`
 /// and merge it into `writers`. A read-only consumer is left out — it cannot
-/// write to the decoy through the references it holds.
-fn merge_target_writers(writers: &mut Vec<DecoyWriter>, target: &Path, candidates: &[ProcessInfo]) {
+/// write to the decoy through the references it holds — and so is a holder
+/// `references_lower` clears (all its references live on the overlay), unless
+/// it cannot be verified at all.
+fn merge_target_writers(
+    writers: &mut Vec<DecoyWriter>,
+    target: &Path,
+    candidates: &[ProcessInfo],
+    references_lower: &dyn Fn(u32) -> bool,
+) {
     for info in candidates {
         if !info.is_write_blocking() {
+            continue;
+        }
+        if !info.is_unverifiable_writer && !references_lower(info.pid) {
+            tracing::debug!(
+                pid = info.pid,
+                target = %target.display(),
+                "post-mount rescan: every reference is on the overlay; not a decoy writer"
+            );
             continue;
         }
         let kind = if info.is_unverifiable_writer {

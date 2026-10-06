@@ -104,6 +104,67 @@ pub(crate) fn process_references_mounts(pid: u32, mount_ids: &HashSet<i32>) -> b
     false
 }
 
+/// Whether `pid` holds a reference *under `target`* (by path) that does not
+/// live on one of `overlay_ids`: a cwd, root, open fd or shared-writable mapping
+/// that still resolves to the decoy below the overlay mounted at `target`.
+///
+/// A process that started after the overlay went up resolves the same paths
+/// through the overlay, so its references carry the overlay's mount id and it is
+/// no stale writer. An entry whose mount id cannot be read counts as stale, so a
+/// doubtful reference is never waved through.
+pub(crate) fn references_under_target_outside(
+    pid: u32,
+    target: &Path,
+    overlay_ids: &HashSet<i32>,
+) -> bool {
+    let base = format!("/proc/{pid}");
+    let stale = |link: &Path, id: Option<i32>| {
+        std::fs::read_link(link).is_ok_and(|resolved| resolved.starts_with(target))
+            && !id.is_some_and(|id| overlay_ids.contains(&id))
+    };
+
+    for name in ["cwd", "root"] {
+        let link = Path::new(&base).join(name);
+        if stale(&link, path_mount_id(&link)) {
+            return true;
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(format!("{base}/fd")) {
+        for entry in entries.flatten() {
+            let id =
+                std::fs::read_to_string(Path::new(&base).join("fdinfo").join(entry.file_name()))
+                    .ok()
+                    .and_then(|fdinfo| parse_fdinfo_mnt_id(&fdinfo));
+            if stale(&entry.path(), id) {
+                return true;
+            }
+        }
+    }
+
+    if let Ok(maps) = std::fs::read_to_string(format!("{base}/maps")) {
+        for range in shared_writable_map_ranges(&maps) {
+            let link = Path::new(&base).join("map_files").join(&range);
+            if stale(&link, path_mount_id(&link)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// The mount ids of the overlays mounted at `target`, from `entries`.
+pub(crate) fn overlay_ids_at(
+    entries: &[crate::filesystem::MountEntry],
+    target: &Path,
+) -> HashSet<i32> {
+    entries
+        .iter()
+        .filter(|entry| entry.fstype == "overlay" && entry.mount_point == target)
+        .map(|entry| entry.mount_id)
+        .collect()
+}
+
 /// Whether `pid` shares this process's mount namespace, so mount ids read from
 /// `/proc/self/mountinfo` are meaningful for its references. `false` when either
 /// namespace link cannot be read.
@@ -193,6 +254,38 @@ mod tests {
         child.wait().unwrap();
         assert!(found, "the open file descriptor must match its mount id");
         assert!(spared, "a mount the process does not touch must not match");
+    }
+
+    #[test]
+    fn a_reference_under_the_target_counts_as_stale_only_off_the_overlay_mount() {
+        // The temp dir stands in for an overlaid target: a reference on its own
+        // mount id is "through the overlay", any other id means the decoy below.
+        let dir = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("read _")
+            .current_dir(dir.path())
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let target = std::fs::canonicalize(dir.path()).unwrap();
+        let on_overlay: HashSet<i32> = [mount_id_holding(dir.path())].into();
+        let elsewhere: HashSet<i32> = [i32::MAX].into();
+        let through_overlay = references_under_target_outside(child.id(), &target, &on_overlay);
+        let on_lower = references_under_target_outside(child.id(), &target, &elsewhere);
+        let unrelated = references_under_target_outside(
+            child.id(),
+            Path::new("/nonexistent-target"),
+            &elsewhere,
+        );
+        child.stdin.take().unwrap().write_all(b"\n").unwrap();
+        child.wait().unwrap();
+        assert!(
+            !through_overlay,
+            "a reference through the overlay is no stale writer"
+        );
+        assert!(on_lower, "a reference off the overlay mount is stale");
+        assert!(!unrelated, "references outside the target never count");
     }
 
     #[test]
