@@ -76,6 +76,48 @@ fn parse_active_units(stdout: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// The systemd system unit search path (see `systemd.unit(5)`), in which the
+/// unit files a host knows about live. A directory missing on a given host is
+/// simply skipped.
+const SYSTEM_UNIT_DIRS: &[&str] = &[
+    "/etc/systemd/system.control",
+    "/run/systemd/system.control",
+    "/run/systemd/transient",
+    "/run/systemd/generator.early",
+    "/etc/systemd/system",
+    "/etc/systemd/system.attached",
+    "/run/systemd/system",
+    "/run/systemd/system.attached",
+    "/run/systemd/generator",
+    "/usr/local/lib/systemd/system",
+    "/usr/lib/systemd/system",
+    "/lib/systemd/system",
+    "/run/systemd/generator.late",
+];
+
+/// The `*.service` unit file names found directly in `dirs`, deduplicated, in
+/// first-seen order. Only names are read — no unit file is opened and no link is
+/// followed beyond what listing a directory needs — so the cost is one directory
+/// read per existing search-path entry. Unreadable or missing directories are
+/// skipped.
+fn service_unit_file_names(dirs: &[&std::path::Path]) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(name) = entry.file_name().into_string() else {
+                continue;
+            };
+            if name.ends_with(".service") && !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    names
+}
+
 /// Run `journalctl` with the given arguments through the shared runner.
 ///
 /// Resolved through the trust-checked host-tool resolver at call time: the
@@ -510,46 +552,46 @@ impl ServiceController {
 
     /// List every service unit the host already knows about, active or not.
     ///
-    /// The union of `systemctl list-unit-files --type=service` (units with a unit
-    /// file on disk) and `systemctl list-units --type=service --all` (every loaded
-    /// unit, including inactive and transient ones). Activation takes this
-    /// snapshot *before* the hidden switch: a unit counts as hidden-added only if
-    /// it is active afterwards and was not known at all beforehand. Comparing
-    /// presence rather than active state means a base service that merely
-    /// restarts while the overlays settle — inactive for an instant, but loaded
-    /// and backed by a decoy unit file — is never mistaken for one the hidden
-    /// generation brought up. Returns an empty list where host interaction is
-    /// skipped.
+    /// The union of the service unit files on disk (every `*.service` name in the
+    /// systemd system unit search path, see [`SYSTEM_UNIT_DIRS`]) and `systemctl
+    /// list-units --type=service --all` (every loaded unit, including inactive and
+    /// transient ones). Activation takes this snapshot *before* the hidden switch:
+    /// a unit counts as hidden-added only if it is active afterwards and was not
+    /// known at all beforehand. Comparing presence rather than active state means
+    /// a base service that merely restarts while the overlays settle — inactive
+    /// for an instant, but loaded and backed by a decoy unit file — is never
+    /// mistaken for one the hidden generation brought up. Returns an empty list
+    /// where host interaction is skipped.
+    ///
+    /// The unit files are enumerated by reading the unit directories rather than
+    /// through `systemctl list-unit-files`: only the names are needed, and
+    /// `list-unit-files` also works out every unit's enablement state by scanning
+    /// all the `.wants`/`.requires` links for each unit. On a host whose unit tree
+    /// sits on a slow filesystem that ran for tens of seconds, outlived the probe
+    /// deadline and left PID 1 busy, so the `list-units` probes queued behind it
+    /// timed out as well and the activation stalled for half a minute.
     pub fn list_known_units() -> Vec<String> {
         if Self::should_skip() {
+            #[cfg(test)]
+            recorder::record("snapshot:known-units");
             return Vec::new();
         }
 
-        let mut known: Vec<String> = Vec::new();
-        for args in [
-            &[
-                "list-unit-files",
-                "--type=service",
-                "--no-legend",
-                "--plain",
-                "--no-pager",
-            ][..],
-            &[
-                "list-units",
-                "--type=service",
-                "--all",
-                "--no-legend",
-                "--plain",
-                "--no-pager",
-            ][..],
-        ] {
-            if let Ok(output) = run_systemctl(args)
-                && output.status.success()
-            {
-                for unit in parse_active_units(&output.stdout) {
-                    if !known.contains(&unit) {
-                        known.push(unit);
-                    }
+        let dirs: Vec<&std::path::Path> =
+            SYSTEM_UNIT_DIRS.iter().map(std::path::Path::new).collect();
+        let mut known = service_unit_file_names(&dirs);
+        if let Ok(output) = run_systemctl(&[
+            "list-units",
+            "--type=service",
+            "--all",
+            "--no-legend",
+            "--plain",
+            "--no-pager",
+        ]) && output.status.success()
+        {
+            for unit in parse_active_units(&output.stdout) {
+                if !known.contains(&unit) {
+                    known.push(unit);
                 }
             }
         }
@@ -566,6 +608,8 @@ impl ServiceController {
     /// is skipped.
     pub fn list_active_units() -> Vec<String> {
         if Self::should_skip() {
+            #[cfg(test)]
+            recorder::record("snapshot:active-units");
             return Vec::new();
         }
 
@@ -652,10 +696,37 @@ pub(crate) fn restart_service_and_socket(service: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_active_units, wait_for_unix_socket_ready};
+    use super::{parse_active_units, service_unit_file_names, wait_for_unix_socket_ready};
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
     use std::time::Duration;
+
+    #[test]
+    fn service_unit_file_names_lists_service_files_across_the_search_path() {
+        // Names only, from every existing directory, deduplicated across
+        // directories (a unit overridden in /etc shadows the vendor copy), with
+        // non-service units and missing directories ignored.
+        let etc = tempfile::tempdir().unwrap();
+        let vendor = tempfile::tempdir().unwrap();
+        for name in ["sshd.service", "getty@.service", "multi-user.target"] {
+            std::fs::write(etc.path().join(name), "").unwrap();
+        }
+        for name in ["sshd.service", "cups.service", "cups.socket"] {
+            std::fs::write(vendor.path().join(name), "").unwrap();
+        }
+        let missing = etc.path().join("does-not-exist");
+
+        let mut names = service_unit_file_names(&[etc.path(), missing.as_path(), vendor.path()]);
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "cups.service".to_string(),
+                "getty@.service".to_string(),
+                "sshd.service".to_string(),
+            ]
+        );
+    }
 
     #[test]
     fn parse_active_units_takes_the_first_column() {
