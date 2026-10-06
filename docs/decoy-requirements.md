@@ -42,6 +42,12 @@ decoy disk.
 - **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which can trigger an
   automatic decoy rebuild (and touch EFI NVRAM) while the hidden session runs.
   The generated hidden module force-disables `system.autoUpgrade`.
+- **sudo's own logs** — `Defaults logfile=` in `/etc/sudoers` or
+  `/etc/sudoers.d/*` writes every sudo command line to a file, and I/O logging
+  (`log_input`, `log_output`, the `log_stdin`/`log_ttyout`/... flags, or the
+  `LOG_INPUT:`/`LOG_OUTPUT:` command tags, stored under `iolog_dir`) records
+  whole terminal sessions, keystrokes and output included. Both write to the
+  decoy disk, outside the journal.
 
 ## Suspend and the lid switch
 
@@ -130,8 +136,9 @@ the target command and its full path through its configured log channel
 (journald, syslog, or `/var/log/sudo.log`). On a persistent decoy that record
 names the hidden-root binary path before any overlay exists.
 
-**Mitigation**: run NAILS on an amnesic decoy (volatile journald, no syslog) so
-the sudo record is never durably written, and keep the binary at a neutral path
+**Mitigation**: run NAILS on an amnesic decoy (volatile journald, no syslog,
+no sudo `logfile` or I/O logging in sudoers) so the sudo record is never durably
+written, and keep the binary at a neutral path
 on the hidden volume. NAILS cannot suppress sudo's own logging without tampering
 with the decoy, which would itself be a tell.
 

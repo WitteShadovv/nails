@@ -25,7 +25,11 @@
 //!   `kernel.core_pattern`, systemd-coredump `Storage=external`, registered
 //!   pstore records, or an armed kdump,
 //! - the NixOS `nixos-upgrade.timer` (which can rebuild and touch EFI NVRAM
-//!   from the decoy profile while the hidden session runs).
+//!   from the decoy profile while the hidden session runs),
+//! - sudo logging in sudoers (`logfile=`, I/O logging with `log_input`,
+//!   `log_output` and friends, `iolog_dir=`), which records the activation
+//!   command or whole terminal sessions on the decoy disk (see
+//!   [`sudo_logging`]).
 //!
 //! # No writes
 //!
@@ -39,6 +43,9 @@ use super::journald_storage::journald_persists_to_decoy;
 use crate::filesystem::parse_mountinfo;
 use crate::{Filesystem, Result};
 use std::path::Path;
+
+mod sudo_logging;
+pub use sudo_logging::{SudoLogging, scan_sudoers};
 
 /// `/proc/self/mountinfo`, the authoritative mount table.
 const MOUNTINFO: &str = "/proc/self/mountinfo";
@@ -161,6 +168,7 @@ impl DecoyPersistenceCheck {
         }
 
         out.extend(Self::crash_posture(fs));
+        out.extend(scan_sudoers(fs, Path::new(sudo_logging::SUDOERS)).findings());
 
         if is_nixos
             && fs
@@ -334,6 +342,25 @@ mod tests {
         let check = DecoyPersistenceCheck::new(false, true);
         let result = check.run(&fs).unwrap();
         assert!(result.is_pass(), "clean decoy must pass: {result:?}");
+    }
+
+    #[test]
+    fn sudo_io_logging_warns() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            "/etc/systemd/journald.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+        fs.mock_add_file(
+            "/etc/sudoers",
+            "Defaults env_reset\nDefaults log_output\nDefaults logfile=/var/log/sudo.log\n",
+        );
+
+        let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+        assert!(result.is_warn(), "sudo I/O logging must warn: {result:?}");
+        assert!(result.message().contains("sudo I/O logging"), "{result:?}");
+        assert!(result.message().contains("/var/log/sudo.log"), "{result:?}");
     }
 
     #[test]
