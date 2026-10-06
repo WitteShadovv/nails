@@ -654,7 +654,8 @@ contents decay:
   --poweroff` — and end a normal session with `nails deactivate --poweroff`
   before handing the machine over.
 - Harden the decoy kernel so freed memory is wiped: add `init_on_free=1
-  page_poison=1` to the decoy kernel command line.
+  page_poison=1` to the decoy kernel command line. The `memory-wipe` pre-flight
+  check reports whether the booted command line sets `init_on_free=1`.
 - There is no complete software defense against a memory dump of a running
   system; the protection is preventing access while it runs.
 

@@ -88,10 +88,10 @@ pub fn build_registry<F: Filesystem>(
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
         BackendDetectCheck, BinaryLocationCheck, DecoyPersistenceCheck, HiddenVolumeCheck,
-        HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, MountNamespaceCheck,
-        NixOSBuildTargetCheck, OverlayCompatibilityCheck, OverlayTargetsCheck, SleepPolicyCheck,
-        SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
-        SymlinkSupportCheck, UpperFsCapabilityCheck, WritableTreesCheck,
+        HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, MemoryWipeCheck,
+        MountNamespaceCheck, NixOSBuildTargetCheck, OverlayCompatibilityCheck, OverlayTargetsCheck,
+        SleepPolicyCheck, SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
+        SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck, WritableTreesCheck,
     };
 
     let mut registry = PreFlightRegistry::new();
@@ -225,6 +225,11 @@ pub fn build_registry<F: Filesystem>(
     }
 
     registry.add_check(Box::new(SwapCheck));
+
+    // Informational only: reports whether the decoy kernel zeroes freed pages
+    // (init_on_free=1), so the hidden session's freed memory does not linger in
+    // RAM after deactivation. Always passes; the message carries the advice.
+    registry.add_check(Box::new(MemoryWipeCheck::new()));
 
     // Reports whether the host would suspend an active session (lid switch, idle
     // auto-suspend), which would strand the hidden environment resident in RAM
