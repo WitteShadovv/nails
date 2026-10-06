@@ -28,8 +28,9 @@ pub struct BinaryLocationCheck {
     /// Overrides the resolved running-binary path. Tests set this; production
     /// leaves it `None` and resolves `std::env::current_exe()` at run time.
     running_binary: Option<PathBuf>,
-    /// Overrides the `PATH` directories probed for decoy symlinks. Tests set
-    /// this; production leaves it `None` and reads the `PATH` environment.
+    /// The `PATH` directories probed for decoy symlinks, taken from the caller's
+    /// `PATH` in the startup snapshot ([`Self::with_caller_path`]) or injected by
+    /// a test. `None` probes nothing.
     path_dirs: Option<Vec<PathBuf>>,
 }
 
@@ -41,6 +42,14 @@ impl BinaryLocationCheck {
             running_binary: None,
             path_dirs: None,
         }
+    }
+
+    /// Probe the directories of the caller's `PATH` (from the startup
+    /// snapshot) for decoy symlinks to the running binary.
+    #[must_use]
+    pub fn with_caller_path(mut self, caller_path: Option<&std::ffi::OsStr>) -> Self {
+        self.path_dirs = caller_path.map(|path| std::env::split_paths(path).collect());
+        self
     }
 
     /// Create a check with injected probes, for tests that cannot set the real
@@ -73,12 +82,7 @@ impl BinaryLocationCheck {
 
     /// The directories on `PATH` to probe for decoy symlinks.
     fn path_dirs(&self) -> Vec<PathBuf> {
-        if let Some(dirs) = &self.path_dirs {
-            return dirs.clone();
-        }
-        std::env::var_os("PATH")
-            .map(|path| std::env::split_paths(&path).collect())
-            .unwrap_or_default()
+        self.path_dirs.clone().unwrap_or_default()
     }
 }
 

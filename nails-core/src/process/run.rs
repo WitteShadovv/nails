@@ -397,7 +397,11 @@ impl ProcessRunner for RealProcessRunner {
 fn base_command(executable: &Path, command: &ProcessCommand) -> std::process::Command {
     let mut child = std::process::Command::new(executable);
     child.args(&command.args);
-    apply_environment(&mut child, command);
+    apply_environment(
+        &mut child,
+        command,
+        &crate::runtime_env::current().inherited,
+    );
     reset_child_oom_score(&mut child);
     child
 }
@@ -436,12 +440,17 @@ fn reset_child_oom_score(child: &mut std::process::Command) {
 ///
 /// See the [module docs](self#environment): a fixed `PATH`, the caller's
 /// locale/terminal variables, and any key the command opted in with
-/// [`ProcessCommand::allow_env`]. Nothing else of the caller's reaches the
-/// child.
-fn apply_environment(child: &mut std::process::Command, command: &ProcessCommand) {
+/// [`ProcessCommand::allow_env`]. `inherited` is the caller's environment as
+/// captured in the startup snapshot (the runner passes the installed one);
+/// nothing else of the caller's reaches the child.
+fn apply_environment(
+    child: &mut std::process::Command,
+    command: &ProcessCommand,
+    inherited: &crate::runtime_env::InheritedVars,
+) {
     child.env_clear();
-    for (key, value) in std::env::vars_os() {
-        if is_allowlisted_env(&key) || command.allowed_env.contains(&key) {
+    for (key, value) in inherited.iter() {
+        if is_allowlisted_env(key) || command.allowed_env.iter().any(|allowed| allowed == key) {
             child.env(key, value);
         }
     }
@@ -758,7 +767,14 @@ fn resolve(program: &Program, search_path: Option<&OsStr>) -> Result<PathBuf> {
         Program::CallerPath(name) => {
             let (path, searched) = match search_path {
                 Some(dirs) => (dirs.to_os_string(), "the search path"),
-                None => (std::env::var_os("PATH").unwrap_or_default(), "PATH"),
+                // The caller's `PATH` from the installed startup snapshot.
+                None => (
+                    crate::runtime_env::current()
+                        .path
+                        .clone()
+                        .unwrap_or_default(),
+                    "PATH",
+                ),
             };
             // Relative entries would make the result depend on the working
             // directory, so only absolute ones are searched.

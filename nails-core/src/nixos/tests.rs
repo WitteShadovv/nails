@@ -7,7 +7,6 @@
 
 use super::*;
 use crate::error::Result;
-use crate::test_support::EnvGuard;
 use serial_test::serial;
 use std::collections::VecDeque;
 use std::fs;
@@ -791,9 +790,25 @@ fn flake_preflight_rejects_relative_plain_flake_ref_before_nix_commands() {
     assert!(clear_flags.lock().unwrap().is_empty());
 }
 
+/// `target` spelled relative to the test process's working directory (which no
+/// test changes), as a chain of `../` up to `/` followed by the absolute path.
+/// Lets a test exercise relative flake refs without changing the working
+/// directory every other test shares.
+fn relative_from_cwd(target: &Path) -> String {
+    let cwd = std::env::current_dir().unwrap();
+    let depth = cwd
+        .components()
+        .filter(|component| matches!(component, std::path::Component::Normal(_)))
+        .count();
+    format!(
+        "{}{}",
+        "../".repeat(depth),
+        target.strip_prefix("/").unwrap().display()
+    )
+}
+
 #[test]
-#[serial]
-fn flake_preflight_accepts_dot_relative_flake_ref() {
+fn flake_preflight_accepts_parent_relative_flake_ref() {
     let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
         Ok((true, String::new(), String::new())),
         Ok((
@@ -803,16 +818,15 @@ fn flake_preflight_accepts_dot_relative_flake_ref() {
         )),
     ]);
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut env = EnvGuard::lock();
-    env.set_current_dir(temp_dir.path());
     std::fs::write(temp_dir.path().join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
+    let relative = relative_from_cwd(temp_dir.path());
 
     let builder = NixOSBuilder {
-        config_path: PathBuf::from("."),
+        config_path: PathBuf::from(&relative),
         profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
         executor: Box::new(executor),
         build_mode: NixOSBuildMode::Flake,
-        flake_ref: Some(".#machine".to_string()),
+        flake_ref: Some(format!("{relative}#machine")),
     };
 
     let summary = builder.preflight_flake().unwrap();
@@ -829,7 +843,6 @@ fn flake_preflight_accepts_dot_relative_flake_ref() {
 }
 
 #[test]
-#[serial]
 fn flake_preflight_accepts_dot_slash_relative_flake_ref() {
     let (executor, calls, clear_flags) = PreflightExecutor::new(vec![
         Ok((true, String::new(), String::new())),
@@ -843,15 +856,14 @@ fn flake_preflight_accepts_dot_slash_relative_flake_ref() {
     let rel_dir = temp_dir.path().join("relative-flake");
     std::fs::create_dir_all(&rel_dir).unwrap();
     std::fs::write(rel_dir.join("flake.nix"), "{ outputs = _: {}; }\n").unwrap();
-    let mut env = EnvGuard::lock();
-    env.set_current_dir(temp_dir.path());
+    let relative = format!("./{}", relative_from_cwd(&rel_dir));
 
     let builder = NixOSBuilder {
-        config_path: PathBuf::from("./relative-flake"),
+        config_path: PathBuf::from(&relative),
         profile_path: PathBuf::from("/nix/var/nix/profiles/nails-system"),
         executor: Box::new(executor),
         build_mode: NixOSBuildMode::Flake,
-        flake_ref: Some("./relative-flake#machine".to_string()),
+        flake_ref: Some(format!("{relative}#machine")),
     };
 
     let summary = builder.preflight_flake().unwrap();
@@ -891,8 +903,7 @@ fn split_flake_ref_separates_base_and_fragment() {
 
 #[test]
 fn local_flake_dir_only_returns_paths_for_local_refs() {
-    // Relative refs resolve against the working directory.
-    let _env = EnvGuard::lock();
+    // Relative refs resolve against the working directory, which no test changes.
     assert_eq!(
         local_flake_dir("/some/dir"),
         Some(PathBuf::from("/some/dir"))
@@ -1065,20 +1076,21 @@ fn test_build_and_switch_keeps_real_build_failures_fatal() {
 #[serial]
 fn test_real_command_executor_execute_nixos_rebuild_uses_path_and_captures_output() {
     // The default executor resolves the toolchain from the caller's PATH, which
-    // is how the VM tests substitute stub builds, so this one test prepends to
-    // PATH; the others inject a search path instead.
+    // is how the VM tests substitute stub builds, so this one test scopes a
+    // snapshot with a prepended PATH; the others inject a search path instead.
     let temp_dir = tempfile::tempdir().unwrap();
     let script = temp_dir.path().join("nixos-rebuild");
     write_executable_script(
         &script,
         "#!/usr/bin/env bash\nprintf 'rebuilt ok\\n'\nprintf 'warn\\n' 1>&2\nexit 0\n",
     );
-    let mut env = EnvGuard::lock();
     let mut paths = vec![temp_dir.path().to_path_buf()];
     if let Some(existing) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&existing));
     }
-    env.set("PATH", std::env::join_paths(paths).unwrap());
+    let _env = crate::runtime_env::ScopedRuntimeEnv::new(
+        crate::RuntimeEnv::empty().with_path(std::env::join_paths(paths).unwrap()),
+    );
 
     let result = RealCommandExecutor::default()
         .execute_nixos_rebuild(&["test"], false)
@@ -1160,8 +1172,10 @@ fn test_real_command_executor_execute_nix_drops_nix_path_only_when_asked() {
         "#!/usr/bin/env bash\nprintf '%s' \"${NIX_PATH-unset}\"\n",
     );
     let executor = RealCommandExecutor::with_search_path(temp_dir.path());
-    let mut env = EnvGuard::lock();
-    env.set("NIX_PATH", "nixpkgs=/caller/channel");
+    let _env = crate::runtime_env::ScopedRuntimeEnv::new(
+        crate::RuntimeEnv::empty()
+            .with_inherited(vec![("NIX_PATH".into(), "nixpkgs=/caller/channel".into())]),
+    );
 
     let kept = executor.execute_nix(&["eval"], false);
     let cleared = executor.execute_nix(&["eval"], true);

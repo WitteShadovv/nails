@@ -177,7 +177,6 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
 mod tests {
     use super::*;
     use crate::filesystem::MockFilesystem;
-    use crate::test_support::EnvGuard;
 
     // ========================================================================
     // Trait metadata
@@ -261,8 +260,8 @@ mod tests {
 
     #[test]
     fn test_explicit_relative_flake_ref_with_dot_slash_passes() {
-        // The check resolves the relative ref against the working directory.
-        let _env = EnvGuard::lock();
+        // The check resolves the relative ref against the working directory, which
+        // no test changes.
         let fs = MockFilesystem::new();
         let current_dir = std::env::current_dir().unwrap();
         let flake_dir = current_dir.join("relative-flake");
@@ -283,8 +282,8 @@ mod tests {
 
     #[test]
     fn test_explicit_relative_current_directory_flake_ref_passes() {
-        // The check resolves the relative ref against the working directory.
-        let _env = EnvGuard::lock();
+        // The check resolves the relative ref against the working directory, which
+        // no test changes.
         let fs = MockFilesystem::new();
         let current_dir = std::env::current_dir().unwrap();
         let flake_nix = current_dir.join("flake.nix");

@@ -39,6 +39,7 @@ fn build_registry_includes_the_shared_checks() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         accept_persistent_decoy: false,
+        caller_path: None,
     };
 
     let registry =
@@ -75,6 +76,7 @@ fn overlay_only_registry_drops_the_nixos_checks() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         accept_persistent_decoy: false,
+        caller_path: None,
     };
 
     let registry =
@@ -101,6 +103,7 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         accept_persistent_decoy: false,
+        caller_path: None,
     };
 
     let registry = build_registry(&fs, &config, &inputs, None).expect("registry builds");
@@ -161,6 +164,7 @@ fn read_only_registry_creates_nothing() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         accept_persistent_decoy: false,
+        caller_path: None,
     };
 
     let registry =

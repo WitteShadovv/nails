@@ -1,23 +1,24 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use nails_core::test_support::EnvGuard;
-use nails_core::{Config, MockFilesystem, NailsManager, NixOSBuilder};
-use serial_test::serial;
+use nails_core::runtime_env::ScopedRuntimeEnv;
+use nails_core::{Config, MockFilesystem, NailsManager, NixOSBuilder, RuntimeEnv};
 use std::fs;
 use std::path::Path;
 
-/// Puts `dir` in front of `PATH` until `env` is dropped. The builder resolves
-/// `nix` from the caller's `PATH`, which is how these tests substitute a stub.
-fn prepend_path(env: &mut EnvGuard, dir: &Path) {
+/// Makes the runner see a caller `PATH` with `dir` in front, on this thread,
+/// until the guard is dropped. The builder resolves `nix` from the caller's
+/// `PATH`, which is how these tests substitute a stub; the process environment
+/// itself is never changed.
+fn prepend_path(dir: &Path) -> ScopedRuntimeEnv {
     let mut paths = vec![dir.to_path_buf()];
     if let Some(existing) = std::env::var_os("PATH") {
         paths.extend(std::env::split_paths(&existing));
     }
-    env.set(
-        "PATH",
-        std::env::join_paths(paths).expect("failed to compose PATH for test"),
-    );
+    ScopedRuntimeEnv::new(
+        RuntimeEnv::empty()
+            .with_path(std::env::join_paths(paths).expect("failed to compose PATH for test")),
+    )
 }
 
 fn make_flake_manager(hidden_root: &Path) -> NailsManager<MockFilesystem> {
@@ -57,7 +58,6 @@ fn write_executable_script(path: &Path, body: &str) {
 }
 
 #[test]
-#[serial]
 fn read_only_flake_preflight_uses_read_only_metadata_and_attr_checks_only() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let hidden_root = temp_dir.path();
@@ -73,8 +73,7 @@ fn read_only_flake_preflight_uses_read_only_metadata_and_attr_checks_only() {
         ),
     );
 
-    let mut env = EnvGuard::lock();
-    prepend_path(&mut env, &bin_dir);
+    let _env = prepend_path(&bin_dir);
 
     let manager = make_flake_manager(hidden_root);
     manager
@@ -120,7 +119,6 @@ fn read_only_flake_preflight_uses_read_only_metadata_and_attr_checks_only() {
 }
 
 #[test]
-#[serial]
 fn read_only_flake_preflight_reports_missing_selected_attr_without_mutation() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let hidden_root = temp_dir.path();
@@ -136,8 +134,7 @@ fn read_only_flake_preflight_reports_missing_selected_attr_without_mutation() {
         ),
     );
 
-    let mut env = EnvGuard::lock();
-    prepend_path(&mut env, &bin_dir);
+    let _env = prepend_path(&bin_dir);
 
     let manager = make_flake_manager(hidden_root);
     let err = manager
@@ -155,7 +152,6 @@ fn read_only_flake_preflight_reports_missing_selected_attr_without_mutation() {
 }
 
 #[test]
-#[serial]
 fn overlay_only_skips_read_only_flake_preflight_entirely() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let hidden_root = temp_dir.path();
@@ -171,8 +167,7 @@ fn overlay_only_skips_read_only_flake_preflight_entirely() {
         ),
     );
 
-    let mut env = EnvGuard::lock();
-    prepend_path(&mut env, &bin_dir);
+    let _env = prepend_path(&bin_dir);
 
     let manager = make_flake_manager(hidden_root);
     manager

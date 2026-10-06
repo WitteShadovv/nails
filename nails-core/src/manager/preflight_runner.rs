@@ -53,6 +53,10 @@ pub struct RegistryInputs {
     /// the decoy-persistence check then warns instead of failing. The effective
     /// value is this flag OR the `accept_persistent_decoy` config key.
     pub accept_persistent_decoy: bool,
+    /// The caller's `PATH` from the startup snapshot, whose directories the
+    /// binary-location check probes for decoy symlinks. `None` (the default
+    /// used by unit tests that build inputs directly) probes nothing.
+    pub caller_path: Option<std::ffi::OsString>,
 }
 
 /// Assemble the pre-flight check registry for a set of [`RegistryInputs`].
@@ -249,9 +253,10 @@ pub fn build_registry<F: Filesystem>(
 
     // Warns when the running binary, or a PATH symlink to it, is not on the
     // hidden volume.
-    registry.add_check(Box::new(BinaryLocationCheck::new(
-        config.hidden_volume_root.clone(),
-    )));
+    registry.add_check(Box::new(
+        BinaryLocationCheck::new(config.hidden_volume_root.clone())
+            .with_caller_path(inputs.caller_path.as_deref()),
+    ));
 
     // Warns (never fails) about the decoy autostart entries, enabled user
     // services, lingering and autologin the hidden session would inherit. When no
@@ -352,6 +357,7 @@ impl<F: Filesystem> NailsManager<F> {
             // can inspect the decoy state; an unresolved operator simply skips it.
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
             accept_persistent_decoy,
+            caller_path: self.runtime_env().path.clone(),
         };
 
         // The host's config layer contributes its own checks; it is `Some` only

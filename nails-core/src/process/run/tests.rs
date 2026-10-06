@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
-use crate::test_support::EnvGuard;
-use serial_test::serial;
+use crate::RuntimeEnv;
+use crate::runtime_env::ScopedRuntimeEnv;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Component;
@@ -15,14 +15,27 @@ fn write_file(path: &Path, body: &str, mode: u32) {
     fs::set_permissions(path, permissions).unwrap();
 }
 
-/// Puts `dir` in front of `PATH` until `env` is dropped. The original entries
-/// stay so that a program the test does not stub still resolves.
-fn prepend_path(env: &mut EnvGuard, dir: &Path) {
+/// Makes the runner see a caller `PATH` with `dir` in front, on this thread,
+/// until the guard is dropped. The test process's own entries follow so that a
+/// program the test does not stub still resolves; the process environment
+/// itself is never changed.
+fn prepend_path(dir: &Path) -> ScopedRuntimeEnv {
     let mut dirs = vec![dir.to_path_buf()];
     if let Some(existing) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&existing));
     }
-    env.set("PATH", std::env::join_paths(dirs).unwrap());
+    ScopedRuntimeEnv::new(RuntimeEnv::empty().with_path(std::env::join_paths(dirs).unwrap()))
+}
+
+/// Makes the runner see `vars` as the caller's environment, on this thread.
+fn caller_env(vars: &[(&str, &str)]) -> ScopedRuntimeEnv {
+    ScopedRuntimeEnv::new(
+        RuntimeEnv::empty().with_inherited(
+            vars.iter()
+                .map(|(key, value)| ((*key).into(), (*value).into()))
+                .collect(),
+        ),
+    )
 }
 
 fn io_error(err: NailsError) -> std::io::Error {
@@ -55,7 +68,6 @@ fn tool_missing_from_the_system_tool_dirs_is_not_found() {
 }
 
 #[test]
-#[serial]
 fn tool_resolution_ignores_the_caller_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     write_file(
@@ -63,8 +75,7 @@ fn tool_resolution_ignores_the_caller_path() {
         "#!/bin/sh\n",
         0o755,
     );
-    let mut env = EnvGuard::lock();
-    prepend_path(&mut env, temp_dir.path());
+    let _env = prepend_path(temp_dir.path());
 
     let err = io_error(resolve(&Program::Tool("nails-stub-tool"), None).unwrap_err());
 
@@ -101,13 +112,11 @@ fn find_executable_skips_directories_and_non_executable_files() {
 }
 
 #[test]
-#[serial]
 fn caller_path_resolves_through_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     let stub = temp_dir.path().join("nails-stub-tool");
     write_file(&stub, "#!/bin/sh\n", 0o755);
-    let mut env = EnvGuard::lock();
-    prepend_path(&mut env, temp_dir.path());
+    let _env = prepend_path(temp_dir.path());
 
     assert_eq!(
         resolve(&Program::CallerPath("nails-stub-tool"), None).unwrap(),
@@ -116,7 +125,6 @@ fn caller_path_resolves_through_path() {
 }
 
 #[test]
-#[serial]
 fn caller_path_skips_relative_path_entries() {
     let temp_dir = tempfile::tempdir().unwrap();
     write_file(
@@ -124,7 +132,6 @@ fn caller_path_skips_relative_path_entries() {
         "#!/bin/sh\n",
         0o755,
     );
-    let mut env = EnvGuard::lock();
     let cwd = std::env::current_dir().unwrap();
     let depth = cwd
         .components()
@@ -133,7 +140,7 @@ fn caller_path_skips_relative_path_entries() {
     let relative =
         PathBuf::from("../".repeat(depth)).join(temp_dir.path().strip_prefix("/").unwrap());
     assert!(relative.join("nails-stub-tool").is_file());
-    prepend_path(&mut env, &relative);
+    let _env = prepend_path(&relative);
 
     let err = io_error(resolve(&Program::CallerPath("nails-stub-tool"), None).unwrap_err());
 
@@ -156,7 +163,6 @@ fn caller_path_resolves_through_an_injected_search_path() {
 }
 
 #[test]
-#[serial]
 fn injected_search_path_replaces_the_caller_path() {
     let on_path = tempfile::tempdir().unwrap();
     write_file(
@@ -165,8 +171,7 @@ fn injected_search_path_replaces_the_caller_path() {
         0o755,
     );
     let empty = tempfile::tempdir().unwrap();
-    let mut env = EnvGuard::lock();
-    prepend_path(&mut env, on_path.path());
+    let _env = prepend_path(on_path.path());
 
     let err = io_error(
         resolve(
@@ -283,16 +288,16 @@ fn child_env_keys(command: ProcessCommand) -> Vec<String> {
 }
 
 #[test]
-#[serial]
 fn real_runner_gives_the_child_only_the_allowlisted_environment() {
     // A secret the caller holds (dropped), locale/terminal variables (kept), and
     // NIX_PATH (dropped unless the command opts in).
-    let mut env = EnvGuard::lock();
-    env.set("NAILS_RUN_SECRET", "leak")
-        .set("LANG", "en_US.UTF-8")
-        .set("LC_ALL", "C")
-        .set("TERM", "xterm-256color")
-        .set("NIX_PATH", "nixpkgs=/caller/channel");
+    let _env = caller_env(&[
+        ("NAILS_RUN_SECRET", "leak"),
+        ("LANG", "en_US.UTF-8"),
+        ("LC_ALL", "C"),
+        ("TERM", "xterm-256color"),
+        ("NIX_PATH", "nixpkgs=/caller/channel"),
+    ]);
 
     let keys = child_env_keys(ProcessCommand::tool("env").allow_in_test_runtime());
 
@@ -318,11 +323,9 @@ fn real_runner_gives_the_child_only_the_allowlisted_environment() {
 }
 
 #[test]
-#[serial]
 fn real_runner_sets_a_fixed_path_the_caller_cannot_override() {
     let temp_dir = tempfile::tempdir().unwrap();
-    let mut env = EnvGuard::lock();
-    prepend_path(&mut env, temp_dir.path());
+    let _env = prepend_path(temp_dir.path());
 
     // allow_env("PATH") must not win over the fixed PATH.
     let (ok, stdout, _) = RealProcessRunner
@@ -339,10 +342,8 @@ fn real_runner_sets_a_fixed_path_the_caller_cannot_override() {
 }
 
 #[test]
-#[serial]
 fn real_runner_passes_allowed_variables_through() {
-    let mut env = EnvGuard::lock();
-    env.set("NIX_PATH", "nixpkgs=/caller/channel");
+    let _env = caller_env(&[("NIX_PATH", "nixpkgs=/caller/channel")]);
 
     let base = ProcessCommand::tool("sh")
         .args(["-c", "printf '%s' \"${NIX_PATH-unset}\""])
@@ -357,11 +358,9 @@ fn real_runner_passes_allowed_variables_through() {
 }
 
 #[test]
-#[serial]
 fn real_runner_sets_explicit_session_variables_on_the_child() {
     // The caller does not hold DBUS_SESSION_BUS_ADDRESS; set_env supplies the
     // operator's session bus explicitly, as the notify-send path does.
-    let _env = EnvGuard::lock();
 
     let (ok, stdout, _) = RealProcessRunner
         .run_text(
@@ -377,10 +376,8 @@ fn real_runner_sets_explicit_session_variables_on_the_child() {
 }
 
 #[test]
-#[serial]
 fn real_runner_set_env_cannot_override_the_fixed_path() {
     // set_env must not be able to redirect the child onto a caller-chosen PATH.
-    let _env = EnvGuard::lock();
 
     let (ok, stdout, _) = RealProcessRunner
         .run_text(
@@ -448,7 +445,6 @@ fn sleep_pid_state(pid: i32) -> Option<char> {
 }
 
 #[test]
-#[serial]
 fn deadline_kills_the_whole_process_group() {
     let temp_dir = tempfile::tempdir().unwrap();
     let pid_file = temp_dir.path().join("grandchild.pid");
