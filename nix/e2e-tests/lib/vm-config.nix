@@ -25,6 +25,13 @@
       }
     ];
 
+    # Most tests read the host Nix store over 9p. The 16 KiB default msize
+    # splits every larger read and readdir into many round trips, and QEMU's
+    # own 9p documentation recommends raising it. 256 KiB stays below the
+    # virtio transport's ceiling (PAGE_SIZE * (VIRTQUEUE_NUM - 3), about
+    # 500 KiB), so no kernel clamps it.
+    msize = 262144;
+
     # Keeping restrictNetwork = false is harmless and avoids the QEMU "-net none"
     # flag that can interfere with the test framework's own virtual network.
     restrictNetwork = false;
