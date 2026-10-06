@@ -3,10 +3,11 @@
 
 use super::gate::ActivationGateTestGuard;
 use super::maybe_block_after_activating_state_transition;
+use super::step_progress::StepProgress;
 use super::{
-    HiddenConfigOutcome, INTEGRITY_VERIFIED_TARGETS, SessionRestartPhase, StepProgress,
-    derive_security_label, determine_session_restart_phase, is_protected_base_unit,
-    overlay_status_body, record_surviving_writers,
+    HiddenConfigOutcome, INTEGRITY_VERIFIED_TARGETS, SessionRestartPhase, derive_security_label,
+    determine_session_restart_phase, is_protected_base_unit, overlay_status_body,
+    record_surviving_writers,
 };
 use crate::DecoyWriter;
 use crate::Verbosity;
