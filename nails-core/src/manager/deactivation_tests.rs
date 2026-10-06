@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::merge_protected_pids;
+use super::process_teardown::merge_protected_pids;
 use super::reboot::{
     PostDeactivationReboot, REBOOT_BINARY_OVERRIDE_ENV, SYSTEMCTL_REBOOT_OVERRIDE_ENV,
     dispatch_reboot_candidates, reboot_candidates, reboot_then_restore_decoy_on_failure,
@@ -240,7 +240,7 @@ fn verify_history_truncation_passes_when_files_are_small() {
 
 #[test]
 fn owner_pid_signalled_only_for_emergency_and_recover() {
-    use super::{ManagerDeactivationKind, owner_pid_to_signal};
+    use super::{ManagerDeactivationKind, process_teardown::owner_pid_to_signal};
 
     // A live owner that is not us is signalled under the state-independent
     // teardowns...
@@ -262,7 +262,7 @@ fn owner_pid_signalled_only_for_emergency_and_recover() {
 
 #[test]
 fn owner_pid_signal_skips_sentinel_and_self() {
-    use super::{ManagerDeactivationKind, owner_pid_to_signal};
+    use super::{ManagerDeactivationKind, process_teardown::owner_pid_to_signal};
 
     // The unset sentinel (0) is never a live owner.
     assert_eq!(
@@ -278,7 +278,7 @@ fn owner_pid_signal_skips_sentinel_and_self() {
 
 #[test]
 fn own_invocation_process_spares_ancestry_session_and_group() {
-    use super::is_own_invocation_process;
+    use super::process_teardown::is_own_invocation_process;
 
     let ancestry = [100u32, 200, 300];
     let self_sid = 100;
@@ -312,7 +312,7 @@ fn own_invocation_process_spares_ancestry_session_and_group() {
 
 #[test]
 fn own_invocation_process_ignores_zero_sentinels() {
-    use super::is_own_invocation_process;
+    use super::process_teardown::is_own_invocation_process;
 
     // An unreadable self or candidate session/group collapses to 0; a 0 must
     // never match-by-accident and spare an unrelated process.
@@ -324,7 +324,7 @@ fn own_invocation_process_ignores_zero_sentinels() {
 
 #[test]
 fn overlay_kill_candidate_is_gated_on_the_overlay_device() {
-    use super::candidate_is_overlay_rooted;
+    use super::process_teardown::candidate_is_overlay_rooted;
 
     // A path-matched candidate whose references are on the overlay device is
     // genuinely inside the overlay and is killed.
@@ -343,7 +343,7 @@ fn overlay_kill_candidate_is_gated_on_the_overlay_device() {
 
 #[test]
 fn a_decoy_mount_point_left_after_its_overlay_is_not_a_leftover() {
-    use super::still_nails_owned;
+    use super::unmount::still_nails_owned;
     use crate::filesystem::NailsMounts;
     use std::path::{Path, PathBuf};
 
