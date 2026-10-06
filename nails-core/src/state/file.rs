@@ -130,21 +130,20 @@ impl PlatformState {
 /// environment usage, defeating NAILS' plausible deniability.
 /// The graphical session a hidden environment ran under.
 ///
-/// Captured at activation from the session-kill restart plan and consulted by
-/// emergency teardown to end the hidden session and restart its display manager,
-/// so the decoy greeter reappears once the overlays are gone.
+/// Captured at activation from the session-kill restart plan as a record of the
+/// session activation took over. No teardown acts on it: emergency never ends a
+/// logind session and never touches the display manager or X server.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HiddenSession {
     /// The operator uid whose logind session the hidden environment took over.
     pub target_uid: u32,
 
-    /// The logind session id, when activation resolved one. `None` falls back to
-    /// terminating the user, which ends every session the user owns.
+    /// The logind session id, when activation resolved one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
 
-    /// The display-manager unit to restart after teardown so the decoy greeter
-    /// comes back. `None` when no display manager was recorded.
+    /// The display-manager unit activation restarted. `None` when none was
+    /// recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_manager: Option<String>,
 }
@@ -282,10 +281,10 @@ pub struct StateFile {
     /// The graphical session the hidden environment ran under, when activation
     /// terminated one to take over the display.
     ///
-    /// Recorded from the session-kill restart plan so emergency teardown can end
-    /// the same logind session and restart the right display manager afterwards,
-    /// bringing the decoy greeter back. `None` for a TTY/headless activation that
-    /// never touched a graphical session. Cleared on deactivation.
+    /// Recorded from the session-kill restart plan; no teardown acts on it (the
+    /// operator's graphical session is never ended or logged out by a teardown).
+    /// `None` for a TTY/headless activation that never touched a graphical
+    /// session. Cleared on deactivation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hidden_session: Option<HiddenSession>,
 

@@ -731,6 +731,10 @@ mod tests {
         assert_eq!(output.status.code(), Some(0), "stderr={stderr}");
         assert!(stderr.contains("did you mean `enabled`?"), "{stderr}");
         assert!(stderr.contains("continuing with defaults"), "{stderr}");
+        // Emergency never touches the display manager, so it never promises a
+        // greeter.
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(!stdout.to_lowercase().contains("greeter"), "{stdout}");
     }
 
     #[test]

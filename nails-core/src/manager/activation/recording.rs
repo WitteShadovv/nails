@@ -59,8 +59,9 @@ impl<F: Filesystem> NailsManager<F> {
     }
 
     /// Record the hidden graphical session in the cached state from the
-    /// session-kill restart plan, so emergency teardown can end the same logind
-    /// session and restart its display manager. A no-op when activation did not
+    /// session-kill restart plan, as a record of what activation took over. No
+    /// teardown acts on it: emergency never ends a logind session and never touches
+    /// the display manager or X server. A no-op when activation did not
     /// take over a graphical session (no target uid in the plan).
     pub(crate) fn record_hidden_session(&self, plan: &crate::process::SessionRestartPlan) {
         let Some(target_uid) = plan.target_uid else {

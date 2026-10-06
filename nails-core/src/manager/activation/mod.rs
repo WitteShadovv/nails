@@ -611,8 +611,8 @@ impl<F: Filesystem> NailsManager<F> {
         // Pre-flight confirmed the hidden volume: keep the progress record that
         // `nails status` reads from here on (removed when activation returns).
         guard.attach_progress_record(&mut step);
-        // Record the graphical session we took over (if any) so emergency teardown
-        // can end the same logind session and bring its display manager back.
+        // Record the graphical session we took over (if any). It is only a record:
+        // no teardown ends that session or touches its display manager.
         guard.record_hidden_session(&restart_plan);
         maybe_block_after_activating_state_transition(guard.runtime_env())?;
 
