@@ -90,11 +90,18 @@ struct JournalFdSite {
 /// journal fds as leaks. A fd's mount id, by contrast, is exactly the overlay
 /// mount's id, read from the same namespace the fd lives in.
 fn inspect_journald_journal_fds(upper_dir: &Path) -> (JournaldFdCheck, Option<String>) {
-    use std::os::unix::fs::MetadataExt;
-
     let Some(pid) = find_journald_pid() else {
         return (JournaldFdCheck::Indeterminate, None);
     };
+    inspect_journal_fds_of(pid, upper_dir)
+}
+
+/// Judge the writable persistent-journal fds process `pid` holds against the
+/// `/var` overlay whose upper directory is `upper_dir` (see
+/// [`inspect_journald_journal_fds`]). Split out so the real-kernel tests can
+/// point it at their own process inside a private mount namespace.
+fn inspect_journal_fds_of(pid: u32, upper_dir: &Path) -> (JournaldFdCheck, Option<String>) {
+    use std::os::unix::fs::MetadataExt;
 
     // The /var overlay's mount id, read from journald's namespace and matched on
     // both the mount point and the upper dir so a foreign overlay on /var cannot be
@@ -266,6 +273,10 @@ fn is_host_journald(pid: u32) -> bool {
         && crate::process::identity::parent_pid(pid) == Some(1)
         && crate::process::mount_refs::same_mount_namespace(pid)
 }
+
+#[cfg(test)]
+#[path = "journald_fd_kernel_tests.rs"]
+mod kernel_tests;
 
 #[cfg(test)]
 mod fdinfo_tests {

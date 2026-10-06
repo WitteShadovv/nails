@@ -21,7 +21,10 @@
 //!
 //! The AppArmor policy on ubuntu-24.04 blocks unprivileged user namespaces, which
 //! is why the job builds the binary unprivileged and then runs it under `sudo
-//! unshare` rather than relying on a rootless namespace.
+//! unshare` rather than relying on a rootless namespace. Where user namespaces
+//! are available, `just privileged-rootless` runs every test here except the
+//! whiteout one rootless (a user namespace cannot set the `trusted.*` xattrs a
+//! directory whiteout needs); see docs/testing-strategy.md.
 
 use nails_core::NailsError;
 use nails_core::filesystem::{Filesystem, RealFilesystem, parse_overlay_opts, read_mountinfo};
