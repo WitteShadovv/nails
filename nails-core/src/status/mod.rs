@@ -79,7 +79,7 @@ pub mod report;
 // Re-export report types
 pub use report::{
     ActivationInFlight, OpSecReminder, OverlayMountStatus, Posture, ReminderSeverity, StatusReport,
-    VerificationStatus, format_uptime, generate_opsec_reminders,
+    UndeliveredNotification, VerificationStatus, format_uptime, generate_opsec_reminders,
 };
 
 pub struct StatusCommand<F: Filesystem> {
@@ -313,6 +313,24 @@ impl<F: Filesystem> StatusCommand<F> {
         };
         let last_switch_warning = state_file.last_switch_warning().map(str::to_string);
 
+        // Results still queued on the hidden volume never reached the operator
+        // (no session to push to, and no login dispatch since). An unreadable
+        // queue (status run by another user) simply reports none.
+        let undelivered_notifications =
+            crate::notification::read_pending(&self.config.hidden_volume_root)
+                .map(|pending| {
+                    pending
+                        .into_iter()
+                        .map(|(_, notification)| UndeliveredNotification {
+                            title: notification.title,
+                            created_at: notification.created_at,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+        let notify_send_missing =
+            crate::notification::deliver::notify_send_missing(&self.config.hidden_volume_root);
+
         // Whether the hidden root is still a live mount. Expected while active;
         // in the Decoy posture it is the signature of an emergency teardown that
         // did not close the backend, which the CLI reports as Critical.
@@ -380,6 +398,8 @@ impl<F: Filesystem> StatusCommand<F> {
             last_deactivation,
             activation_in_flight,
             last_activation,
+            undelivered_notifications,
+            notify_send_missing,
         };
 
         Ok(report)
@@ -503,6 +523,8 @@ impl Default for StatusReport {
             last_deactivation: None,
             activation_in_flight: None,
             last_activation: None,
+            undelivered_notifications: Vec::new(),
+            notify_send_missing: false,
         }
     }
 }

@@ -12,12 +12,51 @@ use std::path::Path;
 use crate::cli::output::envelope::Envelope;
 use crate::cli::output::{ExitStatus, OutputSettings};
 
+/// The real surroundings of the login dispatch loop: the hidden-volume queue,
+/// the activation-in-progress marker, the wall clock and a real sleep.
+struct LoginDispatch<'a> {
+    hidden_volume_root: &'a Path,
+    started: std::time::Instant,
+}
+
+impl<'a> LoginDispatch<'a> {
+    fn new(hidden_volume_root: &'a Path) -> Self {
+        Self {
+            hidden_volume_root,
+            started: std::time::Instant::now(),
+        }
+    }
+}
+
+impl nails_core::notification::deliver::DispatchEnv for LoginDispatch<'_> {
+    fn dispatch(&mut self) -> nails_core::Result<usize> {
+        nails_core::notification::dispatch_all(self.hidden_volume_root)
+    }
+
+    fn activation_in_progress(&mut self) -> bool {
+        nails_core::notification::deliver::result_pending(
+            self.hidden_volume_root,
+            std::time::SystemTime::now(),
+        )
+    }
+
+    fn elapsed(&self) -> std::time::Duration {
+        self.started.elapsed()
+    }
+
+    fn sleep(&mut self, duration: std::time::Duration) {
+        std::thread::sleep(duration);
+    }
+}
+
 /// Execute the notify-dispatch command.
 ///
-/// Reads all pending notification files, sends them via `notify-send`, and
-/// deletes successfully dispatched files. Runs from XDG autostart, so a dispatch
-/// failure is reported but still exits [`ExitStatus::Ok`]; only a config load
-/// failure exits [`ExitStatus::Config`].
+/// Dispatches the pending notification files via `notify-send` (deleting each
+/// one delivered) and, while an activation is still in progress, keeps
+/// dispatching until it settles — at most fifteen minutes — so a result raised
+/// after the session restart reaches the operator. Runs from XDG autostart, so
+/// a dispatch failure is reported but still exits [`ExitStatus::Ok`]; only a
+/// config load failure exits [`ExitStatus::Config`].
 ///
 /// # Arguments
 ///
@@ -30,36 +69,13 @@ pub fn execute(settings: &OutputSettings, config_override: Option<&Path>) -> Exi
         Err(status) => return status,
     };
 
-    match nails_core::notification::dispatch_all(&config.hidden_volume_root) {
-        Ok(initial_count) => {
-            let mut total = initial_count;
-            // If we dispatched any notifications, the system is activating.
-            // Poll briefly for late-arriving notifications (e.g., NixOS rebuild result).
-            // We use an idle-timeout strategy instead of breaking on the first late hit:
-            // after dispatching a late notification, continue polling for 3 more empty
-            // cycles (15s) in case more arrive. If nothing ever arrives after the initial
-            // batch, give up after 6 empty cycles (30s).
-            if initial_count > 0 {
-                let mut idle_streak = 0u32;
-                for _ in 0..60 {
-                    std::thread::sleep(std::time::Duration::from_secs(5));
-                    match nails_core::notification::dispatch_all(&config.hidden_volume_root) {
-                        Ok(0) => {
-                            idle_streak += 1;
-                            // Exit after 3 consecutive empty polls following a late dispatch,
-                            // or after 6 empty polls if we never got a late one.
-                            if (total > initial_count && idle_streak >= 3) || idle_streak >= 6 {
-                                break;
-                            }
-                        }
-                        Ok(n) => {
-                            total += n;
-                            idle_streak = 0;
-                        }
-                        Err(_) => break,
-                    }
-                }
-            }
+    let mut env = LoginDispatch::new(&config.hidden_volume_root);
+    match nails_core::notification::deliver::dispatch_until_settled(
+        &mut env,
+        nails_core::notification::deliver::DISPATCH_POLL_INTERVAL,
+        nails_core::notification::deliver::DISPATCH_POLL_CAP,
+    ) {
+        Ok(total) => {
             if json {
                 Envelope::success(
                     "notify-dispatch",

@@ -13,6 +13,8 @@ in
   ];
 
   testScript = _: ''
+    import json
+
     ${notificationHelpers.writeNotificationConfigFn}
     ${notificationHelpers.writeNotificationSignalFn}
     ${notificationHelpers.runCommandCaptureFn}
@@ -34,16 +36,36 @@ in
             body="Dispatcher should degrade cleanly",
         )
 
-    with subtest("dispatcher exits cleanly and preserves pending file"):
-        result = run_command_capture(
-            f'su - testuser -c "PATH=/run/wrappers/bin:/bin {nails_path} --no-log-file --config {config_path} notify-dispatch --json"',
-            "/tmp/notify-missing-bin",
-        )
+    dispatch_command = f'su - testuser -c "PATH=/run/wrappers/bin:/bin {nails_path} --no-log-file --config {config_path} notify-dispatch --json"'
+    missing_record = "/mnt/data/notifications/.notify-send-missing"
+    missing_warning = "notify-send not found on PATH; desktop notifications stay queued"
+
+    with subtest("dispatcher exits cleanly, preserves the pending file and records the missing notify-send"):
+        result = run_command_capture(dispatch_command, "/tmp/notify-missing-bin")
         assert result["rc"] == 0, result
 
         data = dispatch_result(result["stdout"])
         assert data == {"dispatched": 0, "status": "ok"}, data
-        assert "notify-send not found in the system tool directories; skipping desktop notifications" in result["stderr"], result["stderr"]
+        assert missing_warning in result["stderr"], result["stderr"]
         machine.succeed(f"test -f {signal_path}")
+        # Recorded on the hidden volume so status can explain the queue.
+        machine.succeed(f"test -f {missing_record}")
+
+    with subtest("the missing notify-send is reported once, not at every dispatch"):
+        result = run_command_capture(dispatch_command, "/tmp/notify-missing-bin-again")
+        assert result["rc"] == 0, result
+        assert missing_warning not in result["stderr"], result["stderr"]
+        machine.succeed(f"test -f {signal_path}")
+
+    with subtest("status lists the undelivered notification and why"):
+        status = json.loads(
+            machine.succeed(f"{nails_path} --no-log-file --config {config_path} status --json")
+        )["data"]
+        titles = [n["title"] for n in status["undelivered_notifications"]]
+        assert titles == ["No notify-send"], status
+        assert status["notify_send_missing"] is True, status
+        human = machine.succeed(f"{nails_path} --no-log-file --config {config_path} status")
+        assert "Undelivered notifications: 1" in human, human
+        assert "notify-send was not found" in human, human
   '';
 }

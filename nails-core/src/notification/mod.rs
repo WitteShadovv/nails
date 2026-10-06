@@ -16,6 +16,8 @@
 //! 2. An XDG autostart entry runs `nails notify-dispatch` on user login
 //! 3. The dispatch command reads pending files, calls `notify-send`, and deletes them
 
+pub mod deliver;
+
 use crate::Result;
 use crate::filesystem::SafeRoot;
 use serde::{Deserialize, Serialize};
@@ -107,6 +109,87 @@ pub fn notifications_dir(hidden_volume_root: &Path) -> PathBuf {
 /// name already exists (same title written in the same millisecond), an
 /// incrementing numeric suffix is appended so no notification is overwritten.
 pub fn write_notification(hidden_volume_root: &Path, notification: &Notification) -> Result<()> {
+    let (safe_root, target_user) = prepare_notifications_dir(hidden_volume_root)?;
+    let rel_dir = Path::new("notifications");
+
+    // Generate a filename that sorts chronologically
+    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%3f");
+    let safe_title: String = notification
+        .title
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(40)
+        .collect();
+    let json = serde_json::to_string_pretty(notification).map_err(|e| {
+        crate::NailsError::IoError(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to serialize notification: {}", e),
+        ))
+    })?;
+
+    let base = format!("{}_{}", timestamp, safe_title);
+    let (relative, mut file) = create_signal_file(&safe_root, rel_dir, &base)?;
+    let path = hidden_volume_root.join(&relative);
+
+    file.write_all(json.as_bytes()).map_err(|e| {
+        crate::NailsError::IoError(std::io::Error::new(
+            e.kind(),
+            format!(
+                "Failed to write notification file {}: {}",
+                path.display(),
+                e
+            ),
+        ))
+    })?;
+
+    // Pin the mode to 0o600 (owner rw only) regardless of the umask. This acts
+    // on the open descriptor, not the path: the directory already belongs to
+    // the operator, so a path-based chmod could be redirected through a symlink
+    // swapped in after the create. The file is chown'd to the target user below
+    // so dispatch_all can read and delete it.
+    if let Err(e) = nix::sys::stat::fchmod(
+        file.as_fd(),
+        nix::sys::stat::Mode::from_bits_truncate(0o600),
+    ) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "Failed to set permissions on notification file (non-fatal)"
+        );
+    }
+
+    // Hand the signal file to the operator for the same reason. Operating on the
+    // open file descriptor avoids any symlink race on the path.
+    if let Some(user) = target_user.as_ref()
+        && let Err(e) = fchown_to_user(&file, user)
+    {
+        tracing::warn!(
+            path = %path.display(),
+            error = %e,
+            "Failed to set ownership on notification file (non-fatal)"
+        );
+    }
+
+    tracing::debug!(path = %path.display(), title = %notification.title, "Wrote notification signal file");
+    Ok(())
+}
+
+/// Open the hidden root and make sure `notifications/` exists, is `0700` and
+/// belongs to the operator (who runs the login-time dispatcher), returning the
+/// anchored root and the resolved operator.
+///
+/// Every create under the hidden root goes through [`SafeRoot`], so a symlink
+/// or `..` planted at the `notifications` component cannot redirect a
+/// root-privileged write onto the decoy filesystem.
+fn prepare_notifications_dir(
+    hidden_volume_root: &Path,
+) -> Result<(SafeRoot, Option<crate::TargetUser>)> {
     // Anchor every create under the hidden root through SafeRoot, so a symlink or
     // `..` planted at the `notifications` component cannot redirect this
     // root-privileged write onto the decoy filesystem.
@@ -187,72 +270,7 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
         );
     }
 
-    // Generate a filename that sorts chronologically
-    let timestamp = chrono::Utc::now().format("%Y%m%dT%H%M%S%3f");
-    let safe_title: String = notification
-        .title
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .take(40)
-        .collect();
-    let json = serde_json::to_string_pretty(notification).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Failed to serialize notification: {}", e),
-        ))
-    })?;
-
-    let base = format!("{}_{}", timestamp, safe_title);
-    let (relative, mut file) = create_signal_file(&safe_root, rel_dir, &base)?;
-    let path = hidden_volume_root.join(&relative);
-
-    file.write_all(json.as_bytes()).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to write notification file {}: {}",
-                path.display(),
-                e
-            ),
-        ))
-    })?;
-
-    // Pin the mode to 0o600 (owner rw only) regardless of the umask. This acts
-    // on the open descriptor, not the path: the directory already belongs to
-    // the operator, so a path-based chmod could be redirected through a symlink
-    // swapped in after the create. The file is chown'd to the target user below
-    // so dispatch_all can read and delete it.
-    if let Err(e) = nix::sys::stat::fchmod(
-        file.as_fd(),
-        nix::sys::stat::Mode::from_bits_truncate(0o600),
-    ) {
-        tracing::warn!(
-            path = %path.display(),
-            error = %e,
-            "Failed to set permissions on notification file (non-fatal)"
-        );
-    }
-
-    // Hand the signal file to the operator for the same reason. Operating on the
-    // open file descriptor avoids any symlink race on the path.
-    if let Some(user) = target_user.as_ref()
-        && let Err(e) = fchown_to_user(&file, user)
-    {
-        tracing::warn!(
-            path = %path.display(),
-            error = %e,
-            "Failed to set ownership on notification file (non-fatal)"
-        );
-    }
-
-    tracing::debug!(path = %path.display(), title = %notification.title, "Wrote notification signal file");
-    Ok(())
+    Ok((safe_root, target_user))
 }
 
 /// Create a new signal file named `{base}.json` under `rel_dir` (relative to the
@@ -484,9 +502,18 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
         // `notify-send` is resolved from the fixed system tool directories, never
         // the caller's PATH; if none of them holds it there is nothing to do.
         if !notify_send_available() {
-            tracing::warn!(
-                "notify-send not found in the system tool directories; skipping desktop notifications"
-            );
+            // Recorded once on the hidden volume, so `nails status` can explain
+            // why results stay undelivered, without a warning at every login.
+            match deliver::record_notify_send_missing(hidden_volume_root) {
+                Ok(true) => tracing::warn!(
+                    "notify-send not found on PATH; desktop notifications stay queued and \
+                     `nails status` lists them"
+                ),
+                Ok(false) => {
+                    tracing::debug!("notify-send still missing; notifications stay queued")
+                }
+                Err(e) => tracing::warn!(error = %e, "notify-send not found; could not record it"),
+            }
             return Ok(0);
         }
 
@@ -495,6 +522,7 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
             match send_notification(notification) {
                 Ok(()) => {
                     let _ = clear_notification(hidden_volume_root, path);
+                    deliver::clear_notify_send_missing(hidden_volume_root);
                     dispatched += 1;
                 }
                 Err(e) => {

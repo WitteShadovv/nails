@@ -154,6 +154,36 @@ pub(super) fn last_activation_line(report: &nails_core::status::StatusReport) ->
     })
 }
 
+/// The undelivered-results block: how many result notifications never reached
+/// the operator, one line per title, and why when `notify-send` was missing.
+/// Empty when everything was delivered.
+pub(super) fn undelivered_lines(
+    report: &nails_core::status::StatusReport,
+    style: Style,
+) -> Vec<String> {
+    let pending = &report.undelivered_notifications;
+    if pending.is_empty() && !report.notify_send_missing {
+        return Vec::new();
+    }
+    let mut lines = vec![format!("Undelivered notifications: {}", pending.len())];
+    lines.extend(
+        pending
+            .iter()
+            .map(|n| format!("  {}", style.marked(Mark::Bullet, &n.title))),
+    );
+    if report.notify_send_missing {
+        lines.push(format!(
+            "  {}",
+            style.marked(
+                Mark::Warn,
+                "notify-send was not found in the session, so desktop notifications \
+                 could not be shown; install libnotify in the hidden configuration",
+            )
+        ));
+    }
+    lines
+}
+
 /// Print the status report header: box drawing, or an ASCII rule.
 pub fn print_status_header(style: Style) {
     if style.ascii {
@@ -272,6 +302,14 @@ pub fn print_status_human(
     if let Some(line) = last_activation_line(report) {
         println!();
         println!("{line}");
+    }
+
+    let undelivered = undelivered_lines(report, style);
+    if !undelivered.is_empty() {
+        println!();
+        for line in undelivered {
+            println!("{line}");
+        }
     }
 
     if let Some(line) = hidden_volume_line(report) {

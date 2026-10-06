@@ -547,6 +547,11 @@ fn test_status_report_serialization() {
         decoy_persistent: false,
         last_deactivation: None,
         activation_in_flight: None,
+        undelivered_notifications: vec![crate::status::UndeliveredNotification {
+            title: "NixOS Rebuild Failed".to_string(),
+            created_at: "2026-01-01T00:00:00Z".to_string(),
+        }],
+        notify_send_missing: true,
         last_activation: Some(crate::state::LastActivation {
             duration_ms: 1500,
             finished_at: Utc::now(),

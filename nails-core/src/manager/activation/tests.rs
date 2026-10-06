@@ -537,11 +537,16 @@ fn successful_activation_records_its_duration_and_keeps_a_progress_record_until_
         .position(|op| matches!(op, MockOp::MountOverlay { .. }))
         .expect("overlays mounted");
     assert!(first_progress < first_mount);
-    // ...and removed once the activation finished.
+    // ...and removed once the activation finished, together with the marker
+    // that holds the login dispatcher while the activation runs.
     assert!(
         !fs.path_exists(&progress_path).expect("probe"),
         "progress record must not outlive the activation"
     );
+    assert!(!crate::notification::deliver::result_pending(
+        &hidden_root,
+        std::time::SystemTime::now()
+    ));
 
     // The duration is persisted with the Active state.
     let state_file = crate::StateFile::load(&manager.config().state_file_path).expect("load");
@@ -549,6 +554,60 @@ fn successful_activation_records_its_duration_and_keeps_a_progress_record_until_
         .last_activation
         .expect("last activation recorded on success");
     assert!(last.finished_at <= chrono::Utc::now());
+}
+
+/// Records, at each step, whether the login dispatcher would see an activation
+/// in progress.
+struct MarkerProbe {
+    hidden_root: PathBuf,
+    seen: std::sync::Arc<std::sync::Mutex<Vec<(String, bool)>>>,
+}
+
+impl crate::reporter::progress::Reporter for MarkerProbe {
+    fn step(&mut self, step: crate::reporter::progress::Step<'_>) {
+        let pending = crate::notification::deliver::result_pending(
+            &self.hidden_root,
+            std::time::SystemTime::now(),
+        );
+        self.seen
+            .lock()
+            .unwrap()
+            .push((step.phase.to_string(), pending));
+    }
+    fn detail(&mut self, _detail: &str) {}
+    fn heartbeat(&mut self, _a: &str, _e: std::time::Duration, _l: Option<&str>) {}
+    fn finish(&mut self, _success: bool) {}
+}
+
+#[test]
+fn the_login_dispatcher_sees_the_activation_in_progress_from_the_activating_state() {
+    let (mut manager, _fs, _tmp) = rollback_test_manager();
+    let hidden_root = manager.config().hidden_volume_root.clone();
+    let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    manager.set_reporter(crate::reporter::progress::shared(MarkerProbe {
+        hidden_root: hidden_root.clone(),
+        seen: seen.clone(),
+    }));
+
+    manager.activate(true).expect("activation should succeed");
+
+    let seen = seen.lock().unwrap().clone();
+    let pending_at = |phase: &str| {
+        seen.iter()
+            .find(|(p, _)| p == phase)
+            .map(|(_, pending)| *pending)
+            .unwrap_or_else(|| panic!("no {phase} step in {seen:?}"))
+    };
+    // Not before pre-flight has confirmed the hidden volume...
+    assert!(!pending_at("preflight"));
+    // ...but throughout the mount, switch and session restart...
+    assert!(pending_at("overlay_mount"));
+    assert!(pending_at("session_restart"));
+    // ...and gone once the activation returned.
+    assert!(!crate::notification::deliver::result_pending(
+        &hidden_root,
+        std::time::SystemTime::now()
+    ));
 }
 
 #[test]
@@ -566,6 +625,10 @@ fn a_failed_activation_removes_its_progress_record_and_records_no_duration() {
 
     assert!(result.is_err());
     assert!(!fs.path_exists(&progress_path).expect("probe"));
+    assert!(!crate::notification::deliver::result_pending(
+        &manager.config().hidden_volume_root,
+        std::time::SystemTime::now()
+    ));
     let state_file = crate::StateFile::load(&manager.config().state_file_path).expect("load");
     assert!(state_file.last_activation.is_none());
 }

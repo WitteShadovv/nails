@@ -445,6 +445,45 @@ fn status_reports_an_activation_in_flight_with_its_phase_and_elapsed_time() {
 }
 
 #[test]
+fn status_lists_undelivered_results_and_a_missing_notify_send() {
+    let harness = Harness::new();
+    harness.write_state(SystemState::Inactive);
+    for title in ["NAILS Overlay Active", "NixOS Rebuild Failed"] {
+        nails_core::notification::write_notification(
+            &harness.hidden_root,
+            &nails_core::Notification {
+                title: title.to_string(),
+                body: "body".to_string(),
+                urgency: "critical".to_string(),
+                icon: None,
+                created_at: "2026-01-01T00:00:00Z".to_string(),
+            },
+        )
+        .expect("queue notification");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    nails_core::notification::deliver::record_notify_send_missing(&harness.hidden_root)
+        .expect("record missing notify-send");
+
+    let (code, value) = run_json(&harness.config, &["status"]);
+    assert_eq!(code, 0);
+    assert_matches_schema(&load_schema("status"), &value);
+    let titles: Vec<&str> = value["data"]["undelivered_notifications"]
+        .as_array()
+        .expect("undelivered list")
+        .iter()
+        .map(|n| n["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, vec!["NAILS Overlay Active", "NixOS Rebuild Failed"]);
+    assert_eq!(value["data"]["notify_send_missing"], true);
+
+    let stdout = String::from_utf8(run(&harness.config, &[], &["status"]).stdout).unwrap();
+    assert!(stdout.contains("Undelivered notifications: 2"), "{stdout}");
+    assert!(stdout.contains("NixOS Rebuild Failed"), "{stdout}");
+    assert!(stdout.contains("notify-send was not found"), "{stdout}");
+}
+
+#[test]
 fn status_reports_the_last_activation_duration() {
     let harness = Harness::new();
     let file = StateFile {

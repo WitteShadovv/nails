@@ -8,7 +8,8 @@
 mod types;
 
 pub use types::{
-    ActivationInFlight, OverlayMountStatus, Posture, StatusReport, VerificationStatus,
+    ActivationInFlight, OverlayMountStatus, Posture, StatusReport, UndeliveredNotification,
+    VerificationStatus,
 };
 
 use serde::{Deserialize, Serialize};

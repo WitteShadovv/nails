@@ -162,6 +162,23 @@
             "finished_at": { "type": "string", "format": "date-time" }
           }
         },
+        "undelivered_notifications": {
+          "description": "Result notifications still queued on the hidden volume: neither pushed into the operator's session nor dispatched at login. Omitted when empty.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["title", "created_at"],
+            "properties": {
+              "title": { "type": "string", "minLength": 1 },
+              "created_at": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "notify_send_missing": {
+          "description": "Present (true) when notify-send was missing in the operator's session when notifications were due.",
+          "const": true
+        },
         "opsec_reminders": {
           "type": "array",
           "items": {

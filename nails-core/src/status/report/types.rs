@@ -422,6 +422,25 @@ pub struct StatusReport {
     /// deactivation. `None` before the first successful activation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_activation: Option<crate::state::LastActivation>,
+
+    /// Result notifications still queued on the hidden volume: neither pushed
+    /// into the operator's session nor dispatched at login. Oldest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub undelivered_notifications: Vec<UndeliveredNotification>,
+
+    /// Whether `notify-send` was missing in the operator's session when
+    /// notifications were due, which is why they stayed queued.
+    #[serde(default)]
+    pub notify_send_missing: bool,
+}
+
+/// A queued result notification that has not reached the operator.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UndeliveredNotification {
+    /// The notification title (e.g. `NixOS Rebuild Failed`).
+    pub title: String,
+    /// When it was raised (ISO 8601).
+    pub created_at: String,
 }
 
 /// An activation that is still running, as seen by `status`.

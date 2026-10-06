@@ -32,6 +32,14 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Added
 
+- Activation results reach the operator reliably. A committed activation pushes its queued
+  result notifications straight into the operator's graphical session (`systemd-run --user
+  --machine=<user>@.host`, falling back to `runuser`), removing each one delivered; with no
+  session bus they stay queued as before. `nails notify-dispatch` keeps dispatching while an
+  activation is in progress (signalled by a marker in the notifications directory) for up to 15
+  minutes, instead of giving up after a fixed idle count. A missing `notify-send` is recorded once
+  on the hidden volume, and `nails status` lists undelivered notifications
+  (`undelivered_notifications` and `notify_send_missing` in `--json`).
 - Activation reports progress through one reporter per surface: on an interactive terminal a
   spinner line shows the step and its elapsed time, with the overlay being mounted or the latest
   build line under it, and each finished step stays behind with its duration; on a pipe or

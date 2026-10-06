@@ -85,6 +85,21 @@ pub struct StatusData {
     /// Timing of the most recent successful activation.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_activation: Option<LastActivationJson>,
+    /// Result notifications that never reached the operator.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    undelivered_notifications: Vec<UndeliveredNotificationJson>,
+    /// Whether `notify-send` was missing in the session when notifications
+    /// were due. Omitted when not.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    notify_send_missing: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct UndeliveredNotificationJson {
+    /// Notification title.
+    title: String,
+    /// When it was raised (ISO 8601).
+    created_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -234,6 +249,15 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
                 duration_ms: last.duration_ms,
                 finished_at: last.finished_at.to_rfc3339(),
             }),
+        undelivered_notifications: report
+            .undelivered_notifications
+            .iter()
+            .map(|n| UndeliveredNotificationJson {
+                title: n.title.clone(),
+                created_at: n.created_at.clone(),
+            })
+            .collect(),
+        notify_send_missing: report.notify_send_missing,
     }
 }
 
@@ -268,6 +292,8 @@ pub fn build_status_data_unknown(reason: String) -> StatusData {
         last_deactivation: None,
         activation_in_flight: None,
         last_activation: None,
+        undelivered_notifications: Vec::new(),
+        notify_send_missing: false,
     }
 }
 

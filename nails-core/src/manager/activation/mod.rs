@@ -774,7 +774,9 @@ impl<F: Filesystem> NailsManager<F> {
         // activation has committed. Best-effort: the copy and watcher are a safety
         // net for a backend that fails mid-session, not part of the overlay stack,
         // so a failure here must never undo a successful activation.
+        // Then push the queued results straight into the operator's session.
         self.install_backend_runtime_copy(&overlay_targets_for_copy);
+        self.deliver_results_to_session();
 
         let final_state = self.current_state().ok();
 
@@ -859,11 +861,17 @@ impl<F: Filesystem> NailsManager<F> {
 
     /// Start keeping `step`'s hidden-volume progress record. Only call once the
     /// hidden volume is confirmed mounted, so the record never lands on the decoy.
+    ///
+    /// Also arms the activation-in-progress marker the login dispatcher polls
+    /// on, removed with the progress record when the activation returns.
     fn attach_progress_record(&self, step: &mut StepProgress) {
         step.attach_file(
             self.filesystem.clone(),
             self.config.hidden_volume_root.clone(),
         );
+        step.result_marker = Some(crate::notification::deliver::ResultPendingMarker::arm(
+            &self.config.hidden_volume_root,
+        ));
     }
 
     /// Write the Active state together with this activation's duration.
@@ -1010,6 +1018,49 @@ impl<F: Filesystem> NailsManager<F> {
     /// ([`crate::watcher`]) is then started from that copy as a transient systemd
     /// unit. Everything here is best-effort: a failure leaves the session running
     /// without the safety net and is logged, never fatal.
+    /// Push the queued result notifications into the operator's graphical
+    /// session now that the activation has committed, so they do not wait for
+    /// the next login. Best-effort: without a session bus (or on any failure)
+    /// they stay queued for the login dispatcher, and `nails status` lists
+    /// whatever is still undelivered. Only a committed activation pushes; after a
+    /// rollback the operator is on the decoy session.
+    fn deliver_results_to_session(&self) {
+        use crate::notification::deliver::{
+            PushOutcome, RealSessionNotifier, SessionUser, push_pending,
+        };
+
+        if crate::runtime_safety::should_skip_host_interaction() {
+            return;
+        }
+        let user = crate::TargetUser::resolve().ok().map(|user| SessionUser {
+            uid: user.uid,
+            name: user.name,
+        });
+        match push_pending(
+            &self.config().hidden_volume_root,
+            user.as_ref(),
+            &RealSessionNotifier,
+        ) {
+            Ok(PushOutcome::Delivered(count)) => {
+                tracing::debug!(
+                    count,
+                    "Delivered the activation results to the operator's session"
+                );
+            }
+            Ok(PushOutcome::NoSession) => {
+                tracing::debug!(
+                    "No session bus to push to; results stay queued for the next login"
+                );
+            }
+            Ok(PushOutcome::Failed { delivered, error }) => tracing::warn!(
+                delivered,
+                error = %error,
+                "Could not push every activation result to the session; the rest stay queued"
+            ),
+            Err(e) => tracing::warn!(error = %e, "Could not read the queued activation results"),
+        }
+    }
+
     fn install_backend_runtime_copy(&self, overlay_targets: &[std::path::PathBuf]) {
         if crate::runtime_safety::should_skip_host_interaction() {
             return;
@@ -1467,6 +1518,8 @@ struct StepProgress {
     started_at: chrono::DateTime<chrono::Utc>,
     hub: std::sync::Arc<std::sync::Mutex<Tee>>,
     succeeded: bool,
+    /// Tells the login dispatcher an activation is in progress; removed on drop.
+    result_marker: Option<crate::notification::deliver::ResultPendingMarker>,
     /// Declared last so the active-reporter slot is released after `hub`.
     _scope: crate::reporter::progress::ActiveScope,
 }
@@ -1485,6 +1538,7 @@ impl StepProgress {
             started_at: chrono::Utc::now(),
             hub,
             succeeded: false,
+            result_marker: None,
             _scope: crate::reporter::progress::install(active),
         }
     }
