@@ -745,3 +745,93 @@ fn test_emergency_detaches_overlays_even_when_the_final_state_write_fails() {
         "the overlay must be detached even though the state file could not be written"
     );
 }
+
+/// Kill the hidden volume under a live manager: its mount point stops being a
+/// directory at all, so every later state read and write fails with a real
+/// I/O error (ENOTDIR), as a dead or yanked backend does. Returns a guard that
+/// removes the stand-in file so the temp dir can be cleaned up.
+fn kill_hidden_volume(hidden_root: &Path) -> impl Drop + use<> {
+    struct Restore(PathBuf);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+            let _ = std::fs::create_dir_all(&self.0);
+        }
+    }
+    std::fs::remove_dir_all(hidden_root).unwrap();
+    std::fs::write(hidden_root, b"").unwrap();
+    Restore(hidden_root.to_path_buf())
+}
+
+#[test]
+fn test_emergency_tears_down_every_overlay_when_the_hidden_volume_is_dead() {
+    // The untrusted path used to abort on its very first state write (the
+    // Degraded baseline) when the backend was dead, leaving every overlay
+    // mounted. Every state write is best-effort there: the overlays come down
+    // regardless, and the failed writes are reported.
+    let manager = setup_manager_in_state(SystemState::Activating {
+        started_at: chrono::Utc::now(),
+    });
+    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
+    {
+        let guard = manager.lock().unwrap();
+        mount_nails_overlay(guard.filesystem(), &hidden_root, Path::new("/home"));
+        mount_nails_overlay(guard.filesystem(), &hidden_root, Path::new("/etc"));
+    }
+    let _restore = kill_hidden_volume(&hidden_root);
+
+    let report = manager
+        .lock()
+        .unwrap()
+        .emergency_deactivate()
+        .expect("a dead hidden volume must never stop the emergency teardown");
+
+    let guard = manager.lock().unwrap();
+    assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+    assert!(!guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
+    assert_eq!(report.final_state, SystemState::Inactive);
+    assert!(
+        report.state_write_errors.len() >= 2,
+        "both the baseline and the final state write must be reported: {:?}",
+        report.state_write_errors
+    );
+    assert!(
+        report
+            .state_write_errors
+            .iter()
+            .any(|e| e.starts_with("untrusted baseline")),
+        "{:?}",
+        report.state_write_errors
+    );
+}
+
+#[test]
+fn test_emergency_reports_incomplete_not_io_error_when_the_hidden_volume_is_dead() {
+    // A mount that cannot be removed still ends DeactivationIncomplete (exit 75)
+    // even though the Degraded record cannot be written: the state write never
+    // masks the real outcome, and every other overlay still comes down.
+    let manager = setup_manager_in_state(SystemState::Activating {
+        started_at: chrono::Utc::now(),
+    });
+    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
+    {
+        let guard = manager.lock().unwrap();
+        mount_nails_overlay(guard.filesystem(), &hidden_root, Path::new("/home"));
+        mount_nails_overlay(guard.filesystem(), &hidden_root, Path::new("/etc"));
+        guard
+            .filesystem()
+            .mock_set_unmount_should_fail("/home", true);
+    }
+    let _restore = kill_hidden_volume(&hidden_root);
+
+    let result = manager.lock().unwrap().emergency_deactivate();
+
+    match result {
+        Err(NailsError::DeactivationIncomplete { remaining_mounts }) => {
+            assert_eq!(remaining_mounts, vec![PathBuf::from("/home")]);
+        }
+        other => panic!("expected DeactivationIncomplete, got {other:?}"),
+    }
+    let guard = manager.lock().unwrap();
+    assert!(!guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
+}

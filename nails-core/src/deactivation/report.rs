@@ -107,6 +107,14 @@ pub struct DeactivationReport {
     /// residue of the hidden session can only be cleared by powering the machine
     /// off, so the operator is warned.
     pub reboot_recommended: bool,
+
+    /// State writes a best-effort teardown could not persist.
+    ///
+    /// The state file lives on the hidden volume. Emergency and recovery never
+    /// let a dead, read-only or failing backend stop the unmounts, so a state
+    /// write that fails is recorded here instead of aborting the teardown. Empty
+    /// when every state transition was written.
+    pub state_write_errors: Vec<String>,
 }
 
 impl DeactivationReport {
@@ -205,6 +213,14 @@ impl std::fmt::Display for DeactivationReport {
         if self.runtime_journal_scrubbed {
             writeln!(f)?;
             writeln!(f, "✓ Runtime journal scrubbed (/run/log/journal)")?;
+        }
+
+        if !self.state_write_errors.is_empty() {
+            writeln!(f)?;
+            writeln!(f, "State Not Recorded (hidden volume unavailable):")?;
+            for error in &self.state_write_errors {
+                writeln!(f, "  ! {}", error)?;
+            }
         }
 
         if self.reboot_recommended {

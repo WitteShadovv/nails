@@ -257,6 +257,9 @@ struct EmergencyData {
     force_detached_overlays: Vec<String>,
     /// Best-effort cleanup errors (non-fatal).
     cleanup_errors: Vec<String>,
+    /// State writes the teardown could not persist on the hidden volume (a dead
+    /// or read-only backend); the overlays were torn down regardless.
+    state_write_errors: Vec<String>,
     /// Whether the page cache was dropped after unmount.
     page_cache_dropped: bool,
     /// Whether the volatile runtime journal under `/run/log/journal` was scrubbed.
@@ -319,6 +322,7 @@ fn print_emergency_json(view: &EmergencyView) {
         detached_overlays: report.unmounted_overlays.clone(),
         force_detached_overlays: report.force_detached_overlays.clone(),
         cleanup_errors: report.cleanup_report.errors.clone(),
+        state_write_errors: report.state_write_errors.clone(),
         page_cache_dropped: report.page_cache_dropped,
         runtime_journal_scrubbed: report.runtime_journal_scrubbed,
         history_truncation_verified: report.history_truncation_verified,
@@ -384,6 +388,13 @@ fn render_emergency_success(settings: &OutputSettings, view: &EmergencyView) {
             report.cleanup_report.errors.len()
         ));
         for error in &report.cleanup_report.errors {
+            out.push(format!("    - {error}"));
+        }
+    }
+
+    if !report.state_write_errors.is_empty() {
+        out.push("  ! The hidden volume could not record the teardown state:".to_string());
+        for error in &report.state_write_errors {
             out.push(format!("    - {error}"));
         }
     }

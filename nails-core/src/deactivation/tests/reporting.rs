@@ -19,6 +19,7 @@ fn test_deactivation_report_new() {
         history_truncation_verified: None,
         runtime_journal_scrubbed: false,
         reboot_recommended: false,
+        state_write_errors: Vec::new(),
     };
 
     assert!(report.is_successful());
@@ -41,6 +42,7 @@ fn test_deactivation_report_display_already_inactive() {
         history_truncation_verified: None,
         runtime_journal_scrubbed: false,
         reboot_recommended: false,
+        state_write_errors: Vec::new(),
     };
 
     let output = format!("{}", report);
@@ -66,6 +68,7 @@ fn test_deactivation_report_display_with_items() {
         history_truncation_verified: None,
         runtime_journal_scrubbed: false,
         reboot_recommended: false,
+        state_write_errors: Vec::new(),
     };
 
     let output = format!("{}", report);
@@ -115,6 +118,7 @@ fn test_deactivation_report_display_with_post_unmount_cleanup() {
         history_truncation_verified: None,
         runtime_journal_scrubbed: false,
         reboot_recommended: false,
+        state_write_errors: Vec::new(),
     };
 
     let output = format!("{}", report);
@@ -157,6 +161,7 @@ fn test_deactivation_report_display_without_post_unmount_cleanup() {
         history_truncation_verified: None,
         runtime_journal_scrubbed: false,
         reboot_recommended: false,
+        state_write_errors: Vec::new(),
     };
 
     let output = format!("{}", report);
@@ -181,6 +186,7 @@ fn test_deactivation_report_is_successful_with_inactive_state() {
         history_truncation_verified: None,
         runtime_journal_scrubbed: false,
         reboot_recommended: false,
+        state_write_errors: Vec::new(),
     };
 
     assert!(report.is_successful());
@@ -205,6 +211,7 @@ fn test_deactivation_report_is_not_successful_with_active_state() {
         history_truncation_verified: None,
         runtime_journal_scrubbed: false,
         reboot_recommended: false,
+        state_write_errors: Vec::new(),
     };
 
     assert!(!report.is_successful());

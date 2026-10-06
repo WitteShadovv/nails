@@ -173,6 +173,7 @@ fn test_status_surfaces_last_deactivation_when_hidden_root_attached() {
         history_truncation_verified: None,
         runtime_journal_scrubbed: true,
         reboot_recommended: false,
+        state_write_errors: Vec::new(),
     };
     let built = LastDeactivationReport::from_report(&teardown, "2026-10-06T00:00:00Z");
     let json = serde_json::to_string(&built).unwrap();

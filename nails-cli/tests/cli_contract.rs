@@ -658,6 +658,7 @@ fn emergency_schema_accepts_a_complete_teardown() {
             "detached_overlays": ["/home", "/etc"],
             "force_detached_overlays": [],
             "cleanup_errors": [],
+            "state_write_errors": ["inactive: state.json: read-only file system"],
             "page_cache_dropped": true,
             "runtime_journal_scrubbed": true,
             "history_truncation_verified": null,

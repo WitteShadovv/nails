@@ -904,6 +904,7 @@ fn sample_last_deactivation() -> nails_core::LastDeactivationReport {
         history_truncation_verified: None,
         runtime_journal_scrubbed: true,
         reboot_recommended: false,
+        state_write_errors: Vec::new(),
     };
     LastDeactivationReport::from_report(&teardown, "2026-10-06T00:00:00Z")
 }

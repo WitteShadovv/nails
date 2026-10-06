@@ -18,6 +18,7 @@
         "detached_overlays",
         "force_detached_overlays",
         "cleanup_errors",
+        "state_write_errors",
         "page_cache_dropped",
         "runtime_journal_scrubbed",
         "hidden_root_still_mounted",
@@ -36,6 +37,10 @@
           "items": { "type": "string", "minLength": 1 }
         },
         "cleanup_errors": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "state_write_errors": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },

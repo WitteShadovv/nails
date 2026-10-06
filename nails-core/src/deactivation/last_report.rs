@@ -245,6 +245,7 @@ mod tests {
             history_truncation_verified: None,
             runtime_journal_scrubbed: true,
             reboot_recommended: false,
+            state_write_errors: Vec::new(),
         }
     }
 

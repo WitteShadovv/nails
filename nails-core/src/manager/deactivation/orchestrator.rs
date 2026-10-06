@@ -15,6 +15,7 @@ use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError, Result,
     StateGuard, SystemState,
 };
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -55,6 +56,10 @@ pub struct DeactivationOrchestrator {
     mode: DeactivationMode,
     restore_decoy_profile: bool,
     untrusted_state: bool,
+    /// State writes the teardown tolerated failing (emergency only), surfaced in
+    /// the report so the operator learns the hidden volume could not record the
+    /// teardown.
+    state_write_errors: RefCell<Vec<String>>,
 }
 
 impl DeactivationOrchestrator {
@@ -65,6 +70,7 @@ impl DeactivationOrchestrator {
             mode: DeactivationMode::Normal,
             restore_decoy_profile: true,
             untrusted_state: false,
+            state_write_errors: RefCell::new(Vec::new()),
         }
     }
 
@@ -112,37 +118,54 @@ impl DeactivationOrchestrator {
         }
     }
 
-    /// Standard teardown driven by a trustworthy Active state and its recorded
-    /// overlay list.
     /// Persist a teardown state transition, tolerating a write failure in an
     /// emergency.
     ///
     /// The state file lives on the hidden volume. A normal deactivation fails
-    /// closed if it cannot be written, but emergency is the panic button: a dead
-    /// or read-only backend must never stop it from detaching the overlays. In
-    /// emergency mode a failed write is logged and the teardown continues (the
-    /// in-memory cache still reflects the new state, so later reads keep working
-    /// and the committed guard does not roll back to ACTIVE).
+    /// closed if it cannot be written, but emergency (and recovery) is the panic
+    /// button: a dead, failing or read-only backend must never stop it from
+    /// detaching the overlays. In emergency mode a failed write is logged,
+    /// recorded for the report, and the teardown continues (the in-memory cache
+    /// still reflects the new state, so later reads keep working and the
+    /// committed guard does not roll back to ACTIVE).
     fn persist_teardown_state_or_tolerate<F: Filesystem>(
         &self,
         guard: &mut StateGuard<'_, F>,
         new_state: SystemState,
         phase: &str,
     ) -> Result<()> {
-        if let Err(e) = guard.update_state(new_state) {
-            if self.mode != DeactivationMode::Emergency {
-                return Err(e);
-            }
-            tracing::warn!(
-                error = %e,
-                phase,
-                "Emergency could not persist the teardown state (the hidden backend is \
-                 unavailable); the overlays are detached, so the teardown continues"
-            );
+        let result = guard.update_state(new_state);
+        self.tolerate_state_write(result, phase)
+    }
+
+    /// Apply the emergency state-write policy to the outcome of one write: a
+    /// normal teardown propagates the error, an emergency records it and goes on.
+    fn tolerate_state_write(&self, result: Result<()>, phase: &str) -> Result<()> {
+        let Err(e) = result else {
+            return Ok(());
+        };
+        if self.mode != DeactivationMode::Emergency {
+            return Err(e);
         }
+        tracing::warn!(
+            error = %e,
+            phase,
+            "Emergency could not persist the teardown state (the hidden backend is \
+             unavailable); the teardown continues"
+        );
+        self.state_write_errors
+            .borrow_mut()
+            .push(format!("{phase}: {e}"));
         Ok(())
     }
 
+    /// The state writes tolerated so far, drained for the report.
+    fn take_state_write_errors(&self) -> Vec<String> {
+        std::mem::take(&mut *self.state_write_errors.borrow_mut())
+    }
+
+    /// Standard teardown driven by a trustworthy Active state and its recorded
+    /// overlay list.
     fn run_from_trusted_state<F: Filesystem>(
         &self,
         manager: &mut NailsManager<F>,
@@ -175,6 +198,7 @@ impl DeactivationOrchestrator {
                 history_truncation_verified: None,
                 runtime_journal_scrubbed: false,
                 reboot_recommended: false,
+                state_write_errors: Vec::new(),
             });
         }
 
@@ -358,6 +382,7 @@ impl DeactivationOrchestrator {
             history_truncation_verified: None,
             runtime_journal_scrubbed: false,
             reboot_recommended: false,
+            state_write_errors: self.take_state_write_errors(),
         })
     }
 
@@ -407,8 +432,11 @@ impl DeactivationOrchestrator {
         let degraded = guard
             .current_state()?
             .enter_degraded(reason, remaining_mounts.clone());
-        guard.update_state(degraded)?;
+        let written = guard.update_state(degraded);
+        // Commit before judging the write: whatever happens, the guard must never
+        // roll the state back to ACTIVE once an overlay has been detached.
         guard.commit();
+        self.tolerate_state_write(written, "degraded")?;
 
         Err(NailsError::DeactivationIncomplete { remaining_mounts })
     }
@@ -449,7 +477,11 @@ impl DeactivationOrchestrator {
             reason: "emergency teardown from an untrusted state".to_string(),
             remaining_mounts: overlays_to_unmount.clone(),
         };
-        manager.force_state(baseline.clone())?;
+        // Best-effort in an emergency: a dead or read-only hidden volume must never
+        // keep the overlays mounted. force_state updates the cache even when the
+        // write fails, so the teardown below still sees the Degraded baseline.
+        let forced = manager.force_state(baseline.clone());
+        self.tolerate_state_write(forced, "untrusted baseline")?;
 
         let mut guard = StateGuard::new(&mut *manager, baseline);
 
@@ -505,7 +537,7 @@ impl DeactivationOrchestrator {
         // Clean teardown: clear tracking and go Degraded -> Inactive.
         guard.clear_overlay_status_in_cache()?;
         let inactive_state = guard.current_state()?.recover()?;
-        guard.update_state(inactive_state)?;
+        self.persist_teardown_state_or_tolerate(&mut guard, inactive_state, "inactive")?;
         guard.commit();
 
         tracing::info!(
@@ -530,6 +562,7 @@ impl DeactivationOrchestrator {
             history_truncation_verified: None,
             runtime_journal_scrubbed: false,
             reboot_recommended: false,
+            state_write_errors: self.take_state_write_errors(),
         })
     }
 

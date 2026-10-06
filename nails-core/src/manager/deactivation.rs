@@ -527,6 +527,7 @@ impl<F: Filesystem> NailsManager<F> {
                     history_truncation_verified: None,
                     runtime_journal_scrubbed: false,
                     reboot_recommended: false,
+                    state_write_errors: Vec::new(),
                 });
             }
         }
