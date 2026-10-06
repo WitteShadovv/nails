@@ -11,10 +11,9 @@
     # overlay-only backend is exercised on a non-NixOS host. See
     # nix/distro-tests/. flake.lock must be regenerated on a networked host to
     # pin this input; the development sandbox cannot fetch it.
-    nix-vm-test = {
-      url = "github:numtide/nix-vm-test";
-      inputs.nixpkgs.follows = "nixpkgs";
-    };
+    # nix-vm-test keeps its own nixpkgs: it drives the NixOS test driver with a
+    # command line that newer drivers reject, so it must not follow ours.
+    nix-vm-test.url = "github:numtide/nix-vm-test";
   };
 
   outputs =
