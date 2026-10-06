@@ -213,15 +213,6 @@ pub(super) fn candidate_is_overlay_rooted(
     references_overlay_mount
 }
 
-/// Send `signal` (e.g. `TERM`, `KILL`) to `pid`, best-effort.
-///
-/// Routes through the shared process runner so the host-tool resolution and the
-/// test-runtime guard apply exactly as they do for every other external command.
-pub(super) fn signal_pid(pid: u32, signal: &str) {
-    use crate::process::run::{ProcessRunner, RealProcessRunner, signal_command};
-    let _ = RealProcessRunner.run(&signal_command(pid, signal));
-}
-
 /// Decide whether a recorded activation owner pid should be signalled before an
 /// emergency/recover teardown.
 ///

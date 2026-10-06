@@ -33,7 +33,6 @@ use overlay_context::{OverlayContext, inspect_overlay_context, overlay_context_f
 use process_teardown::{
     candidate_is_overlay_rooted, current_process_ancestry, is_own_invocation_process,
     owner_pid_to_signal, read_proc_cgroup, read_session_and_pgid, self_session_and_pgid,
-    signal_pid,
 };
 
 pub use reboot::{HostEffects, PostTeardownPower};
@@ -346,7 +345,13 @@ impl<F: Filesystem> NailsManager<F> {
             );
         }
 
-        if pids.is_empty() {
+        // Pin each target now: the TERM/KILL sequence below signals these exact
+        // processes (pidfd), never a later process that reuses a pid.
+        let handles: Vec<crate::process::identity::ProcessHandle> = pids
+            .iter()
+            .filter_map(|&pid| crate::process::identity::ProcessHandle::open(pid))
+            .collect();
+        if handles.is_empty() {
             return;
         }
 
@@ -355,22 +360,22 @@ impl<F: Filesystem> NailsManager<F> {
         // job for every such unit first (never the unit this teardown runs in;
         // the graphical session's units were spared above), then signal.
         let own_unit = crate::process::cgroup_unit::own_service_unit();
-        let units: std::collections::BTreeSet<String> = pids
+        let units: std::collections::BTreeSet<String> = handles
             .iter()
-            .filter_map(|&pid| read_proc_cgroup(pid))
+            .filter_map(|handle| read_proc_cgroup(handle.pid()))
             .filter(|cgroup| !session_guard.covers(cgroup))
             .filter_map(|cgroup| crate::process::cgroup_unit::service_unit_from_cgroup(&cgroup))
             .filter(|unit| crate::process::cgroup_unit::may_stop_unit(own_unit.as_deref(), unit))
             .collect();
         process_teardown::enqueue_unit_stops(&units);
 
-        for &pid in &pids {
-            signal_pid(pid, "TERM");
+        for handle in &handles {
+            handle.signal(rustix::process::Signal::TERM);
         }
         std::thread::sleep(std::time::Duration::from_millis(300));
-        for &pid in &pids {
-            if std::path::Path::new(&format!("/proc/{pid}")).exists() {
-                signal_pid(pid, "KILL");
+        for handle in &handles {
+            if handle.is_alive() {
+                handle.signal(rustix::process::Signal::KILL);
             }
         }
     }
@@ -439,18 +444,21 @@ impl<F: Filesystem> NailsManager<F> {
             return;
         }
 
+        let Some(owner) = crate::process::identity::ProcessHandle::open(pid) else {
+            return;
+        };
         tracing::info!(
             pid,
             "Signalling the recorded activation owner before teardown"
         );
-        signal_pid(pid, "TERM");
+        owner.signal(rustix::process::Signal::TERM);
 
         // Emergency keeps the wait short so the overlays come down within a few
         // seconds; recovery is no panic button and allows the owner longer.
         let wait = kind.owner_exit_wait();
         let deadline = std::time::Instant::now() + wait;
         while std::time::Instant::now() < deadline {
-            if !crate::manager::state_management::pid_is_alive(pid) {
+            if !owner.is_alive() {
                 tracing::info!(pid, "Activation owner exited before teardown");
                 return;
             }

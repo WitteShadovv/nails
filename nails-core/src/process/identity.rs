@@ -20,9 +20,85 @@ pub(crate) fn proc_start_time(pid: u32) -> Option<u64> {
         .and_then(parse_stat_start_time)
 }
 
+/// A handle on one live process that signals it and only it.
+///
+/// It holds a pidfd (`pidfd_open`), so a signal can never reach a different
+/// process that later reuses the pid. On a kernel without pidfds (before 5.3)
+/// it falls back to checking the recorded start time right before a plain
+/// `kill`, which narrows the reuse window to that instant.
+pub(crate) struct ProcessHandle {
+    pid: u32,
+    start_time: u64,
+    pidfd: Option<std::os::fd::OwnedFd>,
+}
+
+impl ProcessHandle {
+    /// Open a handle on `pid`; `None` when the process is already gone.
+    pub(crate) fn open(pid: u32) -> Option<Self> {
+        let start_time = proc_start_time(pid)?;
+        let pidfd = i32::try_from(pid)
+            .ok()
+            .and_then(rustix::process::Pid::from_raw)
+            .and_then(|raw| {
+                rustix::process::pidfd_open(raw, rustix::process::PidfdFlags::empty()).ok()
+            });
+        // The pid may have been reused between the start-time read and the
+        // pidfd_open: only a handle whose process still has that start time is
+        // the process we looked at.
+        if proc_start_time(pid) != Some(start_time) {
+            return None;
+        }
+        Some(Self {
+            pid,
+            start_time,
+            pidfd,
+        })
+    }
+
+    /// The pid the handle was opened on.
+    pub(crate) fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Whether the process is still running (not exited, pid not reused).
+    pub(crate) fn is_alive(&self) -> bool {
+        proc_start_time(self.pid) == Some(self.start_time)
+    }
+
+    /// Send `signal` to exactly this process. `false` when it has gone.
+    pub(crate) fn signal(&self, signal: rustix::process::Signal) -> bool {
+        match &self.pidfd {
+            Some(pidfd) => rustix::process::pidfd_send_signal(pidfd, signal).is_ok(),
+            None => {
+                self.is_alive()
+                    && i32::try_from(self.pid)
+                        .ok()
+                        .and_then(rustix::process::Pid::from_raw)
+                        .is_some_and(|pid| rustix::process::kill_process(pid, signal).is_ok())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_handle_signals_its_process_and_nothing_after_it_is_gone() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap();
+        let handle = ProcessHandle::open(child.id()).expect("a live child");
+        assert!(handle.is_alive());
+        assert!(handle.signal(rustix::process::Signal::TERM));
+        child.wait().unwrap();
+        // Reaped: the handle reports it gone and refuses to signal anything.
+        assert!(!handle.is_alive());
+        assert!(!handle.signal(rustix::process::Signal::KILL));
+        assert!(ProcessHandle::open(child.id()).is_none());
+    }
 
     #[test]
     fn the_start_time_is_field_22_even_with_a_tricky_comm() {
