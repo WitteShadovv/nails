@@ -3,11 +3,12 @@
 
 //! Directory listing, enumeration, copy, size, and submount operations.
 
-use crate::process::run::COPY_BUDGET;
-use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
 use crate::{NailsError, Result};
-use std::collections::HashSet;
-use std::os::unix::fs::MetadataExt;
+use std::collections::{HashMap, HashSet};
+use std::ffi::OsStr;
+use std::io;
+use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub(super) fn list_directory(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -138,54 +139,233 @@ pub(super) fn modified_time(path: &Path) -> Result<chrono::DateTime<chrono::Utc>
     Ok(datetime)
 }
 
-pub(super) fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
-    copy_tree_with(&RealProcessRunner, src, dst)
-}
-
-/// Copies the contents of `src` into `dst` with `cp -a`.
+/// Copy the contents of `src` into `dst`, atime-safe and in-process.
 ///
-/// The pivot snapshot must keep ownership, modes, timestamps, xattrs, ACLs,
-/// hard links and special files. `cp -a` preserves all of them; a plain
-/// `std::fs` copy does not.
-fn copy_tree_with(runner: &dyn ProcessRunner, src: &Path, dst: &Path) -> Result<()> {
-    let mut source = src.as_os_str().to_os_string();
-    source.push("/.");
-    // The copy only touches the paths the caller chose, so it may run in tests.
-    // A snapshot of a very large tree can take minutes, so the budget is generous;
-    // it exists only so a `cp` wedged on bad storage cannot hang activation
-    // forever.
-    let command = ProcessCommand::tool("cp")
-        .arg("-a")
-        .arg("--")
-        .arg(&source)
-        .arg(dst)
-        .deadline(COPY_BUDGET)
-        .allow_in_test_runtime();
-
-    let output = runner.run(&command).map_err(|err| match err {
-        NailsError::IoError(io) => NailsError::IoError(std::io::Error::new(
-            io.kind(),
+/// This replaces the former `cp -a` child process. Like `cp -a` it keeps modes,
+/// ownership, timestamps, symlinks, hard links, special files and extended
+/// attributes, but unlike `cp -a` it opens every source for reading with
+/// `O_NOATIME`, so snapshotting a decoy tree (the vfat `/boot` pivot) never
+/// updates the lower files' access times — a forensic tell `cp` would leave.
+///
+/// `O_NOATIME` requires owning the file (or `CAP_FOWNER`); for a source the
+/// caller does not own the open falls back to a plain read, which is still
+/// correct, only not atime-preserving for that one file. Ownership, xattrs and
+/// timestamp restoration on the destination are best-effort: a vfat lower (the
+/// only filesystem that takes this path) carries none of them, and a tmpfs that
+/// rejects a `user.*` xattr must not fail the snapshot.
+pub(super) fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
+    let mut hard_links: HashMap<(u64, u64), PathBuf> = HashMap::new();
+    copy_dir_contents(src, dst, &mut hard_links).map_err(|err| {
+        NailsError::IoError(io::Error::new(
+            err.kind(),
             format!(
-                "Failed to run cp -a {}/. {}: {}",
+                "atime-safe copy of {}/. into {} failed: {}",
                 src.display(),
                 dst.display(),
-                io
+                err
             ),
-        )),
-        other => other,
-    })?;
+        ))
+    })
+}
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(NailsError::IoError(std::io::Error::other(format!(
-            "cp -a {}/. {} failed: {}",
-            src.display(),
-            dst.display(),
-            stderr.trim()
-        ))));
+/// Recursively copy the entries of `src_dir` into the already-existing `dst_dir`.
+fn copy_dir_contents(
+    src_dir: &Path,
+    dst_dir: &Path,
+    hard_links: &mut HashMap<(u64, u64), PathBuf>,
+) -> io::Result<()> {
+    for name in read_dir_noatime(src_dir)? {
+        let src = src_dir.join(&name);
+        let dst = dst_dir.join(&name);
+        let meta = std::fs::symlink_metadata(&src)?;
+        let file_type = meta.file_type();
+
+        if file_type.is_dir() {
+            match std::fs::create_dir(&dst) {
+                Ok(()) => {}
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+            copy_dir_contents(&src, &dst, hard_links)?;
+            // Apply the directory's own metadata AFTER its children exist, so
+            // creating them does not bump the mtime we are about to restore.
+            apply_metadata(&src, &dst, &meta, false);
+        } else if file_type.is_symlink() {
+            let target = std::fs::read_link(&src)?;
+            std::os::unix::fs::symlink(&target, &dst)?;
+            apply_metadata(&src, &dst, &meta, true);
+        } else if file_type.is_file() {
+            // A file reached through several hard links is copied once and then
+            // hard-linked, so the destination preserves the link structure.
+            let key = (meta.dev(), meta.ino());
+            if meta.nlink() > 1
+                && let Some(first) = hard_links.get(&key)
+            {
+                std::fs::hard_link(first, &dst)?;
+                continue;
+            }
+            copy_file_noatime(&src, &dst)?;
+            apply_metadata(&src, &dst, &meta, false);
+            if meta.nlink() > 1 {
+                hard_links.insert(key, dst);
+            }
+        } else {
+            // FIFO, socket or device node: recreate it with mknod, best-effort.
+            copy_special_file(&dst, &meta, &file_type);
+            apply_metadata(&src, &dst, &meta, false);
+        }
+    }
+    Ok(())
+}
+
+/// List the names in `dir`, opening it with `O_NOATIME` so the listing does not
+/// update the directory's access time.
+fn read_dir_noatime(dir: &Path) -> io::Result<Vec<std::ffi::OsString>> {
+    let fd = open_noatime(dir, true)?;
+    let dir_iter = rustix::fs::Dir::new(fd).map_err(io::Error::from)?;
+    let mut names = Vec::new();
+    for entry in dir_iter {
+        let entry = entry.map_err(io::Error::from)?;
+        let raw = entry.file_name().to_bytes();
+        if raw == b"." || raw == b".." {
+            continue;
+        }
+        names.push(OsStr::from_bytes(raw).to_os_string());
+    }
+    Ok(names)
+}
+
+/// Open `path` read-only with `O_NOATIME`, falling back to a plain open when the
+/// caller does not own the file (`EPERM`). Directories add `O_DIRECTORY`; other
+/// paths add `O_NOFOLLOW` so a race cannot redirect the read through a symlink.
+fn open_noatime(path: &Path, is_dir: bool) -> io::Result<std::os::fd::OwnedFd> {
+    use rustix::fs::{Mode, OFlags, open};
+
+    let mut base = OFlags::RDONLY | OFlags::CLOEXEC;
+    if is_dir {
+        base |= OFlags::DIRECTORY;
+    } else {
+        base |= OFlags::NOFOLLOW;
     }
 
+    match open(path, base | OFlags::NOATIME, Mode::empty()) {
+        Ok(fd) => Ok(fd),
+        // O_NOATIME needs file ownership or CAP_FOWNER; retry without it.
+        Err(rustix::io::Errno::PERM) => open(path, base, Mode::empty()).map_err(io::Error::from),
+        Err(e) => Err(io::Error::from(e)),
+    }
+}
+
+/// Copy one regular file's contents, reading the source with `O_NOATIME`.
+fn copy_file_noatime(src: &Path, dst: &Path) -> io::Result<()> {
+    let fd = open_noatime(src, false)?;
+    let mut reader = std::fs::File::from(fd);
+    let mut writer = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)?;
+    io::copy(&mut reader, &mut writer)?;
     Ok(())
+}
+
+/// Recreate a FIFO, socket or device node. Best-effort: a snapshot target that
+/// cannot hold one (or a caller without privilege for a device node) is skipped
+/// rather than failing the whole snapshot.
+fn copy_special_file(dst: &Path, meta: &std::fs::Metadata, file_type: &std::fs::FileType) {
+    use nix::sys::stat::{Mode, SFlag, mknod};
+
+    let kind = if file_type.is_fifo() {
+        SFlag::S_IFIFO
+    } else if file_type.is_socket() {
+        SFlag::S_IFSOCK
+    } else if file_type.is_char_device() {
+        SFlag::S_IFCHR
+    } else if file_type.is_block_device() {
+        SFlag::S_IFBLK
+    } else {
+        return;
+    };
+    let perm = Mode::from_bits_truncate(meta.mode() & 0o7777);
+    let _ = mknod(dst, kind, perm, meta.rdev());
+}
+
+/// Apply mode, ownership, extended attributes and timestamps from `src`'s
+/// metadata onto `dst`. Ownership, xattrs and timestamps are best-effort; the
+/// mode is only applied to non-symlinks (a symlink's own mode is fixed). The
+/// timestamps are set last so no earlier step overwrites the restored atime.
+fn apply_metadata(src: &Path, dst: &Path, meta: &std::fs::Metadata, is_symlink: bool) {
+    if !is_symlink {
+        let _ =
+            std::fs::set_permissions(dst, std::fs::Permissions::from_mode(meta.mode() & 0o7777));
+    }
+    restore_ownership(dst, meta, is_symlink);
+    copy_xattrs(src, dst);
+    restore_times(dst, meta, is_symlink);
+}
+
+fn restore_ownership(dst: &Path, meta: &std::fs::Metadata, is_symlink: bool) {
+    use nix::fcntl::{AT_FDCWD, AtFlags};
+    use nix::unistd::{Gid, Uid, fchownat};
+
+    let flag = if is_symlink {
+        AtFlags::AT_SYMLINK_NOFOLLOW
+    } else {
+        AtFlags::empty()
+    };
+    let _ = fchownat(
+        AT_FDCWD,
+        dst,
+        Some(Uid::from_raw(meta.uid())),
+        Some(Gid::from_raw(meta.gid())),
+        flag,
+    );
+}
+
+fn restore_times(dst: &Path, meta: &std::fs::Metadata, is_symlink: bool) {
+    use nix::fcntl::AT_FDCWD;
+    use nix::sys::stat::{UtimensatFlags, utimensat};
+    use nix::sys::time::TimeSpec;
+
+    let atime = TimeSpec::new(meta.atime(), meta.atime_nsec() as _);
+    let mtime = TimeSpec::new(meta.mtime(), meta.mtime_nsec() as _);
+    let flag = if is_symlink {
+        UtimensatFlags::NoFollowSymlink
+    } else {
+        UtimensatFlags::FollowSymlink
+    };
+    let _ = utimensat(AT_FDCWD, dst, &atime, &mtime, flag);
+}
+
+/// Copy every extended attribute from `src` to `dst`, following no symlinks.
+/// Best-effort: a filesystem without xattr support or one that rejects a name is
+/// silently skipped.
+fn copy_xattrs(src: &Path, dst: &Path) {
+    // A zero-length buffer turns the list/get calls into a size query.
+    let mut empty: [u8; 0] = [];
+    let Ok(size) = rustix::fs::llistxattr(src, &mut empty[..]) else {
+        return;
+    };
+    if size == 0 {
+        return;
+    }
+    let mut names = vec![0u8; size];
+    let Ok(written) = rustix::fs::llistxattr(src, &mut names[..]) else {
+        return;
+    };
+    names.truncate(written);
+
+    for name in names.split(|b| *b == 0).filter(|n| !n.is_empty()) {
+        let name = OsStr::from_bytes(name);
+        let Ok(vsize) = rustix::fs::lgetxattr(src, name, &mut empty[..]) else {
+            continue;
+        };
+        let mut value = vec![0u8; vsize];
+        let Ok(vwritten) = rustix::fs::lgetxattr(src, name, &mut value[..]) else {
+            continue;
+        };
+        value.truncate(vwritten);
+        let _ = rustix::fs::lsetxattr(dst, name, &value, rustix::fs::XattrFlags::empty());
+    }
 }
 
 /// Apparent size in bytes of `path` and everything below it, like `du -sb`.
@@ -245,7 +425,6 @@ pub(super) fn find_submounts(target: &Path) -> Result<Vec<crate::filesystem::Sub
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process::run::{MockProcessRunner, exited};
     use std::ffi::OsStr;
     use std::fs;
     use std::os::unix::ffi::OsStrExt;
@@ -263,56 +442,103 @@ mod tests {
     }
 
     #[test]
-    fn copy_tree_runs_cp_archive_on_the_source_contents() {
-        let runner = MockProcessRunner::new();
+    fn copy_tree_errors_when_the_source_is_missing() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dst = temp_dir.path().join("dst");
+        fs::create_dir_all(&dst).unwrap();
 
-        copy_tree_with(&runner, Path::new("/boot"), Path::new("/run/nails/snap")).unwrap();
+        let err = copy_tree(&temp_dir.path().join("nope"), &dst).unwrap_err();
+        assert!(matches!(err, NailsError::IoError(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn copy_tree_copies_nested_content_and_directory_metadata() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let src = temp_dir.path().join("src");
+        let dst = temp_dir.path().join("dst");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        fs::write(src.join("sub/deep.txt"), "deep").unwrap();
+        fs::set_permissions(src.join("sub"), fs::Permissions::from_mode(0o750)).unwrap();
+
+        copy_tree(&src, &dst).unwrap();
 
         assert_eq!(
-            runner.calls(),
-            vec![
-                ProcessCommand::tool("cp")
-                    .args(["-a", "--", "/boot/.", "/run/nails/snap"])
-                    .deadline(COPY_BUDGET)
-                    .allow_in_test_runtime()
-            ]
+            fs::read_to_string(dst.join("sub/deep.txt")).unwrap(),
+            "deep"
+        );
+        assert_eq!(
+            fs::symlink_metadata(dst.join("sub"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o750
         );
     }
 
     #[test]
-    fn copy_tree_reports_cp_failures_with_stderr() {
-        let runner = MockProcessRunner::new().with_response(Ok(exited(1, "", "cp: cannot stat\n")));
+    fn copy_tree_does_not_update_the_source_access_time() {
+        // tmpfs is usually relatime, which only bumps atime when it is older than
+        // mtime; set atime well before mtime so a non-O_NOATIME read WOULD update
+        // it, making this a real regression guard rather than a relatime no-op.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let src = temp_dir.path().join("src");
+        let dst = temp_dir.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        let file = src.join("secret.txt");
+        fs::write(&file, "watch my atime").unwrap();
 
-        let err =
-            io_error(copy_tree_with(&runner, Path::new("/src"), Path::new("/dst")).unwrap_err());
+        let old_atime = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000);
+        let mtime = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2_000_000);
+        let handle = fs::File::options().write(true).open(&file).unwrap();
+        handle
+            .set_times(
+                fs::FileTimes::new()
+                    .set_accessed(old_atime)
+                    .set_modified(mtime),
+            )
+            .unwrap();
+        drop(handle);
+        let before = fs::metadata(&file).unwrap().accessed().unwrap();
 
-        assert_eq!(err.to_string(), "cp -a /src/. /dst failed: cp: cannot stat");
-    }
+        copy_tree(&src, &dst).unwrap();
 
-    #[test]
-    fn copy_tree_keeps_the_kind_of_start_failures() {
-        let runner = MockProcessRunner::new().with_response(Err(NailsError::IoError(
-            std::io::Error::new(std::io::ErrorKind::NotFound, "cp not found"),
-        )));
-
-        let err =
-            io_error(copy_tree_with(&runner, Path::new("/src"), Path::new("/dst")).unwrap_err());
-
-        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        let after = fs::metadata(&file).unwrap().accessed().unwrap();
         assert_eq!(
-            err.to_string(),
-            "Failed to run cp -a /src/. /dst: cp not found"
+            before, after,
+            "O_NOATIME read must leave the source access time untouched"
+        );
+        // And the content still copied.
+        assert_eq!(
+            fs::read_to_string(dst.join("secret.txt")).unwrap(),
+            "watch my atime"
         );
     }
 
     #[test]
-    fn copy_tree_passes_other_runner_errors_through() {
-        let runner = MockProcessRunner::new()
-            .with_response(Err(NailsError::InvalidState("refused".to_string())));
+    fn copy_tree_preserves_extended_attributes_when_supported() {
+        use rustix::fs::XattrFlags;
 
-        let err = copy_tree_with(&runner, Path::new("/src"), Path::new("/dst")).unwrap_err();
+        let temp_dir = tempfile::tempdir().unwrap();
+        let src = temp_dir.path().join("src");
+        let dst = temp_dir.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        let file = src.join("a.txt");
+        fs::write(&file, "a").unwrap();
 
-        assert!(matches!(err, NailsError::InvalidState(message) if message == "refused"));
+        // Some tmpfs configurations reject user.* xattrs; self-skip if so.
+        if rustix::fs::lsetxattr(&file, "user.nails.test", b"v", XattrFlags::empty()).is_err() {
+            return;
+        }
+
+        copy_tree(&src, &dst).unwrap();
+
+        let mut buf = [0u8; 16];
+        let n = rustix::fs::lgetxattr(dst.join("a.txt"), "user.nails.test", &mut buf[..]).unwrap();
+        assert_eq!(&buf[..n], b"v");
     }
 
     #[test]
@@ -340,6 +566,11 @@ mod tests {
         let copied = fs::symlink_metadata(dst.join("a.txt")).unwrap();
         assert_eq!(copied.permissions().mode() & 0o7777, 0o640);
         assert_eq!(copied.modified().unwrap(), mtime);
+        // The destination atime/mtime are restored from the source (cp -a parity).
+        assert_eq!(
+            copied.accessed().unwrap(),
+            fs::symlink_metadata(&file).unwrap().accessed().unwrap()
+        );
         assert_eq!(
             fs::symlink_metadata(dst.join("b.txt")).unwrap().ino(),
             copied.ino()

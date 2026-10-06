@@ -797,7 +797,7 @@ fn test_real_copy_tree_returns_error_for_missing_source() {
 
     let err = fs.copy_tree(&src, &dst).unwrap_err();
     match err {
-        NailsError::IoError(io) => assert!(io.to_string().contains("cp -a")),
+        NailsError::IoError(io) => assert!(io.to_string().contains("atime-safe copy")),
         other => panic!("expected IoError, got {other:?}"),
     }
 }
