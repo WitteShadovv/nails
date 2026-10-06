@@ -27,7 +27,7 @@
 //! `std::fs`, because doing so would reintroduce the very symlink-following the
 //! helper exists to remove.
 
-use crate::{NailsError, Result};
+use crate::{IoResultExt, NailsError, Result};
 use nix::errno::Errno;
 use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
 use nix::sys::stat::{Mode, mkdirat};
@@ -75,13 +75,16 @@ impl SafeRoot {
             Mode::empty(),
         )
         .map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                errno_kind(e),
-                format!(
-                    "Failed to open hidden root {} as a directory: {e}",
-                    root.display()
+            NailsError::io(
+                root,
+                std::io::Error::new(
+                    errno_kind(e),
+                    format!(
+                        "Failed to open hidden root {} as a directory: {e}",
+                        root.display()
+                    ),
                 ),
-            ))
+            )
         })?;
         Ok(Self {
             root: root.to_path_buf(),
@@ -117,10 +120,13 @@ impl SafeRoot {
     fn open_parent_rw<'a>(&self, relative: &'a Path) -> Result<(OwnedFd, &'a OsStr)> {
         let components = safe_components(relative, &self.root)?;
         let (leaf, parents) = components.split_last().ok_or_else(|| {
-            NailsError::IoError(std::io::Error::other(format!(
-                "Refusing to operate on the hidden root itself: {}",
-                relative.display()
-            )))
+            NailsError::io(
+                relative,
+                std::io::Error::other(format!(
+                    "Refusing to operate on the hidden root itself: {}",
+                    relative.display()
+                )),
+            )
         })?;
 
         let how = OpenHow::new()
@@ -222,14 +228,17 @@ impl SafeRoot {
             .resolve(containment_flags());
         match openat2(self.dir_fd.as_fd(), relative, how) {
             Ok(fd) => Ok(std::fs::File::from(fd)),
-            Err(Errno::EEXIST) => Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                format!(
-                    "an entry already exists at {} under hidden root {}",
-                    relative.display(),
-                    self.root.display()
+            Err(Errno::EEXIST) => Err(NailsError::io(
+                relative,
+                std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!(
+                        "an entry already exists at {} under hidden root {}",
+                        relative.display(),
+                        self.root.display()
+                    ),
                 ),
-            ))),
+            )),
             Err(e) => Err(self.resolve_error(relative, e)),
         }
     }
@@ -277,19 +286,23 @@ impl SafeRoot {
             }
         }
         let temp_fd = temp_fd.ok_or_else(|| {
-            NailsError::IoError(std::io::Error::other(format!(
-                "Failed to create a unique temp file under hidden root for {} ({last_err:?})",
-                relative.display()
-            )))
+            NailsError::io(
+                relative,
+                std::io::Error::other(format!(
+                    "Failed to create a unique temp file under hidden root for {} ({last_err:?})",
+                    relative.display()
+                )),
+            )
         })?;
 
+        let target = self.root.join(relative);
         let outcome = (|| -> Result<()> {
             let mut file = std::fs::File::from(temp_fd);
-            file.write_all(content)?;
+            file.write_all(content).at_path(&target)?;
             nix::sys::stat::fchmod(file.as_fd(), Mode::from_bits_truncate(mode)).map_err(|e| {
-                NailsError::IoError(std::io::Error::new(errno_kind(e), e.to_string()))
+                NailsError::io(&target, std::io::Error::new(errno_kind(e), e.to_string()))
             })?;
-            file.sync_all()?;
+            file.sync_all().at_path(&target)?;
             nix::fcntl::renameat(
                 parent_fd.as_fd(),
                 temp_name.as_str(),
@@ -297,13 +310,16 @@ impl SafeRoot {
                 leaf,
             )
             .map_err(|e| {
-                NailsError::IoError(std::io::Error::new(
-                    errno_kind(e),
-                    format!(
-                        "Failed to move temp file into place at {}: {e}",
-                        relative.display()
+                NailsError::io(
+                    relative,
+                    std::io::Error::new(
+                        errno_kind(e),
+                        format!(
+                            "Failed to move temp file into place at {}: {e}",
+                            relative.display()
+                        ),
                     ),
-                ))
+                )
             })?;
             // Durability: the rename is only guaranteed to survive a crash once
             // the parent directory entry is flushed.
@@ -329,7 +345,8 @@ impl SafeRoot {
         let fd = self.resolve(relative, how)?;
         let mut file = std::fs::File::from(fd);
         let mut buf = String::new();
-        file.read_to_string(&mut buf)?;
+        file.read_to_string(&mut buf)
+            .at_path(self.root.join(relative))?;
         Ok(buf)
     }
 
@@ -411,15 +428,13 @@ impl SafeRoot {
     }
 
     fn try_clone_root(&self) -> Result<OwnedFd> {
-        self.dir_fd
-            .try_clone()
-            .map_err(|e| NailsError::IoError(std::io::Error::new(e.kind(), e.to_string())))
+        self.dir_fd.try_clone().at_path(&self.root)
     }
 
     /// Turn an `openat2`/`mkdirat`/`unlinkat` errno into a `NailsError`,
     /// distinguishing the fail-closed "no `openat2`" case from a refused path.
     fn resolve_error(&self, relative: &Path, e: Errno) -> NailsError {
-        NailsError::IoError(resolve_io_error(&self.root, relative, e))
+        NailsError::io(relative, resolve_io_error(&self.root, relative, e))
     }
 }
 
@@ -464,14 +479,17 @@ fn errno_kind(e: Errno) -> std::io::ErrorKind {
 /// clear error instead of being handed to the kernel. `.` is skipped.
 fn safe_components<'a>(relative: &'a Path, root: &Path) -> Result<Vec<&'a OsStr>> {
     if relative.is_absolute() {
-        return Err(NailsError::IoError(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!(
-                "Refusing absolute path {} under hidden root {}: only relative paths are allowed",
-                relative.display(),
-                root.display()
+        return Err(NailsError::io(
+            relative,
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "Refusing absolute path {} under hidden root {}: only relative paths are allowed",
+                    relative.display(),
+                    root.display()
+                ),
             ),
-        )));
+        ));
     }
     let mut out = Vec::new();
     for component in relative.components() {
@@ -479,24 +497,30 @@ fn safe_components<'a>(relative: &'a Path, root: &Path) -> Result<Vec<&'a OsStr>
             Component::Normal(name) => out.push(name),
             Component::CurDir => {}
             Component::ParentDir => {
-                return Err(NailsError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "Refusing path {} under hidden root {}: a `..` component would climb out",
-                        relative.display(),
-                        root.display()
+                return Err(NailsError::io(
+                    relative,
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "Refusing path {} under hidden root {}: a `..` component would climb out",
+                            relative.display(),
+                            root.display()
+                        ),
                     ),
-                )));
+                ));
             }
             Component::RootDir | Component::Prefix(_) => {
-                return Err(NailsError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!(
-                        "Refusing path {} under hidden root {}: it is not a plain relative path",
-                        relative.display(),
-                        root.display()
+                return Err(NailsError::io(
+                    relative,
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        format!(
+                            "Refusing path {} under hidden root {}: it is not a plain relative path",
+                            relative.display(),
+                            root.display()
+                        ),
                     ),
-                )));
+                ));
             }
         }
     }
@@ -664,7 +688,7 @@ mod tests {
         let err = root
             .create_new(Path::new("notifications/a.json"), 0o600)
             .unwrap_err();
-        let NailsError::IoError(io) = &err else {
+        let NailsError::IoError { source: io, .. } = &err else {
             panic!("expected IoError, got {err}");
         };
         assert_eq!(io.kind(), std::io::ErrorKind::AlreadyExists, "{err}");
@@ -687,7 +711,7 @@ mod tests {
         let err = root
             .create_new(Path::new("notifications/evil.json"), 0o600)
             .unwrap_err();
-        let NailsError::IoError(io) = &err else {
+        let NailsError::IoError { source: io, .. } = &err else {
             panic!("expected IoError, got {err}");
         };
         // The planted link reads as "already exists" (O_EXCL), never followed.

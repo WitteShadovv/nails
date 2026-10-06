@@ -19,7 +19,7 @@
 //! `mount_id`/`parent_id`/`dev` and a per-superblock options field, which is what
 //! lets [`NailsMounts`] classify which mounts NAILS actually created.
 
-use crate::{NailsError, Result};
+use crate::{IoResultExt, NailsError, Result};
 use std::path::{Path, PathBuf};
 
 /// The read-only bind NAILS restores over an overlaid `/nix`.
@@ -180,7 +180,8 @@ fn parse_line(line: &str) -> Option<MountEntry> {
 
 /// Read and parse `/proc/self/mountinfo` once.
 pub fn read_mountinfo() -> Result<Vec<MountEntry>> {
-    let content = std::fs::read_to_string("/proc/self/mountinfo")?;
+    let content =
+        std::fs::read_to_string("/proc/self/mountinfo").at_path("/proc/self/mountinfo")?;
     Ok(parse_mountinfo(&content))
 }
 

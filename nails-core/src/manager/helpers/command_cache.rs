@@ -343,8 +343,11 @@ pub(super) fn command_failed_error(command: &str, output: &std::process::Output)
 /// Map a [`crate::NailsError`] from the shared runner onto the `io::Error` these
 /// cache and service helpers speak, preserving the kind where it is meaningful.
 pub(super) fn runner_error_to_io(err: crate::NailsError) -> std::io::Error {
-    match err {
-        crate::NailsError::IoError(io) => io,
+    // The message keeps the path the runner named (the program that failed).
+    match &err {
+        crate::NailsError::IoError { source, .. } => {
+            std::io::Error::new(source.kind(), err.to_string())
+        }
         crate::NailsError::Timeout { .. } => {
             std::io::Error::new(std::io::ErrorKind::TimedOut, err.to_string())
         }

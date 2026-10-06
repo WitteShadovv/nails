@@ -185,7 +185,7 @@ impl<F: Filesystem> PreFlightCheck<F> for FakeCheck {
             FakeVerdict::Pass => Ok(CheckResult::Pass(format!("{} passed", self.name))),
             FakeVerdict::Fail(message) => Ok(CheckResult::fail(message.clone())),
             FakeVerdict::Error(message) => {
-                Err(NailsError::IoError(std::io::Error::other(message.clone())))
+                Err(NailsError::io("", std::io::Error::other(message.clone())))
             }
         }
     }

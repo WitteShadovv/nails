@@ -10,10 +10,13 @@ impl MockFilesystem {
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         if let Some(info) = paths.get(path) {
             if !info.exists {
-                return Err(NailsError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("File not found: {}", path.display()),
-                )));
+                return Err(NailsError::io(
+                    path,
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("File not found: {}", path.display()),
+                    ),
+                ));
             }
 
             let size_value = info.free_space;
@@ -38,10 +41,13 @@ impl MockFilesystem {
 
             Ok(0)
         } else {
-            Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("File not found: {}", path.display()),
-            )))
+            Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found: {}", path.display()),
+                ),
+            ))
         }
     }
 
@@ -52,21 +58,27 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(from)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "Mock: rename_file configured to fail for {}",
-                    from.display()
+            return Err(NailsError::io(
+                from,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Mock: rename_file configured to fail for {}",
+                        from.display()
+                    ),
                 ),
-            )));
+            ));
         }
 
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         if !paths.get(from).is_some_and(|info| info.exists) {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Source file not found: {}", from.display()),
-            )));
+            return Err(NailsError::io(
+                from,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Source file not found: {}", from.display()),
+                ),
+            ));
         }
 
         if let Some(mut info) = paths.remove(from) {
@@ -93,13 +105,16 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(path)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "Mock: remove_file configured to fail for {}",
-                    path.display()
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Mock: remove_file configured to fail for {}",
+                        path.display()
+                    ),
                 ),
-            )));
+            ));
         }
 
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
@@ -123,13 +138,16 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(path)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "Mock: remove_directory configured to fail for {}",
-                    path.display()
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Mock: remove_directory configured to fail for {}",
+                        path.display()
+                    ),
                 ),
-            )));
+            ));
         }
 
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
@@ -147,13 +165,16 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(path)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "Mock: remove_dir_all configured to fail for {}",
-                    path.display()
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Mock: remove_dir_all configured to fail for {}",
+                        path.display()
+                    ),
                 ),
-            )));
+            ));
         }
 
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
@@ -171,13 +192,16 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(path)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "Mock: secure_delete configured to fail for {}",
-                    path.display()
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Mock: secure_delete configured to fail for {}",
+                        path.display()
+                    ),
                 ),
-            )));
+            ));
         }
 
         self.remove_file_impl(path)?;
@@ -198,13 +222,16 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(path)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "Mock: secure_delete_dir_all configured to fail for {}",
-                    path.display()
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Mock: secure_delete_dir_all configured to fail for {}",
+                        path.display()
+                    ),
                 ),
-            )));
+            ));
         }
 
         self.remove_dir_all_impl(path)?;
@@ -245,10 +272,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(src)
         {
-            return Err(NailsError::IoError(std::io::Error::other(format!(
-                "Mock copy_tree failure for {}",
-                src.display()
-            ))));
+            return Err(NailsError::io(
+                src,
+                std::io::Error::other(format!("Mock copy_tree failure for {}", src.display())),
+            ));
         }
 
         Ok(())
@@ -261,10 +288,13 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(dst)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!("Mock copy_file failure for {}", dst.display()),
-            )));
+            return Err(NailsError::io(
+                dst,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("Mock copy_file failure for {}", dst.display()),
+                ),
+            ));
         }
 
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");

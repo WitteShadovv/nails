@@ -44,7 +44,7 @@
 //! # Ok::<(), nails_core::NailsError>(())
 //! ```
 
-use crate::error::{NailsError, Result};
+use crate::error::{IoResultExt, NailsError, Result};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -375,8 +375,8 @@ fn scan_processes() -> Result<Vec<(u32, PathBuf)>> {
     }
 
     let mut processes = Vec::new();
-    for entry in fs::read_dir(proc_dir)? {
-        let entry = entry?;
+    for entry in fs::read_dir(proc_dir).at_path(proc_dir)? {
+        let entry = entry.at_path(proc_dir)?;
         let file_name = entry.file_name();
         let pid_str = file_name.to_string_lossy();
 
@@ -635,14 +635,14 @@ fn map_is_shared_write(perms: &str) -> bool {
 /// Read process name from `/proc/{pid}/comm`
 fn read_comm(proc_path: &Path) -> Result<String> {
     let comm_path = proc_path.join("comm");
-    let content = fs::read_to_string(comm_path)?;
+    let content = fs::read_to_string(&comm_path).at_path(&comm_path)?;
     Ok(content.trim().to_string())
 }
 
 /// Read full command line from `/proc/{pid}/cmdline`
 fn read_cmdline(proc_path: &Path) -> Result<String> {
     let cmdline_path = proc_path.join("cmdline");
-    let bytes = fs::read(cmdline_path)?;
+    let bytes = fs::read(&cmdline_path).at_path(&cmdline_path)?;
 
     // cmdline is null-separated, convert to space-separated
     let cmdline = bytes

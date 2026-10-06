@@ -132,9 +132,10 @@ struct FailingSystemctlExecutor;
 
 impl CommandExecutor for FailingSystemctlExecutor {
     fn execute_systemctl(&self, _args: &[&str]) -> Result<(bool, String, String)> {
-        Err(crate::NailsError::IoError(std::io::Error::other(
-            "systemctl failed",
-        )))
+        Err(crate::NailsError::io(
+            "systemctl",
+            std::io::Error::other("systemctl failed"),
+        ))
     }
 
     fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
@@ -150,9 +151,10 @@ impl CommandExecutor for FailingKillExecutor {
     }
 
     fn execute_kill(&self, _pid: u32, _signal: &str) -> Result<bool> {
-        Err(crate::NailsError::IoError(std::io::Error::other(
-            "kill failed",
-        )))
+        Err(crate::NailsError::io(
+            "systemctl",
+            std::io::Error::other("kill failed"),
+        ))
     }
 }
 
@@ -392,9 +394,10 @@ fn test_restart_systemd_socket_failure_doesnt_prevent_service_stop() {
 fn test_restart_systemd_service_ignores_socket_stop_error_and_stops_service() {
     let proc = make_test_process("nix-daemon", 234, Some("nix-daemon".to_string()));
     let executor = ScriptedSystemctlExecutor::new(vec![
-        Err(crate::NailsError::IoError(std::io::Error::other(
-            "socket stop failed",
-        ))),
+        Err(crate::NailsError::io(
+            "systemctl",
+            std::io::Error::other("socket stop failed"),
+        )),
         Ok((true, String::new(), String::new())),
     ]);
 

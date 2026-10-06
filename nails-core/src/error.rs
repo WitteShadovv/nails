@@ -321,15 +321,67 @@ pub enum NailsError {
     #[error("operation cancelled")]
     Cancelled,
 
-    /// I/O error (transparently converted from std::io::Error)
+    /// An I/O operation on `path` failed.
     ///
-    /// This variant has #[from] attribute, enabling automatic conversion
-    /// from std::io::Error via the ? operator.
-    #[error(transparent)]
-    IoError(#[from] std::io::Error),
+    /// There is deliberately no automatic conversion from [`std::io::Error`]:
+    /// an I/O error without the path it concerns tells the operator nothing
+    /// actionable, so every site names the path (for a process that failed to
+    /// start, the program) through [`NailsError::io`] or
+    /// [`IoResultExt::at_path`]. The message is `<path>: <error>`, or just the
+    /// error when its own text already names the path.
+    #[error("{}", io_message(.path, .source))]
+    IoError {
+        /// The file, directory or program the operation acted on.
+        path: std::path::PathBuf,
+        /// The underlying error.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// The message of an [`NailsError::IoError`]: the error's own text when it
+/// already names the path, otherwise `<path>: <error>`, so the path always
+/// appears exactly once.
+fn io_message(path: &std::path::Path, source: &std::io::Error) -> String {
+    let text = source.to_string();
+    let shown = path.display().to_string();
+    if !shown.is_empty() && text.contains(&shown) {
+        text
+    } else {
+        format!("{shown}: {text}")
+    }
+}
+
+/// Attach the path an I/O operation acted on to its error.
+pub trait IoResultExt<T> {
+    /// Convert an [`std::io::Result`] into a [`Result`] whose error names `path`.
+    fn at_path(self, path: impl AsRef<std::path::Path>) -> Result<T>;
+}
+
+impl<T> IoResultExt<T> for std::io::Result<T> {
+    fn at_path(self, path: impl AsRef<std::path::Path>) -> Result<T> {
+        self.map_err(|source| NailsError::io(path.as_ref(), source))
+    }
 }
 
 impl NailsError {
+    /// An [`IoError`](NailsError::IoError) for an operation on `path`.
+    pub fn io(path: impl Into<std::path::PathBuf>, source: std::io::Error) -> Self {
+        NailsError::IoError {
+            path: path.into(),
+            source,
+        }
+    }
+
+    /// The kind of the underlying I/O error, when this is an
+    /// [`IoError`](NailsError::IoError).
+    pub fn io_kind(&self) -> Option<std::io::ErrorKind> {
+        match self {
+            NailsError::IoError { source, .. } => Some(source.kind()),
+            _ => None,
+        }
+    }
+
     /// A single, concrete next step for this error, when one exists.
     ///
     /// The CLI shows this below the error line so a failure names not just what
@@ -374,16 +426,20 @@ impl NailsError {
 /// Result type alias for NAILS operations
 ///
 /// All public functions return Result<T, NailsError> for explicit error handling.
-/// This enables the ? operator for error propagation throughout the codebase.
+/// An I/O result is converted with [`IoResultExt::at_path`], so the error names
+/// the path it concerns.
 ///
 /// # Example
 /// ```
-/// use nails_core::{Result, NailsError};
+/// use nails_core::{IoResultExt, Result};
 ///
 /// fn read_config() -> Result<String> {
-///     let content = std::fs::read_to_string("/path/to/config")?;
-///     Ok(content)
+///     let path = "/path/to/config";
+///     std::fs::read_to_string(path).at_path(path)
 /// }
+///
+/// let err = read_config().unwrap_err();
+/// assert!(err.to_string().starts_with("/path/to/config: "));
 /// ```
 pub type Result<T> = std::result::Result<T, NailsError>;
 
@@ -392,15 +448,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_io_error_automatic_conversion() {
-        // std::io::Error should automatically convert to NailsError::IoError
-        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "file not found");
-        let nails_err: NailsError = io_err.into();
+    fn io_errors_name_their_path() {
+        let err = NailsError::io(
+            "/mnt/hidden/state.json",
+            std::io::Error::new(std::io::ErrorKind::NotFound, "No such file or directory"),
+        );
+        assert_eq!(
+            err.to_string(),
+            "/mnt/hidden/state.json: No such file or directory"
+        );
+        assert_eq!(err.io_kind(), Some(std::io::ErrorKind::NotFound));
+        assert!(std::error::Error::source(&err).is_some(), "keeps the cause");
+    }
 
-        match nails_err {
-            NailsError::IoError(_) => {} // Expected
-            _ => panic!("Expected IoError variant"),
-        }
+    #[test]
+    fn a_message_that_already_names_the_path_is_not_repeated() {
+        let err = NailsError::io(
+            "/etc/nixos/flake.nix",
+            std::io::Error::other("Failed to read /etc/nixos/flake.nix: denied"),
+        );
+        assert_eq!(
+            err.to_string(),
+            "Failed to read /etc/nixos/flake.nix: denied"
+        );
+    }
+
+    #[test]
+    fn at_path_attaches_the_path_to_an_io_result() {
+        let path = std::path::Path::new("/nonexistent/path/that/does/not/exist");
+        let err = std::fs::read_to_string(path).at_path(path).unwrap_err();
+        assert!(
+            err.to_string()
+                .starts_with("/nonexistent/path/that/does/not/exist: "),
+            "{err}"
+        );
+        assert_eq!(err.io_kind(), Some(std::io::ErrorKind::NotFound));
     }
 
     #[test]
@@ -527,20 +609,12 @@ mod tests {
 
     #[test]
     fn test_error_propagation_with_question_mark() {
-        // Test that ? operator works with std::io::Error
-        fn read_file() -> Result<String> {
-            let content = std::fs::read_to_string("/nonexistent/path/that/does/not/exist")?;
-            Ok(content)
-        }
-
-        let result = read_file();
-        assert!(result.is_err());
-
-        // Verify it's an IoError variant
-        match result.unwrap_err() {
-            NailsError::IoError(_) => {} // Expected
-            _ => panic!("Expected IoError variant from automatic conversion"),
-        }
+        let path = "/nonexistent/path/that/does/not/exist";
+        let result: Result<String> = std::fs::read_to_string(path).at_path(path);
+        assert!(matches!(
+            result.unwrap_err(),
+            NailsError::IoError { path: ref p, .. } if p == std::path::Path::new(path)
+        ));
     }
 
     #[test]
@@ -557,7 +631,7 @@ mod tests {
         )]);
         let _err6 = NailsError::ConfigError("test".into());
         let _err7 = NailsError::InvalidArgument("test".into());
-        let _err8 = NailsError::IoError(std::io::Error::other("test"));
+        let _err8 = NailsError::io("/tmp/x", std::io::Error::other("test"));
 
         // Filesystem-specific error variants
         use std::path::PathBuf;
@@ -641,11 +715,11 @@ mod tests {
     fn test_io_error_preserves_kind() {
         // Verify that IoError preserves the original error kind
         let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
-        let nails_err: NailsError = io_err.into();
+        let nails_err = NailsError::io("/root/secret", io_err);
 
         match nails_err {
-            NailsError::IoError(inner) => {
-                assert_eq!(inner.kind(), std::io::ErrorKind::PermissionDenied);
+            NailsError::IoError { source, .. } => {
+                assert_eq!(source.kind(), std::io::ErrorKind::PermissionDenied);
             }
             _ => panic!("Expected IoError variant"),
         }

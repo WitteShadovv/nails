@@ -20,7 +20,7 @@
 //! decoy residue.
 
 use super::{VerifyResult, VerifyStatus};
-use crate::{Filesystem, Result};
+use crate::{Filesystem, NailsError, Result};
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
@@ -89,7 +89,8 @@ pub fn write_activation_residue_report<F: Filesystem>(
     };
     // VerifyResult is plain data, so serialization cannot realistically fail;
     // surface any error as I/O rather than inventing a bespoke variant.
-    let json = serde_json::to_string_pretty(&report).map_err(std::io::Error::other)?;
+    let json = serde_json::to_string_pretty(&report)
+        .map_err(|e| NailsError::io(&path, std::io::Error::other(e)))?;
 
     // Write the report through the symlink- and traversal-safe hidden-file API at
     // operator-only mode, so a symlink planted at the report name under the hidden

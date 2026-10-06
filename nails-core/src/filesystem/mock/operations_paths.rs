@@ -79,10 +79,13 @@ impl MockFilesystem {
                 None => return Ok(current),
             }
         }
-        Err(NailsError::IoError(std::io::Error::other(format!(
-            "too many levels of symbolic links: {}",
-            path.display()
-        ))))
+        Err(NailsError::io(
+            path,
+            std::io::Error::other(format!(
+                "too many levels of symbolic links: {}",
+                path.display()
+            )),
+        ))
     }
 
     pub(super) fn supports_symlinks_impl(&self, dir: &Path) -> Result<bool> {
@@ -105,19 +108,25 @@ impl MockFilesystem {
                 if symlinks.get(link).map(|t| t == target).unwrap_or(false) {
                     return Ok(());
                 }
-                return Err(NailsError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!(
-                        "Symlink at {} already exists pointing to a different target",
-                        link.display()
+                return Err(NailsError::io(
+                    link,
+                    std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!(
+                            "Symlink at {} already exists pointing to a different target",
+                            link.display()
+                        ),
                     ),
-                )));
+                ));
             } else if info.exists {
                 drop(paths);
-                return Err(NailsError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!("Path already exists (not a symlink) at {}", link.display()),
-                )));
+                return Err(NailsError::io(
+                    link,
+                    std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        format!("Path already exists (not a symlink) at {}", link.display()),
+                    ),
+                ));
             }
         }
         drop(paths);
@@ -207,21 +216,27 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(path)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!(
-                    "Mock: set_permissions configured to fail for {}",
-                    path.display()
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!(
+                        "Mock: set_permissions configured to fail for {}",
+                        path.display()
+                    ),
                 ),
-            )));
+            ));
         }
 
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         if !paths.get(path).map(|info| info.exists).unwrap_or(false) {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Path does not exist: {}", path.display()),
-            )));
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Path does not exist: {}", path.display()),
+                ),
+            ));
         }
         drop(paths);
 
@@ -237,10 +252,13 @@ impl MockFilesystem {
         if let Some(info) = paths.get(path)
             && !info.exists
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Path does not exist: {}", path.display()),
-            )));
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Path does not exist: {}", path.display()),
+                ),
+            ));
         }
         drop(paths);
 

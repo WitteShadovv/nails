@@ -214,9 +214,10 @@ mod tests {
     fn detect_display_manager_skips_failed_probes_and_returns_later_active_service() {
         let exec = RecordingScriptedSessionCommandExecutor::new(
             vec![
-                Err(crate::NailsError::IoError(std::io::Error::other(
-                    "display-manager failed",
-                ))),
+                Err(crate::NailsError::io(
+                    "systemctl",
+                    std::io::Error::other("display-manager failed"),
+                )),
                 Ok((false, "inactive".to_string(), String::new())),
                 Ok((true, "active".to_string(), String::new())),
             ],

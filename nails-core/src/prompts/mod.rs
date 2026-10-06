@@ -17,11 +17,16 @@
 //! All prompt functions have `_with_io` variants that accept generic `BufRead`
 //! and `Write` implementations, enabling deterministic testing without real stdin/stdout.
 
-use crate::Result;
 use crate::output::{Mark, Stream, Style};
 use crate::process::ProcessInfo;
+use crate::{IoResultExt, Result};
 use std::io::{self, BufRead, Write};
 use std::path::Path;
+
+/// The stream prompts are written to, named in the error when that fails.
+pub(crate) const PROMPT_OUTPUT: &str = "/dev/stderr";
+/// The stream answers are read from, named in the error when that fails.
+pub(crate) const PROMPT_INPUT: &str = "/dev/stdin";
 
 /// Style for prompt text: prompts are written to stderr.
 fn prompt_style() -> Style {
@@ -51,11 +56,11 @@ pub fn prompt_yes_no_with_io<R: BufRead, W: Write>(
     writer: &mut W,
 ) -> Result<bool> {
     let suffix = if default_no { "[y/N]" } else { "[Y/n]" };
-    write!(writer, "{} {}: ", message, suffix)?;
-    writer.flush()?;
+    write!(writer, "{} {}: ", message, suffix).at_path(PROMPT_OUTPUT)?;
+    writer.flush().at_path(PROMPT_OUTPUT)?;
 
     let mut input = String::new();
-    reader.read_line(&mut input)?;
+    reader.read_line(&mut input).at_path(PROMPT_INPUT)?;
 
     let input = input.trim().to_lowercase();
     match input.as_str() {
@@ -63,7 +68,7 @@ pub fn prompt_yes_no_with_io<R: BufRead, W: Write>(
         "n" | "no" => Ok(false),
         "" => Ok(!default_no), // Empty means use default
         _ => {
-            writeln!(writer, "Please answer 'y' or 'n'")?;
+            writeln!(writer, "Please answer 'y' or 'n'").at_path(PROMPT_OUTPUT)?;
             prompt_yes_no_with_io(message, default_no, reader, writer) // Recurse until valid answer
         }
     }
@@ -128,7 +133,7 @@ pub fn prompt_risky_process_restart_with_io<R: BufRead, W: Write>(
     writer: &mut W,
 ) -> Result<bool> {
     let bullet = style.glyph(Mark::Bullet);
-    writeln!(writer)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "{}",
@@ -136,22 +141,25 @@ pub fn prompt_risky_process_restart_with_io<R: BufRead, W: Write>(
             Mark::Warn,
             "Risky processes detected that may cause service disruption:"
         )
-    )?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
 
     for proc in risky_processes {
         if let Some(ref service_name) = proc.service_name {
-            writeln!(writer, "    {bullet} {} ({})", proc.name, service_name)?;
+            writeln!(writer, "    {bullet} {} ({})", proc.name, service_name)
+                .at_path(PROMPT_OUTPUT)?;
         } else {
-            writeln!(writer, "    {bullet} {} (PID {})", proc.name, proc.pid)?;
+            writeln!(writer, "    {bullet} {} (PID {})", proc.name, proc.pid)
+                .at_path(PROMPT_OUTPUT)?;
         }
     }
 
-    writeln!(writer)?;
-    writeln!(writer, "    Restarting these may briefly interrupt:")?;
-    writeln!(writer, "    {bullet} Network connectivity")?;
-    writeln!(writer, "    {bullet} Desktop notifications")?;
-    writeln!(writer, "    {bullet} Some application features")?;
-    writeln!(writer)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "    Restarting these may briefly interrupt:").at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "    {bullet} Network connectivity").at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "    {bullet} Desktop notifications").at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "    {bullet} Some application features").at_path(PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
 
     prompt_yes_no_with_io("    Restart these processes?", true, reader, writer)
 }
@@ -200,7 +208,7 @@ pub fn prompt_pivot_mount_acceptance_with_io<R: BufRead, W: Write>(
     writer: &mut W,
 ) -> Result<bool> {
     let bullet = style.glyph(Mark::Bullet);
-    writeln!(writer)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "{}",
@@ -208,13 +216,15 @@ pub fn prompt_pivot_mount_acceptance_with_io<R: BufRead, W: Write>(
             Mark::Warn,
             format_args!("CANNOT mount {} overlay directly.", target.display())
         )
-    )?;
-    writeln!(writer)?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "The following processes are still using {}:",
         target.display()
-    )?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
 
     for proc in blocking_processes {
         if !proc.cmdline.is_empty() {
@@ -222,20 +232,23 @@ pub fn prompt_pivot_mount_acceptance_with_io<R: BufRead, W: Write>(
                 writer,
                 "  {bullet} {} (PID {}) - {}",
                 proc.name, proc.pid, proc.cmdline
-            )?;
+            )
+            .at_path(PROMPT_OUTPUT)?;
         } else {
-            writeln!(writer, "  {bullet} {} (PID {})", proc.name, proc.pid)?;
+            writeln!(writer, "  {bullet} {} (PID {})", proc.name, proc.pid)
+                .at_path(PROMPT_OUTPUT)?;
         }
     }
 
-    writeln!(writer)?;
-    writeln!(writer, "PIVOT MOUNT FALLBACK:")?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "PIVOT MOUNT FALLBACK:").at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "  A pivot mount uses a staging location and bind mount."
-    )?;
-    writeln!(writer, "  This creates 'split-view' behavior:")?;
-    writeln!(writer)?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "  This creates 'split-view' behavior:").at_path(PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "  {}",
@@ -246,27 +259,32 @@ pub fn prompt_pivot_mount_acceptance_with_io<R: BufRead, W: Write>(
                 target.display()
             )
         )
-    )?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "  {}",
         style.marked(Mark::Pass, "NEW processes will write to the hidden overlay")
-    )?;
-    writeln!(writer)?;
-    writeln!(writer, "  SECURITY RISK:")?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "  SECURITY RISK:").at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "    Old processes may leak information about new (hidden) processes"
-    )?;
-    writeln!(writer, "    to the original filesystem. For example:")?;
-    writeln!(writer, "      - Browser writing downloads to original home")?;
-    writeln!(writer, "      - Text editor saving files to original home")?;
-    writeln!(writer)?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "    to the original filesystem. For example:").at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "      - Browser writing downloads to original home")
+        .at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "      - Text editor saving files to original home").at_path(PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "  This is a LAST RESORT option with reduced security guarantees."
-    )?;
-    writeln!(writer)?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
 
     prompt_yes_no_with_io(
         "Accept pivot mount with split-view risk?",
@@ -327,7 +345,7 @@ pub fn display_abort_message_with_io<W: Write>(
     style: Style,
     writer: &mut W,
 ) -> Result<()> {
-    writeln!(writer)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "{}",
@@ -338,28 +356,31 @@ pub fn display_abort_message_with_io<W: Write>(
                 target.display()
             )
         )
-    )?;
-    writeln!(writer)?;
-    writeln!(writer, "Suggestions:")?;
+    ).at_path(PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "Suggestions:").at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "  1. Close all applications and log out, then activate from TTY:"
-    )?;
-    writeln!(writer, "     $ nails activate")?;
-    writeln!(writer)?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "     $ nails activate").at_path(PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "  2. Kill your graphical session (will lose unsaved work):"
-    )?;
-    writeln!(writer, "     $ nails activate --session kill")?;
-    writeln!(writer)?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "     $ nails activate --session kill").at_path(PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "  3. Accept security trade-off and use pivot mount:"
-    )?;
-    writeln!(writer, "     $ nails activate --pivot allow")?;
-    writeln!(writer)?;
-    writeln!(writer, "Current state: INACTIVE (unchanged)")?;
+    )
+    .at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "     $ nails activate --pivot allow").at_path(PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(PROMPT_OUTPUT)?;
+    writeln!(writer, "Current state: INACTIVE (unchanged)").at_path(PROMPT_OUTPUT)?;
     Ok(())
 }
 

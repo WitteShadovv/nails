@@ -1124,7 +1124,9 @@ fn test_real_command_executor_execute_nixos_rebuild_returns_not_found_when_missi
         .unwrap_err();
 
     match err {
-        crate::NailsError::IoError(io) => assert_eq!(io.kind(), std::io::ErrorKind::NotFound),
+        crate::NailsError::IoError { source: io, .. } => {
+            assert_eq!(io.kind(), std::io::ErrorKind::NotFound)
+        }
         other => panic!("expected IoError(NotFound), got {other:?}"),
     }
 }

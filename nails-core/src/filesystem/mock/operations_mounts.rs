@@ -148,7 +148,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .get(target)
         {
-            return Err(NailsError::IoError(std::io::Error::other(message.clone())));
+            return Err(NailsError::io(
+                target,
+                std::io::Error::other(message.clone()),
+            ));
         }
 
         Ok(self

@@ -3,7 +3,7 @@
 
 //! Directory listing, enumeration, copy, size, and submount operations.
 
-use crate::{NailsError, Result};
+use crate::{IoResultExt, NailsError, Result};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::io;
@@ -13,19 +13,25 @@ use std::path::{Path, PathBuf};
 
 pub(super) fn list_directory(dir: &Path) -> Result<Vec<PathBuf>> {
     let entries = std::fs::read_dir(dir).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to read directory {}: {}", dir.display(), e),
-        ))
+        NailsError::io(
+            dir,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to read directory {}: {}", dir.display(), e),
+            ),
+        )
     })?;
 
     let mut paths = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to read directory entry in {}: {}", dir.display(), e),
-            ))
+            NailsError::io(
+                dir,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to read directory entry in {}: {}", dir.display(), e),
+                ),
+            )
         })?;
         paths.push(entry.path());
     }
@@ -37,28 +43,31 @@ pub(super) fn enumerate_root_directories() -> Result<Vec<PathBuf>> {
     let root = Path::new("/");
 
     let entries = std::fs::read_dir(root).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to read /: {}", e),
-        ))
+        NailsError::io(
+            root,
+            std::io::Error::new(e.kind(), format!("Failed to read /: {}", e)),
+        )
     })?;
 
     let mut directories = Vec::new();
 
     for entry in entries {
         let entry = entry.map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to read directory entry: {}", e),
-            ))
+            NailsError::io(
+                root,
+                std::io::Error::new(e.kind(), format!("Failed to read directory entry: {e}")),
+            )
         })?;
         let path = entry.path();
 
         let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to get metadata for {}: {}", path.display(), e),
-            ))
+            NailsError::io(
+                &path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to get metadata for {}: {}", path.display(), e),
+                ),
+            )
         })?;
 
         // Skip symlinks (even if they point to directories)
@@ -92,23 +101,29 @@ pub(super) fn enumerate_root_directories() -> Result<Vec<PathBuf>> {
 
 pub(super) fn read_directory(path: &Path) -> Result<Vec<std::fs::DirEntry>> {
     let entries = std::fs::read_dir(path).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to read directory {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to read directory {}: {}", path.display(), e),
+            ),
+        )
     })?;
 
     let mut result = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!(
-                    "Failed to read directory entry in {}: {}",
-                    path.display(),
-                    e
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to read directory entry in {}: {}",
+                        path.display(),
+                        e
+                    ),
                 ),
-            ))
+            )
         })?;
         result.push(entry);
     }
@@ -118,21 +133,27 @@ pub(super) fn read_directory(path: &Path) -> Result<Vec<std::fs::DirEntry>> {
 
 pub(super) fn modified_time(path: &Path) -> Result<chrono::DateTime<chrono::Utc>> {
     let metadata = std::fs::metadata(path).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to get metadata for {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to get metadata for {}: {}", path.display(), e),
+            ),
+        )
     })?;
 
     let modified = metadata.modified().map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to get modification time for {}: {}",
-                path.display(),
-                e
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to get modification time for {}: {}",
+                    path.display(),
+                    e
+                ),
             ),
-        ))
+        )
     })?;
 
     let datetime: chrono::DateTime<chrono::Utc> = modified.into();
@@ -156,15 +177,18 @@ pub(super) fn modified_time(path: &Path) -> Result<chrono::DateTime<chrono::Utc>
 pub(super) fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     let mut hard_links: HashMap<(u64, u64), PathBuf> = HashMap::new();
     copy_dir_contents(src, dst, &mut hard_links).map_err(|err| {
-        NailsError::IoError(io::Error::new(
-            err.kind(),
-            format!(
-                "atime-safe copy of {}/. into {} failed: {}",
-                src.display(),
-                dst.display(),
-                err
+        NailsError::io(
+            src,
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "atime-safe copy of {}/. into {} failed: {}",
+                    src.display(),
+                    dst.display(),
+                    err
+                ),
             ),
-        ))
+        )
     })
 }
 
@@ -381,10 +405,13 @@ pub(super) fn get_directory_size(path: &Path) -> Result<u64> {
 
     while let Some(current) = pending.pop() {
         let metadata = std::fs::symlink_metadata(&current).map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to get metadata for {}: {}", current.display(), e),
-            ))
+            NailsError::io(
+                &current,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to get metadata for {}: {}", current.display(), e),
+                ),
+            )
         })?;
 
         if !metadata.is_dir()
@@ -404,7 +431,8 @@ pub(super) fn get_directory_size(path: &Path) -> Result<u64> {
 }
 
 pub(super) fn find_submount_sources(target: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
-    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
+    let mountinfo =
+        std::fs::read_to_string("/proc/self/mountinfo").at_path("/proc/self/mountinfo")?;
     let canonical_target = target
         .canonicalize()
         .unwrap_or_else(|_| target.to_path_buf());
@@ -415,7 +443,8 @@ pub(super) fn find_submount_sources(target: &Path) -> Result<Vec<(PathBuf, PathB
 }
 
 pub(super) fn find_submounts(target: &Path) -> Result<Vec<crate::filesystem::Submount>> {
-    let mountinfo = std::fs::read_to_string("/proc/self/mountinfo")?;
+    let mountinfo =
+        std::fs::read_to_string("/proc/self/mountinfo").at_path("/proc/self/mountinfo")?;
     let canonical_target = target
         .canonicalize()
         .unwrap_or_else(|_| target.to_path_buf());
@@ -436,7 +465,7 @@ mod tests {
 
     fn io_error(err: NailsError) -> std::io::Error {
         match err {
-            NailsError::IoError(io) => io,
+            NailsError::IoError { source, .. } => source,
             other => panic!("expected IoError, got {other:?}"),
         }
     }
@@ -448,7 +477,7 @@ mod tests {
         fs::create_dir_all(&dst).unwrap();
 
         let err = copy_tree(&temp_dir.path().join("nope"), &dst).unwrap_err();
-        assert!(matches!(err, NailsError::IoError(_)), "got {err:?}");
+        assert!(matches!(err, NailsError::IoError { .. }), "got {err:?}");
     }
 
     #[test]

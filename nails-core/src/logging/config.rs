@@ -6,7 +6,7 @@
 //! Provides validated configuration for structured JSON logging with
 //! tracing subscriber setup.
 
-use crate::{NailsError, Result, Verbosity};
+use crate::{IoResultExt, NailsError, Result, Verbosity};
 use std::path::PathBuf;
 
 /// Validated logging configuration returned by `LoggingManager::init()`
@@ -70,13 +70,14 @@ impl LoggingConfig {
         #[cfg(unix)]
         options.mode(0o600);
 
-        let file = options.open(&self.log_file_path)?;
+        let log_file = &self.log_file_path;
+        let file = options.open(log_file).at_path(log_file)?;
 
         #[cfg(unix)]
         {
-            let mut permissions = file.metadata()?.permissions();
+            let mut permissions = file.metadata().at_path(log_file)?.permissions();
             permissions.set_mode(0o600);
-            std::fs::set_permissions(&self.log_file_path, permissions)?;
+            std::fs::set_permissions(log_file, permissions).at_path(log_file)?;
         }
 
         let writer = std::sync::Mutex::new(file);
@@ -221,7 +222,7 @@ mod tests {
             .unwrap_err();
 
         match err {
-            NailsError::IoError(io) => assert_eq!(io.kind(), ErrorKind::NotFound),
+            NailsError::IoError { source, .. } => assert_eq!(source.kind(), ErrorKind::NotFound),
             other => panic!("expected IoError(NotFound), got {other:?}"),
         }
     }
@@ -257,7 +258,7 @@ mod tests {
             .unwrap_err();
 
         match err {
-            NailsError::IoError(io) => assert_eq!(io.kind(), ErrorKind::NotFound),
+            NailsError::IoError { source, .. } => assert_eq!(source.kind(), ErrorKind::NotFound),
             other => panic!("expected IoError(NotFound), got {other:?}"),
         }
     }

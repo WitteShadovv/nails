@@ -27,7 +27,7 @@ fn prepend_path(env: &mut EnvGuard, dir: &Path) {
 
 fn io_error(err: NailsError) -> std::io::Error {
     match err {
-        NailsError::IoError(io) => io,
+        NailsError::IoError { source: io, .. } => io,
         other => panic!("expected IoError, got {other:?}"),
     }
 }

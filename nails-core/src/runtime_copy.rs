@@ -143,9 +143,10 @@ pub fn write_runtime_copy<F: Filesystem>(
         overlay_targets: overlay_targets.to_vec(),
     };
     let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|e| {
-        NailsError::IoError(std::io::Error::other(format!(
-            "failed to serialize the runtime manifest: {e}"
-        )))
+        NailsError::io(
+            manifest_path(),
+            std::io::Error::other(format!("failed to serialize the runtime manifest: {e}")),
+        )
     })?;
     filesystem.write_file_content(&manifest_path(), &manifest_json)?;
 
@@ -182,10 +183,13 @@ pub fn read_manifest<F: Filesystem>(filesystem: &F) -> Result<Option<RuntimeMani
     }
     let content = filesystem.read_file_content(&path)?;
     let manifest: RuntimeManifest = serde_json::from_str(&content).map_err(|e| {
-        NailsError::IoError(std::io::Error::other(format!(
-            "runtime manifest at {} is unparseable: {e}",
-            path.display()
-        )))
+        NailsError::io(
+            &path,
+            std::io::Error::other(format!(
+                "runtime manifest at {} is unparseable: {e}",
+                path.display()
+            )),
+        )
     })?;
     Ok(Some(manifest))
 }

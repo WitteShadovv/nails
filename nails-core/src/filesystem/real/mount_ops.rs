@@ -8,7 +8,7 @@ use crate::filesystem::mountinfo::{
     NailsMounts, escape_overlay_path, parse_overlay_opts, read_mountinfo,
 };
 use crate::filesystem::{Filesystem, MountInfo, MountSource, verify_mount_preconditions};
-use crate::{NailsError, Result};
+use crate::{IoResultExt, NailsError, Result};
 use std::path::{Path, PathBuf};
 
 /// Where udev records a symlink per filesystem label, named by the label.
@@ -312,7 +312,7 @@ pub(super) fn mount_tmpfs(target: &Path, size: &str) -> Result<()> {
         .parse_upper_size()
         .map_err(|e| NailsError::ConfigError(format!("Invalid tmpfs size '{}': {}", size, e)))?;
 
-    std::fs::create_dir_all(target)?;
+    std::fs::create_dir_all(target).at_path(target)?;
 
     let options = format!("size={}", size);
 

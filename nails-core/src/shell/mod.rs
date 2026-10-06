@@ -50,7 +50,7 @@ mod setup;
 #[cfg(test)]
 use crate::constants::ENV_TARGET_USER;
 use crate::target_user::TargetUser;
-use crate::{Config, Filesystem, Result};
+use crate::{Config, Filesystem, NailsError, Result};
 use std::path::{Path, PathBuf};
 
 // Re-export ShellType from cleanup module for backward compatibility
@@ -234,10 +234,10 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             .or_else(|_| std::env::var(ENV_TARGET_USER))
             .or_else(|_| std::env::var("USER"))
             .map_err(|_| {
-                std::io::Error::other(
-                    "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
+                NailsError::InvalidState(
+                    "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)"
+                        .to_string(),
                 )
-                .into()
             })
     }
 
@@ -251,11 +251,10 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             .as_ref()
             .map(|user| user.home().to_path_buf())
             .ok_or_else(|| {
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    "Could not determine the target home directory for shell integration",
+                NailsError::InvalidState(
+                    "Could not determine the target home directory for shell integration"
+                        .to_string(),
                 )
-                .into()
             })
     }
 
@@ -274,8 +273,9 @@ impl<F: Filesystem> ShellInstrumentation<F> {
         }
 
         let username = username.ok_or_else(|| {
-            std::io::Error::other(
-                "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)",
+            NailsError::InvalidState(
+                "Could not determine username (SUDO_USER, NAILS_TARGET_USER, or USER not set)"
+                    .to_string(),
             )
         })?;
 

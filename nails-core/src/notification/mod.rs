@@ -127,10 +127,13 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
         .take(40)
         .collect();
     let json = serde_json::to_string_pretty(notification).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("Failed to serialize notification: {}", e),
-        ))
+        crate::NailsError::io(
+            notifications_dir(hidden_volume_root),
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to serialize notification: {}", e),
+            ),
+        )
     })?;
 
     let base = format!("{}_{}", timestamp, safe_title);
@@ -138,14 +141,17 @@ pub fn write_notification(hidden_volume_root: &Path, notification: &Notification
     let path = hidden_volume_root.join(&relative);
 
     file.write_all(json.as_bytes()).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to write notification file {}: {}",
-                path.display(),
-                e
+        crate::NailsError::io(
+            &path,
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to write notification file {}: {}",
+                    path.display(),
+                    e
+                ),
             ),
-        ))
+        )
     })?;
 
     // Pin the mode to 0o600 (owner rw only) regardless of the umask. This acts
@@ -194,28 +200,37 @@ fn prepare_notifications_dir(
     // `..` planted at the `notifications` component cannot redirect this
     // root-privileged write onto the decoy filesystem.
     let safe_root = SafeRoot::open(hidden_volume_root).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::other(format!(
-            "Failed to open hidden root {} for notifications: {e}",
-            hidden_volume_root.display()
-        )))
+        crate::NailsError::io(
+            hidden_volume_root,
+            std::io::Error::other(format!(
+                "Failed to open hidden root {} for notifications: {e}",
+                hidden_volume_root.display()
+            )),
+        )
     })?;
     let rel_dir = Path::new("notifications");
     // `dir` is used for diagnostics only; all operations go through `safe_root`.
     let dir = notifications_dir(hidden_volume_root);
     safe_root.create_dir_all(rel_dir).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::other(format!(
-            "Failed to create notifications dir {}: {e}",
-            dir.display()
-        )))
+        crate::NailsError::io(
+            &dir,
+            std::io::Error::other(format!(
+                "Failed to create notifications dir {}: {e}",
+                dir.display()
+            )),
+        )
     })?;
 
     // Open the directory as a descriptor so permissions and ownership are set on
     // the directory itself, never through a path that a symlink could redirect.
     let dir_fd = safe_root.open_dir(rel_dir).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::other(format!(
-            "Failed to open notifications dir {}: {e}",
-            dir.display()
-        )))
+        crate::NailsError::io(
+            &dir,
+            std::io::Error::other(format!(
+                "Failed to open notifications dir {}: {e}",
+                dir.display()
+            )),
+        )
     })?;
 
     // Set the notifications directory to 0o700 (owner rwx only).
@@ -295,24 +310,30 @@ fn create_signal_file(
     loop {
         match safe_root.create_new(&relative, 0o600) {
             Ok(file) => return Ok((relative, file)),
-            Err(crate::NailsError::IoError(e)) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(e) if e.io_kind() == Some(std::io::ErrorKind::AlreadyExists) => {
                 attempt += 1;
                 if attempt > MAX_COLLISION_SUFFIXES {
-                    return Err(crate::NailsError::IoError(std::io::Error::new(
-                        std::io::ErrorKind::AlreadyExists,
-                        format!(
-                            "Failed to find a free notification filename for {} after {} attempts",
-                            base, MAX_COLLISION_SUFFIXES
+                    return Err(crate::NailsError::io(
+                        &relative,
+                        std::io::Error::new(
+                            std::io::ErrorKind::AlreadyExists,
+                            format!(
+                                "Failed to find a free notification filename for {} after {} attempts",
+                                base, MAX_COLLISION_SUFFIXES
+                            ),
                         ),
-                    )));
+                    ));
                 }
                 relative = rel_dir.join(format!("{}_{}.json", base, attempt));
             }
             Err(e) => {
-                return Err(crate::NailsError::IoError(std::io::Error::other(format!(
-                    "Failed to create notification file {}: {e}",
-                    relative.display()
-                ))));
+                return Err(crate::NailsError::io(
+                    &relative,
+                    std::io::Error::other(format!(
+                        "Failed to create notification file {}: {e}",
+                        relative.display()
+                    )),
+                ));
             }
         }
     }
@@ -346,19 +367,25 @@ pub fn read_pending(hidden_volume_root: &Path) -> Result<Vec<(PathBuf, Notificat
     // opens them, so it stays a plain `read_dir`; the symlink-sensitive open of
     // each file goes through `safe_root`.
     let safe_root = SafeRoot::open(hidden_volume_root).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::other(format!(
-            "Failed to open hidden root {} for notifications: {e}",
-            hidden_volume_root.display()
-        )))
+        crate::NailsError::io(
+            hidden_volume_root,
+            std::io::Error::other(format!(
+                "Failed to open hidden root {} for notifications: {e}",
+                hidden_volume_root.display()
+            )),
+        )
     })?;
     let rel_dir = Path::new("notifications");
 
     let mut names: Vec<std::ffi::OsString> = std::fs::read_dir(&dir)
         .map_err(|e| {
-            crate::NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to read notifications dir {}: {}", dir.display(), e),
-            ))
+            crate::NailsError::io(
+                &dir,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to read notifications dir {}: {}", dir.display(), e),
+                ),
+            )
         })?
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name())
@@ -404,16 +431,22 @@ pub fn read_pending(hidden_volume_root: &Path) -> Result<Vec<(PathBuf, Notificat
 /// read path.
 pub fn clear_notification(hidden_volume_root: &Path, path: &Path) -> Result<()> {
     let name = path.file_name().ok_or_else(|| {
-        crate::NailsError::IoError(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("notification path has no file name: {}", path.display()),
-        ))
+        crate::NailsError::io(
+            path,
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("notification path has no file name: {}", path.display()),
+            ),
+        )
     })?;
     let safe_root = SafeRoot::open(hidden_volume_root).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::other(format!(
-            "Failed to open hidden root {} for notifications: {e}",
-            hidden_volume_root.display()
-        )))
+        crate::NailsError::io(
+            hidden_volume_root,
+            std::io::Error::other(format!(
+                "Failed to open hidden root {} for notifications: {e}",
+                hidden_volume_root.display()
+            )),
+        )
     })?;
     safe_root.remove_file(&Path::new("notifications").join(name))
 }
@@ -429,18 +462,24 @@ pub fn clear_all(hidden_volume_root: &Path) -> Result<()> {
     // through SafeRoot so a planted symlink at the `notifications` component
     // cannot redirect the unlink.
     let safe_root = SafeRoot::open(hidden_volume_root).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::other(format!(
-            "Failed to open hidden root {} for notifications: {e}",
-            hidden_volume_root.display()
-        )))
+        crate::NailsError::io(
+            hidden_volume_root,
+            std::io::Error::other(format!(
+                "Failed to open hidden root {} for notifications: {e}",
+                hidden_volume_root.display()
+            )),
+        )
     })?;
     let rel_dir = Path::new("notifications");
     for entry in std::fs::read_dir(&dir)
         .map_err(|e| {
-            crate::NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to read notifications dir {}: {}", dir.display(), e),
-            ))
+            crate::NailsError::io(
+                &dir,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to read notifications dir {}: {}", dir.display(), e),
+                ),
+            )
         })?
         .flatten()
     {
@@ -680,11 +719,14 @@ fn run_notify_send(command: &crate::process::ProcessCommand) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(crate::NailsError::IoError(std::io::Error::other(format!(
-            "notify-send exited with {}: {}",
-            output.status,
-            stderr.trim()
-        ))));
+        return Err(crate::NailsError::io(
+            "notify-send",
+            std::io::Error::other(format!(
+                "notify-send exited with {}: {}",
+                output.status,
+                stderr.trim()
+            )),
+        ));
     }
 
     Ok(())

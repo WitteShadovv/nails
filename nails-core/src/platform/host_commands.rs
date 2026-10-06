@@ -167,10 +167,13 @@ impl HostCommands {
             return Ok(candidate);
         }
 
-        Err(NailsError::IoError(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("{name} not found in {}", self.searched_dirs()),
-        )))
+        Err(NailsError::io(
+            name,
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("{name} not found in {}", self.searched_dirs()),
+            ),
+        ))
     }
 
     fn searched_dirs(&self) -> String {

@@ -908,7 +908,7 @@ fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
 
     let err = manager.activate(false).unwrap_err();
     assert!(
-        matches!(&err, NailsError::IoError(e) if e.to_string().contains("unreadable base")),
+        matches!(&err, NailsError::IoError { source: e, .. } if e.to_string().contains("unreadable base")),
         "expected the gate's I/O error, got: {err:?}"
     );
     assert!(

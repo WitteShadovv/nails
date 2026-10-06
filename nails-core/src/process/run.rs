@@ -467,10 +467,13 @@ fn is_allowlisted_env(key: &OsStr) -> bool {
 
 /// Wraps a spawn/`wait` failure with the executable path for context.
 fn start_failed(executable: &Path, err: std::io::Error) -> NailsError {
-    NailsError::IoError(std::io::Error::new(
-        err.kind(),
-        format!("failed to start {}: {}", executable.display(), err),
-    ))
+    NailsError::io(
+        executable,
+        std::io::Error::new(
+            err.kind(),
+            format!("failed to start {}: {}", executable.display(), err),
+        ),
+    )
 }
 
 /// Runs the command to completion (the default, no-deadline mode).
@@ -747,11 +750,10 @@ fn resolve(program: &Program, search_path: Option<&OsStr>) -> Result<PathBuf> {
     match program {
         Program::Tool(name) => find_executable(name, SYSTEM_TOOL_DIRS.iter().map(Path::new))
             .ok_or_else(|| {
-                not_found(format!(
-                    "{} not found in {}",
+                not_found(
                     name,
-                    SYSTEM_TOOL_DIRS.join(", ")
-                ))
+                    format!("{} not found in {}", name, SYSTEM_TOOL_DIRS.join(", ")),
+                )
             }),
         Program::CallerPath(name) => {
             let (path, searched) = match search_path {
@@ -764,7 +766,7 @@ fn resolve(program: &Program, search_path: Option<&OsStr>) -> Result<PathBuf> {
                 .filter(|dir| dir.is_absolute())
                 .collect();
             find_executable(name, dirs.iter().map(PathBuf::as_path))
-                .ok_or_else(|| not_found(format!("{} not found on {}", name, searched)))
+                .ok_or_else(|| not_found(name, format!("{} not found on {}", name, searched)))
         }
         Program::Exact(path) => Ok(path.clone()),
     }
@@ -790,8 +792,12 @@ fn find_executable<'a>(name: &str, dirs: impl IntoIterator<Item = &'a Path>) -> 
         })
 }
 
-fn not_found(message: String) -> NailsError {
-    NailsError::IoError(std::io::Error::new(std::io::ErrorKind::NotFound, message))
+/// A `NotFound` error naming the `program` that could not be resolved.
+fn not_found(program: &str, message: String) -> NailsError {
+    NailsError::io(
+        program,
+        std::io::Error::new(std::io::ErrorKind::NotFound, message),
+    )
 }
 
 #[cfg(test)]

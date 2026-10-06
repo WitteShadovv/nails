@@ -149,7 +149,7 @@ pub(super) fn dispatch_reboot_candidates(candidates: Vec<RebootCommand>) -> Resu
                 tracing::warn!(command = %command_display, error = %failure, "Reboot command failed");
                 failures.push(failure);
             }
-            Err(NailsError::IoError(error)) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(error) if error.io_kind() == Some(std::io::ErrorKind::NotFound) => {
                 tracing::debug!(command = %command_display, "Reboot command not available");
             }
             Err(error) => {

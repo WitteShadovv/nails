@@ -925,9 +925,10 @@ pub(crate) mod save_probe {
             _ => false,
         };
         if hit {
-            return Err(NailsError::IoError(std::io::Error::other(
-                "injected state-save failure (test seam)",
-            )));
+            return Err(NailsError::io(
+                "state.json",
+                std::io::Error::other("injected state-save failure (test seam)"),
+            ));
         }
         Ok(())
     }

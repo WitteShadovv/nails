@@ -208,9 +208,10 @@ fn wait_for_user_manager_exit_returns_false_after_timeout() {
 #[test]
 fn wait_for_user_manager_exit_propagates_systemctl_error() {
     let exec = ScriptedSessionCommandExecutor::new(
-        vec![Err(NailsError::IoError(std::io::Error::other(
-            "systemctl failed",
-        )))],
+        vec![Err(NailsError::io(
+            "systemctl",
+            std::io::Error::other("systemctl failed"),
+        ))],
         vec![],
         true,
     );
@@ -291,9 +292,10 @@ fn restart_display_manager_propagates_is_active_error_after_start() {
     let exec = ScriptedSessionCommandExecutor::new(
         vec![
             Ok((true, String::new(), String::new())),
-            Err(NailsError::IoError(std::io::Error::other(
-                "systemctl failed",
-            ))),
+            Err(NailsError::io(
+                "systemctl",
+                std::io::Error::other("systemctl failed"),
+            )),
         ],
         vec![],
         true,
@@ -325,9 +327,10 @@ fn restart_user_manager_returns_error_when_user_service_fails() {
 fn restart_user_manager_succeeds_even_if_runtime_dir_start_fails() {
     let exec = ScriptedSessionCommandExecutor::new(
         vec![
-            Err(NailsError::IoError(std::io::Error::other(
-                "runtime-dir failed",
-            ))),
+            Err(NailsError::io(
+                "systemctl",
+                std::io::Error::other("runtime-dir failed"),
+            )),
             Ok((true, String::new(), String::new())),
         ],
         vec![],
@@ -408,9 +411,10 @@ fn test_term_failure_propagated() {
     let exec = ScriptedKillExecutor::new(
         vec![], // no systemctl calls
         vec![], // no loginctl calls
-        vec![Err(NailsError::IoError(std::io::Error::other(
-            "TERM signal failed",
-        )))],
+        vec![Err(NailsError::io(
+            "systemctl",
+            std::io::Error::other("TERM signal failed"),
+        ))],
         false,
     );
 
@@ -433,9 +437,10 @@ fn test_kill_failure_propagated() {
     let exec = ScriptedKillExecutor::new(
         vec![],
         vec![],
-        vec![Err(NailsError::IoError(std::io::Error::other(
-            "KILL signal failed",
-        )))],
+        vec![Err(NailsError::io(
+            "systemctl",
+            std::io::Error::other("KILL signal failed"),
+        ))],
         false,
     );
 
@@ -459,9 +464,10 @@ fn test_mixed_partial_success() {
         vec![],
         vec![
             Ok(true), // TERM pid1 succeeds
-            Err(NailsError::IoError(std::io::Error::other(
-                "TERM pid2 failed",
-            ))), // TERM pid2 fails
+            Err(NailsError::io(
+                "systemctl",
+                std::io::Error::other("TERM pid2 failed"),
+            )), // TERM pid2 fails
         ],
         false,
     );

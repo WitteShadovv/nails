@@ -299,10 +299,13 @@ impl Filesystem for RealFilesystem {
 
     fn copy_file(&self, src: &Path, dst: &Path) -> Result<()> {
         std::fs::copy(src, dst).map_err(|e| {
-            crate::NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("failed to copy {} to {}: {e}", src.display(), dst.display()),
-            ))
+            crate::NailsError::io(
+                src,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("failed to copy {} to {}: {e}", src.display(), dst.display()),
+                ),
+            )
         })?;
         Ok(())
     }

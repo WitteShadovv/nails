@@ -57,6 +57,9 @@ fn permission_denied_and_invalid_state_map_to_their_own_codes() {
 
 #[test]
 fn other_errors_map_to_a_generic_deactivation_failure() {
-    let body = deactivate_error_body(&NailsError::IoError(std::io::Error::other("unexpected")));
+    let body = deactivate_error_body(&NailsError::io(
+        "/tmp/x",
+        std::io::Error::other("unexpected"),
+    ));
     assert_eq!(body.code, "deactivation_failed");
 }

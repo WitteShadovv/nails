@@ -3,7 +3,7 @@
 
 //! Session management — killing sessions, cleanup, restart
 
-use crate::{NailsError, Result};
+use crate::{IoResultExt, NailsError, Result};
 use std::fs;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -58,49 +58,62 @@ pub(crate) fn prompt_session_kill_confirmation_with_io<R: std::io::BufRead, W: s
 
     let dm = ctx.display_manager.as_deref().unwrap_or("display-manager");
 
-    writeln!(writer, "⚠️  This will terminate your graphical session!")?;
+    writeln!(writer, "⚠️  This will terminate your graphical session!")
+        .at_path(crate::prompts::PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "    All unsaved work in open applications will be LOST."
-    )?;
-    writeln!(writer)?;
-    writeln!(writer, "    The system will:")?;
-    writeln!(writer, "    1. Stop display manager ({})", dm)?;
+    )
+    .at_path(crate::prompts::PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(crate::prompts::PROMPT_OUTPUT)?;
+    writeln!(writer, "    The system will:").at_path(crate::prompts::PROMPT_OUTPUT)?;
+    writeln!(writer, "    1. Stop display manager ({})", dm)
+        .at_path(crate::prompts::PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "    2. Terminate your logind session and user processes"
-    )?;
-    writeln!(writer, "    3. Mount hidden environment overlays")?;
-    writeln!(writer, "    4. Restart display manager and user manager")?;
+    )
+    .at_path(crate::prompts::PROMPT_OUTPUT)?;
+    writeln!(writer, "    3. Mount hidden environment overlays")
+        .at_path(crate::prompts::PROMPT_OUTPUT)?;
+    writeln!(writer, "    4. Restart display manager and user manager")
+        .at_path(crate::prompts::PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "    5. Apply the hidden configuration layer (if any)"
-    )?;
-    writeln!(writer)?;
+    )
+    .at_path(crate::prompts::PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(crate::prompts::PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "    Activation then continues in the background and usually finishes"
-    )?;
+    )
+    .at_path(crate::prompts::PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "    within a minute. You will need to log in again afterwards; the"
-    )?;
+    )
+    .at_path(crate::prompts::PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "    result arrives as a desktop notification on your next login, and"
-    )?;
+    )
+    .at_path(crate::prompts::PROMPT_OUTPUT)?;
     writeln!(
         writer,
         "    you can also check it with 'sudo nails status'."
-    )?;
-    writeln!(writer)?;
+    )
+    .at_path(crate::prompts::PROMPT_OUTPUT)?;
+    writeln!(writer).at_path(crate::prompts::PROMPT_OUTPUT)?;
 
     // Prompt for confirmation
-    write!(writer, "    Continue? [y/N]: ")?;
-    writer.flush()?;
+    write!(writer, "    Continue? [y/N]: ").at_path(crate::prompts::PROMPT_OUTPUT)?;
+    writer.flush().at_path(crate::prompts::PROMPT_OUTPUT)?;
 
     let mut input = String::new();
-    reader.read_line(&mut input)?;
+    reader
+        .read_line(&mut input)
+        .at_path(crate::prompts::PROMPT_INPUT)?;
 
     let response = input.trim().to_lowercase();
     if response == "y" || response == "yes" {

@@ -31,8 +31,8 @@ use std::path::Path;
 use std::time::{Duration, SystemTime};
 
 use super::{Notification, read_pending};
-use crate::Result;
 use crate::filesystem::SafeRoot;
+use crate::{IoResultExt, Result};
 
 /// Marker present in `notifications/` while an activation is in progress.
 pub const RESULT_PENDING_MARKER: &str = ".result-pending";
@@ -53,10 +53,13 @@ fn rel(name: &str) -> std::path::PathBuf {
 
 fn open_root(hidden_volume_root: &Path) -> Result<SafeRoot> {
     SafeRoot::open(hidden_volume_root).map_err(|e| {
-        crate::NailsError::IoError(std::io::Error::other(format!(
-            "Failed to open hidden root {} for notifications: {e}",
-            hidden_volume_root.display()
-        )))
+        crate::NailsError::io(
+            hidden_volume_root,
+            std::io::Error::other(format!(
+                "Failed to open hidden root {} for notifications: {e}",
+                hidden_volume_root.display()
+            )),
+        )
     })
 }
 
@@ -72,7 +75,8 @@ fn write_marker(hidden_volume_root: &Path, name: &str) -> Result<()> {
     // and create the marker afresh.
     let _ = safe_root.remove_file(&relative);
     let mut file = safe_root.create_new(&relative, 0o600)?;
-    file.write_all(chrono::Utc::now().to_rfc3339().as_bytes())?;
+    file.write_all(chrono::Utc::now().to_rfc3339().as_bytes())
+        .at_path(hidden_volume_root.join(&relative))?;
     if let Some(user) = target_user.as_ref() {
         let _ = super::fchown_to_user(&file, user);
     }
@@ -301,17 +305,22 @@ impl RealSessionNotifier {
             .deadline(crate::process::run::SYSTEMCTL_ACTION_BUDGET)
     }
 
-    fn run(command: &crate::process::ProcessCommand) -> Result<()> {
+    /// Run `command` (the `program` named in its error) and turn a non-zero
+    /// exit into an error.
+    fn run(program: &str, command: &crate::process::ProcessCommand) -> Result<()> {
         use crate::process::{ProcessRunner, RealProcessRunner};
         let output = RealProcessRunner.run(command)?;
         if output.status.success() {
             Ok(())
         } else {
-            Err(crate::NailsError::IoError(std::io::Error::other(format!(
-                "exited with {}: {}",
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))))
+            Err(crate::NailsError::io(
+                program,
+                std::io::Error::other(format!(
+                    "exited with {}: {}",
+                    output.status,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                )),
+            ))
         }
     }
 }
@@ -326,13 +335,18 @@ impl SessionNotifier for RealSessionNotifier {
             crate::platform::host_commands::HostCommands::new(crate::process::SYSTEM_TOOL_DIRS)
                 .resolve("notify-send")?;
         let args = Self::notify_send_args(&notify_send, notification);
-        match Self::run(&Self::systemd_run_command(user, &args)) {
+        match Self::run("systemd-run", &Self::systemd_run_command(user, &args)) {
             Ok(()) => Ok(()),
-            Err(first) => Self::run(&Self::runuser_command(user, &args)).map_err(|second| {
-                crate::NailsError::IoError(std::io::Error::other(format!(
-                    "systemd-run: {first}; runuser: {second}"
-                )))
-            }),
+            Err(first) => {
+                Self::run("runuser", &Self::runuser_command(user, &args)).map_err(|second| {
+                    crate::NailsError::io(
+                        &notify_send,
+                        std::io::Error::other(format!(
+                            "could not run in the session ({first}; {second})"
+                        )),
+                    )
+                })
+            }
         }
     }
 }

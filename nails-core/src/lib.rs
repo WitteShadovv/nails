@@ -150,7 +150,7 @@ pub use config::{
     CliOverrides, ColorProfile, ColorSchemeConfig, Config, ConfigBuilder, DecoyProfile,
     EphemeralOverlayDir, LoadedConfig, OverlayConfig, OverlayMode, ValueSource,
 };
-pub use error::{NailsError, Result};
+pub use error::{IoResultExt, NailsError, Result};
 pub use filesystem::{Filesystem, RealFilesystem};
 #[cfg(any(test, feature = "test-support"))]
 pub use filesystem::{MockFilesystem, PathKind};

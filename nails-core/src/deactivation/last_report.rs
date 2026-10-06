@@ -16,7 +16,7 @@
 //! down with the volume, so recording it leaves no decoy-side trace.
 
 use crate::verify::{Finding, Severity, VerifyStatus};
-use crate::{DeactivationReport, Filesystem, Result, SystemState};
+use crate::{DeactivationReport, Filesystem, NailsError, Result, SystemState};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -196,7 +196,12 @@ pub fn write_last_deactivation_report<F: Filesystem>(
     let relative = LastDeactivationReport::relative_path();
     // LastDeactivationReport is plain data, so serialization cannot realistically
     // fail; surface any error as I/O rather than inventing a bespoke variant.
-    let json = serde_json::to_string_pretty(report).map_err(std::io::Error::other)?;
+    let json = serde_json::to_string_pretty(report).map_err(|e| {
+        NailsError::io(
+            LastDeactivationReport::path_on(hidden_root),
+            std::io::Error::other(e),
+        )
+    })?;
     fs.write_hidden_file_atomic(hidden_root, &relative, &json, 0o600)?;
 
     Ok(LastDeactivationReport::path_on(hidden_root))

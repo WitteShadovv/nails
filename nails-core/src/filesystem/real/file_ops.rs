@@ -6,7 +6,7 @@
 use super::RealFilesystem;
 use crate::filesystem::{DiskUsage, Filesystem, PatternScan};
 use crate::target_user::TargetUser;
-use crate::{NailsError, Result};
+use crate::{IoResultExt, NailsError, Result};
 use std::path::{Path, PathBuf};
 
 pub(super) fn path_exists(path: &Path) -> Result<bool> {
@@ -21,9 +21,7 @@ pub(super) fn device_id(path: &Path) -> Result<u64> {
     use std::os::unix::fs::MetadataExt;
     // `metadata` follows symlinks, which is what we want: the attach gate asks
     // about the filesystem the path resolves to, not about a link inode.
-    std::fs::metadata(path)
-        .map(|meta| meta.dev())
-        .map_err(NailsError::IoError)
+    std::fs::metadata(path).map(|meta| meta.dev()).at_path(path)
 }
 
 pub(super) fn is_symlink(path: &Path) -> Result<bool> {
@@ -31,7 +29,7 @@ pub(super) fn is_symlink(path: &Path) -> Result<bool> {
 }
 
 pub(super) fn canonicalize(path: &Path) -> Result<PathBuf> {
-    Ok(std::fs::canonicalize(path)?)
+    std::fs::canonicalize(path).at_path(path)
 }
 
 pub(super) fn supports_symlinks(dir: &Path) -> Result<bool> {
@@ -46,7 +44,7 @@ pub(super) fn supports_symlinks(dir: &Path) -> Result<bool> {
             let _ = std::fs::remove_file(&probe);
             match e.raw_os_error() {
                 Some(1) | Some(95) => Ok(false),
-                _ => Err(NailsError::IoError(e)),
+                _ => Err(NailsError::io(&probe, e)),
             }
         }
     }
@@ -54,30 +52,36 @@ pub(super) fn supports_symlinks(dir: &Path) -> Result<bool> {
 
 pub(super) fn create_symlink(target: &Path, link: &Path) -> Result<()> {
     if link.is_symlink() {
-        let existing_target = std::fs::read_link(link).map_err(NailsError::IoError)?;
+        let existing_target = std::fs::read_link(link).at_path(link)?;
         if existing_target == target {
             return Ok(());
         }
-        return Err(NailsError::IoError(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!(
-                "Symlink at {} already exists pointing to a different target",
-                link.display()
+        return Err(NailsError::io(
+            link,
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!(
+                    "Symlink at {} already exists pointing to a different target",
+                    link.display()
+                ),
             ),
-        )));
+        ));
     }
     if link.exists() {
-        return Err(NailsError::IoError(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            format!("Path already exists (not a symlink) at {}", link.display()),
-        )));
+        return Err(NailsError::io(
+            link,
+            std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("Path already exists (not a symlink) at {}", link.display()),
+            ),
+        ));
     }
-    std::os::unix::fs::symlink(target, link).map_err(NailsError::IoError)
+    std::os::unix::fs::symlink(target, link).at_path(link)
 }
 
 pub(super) fn disk_usage(path: &Path) -> Result<DiskUsage> {
     let stat = nix::sys::statvfs::statvfs(path)
-        .map_err(|e| NailsError::IoError(std::io::Error::other(e.to_string())))?;
+        .map_err(|e| NailsError::io(path, std::io::Error::from(e)))?;
     let fragment_size = stat.fragment_size();
     Ok(DiskUsage {
         total: stat.blocks() * fragment_size,
@@ -86,20 +90,18 @@ pub(super) fn disk_usage(path: &Path) -> Result<DiskUsage> {
 }
 
 pub(super) fn create_directory(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path)?;
-    Ok(())
+    std::fs::create_dir_all(path).at_path(path)
 }
 
 pub(super) fn set_permissions(path: &Path, mode: u32) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let perms = std::fs::Permissions::from_mode(mode);
-    std::fs::set_permissions(path, perms)?;
-    Ok(())
+    std::fs::set_permissions(path, perms).at_path(path)
 }
 
 pub(super) fn get_permissions(path: &Path) -> Result<u32> {
     use std::os::unix::fs::PermissionsExt;
-    let mode = std::fs::metadata(path)?.permissions().mode();
+    let mode = std::fs::metadata(path).at_path(path)?.permissions().mode();
     Ok(mode & 0o7777)
 }
 
@@ -112,7 +114,7 @@ pub(super) fn is_writable(path: &Path) -> Result<bool> {
         let test_path = path.join(".nails_write_test");
         match std::fs::File::create(&test_path) {
             Ok(_) => {
-                std::fs::remove_file(&test_path)?;
+                std::fs::remove_file(&test_path).at_path(&test_path)?;
                 Ok(true)
             }
             Err(_) => Ok(false),
@@ -124,10 +126,13 @@ pub(super) fn is_writable(path: &Path) -> Result<bool> {
 
 pub(super) fn read_file_content(path: &Path) -> Result<String> {
     std::fs::read_to_string(path).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to read file {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to read file {}: {}", path.display(), e),
+            ),
+        )
     })
 }
 
@@ -137,40 +142,52 @@ pub(super) fn write_file_content(path: &Path, content: &str) -> Result<()> {
     let temp_path = path.with_extension("tmp");
 
     let mut temp_file = std::fs::File::create(&temp_path).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to create temp file {}: {}", temp_path.display(), e),
-        ))
+        NailsError::io(
+            &temp_path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to create temp file {}: {}", temp_path.display(), e),
+            ),
+        )
     })?;
 
     temp_file.write_all(content.as_bytes()).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to write to temp file {}: {}",
-                temp_path.display(),
-                e
+        NailsError::io(
+            &temp_path,
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to write to temp file {}: {}",
+                    temp_path.display(),
+                    e
+                ),
             ),
-        ))
+        )
     })?;
 
     temp_file.sync_all().map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to sync temp file {}: {}", temp_path.display(), e),
-        ))
+        NailsError::io(
+            &temp_path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to sync temp file {}: {}", temp_path.display(), e),
+            ),
+        )
     })?;
 
     std::fs::rename(&temp_path, path).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to rename {} to {}: {}",
-                temp_path.display(),
-                path.display(),
-                e
+        NailsError::io(
+            &temp_path,
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to rename {} to {}: {}",
+                    temp_path.display(),
+                    path.display(),
+                    e
+                ),
             ),
-        ))
+        )
     })?;
 
     Ok(())
@@ -191,17 +208,23 @@ pub(super) fn write_kernel_tunable(path: &Path, value: &str) -> Result<()> {
         .truncate(true)
         .open(path)
         .map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to open kernel tunable {}: {}", path.display(), e),
-            ))
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to open kernel tunable {}: {}", path.display(), e),
+                ),
+            )
         })?;
 
     file.write_all(value.as_bytes()).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to write kernel tunable {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to write kernel tunable {}: {}", path.display(), e),
+            ),
+        )
     })?;
 
     Ok(())
@@ -219,16 +242,22 @@ pub(super) fn overwrite_file_in_place(path: &Path, content: &str) -> Result<()> 
     use std::io::Write;
 
     let parent = path.parent().ok_or_else(|| {
-        NailsError::IoError(std::io::Error::other(format!(
-            "Refusing to overwrite a file with no parent directory: {}",
-            path.display()
-        )))
+        NailsError::io(
+            path,
+            std::io::Error::other(format!(
+                "Refusing to overwrite a file with no parent directory: {}",
+                path.display()
+            )),
+        )
     })?;
     let file_name = path.file_name().ok_or_else(|| {
-        NailsError::IoError(std::io::Error::other(format!(
-            "Refusing to overwrite a path with no file name: {}",
-            path.display()
-        )))
+        NailsError::io(
+            path,
+            std::io::Error::other(format!(
+                "Refusing to overwrite a path with no file name: {}",
+                path.display()
+            )),
+        )
     })?;
 
     // Open the existing file beneath the symlink-safe parent root without
@@ -241,22 +270,31 @@ pub(super) fn overwrite_file_in_place(path: &Path, content: &str) -> Result<()> 
 
     // Truncate on the same inode, then rewrite — no temp file, no rename.
     file.set_len(0).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to truncate {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to truncate {}: {}", path.display(), e),
+            ),
+        )
     })?;
     file.write_all(content.as_bytes()).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to rewrite {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to rewrite {}: {}", path.display(), e),
+            ),
+        )
     })?;
     file.sync_all().map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to sync {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to sync {}: {}", path.display(), e),
+            ),
+        )
     })?;
 
     Ok(())
@@ -284,16 +322,22 @@ pub(super) fn write_user_file(
     use std::io::Write;
 
     let parent = path.parent().ok_or_else(|| {
-        NailsError::IoError(std::io::Error::other(format!(
-            "Refusing to write user file with no parent directory: {}",
-            path.display()
-        )))
+        NailsError::io(
+            path,
+            std::io::Error::other(format!(
+                "Refusing to write user file with no parent directory: {}",
+                path.display()
+            )),
+        )
     })?;
     let file_name = path.file_name().ok_or_else(|| {
-        NailsError::IoError(std::io::Error::other(format!(
-            "Refusing to write user file with no file name: {}",
-            path.display()
-        )))
+        NailsError::io(
+            path,
+            std::io::Error::other(format!(
+                "Refusing to write user file with no file name: {}",
+                path.display()
+            )),
+        )
     })?;
 
     // Ensure the parent chain exists and every directory NAILS creates is owned
@@ -311,11 +355,14 @@ pub(super) fn write_user_file(
         Ok(st) => (st.st_uid, st.st_gid, st.st_mode & 0o7777),
         Err(nix::errno::Errno::ENOENT) => (user.uid, user.gid, default_mode & 0o7777),
         Err(e) => {
-            return Err(NailsError::IoError(std::io::Error::other(format!(
-                "Failed to stat {} before writing: {}",
-                path.display(),
-                e
-            ))));
+            return Err(NailsError::io(
+                path,
+                std::io::Error::other(format!(
+                    "Failed to stat {} before writing: {}",
+                    path.display(),
+                    e
+                )),
+            ));
         }
     };
 
@@ -343,20 +390,26 @@ pub(super) fn write_user_file(
                 continue;
             }
             Err(e) => {
-                return Err(NailsError::IoError(std::io::Error::other(format!(
-                    "Failed to create temp file in {}: {}",
-                    parent.display(),
-                    e
-                ))));
+                return Err(NailsError::io(
+                    parent,
+                    std::io::Error::other(format!(
+                        "Failed to create temp file in {}: {}",
+                        parent.display(),
+                        e
+                    )),
+                ));
             }
         }
     }
     let temp_fd = temp_fd.ok_or_else(|| {
-        NailsError::IoError(std::io::Error::other(format!(
-            "Failed to create a unique temp file in {} ({:?})",
-            parent.display(),
-            last_err
-        )))
+        NailsError::io(
+            parent,
+            std::io::Error::other(format!(
+                "Failed to create a unique temp file in {} ({:?})",
+                parent.display(),
+                last_err
+            )),
+        )
     })?;
 
     // Everything below must clean up the temp on failure so a half-written file
@@ -364,16 +417,22 @@ pub(super) fn write_user_file(
     let outcome = (|| -> Result<()> {
         let mut file = std::fs::File::from(temp_fd);
         file.write_all(content.as_bytes()).map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to write temp file for {}: {}", path.display(), e),
-            ))
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to write temp file for {}: {}", path.display(), e),
+                ),
+            )
         })?;
         file.sync_all().map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to sync temp file for {}: {}", path.display(), e),
-            ))
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to sync temp file for {}: {}", path.display(), e),
+                ),
+            )
         })?;
 
         // Ownership is skipped in test/test-like runtimes, where the process may
@@ -381,26 +440,35 @@ pub(super) fn write_user_file(
         // guard the notification writer uses for the same reason.
         if !crate::runtime_safety::should_skip_host_interaction() {
             fchown(&file, Some(Uid::from_raw(uid)), Some(Gid::from_raw(gid))).map_err(|e| {
-                NailsError::IoError(std::io::Error::other(format!(
-                    "Failed to set ownership {uid}:{gid} on {}: {e}",
-                    path.display()
-                )))
+                NailsError::io(
+                    path,
+                    std::io::Error::other(format!(
+                        "Failed to set ownership {uid}:{gid} on {}: {e}",
+                        path.display()
+                    )),
+                )
             })?;
         }
 
         // Set the mode explicitly so the process umask cannot alter it.
         fchmod(&file, Mode::from_bits_truncate(mode)).map_err(|e| {
-            NailsError::IoError(std::io::Error::other(format!(
-                "Failed to set mode {mode:o} on {}: {e}",
-                path.display()
-            )))
+            NailsError::io(
+                path,
+                std::io::Error::other(format!(
+                    "Failed to set mode {mode:o} on {}: {e}",
+                    path.display()
+                )),
+            )
         })?;
 
         renameat(&dir_fd, temp_name.as_str(), &dir_fd, file_name).map_err(|e| {
-            NailsError::IoError(std::io::Error::other(format!(
-                "Failed to move temp file into place at {}: {e}",
-                path.display()
-            )))
+            NailsError::io(
+                path,
+                std::io::Error::other(format!(
+                    "Failed to move temp file into place at {}: {e}",
+                    path.display()
+                )),
+            )
         })?;
         Ok(())
     })();
@@ -422,19 +490,25 @@ fn open_dir_no_symlinks(dir: &Path) -> Result<std::os::fd::OwnedFd> {
     use nix::fcntl::{OFlag, OpenHow, ResolveFlag, openat2};
 
     let anchor = std::fs::File::open("/").map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to open / to anchor directory resolution: {e}"),
-        ))
+        NailsError::io(
+            "/",
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to open / to anchor directory resolution: {e}"),
+            ),
+        )
     })?;
     let how = OpenHow::new()
         .flags(OFlag::O_PATH | OFlag::O_DIRECTORY | OFlag::O_CLOEXEC)
         .resolve(ResolveFlag::RESOLVE_NO_SYMLINKS);
     openat2(&anchor, dir, how).map_err(|e| {
-        NailsError::IoError(std::io::Error::other(format!(
-            "Refusing to write into {}: its path is not resolvable without symlinks ({e})",
-            dir.display()
-        )))
+        NailsError::io(
+            dir,
+            std::io::Error::other(format!(
+                "Refusing to write into {}: its path is not resolvable without symlinks ({e})",
+                dir.display()
+            )),
+        )
     })
 }
 
@@ -446,24 +520,30 @@ fn create_user_dir_all(dir: &Path, user: &TargetUser) -> Result<()> {
 
     match std::fs::symlink_metadata(dir) {
         Ok(meta) if meta.file_type().is_symlink() => {
-            return Err(NailsError::IoError(std::io::Error::other(format!(
-                "Refusing to write under symlinked directory {}",
-                dir.display()
-            ))));
+            return Err(NailsError::io(
+                dir,
+                std::io::Error::other(format!(
+                    "Refusing to write under symlinked directory {}",
+                    dir.display()
+                )),
+            ));
         }
         Ok(meta) if meta.is_dir() => return Ok(()),
         Ok(_) => {
-            return Err(NailsError::IoError(std::io::Error::other(format!(
-                "Parent path {} exists and is not a directory",
-                dir.display()
-            ))));
+            return Err(NailsError::io(
+                dir,
+                std::io::Error::other(format!(
+                    "Parent path {} exists and is not a directory",
+                    dir.display()
+                )),
+            ));
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            return Err(NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to stat {}: {e}", dir.display()),
-            )));
+            return Err(NailsError::io(
+                dir,
+                std::io::Error::new(e.kind(), format!("Failed to stat {}: {e}", dir.display())),
+            ));
         }
     }
 
@@ -473,10 +553,13 @@ fn create_user_dir_all(dir: &Path, user: &TargetUser) -> Result<()> {
     loop {
         match std::fs::symlink_metadata(cursor) {
             Ok(meta) if meta.file_type().is_symlink() => {
-                return Err(NailsError::IoError(std::io::Error::other(format!(
-                    "Refusing to create directories under symlinked path {}",
-                    cursor.display()
-                ))));
+                return Err(NailsError::io(
+                    cursor,
+                    std::io::Error::other(format!(
+                        "Refusing to create directories under symlinked path {}",
+                        cursor.display()
+                    )),
+                ));
             }
             Ok(_) => break,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -487,10 +570,13 @@ fn create_user_dir_all(dir: &Path, user: &TargetUser) -> Result<()> {
                 }
             }
             Err(e) => {
-                return Err(NailsError::IoError(std::io::Error::new(
-                    e.kind(),
-                    format!("Failed to stat {}: {e}", cursor.display()),
-                )));
+                return Err(NailsError::io(
+                    cursor,
+                    std::io::Error::new(
+                        e.kind(),
+                        format!("Failed to stat {}: {e}", cursor.display()),
+                    ),
+                ));
             }
         }
     }
@@ -500,10 +586,13 @@ fn create_user_dir_all(dir: &Path, user: &TargetUser) -> Result<()> {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
-                return Err(NailsError::IoError(std::io::Error::new(
-                    e.kind(),
-                    format!("Failed to create directory {}: {e}", new_dir.display()),
-                )));
+                return Err(NailsError::io(
+                    new_dir,
+                    std::io::Error::new(
+                        e.kind(),
+                        format!("Failed to create directory {}: {e}", new_dir.display()),
+                    ),
+                ));
             }
         }
 
@@ -517,15 +606,18 @@ fn create_user_dir_all(dir: &Path, user: &TargetUser) -> Result<()> {
 
         if !crate::runtime_safety::should_skip_host_interaction() {
             std::os::unix::fs::chown(new_dir, Some(user.uid), Some(user.gid)).map_err(|e| {
-                NailsError::IoError(std::io::Error::new(
-                    e.kind(),
-                    format!(
-                        "Failed to set ownership {}:{} on {}: {e}",
-                        user.uid,
-                        user.gid,
-                        new_dir.display()
+                NailsError::io(
+                    new_dir,
+                    std::io::Error::new(
+                        e.kind(),
+                        format!(
+                            "Failed to set ownership {}:{} on {}: {e}",
+                            user.uid,
+                            user.gid,
+                            new_dir.display()
+                        ),
                     ),
-                ))
+                )
             })?;
         }
     }
@@ -564,10 +656,13 @@ pub(super) fn find_files_with_pattern(
     }
 
     let entries = std::fs::read_dir(dir).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to read directory {}: {}", dir.display(), e),
-        ))
+        NailsError::io(
+            dir,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to read directory {}: {}", dir.display(), e),
+            ),
+        )
     })?;
 
     for entry in entries.flatten() {
@@ -635,52 +730,67 @@ fn scan_files_tolerant(dir: &Path, pattern: &str, scan: &mut PatternScan) {
 
 pub(super) fn file_size(path: &Path) -> Result<u64> {
     let metadata = std::fs::metadata(path).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to get file size for {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to get file size for {}: {}", path.display(), e),
+            ),
+        )
     })?;
     Ok(metadata.len())
 }
 
 pub(super) fn rename_file(from: &Path, to: &Path) -> Result<()> {
     std::fs::rename(from, to).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!(
-                "Failed to rename {} to {}: {}",
-                from.display(),
-                to.display(),
-                e
+        NailsError::io(
+            from,
+            std::io::Error::new(
+                e.kind(),
+                format!(
+                    "Failed to rename {} to {}: {}",
+                    from.display(),
+                    to.display(),
+                    e
+                ),
             ),
-        ))
+        )
     })
 }
 
 pub(super) fn remove_file(path: &Path) -> Result<()> {
     std::fs::remove_file(path).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to remove file {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to remove file {}: {}", path.display(), e),
+            ),
+        )
     })
 }
 
 pub(super) fn remove_directory(path: &Path) -> Result<()> {
     std::fs::remove_dir(path).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to remove directory {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to remove directory {}: {}", path.display(), e),
+            ),
+        )
     })
 }
 
 pub(super) fn remove_dir_all(path: &Path) -> Result<()> {
     std::fs::remove_dir_all(path).map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to remove directory {}: {}", path.display(), e),
-        ))
+        NailsError::io(
+            path,
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to remove directory {}: {}", path.display(), e),
+            ),
+        )
     })
 }
 
@@ -697,14 +807,17 @@ pub(super) fn secure_delete(fs: &RealFilesystem, path: &Path) -> Result<()> {
         .write(true)
         .open(path)
         .map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!(
-                    "Failed to open file for secure deletion {}: {}",
-                    path.display(),
-                    e
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to open file for secure deletion {}: {}",
+                        path.display(),
+                        e
+                    ),
                 ),
-            ))
+            )
         })?;
 
     const BUFFER_SIZE: usize = 64 * 1024;
@@ -715,29 +828,34 @@ pub(super) fn secure_delete(fs: &RealFilesystem, path: &Path) -> Result<()> {
     while remaining > 0 {
         let to_write = remaining.min(BUFFER_SIZE);
         file.write_all(&zeros[..to_write]).map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!(
-                    "Failed to overwrite file with zeros {}: {}",
-                    path.display(),
-                    e
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to overwrite file with zeros {}: {}",
+                        path.display(),
+                        e
+                    ),
                 ),
-            ))
+            )
         })?;
         remaining -= to_write;
     }
-    file.sync_all().map_err(NailsError::IoError)?;
+    file.sync_all().at_path(path)?;
 
     // Pass 2: Overwrite with random data from /dev/urandom
     use std::io::{Read, Seek};
-    file.seek(std::io::SeekFrom::Start(0))
-        .map_err(NailsError::IoError)?;
+    file.seek(std::io::SeekFrom::Start(0)).at_path(path)?;
 
     let mut urandom = std::fs::File::open("/dev/urandom").map_err(|e| {
-        NailsError::IoError(std::io::Error::new(
-            e.kind(),
-            format!("Failed to open /dev/urandom for secure deletion: {}", e),
-        ))
+        NailsError::io(
+            "/dev/urandom",
+            std::io::Error::new(
+                e.kind(),
+                format!("Failed to open /dev/urandom for secure deletion: {}", e),
+            ),
+        )
     })?;
 
     let mut random_buf = vec![0u8; BUFFER_SIZE];
@@ -747,45 +865,53 @@ pub(super) fn secure_delete(fs: &RealFilesystem, path: &Path) -> Result<()> {
         urandom
             .read_exact(&mut random_buf[..to_write])
             .map_err(|e| {
-                NailsError::IoError(std::io::Error::new(
-                    e.kind(),
-                    format!("Failed to read random data from /dev/urandom: {}", e),
-                ))
+                NailsError::io(
+                    "/dev/urandom",
+                    std::io::Error::new(
+                        e.kind(),
+                        format!("Failed to read random data from /dev/urandom: {}", e),
+                    ),
+                )
             })?;
         file.write_all(&random_buf[..to_write]).map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!(
-                    "Failed to overwrite file with random data {}: {}",
-                    path.display(),
-                    e
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to overwrite file with random data {}: {}",
+                        path.display(),
+                        e
+                    ),
                 ),
-            ))
+            )
         })?;
         remaining -= to_write;
     }
-    file.sync_all().map_err(NailsError::IoError)?;
+    file.sync_all().at_path(path)?;
 
     // Pass 3: Overwrite with zeros again
-    file.seek(std::io::SeekFrom::Start(0))
-        .map_err(NailsError::IoError)?;
+    file.seek(std::io::SeekFrom::Start(0)).at_path(path)?;
 
     remaining = file_size as usize;
     while remaining > 0 {
         let to_write = remaining.min(BUFFER_SIZE);
         file.write_all(&zeros[..to_write]).map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!(
-                    "Failed to overwrite file with zeros (final pass) {}: {}",
-                    path.display(),
-                    e
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!(
+                        "Failed to overwrite file with zeros (final pass) {}: {}",
+                        path.display(),
+                        e
+                    ),
                 ),
-            ))
+            )
         })?;
         remaining -= to_write;
     }
-    file.sync_all().map_err(NailsError::IoError)?;
+    file.sync_all().at_path(path)?;
 
     drop(file);
     fs.remove_file(path)
@@ -794,12 +920,15 @@ pub(super) fn secure_delete(fs: &RealFilesystem, path: &Path) -> Result<()> {
 pub(super) fn secure_delete_dir_all(fs: &RealFilesystem, path: &Path) -> Result<()> {
     if path.is_dir() {
         for entry in std::fs::read_dir(path).map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to read directory {}: {}", path.display(), e),
-            ))
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to read directory {}: {}", path.display(), e),
+                ),
+            )
         })? {
-            let entry = entry.map_err(NailsError::IoError)?;
+            let entry = entry.at_path(path)?;
             let entry_path = entry.path();
 
             if entry_path.is_dir() {
@@ -810,10 +939,13 @@ pub(super) fn secure_delete_dir_all(fs: &RealFilesystem, path: &Path) -> Result<
         }
 
         std::fs::remove_dir(path).map_err(|e| {
-            NailsError::IoError(std::io::Error::new(
-                e.kind(),
-                format!("Failed to remove directory {}: {}", path.display(), e),
-            ))
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to remove directory {}: {}", path.display(), e),
+                ),
+            )
         })?;
     }
 

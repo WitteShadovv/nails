@@ -54,9 +54,15 @@ const INHIBITOR_WHO: &str = "power-management";
 const INHIBITOR_WHY_BLOCK: &str = "A background task is in progress";
 const INHIBITOR_WHY_DELAY: &str = "Finishing a background task before sleep";
 
+/// The system bus logind is reached through, named in D-Bus errors.
+const SYSTEM_BUS_SOCKET: &str = "/run/dbus/system_bus_socket";
+
 /// Map any D-Bus error into a NailsError without leaking a backtrace.
 fn dbus_error<E: std::fmt::Display>(context: &str, error: E) -> NailsError {
-    NailsError::IoError(std::io::Error::other(format!("{context}: {error}")))
+    NailsError::io(
+        SYSTEM_BUS_SOCKET,
+        std::io::Error::other(format!("{context}: {error}")),
+    )
 }
 
 /// Run the sleep guard for the configured mode.

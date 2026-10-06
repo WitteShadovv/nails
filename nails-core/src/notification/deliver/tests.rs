@@ -118,9 +118,10 @@ fn a_failed_send_keeps_it_and_the_rest_queued() {
         true,
         vec![
             Ok(()),
-            Err(crate::NailsError::IoError(std::io::Error::other(
-                "bus gone",
-            ))),
+            Err(crate::NailsError::io(
+                "/run/user/1000/bus",
+                std::io::Error::other("bus gone"),
+            )),
         ],
     );
 
@@ -285,9 +286,10 @@ fn polling_stops_at_the_cap_even_if_the_activation_never_settles() {
 #[test]
 fn a_dispatch_error_is_returned_only_when_nothing_was_delivered() {
     let err = || {
-        Err(crate::NailsError::IoError(std::io::Error::other(
-            "unreadable",
-        )))
+        Err(crate::NailsError::io(
+            "/mnt/hidden/notifications",
+            std::io::Error::other("unreadable"),
+        ))
     };
     let mut env = FakeEnv::new(vec![err()], vec![true]);
     assert!(dispatch_until_settled(&mut env, DISPATCH_POLL_INTERVAL, DISPATCH_POLL_CAP).is_err());

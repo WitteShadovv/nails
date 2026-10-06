@@ -87,15 +87,11 @@ pub fn execute(
         Ok(report) => report,
         Err(e) => {
             let error_msg = match e {
-                NailsError::IoError(ref io_err) => {
-                    if io_err.kind() == std::io::ErrorKind::NotFound {
+                NailsError::IoError { ref source, .. } => {
+                    if source.kind() == std::io::ErrorKind::NotFound {
                         format!("State file not found: {}", state_path.display())
                     } else {
-                        format!(
-                            "I/O error reading state file {}: {}",
-                            state_path.display(),
-                            io_err
-                        )
+                        format!("I/O error reading state file: {e}")
                     }
                 }
                 NailsError::PermissionDenied(ref msg) => {

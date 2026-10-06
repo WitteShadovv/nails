@@ -192,8 +192,11 @@ fn resolve_path<F: Filesystem>(fs: &F, path: &Path) -> Result<PathBuf> {
                 resolved.extend(missing.iter().rev());
                 return Ok(resolved);
             }
-            Err(NailsError::IoError(e))
-                if matches!(e.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) =>
+            Err(e)
+                if matches!(
+                    e.io_kind(),
+                    Some(ErrorKind::NotFound | ErrorKind::NotADirectory)
+                ) =>
             {
                 match (existing.parent(), existing.file_name()) {
                     (Some(parent), Some(name)) => {

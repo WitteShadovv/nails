@@ -222,6 +222,12 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Changed
 
+- Every I/O error names the path it concerns: `NailsError::IoError` is now a struct variant
+  carrying the path (for a process that failed to start, the program) and renders as
+  `<path>: <error>`, or the error alone when it already names the path. The implicit conversion
+  from `std::io::Error` is gone; callers attach the path with `NailsError::io` or
+  `IoResultExt::at_path`. Prompt I/O names `/dev/stderr`/`/dev/stdin`, and "cannot determine the
+  operator's home" is now an invalid-state error rather than an I/O error.
 - Process-restart classification now reads host process-name tables from the platform layer, and
   activation walks `/proc` once per mount phase instead of once per overlay target.
 - Emergency and recovery teardown signal a still-running activation owner before unmounting, and the

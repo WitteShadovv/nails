@@ -65,10 +65,13 @@ impl MockFilesystem {
             .get(path)
             .cloned()
             .ok_or_else(|| {
-                NailsError::IoError(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("File not found in mock: {}", path.display()),
-                ))
+                NailsError::io(
+                    path,
+                    std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("File not found in mock: {}", path.display()),
+                    ),
+                )
             })
     }
 
@@ -100,10 +103,13 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(path)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!("Mock write failure for {}", path.display()),
-            )));
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("Mock write failure for {}", path.display()),
+                ),
+            ));
         }
 
         // The real write stages a temp file in the parent directory and renames
@@ -147,10 +153,13 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(path)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!("Mock kernel-tunable write failure for {}", path.display()),
-            )));
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("Mock kernel-tunable write failure for {}", path.display()),
+                ),
+            ));
         }
 
         // A kernel tunable must already exist: there is no create path, mirroring
@@ -164,10 +173,13 @@ impl MockFilesystem {
             .map(|info| info.exists)
             .unwrap_or(false);
         if !exists {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Kernel tunable not found: {}", path.display()),
-            )));
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Kernel tunable not found: {}", path.display()),
+                ),
+            ));
         }
 
         let mut contents = self
@@ -195,10 +207,13 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(path)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!("Mock write failure for {}", path.display()),
-            )));
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("Mock write failure for {}", path.display()),
+                ),
+            ));
         }
 
         // In-place overwrite requires an existing file: there is no create path,
@@ -216,10 +231,13 @@ impl MockFilesystem {
                 .expect("MockFilesystem mutex poisoned")
                 .contains_key(path);
         if !exists {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("File not found for in-place overwrite: {}", path.display()),
-            )));
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found for in-place overwrite: {}", path.display()),
+                ),
+            ));
         }
 
         // Owner and mode are deliberately left untouched: an in-place overwrite
@@ -262,10 +280,13 @@ impl MockFilesystem {
         }
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         match paths.get(parent) {
-            Some(info) if !info.exists => Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Parent directory does not exist: {}", parent.display()),
-            ))),
+            Some(info) if !info.exists => Err(NailsError::io(
+                parent,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Parent directory does not exist: {}", parent.display()),
+                ),
+            )),
             _ => Ok(()),
         }
     }
@@ -283,10 +304,13 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .contains(path)
         {
-            return Err(NailsError::IoError(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!("Mock write failure for {}", path.display()),
-            )));
+            return Err(NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("Mock write failure for {}", path.display()),
+                ),
+            ));
         }
 
         let existed = self
@@ -389,13 +413,16 @@ impl MockFilesystem {
             return Ok(entries.clone());
         }
 
-        Err(NailsError::IoError(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!(
-                "Mock: directory contents not configured for {}",
-                dir.display()
+        Err(NailsError::io(
+            dir,
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!(
+                    "Mock: directory contents not configured for {}",
+                    dir.display()
+                ),
             ),
-        )))
+        ))
     }
 
     pub(super) fn enumerate_root_directories_impl(&self) -> Result<Vec<PathBuf>> {

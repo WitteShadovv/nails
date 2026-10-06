@@ -493,7 +493,7 @@ fn test_real_create_symlink_existing_symlink_to_different_target_errors() {
 
     let err = fs.create_symlink(&target_b, &link).unwrap_err();
     match err {
-        NailsError::IoError(io) => {
+        NailsError::IoError { source: io, .. } => {
             assert_eq!(io.kind(), std::io::ErrorKind::AlreadyExists);
             assert!(io.to_string().contains("different target"));
         }
@@ -512,7 +512,7 @@ fn test_real_create_symlink_existing_non_symlink_errors() {
 
     let err = fs.create_symlink(&target, &link).unwrap_err();
     match err {
-        NailsError::IoError(io) => {
+        NailsError::IoError { source: io, .. } => {
             assert_eq!(io.kind(), std::io::ErrorKind::AlreadyExists);
             assert!(io.to_string().contains("not a symlink"));
         }
@@ -541,7 +541,7 @@ fn test_real_read_file_content_missing_file_wraps_path_in_error() {
 
     let err = fs.read_file_content(&missing).unwrap_err();
     match err {
-        NailsError::IoError(io) => {
+        NailsError::IoError { source: io, .. } => {
             assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
             assert!(
                 io.to_string()
@@ -707,7 +707,7 @@ fn test_real_write_file_content_returns_contextual_error_when_parent_missing() {
 
     let err = fs.write_file_content(&file, "data").unwrap_err();
     match err {
-        NailsError::IoError(io) => {
+        NailsError::IoError { source: io, .. } => {
             assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
             assert!(io.to_string().contains("Failed to create temp file"));
         }
@@ -797,7 +797,9 @@ fn test_real_copy_tree_returns_error_for_missing_source() {
 
     let err = fs.copy_tree(&src, &dst).unwrap_err();
     match err {
-        NailsError::IoError(io) => assert!(io.to_string().contains("atime-safe copy")),
+        NailsError::IoError { source: io, .. } => {
+            assert!(io.to_string().contains("atime-safe copy"))
+        }
         other => panic!("expected IoError, got {other:?}"),
     }
 }
@@ -1272,7 +1274,9 @@ fn canonicalize_resolves_symlinks_and_reports_missing_paths() {
     let fs_impl = RealFilesystem;
     assert_eq!(fs_impl.canonicalize(&base.join("link")).unwrap(), real);
     match fs_impl.canonicalize(&base.join("link/missing")) {
-        Err(NailsError::IoError(e)) => assert_eq!(e.kind(), std::io::ErrorKind::NotFound),
+        Err(NailsError::IoError { source: e, .. }) => {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound)
+        }
         other => panic!("expected NotFound, got {other:?}"),
     }
 }
@@ -1397,7 +1401,7 @@ fn test_real_overwrite_file_in_place_missing_file_errors() {
     // was not already there. This matches the MockFilesystem contract.
     let err = realfs.overwrite_file_in_place(&path, "x\n").unwrap_err();
     match err {
-        NailsError::IoError(io) => {
+        NailsError::IoError { source: io, .. } => {
             assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
         }
         other => panic!("expected NotFound IoError, got {other:?}"),
@@ -1432,7 +1436,7 @@ fn test_mock_overwrite_file_in_place_missing_file_is_not_found() {
         .overwrite_file_in_place(Path::new("/home/op/.missing"), "x")
         .unwrap_err();
     match err {
-        NailsError::IoError(io) => {
+        NailsError::IoError { source: io, .. } => {
             assert_eq!(io.kind(), std::io::ErrorKind::NotFound);
         }
         other => panic!("expected NotFound IoError, got {other:?}"),

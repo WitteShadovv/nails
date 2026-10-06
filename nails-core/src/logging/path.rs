@@ -14,12 +14,7 @@ use std::path::{Path, PathBuf};
 /// Helper for detecting permission-related failures to log
 /// appropriate warning messages.
 pub(crate) fn is_permission_denied(err: &NailsError) -> bool {
-    match err {
-        NailsError::IoError(io) => {
-            matches!(io.kind(), std::io::ErrorKind::PermissionDenied)
-        }
-        _ => false,
-    }
+    err.io_kind() == Some(std::io::ErrorKind::PermissionDenied)
 }
 
 /// Clean a path by resolving `..` components without filesystem access
@@ -134,17 +129,20 @@ mod tests {
 
     #[test]
     fn test_is_permission_denied_matches_permission_denied_io_error() {
-        let err = NailsError::IoError(std::io::Error::new(
-            ErrorKind::PermissionDenied,
-            "access denied",
-        ));
+        let err = NailsError::io(
+            "/mnt/hidden/logs",
+            std::io::Error::new(ErrorKind::PermissionDenied, "access denied"),
+        );
 
         assert!(is_permission_denied(&err));
     }
 
     #[test]
     fn test_is_permission_denied_rejects_other_io_error_kinds() {
-        let err = NailsError::IoError(std::io::Error::new(ErrorKind::NotFound, "missing"));
+        let err = NailsError::io(
+            "/mnt/hidden/logs",
+            std::io::Error::new(ErrorKind::NotFound, "missing"),
+        );
 
         assert!(!is_permission_denied(&err));
     }
