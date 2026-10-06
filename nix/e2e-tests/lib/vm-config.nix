@@ -110,10 +110,20 @@
     firewall.enable = false;
     usePredictableInterfaceNames = false;
     useDHCP = true;
+    # dhcpcd's default (wait = "any") holds multi-user.target until the QEMU
+    # user-mode network hands out a lease, which took about 6 s of every
+    # boot's 17 s in the driver logs. No test needs that address before
+    # multi-user: the test driver talks over its virtio-console backdoor and
+    # multi-machine tests use the static VLAN addresses on eth1. dhcpcd still
+    # runs and still configures eth0; it just no longer gates the boot.
+    dhcpcd.wait = "background";
   };
 
-  # Enable SSH for debugging (optional)
-  services.openssh.enable = true;
+  # No sshd: the driver reaches the guest over its backdoor shell (and
+  # `machine.shell_interact()` covers debugging), so sshd only cost a
+  # 4096-bit RSA host key generation on every first boot and a listening
+  # socket no test uses.
+  services.openssh.enable = false;
 
   # System configuration
   system.stateVersion = "25.11";
