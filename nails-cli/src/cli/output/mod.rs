@@ -57,6 +57,13 @@ pub fn eprint_tolerating_broken_pipe(text: &str) {
     let _ = stderr.flush();
 }
 
+/// Flush stdout and stderr, ignoring every error (a broken pipe included):
+/// whatever could be delivered has been.
+pub fn flush_stdio() {
+    let _ = io::stdout().lock().flush();
+    let _ = io::stderr().lock().flush();
+}
+
 pub mod activate;
 pub mod check;
 pub mod deactivate;

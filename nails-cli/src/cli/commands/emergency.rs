@@ -5,15 +5,19 @@
 //!
 //! Emergency is a fast, best-effort teardown, not a switch back to the decoy
 //! configuration. It detaches the NAILS overlays first — the one step that
-//! matters — then runs best-effort cleanup and drops the page cache, so a stalled
-//! backend can never delay the unmount. It ends the hidden graphical session and
-//! the services the hidden configuration added, and restarts the display manager
-//! so the decoy greeter reappears. It does not run `switch-to-configuration` and
-//! does not claim an immediate, complete return to the decoy: the operator still
-//! closes the encrypted backend (and powers off or reboots to clear RAM) as the
-//! recovery guidance explains. The teardown starts immediately unless
-//! `--countdown <SECS>` is given, and `--poweroff`/`--reboot` run only after it
-//! finishes.
+//! matters — then scrubs only RAM-backed state (runtime journal, page cache), so
+//! a stalled backend can never delay the unmount and nothing on the decoy is
+//! touched afterwards. It stops the services the hidden configuration added and
+//! kills overlay-rooted processes outside the operator's graphical session, but
+//! never touches the display manager or X server and never logs the operator
+//! out. It does not run `switch-to-configuration` and does not claim an
+//! immediate, complete return to the decoy: the operator still closes the
+//! encrypted backend (and powers off or reboots to clear RAM) as the recovery
+//! guidance explains. The teardown starts immediately unless `--countdown <SECS>`
+//! is given; `--lock-backend` and `--poweroff`/`--reboot` run after the teardown
+//! attempt, whatever its outcome. As its very last step emergency SIGKILLs the
+//! interactive shell it was started from, so that shell writes no history; the
+//! terminal window running it closes.
 
 use std::path::Path;
 
@@ -85,8 +89,27 @@ pub fn execute(
     let lock_requested = args.lock_backend || manager.config().emergency.lock_backend;
 
     let outcome = manager.emergency_deactivate();
-    finish_emergency(settings, &manager, outcome, lock_requested, power_action)
+    let status = finish_emergency(settings, &manager, outcome, lock_requested, power_action);
+
+    // The very last step, once every line of output is flushed: SIGKILL the
+    // interactive shell(s) this emergency was started from. That shell began in
+    // the hidden session and would otherwise append the session's commands to
+    // the decoy history file when it exits; a SIGKILLed shell writes nothing.
+    // Only shells die (sudo and any pipe reader stay), so the output already
+    // written still reaches its reader; the terminal window running that shell
+    // closes. The short pause lets a sudo pty relay forward the last lines.
+    crate::cli::output::flush_stdio();
+    std::thread::sleep(INVOKING_SHELL_KILL_SETTLE);
+    let killed = nails_core::process::kill_invoking_shells(env);
+    if !killed.killed.is_empty() {
+        tracing::info!(killed = ?killed.killed, "Killed the invoking interactive shell(s)");
+    }
+    status
 }
+
+/// How long emergency waits after flushing its output before killing the
+/// invoking shell, so a relay (the sudo pty) can forward the final lines.
+const INVOKING_SHELL_KILL_SETTLE: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Run the follow-up steps and render the result of an emergency teardown.
 fn finish_emergency<F: Filesystem>(

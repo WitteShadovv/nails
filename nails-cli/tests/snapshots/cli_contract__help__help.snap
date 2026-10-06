@@ -29,7 +29,7 @@ Commands:
   activate     Activate the hidden environment (mount overlays and apply the platform layer)
   deactivate   Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
   reapply      Reapply the hidden configuration layer while active (platforms with a layer only)
-  emergency    Emergency teardown: detach overlays immediately, best-effort cleanup
+  emergency    Emergency teardown: detach overlays immediately, nothing written to the decoy
   recover      Reconcile a stuck state and finish an interrupted or degraded teardown
   status       Show current status and uptime
   verify       Verify system is clean of NAILS artifacts

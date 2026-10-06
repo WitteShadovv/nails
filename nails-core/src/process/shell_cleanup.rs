@@ -262,13 +262,15 @@ pub fn kill_user_shells(protected_pids: &[u32], env: &crate::RuntimeEnv) -> Shel
 
 /// Kills every interactive shell on the host, including root's, using SIGKILL.
 ///
-/// This is the final-teardown pass: unlike [`kill_user_shells`] it is not scoped
-/// to the operator's uid, so root's own decoy shell is killed too, before it can
-/// flush its in-memory history to `/root/.bash_history` on exit. The caller runs
-/// it after stopping the display manager / logind session and relies on the
-/// deactivation detach so the invoking shell is killed with the rest rather than
-/// permanently protected — only the teardown's own process ancestry (and, in
-/// test-hooks builds, the harness handoff set) stays in `protected_pids`.
+/// This is the pre-unmount teardown pass: unlike [`kill_user_shells`] it is not
+/// scoped to the operator's uid, so root's own decoy shell is killed too, before
+/// it can flush its in-memory history to `/root/.bash_history` on exit. It never
+/// touches the display manager or the logind session. `protected_pids` holds the
+/// teardown's own invocation — its ancestry plus every process sharing its
+/// session or process group (and, in test-hooks builds, the harness handoff set)
+/// — so the shell that started the teardown survives this pass: a standard
+/// deactivation then reboots, and emergency kills that shell as its very last
+/// step with [`kill_invoking_shells`], once its output is flushed.
 ///
 /// Best-effort and non-fatal; compiled out in test builds like
 /// [`kill_user_shells`].
@@ -277,6 +279,119 @@ pub fn kill_shells_for_teardown(
     env: &crate::RuntimeEnv,
 ) -> ShellKillReport {
     kill_shells(protected_pids, KillScope::AllInteractive, env)
+}
+
+/// Kills the interactive shells in this process's own ancestry and session,
+/// using SIGKILL. Emergency calls it as its very last step, after every line of
+/// its output is flushed.
+///
+/// The pre-unmount pass spares the teardown's own invocation so its output is
+/// not lost, which left the operator's invoking shell alive. That shell was
+/// started inside the hidden session, so on exit it would append the session's
+/// commands to the history file in the (now decoy) home. SIGKILL gives it no
+/// chance to write any history. Only shells are killed: `sudo` and any other
+/// non-shell process in the chain stay, so whatever is still relaying the
+/// output (a pipe reader, the sudo pty relay) keeps working. The terminal window
+/// whose shell this was closes.
+///
+/// Best-effort, a no-op in a test or runtime-safety context, and compiled out in
+/// this crate's own test builds like [`kill_user_shells`].
+pub fn kill_invoking_shells(env: &crate::RuntimeEnv) -> ShellKillReport {
+    #[cfg(test)]
+    {
+        let _ = env;
+        ShellKillReport::default()
+    }
+
+    #[cfg(not(test))]
+    {
+        let mut report = ShellKillReport::default();
+        if crate::runtime_safety::should_skip_host_interaction() {
+            return report;
+        }
+        let own_pid = std::process::id();
+        let ancestry = ancestry_of(own_pid);
+        let own_sid = nix::unistd::getsid(None)
+            .map(|pid| pid.as_raw() as u32)
+            .unwrap_or(0);
+        let Ok(proc_dir) = std::fs::read_dir("/proc") else {
+            return report;
+        };
+        for entry in proc_dir.flatten() {
+            let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() else {
+                continue;
+            };
+            if pid == own_pid || !in_invocation(pid, read_sid(pid).unwrap_or(0), &ancestry, own_sid)
+            {
+                continue;
+            }
+            let comm =
+                std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("comm"))
+                    .map(|c| c.trim().to_string())
+                    .unwrap_or_default();
+            if !SHELL_NAMES.contains(&comm.as_str()) || !process_shell_is_interactive(pid) {
+                continue;
+            }
+            #[cfg(feature = "test-hooks")]
+            if let Some(service_name) = read_service_name(pid)
+                && protected_service_names(env)
+                    .iter()
+                    .any(|name| name == &service_name)
+            {
+                report.skipped.push(pid);
+                continue;
+            }
+            #[cfg(not(feature = "test-hooks"))]
+            let _ = env;
+            let process = nix::unistd::Pid::from_raw(pid as i32);
+            match nix::sys::signal::kill(process, nix::sys::signal::Signal::SIGKILL) {
+                Ok(()) => report.killed.push(pid),
+                Err(err) => report.failed.push((pid, format!("{comm}: {err}"))),
+            }
+        }
+        report
+    }
+}
+
+/// Whether `pid` belongs to the invocation: in `ancestry`, or sharing the
+/// session `own_sid` (`0` matches nothing).
+fn in_invocation(pid: u32, sid: u32, ancestry: &[u32], own_sid: u32) -> bool {
+    ancestry.contains(&pid) || (own_sid != 0 && sid == own_sid)
+}
+
+/// `pid` and its ancestors up to (not including) PID 0, from `/proc/<pid>/status`.
+#[cfg(not(test))]
+fn ancestry_of(pid: u32) -> Vec<u32> {
+    let mut lineage = Vec::new();
+    let mut next = Some(pid);
+    while let Some(pid) = next {
+        if pid == 0 || lineage.contains(&pid) {
+            break;
+        }
+        lineage.push(pid);
+        next = std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("status"))
+            .ok()
+            .and_then(|status| {
+                status.lines().find_map(|line| {
+                    line.strip_prefix("PPid:\t")?
+                        .split_whitespace()
+                        .next()?
+                        .parse()
+                        .ok()
+                })
+            });
+    }
+    lineage
+}
+
+/// The session id of `pid`, from `/proc/<pid>/stat` (scanning past `comm`).
+#[cfg(not(test))]
+fn read_sid(pid: u32) -> Option<u32> {
+    let content =
+        std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
+    let after_comm = content.get(content.rfind(')')? + 1..)?;
+    // Fields after `comm`: state, ppid, pgrp, session, ...
+    after_comm.split_whitespace().nth(3)?.parse().ok()
 }
 
 fn kill_shells(
@@ -414,6 +529,17 @@ fn kill_shells(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn invocation_covers_the_ancestry_and_the_own_session_only() {
+        use super::in_invocation;
+        let ancestry = [400, 300, 200];
+        assert!(in_invocation(200, 99, &ancestry, 400));
+        assert!(in_invocation(555, 400, &ancestry, 400));
+        assert!(!in_invocation(555, 99, &ancestry, 400));
+        // An unreadable own session never matches by accident.
+        assert!(!in_invocation(555, 0, &ancestry, 0));
+    }
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| w.to_string()).collect()

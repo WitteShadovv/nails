@@ -136,7 +136,8 @@ from inside the process — none relies on a reboot to do the unmounting.
 | Scrub the volatile runtime journal | Yes | Yes | Yes |
 | Reboot into the decoy | **Yes** | No (recommended; `--reboot`/`--poweroff`) | No |
 | Close the encrypted backend | cleared by the reboot | Opt-in (`[emergency] lock_backend`, `--lock-backend`) | No |
-| Edit decoy history after unmount | Opt-in (amnesic decoy only) | No | No |
+| Write to or read the decoy after unmount | No | No | No |
+| Kill the invoking interactive shell | cleared by the reboot | Yes, as the very last step | No |
 
 The decoy restore is a symlink swap of `/run/current-system`, not a
 `switch-to-configuration switch`: settings the hidden generation applied
@@ -167,6 +168,15 @@ configuration:
   memory until you close it or power off. `nails status` and `nails verify`
   report this loudly as **Critical — hidden root still mounted**.
 - Processes the hidden session started that do not hold an overlay keep running.
+- **The terminal you ran it from closes.** As its very last step, after its
+  output is flushed, emergency SIGKILLs the interactive shell it was started
+  from (and any other interactive shell in its session). That shell began in the
+  hidden session; left alive it would append the session's commands to the decoy
+  history file when it exits, and a SIGKILLed shell writes nothing. `sudo` and
+  pipe readers are not killed, so the output still reaches them.
+- `--lock-backend` and `--poweroff`/`--reboot` run after the teardown attempt
+  whatever its outcome, including an incomplete teardown, where powering off is
+  the only remaining way to clear RAM.
 - **The desktop is left running.** Emergency never stops or restarts the display
   manager or X server and never logs the operator out, so nothing on screen hints
   at the teardown. Before the overlays come down, emergency signals processes that

@@ -62,7 +62,9 @@ pub use session::{
     SessionKind, SessionRestartPlan, detect_session_context, kill_graphical_session,
     prompt_session_kill_confirmation, restart_display_manager, restart_user_manager,
 };
-pub use shell_cleanup::{ShellKillReport, kill_shells_for_teardown, kill_user_shells};
+pub use shell_cleanup::{
+    ShellKillReport, kill_invoking_shells, kill_shells_for_teardown, kill_user_shells,
+};
 
 #[cfg(test)]
 mod tests {

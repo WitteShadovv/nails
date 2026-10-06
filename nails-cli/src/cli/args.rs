@@ -206,7 +206,7 @@ pub enum Commands {
     Deactivate(DeactivateArgs),
     /// Reapply the hidden configuration layer while active (platforms with a layer only)
     Reapply(ReapplyArgs),
-    /// Emergency teardown: detach overlays immediately, best-effort cleanup
+    /// Emergency teardown: detach overlays immediately, nothing written to the decoy
     Emergency(EmergencyArgs),
     /// Reconcile a stuck state and finish an interrupted or degraded teardown
     Recover(RecoverArgs),
@@ -386,20 +386,21 @@ pub struct EmergencyArgs {
     #[arg(long, value_name = "SECS")]
     pub countdown: Option<u64>,
 
-    /// Power the machine off after the teardown completes.
+    /// Power the machine off after the teardown attempt, whatever its outcome.
     ///
     /// Powering off clears RAM, the only complete remedy for residue the
-    /// teardown cannot remove. Mutually exclusive with `--reboot`.
+    /// teardown cannot remove; it runs even when a mount could not be removed.
+    /// Mutually exclusive with `--reboot`.
     #[arg(long, conflicts_with = "reboot")]
     pub poweroff: bool,
 
-    /// Reboot into the decoy after the teardown completes.
+    /// Reboot into the decoy after the teardown attempt, whatever its outcome.
     ///
     /// A reboot clears RAM. Mutually exclusive with `--poweroff`.
     #[arg(long)]
     pub reboot: bool,
 
-    /// Close the encrypted backend after the teardown: lazy-unmount the hidden
+    /// Close the encrypted backend after the teardown attempt: lazy-unmount the hidden
     /// root and mark its device-mapper stack for deferred removal, wiping the
     /// master key from kernel memory when the last reference drops.
     ///
