@@ -116,7 +116,12 @@ distroVm.buildVmTest {
         # Ubuntu) has no NixOS config layer, so init prints the overlay-only skip
         # note naming the host id -- proof the Debian-family backend was chosen
         # and not NixOS or the unsupported refusal path.
-        init_out = machine.succeed(f"{nails} init /root/nails-base 2>&1")
+        # init refuses a missing target, and anything it writes must stay off
+        # the decoy disk that the forensic check below images, so it gets a
+        # throwaway directory on the /run tmpfs.
+        machine.succeed("mkdir -p /run/nails-init-probe")
+        init_out = machine.succeed(f"{nails} init /run/nails-init-probe 2>&1")
+        machine.succeed("rm -rf /run/nails-init-probe")
         assert "overlay-only" in init_out, (
             f"expected the overlay-only backend to be selected, got: {init_out}"
         )
