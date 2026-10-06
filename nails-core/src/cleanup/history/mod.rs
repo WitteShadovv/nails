@@ -48,10 +48,12 @@ use std::path::PathBuf;
 /// If no target user can be resolved, cleanup still covers `/root`, where a
 /// `sudo` invocation always leaves residue; it never silently cleans nothing.
 ///
+/// The operator is resolved from the startup snapshot `env`.
+///
 /// On the static musl build only local `/etc/passwd` accounts resolve (no NSS).
 #[cfg(not(test))]
-pub fn history_cleanup_homes() -> Vec<PathBuf> {
-    match crate::TargetUser::resolve() {
+pub fn history_cleanup_homes(env: &crate::RuntimeEnv) -> Vec<PathBuf> {
+    match crate::TargetUser::resolve_with(env) {
         Ok(user) => user.cleanup_homes(),
         Err(e) => {
             tracing::warn!(
@@ -66,7 +68,7 @@ pub fn history_cleanup_homes() -> Vec<PathBuf> {
 /// Test build: history cleanup operates on the safe fake home so unit tests never
 /// touch the real operator's files or require environment manipulation.
 #[cfg(test)]
-pub fn history_cleanup_homes() -> Vec<PathBuf> {
+pub fn history_cleanup_homes(_env: &crate::RuntimeEnv) -> Vec<PathBuf> {
     vec![PathBuf::from(crate::cleanup::test_utils::TEST_HOME)]
 }
 

@@ -121,8 +121,9 @@ fn build_cleanup_config<F: Filesystem>(
 /// when any history file still holds enough content to carry session artifacts,
 /// so the caller can surface an honest pass/fail to the operator.
 fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) -> bool {
-    let history_files =
-        crate::cleanup::history::get_extended_history_files_for_homes(&history_cleanup_homes());
+    let history_files = crate::cleanup::history::get_extended_history_files_for_homes(
+        &history_cleanup_homes(manager.runtime_env()),
+    );
     let mut verification_passed = true;
 
     for path in &history_files {
@@ -621,7 +622,7 @@ impl<F: Filesystem> NailsManager<F> {
             // such as the pipe reader capturing this command's output — and the
             // deactivation detach means the invoking shell is torn down with the
             // rest rather than permanently spared.
-            let report = kill_shells_for_teardown(&protected);
+            let report = kill_shells_for_teardown(&protected, self.runtime_env());
             tracing::info!(
                 killed = report.killed.len(),
                 failed = report.failed.len(),
@@ -684,7 +685,7 @@ impl<F: Filesystem> NailsManager<F> {
             tracing::info!("Editing decoy history files after unmount (opt-in)");
             let truncated = truncate_all_history_files_for_homes(
                 &self.filesystem,
-                &history_cleanup_homes(),
+                &history_cleanup_homes(self.runtime_env()),
                 post_unmount_secure_delete,
             );
             tracing::info!(

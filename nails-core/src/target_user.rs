@@ -75,7 +75,7 @@ pub const PRIVILEGE_ENV_VARS: &[&str] = &[
 
 /// The unprivileged user a privileged NAILS run is acting on behalf of.
 ///
-/// Construct one with [`TargetUser::resolve`] in production, or
+/// Construct one with [`TargetUser::resolve_with`] in production, or
 /// [`TargetUser::resolve_from`] with injected sources in tests. The fields are
 /// taken verbatim from the passwd entry, except [`TargetUser::home`], which can
 /// be overridden by an opt-in persona home (see [`TargetUser::with_persona_home`]).
@@ -149,16 +149,6 @@ impl TargetUser {
         resolve_from(env, &SystemPasswd, &SystemSessionOwner)
     }
 
-    /// Resolve the target user from the live process environment.
-    ///
-    /// Equivalent to [`Self::resolve_with`] with a fresh
-    /// [`RuntimeEnv::from_process_env`](crate::RuntimeEnv::from_process_env).
-    /// Call sites that already hold the startup snapshot use
-    /// [`Self::resolve_with`] so the escalation context is read exactly once.
-    pub fn resolve() -> Result<TargetUser> {
-        Self::resolve_with(&crate::RuntimeEnv::from_process_env())
-    }
-
     /// Resolve using injected sources. Available to unit tests so they can drive
     /// resolution hermetically, without touching the real environment, passwd
     /// database or logind.
@@ -173,7 +163,7 @@ impl TargetUser {
     }
 
     /// Construct a `TargetUser` directly from fixed fields. Test-only: production
-    /// code must go through [`TargetUser::resolve`] so resolution stays in one
+    /// code must go through [`TargetUser::resolve_with`] so resolution stays in one
     /// place. Lets tests in other modules (filesystem, shell, notification)
     /// exercise owner-aware writes without a real passwd entry.
     #[cfg(test)]

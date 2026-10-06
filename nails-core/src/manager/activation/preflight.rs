@@ -309,7 +309,11 @@ impl<F: Filesystem> NailsManager<F> {
 
         let history_patterns = patterns::pre_activation_cleanup_patterns();
 
-        let cleaner = HistoryCleaner::new(self.filesystem.clone()).with_patterns(history_patterns);
+        let cleaner = HistoryCleaner::new(self.filesystem.clone())
+            .with_homes(crate::cleanup::history::history_cleanup_homes(
+                self.runtime_env(),
+            ))
+            .with_patterns(history_patterns);
 
         match cleaner.clean() {
             Ok(cleaned_items) => {

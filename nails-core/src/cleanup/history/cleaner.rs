@@ -152,7 +152,8 @@ impl<F: Filesystem> HistoryCleaner<F> {
         let mut homes = match (&self.homes, &self.home) {
             (Some(homes), _) => homes.clone(),
             (None, Some(home)) => vec![home.clone()],
-            (None, None) => history_cleanup_homes(),
+            // No homes attached: resolve from the installed startup snapshot.
+            (None, None) => history_cleanup_homes(&crate::runtime_env::current()),
         };
         homes.dedup();
         let mut seen = std::collections::HashSet::new();

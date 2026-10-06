@@ -20,6 +20,9 @@ pub struct CleanupManager<F: Filesystem> {
     filesystem: F,
     config: CleanupConfig,
     mode: CleanupMode,
+    /// The homes history cleanup covers; resolved from the installed startup
+    /// snapshot when none were attached.
+    history_homes: Option<Vec<std::path::PathBuf>>,
 }
 
 impl<F: Filesystem> CleanupManager<F> {
@@ -28,7 +31,22 @@ impl<F: Filesystem> CleanupManager<F> {
             filesystem,
             config,
             mode,
+            history_homes: None,
         }
+    }
+
+    /// Clean and verify the history files under these homes (the operator's
+    /// home plus `/root`, as the manager resolves them from its snapshot).
+    #[must_use]
+    pub fn with_history_homes(mut self, homes: Vec<std::path::PathBuf>) -> Self {
+        self.history_homes = Some(homes);
+        self
+    }
+
+    fn history_homes(&self) -> Vec<std::path::PathBuf> {
+        self.history_homes.clone().unwrap_or_else(|| {
+            super::history::history_cleanup_homes(&crate::runtime_env::current())
+        })
     }
 
     pub fn cleanup(&self) -> Result<CleanupReport> {
@@ -62,6 +80,7 @@ impl<F: Filesystem> CleanupManager<F> {
 
     fn cleanup_history(&self, report: &mut CleanupReport) {
         let history_cleaner = HistoryCleaner::new(self.filesystem.clone())
+            .with_homes(self.history_homes())
             .with_patterns(self.config.history_patterns.clone())
             .with_secure_delete(self.config.secure_delete);
 
@@ -149,7 +168,7 @@ impl<F: Filesystem> CleanupManager<F> {
     }
 
     fn verify_history_cleanup(&self) -> bool {
-        for home in super::history::history_cleanup_homes() {
+        for home in self.history_homes() {
             for shell in ShellType::all() {
                 let path = shell.history_file_path_for_home(&home);
                 if let Ok(content) = self.filesystem.read_file_content(&path) {
@@ -208,7 +227,7 @@ impl<F: Filesystem> CleanupManager<F> {
         const MAX_HISTORY_SIZE_BYTES: u64 = 10 * 1024;
         let mut all_ok = true;
 
-        for home in super::history::history_cleanup_homes() {
+        for home in self.history_homes() {
             for shell in ShellType::all() {
                 let path = shell.history_file_path_for_home(&home);
                 match self.filesystem.file_size(&path) {
@@ -231,7 +250,8 @@ impl<F: Filesystem> CleanupManager<F> {
 
     fn verify_canary_patterns(&self, report: &mut CleanupReport) -> bool {
         let canary_config = CanaryConfig::default();
-        let scanner = CanaryScanner::new(self.filesystem.clone(), canary_config);
+        let scanner = CanaryScanner::new(self.filesystem.clone(), canary_config)
+            .with_history_homes(self.history_homes());
 
         let scan_result = scanner.scan();
 

@@ -159,7 +159,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     /// Attach the operator whose home the integration writes into, so rc and
     /// autostart files are created symlink-safe and owned by that account.
     ///
-    /// Production callers resolve the operator once (via [`TargetUser::resolve`])
+    /// Production callers resolve the operator once (via [`TargetUser::resolve_with`])
     /// and pass it here; when it cannot be resolved they construct without it and
     /// the integration degrades to a best-effort root-owned write.
     pub fn with_target_user(mut self, target_user: TargetUser) -> Self {

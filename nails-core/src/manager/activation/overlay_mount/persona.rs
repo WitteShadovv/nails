@@ -23,7 +23,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// Bind the fresh persona home over the operator's home when fresh-home mode
     /// is active. No-op in shared-home mode.
     ///
-    /// Resolves the operator with [`TargetUser::resolve`]; fresh-home cannot
+    /// Resolves the operator with [`TargetUser::resolve_with`]; fresh-home cannot
     /// proceed without knowing whose home to replace, so a resolution failure is
     /// returned rather than silently skipped.
     pub(in crate::manager::activation) fn mount_persona_home(

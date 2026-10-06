@@ -3,7 +3,7 @@
 
 //! A single, startup-time snapshot of the process environment NAILS depends on.
 //!
-//! Historically every subsystem reached into [`std::env`] wherever it needed a
+//! Historically every subsystem reached into [`std::env`](mod@std::env) wherever it needed a
 //! value — the shell detector read `SHELL`, the session detector read
 //! `XDG_SESSION_TYPE`/`DISPLAY`, the notification dispatcher read `DISPLAY` and
 //! `WAYLAND_DISPLAY`, the target-user resolver read the escalation variables,

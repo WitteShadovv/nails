@@ -184,6 +184,9 @@ impl Default for CanaryScanResult {
 pub struct CanaryScanner<F: Filesystem> {
     filesystem: F,
     config: CanaryConfig,
+    /// The homes whose history files are scanned by default; resolved from the
+    /// installed startup snapshot when none were attached.
+    history_homes: Option<Vec<PathBuf>>,
 }
 
 impl<F: Filesystem> CanaryScanner<F> {
@@ -194,7 +197,11 @@ impl<F: Filesystem> CanaryScanner<F> {
     /// * `filesystem` - Filesystem implementation for operations
     /// * `config` - Scanner configuration
     pub fn new(filesystem: F, config: CanaryConfig) -> Self {
-        Self { filesystem, config }
+        Self {
+            filesystem,
+            config,
+            history_homes: None,
+        }
     }
 
     /// Scan all configured paths for forbidden patterns
@@ -303,14 +310,27 @@ impl<F: Filesystem> CanaryScanner<F> {
         }
     }
 
+    /// Scan the history files under these homes by default (the operator's
+    /// home plus `/root`, as [`history_cleanup_homes`](super::history::history_cleanup_homes)
+    /// resolves them).
+    #[must_use]
+    pub fn with_history_homes(mut self, homes: Vec<PathBuf>) -> Self {
+        self.history_homes = Some(homes);
+        self
+    }
+
     /// Get default paths to scan (shell history files)
     fn get_default_scan_paths(&self) -> Vec<PathBuf> {
         use super::history::{ShellType, history_cleanup_homes};
 
         let mut paths = Vec::new();
+        let homes = self
+            .history_homes
+            .clone()
+            .unwrap_or_else(|| history_cleanup_homes(&crate::runtime_env::current()));
 
         // Add all shell history files across the operator's home and /root.
-        for home in history_cleanup_homes() {
+        for home in homes {
             for shell in ShellType::all() {
                 paths.push(shell.history_file_path_for_home(&home));
             }

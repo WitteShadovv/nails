@@ -18,16 +18,15 @@ const SHELL_NAMES: &[&str] = &["bash", "zsh", "fish", "sh", "dash", "ksh", "tcsh
 
 /// Service-scoped shell processes that must never be killed, named by the E2E
 /// harness through a test-hooks-only knob (`NAILS_SHELL_CLEANUP_PROTECTED_SERVICES`,
-/// read from the installed startup snapshot).
+/// read from the startup snapshot).
 ///
 /// The NixOS test-driver guest agent (its unit carries the test harness
 /// connection) must survive cleanup for emergency E2E validation to work, but it
 /// does not exist in production deployments. Shipped builds therefore skip no
 /// services and read no such variable: the whole mechanism is compiled out.
 #[cfg(all(not(test), feature = "test-hooks"))]
-fn protected_service_names() -> Vec<String> {
-    crate::runtime_env::current()
-        .test_hooks
+fn protected_service_names(env: &crate::RuntimeEnv) -> Vec<String> {
+    env.test_hooks
         .shell_cleanup_protected_services
         .as_deref()
         .map(|value| {
@@ -77,8 +76,8 @@ impl ShellKillReport {
 /// current effective uid, again excluding root so cleanup never targets root's
 /// shells.
 #[cfg(not(test))]
-fn shell_cleanup_target_uid() -> Option<u32> {
-    crate::TargetUser::resolve()
+fn shell_cleanup_target_uid(env: &crate::RuntimeEnv) -> Option<u32> {
+    crate::TargetUser::resolve_with(env)
         .ok()
         .map(|user| user.uid)
         .filter(|uid| *uid != 0)
@@ -252,12 +251,13 @@ fn read_uid_from_status(pid: u32) -> Option<u32> {
 ///
 /// * `protected_pids` - PIDs that must never be killed (the caller's own
 ///   process ancestry plus any PIDs handed across the `systemd-run` boundary).
+/// * `env` - The startup snapshot the operator is resolved from.
 ///
 /// # Returns
 ///
 /// `ShellKillReport` with details of what was killed, failed, or skipped.
-pub fn kill_user_shells(protected_pids: &[u32]) -> ShellKillReport {
-    kill_shells(protected_pids, KillScope::OperatorOnly)
+pub fn kill_user_shells(protected_pids: &[u32], env: &crate::RuntimeEnv) -> ShellKillReport {
+    kill_shells(protected_pids, KillScope::OperatorOnly, env)
 }
 
 /// Kills every interactive shell on the host, including root's, using SIGKILL.
@@ -272,15 +272,22 @@ pub fn kill_user_shells(protected_pids: &[u32]) -> ShellKillReport {
 ///
 /// Best-effort and non-fatal; compiled out in test builds like
 /// [`kill_user_shells`].
-pub fn kill_shells_for_teardown(protected_pids: &[u32]) -> ShellKillReport {
-    kill_shells(protected_pids, KillScope::AllInteractive)
+pub fn kill_shells_for_teardown(
+    protected_pids: &[u32],
+    env: &crate::RuntimeEnv,
+) -> ShellKillReport {
+    kill_shells(protected_pids, KillScope::AllInteractive, env)
 }
 
-fn kill_shells(protected_pids: &[u32], scope: KillScope) -> ShellKillReport {
+fn kill_shells(
+    protected_pids: &[u32],
+    scope: KillScope,
+    env: &crate::RuntimeEnv,
+) -> ShellKillReport {
     // Defense-in-depth: Never kill shells during tests
     #[cfg(test)]
     {
-        let _ = (protected_pids, scope);
+        let _ = (protected_pids, scope, env);
         tracing::warn!("kill_shells() called in test context - returning no-op");
         ShellKillReport::default()
     }
@@ -292,7 +299,7 @@ fn kill_shells(protected_pids: &[u32], scope: KillScope) -> ShellKillReport {
         // The operator uid only matters for the OperatorOnly scope; the
         // all-interactive teardown pass kills every uid, so a missing operator
         // must not short-circuit it.
-        let target_uid = shell_cleanup_target_uid();
+        let target_uid = shell_cleanup_target_uid(env);
 
         if scope == KillScope::OperatorOnly && target_uid.is_none() {
             tracing::warn!(
@@ -368,7 +375,7 @@ fn kill_shells(protected_pids: &[u32], scope: KillScope) -> ShellKillReport {
 
             #[cfg(feature = "test-hooks")]
             if let Some(service_name) = read_service_name(pid)
-                && protected_service_names()
+                && protected_service_names(env)
                     .iter()
                     .any(|name| name == &service_name)
             {
@@ -591,7 +598,7 @@ mod tests {
         // kill path on the host OS. It should only run in a disposable,
         // isolated environment where killing matching shell processes is safe.
         // The assertion here verifies we still protect the current test PID.
-        let report = kill_user_shells(&[]);
+        let report = kill_user_shells(&[], &crate::RuntimeEnv::empty());
         // Our own shell process (if any) should not have been killed
         let own_pid = std::process::id();
         assert!(!report.killed.contains(&own_pid));

@@ -541,7 +541,8 @@ impl DeactivationOrchestrator {
             CleanupMode::Thorough {
                 verify_cleanup: true,
             },
-        );
+        )
+        .with_history_homes(history_cleanup_homes(manager.runtime_env()));
 
         let report = cleanup_manager.cleanup()?;
 
@@ -578,7 +579,8 @@ impl DeactivationOrchestrator {
             manager.filesystem().clone(),
             self.cleanup_config.clone(),
             CleanupMode::Fast,
-        );
+        )
+        .with_history_homes(history_cleanup_homes(manager.runtime_env()));
 
         let report = cleanup_manager.cleanup()?;
 
@@ -629,7 +631,7 @@ impl DeactivationOrchestrator {
         // by overwriting every history file on the decoy with zeros.
         let cleaned_items = truncate_all_history_files_for_homes(
             manager.filesystem(),
-            &history_cleanup_homes(),
+            &history_cleanup_homes(manager.runtime_env()),
             self.cleanup_config.secure_delete,
         );
 

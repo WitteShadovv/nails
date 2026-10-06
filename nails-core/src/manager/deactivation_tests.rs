@@ -187,7 +187,7 @@ fn verify_history_truncation_fails_when_a_file_stays_large() {
     use crate::cleanup::history::{get_extended_history_files_for_homes, history_cleanup_homes};
     use crate::{Config, MockFilesystem, NailsManager};
 
-    let files = get_extended_history_files_for_homes(&history_cleanup_homes());
+    let files = get_extended_history_files_for_homes(&history_cleanup_homes(&RuntimeEnv::empty()));
     let target = files
         .first()
         .expect("at least one history file path")
@@ -218,7 +218,7 @@ fn verify_history_truncation_passes_when_files_are_small() {
     use crate::cleanup::history::{get_extended_history_files_for_homes, history_cleanup_homes};
     use crate::{Config, MockFilesystem, NailsManager};
 
-    let files = get_extended_history_files_for_homes(&history_cleanup_homes());
+    let files = get_extended_history_files_for_homes(&history_cleanup_homes(&RuntimeEnv::empty()));
     let target = files
         .first()
         .expect("at least one history file path")
