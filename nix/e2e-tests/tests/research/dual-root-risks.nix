@@ -865,6 +865,18 @@ in
         )
         finding(f"R5b: a unit entering the pinned namespace: rc={rc} {out.split()}")
         machine.fail("test -e /etc/aux-ns-probe")
+        # systemd 259: `systemd-run --root-directory=` clones the tree with
+        # open_tree() in the caller's namespace and hands PID 1 the fd
+        # (RootDirectoryFileDescriptor=), so a unit keeps systemd's own
+        # sandboxing while the overlay never exists in the host tree.
+        rc, out = machine.execute(
+            "nsenter --mount=/run/aux-ns/mnt systemd-run --wait --pipe --quiet --collect "
+            "--unit=aux-ns-fd --root-directory=/run/aux-ns/root -p MountAPIVFS=yes "
+            "-p BindReadOnlyPaths=${builtins.storeDir} "
+            "/bin/sh -c 'echo y > /etc/aux-ns-fd-probe && echo wrote; cat /proc/self/mountinfo | head -n 1'"
+        )
+        finding(f"R5b: systemd-run --root-directory= from the pinned namespace: rc={rc} {out.strip()}")
+        machine.fail("test -e /etc/aux-ns-fd-probe")
         machine.succeed(
             "systemd-run --unit=decoy-late3 -p PrivateTmp=yes /run/current-system/sw/bin/sleep infinity"
         )
