@@ -115,6 +115,9 @@ pub mod watcher;
 // Shared string constants (environment-variable names).
 pub mod constants;
 
+// Startup snapshot of the process environment NAILS reads.
+pub mod runtime_env;
+
 // Target-user resolution (who a privileged run acts on behalf of).
 pub mod target_user;
 
@@ -169,6 +172,7 @@ pub use platform::{
     Platform, PlatformKind, RestoreOutcome, detect, detect_platform, discover_host_target,
     discover_with_platform, guard_read_only_trees, platform_for,
 };
+pub use runtime_env::RuntimeEnv;
 pub use target_user::TargetUser;
 
 // Persona inventory exports
