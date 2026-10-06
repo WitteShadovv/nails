@@ -308,6 +308,20 @@ impl<F: Filesystem> NailsManager<F> {
             return;
         }
 
+        // A killed process of a `Restart=` service would be revived by systemd
+        // after the overlays are gone and then write to the decoy. Enqueue a stop
+        // job for every such unit first (never the unit this teardown runs in;
+        // the graphical session's units were spared above), then signal.
+        let own_unit = process_teardown::own_service_unit();
+        let units: std::collections::BTreeSet<String> = pids
+            .iter()
+            .filter_map(|&pid| read_proc_cgroup(pid))
+            .filter(|cgroup| !session_guard.covers(cgroup))
+            .filter_map(|cgroup| process_teardown::service_unit_from_cgroup(&cgroup))
+            .filter(|unit| own_unit.as_deref() != Some(unit.as_str()))
+            .collect();
+        process_teardown::enqueue_unit_stops(&units);
+
         for &pid in &pids {
             signal_pid(pid, "TERM");
         }
