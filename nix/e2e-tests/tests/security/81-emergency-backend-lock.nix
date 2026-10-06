@@ -42,6 +42,10 @@ in
             ExecStart = "${self.packages.x86_64-linux.nails}/bin/nails --config /tmp/nails-headless.toml emergency --lock-backend";
             StandardOutput = "journal+console";
             StandardError = "journal+console";
+            # Record the outcome where the test can read it after the teardown
+            # has restarted journald (which severs this unit's console stream)
+            # and reloaded systemd; see waitForEmergencyUnitFn.
+            ExecStopPost = "/bin/sh -c 'echo \"$$SERVICE_RESULT $$EXIT_STATUS\" > /run/nails-emergency-lock-test.result'";
           };
         };
       };
@@ -51,7 +55,6 @@ in
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.readStatusJsonFn}
     ${emergency.prepareTty1ShellFn}
-    ${emergency.waitForConsoleLogFn}
     ${emergency.rebootAfterEmergencyFn}
     ${emergency.waitForEmergencyUnitFn}
     ${emergency.runEmergencyCommandFn}
@@ -60,16 +63,21 @@ in
     def run_lock_emergency():
         # Mirror run_emergency_command, but start the --lock-backend unit instead.
         prepare_tty1_shell()
-        console_start = len(machine.get_console_log())
+        lock_unit = "nails-emergency-lock-test.service"
+        lock_result = "/run/nails-emergency-lock-test.result"
+        clear_emergency_result(lock_result)
         machine.send_key("alt-f1")
-        machine.send_chars("systemctl reset-failed nails-emergency-lock-test.service\n", delay=0)
+        machine.send_chars(f"systemctl reset-failed {lock_unit}\n", delay=0)
         machine.wait_until_tty_matches("1", r"TTY1_READY#", timeout=30)
-        machine.send_chars("systemctl start --no-block nails-emergency-lock-test.service\n", delay=0)
-        wait_for_console_log(r"Emergency teardown complete", timeout=30, start_index=console_start)
-        # Wait for the transient unit to exit so the deferred dm removal has fired
-        # (the kernel removes the device once the last reference — the nails
-        # process — drops at exit).
-        machine.wait_until_fails("systemctl is-active --quiet nails-emergency-lock-test.service")
+        machine.send_chars(f"systemctl start --no-block {lock_unit}\n", delay=0)
+        # Completion comes from the unit's result file, not the console: the
+        # teardown restarts journald, which can drop the "Emergency teardown
+        # complete" line from the console (that lost line failed
+        # var-lib-nixos-drift). The result file also requires a clean exit.
+        # ExecStopPost runs after the nails process is gone, so the deferred dm
+        # removal (fired as that last reference drops) has happened too.
+        wait_for_emergency_unit(timeout=60, unit=lock_unit, result=lock_result)
+        machine.wait_until_fails(f"systemctl is-active --quiet {lock_unit}", timeout=60)
 
     machine.start()
     machine.wait_for_unit("multi-user.target")

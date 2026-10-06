@@ -54,37 +54,38 @@
     EMERGENCY_UNIT = "nails-emergency-test.service"
     EMERGENCY_RESULT = "/run/nails-emergency-test.result"
 
-    def _dump_emergency_diagnostics(reason):
-        status = machine.execute(f"systemctl status {EMERGENCY_UNIT} --no-pager -l")[1]
-        journal = machine.execute(f"journalctl -u {EMERGENCY_UNIT} --no-pager -b")[1]
+    def _dump_emergency_diagnostics(reason, unit=EMERGENCY_UNIT):
+        status = machine.execute(f"systemctl status {unit} --no-pager -l")[1]
+        journal = machine.execute(f"journalctl -u {unit} --no-pager -b")[1]
         overlays = machine.execute("findmnt -rn -t overlay -o TARGET,SOURCE || true")[1]
         raise AssertionError(
             f"emergency unit {reason}\n"
-            f"--- systemctl status {EMERGENCY_UNIT} ---\n{status}\n"
-            f"--- journalctl -u {EMERGENCY_UNIT} ---\n{journal}\n"
+            f"--- systemctl status {unit} ---\n{status}\n"
+            f"--- journalctl -u {unit} ---\n{journal}\n"
             f"--- remaining overlay mounts ---\n{overlays}\n"
         )
 
-    def clear_emergency_result():
-        machine.succeed(f"rm -f {EMERGENCY_RESULT}")
+    def clear_emergency_result(result=EMERGENCY_RESULT):
+        machine.succeed(f"rm -f {result}")
 
     # Block until the emergency unit's ExecStopPost has recorded the run's
     # outcome ("<SERVICE_RESULT> <EXIT_STATUS>"), and require a clean exit.
-    def wait_for_emergency_unit(timeout=60):
+    # A test with a second emergency unit passes its unit and result path.
+    def wait_for_emergency_unit(timeout=60, unit=EMERGENCY_UNIT, result=EMERGENCY_RESULT):
         import time
 
         deadline = time.time() + timeout
         while time.time() < deadline:
-            rc, out = machine.execute(f"cat {EMERGENCY_RESULT}")
+            rc, out = machine.execute(f"cat {result}")
             if rc == 0 and out.strip():
                 break
             time.sleep(0.5)
         else:
-            _dump_emergency_diagnostics(f"did not finish within {timeout}s")
+            _dump_emergency_diagnostics(f"did not finish within {timeout}s", unit)
 
         fields = out.split()
         if fields[:2] != ["success", "0"]:
-            _dump_emergency_diagnostics(f"finished unsuccessfully ({out.strip()})")
+            _dump_emergency_diagnostics(f"finished unsuccessfully ({out.strip()})", unit)
   '';
 
   # With reboot=False the caller can assert the live, post-emergency state

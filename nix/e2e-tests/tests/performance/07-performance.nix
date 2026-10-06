@@ -27,17 +27,29 @@ in
         imports = [ ./../../lib/vm-config.nix ];
         environment.systemPackages = [ self.packages.x86_64-linux.nails ];
         services.getty.autologinUser = "root";
-        systemd.services.nails-emergency-test = emergency.makeEmergencyUnit self.packages.x86_64-linux.nails "/tmp/nails-headless.toml";
+        # The emergency's own duration_ms is read from a file the unit writes
+        # directly (not via journald): the teardown restarts journald, which
+        # can drop lines from the journal+console stream mid-run.
+        systemd.services.nails-emergency-test =
+          let
+            unit = emergency.makeEmergencyUnit self.packages.x86_64-linux.nails "/tmp/nails-headless.toml";
+          in
+          unit
+          // {
+            serviceConfig = unit.serviceConfig // {
+              StandardOutput = "truncate:/run/nails-emergency-test.out";
+              StandardError = "inherit";
+            };
+          };
       };
   };
 
   testScript = _: ''
     import json
-    import time
 
     ${testHelpers.writeHeadlessConfigFn}
     ${emergency.prepareTty1ShellFn}
-    ${emergency.waitForConsoleLogFn}
+    ${emergency.waitForEmergencyUnitFn}
     ${emergency.rebootAfterEmergencyFn}
     ${perf.detectTcgThresholdMultiplierFn}
     ${perf.guestElapsedMsFn}
@@ -50,23 +62,24 @@ in
         return activation_duration_ms(output)
 
     # The emergency runs from the unit started on tty1 and is followed by a
-    # reboot, as in the emergency test. The unit logs to the serial console,
-    # where nails' own measurement is read before the reboot.
+    # reboot, as in the emergency test. Completion comes from the unit's result
+    # file and nails' own measurement from the output file the unit writes
+    # directly, both under /run, so a journald restart during the teardown can
+    # lose neither (a console-regex wait here could).
     def timed_emergency_ms():
         prepare_tty1_shell()
-        console_start = len(machine.get_console_log())
+        clear_emergency_result()
+        machine.succeed("rm -f /run/nails-emergency-test.out")
         machine.send_key("alt-f1")
         machine.send_chars("systemctl reset-failed nails-emergency-test.service\n", delay=0)
         machine.wait_until_tty_matches("1", r"TTY1_READY#", timeout=30)
         machine.send_chars("systemctl start --no-block nails-emergency-test.service\n", delay=0)
-        wait_for_console_log(r"Detached", timeout=60, start_index=console_start)
-        deadline = time.time() + 30
-        duration = None
-        while duration is None:
-            assert time.time() < deadline, "emergency logged no 'Deactivation complete' duration_ms"
-            duration = deactivation_duration_ms(machine.get_console_log()[console_start:])
-            if duration is None:
-                time.sleep(0.2)
+        wait_for_emergency_unit(timeout=60)
+        output = machine.succeed("cat /run/nails-emergency-test.out")
+        duration = deactivation_duration_ms(output)
+        assert duration is not None, (
+            f"emergency logged no 'Deactivation complete' duration_ms: {output!r}"
+        )
         reboot_after_emergency()
         return duration
 
