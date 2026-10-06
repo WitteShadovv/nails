@@ -5,7 +5,8 @@
 
 use super::decoy::{recorded_decoy_system, restore_decoy_current_system};
 use super::unmount::{
-    UnmountOutcome, discovered_unmount_targets, overlay_unmount_targets, remaining_nails_mounts,
+    UnmountOutcome, discovered_unmount_targets, merge_recorded_with_discovered,
+    overlay_unmount_targets, remaining_nails_mounts,
 };
 use crate::cleanup::history::history_cleanup_homes;
 use crate::deactivation::DeactivationReport;
@@ -210,8 +211,18 @@ impl DeactivationOrchestrator {
             )));
         }
 
-        // Extract overlays BEFORE transitioning away from ACTIVE.
-        let overlays_to_unmount = overlay_unmount_targets(manager, &current_state)?;
+        // Extract overlays BEFORE transitioning away from ACTIVE, and add every
+        // live NAILS mount the recorded list misses, so nothing NAILS mounted is
+        // left behind on a trusted teardown either.
+        let hidden_root = manager.config().hidden_volume_root.clone();
+        let discovered = manager
+            .filesystem()
+            .discover_nails_mounts(Some(&hidden_root))
+            .ok();
+        let overlays_to_unmount = merge_recorded_with_discovered(
+            overlay_unmount_targets(manager, &current_state)?,
+            discovered.as_ref(),
+        );
 
         // The decoy system recorded at activation, read before the guard borrows
         // the manager mutably. Step 5 restores `/run/current-system` to it.

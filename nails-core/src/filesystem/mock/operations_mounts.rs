@@ -232,11 +232,13 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .iter()
         {
+            // A bind's in-filesystem root is the directory it binds, which is
+            // what the real classifier reads to recognise a persona bind.
             entries.push(MountEntry {
                 mount_id: 0,
                 parent_id: 0,
                 dev: String::new(),
-                root: PathBuf::from("/"),
+                root: source.clone(),
                 mount_point: target.clone(),
                 mount_opts: "rw,relatime".to_string(),
                 fstype: "none".to_string(),

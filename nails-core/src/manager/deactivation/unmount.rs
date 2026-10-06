@@ -36,19 +36,45 @@ pub(super) fn overlay_unmount_targets<F: Filesystem>(
 ///
 /// [`unmount_overlays`](DeactivationOrchestrator::unmount_overlays) reverses this
 /// list, so placing the `/nix/store` restore bind last makes it come off before
-/// the `/nix` overlay it sits on, and the persistent overlays come off last. The
-/// `/nix/store` bind is only ours when `/nix` is overlaid, so it is included only
-/// then (and only when still present — the `/nix` teardown path may already have
-/// removed it before the orchestrator runs).
+/// the `/nix` overlay it sits on, the fresh-home persona binds come off before
+/// the `/home` overlay they sit on, and the persistent overlays come off last.
+/// The `/nix/store` bind is only ours when `/nix` is overlaid, so it is included
+/// only then (and only when still present — the `/nix` teardown path may already
+/// have removed it before the orchestrator runs).
 pub(super) fn discovered_unmount_targets(mounts: &NailsMounts) -> Vec<PathBuf> {
     let mut targets = Vec::new();
     targets.extend(mounts.persistent_overlays.iter().cloned());
     targets.extend(mounts.ephemeral_overlays.iter().cloned());
+    targets.extend(mounts.persona_binds.iter().cloned());
     targets.extend(mounts.pivot_binds.iter().cloned());
     if mounts.nix_overlay_present
         && let Some(bind) = &mounts.nix_store_bind
     {
         targets.push(bind.clone());
+    }
+    targets
+}
+
+/// The trusted teardown's targets: the recorded overlays in mount order, then
+/// every live NAILS mount the recorded list misses (a persona bind, a staging
+/// mount, an overlay the state never recorded), in discovery order.
+///
+/// The list is unmounted in reverse, so the discovered extras come off first:
+/// they sit on top of the recorded overlays (a persona bind over `/home`, the
+/// `/nix/store` bind over `/nix`) or inside the runtime root. Each mount point
+/// appears once.
+pub(super) fn merge_recorded_with_discovered(
+    recorded: Vec<PathBuf>,
+    discovered: Option<&NailsMounts>,
+) -> Vec<PathBuf> {
+    let mut targets = recorded;
+    for path in discovered
+        .map(discovered_unmount_targets)
+        .unwrap_or_default()
+    {
+        if !targets.contains(&path) {
+            targets.push(path);
+        }
     }
     targets
 }
@@ -67,8 +93,13 @@ pub(super) struct UnmountOutcome {
     pub(super) force_detached: Vec<String>,
 }
 
-/// Re-read the mount table and return the attempted targets where a NAILS mount
-/// is still live.
+/// Re-read the mount table and return the attempted targets — and every other
+/// NAILS mount still in the live table — where a NAILS mount is still live.
+///
+/// Checking only the attempted targets let a NAILS mount the teardown never
+/// tried (a persona bind missing from the recorded list) pass as a clean
+/// teardown. The runtime-root tmpfs is left out: it is removed after this check,
+/// together with whatever is staged in it.
 ///
 /// A target counts as live when something is still mounted there *and* that
 /// mount is NAILS's own: an overlay, or a mount the live-table classifier
@@ -90,7 +121,15 @@ pub(super) fn remaining_nails_mounts<F: Filesystem>(
     let discovered = manager
         .filesystem()
         .discover_nails_mounts(Some(&hidden_root));
-    attempted
+    let mut candidates = attempted.to_vec();
+    if let Ok(mounts) = &discovered {
+        for point in mounts.owned_mount_points() {
+            if mounts.runtime_tmpfs.as_ref() != Some(&point) && !candidates.contains(&point) {
+                candidates.push(point);
+            }
+        }
+    }
+    candidates
         .iter()
         .filter(|target| {
             let mounted = match manager.filesystem().is_mounted(target) {

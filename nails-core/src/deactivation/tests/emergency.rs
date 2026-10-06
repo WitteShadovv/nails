@@ -878,3 +878,91 @@ fn test_emergency_never_touches_decoy_history_or_temp_files_after_unmount() {
         .collect();
     assert!(decoy_writes.is_empty(), "no decoy write: {decoy_writes:?}");
 }
+
+#[test]
+fn test_untrusted_emergency_unmounts_persona_binds() {
+    // The fresh-home persona bind sits on the /home overlay. The untrusted path
+    // discovered overlays and staging mounts but not persona binds, so the bind
+    // survived the teardown; it must come off (before the overlay under it).
+    let manager = setup_manager_in_state(SystemState::Activating {
+        started_at: chrono::Utc::now(),
+    });
+    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
+    let home = Path::new("/home/testuser");
+    {
+        let guard = manager.lock().unwrap();
+        let fs = guard.filesystem();
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+        let persona_home = hidden_root.join("persona/home");
+        fs.mock_set_path_exists(persona_home.to_str().unwrap(), true);
+        fs.mock_set_path_exists(home.to_str().unwrap(), true);
+        fs.bind_mount(&persona_home, home).unwrap();
+        assert!(
+            fs.discover_nails_mounts(Some(&hidden_root))
+                .unwrap()
+                .is_owned(home)
+        );
+    }
+
+    manager.lock().unwrap().emergency_deactivate().unwrap();
+
+    let guard = manager.lock().unwrap();
+    assert!(!guard.filesystem().is_mounted(home).unwrap());
+    assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
+}
+
+#[test]
+fn test_trusted_emergency_unmounts_live_nails_mounts_the_state_missed() {
+    // The recorded overlay list covers /home and /etc; a NAILS overlay on /srv
+    // that the state never recorded must come down too, not survive a "clean"
+    // teardown.
+    let fixture = setup_active_manager();
+    let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
+    {
+        let guard = fixture.lock().unwrap();
+        let fs = guard.filesystem();
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+        mount_nails_overlay(fs, &hidden_root, Path::new("/etc"));
+        mount_nails_overlay(fs, &hidden_root, Path::new("/srv"));
+    }
+
+    let report = fixture.lock().unwrap().emergency_deactivate().unwrap();
+
+    assert!(
+        report.unmounted_overlays.iter().any(|p| p == "/srv"),
+        "{report:?}"
+    );
+    let guard = fixture.lock().unwrap();
+    assert!(!guard.filesystem().is_mounted(Path::new("/srv")).unwrap());
+}
+
+#[test]
+fn test_a_surviving_discovered_nails_mount_makes_the_teardown_incomplete() {
+    // A NAILS mount that cannot be removed is reported even when the recorded
+    // list never named it: the remaining-mount check covers every live NAILS
+    // mount, not only the attempted targets.
+    let fixture = setup_active_manager();
+    let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
+    let home = Path::new("/home/testuser");
+    {
+        let guard = fixture.lock().unwrap();
+        let fs = guard.filesystem();
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+        mount_nails_overlay(fs, &hidden_root, Path::new("/etc"));
+        let persona_home = hidden_root.join("persona/home");
+        fs.mock_set_path_exists(persona_home.to_str().unwrap(), true);
+        fs.mock_set_path_exists(home.to_str().unwrap(), true);
+        fs.bind_mount(&persona_home, home).unwrap();
+        fs.mock_set_unmount_should_fail(home.to_str().unwrap(), true);
+    }
+
+    match fixture.lock().unwrap().emergency_deactivate() {
+        Err(NailsError::DeactivationIncomplete { remaining_mounts }) => {
+            assert!(
+                remaining_mounts.contains(&home.to_path_buf()),
+                "{remaining_mounts:?}"
+            );
+        }
+        other => panic!("expected DeactivationIncomplete, got {other:?}"),
+    }
+}
