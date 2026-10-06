@@ -203,30 +203,30 @@ mod tests {
     #[test]
     fn test_explicit_flake_with_attr_all_paths_exist() {
         let fs = MockFilesystem::new();
-        fs.mock_set_path_exists("/etc/nixos", true);
-        fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+        fs.mock_set_path_exists("/srv/flake", true);
+        fs.mock_set_path_exists("/srv/flake/flake.nix", true);
 
         let check = NixOSBuildTargetCheck::new(
-            Some("/etc/nixos#amnesia-virtualbox".to_string()),
+            Some("/srv/flake#amnesia-virtualbox".to_string()),
             HostTarget::None,
         );
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_pass());
-        assert!(result.message().contains("/etc/nixos#amnesia-virtualbox"));
+        assert!(result.message().contains("/srv/flake#amnesia-virtualbox"));
     }
 
     #[test]
     fn test_explicit_flake_without_attr() {
         let fs = MockFilesystem::new();
-        fs.mock_set_path_exists("/etc/nixos", true);
-        fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+        fs.mock_set_path_exists("/srv/flake", true);
+        fs.mock_set_path_exists("/srv/flake/flake.nix", true);
 
-        let check = NixOSBuildTargetCheck::new(Some("/etc/nixos".to_string()), HostTarget::None);
+        let check = NixOSBuildTargetCheck::new(Some("/srv/flake".to_string()), HostTarget::None);
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_pass());
-        assert!(result.message().contains("/etc/nixos"));
+        assert!(result.message().contains("/srv/flake"));
     }
 
     #[test]
@@ -317,17 +317,17 @@ mod tests {
     #[test]
     fn test_explicit_flake_no_flake_nix() {
         let fs = MockFilesystem::new();
-        fs.mock_set_path_exists("/etc/nixos", true);
-        fs.mock_set_path_exists("/etc/nixos/flake.nix", false);
+        fs.mock_set_path_exists("/srv/flake", true);
+        fs.mock_set_path_exists("/srv/flake/flake.nix", false);
 
         let check = NixOSBuildTargetCheck::new(
-            Some("/etc/nixos#amnesia-virtualbox".to_string()),
+            Some("/srv/flake#amnesia-virtualbox".to_string()),
             HostTarget::None,
         );
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_fail());
-        assert!(result.message().contains("/etc/nixos"));
+        assert!(result.message().contains("/srv/flake"));
     }
 
     #[test]
@@ -335,12 +335,13 @@ mod tests {
         let fs = MockFilesystem::new();
         fs.mock_set_path_exists("/mnt/hidden/nixos", true);
         fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", false);
-        fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
 
+        // Even with a legacy target discovered, a selected flake directory is
+        // validated on its own and never falls back to it.
         let check = NixOSBuildTargetCheck::with_selected_flake_dir(
             None,
             Some(PathBuf::from("/mnt/hidden/nixos")),
-            HostTarget::None,
+            HostTarget::Legacy(PathBuf::from("/cfg/configuration.nix")),
         );
         let result = check.run(&fs).unwrap();
 
