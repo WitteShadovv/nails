@@ -5,9 +5,7 @@
 
 use super::*;
 use crate::MockFilesystem;
-use crate::test_support::EnvGuard;
-
-use serial_test::serial;
+use crate::target_user::TargetUser;
 
 fn create_test_shell() -> ShellInstrumentation<MockFilesystem> {
     let fs = MockFilesystem::new();

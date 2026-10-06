@@ -4,9 +4,7 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_write_xdg_autostart_entry_creates_desktop_file() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -14,9 +12,15 @@ fn test_write_xdg_autostart_entry_creates_desktop_file() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    env.set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ),
+    );
     let result = shell.write_xdg_autostart_entry();
 
     assert!(result.is_ok());
@@ -36,9 +40,7 @@ fn test_write_xdg_autostart_entry_creates_desktop_file() {
     assert!(content.contains("X-GNOME-Autostart-enabled=true"));
 }
 #[test]
-#[serial]
 fn test_write_xdg_autostart_entry_creates_autostart_directory() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -46,9 +48,15 @@ fn test_write_xdg_autostart_entry_creates_autostart_directory() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    env.set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ),
+    );
 
     // Autostart directory doesn't exist yet
     let autostart_dir = PathBuf::from("/home/testuser/.config/autostart");
@@ -64,9 +72,7 @@ fn test_write_xdg_autostart_entry_creates_autostart_directory() {
     assert!(fs.path_exists(&autostart_dir).unwrap());
 }
 #[test]
-#[serial]
 fn test_write_xdg_autostart_entry_uses_user_env_fallback() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -74,9 +80,15 @@ fn test_write_xdg_autostart_entry_uses_user_env_fallback() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/fallbackuser", true);
 
-    env.remove("SUDO_USER").set("USER", "fallbackuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "fallbackuser",
+            "/home/fallbackuser",
+            "/bin/bash",
+        ),
+    );
     let result = shell.write_xdg_autostart_entry();
 
     assert!(result.is_ok());
@@ -87,9 +99,7 @@ fn test_write_xdg_autostart_entry_uses_user_env_fallback() {
     assert!(fs.read_file_content(&desktop_path).is_ok());
 }
 #[test]
-#[serial]
 fn test_write_xdg_autostart_entry_uses_home_env_without_hardcoded_home_prefix() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
     let home = "/srv/users/fallbackuser";
@@ -99,11 +109,9 @@ fn test_write_xdg_autostart_entry_uses_home_env_without_hardcoded_home_prefix() 
     fs.mock_set_path_exists("/srv/users", true);
     fs.mock_set_path_exists(home, true);
 
-    env.remove("SUDO_USER")
-        .set("USER", "fallbackuser")
-        .set("HOME", home);
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(
+        crate::target_user::TargetUser::for_test(1000, 1000, "fallbackuser", home, "/bin/bash"),
+    );
     let result = shell.write_xdg_autostart_entry();
 
     assert!(result.is_ok());
@@ -113,9 +121,7 @@ fn test_write_xdg_autostart_entry_uses_home_env_without_hardcoded_home_prefix() 
     assert!(fs.read_file_content(&desktop_path).is_ok());
 }
 #[test]
-#[serial]
 fn test_write_xdg_autostart_entry_idempotent() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -123,9 +129,15 @@ fn test_write_xdg_autostart_entry_idempotent() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    env.set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ),
+    );
 
     // Write twice — should succeed both times
     let result1 = shell.write_xdg_autostart_entry();
@@ -142,9 +154,7 @@ fn test_write_xdg_autostart_entry_idempotent() {
     assert!(content.contains("[Desktop Entry]"));
 }
 #[test]
-#[serial]
 fn test_write_xdg_autostart_entry_returns_false_on_write_failure() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -158,9 +168,15 @@ fn test_write_xdg_autostart_entry_returns_false_on_write_failure() {
         true,
     );
 
-    env.set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ),
+    );
     let result = shell.write_xdg_autostart_entry();
 
     // Should return Ok(false) on best-effort failure
@@ -168,9 +184,7 @@ fn test_write_xdg_autostart_entry_returns_false_on_write_failure() {
     assert!(!result.unwrap());
 }
 #[test]
-#[serial]
 fn test_write_xdg_autostart_desktop_file_content_format() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -178,9 +192,15 @@ fn test_write_xdg_autostart_desktop_file_content_format() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    env.set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ),
+    );
     shell.write_xdg_autostart_entry().unwrap();
 
     let desktop_path = PathBuf::from("/home/testuser/.config/autostart/nails-notify.desktop");

@@ -4,7 +4,6 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_write_alias_scripts_creates_directory() {
     let fs = MockFilesystem::new();
     let config = Config::default();
@@ -25,7 +24,6 @@ fn test_write_alias_scripts_creates_directory() {
     assert!(fs.path_exists(&scripts_dir).unwrap());
 }
 #[test]
-#[serial]
 fn test_write_alias_scripts_writes_all_files() {
     let fs = MockFilesystem::new();
     let config = Config::default();
@@ -59,49 +57,42 @@ fn test_write_alias_scripts_writes_all_files() {
     );
 }
 #[test]
-#[serial]
 fn test_alias_script_path_bash() {
     let shell = create_test_shell();
     let path = shell.alias_script_path(ShellType::Bash);
     assert!(path.to_string_lossy().ends_with("nails_alias.sh"));
 }
 #[test]
-#[serial]
 fn test_alias_script_path_zsh() {
     let shell = create_test_shell();
     let path = shell.alias_script_path(ShellType::Zsh);
     assert!(path.to_string_lossy().ends_with("nails_alias.sh"));
 }
 #[test]
-#[serial]
 fn test_alias_script_path_fish() {
     let shell = create_test_shell();
     let path = shell.alias_script_path(ShellType::Fish);
     assert!(path.to_string_lossy().ends_with("nails_alias.fish"));
 }
 #[test]
-#[serial]
 fn test_alias_cleanup_script_path_bash() {
     let shell = create_test_shell();
     let path = shell.alias_cleanup_script_path(ShellType::Bash);
     assert!(path.to_string_lossy().ends_with("nails_alias_cleanup.sh"));
 }
 #[test]
-#[serial]
 fn test_alias_cleanup_script_path_zsh() {
     let shell = create_test_shell();
     let path = shell.alias_cleanup_script_path(ShellType::Zsh);
     assert!(path.to_string_lossy().ends_with("nails_alias_cleanup.sh"));
 }
 #[test]
-#[serial]
 fn test_alias_cleanup_script_path_fish() {
     let shell = create_test_shell();
     let path = shell.alias_cleanup_script_path(ShellType::Fish);
     assert!(path.to_string_lossy().ends_with("nails_alias_cleanup.fish"));
 }
 #[test]
-#[serial]
 fn test_bash_zsh_alias_script_content() {
     let fs = MockFilesystem::new();
     let config = Config::default();
@@ -124,7 +115,6 @@ fn test_bash_zsh_alias_script_content() {
     assert!(script_content.contains("alias nails='sudo"));
 }
 #[test]
-#[serial]
 fn test_fish_alias_script_content() {
     let fs = MockFilesystem::new();
     let config = Config::default();
@@ -147,7 +137,6 @@ fn test_fish_alias_script_content() {
     assert!(script_content.contains("alias nails 'sudo"));
 }
 #[test]
-#[serial]
 fn test_alias_script_uses_actual_binary_path() {
     let fs = MockFilesystem::new();
     let config = Config {
@@ -172,7 +161,6 @@ fn test_alias_script_uses_actual_binary_path() {
     assert!(bash_script.contains("alias nails='sudo"));
 }
 #[test]
-#[serial]
 fn test_bash_zsh_cleanup_script_content() {
     let fs = MockFilesystem::new();
     let config = Config::default();
@@ -193,7 +181,6 @@ fn test_bash_zsh_cleanup_script_content() {
     assert!(cleanup_content.contains("unalias nails 2>/dev/null || true"));
 }
 #[test]
-#[serial]
 fn test_fish_cleanup_script_content() {
     let fs = MockFilesystem::new();
     let config = Config::default();
@@ -214,7 +201,6 @@ fn test_fish_cleanup_script_content() {
     assert!(cleanup_content.contains("functions -e nails 2>/dev/null; or true"));
 }
 #[test]
-#[serial]
 fn test_write_alias_scripts_idempotent() {
     let fs = MockFilesystem::new();
     let config = Config::default();

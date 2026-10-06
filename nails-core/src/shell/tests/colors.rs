@@ -4,9 +4,7 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_shell_setup_result_paths() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config {
         hidden_volume_root: "/test/hidden".into(),
@@ -16,10 +14,7 @@ fn test_shell_setup_result_paths() {
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs, config);
+    let shell = ShellInstrumentation::new(fs, config).with_shell_env(Some("/bin/bash".to_string()));
     let result = shell.shell_setup();
 
     // Should have Some result
@@ -41,9 +36,7 @@ fn test_shell_setup_result_paths() {
     );
 }
 #[test]
-#[serial]
 fn test_shell_setup_color_scheme_enabled() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let mut config = Config::default();
     config.color_scheme.enabled = true;
@@ -53,10 +46,8 @@ fn test_shell_setup_color_scheme_enabled() {
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs, config.clone());
+    let shell =
+        ShellInstrumentation::new(fs, config.clone()).with_shell_env(Some("/bin/bash".to_string()));
     let result = shell.shell_setup();
 
     // Verify setup succeeds
@@ -71,9 +62,7 @@ fn test_shell_setup_color_scheme_enabled() {
     assert!(color_sequences.contains("\x1b]10;#e0e0e0\x07")); // foreground
 }
 #[test]
-#[serial]
 fn test_shell_setup_color_scheme_disabled() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let mut config = Config::default();
     config.color_scheme.enabled = false;
@@ -81,10 +70,8 @@ fn test_shell_setup_color_scheme_disabled() {
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs, config.clone());
+    let shell =
+        ShellInstrumentation::new(fs, config.clone()).with_shell_env(Some("/bin/bash".to_string()));
     let result = shell.shell_setup();
 
     // Verify setup succeeds
@@ -95,9 +82,7 @@ fn test_shell_setup_color_scheme_disabled() {
     assert!(color_sequences.is_empty());
 }
 #[test]
-#[serial]
 fn test_shell_cleanup_color_scheme_enabled() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let mut config = Config::default();
     config.color_scheme.enabled = true;
@@ -106,10 +91,8 @@ fn test_shell_cleanup_color_scheme_enabled() {
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs, config.clone());
+    let shell =
+        ShellInstrumentation::new(fs, config.clone()).with_shell_env(Some("/bin/bash".to_string()));
     let result = shell.shell_cleanup(false);
 
     // Verify cleanup succeeds
@@ -123,9 +106,7 @@ fn test_shell_cleanup_color_scheme_enabled() {
     assert!(color_sequences.contains("\x1b]104\x07")); // reset palette
 }
 #[test]
-#[serial]
 fn test_shell_cleanup_color_scheme_disabled() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let mut config = Config::default();
     config.color_scheme.enabled = false;
@@ -133,10 +114,8 @@ fn test_shell_cleanup_color_scheme_disabled() {
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs, config.clone());
+    let shell =
+        ShellInstrumentation::new(fs, config.clone()).with_shell_env(Some("/bin/bash".to_string()));
     let result = shell.shell_cleanup(false);
 
     // Verify cleanup succeeds
@@ -147,9 +126,7 @@ fn test_shell_cleanup_color_scheme_disabled() {
     assert!(color_sequences.is_empty());
 }
 #[test]
-#[serial]
 fn test_activation_deactivation_color_scheme_cycle() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let mut config = Config::default();
     config.color_scheme.enabled = true;
@@ -160,10 +137,8 @@ fn test_activation_deactivation_color_scheme_cycle() {
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+    let shell = ShellInstrumentation::new(fs.clone(), config.clone())
+        .with_shell_env(Some("/bin/bash".to_string()));
 
     // Test activation (shell_setup)
     let setup_result = shell.shell_setup();
@@ -190,19 +165,15 @@ fn test_activation_deactivation_color_scheme_cycle() {
     assert_ne!(hidden_sequences, decoy_sequences);
 }
 #[test]
-#[serial]
 fn test_color_scheme_applied_after_scripts_written() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+    let shell = ShellInstrumentation::new(fs.clone(), config.clone())
+        .with_shell_env(Some("/bin/bash".to_string()));
 
     // Run shell_setup which writes scripts first, then applies color scheme
     let result = shell.shell_setup();
@@ -228,19 +199,15 @@ fn test_color_scheme_applied_after_scripts_written() {
     assert!(!color_sequences.is_empty());
 }
 #[test]
-#[serial]
 fn test_emergency_deactivation_includes_color_reset() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs, config.clone());
+    let shell =
+        ShellInstrumentation::new(fs, config.clone()).with_shell_env(Some("/bin/bash".to_string()));
 
     // Emergency deactivation calls shell_cleanup(true)
     let result = shell.shell_cleanup(true);

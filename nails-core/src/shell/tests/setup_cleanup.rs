@@ -4,19 +4,15 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_shell_setup_with_bash() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell =
+        ShellInstrumentation::new(fs.clone(), config).with_shell_env(Some("/bin/bash".to_string()));
     let result = shell.shell_setup();
 
     // Should succeed
@@ -39,19 +35,15 @@ fn test_shell_setup_with_bash() {
     assert!(setup.warning.is_none());
 }
 #[test]
-#[serial]
 fn test_shell_setup_with_zsh() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to zsh
-    env.set("SHELL", "/usr/bin/zsh");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config)
+        .with_shell_env(Some("/usr/bin/zsh".to_string()));
     let result = shell.shell_setup();
 
     // Should succeed
@@ -70,19 +62,15 @@ fn test_shell_setup_with_zsh() {
     assert!(setup.instructions[1].contains("nails_alias.sh"));
 }
 #[test]
-#[serial]
 fn test_shell_setup_with_fish() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to fish
-    env.set("SHELL", "/usr/bin/fish");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config)
+        .with_shell_env(Some("/usr/bin/fish".to_string()));
     let result = shell.shell_setup();
 
     // Should succeed
@@ -101,17 +89,12 @@ fn test_shell_setup_with_fish() {
     assert!(setup.instructions[1].contains("nails_alias.fish"));
 }
 #[test]
-#[serial]
 fn test_shell_setup_no_shell_detected() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
-
-    // Ensure SHELL is not set (use a custom variable that we know is unset)
-    env.remove("SHELL");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.shell_setup();
@@ -121,9 +104,7 @@ fn test_shell_setup_no_shell_detected() {
     assert!(matches!(result.as_ref(), Ok(None)));
 }
 #[test]
-#[serial]
 fn test_shell_setup_without_shell_env_still_sets_up_persistent_integration_for_target_user() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -131,9 +112,15 @@ fn test_shell_setup_without_shell_env_still_sets_up_persistent_integration_for_t
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/amnesia", true);
 
-    env.remove("SHELL").set("NAILS_TARGET_USER", "amnesia");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "amnesia",
+            "/home/amnesia",
+            "/bin/bash",
+        ),
+    );
     let result = shell.shell_setup();
 
     assert!(result.is_ok());
@@ -147,9 +134,7 @@ fn test_shell_setup_without_shell_env_still_sets_up_persistent_integration_for_t
     assert!(content.contains("# >>> managed shell integration"));
 }
 #[test]
-#[serial]
 fn test_shell_setup_returns_warning_without_source_commands_when_script_writes_fail() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     // Pin the root: the default now derives from the binary location, which in a
     // test build is the build directory, not the install mount this test asserts on.
@@ -164,11 +149,15 @@ fn test_shell_setup_returns_warning_without_source_commands_when_script_writes_f
     fs.mock_set_write_should_fail("/mnt/data/scripts/nails_prompt.bash", true);
     fs.mock_set_write_should_fail("/mnt/data/scripts/nails_alias.sh", true);
 
-    env.set("SHELL", "/bin/bash")
-        .set("USER", "testuser")
-        .set("HOME", "/home/testuser");
-
-    let shell = ShellInstrumentation::new(fs, config);
+    let shell = ShellInstrumentation::new(fs, config)
+        .with_shell_env(Some("/bin/bash".to_string()))
+        .with_target_user(crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ));
     let result = shell
         .shell_setup()
         .unwrap()
@@ -181,9 +170,7 @@ fn test_shell_setup_returns_warning_without_source_commands_when_script_writes_f
     assert!(warning.contains("alias scripts could not be generated"));
 }
 #[test]
-#[serial]
 fn test_shell_setup_continues_when_xdg_autostart_write_returns_false() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -195,9 +182,15 @@ fn test_shell_setup_continues_when_xdg_autostart_write_returns_false() {
         true,
     );
 
-    env.set("SHELL", "/bin/bash").set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config)
+        .with_shell_env(Some("/bin/bash".to_string()))
+        .with_target_user(crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ));
     let result = shell
         .shell_setup()
         .unwrap()
@@ -209,21 +202,13 @@ fn test_shell_setup_continues_when_xdg_autostart_write_returns_false() {
     assert!(result.rc_modified);
 }
 #[test]
-#[serial]
 fn test_shell_setup_continues_when_xdg_autostart_resolution_errors() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    env.set("SHELL", "/bin/bash")
-        .remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .remove("USER")
-        .remove("HOME");
-
-    let shell = ShellInstrumentation::new(fs, config);
+    let shell = ShellInstrumentation::new(fs, config).with_shell_env(Some("/bin/bash".to_string()));
     let result = shell
         .shell_setup()
         .unwrap()
@@ -235,19 +220,14 @@ fn test_shell_setup_continues_when_xdg_autostart_resolution_errors() {
     assert!(result.warning.is_none());
 }
 #[test]
-#[serial]
 fn test_shell_setup_unsupported_shell() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL to unsupported shell
-    env.set("SHELL", "/bin/tcsh");
-
-    let shell = ShellInstrumentation::new(fs, config);
+    let shell = ShellInstrumentation::new(fs, config).with_shell_env(Some("/bin/tcsh".to_string()));
     let result = shell.shell_setup();
 
     // Should succeed but return None
@@ -255,19 +235,14 @@ fn test_shell_setup_unsupported_shell() {
     assert!(matches!(result.as_ref(), Ok(None)));
 }
 #[test]
-#[serial]
 fn test_shell_setup_to_source_commands() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs, config);
+    let shell = ShellInstrumentation::new(fs, config).with_shell_env(Some("/bin/bash".to_string()));
     let result = shell.shell_setup();
 
     // Should have Some result
@@ -282,19 +257,14 @@ fn test_shell_setup_to_source_commands() {
     assert!(commands[1].ends_with("nails_alias.sh"));
 }
 #[test]
-#[serial]
 fn test_shell_cleanup_normal_deactivation() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs, config);
+    let shell = ShellInstrumentation::new(fs, config).with_shell_env(Some("/bin/bash".to_string()));
     let result = shell.shell_cleanup(false); // false = no alias removal
 
     // Should have shell type detected
@@ -309,19 +279,14 @@ fn test_shell_cleanup_normal_deactivation() {
     assert!(result.message.is_none());
 }
 #[test]
-#[serial]
 fn test_shell_cleanup_emergency_deactivation() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
     // Mock the parent directory to exist
     fs.mock_set_path_exists(&config.hidden_volume_root.to_string_lossy(), true);
 
-    // Set SHELL environment variable to bash
-    env.set("SHELL", "/bin/bash");
-
-    let shell = ShellInstrumentation::new(fs, config);
+    let shell = ShellInstrumentation::new(fs, config).with_shell_env(Some("/bin/bash".to_string()));
     let result = shell.shell_cleanup(true); // true = include alias removal
 
     // Should have shell type detected
@@ -333,14 +298,9 @@ fn test_shell_cleanup_emergency_deactivation() {
     assert!(result.instructions[1].contains("nails_alias_cleanup.sh"));
 }
 #[test]
-#[serial]
 fn test_shell_cleanup_no_shell_detected() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
-
-    // Ensure SHELL is not set
-    env.remove("SHELL");
 
     let shell = ShellInstrumentation::new(fs, config);
     let result = shell.shell_cleanup(false);
@@ -356,16 +316,12 @@ fn test_shell_cleanup_no_shell_detected() {
     assert!(result.message.unwrap().contains("Shell cleanup skipped"));
 }
 #[test]
-#[serial]
 fn test_shell_cleanup_with_fish() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
-    // Set SHELL to fish
-    env.set("SHELL", "/usr/bin/fish");
-
-    let shell = ShellInstrumentation::new(fs, config);
+    let shell =
+        ShellInstrumentation::new(fs, config).with_shell_env(Some("/usr/bin/fish".to_string()));
     let result = shell.shell_cleanup(true); // emergency with alias removal
 
     // Should have fish shell type
@@ -377,9 +333,7 @@ fn test_shell_cleanup_with_fish() {
     assert!(result.instructions[1].contains("nails_alias_cleanup.fish"));
 }
 #[test]
-#[serial]
 fn test_shell_setup_writes_xdg_autostart_entry() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -387,9 +341,15 @@ fn test_shell_setup_writes_xdg_autostart_entry() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    env.set("SHELL", "/bin/bash").set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config)
+        .with_shell_env(Some("/bin/bash".to_string()))
+        .with_target_user(crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ));
     let result = shell.shell_setup();
 
     assert!(result.is_ok());
@@ -403,12 +363,8 @@ fn test_shell_setup_writes_xdg_autostart_entry() {
 }
 
 #[test]
-#[serial]
 fn test_shell_setup_skips_all_writes_when_home_not_on_overlay() {
     use crate::target_user::TargetUser;
-
-    let mut env = EnvGuard::lock();
-    env.set("SHELL", "/bin/bash");
 
     let fs = MockFilesystem::new();
     let config = Config {
@@ -417,7 +373,9 @@ fn test_shell_setup_skips_all_writes_when_home_not_on_overlay() {
     };
 
     let operator = TargetUser::for_test(1000, 1000, "testuser", "/home/testuser", "/bin/bash");
-    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(operator);
+    let shell = ShellInstrumentation::new(fs.clone(), config)
+        .with_target_user(operator)
+        .with_shell_env(Some("/bin/bash".to_string()));
     // The operator's home sits on the bare decoy disk, not a NAILS overlay, so the
     // integration must write nothing: an rc block here would persist the hidden
     // binary path on the decoy disk.

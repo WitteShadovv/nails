@@ -3,307 +3,121 @@
 
 use super::*;
 
+/// A shell instrumentation whose `SHELL` is injected from the startup snapshot,
+/// with no attached operator.
+fn shell_with_shell_env(shell: &str) -> ShellInstrumentation<MockFilesystem> {
+    create_test_shell().with_shell_env(Some(shell.to_string()))
+}
+
+/// A shell instrumentation acting for a fixed operator, with `SHELL` unset so
+/// detection falls back to probing that operator's rc files.
+fn shell_for_user(
+    fs: MockFilesystem,
+    name: &str,
+    home: &str,
+) -> ShellInstrumentation<MockFilesystem> {
+    let user = TargetUser::for_test(1000, 1000, name, home, "/bin/bash");
+    ShellInstrumentation::new(fs, Config::default()).with_target_user(user)
+}
+
 #[test]
-#[serial]
 fn test_detect_bash_shell() {
-    let mut env = EnvGuard::lock();
-    env.set("SHELL", "/bin/bash");
-    let shell = create_test_shell();
-    let result = shell.detect_current_shell();
-    assert_eq!(result, Some(ShellType::Bash));
+    let shell = shell_with_shell_env("/bin/bash");
+    assert_eq!(shell.detect_current_shell(), Some(ShellType::Bash));
 }
+
 #[test]
-#[serial]
 fn test_detect_zsh_shell() {
-    let mut env = EnvGuard::lock();
-    env.set("SHELL", "/usr/bin/zsh");
-    let shell = create_test_shell();
-    let result = shell.detect_current_shell();
-    assert_eq!(result, Some(ShellType::Zsh));
+    let shell = shell_with_shell_env("/usr/bin/zsh");
+    assert_eq!(shell.detect_current_shell(), Some(ShellType::Zsh));
 }
+
 #[test]
-#[serial]
 fn test_detect_fish_shell() {
-    let mut env = EnvGuard::lock();
-    env.set("SHELL", "/usr/local/bin/fish");
-    let shell = create_test_shell();
-    let result = shell.detect_current_shell();
-    assert_eq!(result, Some(ShellType::Fish));
+    let shell = shell_with_shell_env("/usr/local/bin/fish");
+    assert_eq!(shell.detect_current_shell(), Some(ShellType::Fish));
 }
+
 #[test]
-#[serial]
 fn test_detect_unsupported_shell() {
-    let mut env = EnvGuard::lock();
-    env.set("SHELL", "/bin/tcsh");
-    let shell = create_test_shell();
-    let result = shell.detect_current_shell();
-    assert_eq!(result, None);
+    let shell = shell_with_shell_env("/bin/tcsh");
+    assert_eq!(shell.detect_current_shell(), None);
 }
+
 #[test]
-#[serial]
-fn test_detect_shell_falls_back_to_home_dir_without_hardcoded_home_prefix() {
-    let mut env = EnvGuard::lock();
+fn test_detect_shell_falls_back_to_zshrc_without_hardcoded_home_prefix() {
+    // No SHELL injected: detection resolves the operator's home and probes its
+    // rc files. The home need not live under /home.
     let fs = MockFilesystem::new();
-    let config = Config::default();
     let home = "/srv/users/amnesia";
     set_mock_home(&fs, home);
     fs.mock_set_path_exists(&format!("{home}/.zshrc"), true);
 
-    env.remove("SHELL")
-        .remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .set("USER", "amnesia")
-        .set("HOME", home);
+    let shell = shell_for_user(fs, "amnesia", home);
 
-    let shell = ShellInstrumentation::new(fs, config);
-    let result = shell.detect_current_shell();
-
-    assert_eq!(result, Some(ShellType::Zsh));
+    assert_eq!(shell.detect_current_shell(), Some(ShellType::Zsh));
 }
+
 #[test]
-#[serial]
 fn test_detect_shell_falls_back_to_fish_config_when_shell_env_is_unset() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
-    let config = Config::default();
     let home = "/home/amnesia";
     set_mock_home(&fs, home);
     fs.mock_set_path_exists(&format!("{home}/.config/fish/config.fish"), true);
 
-    env.remove("SHELL")
-        .remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .set("USER", "amnesia")
-        .set("HOME", home);
+    let shell = shell_for_user(fs, "amnesia", home);
 
-    let shell = ShellInstrumentation::new(fs, config);
-    let result = shell.detect_current_shell();
-
-    assert_eq!(result, Some(ShellType::Fish));
+    assert_eq!(shell.detect_current_shell(), Some(ShellType::Fish));
 }
+
 #[test]
-#[serial]
-fn test_detect_shell_returns_none_when_no_shell_env_or_rc_files_exist() {
-    let mut env = EnvGuard::lock();
+fn test_detect_shell_returns_none_without_shell_env_operator_or_rc_files() {
+    // No SHELL and no attached operator: the home cannot be resolved, so
+    // detection reports nothing rather than guessing.
+    let shell = create_test_shell();
+    assert_eq!(shell.detect_current_shell(), None);
+}
+
+#[test]
+fn test_detect_shell_probes_the_operators_home_rc_files() {
+    // The operator's home carries a .zshrc; detection uses that home, not any
+    // ambient value.
     let fs = MockFilesystem::new();
-    let config = Config::default();
-    let home = "/home/amnesia";
-    set_mock_home(&fs, home);
+    set_mock_home(&fs, "/home/amnesia");
+    fs.mock_set_path_exists("/home/amnesia/.zshrc", true);
 
-    env.remove("SHELL")
-        .remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .set("USER", "amnesia")
-        .set("HOME", home);
+    let shell = shell_for_user(fs, "amnesia", "/home/amnesia");
 
-    let shell = ShellInstrumentation::new(fs, config);
-    let result = shell.detect_current_shell();
-
-    assert_eq!(result, None);
+    assert_eq!(shell.detect_current_shell(), Some(ShellType::Zsh));
 }
+
 #[test]
-#[serial]
-fn test_resolve_target_username_prefers_sudo_user() {
-    let mut env = EnvGuard::lock();
-    let shell = create_test_shell();
+fn test_detect_shell_defaults_to_bash_for_known_operator_without_rc_files() {
+    let fs = MockFilesystem::new();
+    set_mock_home(&fs, "/home/amnesia");
 
-    env.set("SUDO_USER", "sudo-user")
-        .set("NAILS_TARGET_USER", "target-user")
-        .set("USER", "plain-user");
+    let shell = shell_for_user(fs, "amnesia", "/home/amnesia");
 
-    let result = shell.resolve_target_username().unwrap();
-
-    assert_eq!(result, "sudo-user");
+    assert_eq!(shell.detect_current_shell(), Some(ShellType::Bash));
 }
+
 #[test]
-#[serial]
-fn test_resolve_target_username_uses_target_user_fallback() {
-    let mut env = EnvGuard::lock();
-    let shell = create_test_shell();
-
-    env.remove("SUDO_USER")
-        .set("NAILS_TARGET_USER", "target-user")
-        .set("USER", "plain-user");
-
-    let result = shell.resolve_target_username().unwrap();
-
-    assert_eq!(result, "target-user");
-}
-#[test]
-#[serial]
-fn test_resolve_target_username_uses_user_fallback() {
-    let mut env = EnvGuard::lock();
-    let shell = create_test_shell();
-
-    env.remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .set("USER", "plain-user");
-
-    let result = shell.resolve_target_username().unwrap();
-
-    assert_eq!(result, "plain-user");
-}
-#[test]
-#[serial]
-fn test_resolve_target_username_errors_without_any_user_env() {
-    let mut env = EnvGuard::lock();
-    let shell = create_test_shell();
-
-    env.remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .remove("USER");
-
-    let err = shell.resolve_target_username().unwrap_err();
-
-    assert!(err.to_string().contains("Could not determine username"));
-}
-#[test]
-#[serial]
-fn test_has_explicit_target_user_context_detects_target_user_env() {
-    let mut env = EnvGuard::lock();
-    env.remove("SUDO_USER").remove("NAILS_TARGET_USER");
-    assert!(!ShellInstrumentation::<MockFilesystem>::has_explicit_target_user_context());
-
-    env.set("NAILS_TARGET_USER", "amnesia");
-    assert!(ShellInstrumentation::<MockFilesystem>::has_explicit_target_user_context());
-}
-#[test]
-#[serial]
-fn test_resolve_home_from_current_environment_uses_matching_home() {
-    let mut env = EnvGuard::lock();
-    env.remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .set("HOME", "/srv/users/amnesia");
-
-    let result = ShellInstrumentation::<MockFilesystem>::resolve_home_from_current_environment(
-        Some("amnesia"),
-    );
-
-    assert_eq!(result, Some(PathBuf::from("/srv/users/amnesia")));
-}
-#[test]
-#[serial]
-fn test_resolve_home_from_current_environment_rejects_mismatched_home() {
-    let mut env = EnvGuard::lock();
-    env.remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .set("HOME", "/srv/users/other");
-
-    let result = ShellInstrumentation::<MockFilesystem>::resolve_home_from_current_environment(
-        Some("amnesia"),
-    );
-
-    assert_eq!(result, None);
-}
-#[test]
-#[serial]
-fn test_resolve_home_from_current_environment_ignores_home_for_explicit_target_context() {
-    let mut env = EnvGuard::lock();
-    env.set("NAILS_TARGET_USER", "amnesia")
-        .set("HOME", "/srv/users/amnesia");
-
-    let result = ShellInstrumentation::<MockFilesystem>::resolve_home_from_current_environment(
-        Some("amnesia"),
-    );
-
-    assert_eq!(result, None);
-}
-#[test]
-#[serial]
-fn test_resolve_target_home_dir_prefers_matching_home_env() {
-    let mut env = EnvGuard::lock();
-    let shell = create_test_shell();
-
-    env.remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .set("USER", "amnesia")
-        .set("HOME", "/srv/users/amnesia");
+fn test_resolve_target_home_dir_uses_the_attached_operator_home() {
+    let shell = shell_for_user(MockFilesystem::new(), "amnesia", "/srv/users/amnesia");
 
     let result = shell.resolve_target_home_dir().unwrap();
 
     assert_eq!(result, PathBuf::from("/srv/users/amnesia"));
 }
+
 #[test]
-#[serial]
-fn test_resolve_target_home_dir_falls_back_to_home_username_path_when_home_mismatched() {
-    let mut env = EnvGuard::lock();
+fn test_resolve_target_home_dir_errors_without_an_attached_operator() {
     let shell = create_test_shell();
-
-    env.remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .set("USER", "amnesia")
-        .set("HOME", "/tmp/not-amnesia");
-
-    let result = shell.resolve_target_home_dir().unwrap();
-
-    assert_eq!(result, PathBuf::from("/home/amnesia"));
-}
-#[test]
-#[serial]
-fn test_resolve_target_home_dir_ignores_home_env_when_explicit_target_user_is_set() {
-    let mut env = EnvGuard::lock();
-    let shell = create_test_shell();
-
-    env.remove("SUDO_USER")
-        .set("NAILS_TARGET_USER", "amnesia")
-        .remove("USER")
-        .set("HOME", "/srv/users/amnesia");
-
-    let result = shell.resolve_target_home_dir().unwrap();
-
-    assert_eq!(result, PathBuf::from("/home/amnesia"));
-}
-#[test]
-#[serial]
-fn test_resolve_target_home_dir_errors_without_any_user_context() {
-    let mut env = EnvGuard::lock();
-    let shell = create_test_shell();
-
-    env.remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .remove("USER")
-        .remove("HOME");
 
     let err = shell.resolve_target_home_dir().unwrap_err();
 
-    assert!(err.to_string().contains("Could not determine username"));
-}
-#[test]
-#[serial]
-fn test_detect_shell_ignores_mismatched_home_and_falls_back_to_user_home_rc_files() {
-    let mut env = EnvGuard::lock();
-    let fs = MockFilesystem::new();
-    let config = Config::default();
-    set_mock_home(&fs, "/home/amnesia");
-    fs.mock_set_path_exists("/home/amnesia/.zshrc", true);
-    fs.mock_set_path_exists("/tmp/not-amnesia", true);
-
-    env.remove("SHELL")
-        .remove("SUDO_USER")
-        .remove("NAILS_TARGET_USER")
-        .set("USER", "amnesia")
-        .set("HOME", "/tmp/not-amnesia");
-
-    let shell = ShellInstrumentation::new(fs, config);
-    let result = shell.detect_current_shell();
-
-    assert_eq!(result, Some(ShellType::Zsh));
-}
-#[test]
-#[serial]
-fn test_detect_shell_defaults_to_bash_for_explicit_target_user_without_rc_files() {
-    let mut env = EnvGuard::lock();
-    let fs = MockFilesystem::new();
-    let config = Config::default();
-    set_mock_home(&fs, "/home/amnesia");
-
-    env.remove("SHELL")
-        .remove("SUDO_USER")
-        .remove("USER")
-        .set("NAILS_TARGET_USER", "amnesia");
-
-    let shell = ShellInstrumentation::new(fs, config);
-    let result = shell.detect_current_shell();
-
-    assert_eq!(result, Some(ShellType::Bash));
+    assert!(
+        err.to_string()
+            .contains("Could not determine the target home directory")
+    );
 }

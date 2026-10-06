@@ -4,9 +4,7 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_inject_rc_integration_bash_creates_bashrc() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     // Pin the root: the default now derives from the binary location, which in a
     // test build is the build directory, not the install mount this test asserts on.
@@ -19,9 +17,15 @@ fn test_inject_rc_integration_bash_creates_bashrc() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    env.set("SHELL", "/bin/bash").set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+    let shell = ShellInstrumentation::new(fs.clone(), config.clone())
+        .with_shell_env(Some("/bin/bash".to_string()))
+        .with_target_user(crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ));
 
     // Call inject_rc_integration
     let result = shell.inject_rc_integration(ShellType::Bash);
@@ -40,9 +44,7 @@ fn test_inject_rc_integration_bash_creates_bashrc() {
     assert!(content.contains("# <<< managed shell integration <<<"));
 }
 #[test]
-#[serial]
 fn test_inject_rc_integration_zsh_creates_zshrc() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     // Pin the root: the default now derives from the binary location, which in a
     // test build is the build directory, not the install mount this test asserts on.
@@ -55,9 +57,15 @@ fn test_inject_rc_integration_zsh_creates_zshrc() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    env.set("SHELL", "/bin/zsh").set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+    let shell = ShellInstrumentation::new(fs.clone(), config.clone())
+        .with_shell_env(Some("/bin/zsh".to_string()))
+        .with_target_user(crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ));
 
     let result = shell.inject_rc_integration(ShellType::Zsh);
 
@@ -73,9 +81,7 @@ fn test_inject_rc_integration_zsh_creates_zshrc() {
     assert!(content.contains("source /mnt/data/scripts/nails_alias.sh"));
 }
 #[test]
-#[serial]
 fn test_inject_rc_integration_fish_creates_config_fish() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     // Pin the root: the default now derives from the binary location, which in a
     // test build is the build directory, not the install mount this test asserts on.
@@ -88,9 +94,15 @@ fn test_inject_rc_integration_fish_creates_config_fish() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    env.set("SHELL", "/bin/fish").set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+    let shell = ShellInstrumentation::new(fs.clone(), config.clone())
+        .with_shell_env(Some("/bin/fish".to_string()))
+        .with_target_user(crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ));
 
     let result = shell.inject_rc_integration(ShellType::Fish);
 
@@ -106,9 +118,7 @@ fn test_inject_rc_integration_fish_creates_config_fish() {
     assert!(content.contains("source /mnt/data/scripts/nails_alias.fish"));
 }
 #[test]
-#[serial]
 fn test_inject_rc_integration_idempotent() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -116,9 +126,15 @@ fn test_inject_rc_integration_idempotent() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    env.set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+    let shell = ShellInstrumentation::new(fs.clone(), config.clone()).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ),
+    );
 
     // Call twice
     let result1 = shell.inject_rc_integration(ShellType::Bash);
@@ -135,9 +151,7 @@ fn test_inject_rc_integration_idempotent() {
     assert_eq!(marker_count, 1, "Should only have one integration block");
 }
 #[test]
-#[serial]
 fn test_inject_rc_integration_appends_to_existing_bashrc() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -153,9 +167,15 @@ fn test_inject_rc_integration_appends_to_existing_bashrc() {
         "# Existing config\nexport PATH=/usr/bin:$PATH\n",
     );
 
-    env.set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+    let shell = ShellInstrumentation::new(fs.clone(), config.clone()).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ),
+    );
     let result = shell.inject_rc_integration(ShellType::Bash);
 
     assert!(result.is_ok());
@@ -170,9 +190,7 @@ fn test_inject_rc_integration_appends_to_existing_bashrc() {
     assert!(content.contains("# >>> managed shell integration"));
 }
 #[test]
-#[serial]
 fn test_inject_rc_integration_uses_color_scheme_config() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config {
         color_scheme: crate::config::ColorSchemeConfig {
@@ -189,9 +207,15 @@ fn test_inject_rc_integration_uses_color_scheme_config() {
     fs.mock_set_path_exists("/home", true);
     fs.mock_set_path_exists("/home/testuser", true);
 
-    env.set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+    let shell = ShellInstrumentation::new(fs.clone(), config.clone()).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ),
+    );
     let result = shell.inject_rc_integration(ShellType::Bash);
 
     assert!(result.is_ok());
@@ -204,9 +228,7 @@ fn test_inject_rc_integration_uses_color_scheme_config() {
     assert!(content.contains("#abcdef"));
 }
 #[test]
-#[serial]
 fn test_inject_rc_integration_falls_back_to_user_env() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -215,9 +237,16 @@ fn test_inject_rc_integration_falls_back_to_user_env() {
     fs.mock_set_path_exists("/home/fallbackuser", true);
 
     // No SUDO_USER, should fall back to USER
-    env.remove("SUDO_USER").set("USER", "fallbackuser");
 
-    let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+    let shell = ShellInstrumentation::new(fs.clone(), config.clone()).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "fallbackuser",
+            "/home/fallbackuser",
+            "/bin/bash",
+        ),
+    );
     let result = shell.inject_rc_integration(ShellType::Bash);
 
     assert!(result.is_ok());
@@ -227,9 +256,7 @@ fn test_inject_rc_integration_falls_back_to_user_env() {
     assert!(fs.read_file_content(&bashrc_path).is_ok());
 }
 #[test]
-#[serial]
 fn test_inject_rc_integration_returns_false_on_failure() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
 
@@ -240,9 +267,15 @@ fn test_inject_rc_integration_returns_false_on_failure() {
     // Make bashrc write fail
     fs.mock_set_write_should_fail("/home/testuser/.bashrc", true);
 
-    env.set("SUDO_USER", "testuser");
-
-    let shell = ShellInstrumentation::new(fs.clone(), config.clone());
+    let shell = ShellInstrumentation::new(fs.clone(), config.clone()).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ),
+    );
     let result = shell.inject_rc_integration(ShellType::Bash);
 
     // Should return Ok(false) on best-effort failure
@@ -250,9 +283,7 @@ fn test_inject_rc_integration_returns_false_on_failure() {
     assert!(!result.unwrap());
 }
 #[test]
-#[serial]
 fn test_inject_rc_integration_uses_home_env_without_hardcoded_home_prefix() {
-    let mut env = EnvGuard::lock();
     let fs = MockFilesystem::new();
     let config = Config::default();
     let home = "/srv/users/fallbackuser";
@@ -262,11 +293,9 @@ fn test_inject_rc_integration_uses_home_env_without_hardcoded_home_prefix() {
     fs.mock_set_path_exists("/srv/users", true);
     fs.mock_set_path_exists(home, true);
 
-    env.remove("SUDO_USER")
-        .set("USER", "fallbackuser")
-        .set("HOME", home);
-
-    let shell = ShellInstrumentation::new(fs.clone(), config);
+    let shell = ShellInstrumentation::new(fs.clone(), config).with_target_user(
+        crate::target_user::TargetUser::for_test(1000, 1000, "fallbackuser", home, "/bin/bash"),
+    );
     let result = shell.inject_rc_integration(ShellType::Bash);
 
     assert!(result.is_ok());

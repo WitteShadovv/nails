@@ -4,14 +4,12 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_scripts_dir_path() {
     let shell = create_test_shell();
     let scripts_dir = shell.scripts_dir();
     assert!(scripts_dir.to_string_lossy().ends_with("/scripts"));
 }
 #[test]
-#[serial]
 fn test_prompt_script_paths() {
     let shell = create_test_shell();
 
@@ -25,7 +23,6 @@ fn test_prompt_script_paths() {
     assert!(fish_path.to_string_lossy().ends_with("nails_prompt.fish"));
 }
 #[test]
-#[serial]
 fn test_cleanup_script_paths() {
     let shell = create_test_shell();
 
@@ -51,7 +48,6 @@ fn test_cleanup_script_paths() {
     );
 }
 #[test]
-#[serial]
 fn test_write_prompt_scripts_creates_directory() {
     let fs = MockFilesystem::new();
     let config = Config::default();
@@ -72,7 +68,6 @@ fn test_write_prompt_scripts_creates_directory() {
     assert!(fs.path_exists(&scripts_dir).unwrap());
 }
 #[test]
-#[serial]
 fn test_write_prompt_scripts_writes_all_files() {
     let fs = MockFilesystem::new();
     let config = Config::default();
@@ -114,7 +109,6 @@ fn test_write_prompt_scripts_writes_all_files() {
     );
 }
 #[test]
-#[serial]
 fn test_write_prompt_scripts_idempotent() {
     let fs = MockFilesystem::new();
     let config = Config::default();
@@ -145,7 +139,6 @@ fn test_write_prompt_scripts_idempotent() {
     );
 }
 #[test]
-#[serial]
 fn test_write_prompt_scripts_uses_custom_hidden_volume_root() {
     let fs = MockFilesystem::new();
     let config = Config {
@@ -170,7 +163,6 @@ fn test_write_prompt_scripts_uses_custom_hidden_volume_root() {
     assert!(!script_content.contains(".nails"));
 }
 #[test]
-#[serial]
 fn test_script_content_has_shebang() {
     let fs = MockFilesystem::new();
     let config = Config::default();

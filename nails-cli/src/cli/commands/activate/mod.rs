@@ -536,10 +536,11 @@ pub fn execute(
         if matches!(result, Ok(nails_core::ActivationOutcome::Activated { .. })) {
             use nails_core::ShellInstrumentation;
             let mut shell =
-                ShellInstrumentation::new(nails_core::RealFilesystem, manager.config().clone());
+                ShellInstrumentation::new(nails_core::RealFilesystem, manager.config().clone())
+                    .with_shell_env(manager.runtime_env().shell.clone());
             // Attach the operator so rc and autostart files land symlink-safe and
             // owned by them; fall back to a best-effort root-owned write otherwise.
-            match nails_core::TargetUser::resolve() {
+            match nails_core::TargetUser::resolve_with(manager.runtime_env()) {
                 Ok(user) => shell = shell.with_target_user(user),
                 Err(e) => {
                     tracing::warn!(
