@@ -36,7 +36,12 @@
 # with a linked TODO and a code fix (overlay handling for /var/lib/nixos; evaluate
 # userborn/systemd-sysusers), not silenced.
 
-{ self, pkgs, ... }:
+{
+  self,
+  pkgs,
+  nixpkgs,
+  ...
+}:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -46,7 +51,7 @@ let
   # The hidden toplevel, built here against the guest's own nixpkgs so the store
   # path matches what the in-guest flake build computes. Seeded into the guest
   # store below so the offline build finds it already present.
-  hiddenToplevel = import ./../../lib/hidden-toplevel.nix { inherit pkgs; };
+  hiddenToplevel = import ./../../lib/hidden-toplevel.nix { inherit pkgs nixpkgs; };
   # The emergency runner bakes the config path into its unit; the test writes the
   # /var-overlaying config to this same path at runtime.
   varConfig = "/tmp/nails-var.toml";

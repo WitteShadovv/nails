@@ -244,7 +244,7 @@
             printf '%s  %s\n' "$binary_sha256" "nails" >> "$out/checksums.txt"
           '';
 
-      rawE2eTests = import ./nix/e2e-tests { inherit self pkgs; };
+      rawE2eTests = import ./nix/e2e-tests { inherit self pkgs nixpkgs; };
       e2eTests = lib.filterAttrs (name: _: !(lib.hasPrefix "_" name)) rawE2eTests;
 
       # The portable distribution smoke suite (Debian/Ubuntu on nix-vm-test).

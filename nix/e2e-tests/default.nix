@@ -1,4 +1,8 @@
-{ self, pkgs }:
+{
+  self,
+  pkgs,
+  nixpkgs,
+}:
 
 let
   inherit (pkgs) lib;
@@ -56,7 +60,7 @@ let
         [ ]
     ) (builtins.attrNames entries);
 
-  rawSpecs = map (path: import path { inherit self pkgs; }) (collectTestFiles testsRoot);
+  rawSpecs = map (path: import path { inherit self pkgs nixpkgs; }) (collectTestFiles testsRoot);
   rawNames = map (spec: spec.name) rawSpecs;
 
   _assertUniqueNames =
