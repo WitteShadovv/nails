@@ -21,7 +21,9 @@
 #     system. A NixOS toplevel derivation is a function of the merged `config`
 #     alone, so reproducing the decoy /etc/nixos as inline modules of equal
 #     content yields the identical store path the guest computes from the files.
-{ pkgs, nixpkgs }:
+# `pkgs` is accepted (callers `inherit pkgs nixpkgs`) but no longer referenced:
+# the toplevel is now evaluated purely from the locked `nixpkgs` flake input.
+{ nixpkgs, ... }:
 let
   # The in-guest hidden flake takes the seeded nixpkgs *source* as a `path:`
   # input (fixtures/hidden-config/flake.nix, substituted with `pkgs.path`). To
@@ -32,13 +34,16 @@ let
   #     `unsafeDiscardStringContext`; and
   #   * pure evaluation also rejects an *unlocked* flakeref, so the ref is pinned
   #     with the input's own `narHash`.
-  # `pkgs.path` is the source tree of this same `nixpkgs` input, so its store
-  # path equals `nixpkgs.outPath`; the assertion below makes that explicit, and a
-  # drift would surface here rather than as a mismatched guest store path.
+  # `pkgs.path` is the source tree of this same `nixpkgs` input, so realising
+  # this flake yields the same `lib.nixosSystem` the guest flake calls. We cannot
+  # assert `nixpkgs.outPath == pkgs.path`: `outPath` is a string carrying store
+  # context while `pkgs.path` is a lazy source-tree path (a flake-ref value such
+  # as «github:NixOS/nixpkgs/…»), so the two are never `==` even when they denote
+  # the same tree. The `narHash` pin below is what actually ties the fetched
+  # flake to the locked input, so any drift surfaces as a mismatched guest store
+  # path rather than being caught here.
   nixpkgsSource = builtins.unsafeDiscardStringContext nixpkgs.outPath;
-  nixpkgsFlake =
-    assert nixpkgs.outPath == pkgs.path;
-    builtins.getFlake "path:${nixpkgsSource}?narHash=${nixpkgs.narHash}";
+  nixpkgsFlake = builtins.getFlake "path:${nixpkgsSource}?narHash=${nixpkgs.narHash}";
 
   # The decoy's /etc/nixos/configuration.nix (see lib/vm-config.nix). The guest
   # hidden flake imports this file; the import of the (empty) hardware
