@@ -21,9 +21,10 @@ in
         "nix-command"
         "flakes"
       ];
-      # The guest is offline. The hidden toplevel is a store path the flake
-      # produces with builtins.toFile, so the explicit `nix build` only has to
-      # realise an already-present path; configuring no substituters (mkForce over
+      # The guest is offline. The hidden toplevel is a store directory the flake
+      # produces with `builtins.path` (a plain source copy of a committed
+      # directory — no nixpkgs, no build), so the explicit `nix build` only has to
+      # realise an already-local path; configuring no substituters (mkForce over
       # any profile or qemu-vm default) stops nix from querying an unreachable
       # cache for it.
       nix.settings.substituters = lib.mkForce [ ];
@@ -93,22 +94,24 @@ in
             f"hidden flake leaked onto the decoy {context}: {hits!r}"
         )
 
-    def install_nixos_rebuild_wrapper(log_path, marker_path):
+    def install_toplevel_fixture(marker_path):
+        # The flake's `system.build.toplevel` is this committed directory, copied
+        # into the store verbatim by `builtins.path`. nails builds it (an offline
+        # source realise, no nixpkgs) and runs its `bin/switch-to-configuration
+        # test`, exactly as it would a real toplevel — so the stub script stands in
+        # for a full generation's activation and records that it ran. The
+        # executable bit is the only permission the Nix store preserves, so the
+        # copied script stays runnable.
         machine.succeed(
-            f"""mkdir -p /tmp/nails-wrapper/bin
-    rm -f {log_path}
-    cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
+            f"""mkdir -p /mnt/data/nixos/toplevel/bin
+    cat > /mnt/data/nixos/toplevel/bin/switch-to-configuration <<'EOF'
     #!/bin/sh
-    printf '%s\\n' "$*" >> {log_path}
-    if [ "$1" = test ]; then
-      mkdir -p "$(dirname {marker_path})"
-      printf '%s\\n' 'flake-override-active' > {marker_path}
-    fi
+    mkdir -p "$(dirname {marker_path})"
+    printf '%s\\n' 'flake-override-active' > {marker_path}
     exit 0
     EOF
-    chmod 755 /tmp/nails-wrapper/bin/nixos-rebuild"""
+    chmod 755 /mnt/data/nixos/toplevel/bin/switch-to-configuration"""
         )
-        return "PATH=/tmp/nails-wrapper/bin:$PATH"
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -138,27 +141,27 @@ in
         machine.succeed("""cat >> /mnt/data/nixos/flake.nix <<'EOF'
     {
       description = "NAILS flake override E2E";
-      # No nixpkgs input: this test stubs nixos-rebuild (below), so the hidden
-      # system is never actually built. A `path:` nixpkgs input would copy the
-      # entire nixpkgs tree into the decoy store during the deferred
-      # `nix flake metadata`/eval — several minutes of I/O on the space-limited
-      # test disk — without exercising anything this test asserts. nails' flake
-      # validation only needs the flake to resolve and the selected
-      # `nixosConfigurations` attribute to exist, and the canary leak check only
-      # needs the flake source (carrying the canary) copied into the store; this
-      # minimal flake still drives both. The real build+switch path lives in
-      # test 27 (activate-full-rebuild).
+      # No nixpkgs input: a `path:` nixpkgs input would copy the entire nixpkgs
+      # tree into the decoy store during the deferred `nix flake metadata`/eval —
+      # several minutes of I/O on the space-limited test disk — without exercising
+      # anything this test asserts. The real build+switch of a nixpkgs-backed
+      # toplevel lives in test 27 (activate-full-rebuild); this test covers the
+      # flake *dispatch* and the canary-leak invariant, which a minimal, input-less
+      # flake drives on its own.
       #
       # nails builds the hidden toplevel explicitly (`nix build
-      # ...system.build.toplevel`) before it dispatches the switch to
-      # nixos-rebuild. Expose a trivial, nixpkgs-free toplevel the offline guest
-      # can realise with no build or fetch: a plain store path produced by
-      # `builtins.toFile`. The stubbed nixos-rebuild still performs the switch, so
-      # the toplevel content is never used — only its presence lets the explicit
-      # build step succeed while the flake stays input-less.
+      # ...system.build.toplevel`) and then runs that toplevel's own
+      # `bin/switch-to-configuration test`. So the toplevel must be a real store
+      # *directory* with a runnable switch script, not a bare file. Produce it with
+      # `builtins.path`, a plain source copy of the committed ./toplevel directory:
+      # it realises offline with no build and no fetch, and the only bit the Nix
+      # store keeps — the executable bit — is enough to make the script runnable.
       outputs = { self }: {
         nixosConfigurations.nails-e2e.config.system.build.toplevel =
-          builtins.toFile "nixos-system-nails-e2e" "flake-override stub toplevel";
+          builtins.path {
+            path = ./toplevel;
+            name = "nixos-system-nails-e2e";
+          };
       };
     }
     EOF""")
@@ -169,10 +172,7 @@ in
         machine.succeed("""cat > /mnt/data/nixos/flake.lock <<'EOF'
     {"nodes":{"root":{}},"root":"root","version":7}
     EOF""")
-        wrapper_env = install_nixos_rebuild_wrapper(
-            "/tmp/nixos-rebuild-flake.log",
-            "/etc/nails-flake-marker",
-        )
+        install_toplevel_fixture("/etc/nails-flake-marker")
 
     with subtest("null control: the hidden flake has not touched the decoy store yet"):
         # Nothing has been activated, so no nix invocation has copied the hidden
@@ -193,15 +193,27 @@ in
         machine.succeed(f"rm -f {planted}")
         assert_hidden_flake_absent_from_decoy(nix_store, "after removing the planted copy")
 
-    with subtest("explicit flake override dispatches to nixos-rebuild --flake"):
-        machine.succeed(
-            f"{wrapper_env} nails --config {headless_config} activate --session keep -y --nixos-flake {flake_ref}"
+    with subtest("explicit flake override builds the flake toplevel and switches to it"):
+        # nails resolves the flake toplevel installable, builds it explicitly with
+        # `nix build` and activates it with the toplevel's own
+        # `switch-to-configuration test` — no nixos-rebuild and no legacy
+        # `-I nixos-config` path. Capture and always print the output: the build and
+        # switch run inside the activation, so this is the only view of them when an
+        # assertion below fails.
+        rc, out = machine.execute(
+            "set +e; "
+            f"nails --config {headless_config} activate --session keep -y "
+            f"--nixos-flake {flake_ref} 2>&1"
         )
-        rebuild_log = machine.succeed("cat /tmp/nixos-rebuild-flake.log")
-        assert f"--flake {flake_ref}" in rebuild_log, \
-            f"Expected explicit flake ref in nixos-rebuild invocation, got: {rebuild_log!r}"
-        assert "-I nixos-config=/etc/nixos/configuration.nix" not in rebuild_log, \
-            f"Did not expect legacy nixos-config path when using --nixos-flake, got: {rebuild_log!r}"
+        print(f"nails activate --nixos-flake exited rc={rc}; output follows:")
+        print(out)
+        assert rc == 0, f"flake-override activation failed (rc={rc})"
+        assert "nixosConfigurations.nails-e2e" in out, (
+            f"activation must build the flake-selected toplevel installable: {out!r}"
+        )
+        assert "nixos-config=/etc/nixos/configuration.nix" not in out, (
+            f"the legacy nixos-config path must not be used with --nixos-flake: {out!r}"
+        )
 
     with subtest("flake-selected system becomes active"):
         assert_status_state_local("Active", headless_config)
