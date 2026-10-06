@@ -664,4 +664,57 @@ mod platform_wiring_tests {
         m.initialize_platform().unwrap();
         assert_eq!(m.host_profile().unwrap().kind, PlatformKind::Fhs);
     }
+
+    #[test]
+    fn fake_platform_drives_profile_backend_and_discovery() {
+        use crate::platform::{FakePlatform, HostTarget};
+        let mut m = NailsManager::new(
+            MockFilesystem::new(),
+            Config::default(),
+            PathBuf::from("/tmp/state.json"),
+        );
+        m.set_fake_platform(
+            FakePlatform::nixos().with_build_target(HostTarget::Flake(PathBuf::from("/cfg"))),
+        );
+
+        assert_eq!(m.host_profile().unwrap().kind, PlatformKind::NixOs);
+        assert_eq!(m.platform().unwrap().kind(), PlatformKind::NixOs);
+        assert!(m.config_layer().is_some());
+        assert_eq!(
+            m.discover_host_target(false).unwrap(),
+            HostTarget::Flake(PathBuf::from("/cfg"))
+        );
+        assert_eq!(
+            m.discover_host_target(true).unwrap(),
+            HostTarget::OverlayOnly
+        );
+    }
+
+    #[test]
+    fn detection_replaces_an_injected_fake() {
+        use crate::platform::{FakePlatform, HostTarget};
+        let mut m = NailsManager::new(fhs_host(), Config::default(), PathBuf::from("/tmp/s.json"));
+        m.set_fake_platform(
+            FakePlatform::nixos().with_build_target(HostTarget::Flake(PathBuf::from("/cfg"))),
+        );
+        m.initialize_platform().unwrap();
+
+        assert_eq!(m.platform().unwrap().kind(), PlatformKind::Fhs);
+        assert_eq!(m.discover_host_target(false).unwrap(), HostTarget::None);
+    }
+
+    #[test]
+    fn set_nixos_builder_wires_a_builder_after_construction() {
+        let mut m = NailsManager::new(
+            MockFilesystem::new(),
+            Config::default(),
+            PathBuf::from("/tmp/state.json"),
+        );
+        assert!(!m.hidden_switch_configured());
+        m.set_nixos_builder(NixOSBuilder::new_legacy(
+            PathBuf::from("/etc/nixos/configuration.nix"),
+            PathBuf::from("/nix/var/nix/profiles/nails-system"),
+        ));
+        assert!(m.hidden_switch_configured());
+    }
 }

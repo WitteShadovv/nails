@@ -79,7 +79,6 @@ impl<F: Filesystem> NailsManager<F> {
 #[cfg(test)]
 mod tests {
     use crate::nixos::{CommandExecutor, NixOSBuilder, SwitchAction};
-    use crate::platform::{HostProfile, PlatformKind};
     use crate::{
         ActivateOptions, Config, Filesystem, MockFilesystem, NailsManager, OverlayConfig,
         OverlayMode, Result,
@@ -177,16 +176,7 @@ mod tests {
         let fs_clone = fs.clone();
         let mut manager = NailsManager::with_nixos(fs, config, state_path, builder);
         // A Debian/FHS host: no declarative config layer.
-        manager.set_host_profile(HostProfile {
-            kind: PlatformKind::Fhs,
-            id: Some("debian".to_string()),
-            id_like: vec![],
-            version_id: Some("12".to_string()),
-            is_systemd: true,
-            is_ostree: false,
-            has_current_system: false,
-            unsupported_reason: None,
-        });
+        manager.set_fake_platform(crate::platform::FakePlatform::fhs());
 
         assert!(
             manager.config_layer().is_none(),

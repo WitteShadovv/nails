@@ -531,16 +531,7 @@ mod tests {
     fn preflight_phase_fhs_host_stages_nothing() {
         let root = std::path::PathBuf::from("/mnt/data");
         let (mut manager, fs) = attach_gate_manager(&root, 42, 7);
-        manager.set_host_profile(crate::platform::HostProfile {
-            kind: crate::platform::PlatformKind::Fhs,
-            id: Some("debian".to_string()),
-            id_like: vec![],
-            version_id: Some("12".to_string()),
-            is_systemd: true,
-            is_ostree: false,
-            has_current_system: false,
-            unsupported_reason: None,
-        });
+        manager.set_fake_platform(crate::platform::FakePlatform::fhs());
         let staged = root.join("etc/nixos/nails/configuration.nix");
 
         manager
@@ -621,16 +612,7 @@ mod tests {
     fn stage_hidden_config_skips_on_fhs_host() {
         let root = std::path::PathBuf::from("/mnt/data");
         let (mut manager, fs) = attach_gate_manager(&root, 42, 7);
-        manager.set_host_profile(crate::platform::HostProfile {
-            kind: crate::platform::PlatformKind::Fhs,
-            id: Some("debian".to_string()),
-            id_like: vec![],
-            version_id: Some("12".to_string()),
-            is_systemd: true,
-            is_ostree: false,
-            has_current_system: false,
-            unsupported_reason: None,
-        });
+        manager.set_fake_platform(crate::platform::FakePlatform::fhs());
         let staged = root.join("etc/nixos/nails/configuration.nix");
 
         manager

@@ -478,16 +478,9 @@ fn activation_refuses_an_unsupported_host_before_any_state_write() {
     let (mut manager, fs, _tmp) = rollback_test_manager();
 
     let state_before = manager.current_state().expect("state");
-    manager.set_host_profile(crate::platform::HostProfile {
-        kind: crate::platform::PlatformKind::Unsupported,
-        id: Some("fedora".to_string()),
-        id_like: vec![],
-        version_id: None,
-        is_systemd: true,
-        is_ostree: true,
-        has_current_system: false,
-        unsupported_reason: Some("ostree / image-based host".to_string()),
-    });
+    manager.set_fake_platform(crate::platform::FakePlatform::new(
+        crate::platform::PlatformKind::Unsupported,
+    ));
 
     let result = manager.activate(true);
     assert!(
@@ -1247,15 +1240,6 @@ fn hidden_switch_is_configured_only_with_a_builder_and_a_layer() {
     assert!(manager.hidden_switch_configured());
 
     // A builder on a host without a declarative layer (FHS): no switch.
-    manager.set_host_profile(crate::platform::HostProfile {
-        kind: crate::platform::PlatformKind::Fhs,
-        id: Some("debian".to_string()),
-        id_like: vec![],
-        version_id: Some("12".to_string()),
-        is_systemd: true,
-        is_ostree: false,
-        has_current_system: false,
-        unsupported_reason: None,
-    });
+    manager.set_fake_platform(crate::platform::FakePlatform::fhs());
     assert!(!manager.hidden_switch_configured());
 }
