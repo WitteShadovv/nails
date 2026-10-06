@@ -328,6 +328,7 @@ in
         "/var/lib/NetworkManager",
         "/var/lib/AccountsService",
         "/etc/localtime",
+        "/var/lib/systemd/linger",
     ]
 
 
@@ -363,6 +364,9 @@ in
             f"$B/busctl call org.freedesktop.Accounts /org/freedesktop/Accounts/User{UID} "
             f"org.freedesktop.Accounts.User SetLanguage s {lang}; echo \"RESULT accounts-set $?\"\n"
             f"$B/timedatectl set-timezone {tz}; echo \"RESULT timedate $?\"\n"
+            # set-self-linger is allow_active=yes upstream and writes
+            # /var/lib/systemd/linger/<name> on the decoy.
+            "$B/loginctl enable-linger; echo \"RESULT linger $?\"\n"
             "$B/busctl get-property org.freedesktop.login1 /org/freedesktop/login1/session/auto "
             "org.freedesktop.login1.Session Id; echo \"RESULT login1-auto $?\"\n"
             "$B/busctl --system list --no-legend --acquired | awk '{print $1}' | tr '\\n' ' '; echo\n"
@@ -602,12 +606,16 @@ in
         finding(f"R2-A results (0 = the daemon accepted the request): {res}")
         finding(f"R2-A decoy state diff: {diff}")
         finding("R2-A probe output:\n" + out.strip())
+        machine.succeed(f"loginctl disable-linger {USER} || true")
 
     with subtest("R2-B: polkit rule in /run denying the hidden user"):
         rule = (
             "polkit.addRule(function(action, subject) {\n"
             f"  if ((subject.user == \"{USER}\" || subject.user == \"{UID}\") &&\n"
-            "      action.id.indexOf(\"org.freedesktop.login1.\") != 0) {\n"
+            "      (action.id.indexOf(\"org.freedesktop.login1.\") != 0 ||\n"
+            "       action.id == \"org.freedesktop.login1.set-self-linger\" ||\n"
+            "       action.id.indexOf(\"org.freedesktop.login1.hibernate\") == 0 ||\n"
+            "       action.id.indexOf(\"org.freedesktop.login1.set-reboot\") == 0)) {\n"
             "    return polkit.Result.NO;\n"
             "  }\n"
             "});\n"
@@ -629,6 +637,8 @@ in
         assert before.get(acct) == after.get(acct), "AccountsService changed the hidden user's file"
         assert before.get("/etc/localtime") == after.get("/etc/localtime"), "the time zone changed"
         assert res.get("login1-auto") == 0, "the polkit rule must leave login1 usable"
+        assert not [p for p in diff["added"] if "/linger/" in p], "logind wrote a linger file"
+        machine.succeed(f"loginctl disable-linger {USER} || true")
 
     with subtest("R2-C: filtering proxy over the system bus socket"):
         machine.succeed("rm -f /run/polkit-1/rules.d/00-aux.rules", "systemctl reload polkit.service")
@@ -659,6 +669,9 @@ in
         res, out, diff, before, after = r2_probe("c", "es_ES.UTF-8", "Europe/Madrid")
         finding(f"R2-C results: {res}")
         finding(f"R2-C decoy state diff: {diff}")
+        # login1 is on the allowlist, so set-self-linger still reaches logind
+        # through the proxy: a filter needs the polkit rule as well.
+        machine.succeed(f"loginctl disable-linger {USER} || true")
         finding("R2-C probe output:\n" + out.strip())
         conns = [p for p in diff["added"] if "system-connections" in p]
         assert not conns, f"NetworkManager wrote connections through the filtered bus: {conns}"
