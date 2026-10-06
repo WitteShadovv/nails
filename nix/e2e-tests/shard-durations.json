@@ -51,6 +51,7 @@
   "overlay-pivot-vfat-boot": 115,
   "overlay-reset-upper": 130,
   "overlay-reverse-order-unmount": 89,
+  "overlay-stale-writer-kind": 120,
   "performance-validation": 684,
   "permissions-security": 60,
   "persona-fresh-home": 100,
