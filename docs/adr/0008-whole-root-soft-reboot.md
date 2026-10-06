@@ -64,7 +64,12 @@ marked [V-spike] below.
 **Second run (commit `8c69ea8`):** cycle 1 entered in the same times. On the way
 back, the first version of the `/run` scrub sent the decoy into emergency mode
 after a 300 s device timeout (§5). The scrub was rewritten as an allowlist of
-what to delete; a third run is pending.
+what to delete.
+
+**Third run (commit `7b30b12`):** the way back worked: shutdown phase 1.2 s,
+backdoor after 3.0 s, and 783 `/run/udev` entries carried. The residue check
+caught one carried entry not in the snapshot, the empty `/run/initramfs`
+mountpoint (§5). It is now removed, and a fourth run is pending.
 
 ## 1. Soft-reboot semantics
 
@@ -364,14 +369,30 @@ stopped, and the hidden volume is unmounted. The script:
    | `/run/systemd/{transient,system,system.control}/*` | hidden transient and runtime unit files and drop-ins (including the scrub's own) |
    | `/run/utmp` | hidden logins; `systemd-update-utmp` recreates it at the decoy start |
    | `/run/user/<uid>` (empty dirs only) | mountpoints of the hidden user runtime dirs; their tmpfs mounts are not carried |
-   | top-level entries of `/run` and of `/run/systemd` that are not in a snapshot taken in the decoy just before entering | runtime directories and files of hidden services, and stray files |
+   | entries up to two levels below `/run` that are not in a snapshot taken in the decoy just before entering | runtime directories, lock files and stray files of the hidden session, plus what the hidden *shutdown* created (`/run/nologin`, `/run/systemd/ask-password-block`, `/run/initramfs`, see below) |
 
    | Kept | Why |
    | --- | --- |
    | every socket | PID 1's notify and varlink sockets and the never-stopped socket units are carried as fds bound to these inodes |
    | `/run/udev` | the device database the decoy's device units are rebuilt from (see above). It may hold records for devices the hidden session created; the spike reports how many entries are carried |
    | `/run/credentials`, `/run/current-system`, `/run/booted-system`, `/run/nextroot` | system credentials, the init check and module tree, and the transition itself |
-   | everything else that was in the snapshot | the decoy's own pre-entry state; deleting it is what broke the second run |
+   | everything else that was in the snapshot | the decoy's own pre-entry state; deleting it is what broke the second run. The content of kept files such as `/run/mount/utab` and `/run/cryptsetup/*` can still have been changed by the hidden session; the spike prints it for review |
+
+   **`/run/initramfs` (third run).** NixOS's `generate-shutdown-ramfs.service`
+   is pulled in by `shutdown.target` on every shutdown, soft-reboots included.
+   It mounts a tmpfs at `/run/initramfs` and fills it with an exitrd built from
+   the *running* system's store paths: `systemd-shutdown`, coreutils, a shell
+   and `os-release` [V-src: `nixos/modules/system/boot/systemd/shutdown.nix`].
+   On the way back the running system is the hidden one, so with a hidden NixOS
+   toplevel this exitrd would hold hidden store paths. It is never used on a
+   soft-reboot, because `systemd-shutdown`, which would exec
+   `/run/initramfs/shutdown`, does not run [V-src: man page]. Being a mount
+   below `/run`, it is not carried by the non-recursive `/run` move either, so
+   its content dies with the old root. What the third run saw in the decoy was
+   only the empty mountpoint directory [V-spike]. The scrub now unmounts any
+   mount it meets among the entries to delete, then removes the directory. The
+   decoy's next real shutdown builds its own exitrd again (its
+   `ConditionFileIsExecutable=!/run/initramfs/shutdown` holds).
 
 2. **Seeks the decoy journald's kmsg cursor.** It writes "last kmsg sequence +
    1", read from `/dev/kmsg` without blocking, into
@@ -388,7 +409,8 @@ scrub logs every path it removes to `/dev/kmsg`. That puts the names in the
 ring buffer (RAM), though not in the journal, because of the cursor; a real
 implementation must not log them. If the next userspace reaches emergency mode
 or PID 1 freezes, the spike now fails within seconds and prints the timeouts
-and failed dependencies from the console. [V-spike, pending the third run]
+and failed dependencies from the console. [V-spike: the third run removed every
+probe; the `/run/initramfs` fix is pending]
 
 Alternatives considered and rejected:
 

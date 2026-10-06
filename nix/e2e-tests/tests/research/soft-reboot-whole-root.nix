@@ -532,9 +532,11 @@ in
     #       the runtime journal, logind's sessions/users/seats/inhibitors,
     #       transient and runtime unit files (including this drop-in), utmp,
     #       and the leftover mountpoint dirs of /run/user/<uid>;
-    #    b. every entry at the top of /run and of /run/systemd that is not in
-    #       the snapshot taken in the decoy just before entering (written to
-    #       /run/nails-run-snapshot), i.e. what hidden services created.
+    #    b. every entry up to two levels below /run that is not in the
+    #       snapshot taken in the decoy just before entering (written to
+    #       /run/nails-run-snapshot): what hidden services created, and what
+    #       the hidden shutdown created (/run/nologin, the /run/initramfs
+    #       exitrd mount, which is unmounted first).
     #    Never touched: sockets (PID 1's notify and varlink sockets and the
     #    never-stopped socket units are carried as fds bound to these inodes),
     #    /run/udev, /run/credentials, /run/current-system, /run/booted-system
@@ -553,6 +555,14 @@ in
     del() {
         [ -S "$1" ] && return 0
         [ -e "$1" ] || [ -L "$1" ] || return 0
+        # A mount made under /run during the hidden shutdown (NixOS mounts a
+        # tmpfs at /run/initramfs for its exitrd) is not carried by the
+        # non-recursive /run move anyway; unmount it so its mountpoint can go
+        # too. Nothing after this service uses it: systemd-shutdown, which
+        # would exec /run/initramfs/shutdown, never runs on a soft-reboot.
+        if [ -d "$1" ] && [ ! -L "$1" ] && mountpoint -q -- "$1"; then
+            umount -- "$1" 2>/dev/null || umount -l -- "$1"
+        fi
         # Spike diagnostics only: the names land in the kernel ring buffer
         # (RAM). The cursor below keeps them out of the decoy journal; a real
         # implementation must not log them at all.
@@ -566,11 +576,11 @@ in
         [ -d "$p" ] && rmdir -- "$p" 2>/dev/null
     done
     if [ -r "$snap" ]; then
-        for p in /run/* /run/.[!.]* /run/systemd/* /run/systemd/.[!.]*; do
-            case "$p" in
-                /run/nextroot|/run/udev|/run/credentials|/run/current-system|/run/booted-system|/run/systemd|"$snap") continue ;;
-            esac
-            [ -e "$p" ] || [ -L "$p" ] || continue
+        # The same two levels the snapshot and the residue check cover.
+        mapfile -t entries < <(find /run -xdev -mindepth 1 -maxdepth 2 \( -path /run/nextroot \
+            -o -path /run/udev -o -path /run/credentials -o -path /run/current-system \
+            -o -path /run/booted-system \) -prune -o ! -path "$snap" -print)
+        for p in "''${entries[@]}"; do
             grep -qxF -- "$p" "$snap" || del "$p"
         done
     fi
@@ -630,7 +640,7 @@ in
                 "find /run -xdev -mindepth 1 -maxdepth 2 | LC_ALL=C sort > /run/nails-run-snapshot.tmp && "
                 "mv /run/nails-run-snapshot.tmp /run/nails-run-snapshot && cat /run/nails-run-snapshot"
             )
-            run_snapshots[cycle] = set(snapshot_text.split())
+            run_snapshots[cycle] = set(snapshot_text.splitlines())
             machine.succeed(
                 "set -eux; "
                 f"mkdir -p {UPPER} {WORK} /run/nails-lower /run/nextroot; "
@@ -838,7 +848,7 @@ in
                 machine.succeed(
                     "find /run -xdev -mindepth 1 -maxdepth 2 \\( -path /run/udev -o -path /run/credentials \\) "
                     f"-prune -o ! -type s ! -newerct @{leave_wall} -print"
-                ).split()
+                ).splitlines()
             )
             residue = sorted(carried - run_snapshots[cycle] - {"/run/nextroot"})
             finding(f"{label}: entries carried from before the switch, all pre-existing: {len(carried)}")
@@ -846,6 +856,13 @@ in
                 f"find /run/udev -xdev -mindepth 1 -maxdepth 2 ! -newerct @{leave_wall} | wc -l"
             )
             finding(f"{label}: /run/udev entries carried (kept on purpose): {udev_new.strip()}")
+            # Files that existed before entering are kept by design; report the
+            # ones whose content the hidden session may have rewritten.
+            _, kept_content = out_of(
+                "for f in /run/mount/utab /run/cryptsetup/*; do [ -e \"$f\" ] && "
+                "{ echo \"== $f\"; cat \"$f\" 2>/dev/null | head -n 20; }; done; true"
+            )
+            finding(f"{label}: content of kept files the hidden session could touch:\n{kept_content}")
             _, scrub_log = out_of("dmesg | grep 'nails-scrub:' | tail -n 40 || true")
             finding(f"{label}: what the scrub removed (from its own kmsg lines):\n{scrub_log}")
             assert not residue, f"hidden /run residue in the decoy: {residue}"
