@@ -3,7 +3,7 @@
 - Status: proposed (the spike passes; the decision waits on the remaining go/no-go criteria)
 - Date: 2026-10-06
 - Backlog: T-132 (whole-root / soft-reboot design), T-131 (alternatives matrix)
-- Related: [ADR 0005](0005-live-overlay-vs-boot-time-overlay.md), [threat model](../threat-model.md)
+- Related: [ADR 0005](0005-live-overlay-vs-boot-time-overlay.md), [ADR 0009](0009-dual-root-emergency.md), [threat model](../threat-model.md)
 
 ## Context
 
@@ -539,6 +539,9 @@ unremarkable to a casual observer, but they are a logout. If the ruling stands
 unchanged, whole-root mode cannot be the only mode. The live-overlay mode (and its
 emergency) has to stay available for operators who need the desktop to survive
 emergency.
+
+[ADR 0009](0009-dual-root-emergency.md) evaluates a whole-root design that
+leaves the decoy desktop running on its own VT and so meets the ruling.
 
 ## 7. Forensic comparison
 
