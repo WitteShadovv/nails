@@ -133,6 +133,10 @@ def lint_text(path: Path, text: str) -> list[Finding]:
 def lint_paths(paths: Iterable[Path]) -> list[Finding]:
     findings: list[Finding] = []
     for root in paths:
+        if not root.exists():
+            # The hermetic ci-python check copies only ci/; the suite is linted
+            # by the lint-misc job, which has the whole tree.
+            continue
         files = sorted(root.rglob("*.nix")) if root.is_dir() else [root]
         for file in files:
             findings += lint_text(file, file.read_text(encoding="utf-8"))
