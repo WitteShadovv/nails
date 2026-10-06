@@ -74,6 +74,11 @@ pub struct StatusData {
     hidden_root_mounted: bool,
     /// OpSec reminders.
     opsec_reminders: Vec<OpSecReminderJson>,
+    /// The self-check written by the last standard deactivation, read back from
+    /// the hidden volume when it is attached. Omitted when the volume is not
+    /// attached or no report is present.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_deactivation: Option<nails_core::LastDeactivationReport>,
 }
 
 #[derive(Debug, Serialize)]
@@ -165,6 +170,7 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
                 message: reminder.message.clone(),
             })
             .collect(),
+        last_deactivation: report.last_deactivation.clone(),
     }
 }
 
@@ -196,6 +202,7 @@ pub fn build_status_data_unknown(reason: String) -> StatusData {
         hidden_root_available_bytes: None,
         hidden_root_mounted: false,
         opsec_reminders: Vec::new(),
+        last_deactivation: None,
     }
 }
 

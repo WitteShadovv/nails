@@ -100,6 +100,29 @@ in
         )
         status = json.loads(machine.succeed("nails status --json"))["data"]
         assert status["state"]["kind"] == "inactive", f"expected inactive, got {status}"
+
+        # The standard deactivation wrote a self-check onto the hidden volume
+        # before it rebooted. The reboot closed the LUKS backend, so reopen it to
+        # confirm the report survived on the hidden filesystem and that `status`
+        # surfaces it while the volume is attached.
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        report_path = "/mnt/data/reports/last-deactivation.json"
+        machine.succeed(f"test -f {report_path}")
+        last = json.loads(machine.succeed(f"cat {report_path}"))
+        assert last["schema_version"] >= 1, last
+        assert last["status"] in ("Secure", "Warning", "Critical"), last
+        assert last["outcome"]["successful"] is True, last
+        assert last["outcome"]["was_already_inactive"] is False, last
+        attached_status = json.loads(
+            machine.succeed(f"nails --config {headless_config} status --json")
+        )["data"]
+        assert "last_deactivation" in attached_status, (
+            f"status did not surface the last-deactivation report: {attached_status}"
+        )
+        assert attached_status["last_deactivation"]["outcome"]["successful"] is True, (
+            attached_status
+        )
+
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
 
         verify_status, verify_payload = run_verify("--deep")

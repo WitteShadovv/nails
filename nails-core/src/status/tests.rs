@@ -147,6 +147,82 @@ fn test_status_report_carries_hidden_root_disk_usage() {
 }
 
 #[test]
+fn test_status_surfaces_last_deactivation_when_hidden_root_attached() {
+    use crate::deactivation::LastDeactivationReport;
+    use crate::{CleanupReport, DeactivationReport, PostUnmountCleanupReport};
+
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/hidden"),
+        ..Config::default()
+    };
+
+    // The hidden volume is attached, with a last-deactivation report on it.
+    fs.mock_set_mounted(std::path::Path::new("/mnt/hidden"), true);
+    let teardown = DeactivationReport {
+        cleanup_report: CleanupReport::default(),
+        unmounted_overlays: vec!["/home".to_string()],
+        failed_overlays: Vec::new(),
+        remaining_mounts: Vec::new(),
+        duration: std::time::Duration::from_millis(900),
+        final_state: SystemState::Inactive,
+        was_already_inactive: false,
+        post_unmount_cleanup: PostUnmountCleanupReport::default(),
+        force_detached_overlays: Vec::new(),
+        page_cache_dropped: false,
+        history_truncation_verified: None,
+        runtime_journal_scrubbed: true,
+        reboot_recommended: false,
+    };
+    let built = LastDeactivationReport::from_report(&teardown, "2026-10-06T00:00:00Z");
+    let json = serde_json::to_string(&built).unwrap();
+    fs.mock_set_file_content("/mnt/hidden/reports/last-deactivation.json", &json);
+
+    let state_file = StateFile {
+        state: SystemState::Inactive,
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let report = StatusCommand::new(fs, config, temp_file.path().to_path_buf())
+        .run()
+        .unwrap();
+
+    let surfaced = report
+        .last_deactivation
+        .expect("an attached hidden root with a report must surface it");
+    assert_eq!(surfaced, built);
+    assert!(surfaced.outcome.successful);
+}
+
+#[test]
+fn test_status_omits_last_deactivation_when_hidden_root_not_attached() {
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/hidden"),
+        ..Config::default()
+    };
+    // Even with a report file present, a detached hidden root is not read.
+    fs.mock_set_mounted(std::path::Path::new("/mnt/hidden"), false);
+    fs.mock_set_file_content(
+        "/mnt/hidden/reports/last-deactivation.json",
+        "{\"not\":\"read\"}",
+    );
+
+    let state_file = StateFile {
+        state: SystemState::Inactive,
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let report = StatusCommand::new(fs, config, temp_file.path().to_path_buf())
+        .run()
+        .unwrap();
+
+    assert!(report.last_deactivation.is_none());
+}
+
+#[test]
 fn test_status_command_propagates_permission_denied_for_unreadable_state() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -469,6 +545,7 @@ fn test_status_report_serialization() {
         load_outcome: crate::LoadOutcome::Missing,
         persona_mode: crate::config::PersonaMode::FreshHome,
         decoy_persistent: false,
+        last_deactivation: None,
     };
 
     let json = serde_json::to_string(&report).unwrap();

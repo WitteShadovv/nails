@@ -327,6 +327,19 @@ impl<F: Filesystem> StatusCommand<F> {
         let decoy_persistent =
             crate::preflight::checks::DecoyPersistenceCheck::decoy_is_persistent(&self.filesystem);
 
+        // Surface the last standard deactivation's self-check, if the hidden
+        // volume is attached. It lives on the hidden root, so it is only readable
+        // while mounted; a missing or unreadable report leaves this `None`. This
+        // never writes.
+        let last_deactivation = if hidden_root_mounted {
+            crate::deactivation::read_last_deactivation_report(
+                &self.filesystem,
+                &self.config.hidden_volume_root,
+            )
+        } else {
+            None
+        };
+
         // Build report
         let report = StatusReport {
             state: state_file.state,
@@ -350,6 +363,7 @@ impl<F: Filesystem> StatusCommand<F> {
             load_outcome,
             persona_mode: self.config.persona.mode,
             decoy_persistent,
+            last_deactivation,
         };
 
         Ok(report)
@@ -470,6 +484,7 @@ impl Default for StatusReport {
             load_outcome: LoadOutcome::Missing,
             persona_mode: crate::config::PersonaMode::SharedHome,
             decoy_persistent: false,
+            last_deactivation: None,
         }
     }
 }

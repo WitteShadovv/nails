@@ -24,6 +24,7 @@
 //! }
 //! ```
 
+mod last_report;
 mod report;
 pub(crate) mod test_gate;
 
@@ -33,4 +34,9 @@ mod tests;
 // Public exports. The deactivation sequence itself now lives in the manager
 // module (`manager::deactivation`); this module keeps only the shared report
 // types and the test gate.
+pub use last_report::{
+    DeactivationOutcome, LAST_DEACTIVATION_REPORT_DIR, LAST_DEACTIVATION_REPORT_FILE,
+    LAST_DEACTIVATION_SCHEMA_VERSION, LastDeactivationReport, read_last_deactivation_report,
+    write_last_deactivation_report,
+};
 pub use report::{DeactivationReport, PostUnmountCleanupReport};

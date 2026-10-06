@@ -142,6 +142,75 @@
               "message": { "type": "string", "minLength": 1 }
             }
           }
+        },
+        "last_deactivation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema_version",
+            "generated_at",
+            "status",
+            "duration_ms",
+            "outcome",
+            "unmounted_overlays",
+            "failed_overlays",
+            "remaining_mounts",
+            "findings"
+          ],
+          "properties": {
+            "schema_version": { "type": "integer", "minimum": 1 },
+            "generated_at": { "type": "string", "minLength": 1 },
+            "status": {
+              "type": "string",
+              "enum": ["Secure", "Warning", "Critical"]
+            },
+            "duration_ms": { "type": "integer", "minimum": 0 },
+            "outcome": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "final_state",
+                "successful",
+                "was_already_inactive",
+                "reboot_recommended"
+              ],
+              "properties": {
+                "final_state": { "type": "string", "minLength": 1 },
+                "successful": { "type": "boolean" },
+                "was_already_inactive": { "type": "boolean" },
+                "reboot_recommended": { "type": "boolean" }
+              }
+            },
+            "unmounted_overlays": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "failed_overlays": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "remaining_mounts": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["severity", "category", "message"],
+                "properties": {
+                  "severity": {
+                    "type": "string",
+                    "enum": ["Info", "Warn", "Critical"]
+                  },
+                  "category": { "type": "string", "minLength": 1 },
+                  "message": { "type": "string", "minLength": 1 },
+                  "fix_guidance": { "type": "string", "minLength": 1 }
+                }
+              }
+            }
+          }
         }
       }
     },

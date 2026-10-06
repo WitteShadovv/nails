@@ -405,6 +405,13 @@ pub struct StatusReport {
     /// persistent decoy never reads as secure.
     #[serde(default)]
     pub decoy_persistent: bool,
+
+    /// The self-check written by the last standard deactivation, read back from
+    /// `<hidden-root>/reports/last-deactivation.json` when the hidden volume is
+    /// attached. `None` when the volume is not attached or no report is present.
+    /// Surfaced so the operator can see how the previous session ended.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub last_deactivation: Option<crate::deactivation::LastDeactivationReport>,
 }
 
 fn default_load_outcome() -> LoadOutcome {

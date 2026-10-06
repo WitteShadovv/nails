@@ -1138,6 +1138,16 @@ impl<F: Filesystem> NailsManager<F> {
             report.history_truncation_verified = Some(verify_history_truncation(self));
         }
 
+        // Record the post-teardown self-check on the hidden volume before the
+        // reboot. At this point the decoy configuration is restored and the
+        // overlays are unmounted, yet the hidden volume is still attached and
+        // writable (the state file was just written to it), so this is the last
+        // moment the report can land on the hidden root. It is written only on a
+        // standard deactivation that reboots, only after a real teardown, and only
+        // ever to the hidden volume — never to the decoy. Best-effort: a write
+        // failure is logged and the reboot proceeds.
+        self.write_last_deactivation_report_before_reboot(kind, &report);
+
         if kind.reboots_on_success() {
             if self.verbosity() >= crate::verbosity::Verbosity::Normal {
                 tracing::info!("Rebooting system...");
@@ -1212,6 +1222,50 @@ impl<F: Filesystem> NailsManager<F> {
                 "Teardown complete without a reboot: the runtime journal was scrubbed, but \
                  only a full reboot clears all kernel and RAM residue of the hidden session"
             );
+        }
+    }
+
+    /// Write the post-teardown self-check report to the hidden volume before the
+    /// reboot.
+    ///
+    /// Runs only for a standard deactivation (the kind that reboots) and only
+    /// after a genuine teardown: an already-inactive no-op has nothing to report
+    /// and may not even have the hidden volume attached. The report always lands
+    /// on the hidden volume through the symlink-safe hidden-file API; nothing is
+    /// ever written to the decoy. A write failure is logged and the teardown
+    /// continues — the report is a convenience for the next `status`, not a gate
+    /// on returning to the decoy.
+    fn write_last_deactivation_report_before_reboot(
+        &self,
+        kind: ManagerDeactivationKind,
+        report: &DeactivationReport,
+    ) {
+        if !kind.reboots_on_success() || report.was_already_inactive {
+            return;
+        }
+
+        let hidden_root = self.config().hidden_volume_root.clone();
+        if hidden_root.as_os_str().is_empty() {
+            return;
+        }
+
+        let generated_at = chrono::Utc::now().to_rfc3339();
+        let summary =
+            crate::deactivation::LastDeactivationReport::from_report(report, generated_at);
+        match crate::deactivation::write_last_deactivation_report(
+            self.filesystem(),
+            &hidden_root,
+            &summary,
+        ) {
+            Ok(path) => {
+                tracing::info!(path = %path.display(), "Wrote post-deactivation self-check report");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Could not write the post-deactivation self-check report; continuing to reboot"
+                );
+            }
         }
     }
 

@@ -332,6 +332,106 @@ fn test_deactivate_requests_reboot_only_after_successful_teardown() {
 }
 
 #[test]
+fn test_normal_deactivation_writes_last_deactivation_report() {
+    use crate::OverlayConfig;
+
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let hidden_root = temp_dir.path();
+    std::fs::create_dir_all(hidden_root).unwrap();
+    let state_path = hidden_root.join("state.json");
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    fs.mock_set_path_exists(
+        "/nix/var/nix/profiles/system/bin/switch-to-configuration",
+        true,
+    );
+    fs.mock_set_path_exists("/", true);
+
+    // Track the hidden root as an existing, writable directory so the pre-reboot
+    // report write (through the symlink-safe hidden-file API) can create the
+    // reports dir and land the file.
+    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
+
+    let upper_dir = hidden_root.join("overlays/home/upper");
+    let work_dir = hidden_root.join("overlays/home/work");
+    std::fs::create_dir_all(&upper_dir).unwrap();
+    std::fs::create_dir_all(&work_dir).unwrap();
+    fs.mock_set_path_exists(upper_dir.to_str().unwrap(), true);
+    fs.mock_set_path_exists(work_dir.to_str().unwrap(), true);
+    fs.mock_set_mounted(Path::new("/home"), true);
+
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        log_path: hidden_root.join("logs"),
+        overlay_mode: crate::OverlayMode::Explicit,
+        overlays: vec![OverlayConfig {
+            name: "home".to_string(),
+            lower: PathBuf::from("/"),
+            upper: upper_dir.clone(),
+            work: work_dir.clone(),
+            target: PathBuf::from("/home"),
+        }],
+        ..Config::test_default()
+    };
+
+    let manager = Arc::new(Mutex::new(NailsManager::new(
+        fs.clone(),
+        config,
+        state_path.clone(),
+    )));
+
+    let mut overlay_status = HashMap::new();
+    overlay_status.insert(
+        PathBuf::from("/home"),
+        OverlayInfo {
+            mount_method: Default::default(),
+            mount_path: PathBuf::from("/home"),
+            lower_dir: PathBuf::from("/"),
+            upper_dir: upper_dir.clone(),
+            work_dir: work_dir.clone(),
+            mounted_at: Utc::now(),
+        },
+    );
+    manager
+        .lock()
+        .unwrap()
+        .force_state(SystemState::Active {
+            activated_at: Utc::now(),
+            overlays: vec![PathBuf::from("/home")],
+            decoy_writers: Vec::new(),
+        })
+        .unwrap();
+    {
+        let mgr = manager.lock().unwrap();
+        let mut cached = mgr.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            state_file.overlay_status = overlay_status;
+        }
+    }
+
+    let mut env = EnvGuard::lock();
+    env.set("NAILS_TEST_RUNTIME", "1");
+    let result = manager.lock().unwrap().deactivate();
+    drop(env);
+
+    assert!(result.is_ok(), "normal deactivation should succeed");
+
+    // The self-check landed on the hidden volume, under reports/, before the
+    // (test-suppressed) reboot.
+    let report_path = hidden_root.join("reports/last-deactivation.json");
+    let written = fs
+        .get_written_content(&report_path)
+        .expect("normal deactivation must write the last-deactivation self-check");
+    let parsed: crate::LastDeactivationReport = serde_json::from_str(&written).unwrap();
+    assert!(parsed.outcome.successful);
+    assert!(!parsed.outcome.was_already_inactive);
+    assert_eq!(parsed.schema_version, 1);
+}
+
+#[test]
 fn test_deactivate_does_not_request_reboot_after_failed_teardown() {
     use crate::OverlayConfig;
 

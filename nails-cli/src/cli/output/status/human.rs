@@ -240,6 +240,10 @@ pub fn print_status_human(
         println!("{line}");
     }
 
+    if let Some(ref last) = report.last_deactivation {
+        print_last_deactivation_summary(last, style);
+    }
+
     if details && matches!(report.state, SystemState::Active { .. }) {
         println!();
         println!("Details:");
@@ -306,5 +310,39 @@ pub fn print_status_human(
         for log in &logs {
             println!("  {}", log);
         }
+    }
+}
+
+/// Render a concise summary of the last standard deactivation's self-check.
+///
+/// Shows the overall verdict, when it ran and the outcome, and lists any
+/// non-informational findings so an operator can see at a glance whether the
+/// previous session tore down cleanly. The full detail is available in
+/// `status --json`.
+fn print_last_deactivation_summary(report: &nails_core::LastDeactivationReport, style: Style) {
+    use nails_core::{Severity, VerifyStatus};
+
+    let (mark, verdict) = match report.status {
+        VerifyStatus::Secure => (Mark::Pass, "clean"),
+        VerifyStatus::Warning => (Mark::Warn, "warnings"),
+        VerifyStatus::Critical => (Mark::Fail, "critical findings"),
+    };
+
+    println!();
+    println!(
+        "Last deactivation:  {}",
+        style.marked(mark, format_args!("{verdict} ({})", report.generated_at))
+    );
+
+    for finding in &report.findings {
+        let finding_mark = match finding.severity {
+            Severity::Info => continue,
+            Severity::Warn => Mark::Warn,
+            Severity::Critical => Mark::Fail,
+        };
+        println!(
+            "  {}",
+            style.marked(finding_mark, format_args!("{}", finding.message))
+        );
     }
 }

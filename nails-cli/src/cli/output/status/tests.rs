@@ -878,3 +878,57 @@ fn test_posture_lines_warn_on_persistent_decoy() {
         "{lines:?}"
     );
 }
+
+fn sample_last_deactivation() -> nails_core::LastDeactivationReport {
+    use nails_core::{CleanupReport, DeactivationReport, LastDeactivationReport};
+
+    let teardown = DeactivationReport {
+        cleanup_report: CleanupReport::default(),
+        unmounted_overlays: vec!["/home".to_string(), "/etc".to_string()],
+        failed_overlays: Vec::new(),
+        remaining_mounts: Vec::new(),
+        duration: std::time::Duration::from_millis(1500),
+        final_state: SystemState::Inactive,
+        was_already_inactive: false,
+        post_unmount_cleanup: nails_core::PostUnmountCleanupReport::default(),
+        force_detached_overlays: Vec::new(),
+        page_cache_dropped: false,
+        history_truncation_verified: None,
+        runtime_journal_scrubbed: true,
+        reboot_recommended: false,
+    };
+    LastDeactivationReport::from_report(&teardown, "2026-10-06T00:00:00Z")
+}
+
+#[test]
+fn test_status_json_includes_last_deactivation_when_present() {
+    // Absent by default, so the key is omitted entirely.
+    let data = super::json::build_status_data(&inactive_report());
+    let value = serde_json::to_value(&data).unwrap();
+    assert!(value.get("last_deactivation").is_none());
+
+    // Present when the report was surfaced by status.
+    let mut report = inactive_report();
+    report.last_deactivation = Some(sample_last_deactivation());
+    let data = super::json::build_status_data(&report);
+    let value = serde_json::to_value(&data).unwrap();
+    assert_eq!(value["last_deactivation"]["status"], "Secure");
+    assert_eq!(value["last_deactivation"]["outcome"]["successful"], true);
+    assert_eq!(value["last_deactivation"]["duration_ms"], 1500);
+}
+
+#[test]
+fn test_print_status_human_renders_last_deactivation() {
+    // Smoke test: the human renderer handles a surfaced report without panicking.
+    let mut report = inactive_report();
+    report.last_deactivation = Some(sample_last_deactivation());
+    print_status_human(
+        &report,
+        false,
+        &PathBuf::from("/etc/nails.toml"),
+        &PathBuf::from("/mnt/hidden/state.json"),
+        &PathBuf::from("/mnt/hidden"),
+        &PathBuf::from("/mnt/hidden/logs"),
+        COLOR,
+    );
+}

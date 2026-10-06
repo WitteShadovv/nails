@@ -3,11 +3,11 @@
 
 //! Data types for forensic verification
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Severity level for verification findings
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum Severity {
     /// Informational message (no action required)
@@ -19,7 +19,7 @@ pub enum Severity {
 }
 
 /// A single forensic finding from the verification process
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Finding {
     /// Severity level of the finding
     pub severity: Severity,
@@ -28,7 +28,7 @@ pub struct Finding {
     /// Human-readable message describing the finding
     pub message: String,
     /// Optional guidance on how to fix the issue
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub fix_guidance: Option<String>,
 }
 
@@ -55,7 +55,7 @@ impl Finding {
 }
 
 /// Overall verification status
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum VerifyStatus {
     /// System is clean - no artifacts found
