@@ -3,9 +3,9 @@
 This module runs inside the NixOS test *driver* (the Python the driver execs),
 not inside the guest. The driver shuts a machine down, converts its root qcow2
 to a flat raw image, and these helpers read that image from the outside with The
-Sleuth Kit, ``strings``, ``debugfs`` and SQLite to answer one question: does any
-trace of the hidden session survive on the *decoy* disk once the overlays are
-gone?
+Sleuth Kit, a ``strings``-equivalent byte scan, ``debugfs`` and SQLite to
+answer one question: does any trace of the hidden session survive on the
+*decoy* disk once the overlays are gone?
 
 The point of imaging the decoy root is that the old checks ran ``fls`` against
 ``/dev/vdb`` -- the LUKS *ciphertext* of the hidden volume -- so they could never
@@ -21,6 +21,7 @@ unit-test without Nix. The ``forensic-vm-config.nix`` test wrapper points the
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -28,6 +29,7 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,7 +40,6 @@ QEMU_IMG = os.environ.get("NAILS_QEMU_IMG", "qemu-img")
 FLS = os.environ.get("NAILS_FLS", "fls")
 MMLS = os.environ.get("NAILS_MMLS", "mmls")
 ICAT = os.environ.get("NAILS_ICAT", "icat")
-STRINGS = os.environ.get("NAILS_STRINGS", "strings")
 DEBUGFS = os.environ.get("NAILS_DEBUGFS", "debugfs")
 JOURNALCTL = os.environ.get("NAILS_JOURNALCTL", "journalctl")
 
@@ -164,9 +165,20 @@ def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     # replacement rather than letting an undecodable byte abort the whole scan:
     # the tokens we search for are ASCII, so a replacement char never hides or
     # invents a match.
-    return subprocess.run(
-        cmd, check=True, text=True, capture_output=True, errors="replace"
-    )
+    started = time.monotonic()
+    try:
+        return subprocess.run(
+            cmd, check=True, text=True, capture_output=True, errors="replace"
+        )
+    finally:
+        _log_duration(Path(cmd[0]).name, started)
+
+
+def _log_duration(what: str, started: float) -> None:
+    # The driver log has no wall-clock timestamps and does not time host-side
+    # work, so print how long each imaging and scanning step took; the E2E log
+    # profiler (scripts/e2e-log-profile.py) reads these lines.
+    print(f"disk_forensics: {what} took {time.monotonic() - started:.2f} seconds")
 
 
 def root_image(machine: object) -> Path:
@@ -253,10 +265,124 @@ def run_fls(image: str | os.PathLike[str], offset: int | None = None) -> list[Fl
     return parse_fls(proc.stdout)
 
 
+# `strings` prints runs of at least this many printable bytes (7-bit mode:
+# printable ASCII plus TAB). A token can only show up in its output as part of
+# such a run, so the native scan below applies the same rule.
+_STRINGS_MIN_LEN = 4
+_STRINGS_BYTES = frozenset(b"\t" + bytes(range(0x20, 0x7F)))
+# Bytes read per pread() while scanning an image; tokens are tiny, so this only
+# trades syscalls against memory.
+_SCAN_CHUNK = 8 * 1024 * 1024
+
+
+def _strings_visible(token: str) -> bool:
+    """Whether ``token`` is made only of bytes ``strings`` treats as text."""
+    return bool(token) and all(ord(ch) in _STRINGS_BYTES for ch in token)
+
+
+def _in_strings_run(window: bytes, needle: bytes) -> bool:
+    """Whether ``needle`` occurs in ``window`` inside a run ``strings`` prints.
+
+    A needle of at least ``_STRINGS_MIN_LEN`` bytes is such a run by itself. A
+    shorter one counts only where its surrounding run of text bytes reaches the
+    minimum length, exactly as a substring search of ``strings -a`` output would
+    find it.
+    """
+    if len(needle) >= _STRINGS_MIN_LEN:
+        return needle in window
+    index = window.find(needle)
+    while index != -1:
+        start, end = index, index + len(needle)
+        while start > 0 and window[start - 1] in _STRINGS_BYTES:
+            start -= 1
+            if end - start >= _STRINGS_MIN_LEN:
+                return True
+        while end < len(window) and window[end] in _STRINGS_BYTES:
+            end += 1
+            if end - start >= _STRINGS_MIN_LEN:
+                return True
+        if end - start >= _STRINGS_MIN_LEN:
+            return True
+        index = window.find(needle, index + 1)
+    return False
+
+
+def _data_extents(fd: int, size: int) -> list[tuple[int, int]]:
+    """The ``(start, end)`` byte ranges of ``fd`` that hold data, holes skipped.
+
+    ``qemu-img convert -O raw`` writes a sparse file, so a 20 GiB decoy root is
+    mostly holes. A hole reads as zeros, and a zero byte ends a ``strings`` run,
+    so no token can straddle a hole: scanning only the data extents finds
+    exactly what a full read would. Filesystems without SEEK_DATA support get one
+    extent covering the whole file.
+    """
+    extents: list[tuple[int, int]] = []
+    seek_data = getattr(os, "SEEK_DATA", None)
+    seek_hole = getattr(os, "SEEK_HOLE", None)
+    if seek_data is None or seek_hole is None:
+        return [(0, size)] if size else []
+    offset = 0
+    try:
+        while offset < size:
+            try:
+                start = os.lseek(fd, offset, seek_data)
+            except OSError as err:
+                if err.errno == errno.ENXIO:  # no data after offset
+                    break
+                raise
+            end = os.lseek(fd, start, seek_hole)
+            extents.append((start, end))
+            offset = end
+    except OSError:
+        return [(0, size)] if size else []
+    return extents
+
+
 def run_strings_scan(image: str | os.PathLike[str], tokens: Iterable[str]) -> set[str]:
-    """Which of ``tokens`` appear anywhere in the raw image bytes."""
-    proc = _run([STRINGS, "-a", str(image)])
-    return scan_tokens(proc.stdout, tokens)
+    """Which of ``tokens`` appear anywhere in the raw image bytes.
+
+    Equivalent to running ``strings -a`` over the image and searching its output
+    with :func:`scan_tokens` (the scan this replaced), but it reads only the data
+    extents of the sparse image instead of every byte of the virtual disk, and
+    never holds the whole text dump in memory. A token is reported only where
+    ``strings`` would have printed it (see :func:`_in_strings_run`), as before.
+    An empty token never matches; a token with a byte ``strings`` does not treat
+    as text (a newline, a non-ASCII character) raises ``ValueError``, because
+    no scan could ever find it.
+    """
+    wanted = {token for token in tokens if token}
+    unprintable = sorted(token for token in wanted if not _strings_visible(token))
+    if unprintable:
+        # `strings` never prints such a token whole (a newline, for example,
+        # ends a run), so a scan for it could never fail. Refuse it instead of
+        # returning a clean result that proves nothing.
+        raise ValueError(f"tokens strings cannot print: {unprintable!r}")
+    needles = {token: token.encode("ascii") for token in wanted}
+    found: set[str] = set()
+    if not needles:
+        return found
+    started = time.monotonic()
+    # Carry enough of the previous read that a token straddling two reads is
+    # seen whole, with the run context a short token needs on its left.
+    overlap = max(len(needle) for needle in needles.values()) + _STRINGS_MIN_LEN
+    with open(image, "rb") as handle:
+        fd = handle.fileno()
+        size = os.fstat(fd).st_size
+        for start, end in _data_extents(fd, size):
+            position = start
+            carry = b""
+            while position < end and len(found) < len(needles):
+                chunk = os.pread(fd, min(_SCAN_CHUNK, end - position), position)
+                if not chunk:
+                    break
+                window = carry + chunk
+                for token, needle in needles.items():
+                    if token not in found and _in_strings_run(window, needle):
+                        found.add(token)
+                carry = window[-overlap:]
+                position += len(chunk)
+    _log_duration("strings scan", started)
+    return found
 
 
 def _rdump(image: str, offset: int, src: str, dest: Path) -> None:

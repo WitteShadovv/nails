@@ -9,11 +9,14 @@ turn every leak into a false pass.
 from __future__ import annotations
 
 import json
+import os
+import random
 import re
 import tempfile
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 import disk_forensics as df
 
@@ -90,6 +93,74 @@ class ScanTokensTest(unittest.TestCase):
 
     def test_absent_tokens_yield_empty_set(self) -> None:
         self.assertEqual(df.scan_tokens("clean", ["leak"]), set())
+
+
+def _strings_model(data: bytes) -> str:
+    """A model of ``strings -a`` (7-bit, minimum length 4): one run per line."""
+    runs = re.findall(rb"[\t\x20-\x7e]{4,}", data)
+    return "\n".join(run.decode("ascii") for run in runs)
+
+
+class RunStringsScanTest(unittest.TestCase):
+    """The native image scan must report exactly what strings + scan_tokens did."""
+
+    def setUp(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.dir = Path(directory.name)
+
+    def _image(self, chunks: list[tuple[int, bytes]], size: int) -> Path:
+        path = self.dir / "disk.raw"
+        with path.open("wb") as handle:
+            handle.truncate(size)
+            for offset, data in chunks:
+                handle.seek(offset)
+                handle.write(data)
+        return path
+
+    def test_finds_a_token_after_a_large_hole(self) -> None:
+        image = self._image([(64 << 20, b"\0LEAK_TOKEN_1234\0")], 128 << 20)
+        hits = df.run_strings_scan(image, ["LEAK_TOKEN_1234", "absent-token"])
+        self.assertEqual(hits, {"LEAK_TOKEN_1234"})
+
+    def test_finds_a_token_straddling_a_read_boundary(self) -> None:
+        token = "STRADDLE_TOKEN_abcdef"
+        image = self._image([(4096 - 5, token.encode())], 16384)
+        with mock.patch.object(df, "_SCAN_CHUNK", 4096):
+            self.assertEqual(df.run_strings_scan(image, [token]), {token})
+
+    def test_a_short_token_counts_only_inside_a_printed_run(self) -> None:
+        image = self._image([(0, b"abc\x00xyzw\x00tab\there\x00")], 4096)
+        # "abc" is a 3-byte run strings never prints; "yz" sits in "xyzw".
+        hits = df.run_strings_scan(image, ["abc", "yz", "", "tab\there"])
+        self.assertEqual(hits, {"yz", "tab\there"})
+
+    def test_a_token_strings_cannot_print_is_refused(self) -> None:
+        image = self._image([(0, b"SPLIT_\nTOKEN\0")], 4096)
+        with self.assertRaises(ValueError):
+            df.run_strings_scan(image, ["SPLIT_\nTOKEN"])
+        with self.assertRaises(ValueError):
+            df.run_strings_scan(image, ["caf\u00e9"])
+        self.assertEqual(df.run_strings_scan(image, ["SPLIT_TOKEN"]), set())
+
+    def test_matches_the_strings_model_on_random_images(self) -> None:
+        rng = random.Random(7)
+        alphabet = b"ABCD\t \n\x00\xff"
+        tokens = ["ABCD", "ABAB", "A BC", "D\tAB", "CCCCC", "AB", "C"]
+        for _ in range(40):
+            data = bytes(rng.choice(alphabet) for _ in range(3000))
+            offset = rng.randrange(0, 1 << 20)
+            image = self._image([(offset, data)], (1 << 20) + 8192)
+            expected = df.scan_tokens(_strings_model(data), tokens)
+            with mock.patch.object(df, "_SCAN_CHUNK", 257):
+                self.assertEqual(df.run_strings_scan(image, tokens), expected)
+
+    def test_data_extents_cover_written_data(self) -> None:
+        image = self._image([(1 << 20, b"x" * 10)], 4 << 20)
+        with image.open("rb") as handle:
+            fd = handle.fileno()
+            extents = df._data_extents(fd, os.fstat(fd).st_size)
+        self.assertTrue(any(s <= (1 << 20) < e for s, e in extents), extents)
 
 
 class TokenSnippetTest(unittest.TestCase):

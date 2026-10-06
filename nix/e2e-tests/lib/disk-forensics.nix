@@ -22,7 +22,6 @@ in
     _nails_os.environ["NAILS_FLS"] = "${pkgs.sleuthkit}/bin/fls"
     _nails_os.environ["NAILS_MMLS"] = "${pkgs.sleuthkit}/bin/mmls"
     _nails_os.environ["NAILS_ICAT"] = "${pkgs.sleuthkit}/bin/icat"
-    _nails_os.environ["NAILS_STRINGS"] = "${pkgs.binutils}/bin/strings"
     _nails_os.environ["NAILS_DEBUGFS"] = "${pkgs.e2fsprogs}/bin/debugfs"
     _nails_os.environ["NAILS_JOURNALCTL"] = "${pkgs.systemd}/bin/journalctl"
 
