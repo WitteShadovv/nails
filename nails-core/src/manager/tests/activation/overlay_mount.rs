@@ -101,9 +101,11 @@ fn test_activate_auto_mode_overlays_all_non_excluded_dirs() {
 
 #[test]
 fn test_activate_walks_proc_once_per_phase_not_per_target() {
-    // The mount phase must walk /proc a single time and classify every target
-    // against that one snapshot, rather than re-scanning /proc per target. With
-    // three overlays, a per-target scan would capture three times.
+    // Each activation phase must walk /proc a single time and classify every
+    // target against that one snapshot, rather than re-scanning /proc per target.
+    // With three overlays there are two phase captures — one pre-mount to classify
+    // blocking writers, one post-mount to rescan for survivors — never one capture
+    // per target (which would be three, or six across both phases).
     let (temp_dir, fs, state_path) = setup_auto_mode_test(&["/home", "/etc", "/var"]);
     let mock_hidden_vol = temp_dir.path();
 
@@ -129,9 +131,9 @@ fn test_activate_walks_proc_once_per_phase_not_per_target() {
 
     assert_eq!(
         crate::process::detection::capture_count(),
-        1,
-        "the mount phase must capture one /proc snapshot for all three targets, \
-         not one per target"
+        2,
+        "activation must capture one /proc snapshot per phase (pre-mount classify \
+         plus post-mount rescan) for all three targets, not one per target"
     );
 }
 
