@@ -166,7 +166,8 @@ jobs:
           fi
           attrs=()
           for test in "${tests[@]}"; do
-            attrs+=(".#legacyPackages.x86_64-linux.e2e-distro.$test")
+            # Quote the attribute: names such as ubuntu-24.04-smoke contain a dot.
+            attrs+=(".#legacyPackages.x86_64-linux.e2e-distro.\"$test\"")
           done
           nix build -L --no-link "${attrs[@]}"
 

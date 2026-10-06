@@ -237,9 +237,11 @@ overlay2 rootfs and cannot exercise journald or a reboot.
 
 Layout:
 
-- `images.nix`: the image table, `name -> { distro, release, format, image }`.
-  Each image is a pinned fixed-output derivation (`pkgs.fetchurl`), so upstream
-  pruning cannot change what the suite runs. **This is the one place to edit.**
+- `images.nix`: the distribution table, `name -> { distro, image, release }`.
+  `distro` and `image` name a release in `nix-vm-test`, which pins every cloud
+  image as a fixed-output derivation of a dated upstream build; the `flake.lock`
+  pin of `nix-vm-test` therefore fixes exactly what the suite boots. **This is
+  the one place to edit.**
 - `lib/distro-vm.nix`: the single call into `nix-vm-test` (`buildVmTest`), so a
   change in its attribute layout is a one-line fix.
 - `lib/hidden-root.nix`: the loop-backed ext4 (or LUKS, when `cryptsetup` ships)
@@ -265,12 +267,7 @@ Once a distribution's backend and detection have landed, add one entry to
 `nix/distro-tests/images.nix`:
 
 ```nix
-"fedora-41" = cloud {
-  distro = "fedora";          # the nix-vm-test distribution attribute
-  release = "41";
-  url = "https://.../Fedora-Cloud-Base-...-x86_64.qcow2";
-  sha256 = "sha256-...";      # see "Pinning images" below
-};
+"fedora-41" = entry "fedora" "41" "41";   # nix-vm-test set, its image key, release
 ```
 
 The scenario, the flake's `e2e-distro` attribute and the CI matrix are all
@@ -294,20 +291,11 @@ Build one scenario directly:
 nix build -L .#legacyPackages.x86_64-linux.e2e-distro.debian-12-smoke
 ```
 
-### Pinning images (deferred, needs network and Nix)
+### Moving to newer images
 
-The `sha256` values in `images.nix` ship as `lib.fakeHash` placeholders: the
-development sandbox has no network and no Nix daemon, so they cannot be computed
-there, and `flake.lock` cannot pin the `nix-vm-test` input. Before the suite
-builds, on a networked host with Nix:
-
-1. `nix flake lock` to add and pin `nix-vm-test`.
-2. For each image, `nix store prefetch-file --json <url>` and copy the printed
-   `hash` into `images.nix` (the `buildVmTest` assertion fails loudly on a
-   remaining placeholder).
-3. Mirror the pinned image files into the project binary cache so a pruned
-   upstream URL still resolves.
-4. Confirm the `nix-vm-test` attribute spelling in `lib/distro-vm.nix` against
-   the pinned revision, then
-   `nix build .#legacyPackages.x86_64-linux.e2e-distro.debian-12-smoke` and the
-   Ubuntu scenario on a KVM host.
+The images are those of the pinned `nix-vm-test` revision. To move forward,
+update that input (`nix flake update nix-vm-test`), check that every
+`distro`/`image` pair in `images.nix` still exists upstream (the `buildVmTest`
+assertion names any that do not), and build the scenarios on a KVM host. An
+attribute name containing a dot must be quoted on the command line, e.g.
+`.#legacyPackages.x86_64-linux.e2e-distro."ubuntu-24.04-smoke"`.
