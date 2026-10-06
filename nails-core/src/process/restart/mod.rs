@@ -228,10 +228,13 @@ fn terminate(proc: &ProcessInfo, executor: &dyn CommandExecutor) -> Result<Resta
     // SIGTERM didn't work, try SIGKILL (forceful)
     let kill_success = executor.execute_kill(proc.pid, "KILL")?;
 
+    // A process that exited between the TERM and the KILL makes the KILL fail
+    // with ESRCH; it is stopped all the same, and reporting it as a survivor
+    // would make a restart policy fail closed for a writer that is already gone.
     Ok(RestartedProcess {
         info: proc.clone(),
         restart_method: RestartMethod::Terminate,
-        stopped_successfully: kill_success,
+        stopped_successfully: kill_success || !process_exists(proc.pid),
     })
 }
 

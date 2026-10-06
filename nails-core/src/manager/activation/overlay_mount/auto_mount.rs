@@ -29,9 +29,9 @@ impl<F: Filesystem> NailsManager<F> {
         // Checked again on the exact list about to be mounted: a top-level directory
         // created since the pre-flight checks is a new target.
         crate::preflight::ensure_targets_clear(&self.filesystem, &self.config, &overlay_targets)?;
-        // Refuse before anything is stopped or mounted if a user's terminal
-        // program would have to be force-terminated on any target.
-        crate::overlay::refuse_interactive_terminations(&overlay_targets, strategy_options)?;
+        // Refuse before anything is stopped or mounted if a non-service process
+        // would have to be signalled on any target without the opt-in.
+        crate::overlay::refuse_unconsented_signals(&overlay_targets, strategy_options)?;
 
         // Resolve each target's overlay config on the hidden volume. A build failure
         // is best-effort: record it and carry on, exactly as the merged loop treats

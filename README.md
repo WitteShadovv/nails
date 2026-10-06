@@ -312,7 +312,7 @@ are the same).
 | `--pivot <refuse\|allow\|ask>` | How to handle a volume that needs a pivot mount (default `refuse`) |
 | `--overlay-only` | Mount overlays only; skip the platform configuration layer |
 | `--risky-services <restart\|skip>` | Restart risky services still referencing a target, or leave them as reported survivors (overrides `risky_services`) |
-| `--terminate-interactive` | Force-terminate interactive programs holding a target instead of aborting |
+| `--terminate-processes` | Signal non-service processes holding a target instead of aborting |
 | `--accept-persistent-decoy` | Activate despite a persistent decoy posture (overrides `accept_persistent_decoy`) |
 | `--nixos-flake <REF>` | NixOS: flake reference `<path>#<host>` to pass to `nixos-rebuild --flake` |
 | `--dry-run` | Preview the steps without changing anything |

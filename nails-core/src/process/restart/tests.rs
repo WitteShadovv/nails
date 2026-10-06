@@ -340,6 +340,31 @@ fn test_terminate_goes_to_kill_when_term_command_fails() {
 }
 
 #[test]
+fn test_terminate_counts_a_failed_kill_on_an_exited_process_as_stopped() {
+    // TERM "fails" and so does KILL (ESRCH), but the PID no longer exists: the
+    // process is gone, so it is stopped rather than a survivor.
+    let pid = 99_999_998;
+    let proc = make_test_process("gone", pid, None);
+    let executor = RecordingKillExecutor::new(false, false);
+
+    let result = terminate(&proc, &executor).unwrap();
+
+    assert!(result.stopped_successfully);
+}
+
+#[test]
+fn test_terminate_reports_a_live_process_whose_kill_failed() {
+    // KILL failed and the process (this test process) is still alive.
+    let pid = std::process::id();
+    let proc = make_test_process("alive", pid, None);
+    let executor = RecordingKillExecutor::new(false, false);
+
+    let result = terminate(&proc, &executor).unwrap();
+
+    assert!(!result.stopped_successfully);
+}
+
+#[test]
 fn test_restart_processes_with_executor_propagates_systemctl_error() {
     let processes = vec![make_test_process("svc", 12, Some("svc".to_string()))];
 

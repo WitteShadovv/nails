@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Phase 2 of the overlay mounting strategy: classify the processes using a
-//! target, apply the risky-service policy, and refuse to force-terminate
-//! interactive user programs.
+//! target, apply the risky-service policy, and refuse to signal non-service
+//! processes without the operator's opt-in.
 //!
 //! This lives apart from the mounting flow in [`super`] so the restart/guard
 //! sequencing can be unit-tested through a scripted command executor.
@@ -22,30 +22,30 @@ fn survivor(proc: &ProcessInfo) -> SurvivingWriter {
     }
 }
 
-/// Whether a process would be force-terminated by signal (it has no systemd
-/// service to stop cleanly) while a user is interacting with it.
+/// Whether a process can only be stopped by signal: it has no systemd unit to
+/// stop cleanly.
 ///
-/// These are the processes activation must never SIGKILL silently: a shell, an
-/// editor or a `tail -f` the user left running. The caller aborts before mounting
-/// when any such process would be terminated without an explicit opt-in.
-fn is_protected_interactive(proc: &ProcessInfo) -> bool {
-    proc.service_name.is_none() && proc.is_interactive
+/// Activation never signals such a process without the operator's explicit
+/// opt-in (`terminate_processes`): it may be a shell, an editor or a `tail -f`
+/// a user is working in, or a detached job whose work a signal would lose.
+fn is_signal_only(proc: &ProcessInfo) -> bool {
+    proc.service_name.is_none()
 }
 
-/// Whether Phase 2 would force-terminate an interactive user program: `proc` is
-/// protected (see [`is_protected_interactive`]) and its classification on the
-/// target means it gets stopped — a safe process while safe restarts are on, or
-/// a risky one when risky services are being restarted.
+/// Whether Phase 2 would signal a non-service process: `proc` has no systemd
+/// unit (see [`is_signal_only`]) and its classification on the target means it
+/// gets stopped — a safe process while safe restarts are on, or a risky one
+/// when risky services are being restarted.
 ///
 /// The single predicate behind both the pre-mount sweep and the per-target
 /// guard, so the two can never disagree about which processes are refused.
-fn would_force_terminate(
+fn would_signal(
     proc: &ProcessInfo,
     strategy: RestartStrategy,
     options: &OverlayStrategyOptions,
     restart_risky: bool,
 ) -> bool {
-    if !is_protected_interactive(proc) {
+    if !is_signal_only(proc) {
         return false;
     }
     match strategy {
@@ -55,52 +55,62 @@ fn would_force_terminate(
     }
 }
 
-/// The refusal returned when activation would have to force-terminate
-/// interactive programs. `listed` names each process and where it was found.
-fn interactive_refusal(scope: &str, listed: &str) -> NailsError {
+/// How one refused process is named: `tail (PID 812, interactive)`.
+fn refused_label(proc: &ProcessInfo) -> String {
+    if proc.is_interactive {
+        format!("{} (PID {}, interactive)", proc.name, proc.pid)
+    } else {
+        format!("{} (PID {})", proc.name, proc.pid)
+    }
+}
+
+/// The refusal returned when activation would have to signal non-service
+/// processes without the opt-in. `listed` names each process and where it was
+/// found.
+fn signal_refusal(scope: &str, listed: &str) -> NailsError {
     NailsError::InvalidState(format!(
-        "Refusing to force-terminate interactive process(es) {scope}: {listed}. \
-         Close them, or re-run with --terminate-interactive to end them anyway."
+        "Refusing to signal non-service process(es) {scope}: {listed}. \
+         Close them, or re-run with --terminate-processes to end them anyway."
     ))
 }
 
-/// Refuse up front when mounting `targets` would force-terminate an interactive
-/// user program on any of them.
+/// Refuse up front when mounting `targets` would signal a non-service process
+/// on any of them without the operator's opt-in.
 ///
 /// Runs before the first mount, service stop or signal, so a `tail -f` on
 /// `/var` blocks activation with nothing changed rather than after earlier
-/// targets were already mounted and their services restarted. Risky services
+/// targets were already mounted and their services restarted. Risky holders
 /// count only under an explicit `restart` policy: when the policy is left to a
 /// prompt, the per-target guard in [`run_process_phase`] still applies once the
 /// operator has answered.
-pub fn refuse_interactive_terminations(
+pub fn refuse_unconsented_signals(
     targets: &[PathBuf],
     options: &OverlayStrategyOptions,
 ) -> Result<()> {
-    if options.terminate_interactive || options.skip_process_detection {
+    if options.terminate_processes || options.skip_process_detection {
         return Ok(());
     }
-    let found = crate::process::detect_interactive_processes_using(targets)?;
-    check_interactive_terminations(&found, options)
+    let found = crate::process::detect_non_service_processes_using(targets)?;
+    check_unconsented_signals(&found, options)
 }
 
-/// The decision behind [`refuse_interactive_terminations`], taking the detected
+/// The decision behind [`refuse_unconsented_signals`], taking the detected
 /// `(target, process)` pairs so it can be tested without a live `/proc`.
-pub(super) fn check_interactive_terminations(
+pub(super) fn check_unconsented_signals(
     found: &[(PathBuf, ProcessInfo)],
     options: &OverlayStrategyOptions,
 ) -> Result<()> {
     use crate::process::classify_process;
 
-    if options.terminate_interactive {
+    if options.terminate_processes {
         return Ok(());
     }
     let restart_risky = options.risky_services == Some(RiskyServicePolicy::Restart);
 
-    // One entry per process, listing every target it would be terminated for.
+    // One entry per process, listing every target it would be signalled for.
     let mut offenders: Vec<(&ProcessInfo, Vec<String>)> = Vec::new();
     for (target, proc) in found {
-        if !would_force_terminate(proc, classify_process(proc, target), options, restart_risky) {
+        if !would_signal(proc, classify_process(proc, target), options, restart_risky) {
             continue;
         }
         let shown = target.display().to_string();
@@ -116,27 +126,62 @@ pub(super) fn check_interactive_terminations(
 
     let listed = offenders
         .iter()
-        .map(|(proc, targets)| {
-            format!("{} (PID {}) on {}", proc.name, proc.pid, targets.join(", "))
-        })
+        .map(|(proc, targets)| format!("{} on {}", refused_label(proc), targets.join(", ")))
         .collect::<Vec<_>>()
         .join("; ");
     tracing::error!(
         processes = %listed,
-        "  ✗ Refusing to force-terminate interactive process(es) before mounting: {}",
+        "  ✗ Refusing to signal non-service process(es) before mounting: {}",
         listed
     );
-    Err(interactive_refusal("before mounting", &listed))
+    Err(signal_refusal("before mounting", &listed))
+}
+
+/// The fail-closed error when the risky-service policy is `restart` but some
+/// risky holders could not be stopped: leaving them running would silently
+/// contradict the operator's choice, so activation aborts with the list.
+fn risky_restart_failure(target: &Path, failed: &[&ProcessInfo]) -> NailsError {
+    let listed = failed
+        .iter()
+        .map(|p| match &p.service_name {
+            Some(service) => format!("{} ({}.service, PID {})", p.name, service, p.pid),
+            None => format!("{} (PID {})", p.name, p.pid),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    NailsError::InvalidState(format!(
+        "Could not restart risky process(es) using {}: {listed}. They would keep writing \
+         to the decoy; stop them yourself, or re-run with --risky-services skip to leave \
+         them running and have them reported.",
+        target.display()
+    ))
+}
+
+/// Start again the services this phase stopped, before it fails closed, so an
+/// aborted activation does not leave them down. Best-effort: a failed start is
+/// logged and the original error is still returned.
+fn restart_stopped_services(
+    services: &[String],
+    executor: &dyn crate::process::restart::CommandExecutor,
+) {
+    for service in services {
+        let socket = format!("{service}.socket");
+        let _ = executor.execute_systemctl(&["start", &socket]);
+        if let Err(err) = executor.execute_systemctl(&["start", service]) {
+            tracing::warn!(service = %service, error = %err, "could not restart service after aborted phase");
+        }
+    }
 }
 
 /// Classify the blocking processes and act on them: restart the safe ones,
-/// apply the risky-service policy, and refuse to force-terminate interactive
-/// user programs.
+/// apply the risky-service policy, and refuse to signal non-service processes
+/// without the operator's opt-in.
 ///
 /// Returns the services stopped (to restart after the mount) and the writers
 /// that survived Phase 2 still referencing the target. Returns an error — before
-/// any signal is sent — when an interactive, non-service process would be
-/// force-terminated and the operator did not opt in via `terminate_interactive`.
+/// any signal is sent — when a non-service process would be signalled and the
+/// operator did not opt in via `terminate_processes`, and fails closed when the
+/// risky-service policy is `restart` but a risky holder could not be stopped.
 ///
 /// The command executor is a seam so the sequencing can be unit-tested without
 /// touching real processes.
@@ -208,33 +253,33 @@ pub(super) fn run_process_phase(
         }
     };
 
-    // Safety gate: never force-terminate an interactive, non-service user process
-    // (a shell, editor or `tail -f`). Terminating one by SIGKILL loses the user's
-    // work silently, so abort before mounting and before any signal is sent,
-    // listing the offenders, unless the operator opted in.
-    if !options.terminate_interactive {
-        let protected: Vec<&ProcessInfo> = to_restart_safe
+    // Safety gate: never signal a non-service process (a shell, editor, `tail
+    // -f` or detached job) without the operator's opt-in. A signal can lose
+    // their work silently, so abort before mounting and before any signal is
+    // sent, listing the offenders.
+    if !options.terminate_processes {
+        let refused: Vec<&ProcessInfo> = to_restart_safe
             .iter()
             .map(|p| (p, RestartStrategy::Safe))
             .chain(to_restart_risky.iter().map(|p| (p, RestartStrategy::Risky)))
-            .filter(|(p, strategy)| would_force_terminate(p, *strategy, options, restart_risky))
+            .filter(|(p, strategy)| would_signal(p, *strategy, options, restart_risky))
             .map(|(p, _)| p)
             .collect();
 
-        if !protected.is_empty() {
-            let listed = protected
+        if !refused.is_empty() {
+            let listed = refused
                 .iter()
-                .map(|p| format!("{} (PID {})", p.name, p.pid))
+                .map(|p| refused_label(p))
                 .collect::<Vec<_>>()
                 .join(", ");
             tracing::error!(
                 target_path = %target.display(),
                 processes = %listed,
-                "  ✗ Refusing to force-terminate interactive process(es) on {}: {}",
+                "  ✗ Refusing to signal non-service process(es) on {}: {}",
                 target.display(),
                 listed
             );
-            return Err(interactive_refusal(
+            return Err(signal_refusal(
                 &format!("using {}", target.display()),
                 &listed,
             ));
@@ -274,14 +319,24 @@ pub(super) fn run_process_phase(
                 "  Restarting {} risky processes...",
                 to_restart_risky.len()
             );
-            for result in restart_processes_with_executor(&to_restart_risky, executor)? {
+            let results = restart_processes_with_executor(&to_restart_risky, executor)?;
+            let mut failed = Vec::new();
+            for result in &results {
                 if result.stopped_successfully {
                     if let Some(ref svc) = result.info.service_name {
                         stopped_services.push(svc.clone());
                     }
                 } else {
-                    survivors.push(survivor(&result.info));
+                    failed.push(&result.info);
                 }
+            }
+            // The operator chose to restart risky holders; one that could not be
+            // stopped would keep writing to the decoy against that choice, so
+            // fail closed (bringing back what this phase stopped) rather than
+            // carry it on as a survivor.
+            if !failed.is_empty() {
+                restart_stopped_services(&stopped_services, executor);
+                return Err(risky_restart_failure(target, &failed));
             }
         } else {
             survivors.extend(to_restart_risky.iter().map(survivor));

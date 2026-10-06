@@ -3,7 +3,7 @@
   "activate-dry-run": 176,
   "activate-flake-override": 408,
   "activate-full-rebuild": 186,
-  "activate-refuse-interactive-writer": 90,
+  "activate-refuse-interactive-writer": 150,
   "backend-nfs-unsuitable": 300,
   "basic-workflow": 207,
   "bind-mounted-root": 250,

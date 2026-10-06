@@ -186,7 +186,7 @@ impl<F: Filesystem> NailsManager<F> {
         let strategy_options = crate::overlay::OverlayStrategyOptions {
             auto_restart_safe: true, // Always restart safe processes automatically
             risky_services: options.resolve_risky_services()?,
-            terminate_interactive: options.terminate_interactive,
+            terminate_processes: options.terminate_processes,
             allow_pivot: !options.no_pivot, // Respect --no-pivot flag
             auto_accept_pivot: options.accept_pivot_risks, // Auto-accept if --accept-pivot-risks
             skip_process_detection: options

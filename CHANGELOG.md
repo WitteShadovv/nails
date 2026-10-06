@@ -126,9 +126,11 @@ state, config and CLI surfaces; there are no compatibility shims.
   `ok`, and `data` or `error`), state and verification as tagged snake_case objects, a documented
   exit-code table returned from `main` (verify warnings and critical exit 10 and 11, preflight
   refusals 4).
-- The `risky_services` config key and the `--risky-services`/`--terminate-interactive` activate
-  flags; non-interactive activation no longer silently skips risky-service restarts or
-  force-terminates interactive user processes, and surviving decoy writers are tracked by identity.
+- The `risky_services` config key and the `--risky-services`/`--terminate-processes` activate
+  flags; activation never signals a process that has no systemd unit (interactive or not) without
+  `--terminate-processes`, a risky holder that cannot be restarted under the `restart` policy makes
+  activation fail closed instead of surviving silently, and surviving decoy writers are tracked by
+  identity and classified (surviving, stale_lower, unverifiable) by a post-mount `/proc` rescan.
 - A scheduled maintenance workflow (crate fetcher canary, Rust cache warming, stress loop and a
   task-dispatch input) and a `report-status` action that tracks red runs of `main`, scheduled jobs
   and releases in `ci-red`/advisory issues.

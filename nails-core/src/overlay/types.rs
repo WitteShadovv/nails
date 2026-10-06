@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Controls how the universal overlay mounting algorithm behaves regarding:
 /// - Process restart decisions (safe/risky)
-/// - Whether interactive user processes may be force-terminated
+/// - Whether non-service processes may be signalled
 /// - Pivot mount fallback policy
 ///
 /// # Examples
@@ -31,7 +31,7 @@ use serde::{Deserialize, Serialize};
 /// let opts = OverlayStrategyOptions {
 ///     auto_restart_safe: true,
 ///     risky_services: Some(RiskyServicePolicy::Restart),
-///     terminate_interactive: false,
+///     terminate_processes: false,
 ///     allow_pivot: true,
 ///     auto_accept_pivot: true,
 ///     skip_process_detection: false,
@@ -74,13 +74,14 @@ pub struct OverlayStrategyOptions {
     ///   mounting.
     pub risky_services: Option<RiskyServicePolicy>,
 
-    /// Allow force-terminating interactive, non-service user processes.
+    /// Allow signalling non-service processes.
     ///
-    /// A process attached to a terminal is almost always one a user is working
-    /// in. When false (the secure default), the strategy refuses to SIGKILL such
-    /// a process and aborts before mounting, listing the offenders. Set to true
+    /// A process with no systemd unit can only be stopped by signal, which may
+    /// lose a user's work (a shell, an editor, a `tail -f`) or end a detached
+    /// job. When false (the secure default), the strategy never signals such a
+    /// process: it aborts before mounting, listing the offenders. Set to true
     /// only when the operator has explicitly opted in.
-    pub terminate_interactive: bool,
+    pub terminate_processes: bool,
 
     /// Allow pivot mount fallback when direct mount fails
     ///
@@ -107,7 +108,7 @@ impl Default for OverlayStrategyOptions {
         Self {
             auto_restart_safe: true,       // Always restart safe processes
             risky_services: None,          // Prompt on a terminal by default
-            terminate_interactive: false,  // Never SIGKILL a user's terminal program
+            terminate_processes: false,    // Never signal a process without a unit
             allow_pivot: true,             // Allow pivot as last resort
             auto_accept_pivot: false,      // Prompt by default for security awareness
             skip_process_detection: false, // Don't skip process detection by default
@@ -186,7 +187,7 @@ mod tests {
         let opts = OverlayStrategyOptions::default();
         assert!(opts.auto_restart_safe);
         assert_eq!(opts.risky_services, None);
-        assert!(!opts.terminate_interactive);
+        assert!(!opts.terminate_processes);
         assert!(opts.allow_pivot);
         assert!(!opts.auto_accept_pivot);
         assert!(!opts.skip_process_detection);
@@ -197,14 +198,14 @@ mod tests {
         let opts = OverlayStrategyOptions {
             auto_restart_safe: false,
             risky_services: Some(RiskyServicePolicy::Skip),
-            terminate_interactive: true,
+            terminate_processes: true,
             allow_pivot: false,
             auto_accept_pivot: true,
             skip_process_detection: true,
         };
         assert!(!opts.auto_restart_safe);
         assert_eq!(opts.risky_services, Some(RiskyServicePolicy::Skip));
-        assert!(opts.terminate_interactive);
+        assert!(opts.terminate_processes);
         assert!(!opts.allow_pivot);
         assert!(opts.auto_accept_pivot);
         assert!(opts.skip_process_detection);

@@ -139,7 +139,7 @@ pub fn execute(
         dry_run,
         overlay_only,
         risky_services: _,
-        terminate_interactive: _,
+        terminate_processes: _,
         accept_persistent_decoy,
     } = *args;
     let verbosity = settings.verbosity;

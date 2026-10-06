@@ -93,11 +93,15 @@ pub struct ActivateOptions {
     /// required).
     pub risky_services: Option<RiskyServicePolicy>,
 
-    /// Allow force-terminating interactive, non-service user processes.
+    /// Allow signalling non-service processes that hold an overlay target.
     ///
-    /// Off by default: activation refuses to SIGKILL a program a user is working
-    /// in (a shell, editor or `tail -f`) and aborts before mounting instead.
-    pub terminate_interactive: bool,
+    /// A process with no systemd unit can only be stopped by signal. Off by
+    /// default: activation never signals such a process (a shell, editor,
+    /// `tail -f` or a detached script) and aborts before mounting instead,
+    /// listing them. Services are always stopped through systemd, and
+    /// `--session kill` is its own, separately confirmed opt-in for ending the
+    /// operator's session.
+    pub terminate_processes: bool,
 
     /// Override skip_process_detection behavior (for testing)
     ///
@@ -156,7 +160,7 @@ impl Default for ActivateOptions {
             no_color: false,
             overlay_only: false,
             risky_services: None,
-            terminate_interactive: false,
+            terminate_processes: false,
             skip_process_detection_override: None,
             session_kill_confirmed: false,
             pre_activation_cleanup: DEFAULT_PRE_ACTIVATION_CLEANUP,
@@ -363,7 +367,7 @@ mod tests {
             no_color: true,
             overlay_only: false,
             risky_services: Some(RiskyServicePolicy::Restart),
-            terminate_interactive: true,
+            terminate_processes: true,
             skip_process_detection_override: None,
             session_kill_confirmed: false,
             pre_activation_cleanup: true,

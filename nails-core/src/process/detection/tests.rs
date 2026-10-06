@@ -502,6 +502,6 @@ fn entry_ignores_a_process_not_using_the_target() {
 }
 
 #[test]
-fn detect_interactive_processes_using_no_targets_finds_nothing() {
-    assert!(detect_interactive_processes_using(&[]).unwrap().is_empty());
+fn detect_non_service_processes_using_no_targets_finds_nothing() {
+    assert!(detect_non_service_processes_using(&[]).unwrap().is_empty());
 }

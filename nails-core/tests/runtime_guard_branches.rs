@@ -205,7 +205,7 @@ fn subprocess_notification_dispatch_entrypoint() {
                 &OverlayStrategyOptions {
                     auto_restart_safe: true,
                     risky_services: None,
-                    terminate_interactive: false,
+                    terminate_processes: false,
                     allow_pivot: true,
                     auto_accept_pivot: false,
                     skip_process_detection: false,

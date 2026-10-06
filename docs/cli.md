@@ -157,9 +157,9 @@ EXAMPLES:
   - `skip`:
     Leave them running; they are reported as surviving writers
 
-* `--terminate-interactive` — Force-terminate interactive user programs (shells, editors, `tail -f`) holding a target instead of aborting
+* `--terminate-processes` — Signal non-service processes (shells, editors, scripts) holding a target instead of aborting
 
-   Off by default: activation refuses to SIGKILL a program a user is working in and aborts before mounting. This flag ends them anyway.
+   Off by default: a process with no systemd unit can only be stopped by signal, so activation never signals one and aborts before mounting, listing them. This flag ends them anyway.
 * `--accept-persistent-decoy` — Accept a persistent decoy posture instead of refusing activation
 
    By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. Records those sinks write before the overlays are mounted survive deactivation and reboot. This flag accepts that risk (and overrides `accept_persistent_decoy` in `nails.toml`).

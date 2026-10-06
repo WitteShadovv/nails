@@ -389,6 +389,8 @@ struct RecordingExecutor {
     kill_calls: std::sync::Mutex<Vec<(u32, String)>>,
     systemctl_success: bool,
     kill_success: bool,
+    /// A unit whose `systemctl stop` fails while every other call succeeds.
+    failing_stop: Option<String>,
 }
 
 impl RecordingExecutor {
@@ -398,6 +400,7 @@ impl RecordingExecutor {
             kill_calls: std::sync::Mutex::new(Vec::new()),
             systemctl_success: true,
             kill_success: true,
+            failing_stop: None,
         }
     }
 
@@ -416,7 +419,15 @@ impl CommandExecutor for RecordingExecutor {
             .lock()
             .unwrap()
             .push(args.iter().map(|s| s.to_string()).collect());
-        Ok((self.systemctl_success, String::new(), String::new()))
+        let failing = self
+            .failing_stop
+            .as_deref()
+            .is_some_and(|unit| args == ["stop", unit]);
+        Ok((
+            self.systemctl_success && !failing,
+            String::new(),
+            String::new(),
+        ))
     }
 
     fn execute_kill(&self, pid: u32, signal: &str) -> crate::error::Result<bool> {
@@ -501,7 +512,7 @@ fn run_process_phase_aborts_on_interactive_process_without_opt_in() {
     // without the gate it would be SIGKILLed. The gate must abort first.
     let options = OverlayStrategyOptions {
         risky_services: Some(RiskyServicePolicy::Restart),
-        terminate_interactive: false,
+        terminate_processes: false,
         ..Default::default()
     };
     let executor = RecordingExecutor::new();
@@ -521,10 +532,108 @@ fn run_process_phase_aborts_on_interactive_process_without_opt_in() {
 }
 
 #[test]
+fn run_process_phase_never_signals_a_detached_non_service_process_without_opt_in() {
+    // Non-interactive and serviceless on /var: Safe, so it used to be signalled
+    // silently. Without the opt-in the phase must abort before any signal.
+    let options = OverlayStrategyOptions {
+        risky_services: Some(RiskyServicePolicy::Skip),
+        ..Default::default()
+    };
+    let executor = RecordingExecutor::new();
+
+    let blocking = vec![proc("logger", 300, None, false)];
+    let err = run_process_phase(blocking, std::path::Path::new("/var"), &options, &executor)
+        .expect_err("a serviceless writer must abort the phase without the opt-in");
+
+    assert!(err.to_string().contains("logger (PID 300)"), "{err}");
+    assert!(executor.kill_calls().is_empty());
+    assert!(executor.systemctl_calls().is_empty());
+}
+
+#[test]
+fn run_process_phase_still_stops_safe_services_without_opt_in() {
+    // Services are stopped through systemd; the opt-in only covers signals.
+    let options = OverlayStrategyOptions {
+        risky_services: Some(RiskyServicePolicy::Skip),
+        ..Default::default()
+    };
+    let executor = RecordingExecutor::new();
+
+    let blocking = vec![proc("rsyslogd", 210, Some("rsyslog"), false)];
+    let (stopped, survivors) =
+        run_process_phase(blocking, std::path::Path::new("/var"), &options, &executor).unwrap();
+
+    assert_eq!(stopped, vec!["rsyslog".to_string()]);
+    assert!(survivors.is_empty());
+    assert!(executor.kill_calls().is_empty());
+}
+
+#[test]
+fn run_process_phase_fails_closed_when_a_risky_restart_fails() {
+    // Under the restart policy a risky service that will not stop would keep
+    // writing to the decoy against the operator's choice: fail closed, naming it,
+    // and start again the safe service this phase already stopped.
+    let options = OverlayStrategyOptions {
+        risky_services: Some(RiskyServicePolicy::Restart),
+        ..Default::default()
+    };
+    let executor = RecordingExecutor {
+        failing_stop: Some("NetworkManager".to_string()),
+        ..RecordingExecutor::new()
+    };
+
+    let blocking = vec![
+        proc("rsyslogd", 210, Some("rsyslog"), false),
+        proc("NetworkManager", 500, Some("NetworkManager"), false),
+    ];
+    let err = run_process_phase(blocking, std::path::Path::new("/var"), &options, &executor)
+        .expect_err("a failed risky restart must fail closed");
+
+    let message = err.to_string();
+    assert!(
+        message.contains("NetworkManager (NetworkManager.service, PID 500)"),
+        "{message}"
+    );
+    assert!(message.contains("--risky-services skip"), "{message}");
+    let calls = executor.systemctl_calls();
+    assert!(
+        calls.iter().any(|c| c == &["start", "rsyslog"]),
+        "the stopped safe service is brought back: {calls:?}"
+    );
+}
+
+#[test]
+fn run_process_phase_fails_closed_when_an_opted_in_risky_kill_fails() {
+    // A serviceless risky holder (cwd in /srv) under the restart policy and the
+    // opt-in, whose KILL fails while it is still alive (this test process, so
+    // the mocked signal reaches nothing): fail closed instead of a survivor.
+    let options = OverlayStrategyOptions {
+        risky_services: Some(RiskyServicePolicy::Restart),
+        terminate_processes: true,
+        ..Default::default()
+    };
+    let executor = RecordingExecutor {
+        kill_success: false,
+        ..RecordingExecutor::new()
+    };
+    let mut shell = proc("bash", std::process::id(), None, false);
+    shell.has_cwd_in_target = true;
+
+    let err = run_process_phase(
+        vec![shell],
+        std::path::Path::new("/srv"),
+        &options,
+        &executor,
+    )
+    .expect_err("a risky holder that survives its restart must fail closed");
+    assert!(err.to_string().contains("Could not restart risky"), "{err}");
+}
+
+#[test]
 fn run_process_phase_terminates_interactive_process_when_opted_in() {
     let options = OverlayStrategyOptions {
         risky_services: Some(RiskyServicePolicy::Restart),
-        terminate_interactive: true,
+        terminate_processes: true,
         ..Default::default()
     };
     let executor = RecordingExecutor::new();
@@ -578,12 +687,15 @@ fn noninteractive_keep_session() -> OverlayStrategyOptions {
 fn sweep_refuses_a_tty_tail_on_var_naming_process_and_target() {
     let found = vec![on("/var", proc("tail", 812, None, true))];
 
-    let err = check_interactive_terminations(&found, &noninteractive_keep_session())
+    let err = check_unconsented_signals(&found, &noninteractive_keep_session())
         .expect_err("a terminal-attached tail on /var must block activation");
     let message = err.to_string();
     assert!(message.contains("before mounting"), "{message}");
-    assert!(message.contains("tail (PID 812) on /var"), "{message}");
-    assert!(message.contains("--terminate-interactive"), "{message}");
+    assert!(
+        message.contains("tail (PID 812, interactive) on /var"),
+        "{message}"
+    );
+    assert!(message.contains("--terminate-processes"), "{message}");
 }
 
 #[test]
@@ -594,11 +706,17 @@ fn sweep_lists_one_process_once_with_every_target() {
         on("/var", proc("tail", 812, None, true)),
     ];
 
-    let message = check_interactive_terminations(&found, &noninteractive_keep_session())
+    let message = check_unconsented_signals(&found, &noninteractive_keep_session())
         .unwrap_err()
         .to_string();
-    assert!(message.contains("less (PID 77) on /etc, /var"), "{message}");
-    assert!(message.contains("tail (PID 812) on /var"), "{message}");
+    assert!(
+        message.contains("less (PID 77, interactive) on /etc, /var"),
+        "{message}"
+    );
+    assert!(
+        message.contains("tail (PID 812, interactive) on /var"),
+        "{message}"
+    );
 }
 
 #[test]
@@ -609,11 +727,24 @@ fn sweep_allows_processes_that_would_not_be_terminated() {
         on("/home", proc("bash", 100, None, true)),
         // A service is stopped through systemd, not by signal.
         on("/var", proc("journal-tty", 200, Some("journal-tty"), true)),
-        // Not attached to a terminal.
-        on("/var", proc("logger", 300, None, false)),
+        // A browser on /home is NoRestart even without a terminal.
+        on("/home", proc("firefox", 300, None, false)),
     ];
 
-    assert!(check_interactive_terminations(&found, &noninteractive_keep_session()).is_ok());
+    assert!(check_unconsented_signals(&found, &noninteractive_keep_session()).is_ok());
+}
+
+#[test]
+fn sweep_refuses_a_detached_non_service_writer_too() {
+    // Not attached to a terminal, but it has no unit: the only way to stop it is
+    // a signal, which needs the opt-in just like an interactive program.
+    let found = vec![on("/var", proc("logger", 300, None, false))];
+
+    let message = check_unconsented_signals(&found, &noninteractive_keep_session())
+        .expect_err("a serviceless writer must not be signalled without the opt-in")
+        .to_string();
+    assert!(message.contains("logger (PID 300) on /var"), "{message}");
+    assert!(!message.contains("interactive)"), "{message}");
 }
 
 #[test]
@@ -627,27 +758,27 @@ fn sweep_counts_risky_processes_only_under_an_explicit_restart() {
         risky_services: Some(RiskyServicePolicy::Restart),
         ..Default::default()
     };
-    assert!(check_interactive_terminations(&found, &restart).is_err());
+    assert!(check_unconsented_signals(&found, &restart).is_err());
 
     // Skipped risky processes stay running as reported writers.
-    assert!(check_interactive_terminations(&found, &noninteractive_keep_session()).is_ok());
+    assert!(check_unconsented_signals(&found, &noninteractive_keep_session()).is_ok());
 
     // Left to a prompt, the per-target guard decides after the answer.
     let prompt = OverlayStrategyOptions {
         risky_services: None,
         ..Default::default()
     };
-    assert!(check_interactive_terminations(&found, &prompt).is_ok());
+    assert!(check_unconsented_signals(&found, &prompt).is_ok());
 }
 
 #[test]
 fn sweep_allows_terminating_when_opted_in() {
     let found = vec![on("/var", proc("tail", 812, None, true))];
     let options = OverlayStrategyOptions {
-        terminate_interactive: true,
+        terminate_processes: true,
         ..noninteractive_keep_session()
     };
-    assert!(check_interactive_terminations(&found, &options).is_ok());
+    assert!(check_unconsented_signals(&found, &options).is_ok());
 }
 
 #[test]
@@ -656,5 +787,5 @@ fn sweep_is_skipped_without_process_detection() {
         skip_process_detection: true,
         ..noninteractive_keep_session()
     };
-    assert!(refuse_interactive_terminations(&[std::path::PathBuf::from("/var")], &options).is_ok());
+    assert!(refuse_unconsented_signals(&[std::path::PathBuf::from("/var")], &options).is_ok());
 }

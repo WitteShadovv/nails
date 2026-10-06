@@ -327,13 +327,14 @@ pub fn detect_processes_using(target: &Path) -> Result<Vec<ProcessInfo>> {
     Ok(ProcSnapshot::capture()?.processes_using(target))
 }
 
-/// Detect the terminal-attached processes using any of `targets`, in one pass
-/// over `/proc`.
+/// Detect the non-service processes (no systemd unit) using any of `targets`,
+/// in one pass over `/proc`.
 ///
-/// Returns one `(target, process)` pair per target a process uses. Activation
-/// runs this before mounting anything so it can refuse up front when it would
-/// otherwise have to force-terminate a program a user is working in.
-pub fn detect_interactive_processes_using(
+/// Returns one `(target, process)` pair per target a process uses. Such a
+/// process can only be stopped by signal, so activation runs this before
+/// mounting anything and refuses up front when it would otherwise have to
+/// signal one without the operator's opt-in.
+pub fn detect_non_service_processes_using(
     targets: &[PathBuf],
 ) -> Result<Vec<(PathBuf, ProcessInfo)>> {
     if targets.is_empty() || crate::runtime_safety::should_skip_host_interaction() {
@@ -343,7 +344,7 @@ pub fn detect_interactive_processes_using(
     let snapshot = ProcSnapshot::capture()?;
     let mut found = Vec::new();
     for entry in &snapshot.entries {
-        if !entry.is_interactive {
+        if entry.service_name.is_some() {
             continue;
         }
         for target in targets {

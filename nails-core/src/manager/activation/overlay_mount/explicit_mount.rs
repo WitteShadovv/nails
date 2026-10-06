@@ -58,9 +58,9 @@ impl<F: Filesystem> NailsManager<F> {
             .map(|overlay| overlay.target.clone())
             .collect();
         crate::preflight::ensure_targets_clear(&self.filesystem, &self.config, &targets)?;
-        // Refuse before anything is stopped or mounted if a user's terminal
-        // program would have to be force-terminated on any target.
-        crate::overlay::refuse_interactive_terminations(&targets, strategy_options)?;
+        // Refuse before anything is stopped or mounted if a non-service process
+        // would have to be signalled on any target without the opt-in.
+        crate::overlay::refuse_unconsented_signals(&targets, strategy_options)?;
 
         let overlays = self.config.overlays.clone();
         self.mount_overlay_targets(

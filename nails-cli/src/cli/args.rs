@@ -294,13 +294,14 @@ pub struct ActivateArgs {
     #[arg(long = "risky-services", value_enum, value_name = "POLICY")]
     pub risky_services: Option<RiskyServicesArg>,
 
-    /// Force-terminate interactive user programs (shells, editors, `tail -f`)
-    /// holding a target instead of aborting
+    /// Signal non-service processes (shells, editors, scripts) holding a target
+    /// instead of aborting
     ///
-    /// Off by default: activation refuses to SIGKILL a program a user is working
-    /// in and aborts before mounting. This flag ends them anyway.
+    /// Off by default: a process with no systemd unit can only be stopped by
+    /// signal, so activation never signals one and aborts before mounting,
+    /// listing them. This flag ends them anyway.
     #[arg(long)]
-    pub terminate_interactive: bool,
+    pub terminate_processes: bool,
 
     /// Accept a persistent decoy posture instead of refusing activation
     ///
@@ -329,7 +330,7 @@ impl ActivateArgs {
             yes: self.yes,
             overlay_only: self.overlay_only,
             risky_services: self.risky_services.map(Into::into),
-            terminate_interactive: self.terminate_interactive,
+            terminate_processes: self.terminate_processes,
             accept_persistent_decoy: self.accept_persistent_decoy,
             ..nails_core::ActivateOptions::default()
         }
