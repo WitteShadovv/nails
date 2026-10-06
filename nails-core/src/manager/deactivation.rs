@@ -65,6 +65,14 @@ impl ManagerDeactivationKind {
         }
     }
 
+    /// How long the teardown waits for a signalled activation owner to exit.
+    fn owner_exit_wait(self) -> std::time::Duration {
+        match self {
+            Self::Emergency => std::time::Duration::from_secs(1),
+            Self::Normal | Self::Recover => std::time::Duration::from_secs(3),
+        }
+    }
+
     fn reboots_on_success(self) -> bool {
         matches!(self, Self::Normal)
     }
@@ -180,8 +188,6 @@ impl<F: Filesystem> NailsManager<F> {
     /// spares the teardown's own session and never touches the display manager.
     /// All of it is best-effort.
     fn stop_hidden_units_before_teardown(&self, overlay_targets: &[PathBuf]) {
-        use crate::manager::helpers::ServiceController;
-
         let added_units = self
             .cached_state
             .borrow()
@@ -189,9 +195,21 @@ impl<F: Filesystem> NailsManager<F> {
             .map(|state_file| state_file.hidden_added_units.clone())
             .unwrap_or_default();
 
-        for unit in &added_units {
-            tracing::info!(unit, "Stopping a unit the hidden configuration added");
-            let _ = ServiceController::stop_unit(unit);
+        // Enqueue every stop at once rather than waiting for each unit in turn:
+        // one bounded call, so a slow unit can never hold the overlays up. The
+        // jobs also keep Restart= from reviving a unit the kill below hits.
+        if !added_units.is_empty() {
+            let units = added_units
+                .iter()
+                .map(|unit| {
+                    if unit.contains('.') {
+                        unit.clone()
+                    } else {
+                        format!("{unit}.service")
+                    }
+                })
+                .collect();
+            process_teardown::enqueue_unit_stops(&units);
         }
 
         self.kill_overlay_rooted_processes(overlay_targets);
@@ -253,8 +271,11 @@ impl<F: Filesystem> NailsManager<F> {
         // The processes that keep the operator's graphical session alive. Emergency
         // detaches the overlays from under a running desktop without logging the
         // operator out, so these are spared even though they are overlay-rooted.
+        // Bounded: a hung logind must not hold the overlays up. A query that
+        // runs out of budget makes the guard spare every user session, the
+        // desktop-safe answer.
         let session_guard = session_guard::GraphicalSessionGuard::detect(
-            &crate::process::session::RealSessionCommandExecutor,
+            &session_guard::BoundedLoginctl::new(session_guard::SESSION_DETECTION_BUDGET),
         );
         let mut spared_session_pids = std::collections::BTreeSet::new();
 
@@ -397,12 +418,16 @@ impl<F: Filesystem> NailsManager<F> {
         );
         signal_pid(pid, "TERM");
 
-        for _ in 0..10 {
+        // Emergency keeps the wait short so the overlays come down within a few
+        // seconds; recovery is no panic button and allows the owner longer.
+        let wait = kind.owner_exit_wait();
+        let deadline = std::time::Instant::now() + wait;
+        while std::time::Instant::now() < deadline {
             if !crate::manager::state_management::pid_is_alive(pid) {
                 tracing::info!(pid, "Activation owner exited before teardown");
                 return;
             }
-            std::thread::sleep(std::time::Duration::from_millis(300));
+            std::thread::sleep(std::time::Duration::from_millis(100));
         }
         tracing::warn!(
             pid,
@@ -535,8 +560,14 @@ impl<F: Filesystem> NailsManager<F> {
         self.teardown_overlay_dependents(&overlay_context);
 
         if overlay_context.nix_was_overlaid {
-            tracing::info!("Stopping nix-daemon before /nix overlay unmount...");
-            let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
+            // Emergency does not wait for nix-daemon to stop: the overlay-rooted
+            // kill below stops (stop job first) and kills any daemon still using
+            // the /nix overlay, and the unmounts fall back to a lazy detach, so
+            // the overlays never wait on it.
+            if kind != ManagerDeactivationKind::Emergency {
+                tracing::info!("Stopping nix-daemon before /nix overlay unmount...");
+                let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
+            }
 
             tracing::info!("Unmounting /nix/store bind mount...");
             // Best-effort: a failure here must not short-circuit the teardown

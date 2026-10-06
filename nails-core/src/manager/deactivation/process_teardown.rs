@@ -261,6 +261,13 @@ pub(super) fn enqueue_unit_stops(units: &std::collections::BTreeSet<String>) {
     if units.is_empty() {
         return;
     }
+    if crate::runtime_safety::should_skip_host_interaction() {
+        #[cfg(test)]
+        for unit in units {
+            crate::manager::helpers::record_service_action(format!("stop:{unit}"));
+        }
+        return;
+    }
     tracing::info!(units = ?units, "Enqueuing stop jobs before the overlay kill so Restart= cannot revive them");
     let command = ProcessCommand::tool("systemctl")
         .arg("stop")

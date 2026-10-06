@@ -1046,3 +1046,35 @@ fn test_incomplete_emergency_still_scrubs_ram_backed_state() {
         "the page cache must be dropped"
     );
 }
+
+#[test]
+fn test_emergency_never_waits_for_nix_daemon_before_the_unmount() {
+    // Stopping nix-daemon blocks until the daemon exits. Emergency must not wait
+    // on it before the overlays come down: the overlay kill deals with a daemon
+    // still on /nix, and the decoy daemon is started again afterwards.
+    let manager = setup_manager_in_state(SystemState::Activating {
+        started_at: chrono::Utc::now(),
+    });
+    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
+    {
+        let guard = manager.lock().unwrap();
+        mount_nails_overlay(guard.filesystem(), &hidden_root, Path::new("/nix"));
+    }
+    let _ = crate::manager::helpers::drain_recorded_service_actions();
+
+    manager.lock().unwrap().emergency_deactivate().unwrap();
+
+    let actions = crate::manager::helpers::drain_recorded_service_actions();
+    assert!(
+        !actions.iter().any(|a| a.starts_with("stop:nix-daemon")),
+        "emergency must not block on stopping nix-daemon: {actions:?}"
+    );
+    assert!(
+        !manager
+            .lock()
+            .unwrap()
+            .filesystem()
+            .is_mounted(Path::new("/nix"))
+            .unwrap()
+    );
+}

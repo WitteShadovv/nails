@@ -362,3 +362,16 @@ fn cleanup_pivot_staging_detaches_and_removes_the_staging() {
     assert!(!fs.is_mounted(Path::new(root)).unwrap());
     assert!(!fs.path_exists(Path::new(root)).unwrap());
 }
+
+#[test]
+fn emergency_waits_at_most_a_second_for_the_activation_owner() {
+    use super::ManagerDeactivationKind;
+    // The overlays must come down within a few seconds of the panic button.
+    assert!(
+        ManagerDeactivationKind::Emergency.owner_exit_wait() <= std::time::Duration::from_secs(1)
+    );
+    assert!(
+        ManagerDeactivationKind::Recover.owner_exit_wait()
+            > ManagerDeactivationKind::Emergency.owner_exit_wait()
+    );
+}

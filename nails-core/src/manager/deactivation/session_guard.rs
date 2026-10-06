@@ -66,6 +66,59 @@
 
 use crate::process::session::SessionCommandExecutor;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// The whole budget for enumerating the graphical sessions before the emergency
+/// kill. Each `loginctl` call gets what is left of it.
+pub(super) const SESSION_DETECTION_BUDGET: Duration = Duration::from_secs(2);
+
+/// A `loginctl` runner that shares one deadline across every call, so session
+/// detection as a whole never takes longer than its budget. A call made after
+/// the deadline fails at once, which the guard answers by sparing every user
+/// session.
+pub(super) struct BoundedLoginctl {
+    deadline: Instant,
+}
+
+impl BoundedLoginctl {
+    pub(super) fn new(budget: Duration) -> Self {
+        Self {
+            deadline: Instant::now() + budget,
+        }
+    }
+
+    fn remaining(&self) -> Option<Duration> {
+        self.deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+    }
+}
+
+impl SessionCommandExecutor for BoundedLoginctl {
+    fn execute_systemctl(&self, args: &[&str]) -> crate::Result<(bool, String, String)> {
+        crate::process::session::RealSessionCommandExecutor.execute_systemctl(args)
+    }
+
+    fn execute_loginctl(&self, args: &[&str]) -> crate::Result<(bool, String, String)> {
+        use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
+        let Some(left) = self.remaining() else {
+            return Ok((
+                false,
+                String::new(),
+                "session detection budget spent".to_string(),
+            ));
+        };
+        RealProcessRunner.run_text(&ProcessCommand::tool("loginctl").args(args).deadline(left))
+    }
+
+    fn execute_kill(&self, pid: u32, signal: &str) -> crate::Result<bool> {
+        crate::process::session::RealSessionCommandExecutor.execute_kill(pid, signal)
+    }
+
+    fn loginctl_available(&self) -> bool {
+        self.remaining().is_some()
+    }
+}
 
 /// The cgroup-path fragment of the display manager (and, on systemd hosts, the X
 /// server it starts). Present on every systemd host, graphical or not; it simply
@@ -105,7 +158,12 @@ impl GraphicalSessionGuard {
 
         for id in &session_ids {
             let Some(props) = show_session(executor, id) else {
-                continue;
+                // A session that could not be inspected may be the operator's
+                // desktop: fall back to the broad, desktop-safe rule.
+                return Self {
+                    fragments,
+                    spare_all_user_sessions: true,
+                };
             };
             if is_graphical_user_session(&props) {
                 fragments.push(session_scope_fragment(id));
@@ -348,6 +406,29 @@ mod tests {
         assert!(guard.covers("0::/system.slice/display-manager.service"));
         // Even in the fallback, a plain system service is still killable.
         assert!(!guard.covers("0::/system.slice/some-daemon.service"));
+    }
+
+    #[test]
+    fn falls_back_to_sparing_all_user_sessions_when_a_session_cannot_be_inspected() {
+        // A listed session whose details cannot be read may be the desktop; it
+        // must never be left unprotected.
+        let mut fake = FakeLoginctl::new().with_session(
+            "c1",
+            &[("Class", "user"), ("Type", "tty"), ("User", "1000")],
+        );
+        fake.ids.push("c2".to_string());
+        let guard = GraphicalSessionGuard::detect(&fake);
+        assert!(guard.covers("0::/user.slice/user-1000.slice/session-c2.scope/x"));
+        assert!(!guard.covers("0::/system.slice/some-daemon.service"));
+    }
+
+    #[test]
+    fn a_spent_budget_fails_every_query_at_once() {
+        let bounded = BoundedLoginctl::new(Duration::ZERO);
+        let started = Instant::now();
+        let guard = GraphicalSessionGuard::detect(&bounded);
+        assert!(started.elapsed() < Duration::from_millis(100));
+        assert!(guard.covers("0::/user.slice/user-1000.slice/session-3.scope"));
     }
 
     #[test]

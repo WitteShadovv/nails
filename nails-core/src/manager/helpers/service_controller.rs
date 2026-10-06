@@ -626,34 +626,6 @@ impl ServiceController {
         }
     }
 
-    /// Stop a single unit, socket before service.
-    ///
-    /// The paired `<unit>.socket` is stopped first so socket activation does not
-    /// bring the service straight back; a unit with no socket simply has that
-    /// best-effort step do nothing. Returns whether the service stop succeeded.
-    /// Used by emergency teardown to end the services the hidden configuration
-    /// added without a full decoy switch.
-    pub fn stop_unit(unit: &str) -> bool {
-        if Self::should_skip() {
-            #[cfg(test)]
-            {
-                recorder::record(format!("stop:{unit}.socket"));
-                recorder::record(format!("stop:{unit}"));
-            }
-            return true;
-        }
-
-        let socket_name = format!("{unit}.socket");
-        let _ = run_systemctl(&["stop", socket_name.as_str()]);
-        match run_systemctl(&["stop", unit]) {
-            Ok(output) => output.status.success(),
-            Err(err) => {
-                tracing::warn!(unit, %err, "failed to stop hidden-session unit");
-                false
-            }
-        }
-    }
-
     /// Best-effort restart of services that were stopped during overlay mounting
     /// when the mount ultimately fails. Starts both socket and service for each,
     /// logging — never propagating — a failure so teardown always completes.
