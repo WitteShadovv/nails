@@ -155,9 +155,38 @@ in
             + f"nails --config {graphical_config} activate --session kill -y"
         )
 
+        # The state can already read Inactive before the detached worker has
+        # done anything, so waiting on state.json alone could let the checks
+        # below run before the activation and pass vacuously. Find the worker
+        # (a run-*.service with the neutral description; a failed unit stays
+        # listed, and one that already exited cleanly has at least logged its
+        # start), wait for it to stop, and only then require Inactive.
+        import shlex as _shlex
+
+        finder = (
+            "systemctl list-units --all --plain --no-legend 'run-*.service' "
+            + "| while read -r unit _; do "
+            + "if [ \"$(systemctl show \"$unit\" -p Description --value)\" = "
+            + "'System maintenance task' ]; then printf '%s' \"$unit\"; break; fi; "
+            + "done"
+        )
+        graphical.wait_until_succeeds(
+            "bash -lc "
+            + _shlex.quote(
+                "test -n \"$(" + finder + ")\" || "
+                + "journalctl -b --no-pager -o cat | grep -q 'System maintenance task'"
+            ),
+            timeout=120,
+        )
+        worker = graphical.succeed("bash -lc " + _shlex.quote(finder)).strip()
+        if worker:
+            graphical.wait_until_fails(
+                f"systemctl is-active --quiet {_shlex.quote(worker)}", timeout=300
+            )
+
         # The rollback persists Inactive once every overlay is unmounted.
         graphical.wait_until_succeeds(
-            "grep -q '\"state\": \"Inactive\"' /mnt/data/state.json"
+            "grep -q '\"state\": \"Inactive\"' /mnt/data/state.json", timeout=60
         )
 
         for path in ["/home", "/etc"]:

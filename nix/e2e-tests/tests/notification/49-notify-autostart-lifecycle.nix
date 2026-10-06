@@ -99,11 +99,12 @@ in
         machine.wait_until_succeeds("systemctl is-active display-manager.service")
         machine.wait_until_succeeds("systemctl is-active user@1000.service")
         machine.wait_until_succeeds(f"test -f {desktop_path}")
-        assert_overlay_mounted("/home")
         # The binary lives in the Nix store, so status must use the headless
         # config to read the hidden-volume state rather than the store-derived
-        # default root.
+        # default root. Wait for the detached activation to commit before
+        # asserting its mounts (the race that failed notify-session-push).
         wait_for_status_state("Active", config_path=headless_config)
+        assert_overlay_mounted("/home")
 
         assert_owned_by(autostart_dir, "testuser:users", "700")
         assert_owned_by(desktop_path, "testuser:users", "644")
