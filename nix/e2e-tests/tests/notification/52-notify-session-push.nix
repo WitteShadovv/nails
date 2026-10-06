@@ -155,9 +155,11 @@ in
             + f"nails --config {headless_config} activate -y"
         )
         wait_for_activation_transient_unit()
+        # The worker is still mounting when its unit appears: wait for the
+        # committed state before asserting what activation produced.
+        wait_for_status_state("Active", config_path=headless_config)
         machine.wait_until_succeeds("systemctl is-active display-manager.service")
         assert_overlay_mounted("/home")
-        wait_for_status_state("Active", config_path=headless_config)
         status = read_status_json(config_path=headless_config)
         assert status.get("hidden_config_warning"), status
 
