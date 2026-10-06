@@ -29,6 +29,7 @@ use super::{MountTracker, NailsManager};
 use crate::notification::{Notification, write_notification};
 use crate::overlay::SurvivingWriter;
 use crate::process::RealSessionCommandExecutor as RealSessionCommands;
+use crate::reporter::progress::{Reporter, SharedReporter, Step, Tee};
 use crate::{DecoyWriter, Filesystem, NailsError, Result, Verbosity};
 use std::path::Path;
 
@@ -484,7 +485,6 @@ impl<F: Filesystem> NailsManager<F> {
         use crate::{StateGuard, Stopwatch};
 
         let total_timer = Stopwatch::start();
-        let started_at = chrono::Utc::now();
 
         // Clear any outcome recorded by a previous activation; the activation-scope
         // rollback guard sets this handle again only if a rollback actually runs,
@@ -523,7 +523,7 @@ impl<F: Filesystem> NailsManager<F> {
         // Debian-family). `None` (no profile detected, e.g. unit tests) is not
         // treated as Debian-family, so no spurious platform marker is written.
         let host_is_fhs = host_has_layer == Some(false);
-        let mut step = StepProgress::new(verbosity, if layer_runs { 7 } else { 5 });
+        let mut step = self.step_progress(layer_runs);
 
         // Step 1: Reconcile the persisted state against the boot and the live
         // kernel mount table before trusting it (see `reconcile_gate_for_activation`).
@@ -606,8 +606,7 @@ impl<F: Filesystem> NailsManager<F> {
         guard.update_state(activating_state)?;
         // Pre-flight confirmed the hidden volume: keep the progress record that
         // `nails status` reads from here on (removed when activation returns).
-        let hidden_root = guard.config().hidden_volume_root.clone();
-        step.attach_file(guard.filesystem().clone(), hidden_root, started_at);
+        guard.attach_progress_record(&mut step);
         // Record the graphical session we took over (if any) so emergency teardown
         // can end the same logind session and bring its display manager back.
         guard.record_hidden_session(&restart_plan);
@@ -768,6 +767,7 @@ impl<F: Filesystem> NailsManager<F> {
         activation_mounts.disarm();
         guard.commit();
         session_restart_guard.disarm();
+        step.succeed();
 
         // Mirror the binary, config and a mount manifest into a RAM-backed copy on
         // the decoy /run, and start the in-session backend watcher, now that the
@@ -845,6 +845,25 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         Ok(ActivationOutcome::Activated { hidden_config })
+    }
+
+    /// Progress for one activation: seven steps when a declarative layer runs,
+    /// five otherwise, reported through this manager's reporter.
+    fn step_progress(&self, layer_runs: bool) -> StepProgress {
+        StepProgress::new(
+            self.verbosity,
+            if layer_runs { 7 } else { 5 },
+            self.reporter.clone(),
+        )
+    }
+
+    /// Start keeping `step`'s hidden-volume progress record. Only call once the
+    /// hidden volume is confirmed mounted, so the record never lands on the decoy.
+    fn attach_progress_record(&self, step: &mut StepProgress) {
+        step.attach_file(
+            self.filesystem.clone(),
+            self.config.hidden_volume_root.clone(),
+        );
     }
 
     /// Write the Active state together with this activation's duration.
@@ -1429,74 +1448,109 @@ fn format_mount_list(mounts: &[std::path::PathBuf]) -> String {
 /// runs (NixOS, and not `--overlay-only`); each emitted step advances the counter
 /// so the `[n/total]` numbering stays contiguous even when the layer steps are
 /// skipped. A step is counted whatever the verbosity, so the numbering a quiet
-/// run would show matches a verbose one; only the log line is gated.
-struct StepProgress<F: Filesystem> {
-    verbosity: Verbosity,
+/// run would show matches a verbose one.
+///
+/// Every step is logged at debug level (the hidden-root log) and reported
+/// through a [`Tee`]: to the manager's operator-facing reporter (muted below
+/// Normal verbosity) and, once attached, to the hidden-volume progress record.
+/// The tee is installed as the active reporter for the activation's lifetime,
+/// so heartbeats and details raised deep in the build and mount code reach it.
+/// Unless [`succeed`](Self::succeed) is called, dropping the progress reports
+/// the current step as failed; dropping it also removes the progress record.
+struct StepProgress {
     current: u8,
     total: u8,
     /// The phase id and label most recently emitted, so a progress record
     /// attached mid-activation starts from the phase already in progress.
     last: (&'static str, String),
-    /// The hidden-volume progress record, attached once the hidden volume is
-    /// known to be mounted (see [`StepProgress::attach_file`]).
-    file: Option<crate::progress::ProgressFileWriter<F>>,
+    /// When the activation started, recorded in the progress record.
+    started_at: chrono::DateTime<chrono::Utc>,
+    hub: std::sync::Arc<std::sync::Mutex<Tee>>,
+    succeeded: bool,
+    /// Declared last so the active-reporter slot is released after `hub`.
+    _scope: crate::reporter::progress::ActiveScope,
 }
 
-impl<F: Filesystem> StepProgress<F> {
-    fn new(verbosity: Verbosity, total: u8) -> Self {
+impl StepProgress {
+    fn new(verbosity: Verbosity, total: u8, reporter: SharedReporter) -> Self {
+        let hub = std::sync::Arc::new(std::sync::Mutex::new(Tee::new(
+            reporter,
+            verbosity >= Verbosity::Normal,
+        )));
+        let active: SharedReporter = hub.clone();
         Self {
-            verbosity,
             current: 0,
             total,
             last: ("", String::new()),
-            file: None,
+            started_at: chrono::Utc::now(),
+            hub,
+            succeeded: false,
+            _scope: crate::reporter::progress::install(active),
         }
     }
 
-    /// The label a step message contributes to the progress record: the message
-    /// without its trailing ellipsis.
+    fn hub(&self) -> std::sync::MutexGuard<'_, Tee> {
+        self.hub
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// The label a step message contributes: the message without its trailing
+    /// ellipsis.
     fn label(message: &str) -> String {
         message.trim_end_matches('.').to_string()
     }
 
-    /// Advance to the next step, log it at Normal verbosity or above, and update
-    /// the progress record when one is attached.
+    /// Advance to the next step: log it and report it.
     fn emit(&mut self, phase: &'static str, message: &str) {
         self.current += 1;
         self.last = (phase, Self::label(message));
-        if let Some(file) = self.file.as_mut() {
-            file.phase(u32::from(self.current), phase, &self.last.1);
-        }
-        if self.verbosity >= Verbosity::Normal {
-            tracing::info!(
-                event = "progress",
-                phase = phase,
-                current = self.current,
-                total = self.total,
-                "[{}/{}] {}",
-                self.current,
-                self.total,
-                message
-            );
-        }
+        tracing::debug!(
+            event = "progress",
+            phase = phase,
+            current = self.current,
+            total = self.total,
+            "[{}/{}] {}",
+            self.current,
+            self.total,
+            self.last.1
+        );
+        let (index, total) = (u32::from(self.current), u32::from(self.total));
+        let label = self.last.1.clone();
+        self.hub().step(Step {
+            index,
+            total,
+            phase,
+            label: &label,
+        });
     }
 
     /// Start keeping the hidden-volume progress record, beginning with the phase
     /// already in progress. The record is removed when this progress is dropped.
-    fn attach_file(
-        &mut self,
-        fs: F,
-        hidden_root: std::path::PathBuf,
-        started_at: chrono::DateTime<chrono::Utc>,
-    ) {
-        self.file = Some(crate::progress::ProgressFileWriter::start(
+    fn attach_file<F: Filesystem>(&mut self, fs: F, hidden_root: std::path::PathBuf) {
+        let writer = crate::progress::ProgressFileWriter::start(
             fs,
             hidden_root,
-            started_at,
+            self.started_at,
             u32::from(self.current),
             u32::from(self.total),
             self.last.0,
             &self.last.1,
-        ));
+        );
+        self.hub().attach(Box::new(writer));
+    }
+
+    /// The activation succeeded: report the final step as done.
+    fn succeed(&mut self) {
+        self.succeeded = true;
+        self.hub().finish(true);
+    }
+}
+
+impl Drop for StepProgress {
+    fn drop(&mut self) {
+        if !self.succeeded {
+            self.hub().finish(false);
+        }
     }
 }

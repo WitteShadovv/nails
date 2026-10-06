@@ -509,6 +509,48 @@ fn verify_json_matches_schema_and_snapshot() {
 // the exact documents the renderers emit, and reject a malformed one.
 // ---------------------------------------------------------------------------
 
+/// The NDJSON lines the activation's JSON reporter writes for one step, one
+/// detail and one heartbeat.
+fn json_reporter_events() -> Vec<Value> {
+    use nails_core::reporter::progress::{JsonReporter, Reporter, Step};
+    use std::io::Write;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Clone, Default)]
+    struct Buffer(Arc<Mutex<Vec<u8>>>);
+    impl Write for Buffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let buffer = Buffer::default();
+    let mut reporter = JsonReporter::new(Box::new(buffer.clone()), 1, "activate");
+    reporter.step(Step {
+        index: 4,
+        total: 5,
+        phase: "overlay_mount",
+        label: "Mounting overlays",
+    });
+    reporter.detail("mounting /home (1/2)");
+    reporter.heartbeat(
+        "building",
+        std::time::Duration::from_secs(30),
+        Some("raw build line"),
+    );
+    let text = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    let events: Vec<Value> = text
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(events.len(), 3, "{text}");
+    events
+}
+
 #[test]
 fn activate_schema_accepts_progress_result_and_error_lines() {
     let schema = load_schema("activate");
@@ -516,6 +558,11 @@ fn activate_schema_accepts_progress_result_and_error_lines() {
         "schema_version": 1, "command": "activate", "type": "progress", "phase": "mounting"
     });
     assert_matches_schema(&schema, &progress);
+
+    // Every event the activation's JSON reporter emits fits the progress branch.
+    for event in json_reporter_events() {
+        assert_matches_schema(&schema, &event);
+    }
 
     let result = serde_json::json!({
         "schema_version": 1, "command": "activate", "type": "result",

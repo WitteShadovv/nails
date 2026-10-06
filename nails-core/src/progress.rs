@@ -131,7 +131,7 @@ impl<F: Filesystem> ProgressFileWriter<F> {
     }
 
     /// Record that the activation entered `phase` (step `step`).
-    pub fn phase(&mut self, step: u32, phase: &str, label: &str) {
+    pub fn set_phase(&mut self, step: u32, phase: &str, label: &str) {
         self.current.step = step;
         self.current.phase = phase.to_string();
         self.current.label = label.to_string();
@@ -141,7 +141,7 @@ impl<F: Filesystem> ProgressFileWriter<F> {
     }
 
     /// Replace the detail line within the current phase.
-    pub fn detail(&mut self, detail: Option<String>) {
+    pub fn set_detail(&mut self, detail: Option<String>) {
         if self.current.detail != detail {
             self.current.detail = detail;
             self.flush();
@@ -158,6 +158,34 @@ impl<F: Filesystem> ProgressFileWriter<F> {
             tracing::debug!(error = %e, "Could not update the activation progress record");
         }
     }
+}
+
+/// The progress record as a reporter: steps become phases, details and the
+/// most recent build line of a long step become the detail. The record lives
+/// on the hidden volume, so it may carry the build line that terminal-less
+/// surfaces never show.
+impl<F: Filesystem> crate::reporter::progress::Reporter for ProgressFileWriter<F> {
+    fn step(&mut self, step: crate::reporter::progress::Step<'_>) {
+        self.set_phase(step.index, step.phase, step.label);
+    }
+
+    fn detail(&mut self, detail: &str) {
+        self.set_detail(Some(detail.trim().to_string()));
+    }
+
+    fn heartbeat(
+        &mut self,
+        _activity: &str,
+        _elapsed: std::time::Duration,
+        last_line: Option<&str>,
+    ) {
+        if let Some(line) = last_line.map(str::trim).filter(|line| !line.is_empty()) {
+            self.set_detail(Some(line.to_string()));
+        }
+    }
+
+    /// The record is removed when the writer is dropped.
+    fn finish(&mut self, _success: bool) {}
 }
 
 impl<F: Filesystem> Drop for ProgressFileWriter<F> {
@@ -193,8 +221,8 @@ mod tests {
         assert_eq!(first.phase, "session_management");
         assert_eq!(first.started_at, started);
 
-        writer.phase(4, "overlay_mount", "Mounting overlays");
-        writer.detail(Some("mounting /home (1/3)".to_string()));
+        writer.set_phase(4, "overlay_mount", "Mounting overlays");
+        writer.set_detail(Some("mounting /home (1/3)".to_string()));
         let now = read_progress(&fs, &root).expect("updated snapshot");
         assert_eq!(now.step, 4);
         assert_eq!(now.total_steps, 7);
@@ -203,7 +231,7 @@ mod tests {
         assert_eq!(now.started_at, started, "start time is kept across phases");
 
         // Entering a new phase drops the previous phase's detail.
-        writer.phase(5, "profile_switch", "Applying hidden configuration");
+        writer.set_phase(5, "profile_switch", "Applying hidden configuration");
         assert_eq!(read_progress(&fs, &root).unwrap().detail, None);
 
         drop(writer);

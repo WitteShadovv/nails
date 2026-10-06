@@ -324,16 +324,12 @@ impl<F: Filesystem> NailsManager<F> {
 
         let overlay_total = overlays.len();
         for (overlay_index, overlay) in overlays.iter().enumerate() {
-            if verbosity >= Verbosity::Normal {
-                tracing::info!(
-                    event = "progress",
-                    phase = "overlay_mount",
-                    current = overlay_index + 1,
-                    total = overlay_total,
-                    "{}",
-                    overlay_progress_message(&overlay.target, overlay_index + 1, overlay_total)
-                );
-            }
+            // Reported through the activation's reporter (muted below Normal
+            // verbosity there) and kept as the progress record's detail.
+            crate::reporter::progress::detail(
+                "overlay_mount",
+                &overlay_progress_message(&overlay.target, overlay_index + 1, overlay_total),
+            );
 
             // Clear stale opaque markers on NAILS-managed dirs (currently
             // /etc/nixos) so a previous cycle cannot hide lower-layer contents.

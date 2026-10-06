@@ -409,13 +409,10 @@ fn switch_to_decoy_for_session<F: Filesystem>(
         &command,
         crate::process::run::BUILD_PROGRESS_INTERVAL,
         &mut |elapsed, last_line| {
-            tracing::info!(
-                "{}",
-                crate::process::run::heartbeat_line(
-                    "restoring the decoy configuration",
-                    elapsed,
-                    last_line
-                )
+            crate::reporter::progress::heartbeat(
+                "restoring the decoy configuration",
+                elapsed,
+                last_line,
             );
         },
     )?;

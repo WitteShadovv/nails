@@ -157,6 +157,13 @@ pub struct NailsManager<F: Filesystem> {
     /// `RefCell` (not `Rc`) keeps `NailsManager` `Send`; reset at the start of
     /// each activation.
     last_rollback: RefCell<activation::rollback::RollbackOutcome>,
+
+    /// Where activation reports its progress (steps, details, heartbeats).
+    ///
+    /// Defaults to [`TracingReporter`](crate::reporter::progress::TracingReporter);
+    /// the CLI replaces it with the surface-specific reporter (terminal spinner,
+    /// plain lines, JSON events, or silent when detached).
+    reporter: crate::reporter::progress::SharedReporter,
 }
 
 // Manual Debug implementation because NixOSBuilder contains trait objects
@@ -220,6 +227,7 @@ impl<F: Filesystem> NailsManager<F> {
             host_effects: HostEffects::Real,
             verbosity: crate::verbosity::Verbosity::default(),
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
+            reporter: crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
         }
     }
 
@@ -272,6 +280,7 @@ impl<F: Filesystem> NailsManager<F> {
             host_effects: HostEffects::Real,
             verbosity: crate::verbosity::Verbosity::default(),
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
+            reporter: crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
         }
     }
 
@@ -318,6 +327,16 @@ impl<F: Filesystem> NailsManager<F> {
     /// ```
     pub fn set_verbosity(&mut self, verbosity: crate::verbosity::Verbosity) {
         self.verbosity = verbosity;
+    }
+
+    /// Set where activation reports its progress.
+    ///
+    /// The reporter receives a numbered step per activation phase, details
+    /// within a phase (the overlay being mounted) and heartbeats while a long
+    /// build or switch runs. Steps are only reported at Normal verbosity or
+    /// above; the hidden-volume progress record is kept regardless.
+    pub fn set_reporter(&mut self, reporter: crate::reporter::progress::SharedReporter) {
+        self.reporter = reporter;
     }
 
     /// Detect the host through this manager's filesystem and store the profile.

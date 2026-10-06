@@ -68,7 +68,9 @@ pub mod status;
 pub mod verify;
 
 // Re-export commonly used formatters
-pub use activate::{print_activate_human, print_activate_json_result, print_activate_progress};
+pub use activate::{
+    ProgressSurface, print_activate_human, print_activate_json_result, print_activate_progress,
+};
 pub use check::{print_check_human, print_check_json};
 pub use deactivate::{deactivate_error_body, print_deactivate_json};
 pub use envelope::{Envelope, ErrorBody, report_error};

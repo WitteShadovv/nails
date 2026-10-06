@@ -81,7 +81,9 @@ pub fn init_subscriber(
                 .with_line_number(false)
                 .with_level(true)
                 .with_ansi(ansi)
-                .with_writer(std::io::stderr)
+                // Lifts an activation spinner (when one is on screen) around each
+                // log line so the two never garble; a plain stderr write otherwise.
+                .with_writer(|| nails_core::reporter::progress::ProgressAwareStderr)
                 .with_filter(console_level);
             registry.with(console).init();
         }

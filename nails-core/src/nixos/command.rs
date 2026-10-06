@@ -183,18 +183,16 @@ impl CommandExecutor for RealCommandExecutor {
     }
 }
 
-/// Runs a long, uninterruptible step through the streaming runner, logging
-/// "still {activity}, 2m10s" at a steady interval so the operator can see a slow
-/// build or switch is still alive. Never applies a deadline.
+/// Runs a long, uninterruptible step through the streaming runner, reporting a
+/// heartbeat ("still {activity}, 2m10s", plus the latest build line where the
+/// surface shows it) at a steady interval so the operator can see a slow build
+/// or switch is still alive. Never applies a deadline.
 fn run_long_step(command: &ProcessCommand, activity: &str) -> Result<(bool, String, String)> {
     RealProcessRunner.run_streaming_text(
         command,
         crate::process::run::BUILD_PROGRESS_INTERVAL,
         &mut |elapsed, last_line| {
-            tracing::info!(
-                "{}",
-                crate::process::run::heartbeat_line(activity, elapsed, last_line)
-            );
+            crate::reporter::progress::heartbeat(activity, elapsed, last_line);
         },
     )
 }

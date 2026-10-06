@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Actionable diagnostics rendering.
+//! Operator-facing reporting: actionable diagnostics and activation progress.
+//!
+//! [`progress`] carries the [`Reporter`](progress::Reporter) abstraction that
+//! activation phases report through, separating what the operator watches
+//! (steps, details, heartbeats) from the log. The rest of this module renders
+//! actionable diagnostics.
 //!
 //! This is the single place that turns a set of failures into the "what to do
 //! next" output, so the human summary, the JSON envelope and any future surface
@@ -17,6 +22,8 @@
 //!   the hidden storage" step, not one per check.
 //! - A single terminal [`NailsError`]: rendered as a [`Diagnostic`] pairing the
 //!   error's message with its one [`NailsError::hint`], if it has one.
+
+pub mod progress;
 
 use crate::error::{NailsError, PreFlightFailures};
 

@@ -13,7 +13,24 @@
         "schema_version": { "const": 1 },
         "command": { "const": "activate" },
         "type": { "const": "progress" },
-        "phase": { "type": "string", "minLength": 1 }
+        "phase": { "type": "string", "minLength": 1 },
+        "step": {
+          "description": "Present on a step event: the 1-based index of the step that started.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "total_steps": { "type": "integer", "minimum": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "detail": {
+          "description": "Present on a detail event: progress within the current step, such as the overlay being mounted.",
+          "type": "string",
+          "minLength": 1
+        },
+        "elapsed_seconds": {
+          "description": "Present on a heartbeat event: how long the current long-running step (a build or switch) has been running.",
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
     {

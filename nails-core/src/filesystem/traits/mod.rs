@@ -104,8 +104,8 @@ pub struct ProcessMatch {
 /// - **Sync:** Required for sharing between threads
 /// - **Clone:** Required for passing to multiple managers
 /// - **'static:** Implementations own their state (no borrowed filesystems), so
-///   platform backends and config layers can be handed out as trait objects
-///   over any filesystem
+///   platform backends, config layers and progress reporters can be handed out
+///   as trait objects that outlive a borrow of the manager
 ///
 /// # Implementation Notes
 ///

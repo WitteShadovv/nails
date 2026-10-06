@@ -1050,7 +1050,11 @@ fn no_cancel_lets_activation_complete() {
 #[test]
 fn step_progress_numbers_steps_contiguously_up_to_the_total() {
     // The layer path emits seven steps: the counter ends exactly at the total.
-    let mut step = StepProgress::<crate::MockFilesystem>::new(Verbosity::Normal, 7);
+    let mut step = StepProgress::new(
+        Verbosity::Normal,
+        7,
+        crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
+    );
     for _ in 0..7 {
         step.emit("phase", "message");
     }
@@ -1245,7 +1249,11 @@ fn record_hidden_added_units_records_nothing_without_an_applied_switch() {
 fn step_progress_total_follows_the_overlay_only_path() {
     // With no declarative layer the two NixOS steps are skipped, so the derived
     // total is five and the five emitted steps number 1..=5 contiguously.
-    let mut step = StepProgress::<crate::MockFilesystem>::new(Verbosity::Quiet, 5);
+    let mut step = StepProgress::new(
+        Verbosity::Quiet,
+        5,
+        crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
+    );
     for expected in 1..=5 {
         step.emit("phase", "message");
         assert_eq!(step.current, expected);

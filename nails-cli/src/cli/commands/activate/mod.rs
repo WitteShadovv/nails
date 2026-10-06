@@ -513,6 +513,13 @@ pub fn execute(
     if json {
         output::print_activate_progress("activating");
     }
+    // Present the activation's progress for this surface: a spinner on an
+    // interactive terminal, plain lines on a pipe, typed events under --json,
+    // and nothing at all from a detached worker (whose progress `nails status`
+    // reads from the hidden volume).
+    manager.set_reporter(
+        output::ProgressSurface::select(settings, already_detached).reporter(settings),
+    );
     let start = Instant::now();
     let result = manager.activate_with_options(options, skip_preflight);
     let duration = start.elapsed().as_secs_f64();

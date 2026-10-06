@@ -38,6 +38,9 @@ pub struct OutputSettings {
     pub color_stderr: bool,
     /// Use ASCII markers and no box drawing.
     pub ascii: bool,
+    /// Animate progress (a redrawn spinner line) on stderr. Only for human
+    /// output on an interactive terminal that understands cursor control.
+    pub progress_animation: bool,
 }
 
 impl Default for OutputSettings {
@@ -49,6 +52,7 @@ impl Default for OutputSettings {
             color_stdout: false,
             color_stderr: false,
             ascii: false,
+            progress_animation: false,
         }
     }
 }
@@ -158,12 +162,18 @@ impl OutputSettings {
         // Results go to stdout, so its sink decides whether Unicode is safe.
         let ascii = args.ascii || env.term_is_dumb() || !env.stdout_tty || !env.locale_is_utf8();
 
+        // A spinner redraws its line in place, so it needs a real terminal on
+        // stderr that honours cursor control; pipes, files, the journal and
+        // `TERM=dumb` get one plain line per step instead.
+        let progress_animation = mode == OutputMode::Human && env.stderr_tty && !env.term_is_dumb();
+
         Self {
             verbosity,
             mode,
             color_stdout,
             color_stderr,
             ascii,
+            progress_animation,
         }
     }
 
@@ -430,5 +440,28 @@ mod tests {
                 ascii: true
             }
         );
+    }
+
+    #[test]
+    fn progress_animates_only_for_human_output_on_a_capable_terminal() {
+        assert!(resolve(GlobalArgs::default(), &terminal()).progress_animation);
+
+        let piped = Environment {
+            stderr_tty: false,
+            ..terminal()
+        };
+        assert!(!resolve(GlobalArgs::default(), &piped).progress_animation);
+
+        let dumb = Environment {
+            term: Some("dumb".to_string()),
+            ..terminal()
+        };
+        assert!(!resolve(GlobalArgs::default(), &dumb).progress_animation);
+
+        let json = GlobalArgs {
+            json: true,
+            ..GlobalArgs::default()
+        };
+        assert!(!resolve(json, &terminal()).progress_animation);
     }
 }

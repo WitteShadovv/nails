@@ -117,6 +117,61 @@ fn decoy_writer_lines(
     lines
 }
 
+/// How activation progress is presented on this run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProgressSurface {
+    /// A redrawn spinner line with the step and its elapsed time (stderr is an
+    /// interactive terminal).
+    Spinner,
+    /// One plain line per step, detail and heartbeat on stderr.
+    Plain,
+    /// Typed `progress` events in the `activate --json` stream on stdout.
+    Json,
+    /// Nothing on stdout or stderr: a detached worker, whose progress is read
+    /// from the hidden-volume progress record by `nails status`.
+    Silent,
+}
+
+impl ProgressSurface {
+    /// Choose the surface for a run. A detached worker is always silent, even
+    /// when it inherited `--json`: its output streams are discarded. Quiet runs
+    /// report no progress, so they never start a spinner.
+    pub fn select(settings: &OutputSettings, detached: bool) -> Self {
+        if detached {
+            ProgressSurface::Silent
+        } else if settings.is_json() {
+            ProgressSurface::Json
+        } else if settings.progress_animation && !settings.is_quiet() {
+            ProgressSurface::Spinner
+        } else {
+            ProgressSurface::Plain
+        }
+    }
+
+    /// Build the reporter for this surface.
+    pub fn reporter(
+        self,
+        settings: &OutputSettings,
+    ) -> nails_core::reporter::progress::SharedReporter {
+        use nails_core::reporter::progress::{
+            JsonReporter, PlainReporter, SilentReporter, TtyReporter, shared,
+        };
+        match self {
+            ProgressSurface::Spinner => shared(TtyReporter::new(
+                Box::new(std::io::stderr()),
+                settings.stderr_style(),
+            )),
+            ProgressSurface::Plain => shared(PlainReporter::new(Box::new(std::io::stderr()))),
+            ProgressSurface::Json => shared(JsonReporter::new(
+                Box::new(std::io::stdout()),
+                SCHEMA_VERSION,
+                "activate",
+            )),
+            ProgressSurface::Silent => shared(SilentReporter),
+        }
+    }
+}
+
 /// Emit a progress event on stdout, ahead of the final result line.
 pub fn print_activate_progress(phase: &'static str) {
     let event = ActivateProgressEvent {
@@ -534,6 +589,47 @@ fn render_activate_success(
 
 #[cfg(test)]
 mod tests {
+    use super::ProgressSurface;
+    use crate::cli::output::{OutputMode, OutputSettings};
+
+    #[test]
+    fn progress_surface_follows_mode_terminal_and_detachment() {
+        let terminal = OutputSettings {
+            progress_animation: true,
+            ..OutputSettings::default()
+        };
+        let piped = OutputSettings::default();
+        let json = OutputSettings {
+            mode: OutputMode::Json,
+            ..OutputSettings::default()
+        };
+
+        assert_eq!(
+            ProgressSurface::select(&terminal, false),
+            ProgressSurface::Spinner
+        );
+        assert_eq!(
+            ProgressSurface::select(&piped, false),
+            ProgressSurface::Plain
+        );
+        assert_eq!(ProgressSurface::select(&json, false), ProgressSurface::Json);
+        let quiet_terminal = OutputSettings {
+            verbosity: nails_core::Verbosity::Quiet,
+            ..terminal
+        };
+        assert_eq!(
+            ProgressSurface::select(&quiet_terminal, false),
+            ProgressSurface::Plain
+        );
+        // A detached worker never writes progress, whatever it inherited.
+        for settings in [terminal, piped, json] {
+            assert_eq!(
+                ProgressSurface::select(&settings, true),
+                ProgressSurface::Silent
+            );
+        }
+    }
+
     use super::*;
     use nails_core::{MockFilesystem, NailsError, NailsManager, ShellSetupResult, TestWorld};
     use std::path::PathBuf;

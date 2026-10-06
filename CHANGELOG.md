@@ -32,6 +32,13 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Added
 
+- Activation reports progress through one reporter per surface: on an interactive terminal a
+  spinner line shows the step and its elapsed time, with the overlay being mounted or the latest
+  build line under it, and each finished step stays behind with its duration; on a pipe or
+  `TERM=dumb` one plain line per step, per overlay and per 30 s heartbeat (never the raw build
+  line); under `--json` typed `progress` events (`step`/`total_steps`/`label`, `detail`,
+  `elapsed_seconds`); and a detached worker writes nothing to stdout or stderr. Step lines no longer
+  carry an `INFO` prefix.
 - `nails status` shows an activation in flight while the state is `activating`: the phase,
   step and elapsed time, read from a progress record the activation keeps on the hidden volume
   (`progress.json`, removed when the activation returns). This is the only view of a detached

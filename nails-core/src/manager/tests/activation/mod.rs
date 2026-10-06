@@ -545,6 +545,10 @@ fn test_activate_quiet_mode_minimal_output() {
     };
     let mut manager = NailsManager::new(fs.clone(), config, state_path.clone());
     manager.set_verbosity(Verbosity::Quiet);
+    let reported = Arc::new(Mutex::new(Vec::new()));
+    manager.set_reporter(crate::reporter::progress::shared(StepRecorder(
+        reported.clone(),
+    )));
 
     let manager_arc = Arc::new(Mutex::new(manager));
 
@@ -552,10 +556,86 @@ fn test_activate_quiet_mode_minimal_output() {
     let result = manager_arc.lock().unwrap().activate(true);
     assert!(result.is_ok(), "Activate should succeed: {:?}", result);
 
-    // In quiet mode, progress steps are suppressed. Assert on stable step
-    // tokens rather than the step count (which the path derives) or punctuation.
-    assert!(!logs_contain("Preparing session management"));
-    assert!(!logs_contain("Running pre-flight checks"));
+    // In quiet mode no progress reaches the operator: the reporter receives
+    // nothing, and no step is logged at info level (it is only in the debug
+    // log that the hidden-root log file records).
+    assert!(
+        reported.lock().unwrap().is_empty(),
+        "quiet mode must not report progress: {:?}",
+        reported.lock().unwrap()
+    );
+    logs_assert(|lines: &[&str]| {
+        match lines
+            .iter()
+            .find(|line| line.contains(" INFO ") && line.contains("Preparing session management"))
+        {
+            Some(line) => Err(format!("step shown at info level in quiet mode: {line}")),
+            None => Ok(()),
+        }
+    });
+}
+
+/// Records the step phases an activation reports.
+struct StepRecorder(std::sync::Arc<std::sync::Mutex<Vec<String>>>);
+
+impl crate::reporter::progress::Reporter for StepRecorder {
+    fn step(&mut self, step: crate::reporter::progress::Step<'_>) {
+        self.0.lock().unwrap().push(step.phase.to_string());
+    }
+    fn detail(&mut self, detail: &str) {
+        self.0.lock().unwrap().push(format!("detail {detail}"));
+    }
+    fn heartbeat(&mut self, _activity: &str, _elapsed: std::time::Duration, _line: Option<&str>) {
+        self.0.lock().unwrap().push("heartbeat".to_string());
+    }
+    fn finish(&mut self, success: bool) {
+        self.0.lock().unwrap().push(format!("finish {success}"));
+    }
+}
+
+#[test]
+fn activation_reports_each_step_and_finishes_successfully() {
+    use std::sync::{Arc, Mutex};
+
+    let temp_dir = tempfile::tempdir().expect("Should create temp dir");
+    let hidden = temp_dir.path();
+    let state_path = hidden.join("state.json");
+    StateFile::default()
+        .save_with_custom_root(&state_path, hidden)
+        .expect("Should save initial state");
+    let config = Config {
+        hidden_volume_root: hidden.to_path_buf(),
+        state_file_path: state_path.clone(),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+    let mut manager = NailsManager::new(MockFilesystem::new(), config, state_path);
+    let reported = Arc::new(Mutex::new(Vec::new()));
+    manager.set_reporter(crate::reporter::progress::shared(StepRecorder(
+        reported.clone(),
+    )));
+
+    manager.activate(true).expect("activation should succeed");
+
+    let reported = reported.lock().unwrap().clone();
+    let steps: Vec<&str> = reported
+        .iter()
+        .filter(|event| !event.starts_with("detail") && !event.starts_with("finish"))
+        .map(String::as_str)
+        .collect();
+    assert_eq!(
+        steps,
+        vec![
+            "preflight",
+            "session_management",
+            "config_prepare",
+            "overlay_mount",
+            "profile_switch",
+            "session_restart",
+            "finalize",
+        ]
+    );
+    assert_eq!(reported.last().map(String::as_str), Some("finish true"));
 }
 
 #[test]
