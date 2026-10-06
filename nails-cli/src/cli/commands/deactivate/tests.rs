@@ -29,7 +29,10 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
     command
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DEACTIVATE_SUBPROCESS_CASE", case)
-        .env(ENV_SKIP_DETACH, "1");
+        .env(ENV_SKIP_DETACH, "1")
+        // The temp hidden roots share `/`'s device; declare them attached so the
+        // state lock (which refuses an unmounted hidden root) admits them.
+        .env("NAILS_TEST_FORCE_ATTACHED", "1");
 
     if let Some(path) = config_path {
         command.env("NAILS_DEACTIVATE_SUBPROCESS_CONFIG", path);

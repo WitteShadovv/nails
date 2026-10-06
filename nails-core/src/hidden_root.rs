@@ -135,6 +135,65 @@ impl HiddenRoot {
     }
 }
 
+/// Refuse a state write (the state file or its `.lock`) unless `dir` lies on the
+/// mounted hidden volume.
+///
+/// Every manager state write and every command's state lock goes through it.
+/// Only `init --allow-unmounted`, which the operator points at a directory on
+/// purpose, writes its first state file without it.
+///
+/// The state directory is the hidden root (or a directory inside it). When the
+/// hidden volume is not mounted the configured path is a bare mount-point
+/// directory on the decoy, and creating `state.json` or `.lock` there would
+/// leave a NAILS artifact on the decoy disk. The same attach gate every other
+/// write path consults decides it: the directory must exist and sit on a
+/// filesystem other than `/`'s. No marker is required, since `state.json` is
+/// itself the marker.
+pub fn ensure_state_dir_attached<F: Filesystem>(fs: &F, dir: &Path) -> Result<()> {
+    #[cfg(test)]
+    if !state_attach_probe::enforced() {
+        return Ok(());
+    }
+    match HiddenRoot::verify_attached(fs, dir, false)? {
+        AttachState::Attached => Ok(()),
+        AttachState::Unattached(reason) => Err(crate::NailsError::InvalidState(format!(
+            "refusing to write state outside the mounted hidden volume: {reason}"
+        ))),
+    }
+}
+
+/// Test seam for [`ensure_state_dir_attached`], compiled only under `cfg(test)`.
+///
+/// This crate's unit tests write state into temp directories that share `/`'s
+/// device on many hosts, so the state gate is off for them unless a test arms it
+/// on its own thread to exercise the refusal against a real directory.
+#[cfg(test)]
+pub(crate) mod state_attach_probe {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ENFORCED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Enforce the state attach gate on this thread until the guard drops.
+    pub(crate) fn enforce() -> Guard {
+        ENFORCED.with(|cell| cell.set(true));
+        Guard
+    }
+
+    pub(crate) fn enforced() -> bool {
+        ENFORCED.with(Cell::get)
+    }
+
+    pub(crate) struct Guard;
+
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            ENFORCED.with(|cell| cell.set(false));
+        }
+    }
+}
+
 /// Test-only escape hatch for the device comparison.
 ///
 /// Integration tests exercise the real write paths against a temp directory,

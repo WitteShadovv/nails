@@ -262,12 +262,23 @@ impl<F: Filesystem> NailsManager<F> {
         // Save to disk with configured hidden volume root. Restore the cache to
         // the forced state whether or not the write succeeds (see `update_state`),
         // so a failed write never empties the cache; the error is still returned.
-        let save_result = state_file
-            .save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root);
+        let save_result = self.save_state_file(&state_file);
         *cached = Some(state_file);
         save_result?;
 
         Ok(())
+    }
+
+    /// Write `state_file` to the state path, but only onto the mounted hidden
+    /// volume: an unmounted mount point is a directory on the decoy, and
+    /// `state.json` must never be created there.
+    fn save_state_file(&self, state_file: &StateFile) -> Result<()> {
+        let state_dir = self
+            .state_file_path
+            .parent()
+            .unwrap_or(&self.config.hidden_volume_root);
+        crate::hidden_root::ensure_state_dir_attached(&self.filesystem, state_dir)?;
+        state_file.save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)
     }
 
     /// Update system state with validation
@@ -356,8 +367,7 @@ impl<F: Filesystem> NailsManager<F> {
         // restored to the new state whether or not the write succeeds, so a failed
         // write (a dead or read-only hidden backend) never leaves the cache empty
         // and later reads keep working; the error is still returned to the caller.
-        let save_result = state_file
-            .save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root);
+        let save_result = self.save_state_file(&state_file);
         *cached = Some(state_file);
         save_result?;
 
@@ -377,8 +387,7 @@ impl<F: Filesystem> NailsManager<F> {
         let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.last_modified = Utc::now();
-            state_file
-                .save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)?;
+            self.save_state_file(state_file)?;
         }
         Ok(())
     }

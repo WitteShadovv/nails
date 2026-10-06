@@ -893,7 +893,17 @@ fn exit_code_5_needs_root_on_privileged_commands_run_unprivileged() {
 fn exit_code_6_invalid_state_on_reset_upper_while_active() {
     // reset-upper refuses when the system is not Inactive, before touching data.
     let harness = write_active_harness();
-    let (code, value) = run_json(&harness.config, &["reset-upper", CONTRACT_TARGET, "-y"]);
+    // The temp hidden root shares `/`'s device; declare it attached so the state
+    // lock (which refuses an unmounted hidden root) lets the state check run.
+    let output = run(
+        &harness.config,
+        &[("NAILS_TEST_FORCE_ATTACHED", "1")],
+        &["reset-upper", CONTRACT_TARGET, "-y", "--json"],
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let value: Value = serde_json::from_str(stdout.trim().lines().next_back().unwrap_or(""))
+        .unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}): {stdout}"));
+    let code = output.status.code().unwrap_or(-1);
     assert_eq!(code, 6);
     assert_eq!(value["command"], "reset-upper");
     assert_eq!(value["ok"], false);

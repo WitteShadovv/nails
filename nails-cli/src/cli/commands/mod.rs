@@ -263,14 +263,17 @@ pub(crate) fn acquire_state_lock_or_report(
     command: &'static str,
     json: bool,
 ) -> Result<nails_core::StateLock, ExitStatus> {
-    nails_core::StateLock::try_acquire(state_lock_dir(state_file_path)).map_err(|error| {
-        report_error(
-            json,
-            command,
-            ExitStatus::Failed,
-            ErrorBody::new("state_locked", error.to_string()),
-        )
-    })
+    let dir = state_lock_dir(state_file_path);
+    nails_core::ensure_state_dir_attached(&nails_core::RealFilesystem, dir)
+        .and_then(|()| nails_core::StateLock::try_acquire(dir))
+        .map_err(|error| {
+            report_error(
+                json,
+                command,
+                ExitStatus::Failed,
+                ErrorBody::new("state_locked", error.to_string()),
+            )
+        })
 }
 
 /// Take the state lock for emergency teardown, proceeding without it on timeout.
@@ -282,10 +285,14 @@ pub(crate) fn acquire_state_lock_or_report(
 pub(crate) fn acquire_state_lock_for_emergency(
     state_file_path: &Path,
 ) -> Option<nails_core::StateLock> {
-    match nails_core::StateLock::acquire_with_timeout(
-        state_lock_dir(state_file_path),
-        nails_core::EMERGENCY_LOCK_TIMEOUT,
-    ) {
+    // Never create `.lock` in a bare mount-point directory on the decoy: with the
+    // hidden volume gone, emergency proceeds without the lock.
+    let dir = state_lock_dir(state_file_path);
+    if let Err(error) = nails_core::ensure_state_dir_attached(&nails_core::RealFilesystem, dir) {
+        tracing::warn!(%error, "Hidden volume not attached; proceeding with emergency teardown without the state lock");
+        return None;
+    }
+    match nails_core::StateLock::acquire_with_timeout(dir, nails_core::EMERGENCY_LOCK_TIMEOUT) {
         Ok(Some(lock)) => Some(lock),
         Ok(None) => {
             tracing::warn!(

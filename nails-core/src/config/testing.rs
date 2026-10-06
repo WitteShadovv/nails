@@ -227,6 +227,19 @@ impl TestWorld {
             }
         });
 
+        // The hidden root is a real directory standing in for the mounted hidden
+        // volume; the mock world sees it as one too, so the state-write attach
+        // gate finds it.
+        for root in [
+            Some(config.hidden_volume_root.as_path()),
+            config.state_file_path.parent(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.fs
+                .mock_set_path_type(&root.to_string_lossy(), PathKind::Dir);
+        }
         for dir in &self.dirs {
             self.fs.mock_set_path_type(dir, PathKind::Dir);
         }

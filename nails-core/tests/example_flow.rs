@@ -76,6 +76,8 @@ fn test_activation_with_config() {
     let state_path = hidden_root.join("state.json");
 
     let fs = MockFilesystem::new();
+    // The temp dir stands in for the mounted hidden volume.
+    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
     let config = Config {
         hidden_volume_root: hidden_root,
         state_file_path: state_path.clone(),

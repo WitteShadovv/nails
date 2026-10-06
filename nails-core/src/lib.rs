@@ -152,7 +152,7 @@ pub use error::{IoResultExt, NailsError, Result};
 pub use filesystem::{Filesystem, RealFilesystem};
 #[cfg(any(test, feature = "test-support"))]
 pub use filesystem::{MockFilesystem, PathKind};
-pub use hidden_root::{AttachState, HiddenRoot};
+pub use hidden_root::{AttachState, HiddenRoot, ensure_state_dir_attached};
 pub use manager::deactivation::{DeactivationMode, DeactivationOrchestrator};
 pub use manager::{
     ActivationOutcome, HiddenConfigOutcome, HostEffects, MountInfo, MountTracker, MountType,

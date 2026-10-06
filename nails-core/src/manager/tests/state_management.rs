@@ -788,3 +788,45 @@ fn transition_methods_agree_with_canonical_policy() {
         assert_eq!(idx(&emergency), 0);
     }
 }
+
+#[test]
+fn state_writes_refuse_a_hidden_root_that_is_not_the_mounted_volume() {
+    use crate::hidden_root::state_attach_probe;
+
+    // With the hidden volume not mounted, the configured root is a bare
+    // mount-point directory on the decoy (here: on `/`'s device). No state write
+    // may create state.json there.
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().to_path_buf();
+    let fs = crate::MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_device_id(std::path::Path::new("/"), 1);
+    fs.mock_set_device_id(&root, 1);
+    let state_path = root.join("state.json");
+    let config = crate::Config {
+        hidden_volume_root: root.clone(),
+        state_file_path: state_path.clone(),
+        ..crate::Config::test_default()
+    };
+    let mut manager = crate::NailsManager::new(fs.clone(), config, state_path.clone());
+
+    let _enforced = state_attach_probe::enforce();
+    let error = manager
+        .force_state(crate::SystemState::Inactive)
+        .expect_err("an unmounted hidden root must refuse the state write");
+    assert!(
+        error
+            .to_string()
+            .contains("outside the mounted hidden volume"),
+        "{error}"
+    );
+    assert!(
+        !state_path.exists(),
+        "state.json must not be created on the decoy"
+    );
+
+    // Once the volume is mounted (its own device), the write goes through.
+    fs.mock_set_device_id(&root, 2);
+    manager.force_state(crate::SystemState::Inactive).unwrap();
+    assert!(state_path.exists());
+}
