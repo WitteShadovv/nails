@@ -7,14 +7,10 @@
 # disk-image forensic scanners in nix/e2e-tests/lib/disk_forensics.py chief among
 # them -- works unchanged against a Debian or Ubuntu guest.
 #
-#   API COUPLING (confirm at evaluation time): the single call into nix-vm-test
-#   is `buildVmTest` below. The numtide attribute layout is versioned, so the
-#   exact spelling of "run this testScript against this pinned image" must be
-#   checked against the pinned revision when flake.lock is first generated on a
-#   KVM host (the development sandbox has no Nix and cannot fetch the input).
-#   Everything else in the distro tier is image-table data and plain testScript
-#   text; keeping the coupling to this one function means a spelling fix is a
-#   one-line change here, not a rewrite of every test.
+# The single call into nix-vm-test is `buildVmTest` below: each distribution
+# is an attribute set keyed by release, and each release is a function of the
+# test script. Keeping the coupling to this one function means an upstream API
+# change is a one-line fix here, not a rewrite of every test.
 { pkgs, nix-vm-test }:
 let
   inherit (pkgs) lib;
@@ -27,7 +23,7 @@ in
 {
   # Build one distribution VM test.
   #
-  #   entry      one value from images.nix: { distro, release, format, image }.
+  #   entry      one value from images.nix: { distro, image, release }.
   #   sharedDirs host paths exposed read-only in the guest, as
   #              { <name> = { source = <store path>; target = <guest path>; }; }.
   #              The static musl `nails` binary is shared this way.
@@ -38,13 +34,10 @@ in
       sharedDirs ? { },
       testScript,
     }:
-    assert lib.assertMsg (entry.image.outputHash or null != lib.fakeHash)
-      "distro image ${entry.distro}-${entry.release} still has a placeholder hash; pin it before building (see nix/distro-tests/images.nix)";
-    # The per-distribution builder, selected by the image table's `distro`
-    # field. numtide exposes one attribute per supported distribution; passing an
-    # explicit `image` overrides its default pin with our content-addressed one.
-    vmLib.${entry.distro} {
-      inherit (entry) image;
+    assert lib.assertMsg (
+      vmLib ? ${entry.distro} && vmLib.${entry.distro} ? ${entry.image}
+    ) "nix-vm-test has no ${entry.distro} image ${entry.image} (see nix/distro-tests/images.nix)";
+    vmLib.${entry.distro}.${entry.image} {
       inherit sharedDirs testScript;
     };
 }
