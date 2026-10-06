@@ -375,8 +375,8 @@ mod tests {
         fs.mock_set_submounts(
             Path::new("/etc"),
             vec![Submount::ExtraLower {
-                mount_point: PathBuf::from("/etc/nixos"),
-                source: PathBuf::from("/persist/etc/nixos"),
+                mount_point: PathBuf::from("/etc/data"),
+                source: PathBuf::from("/persist/etc/data"),
             }],
         );
 

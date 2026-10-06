@@ -7,10 +7,10 @@
 //! `clone_private_mount()` isolates the overlay from the VFS mount tree, so
 //! any bind-mounted content within the lower directory is invisible.
 //!
-//! On NixOS impermanence systems this is a critical problem: `/etc` is on tmpfs
-//! and `/etc/nixos` is bind-mounted from `/persist/etc/nixos/`. When overlayfs
-//! mounts with `lowerdir=/etc`, it sees the empty tmpfs directory — files like
-//! `flake.nix` and `configuration.nix` are invisible.
+//! On impermanence systems this is a critical problem: `/etc` is on tmpfs and a
+//! persistent directory such as `/etc/data` is bind-mounted from
+//! `/persist/etc/data/`. When overlayfs mounts with `lowerdir=/etc`, it sees the
+//! empty tmpfs directory — the bind-mounted files are invisible.
 //!
 //! This module computes extra lower layer directories from bind mount sources,
 //! enabling overlayfs's native multiple lower layer support
@@ -29,9 +29,9 @@ use std::path::{Path, PathBuf};
 ///
 /// # Algorithm
 ///
-/// Given `target = /etc` and `(mount_point = /etc/nixos, source = /persist/etc/nixos)`:
-/// 1. Compute relative path: `nixos`
-/// 2. Strip relative suffix from source: `/persist/etc/nixos` → `/persist/etc`
+/// Given `target = /etc` and `(mount_point = /etc/data, source = /persist/etc/data)`:
+/// 1. Compute relative path: `data`
+/// 2. Strip relative suffix from source: `/persist/etc/data` → `/persist/etc`
 /// 3. That gives us the extra lower root: `/persist/etc`
 ///
 /// # Arguments
@@ -51,7 +51,7 @@ use std::path::{Path, PathBuf};
 ///
 /// let target = Path::new("/etc");
 /// let sources = vec![
-///     (PathBuf::from("/etc/nixos"), PathBuf::from("/persist/etc/nixos")),
+///     (PathBuf::from("/etc/data"), PathBuf::from("/persist/etc/data")),
 /// ];
 ///
 /// let extra = compute_extra_lower_dirs(target, &sources);
@@ -91,7 +91,7 @@ pub fn compute_extra_lower_dirs(
         };
 
         // Strip the relative suffix from the source to get the extra lower root.
-        // e.g., source=/persist/etc/nixos, relative=nixos → root=/persist/etc
+        // e.g., source=/persist/etc/data, relative=data → root=/persist/etc
         let extra_lower = match source_path.strip_suffix_path(relative) {
             Some(root) => root,
             None => {
@@ -179,8 +179,8 @@ mod tests {
     #[test]
     fn test_single_submount_computes_extra_lower() {
         let sources = vec![(
-            PathBuf::from("/etc/nixos"),
-            PathBuf::from("/persist/etc/nixos"),
+            PathBuf::from("/etc/data"),
+            PathBuf::from("/persist/etc/data"),
         )];
         let result = compute_extra_lower_dirs(Path::new("/etc"), &sources);
         assert_eq!(result, vec![PathBuf::from("/persist/etc")]);
@@ -190,8 +190,8 @@ mod tests {
     fn test_multiple_submounts_same_root_deduplicates() {
         let sources = vec![
             (
-                PathBuf::from("/etc/nixos"),
-                PathBuf::from("/persist/etc/nixos"),
+                PathBuf::from("/etc/data"),
+                PathBuf::from("/persist/etc/data"),
             ),
             (PathBuf::from("/etc/ssh"), PathBuf::from("/persist/etc/ssh")),
         ];
@@ -204,8 +204,8 @@ mod tests {
     fn test_multiple_submounts_different_roots() {
         let sources = vec![
             (
-                PathBuf::from("/etc/nixos"),
-                PathBuf::from("/persist/etc/nixos"),
+                PathBuf::from("/etc/data"),
+                PathBuf::from("/persist/etc/data"),
             ),
             (
                 PathBuf::from("/etc/machine-id"),
@@ -225,8 +225,8 @@ mod tests {
     #[test]
     fn test_nested_submount_path() {
         let sources = vec![(
-            PathBuf::from("/etc/nixos/secrets"),
-            PathBuf::from("/persist/etc/nixos/secrets"),
+            PathBuf::from("/etc/data/secrets"),
+            PathBuf::from("/persist/etc/data/secrets"),
         )];
         let result = compute_extra_lower_dirs(Path::new("/etc"), &sources);
         assert_eq!(result, vec![PathBuf::from("/persist/etc")]);
@@ -246,7 +246,7 @@ mod tests {
     fn test_source_suffix_mismatch_skipped() {
         // Source doesn't end with the relative path — can't compute root
         let sources = vec![(
-            PathBuf::from("/etc/nixos"),
+            PathBuf::from("/etc/data"),
             PathBuf::from("/persist/completely/different"),
         )];
         let result = compute_extra_lower_dirs(Path::new("/etc"), &sources);
@@ -255,25 +255,25 @@ mod tests {
 
     #[test]
     fn test_strip_suffix_path_basic() {
-        let p = Path::new("/persist/etc/nixos");
+        let p = Path::new("/persist/etc/data");
         assert_eq!(
-            p.strip_suffix_path(Path::new("nixos")),
+            p.strip_suffix_path(Path::new("data")),
             Some(PathBuf::from("/persist/etc"))
         );
     }
 
     #[test]
     fn test_strip_suffix_path_multi_component() {
-        let p = Path::new("/persist/etc/nixos/secrets");
+        let p = Path::new("/persist/etc/data/secrets");
         assert_eq!(
-            p.strip_suffix_path(Path::new("nixos/secrets")),
+            p.strip_suffix_path(Path::new("data/secrets")),
             Some(PathBuf::from("/persist/etc"))
         );
     }
 
     #[test]
     fn test_strip_suffix_path_no_match() {
-        let p = Path::new("/persist/etc/nixos");
+        let p = Path::new("/persist/etc/data");
         assert_eq!(p.strip_suffix_path(Path::new("ssh")), None);
     }
 
@@ -289,7 +289,7 @@ mod tests {
     #[test]
     fn test_strip_suffix_path_suffix_longer_than_path() {
         let p = Path::new("/etc");
-        assert_eq!(p.strip_suffix_path(Path::new("persist/etc/nixos")), None);
+        assert_eq!(p.strip_suffix_path(Path::new("persist/etc/data")), None);
     }
 
     #[test]
