@@ -239,6 +239,8 @@ in
 
     with subtest("deactivate-with-reboot removes the hidden runtime state"):
         canonical_deactivate(headless_config, unit_name="nails-deactivate-full-rebuild")
+        # The reboot clears /tmp, so the headless config is re-written.
+        write_headless_config(headless_config)
         # The hidden volume is closed by the reboot; status reads a missing state
         # file as Inactive.
         assert_state("Inactive", headless_config)
@@ -272,6 +274,8 @@ in
 
     with subtest("final deactivate leaves no hidden overlays and bounded nixos drift"):
         canonical_deactivate(headless_config, unit_name="nails-deactivate-full-rebuild-2")
+        # The reboot clears /tmp, so the headless config is re-written.
+        write_headless_config(headless_config)
         assert_state("Inactive", headless_config)
         machine.fail(f"test -e {HIDDEN_MARKER}")
 
