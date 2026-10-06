@@ -966,3 +966,41 @@ fn test_a_surviving_discovered_nails_mount_makes_the_teardown_incomplete() {
         other => panic!("expected DeactivationIncomplete, got {other:?}"),
     }
 }
+
+#[test]
+fn test_untrusted_emergency_repoints_a_hidden_current_system_at_the_booted_decoy() {
+    // No reboot follows an emergency, and the untrusted path has no decoy record:
+    // a /run/current-system left naming the (now gone) hidden toplevel must be
+    // pointed back at the booted decoy generation.
+    let manager = setup_manager_in_state(SystemState::Activating {
+        started_at: chrono::Utc::now(),
+    });
+    let hidden_root = manager.lock().unwrap().config().hidden_volume_root.clone();
+    {
+        let guard = manager.lock().unwrap();
+        let fs = guard.filesystem();
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+        fs.mock_set_path_exists("/nix/store/booted-decoy", true);
+        fs.create_symlink(
+            Path::new("/nix/store/booted-decoy"),
+            Path::new("/run/booted-system"),
+        )
+        .unwrap();
+        fs.create_symlink(
+            Path::new("/nix/store/hidden-system"),
+            Path::new("/run/current-system"),
+        )
+        .unwrap();
+    }
+
+    manager.lock().unwrap().emergency_deactivate().unwrap();
+
+    let guard = manager.lock().unwrap();
+    assert_eq!(
+        guard
+            .filesystem()
+            .canonicalize(Path::new("/run/current-system"))
+            .unwrap(),
+        Path::new("/nix/store/booted-decoy")
+    );
+}

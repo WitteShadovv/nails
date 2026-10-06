@@ -3,7 +3,10 @@
 
 //! The single-layer deactivation sequence shared by every teardown path.
 
-use super::decoy::{recorded_decoy_system, restore_decoy_current_system};
+use super::decoy::{
+    recorded_decoy_system, recorded_hidden_toplevel, restore_decoy_current_system,
+    restore_hidden_current_system,
+};
 use super::unmount::{
     UnmountOutcome, discovered_unmount_targets, merge_recorded_with_discovered,
     overlay_unmount_targets, remaining_nails_mounts,
@@ -409,6 +412,16 @@ impl DeactivationOrchestrator {
             "Teardown incomplete; recording DEGRADED (no remount, no return to ACTIVE)"
         );
 
+        // No reboot follows a degraded teardown, so point /run/current-system
+        // back at the decoy if it still names the hidden system (a RAM-only
+        // symlink swap, best-effort).
+        let _ = restore_hidden_current_system(
+            guard.filesystem(),
+            recorded_decoy_system(&guard).as_deref(),
+            recorded_hidden_toplevel(&guard).as_deref(),
+            guard.runtime_env(),
+        );
+
         // Record DEGRADED and commit so the RAII guard does NOT force the state
         // back to ACTIVE on drop. DEACTIVATING/Degraded -> DEGRADED is allowed.
         let degraded = guard
@@ -442,6 +455,10 @@ impl DeactivationOrchestrator {
             .filesystem()
             .discover_nails_mounts(Some(&hidden_root))?;
         let overlays_to_unmount = discovered_unmount_targets(&discovered);
+        // Whatever the cache still holds (nothing for a corrupt file), read before
+        // the baseline write replaces the state.
+        let recorded_decoy = recorded_decoy_system(manager);
+        let recorded_hidden = recorded_hidden_toplevel(manager);
 
         tracing::warn!(
             targets = ?overlays_to_unmount,
@@ -493,7 +510,19 @@ impl DeactivationOrchestrator {
 
         // No artifact cleanup after the unmount: everything it could reach is on
         // the decoy now (see the trusted emergency path).
-        let cleanup_report = CleanupReport::new(CleanupMode::Fast);
+        let mut cleanup_report = CleanupReport::new(CleanupMode::Fast);
+
+        // The untrusted path has no trustworthy decoy record to restore from, but
+        // /run/current-system may still name the hidden system: repoint it at the
+        // decoy when it does (a RAM-only symlink swap, best-effort).
+        if let Some(failure) = restore_hidden_current_system(
+            guard.filesystem(),
+            recorded_decoy.as_deref(),
+            recorded_hidden.as_deref(),
+            guard.runtime_env(),
+        ) {
+            cleanup_report.add_error(failure);
+        }
 
         // Drop the page cache after unmount (best-effort).
         let page_cache_dropped = self.drop_page_cache_after_unmount(&guard);
