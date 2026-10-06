@@ -763,6 +763,7 @@ impl<F: Filesystem> NailsManager<F> {
                 self.filesystem(),
                 recorded_decoy.as_deref(),
                 self.runtime_env(),
+                self.post_deactivation_power,
             )?;
         }
 

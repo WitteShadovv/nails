@@ -25,7 +25,7 @@ Options:
       --poweroff
           Power the machine off after the teardown attempt, whatever its outcome.
 
-          Powering off clears RAM, the only complete remedy for residue the teardown cannot remove; it runs even when a mount could not be removed. Mutually exclusive with `--reboot`.
+          Powering off lets RAM decay, the only complete remedy for residue the teardown cannot remove; it runs even when a mount could not be removed. Leave the machine off for a few minutes. Mutually exclusive with `--reboot`.
 
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
@@ -36,7 +36,7 @@ Options:
       --reboot
           Reboot into the decoy after the teardown attempt, whatever its outcome.
 
-          A reboot clears RAM. Mutually exclusive with `--poweroff`.
+          A warm reboot does not clear RAM: DRAM keeps its contents across a reset unless the firmware honours the TCG memory-overwrite request (MOR), and setting MOR writes EFI NVRAM. Prefer `--poweroff` when RAM residue matters. Mutually exclusive with `--poweroff`.
 
       --color <WHEN>
           When to use colour

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/deactivate.schema.json",
   "title": "NAILS deactivate --json",
-  "description": "Machine-readable deactivate envelope: one document with schema_version, command, ok, and either data (the reboot was requested) or error (the teardown failed).",
+  "description": "Machine-readable deactivate envelope: one document with schema_version, command, ok, and either data (the reboot or power-off was requested) or error (the teardown failed).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],
@@ -15,7 +15,7 @@
       "additionalProperties": false,
       "required": ["status", "recovery_guidance"],
       "properties": {
-        "status": { "const": "reboot_requested" },
+        "status": { "enum": ["reboot_requested", "poweroff_requested"] },
         "recovery_guidance": {
           "type": "array",
           "items": { "type": "string", "minLength": 1 }

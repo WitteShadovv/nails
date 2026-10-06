@@ -637,6 +637,49 @@ fn deactivate_requests_reboot_through_injected_dispatcher_even_in_test_runtime()
 }
 
 #[test]
+fn deactivate_requests_poweroff_when_the_operator_chose_it() {
+    // `deactivate --poweroff` routes the post-teardown step through the same
+    // dispatcher, asking for a power-off instead of the default reboot.
+    let (manager, _fs, _temp) = manager_ready_for_reboot_step();
+
+    let recorder = SimulatedHostEffects::new(SimulatedReboot::Dispatched);
+    {
+        let mut mgr = manager.lock().unwrap();
+        mgr.set_host_effects(HostEffects::Simulated(recorder.clone()));
+        mgr.set_post_deactivation_power(crate::PostTeardownPower::Poweroff);
+    }
+
+    manager
+        .lock()
+        .unwrap()
+        .deactivate()
+        .expect("deactivation should succeed when the power-off is dispatched");
+
+    assert_eq!(recorder.reboot_requests(), 1);
+    assert_eq!(
+        recorder.poweroff_requests(),
+        1,
+        "the post-teardown step must ask for a power-off, not a reboot"
+    );
+}
+
+#[test]
+fn deactivate_reboots_by_default() {
+    let (manager, _fs, _temp) = manager_ready_for_reboot_step();
+
+    let recorder = SimulatedHostEffects::new(SimulatedReboot::Dispatched);
+    manager
+        .lock()
+        .unwrap()
+        .set_host_effects(HostEffects::Simulated(recorder.clone()));
+
+    manager.lock().unwrap().deactivate().unwrap();
+
+    assert_eq!(recorder.reboot_requests(), 1);
+    assert_eq!(recorder.poweroff_requests(), 0);
+}
+
+#[test]
 fn deactivate_surfaces_a_refusing_reboot_guard_as_an_error() {
     // A guard that refuses the destructive reboot step must surface as an error,
     // never a silent `Ok`: the dispatcher records the attempt and returns the

@@ -178,8 +178,13 @@ Every backend leaves the same traces on the decoy side while you unlock it:
   (`boot.initrd.luks.devices`, `fileSystems`).
 
 `nails deactivate` ends with a reboot, which removes every mapping and loop
-device and clears the keys from RAM. After `nails emergency`, which does not
-reboot, run the lock sequence yourself.
+device. The reboot does not clear the keys from RAM: dm-crypt wipes the master
+key when a mapping is removed, but other copies (page cache, freed pages,
+process memory) survive a warm reboot unless the firmware honours the TCG
+memory-overwrite request, and setting that request writes EFI NVRAM. Use
+`nails deactivate --poweroff` to power off instead and let RAM decay. After
+`nails emergency`, which neither reboots nor powers off by default, run the lock
+sequence yourself.
 
 ## Deniability hazards
 

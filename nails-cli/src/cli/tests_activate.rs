@@ -127,6 +127,12 @@ fn test_deactivate_args_parsing_defaults() {
 }
 
 #[test]
+fn test_deactivate_poweroff_flag() {
+    assert!(deactivate(&["--poweroff"]).1.poweroff);
+    assert!(!deactivate(&[]).1.poweroff);
+}
+
+#[test]
 fn test_deactivate_no_clear_history_flag() {
     assert!(deactivate(&["--no-clear-history"]).1.no_clear_history);
 }

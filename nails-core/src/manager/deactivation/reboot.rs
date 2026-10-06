@@ -176,6 +176,22 @@ pub(super) fn request_reboot(env: &crate::RuntimeEnv) -> Result<()> {
     dispatch_reboot_candidates(reboot_candidates(env))
 }
 
+/// Dispatch the requested post-deactivation power action: the reboot commands,
+/// or the power-off commands when the operator asked for a power-off.
+fn request_power(env: &crate::RuntimeEnv, action: PostTeardownPower) -> Result<()> {
+    match action {
+        PostTeardownPower::Reboot => request_reboot(env),
+        PostTeardownPower::Poweroff => {
+            if crate::runtime_safety::should_skip_host_interaction() {
+                return Err(NailsError::RebootFailed(
+                    "Refusing to trigger power-off in test or runtime-safety mode".to_string(),
+                ));
+            }
+            dispatch_reboot_candidates(poweroff_candidates())
+        }
+    }
+}
+
 pub(super) fn poweroff_candidates() -> Vec<RebootCommand> {
     vec![
         RebootCommand::systemctl_poweroff(Program::Tool("systemctl")),
@@ -315,6 +331,7 @@ impl HostEffects {
         filesystem: &F,
         recorded_decoy: Option<&str>,
         env: &crate::RuntimeEnv,
+        action: PostTeardownPower,
     ) -> Result<PostDeactivationReboot> {
         match self {
             Self::Real => {
@@ -324,14 +341,14 @@ impl HostEffects {
                 }
 
                 reboot_then_restore_decoy_on_failure(
-                    || request_reboot(env),
+                    || request_power(env, action),
                     || switch_to_decoy_for_session(filesystem, recorded_decoy),
                 )
             }
             #[cfg(any(test, feature = "test-hooks"))]
             Self::Simulated(simulated) => {
                 let _ = recorded_decoy;
-                simulated.record_reboot_request()
+                simulated.record_reboot_request(action)
             }
         }
     }
@@ -339,9 +356,10 @@ impl HostEffects {
     /// Dispatch a power action requested after an emergency teardown
     /// (`--poweroff`/`--reboot`).
     ///
-    /// A power-off clears RAM, the only complete remedy for residue the teardown
-    /// cannot remove; a reboot into the decoy does the same and comes back up on
-    /// the decoy. [`HostEffects::Real`] skips the dispatch while runtime-safety
+    /// A power-off lets DRAM decay, the only complete remedy for residue the
+    /// teardown cannot remove; a warm reboot into the decoy comes back up on the
+    /// decoy but leaves RAM contents in place unless the firmware honours the TCG
+    /// memory-overwrite request. [`HostEffects::Real`] skips the dispatch while runtime-safety
     /// mode is active (a compile-time `false` in shipped builds), so the request
     /// is observable in tests without touching the host.
     pub(crate) fn run_post_teardown_power(
@@ -374,9 +392,10 @@ impl HostEffects {
 /// A power action to run after an emergency teardown.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PostTeardownPower {
-    /// Power the machine off (clears RAM).
+    /// Power the machine off; DRAM contents decay once power is removed.
     Poweroff,
-    /// Reboot into the decoy (clears RAM).
+    /// Reboot into the decoy. A warm reboot does not clear RAM unless the
+    /// firmware honours the TCG memory-overwrite request.
     Reboot,
 }
 
@@ -401,6 +420,7 @@ pub(crate) enum PowerDispatch {
 pub struct SimulatedHostEffects {
     reboot_requests: std::sync::atomic::AtomicUsize,
     power_requests: std::sync::atomic::AtomicUsize,
+    poweroff_requests: std::sync::atomic::AtomicUsize,
     outcome: SimulatedReboot,
 }
 
@@ -424,6 +444,7 @@ impl SimulatedHostEffects {
         std::sync::Arc::new(Self {
             reboot_requests: std::sync::atomic::AtomicUsize::new(0),
             power_requests: std::sync::atomic::AtomicUsize::new(0),
+            poweroff_requests: std::sync::atomic::AtomicUsize::new(0),
             outcome,
         })
     }
@@ -441,9 +462,20 @@ impl SimulatedHostEffects {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    fn record_reboot_request(&self) -> Result<PostDeactivationReboot> {
+    /// How many post-deactivation requests asked for a power-off instead of the
+    /// default reboot (a subset of [`reboot_requests`](Self::reboot_requests)).
+    pub fn poweroff_requests(&self) -> usize {
+        self.poweroff_requests
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn record_reboot_request(&self, action: PostTeardownPower) -> Result<PostDeactivationReboot> {
         self.reboot_requests
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if action == PostTeardownPower::Poweroff {
+            self.poweroff_requests
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
         match &self.outcome {
             SimulatedReboot::Dispatched => Ok(PostDeactivationReboot::Dispatched),
             SimulatedReboot::Refuse(message) => Err(NailsError::NixOSError(message.clone())),

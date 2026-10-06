@@ -30,6 +30,11 @@ Options:
 
           Deactivation restores the decoy configuration and reboots. Without this flag it prompts on a terminal and refuses to run without one.
 
+      --poweroff
+          Power the machine off instead of rebooting once the decoy is restored.
+
+          A warm reboot does not clear RAM: DRAM keeps its contents across a reset unless the firmware honours the TCG memory-overwrite request (MOR), and setting MOR writes EFI NVRAM. Powering off lets the memory decay; leave the machine off for a few minutes before handing it over.
+
   -q, --quiet
           Print only errors and the final result
 
@@ -57,6 +62,7 @@ Options:
 
 EXAMPLES:
   nails deactivate                    Restore the decoy and reboot
+  nails deactivate --poweroff         Restore the decoy and power off
   nails deactivate -y                 Skip the confirmation prompt
 
 ----- stderr -----

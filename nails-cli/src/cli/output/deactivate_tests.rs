@@ -9,14 +9,14 @@ use std::path::PathBuf;
 fn success_json_prints_one_parseable_envelope() {
     // Smoke test: the renderer prints to stdout without panicking and the shape
     // is exercised by the envelope's own serialization tests.
-    print_deactivate_json();
+    print_deactivate_json(false);
 }
 
 #[test]
-fn recovery_guidance_lists_the_dismount_and_reboot_steps() {
+fn recovery_guidance_lists_the_dismount_and_poweroff_steps() {
     let combined = DEACTIVATE_RECOVERY_GUIDANCE.join("\n");
     assert!(combined.contains("dismounted"), "{combined}");
-    assert!(combined.contains("rebooted"), "{combined}");
+    assert!(combined.contains("powered off"), "{combined}");
 }
 
 #[test]

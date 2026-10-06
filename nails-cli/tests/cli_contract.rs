@@ -641,6 +641,12 @@ fn deactivate_schema_accepts_the_success_envelope() {
     });
     assert_matches_schema(&schema, &value);
 
+    let poweroff = serde_json::json!({
+        "schema_version": 1, "command": "deactivate", "ok": true,
+        "data": {"status": "poweroff_requested", "recovery_guidance": ["Powered off."]}
+    });
+    assert_matches_schema(&schema, &poweroff);
+
     let error = serde_json::json!({
         "schema_version": 1, "command": "deactivate", "ok": false,
         "error": {"code": "mount_busy", "message": "overlay busy: /home", "hint": "retry"}

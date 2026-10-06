@@ -51,7 +51,7 @@ pub fn execute(
     let already_detached = env.nails_detached.is_some();
     if !args.yes && !already_detached {
         if std::io::stdin().is_terminal() {
-            if !prompt_deactivate_confirmation(settings) {
+            if !prompt_deactivate_confirmation(settings, args.poweroff) {
                 return report_error(
                     json,
                     "deactivate",
@@ -85,6 +85,9 @@ pub fn execute(
     let mut manager =
         NailsManager::new(filesystem, config, state_path).with_runtime_env(env.clone());
     manager.set_verbosity(verbosity);
+    if args.poweroff {
+        manager.set_post_deactivation_power(nails_core::PostTeardownPower::Poweroff);
+    }
 
     if let Err(e) = maybe_detach_for_deactivation(env) {
         return report_error(
@@ -117,7 +120,7 @@ pub fn execute(
     match manager.deactivate() {
         Ok(_report) => {
             if json {
-                print_deactivate_json();
+                print_deactivate_json(args.poweroff);
             } else {
                 println!(
                     "{}",
@@ -125,9 +128,13 @@ pub fn execute(
                         .stdout_style()
                         .marked(Mark::Pass, "System configuration restored")
                 );
-                println!("  Rebooting to decoy environment...");
+                if args.poweroff {
+                    println!("  Powering off...");
+                } else {
+                    println!("  Rebooting to decoy environment...");
+                }
             }
-            // Note: the reboot was already issued, so this may not run.
+            // Note: the reboot or power-off was already issued, so this may not run.
             ExitStatus::Ok
         }
         Err(e) => report_error(
@@ -141,23 +148,24 @@ pub fn execute(
 
 /// Prompt on the terminal before deactivating, returning whether the operator
 /// confirmed. The warning and question go to stderr so stdout stays clean.
-fn prompt_deactivate_confirmation(settings: &OutputSettings) -> bool {
+fn prompt_deactivate_confirmation(settings: &OutputSettings, poweroff: bool) -> bool {
     use std::io::{BufRead, Write};
 
     let style = settings.stderr_style();
     let mut stderr = std::io::stderr();
-    let _ = writeln!(
-        stderr,
-        "{}",
-        style.marked(
-            Mark::Warn,
-            "This restores the decoy configuration and reboots now."
+    let (headline, detail) = if poweroff {
+        (
+            "This restores the decoy configuration and powers off now.",
+            "    The hidden overlays are unmounted and the machine powers off.",
         )
-    );
-    let _ = writeln!(
-        stderr,
-        "    The hidden overlays are unmounted and the machine reboots into the decoy."
-    );
+    } else {
+        (
+            "This restores the decoy configuration and reboots now.",
+            "    The hidden overlays are unmounted and the machine reboots into the decoy.",
+        )
+    };
+    let _ = writeln!(stderr, "{}", style.marked(Mark::Warn, headline));
+    let _ = writeln!(stderr, "{detail}");
     let _ = write!(stderr, "    Continue? [y/N]: ");
     let _ = stderr.flush();
 

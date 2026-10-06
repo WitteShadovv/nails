@@ -19,22 +19,27 @@ use crate::cli::output::envelope::{Envelope, ErrorBody};
 pub const DEACTIVATE_RECOVERY_GUIDANCE: &[&str] = &[
     "Important: Hidden storage may still be mounted. Your system is not in a fully safe state until:",
     "  1. The hidden volume is dismounted",
-    "  2. The system is rebooted",
+    "  2. The system is powered off (a warm reboot does not clear RAM)",
 ];
 
 /// The `data` payload for a successful `deactivate --json`.
 #[derive(Debug, Serialize)]
 pub struct DeactivateData {
-    /// What happened (`reboot_requested`).
+    /// What happened (`reboot_requested` or `poweroff_requested`).
     status: &'static str,
     /// The recovery steps the operator should still take.
     recovery_guidance: Vec<&'static str>,
 }
 
-/// Print the success envelope for a deactivation that requested a reboot.
-pub fn print_deactivate_json() {
+/// Print the success envelope for a deactivation that requested a reboot, or a
+/// power-off when `poweroff` is set.
+pub fn print_deactivate_json(poweroff: bool) {
     let data = DeactivateData {
-        status: "reboot_requested",
+        status: if poweroff {
+            "poweroff_requested"
+        } else {
+            "reboot_requested"
+        },
         recovery_guidance: DEACTIVATE_RECOVERY_GUIDANCE.to_vec(),
     };
     Envelope::success("deactivate", data).print();

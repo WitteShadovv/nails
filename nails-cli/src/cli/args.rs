@@ -342,6 +342,7 @@ impl ActivateArgs {
 #[command(after_long_help = "\
 EXAMPLES:
   nails deactivate                    Restore the decoy and reboot
+  nails deactivate --poweroff         Restore the decoy and power off
   nails deactivate -y                 Skip the confirmation prompt")]
 pub struct DeactivateArgs {
     /// Skip shell history cleanup
@@ -357,6 +358,15 @@ pub struct DeactivateArgs {
     /// flag it prompts on a terminal and refuses to run without one.
     #[arg(short = 'y', long)]
     pub yes: bool,
+
+    /// Power the machine off instead of rebooting once the decoy is restored.
+    ///
+    /// A warm reboot does not clear RAM: DRAM keeps its contents across a reset
+    /// unless the firmware honours the TCG memory-overwrite request (MOR), and
+    /// setting MOR writes EFI NVRAM. Powering off lets the memory decay; leave
+    /// the machine off for a few minutes before handing it over.
+    #[arg(long)]
+    pub poweroff: bool,
 }
 
 /// `nails reapply` arguments
@@ -388,15 +398,19 @@ pub struct EmergencyArgs {
 
     /// Power the machine off after the teardown attempt, whatever its outcome.
     ///
-    /// Powering off clears RAM, the only complete remedy for residue the
+    /// Powering off lets RAM decay, the only complete remedy for residue the
     /// teardown cannot remove; it runs even when a mount could not be removed.
-    /// Mutually exclusive with `--reboot`.
+    /// Leave the machine off for a few minutes. Mutually exclusive with
+    /// `--reboot`.
     #[arg(long, conflicts_with = "reboot")]
     pub poweroff: bool,
 
     /// Reboot into the decoy after the teardown attempt, whatever its outcome.
     ///
-    /// A reboot clears RAM. Mutually exclusive with `--poweroff`.
+    /// A warm reboot does not clear RAM: DRAM keeps its contents across a reset
+    /// unless the firmware honours the TCG memory-overwrite request (MOR), and
+    /// setting MOR writes EFI NVRAM. Prefer `--poweroff` when RAM residue
+    /// matters. Mutually exclusive with `--poweroff`.
     #[arg(long)]
     pub reboot: bool,
 

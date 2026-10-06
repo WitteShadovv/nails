@@ -174,6 +174,7 @@ Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
 
 EXAMPLES:
   nails deactivate                    Restore the decoy and reboot
+  nails deactivate --poweroff         Restore the decoy and power off
   nails deactivate -y                 Skip the confirmation prompt
 
 ###### **Options:**
@@ -184,6 +185,9 @@ EXAMPLES:
 * `-y`, `--yes` — Proceed without the confirmation prompt
 
    Deactivation restores the decoy configuration and reboots. Without this flag it prompts on a terminal and refuses to run without one.
+* `--poweroff` — Power the machine off instead of rebooting once the decoy is restored.
+
+   A warm reboot does not clear RAM: DRAM keeps its contents across a reset unless the firmware honours the TCG memory-overwrite request (MOR), and setting MOR writes EFI NVRAM. Powering off lets the memory decay; leave the machine off for a few minutes before handing it over.
 
 
 
@@ -217,10 +221,10 @@ EXAMPLES:
    Omitted (the default) tears down immediately. The wait is never affected by `--quiet` or `--json`, so output flags never change the timing.
 * `--poweroff` — Power the machine off after the teardown attempt, whatever its outcome.
 
-   Powering off clears RAM, the only complete remedy for residue the teardown cannot remove; it runs even when a mount could not be removed. Mutually exclusive with `--reboot`.
+   Powering off lets RAM decay, the only complete remedy for residue the teardown cannot remove; it runs even when a mount could not be removed. Leave the machine off for a few minutes. Mutually exclusive with `--reboot`.
 * `--reboot` — Reboot into the decoy after the teardown attempt, whatever its outcome.
 
-   A reboot clears RAM. Mutually exclusive with `--poweroff`.
+   A warm reboot does not clear RAM: DRAM keeps its contents across a reset unless the firmware honours the TCG memory-overwrite request (MOR), and setting MOR writes EFI NVRAM. Prefer `--poweroff` when RAM residue matters. Mutually exclusive with `--poweroff`.
 * `--lock-backend` — Close the encrypted backend after the teardown attempt: lazy-unmount the hidden root and mark its device-mapper stack for deferred removal, wiping the master key from kernel memory when the last reference drops.
 
    Forces the close for this run regardless of the `[emergency] lock_backend` config key. Without it (and without the key) the hidden filesystem stays mounted and readable after the emergency, and the printed sequence closes it by hand.

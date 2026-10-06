@@ -103,6 +103,7 @@ fn subprocess_deactivate_entrypoint() {
     let keep_history = DeactivateArgs {
         no_clear_history: true,
         yes: true,
+        ..DeactivateArgs::default()
     };
     let confirmed = DeactivateArgs {
         yes: true,
@@ -318,7 +319,7 @@ fn deactivate_ascii_recovery_guidance_is_ascii_only() {
 fn deactivate_recovery_guidance_contains_expected_text() {
     let combined: String = DEACTIVATE_RECOVERY_GUIDANCE.join("\n");
     assert!(combined.contains("hidden volume is dismounted"));
-    assert!(combined.contains("system is rebooted"));
+    assert!(combined.contains("system is powered off"));
 }
 
 #[test]

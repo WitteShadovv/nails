@@ -145,6 +145,11 @@ pub struct NailsManager<F: Filesystem> {
     /// request without rebooting the machine.
     host_effects: HostEffects,
 
+    /// What a standard deactivation does to the host once the decoy is restored:
+    /// [`PostTeardownPower::Reboot`] (the default) or, when the operator asked for
+    /// it, [`PostTeardownPower::Poweroff`].
+    post_deactivation_power: PostTeardownPower,
+
     /// Verbosity level for progress output
     verbosity: crate::verbosity::Verbosity,
 
@@ -192,6 +197,7 @@ impl<F: Filesystem> std::fmt::Debug for NailsManager<F> {
                 &self.host_profile.as_ref().map(|profile| profile.kind),
             )
             .field("host_effects", &self.host_effects)
+            .field("post_deactivation_power", &self.post_deactivation_power)
             .field("verbosity", &self.verbosity)
             .finish()
     }
@@ -234,6 +240,7 @@ impl<F: Filesystem> NailsManager<F> {
             host_profile: None,
             platform_override: None,
             host_effects: HostEffects::Real,
+            post_deactivation_power: PostTeardownPower::Reboot,
             verbosity: crate::verbosity::Verbosity::default(),
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
             reporter: crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
@@ -288,6 +295,7 @@ impl<F: Filesystem> NailsManager<F> {
             host_profile: None,
             platform_override: None,
             host_effects: HostEffects::Real,
+            post_deactivation_power: PostTeardownPower::Reboot,
             verbosity: crate::verbosity::Verbosity::default(),
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
             reporter: crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
@@ -314,6 +322,16 @@ impl<F: Filesystem> NailsManager<F> {
     #[cfg(any(test, feature = "test-support"))]
     pub fn set_host_effects(&mut self, host_effects: HostEffects) {
         self.host_effects = host_effects;
+    }
+
+    /// Choose what a standard deactivation does after restoring the decoy.
+    ///
+    /// The default reboots into the decoy. [`PostTeardownPower::Poweroff`] powers
+    /// the machine off instead: a warm reboot leaves DRAM contents in place unless
+    /// the firmware honours the TCG memory-overwrite request, while a power-off
+    /// lets them decay.
+    pub fn set_post_deactivation_power(&mut self, action: PostTeardownPower) {
+        self.post_deactivation_power = action;
     }
 
     /// Set verbosity level for progress output

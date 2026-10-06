@@ -149,9 +149,10 @@ recover do not, which is why both recommend a reboot and emergency offers
 ### When to use each
 
 - **`deactivate`** — the normal end of a session, when you have time to reboot.
+  Pass `--poweroff` to power off instead of rebooting, which is what clears RAM.
 - **`emergency`** — an imminent threat, or you cannot reboot right now. Teardown
   starts immediately; pass `--countdown <SECS>` for an abortable wait and
-  `--poweroff`/`--reboot` to clear RAM afterwards.
+  `--poweroff` (clears RAM) or `--reboot` (does not) afterwards.
 - **`recover`** — a system left inconsistent by a crash, a killed process or an
   interrupted teardown. It reads the live mount table, unmounts any NAILS overlay
   it finds, restores the decoy symlink and resets the state to Inactive.
@@ -477,8 +478,8 @@ of removing them. Only if `recover` is unavailable, and only after `findmnt -t
 overlay` is already empty, may you remove `state.json`.
 
 Expected residue after a by-hand teardown: device-removal kernel messages may
-reach the journal, and only a power-off or reboot clears all kernel and RAM
-residue. Prefer `nails emergency --poweroff` where you can.
+reach the journal, and only a power-off clears all kernel and RAM residue (a
+warm reboot leaves RAM contents in place). Prefer `nails emergency --poweroff` where you can.
 
 ### Specific situations
 
@@ -642,10 +643,16 @@ it again.
 
 DRAM retains data briefly after power-off (longer when cold). Emergency drops the
 page cache after unmount (`echo 3 > /proc/sys/vm/drop_caches`), which frees only
-*clean* pages and does not zero RAM. Only a power-off or reboot clears RAM:
+*clean* pages and does not zero RAM. A warm reboot does not clear RAM either:
+the memory stays powered across the reset, and the firmware wipes it only if it
+honours the TCG Platform Reset Attack Mitigation request (the MOR bit). Setting
+MOR writes an EFI variable, that is NVRAM on the decoy machine, so NAILS does not
+set it. Only a power-off, followed by a few minutes without power, lets the
+contents decay:
 
 - Power off completely (not suspend) in threat situations — `nails emergency
-  --poweroff`.
+  --poweroff` — and end a normal session with `nails deactivate --poweroff`
+  before handing the machine over.
 - Harden the decoy kernel so freed memory is wiped: add `init_on_free=1
   page_poison=1` to the decoy kernel command line.
 - There is no complete software defense against a memory dump of a running

@@ -242,6 +242,11 @@ steps in full, organised around where each one runs, with a recovery runbook and
    sudo /mnt/data/nails deactivate
    ```
 
+   Before handing the machine over, prefer `deactivate --poweroff`, and leave
+   the machine off for a few minutes. A warm reboot does not clear RAM: DRAM
+   keeps its contents across a reset unless the firmware honours the TCG
+   memory-overwrite request (MOR), and setting MOR itself writes EFI NVRAM.
+
 7. **Verify from the hidden side, before handing the machine over.**
 
    The binary lives on the hidden volume, not on the decoy, so run `verify`
@@ -273,7 +278,7 @@ would not resolve.
 |---|---|
 | `sudo /mnt/data/nails init <PATH>` | Bootstrap a hidden-volume layout on an existing mounted root |
 | `sudo /mnt/data/nails activate` | Activate the hidden environment |
-| `sudo /mnt/data/nails deactivate` | Return to decoy state and reboot |
+| `sudo /mnt/data/nails deactivate` | Return to decoy state and reboot (`--poweroff` to power off) |
 | `sudo /mnt/data/nails emergency` | Tear everything down now, without waiting for a reboot |
 | `sudo /mnt/data/nails recover` | Reconcile a stuck state and finish an interrupted teardown |
 | `/mnt/data/nails status` | Show current state, security posture, and hidden-volume disk usage |
@@ -318,9 +323,10 @@ are the same).
 | `--dry-run` | Preview the steps without changing anything |
 | `--no-preflight` | Skip pre-flight checks (dangerous; expert use only) |
 
-`deactivate` takes `-y`/`--yes` and `--no-clear-history`. `emergency` takes
-`--countdown <SECS>` (an abortable wait; teardown is immediate by default) and
-`--poweroff`/`--reboot` to clear RAM once teardown finishes. `verify` takes
+`deactivate` takes `-y`/`--yes`, `--no-clear-history` and `--poweroff` (power
+off instead of rebooting). `emergency` takes `--countdown <SECS>` (an abortable
+wait; teardown is immediate by default) and `--poweroff`/`--reboot` once
+teardown finishes; only the power-off lets RAM decay. `verify` takes
 `--deep`, and `--offline --root <MOUNT>` to scan a mounted decoy image.
 
 ### Exit codes

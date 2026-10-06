@@ -85,7 +85,7 @@ pub struct CleanupConfig {
     /// When enabled, writes "3" to `/proc/sys/vm/drop_caches` to release clean
     /// cached pages. Requires root privileges. This only frees *clean* page
     /// cache; it does not zero RAM, so it is a modest residue-reduction step, not
-    /// memory sanitization. Only a reboot clears RAM completely.
+    /// memory sanitization. Only a power-off lets RAM decay; a warm reboot does not.
     #[serde(default)]
     pub drop_page_cache: bool,
 
