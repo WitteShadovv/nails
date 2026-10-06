@@ -52,8 +52,14 @@ Each claim is tagged with how solid it is:
 The spike is
 `nix/e2e-tests/tests/research/soft-reboot-whole-root.nix`; build it with
 `nix build .#legacyPackages.x86_64-linux.e2e.research-soft-reboot-whole-root -L`.
-At the time of writing it has **not run yet** (no Nix daemon or KVM was available
-where it was written).
+**First run (commit `ea39acb`, 2026-10-06, KVM host):** both cycles ran, and
+every vital check passed in the hidden root and on the decoy: units, network,
+getty and a password login, `modprobe`, ESP and EFI entries, the Nix store and
+daemon, LUKS, journald writing into the upper, strict and deferred close. The
+run then failed in its last step: the raw-disk grep ran out of memory in the
+guest, so the final power cycle did not run. It also found two leaks, now
+mitigated in the spike (§5), and a timing artefact (§1). The run's results are
+marked [V-spike] below. The fixes are waiting for a second run.
 
 ## 1. Soft-reboot semantics
 
@@ -113,14 +119,29 @@ Two consequences matter for NAILS:
 
 ### Timing, console, GPU and network
 
-- **Timing.** Nobody publishes numbers. Red Hat's bootc material says "seconds"
-  against minutes for a full reboot. [V-src, qualitative] The grey-out is the
-  shutdown of all units plus the startup to the greeter. A misbehaving unit can
-  stall the shutdown up to `DefaultTimeoutStopSec` (90 s by default). Estimate for
-  a desktop: 5 to 20 s, with a 90 s worst case per stuck unit. [I] The spike
-  records trigger-to-backdoor, trigger-to-`multi-user.target` and
-  trigger-to-settled for all four transitions [V-spike]. The headless VM cannot
-  show the time to the greeter.
+- **Timing.** Red Hat's bootc material only says "seconds", against minutes for
+  a full reboot. [V-src, qualitative] Measured in the spike VM (2 vCPUs,
+  headless NixOS, from the guest's serial-console kernel timestamps) [V-spike]:
+
+  | Transition | Trigger to "Soft-rebooting." (shutdown phase) | Trigger to backdoor shell | Trigger to `multi-user.target` (PID 1: "Soft-reboot finished in") |
+  | --- | --- | --- | --- |
+  | cycle 1, enter | 1.2 s | 3.0 s | 9.1 s |
+  | cycle 1, leave | 1.0 s | 2.7 s | 9.1 s |
+  | cycle 2, enter | 2.4 s | 6.4 s | 13.5 s |
+  | cycle 2, leave | 0.7 s | 2.7 s | 9.6 s |
+
+  About 6 s of every figure in the last column is dhcpcd waiting for its lease
+  (`multi-user.target` waits for the DHCP client in this VM). Userspace is usable
+  2.7 to 6.4 s after the trigger. For comparison, the kernel-to-`multi-user`
+  time of a full boot in the same VM is 13.3 s, on top of OVMF and systemd-boot.
+  The first run reported ~290 s per transition. That was an artefact:
+  the driver's `wait_for_console_text()` consumes one queued console line per
+  second, and a soft-reboot prints ~300 lines. The spike now reconnects directly
+  (bounded by an alarm) and logs PID 1's own `ShutdownStart`, `Userspace` and
+  `Finish` timestamps. A misbehaving unit can still stall the shutdown up to
+  `DefaultTimeoutStopSec` (90 s by default). Estimate for a real desktop, with
+  its display manager and user session: 5 to 15 s to the greeter. [I] The
+  headless VM cannot show the time to the greeter.
 - **What the user sees.** The desktop disappears. VT 1 comes to the front with a
   text console (systemd status output or a getty) for the grey-out, then the
   display manager greeter appears. **The user is logged out.** [V-src for the VT
@@ -291,28 +312,81 @@ upper's `/etc` holds. [I]
    old root and freed once unreferenced. [V-src; V-spike: no overlay or nextroot
    mount remains, the mapping closes]
 
-**Residue in RAM after the switch back** (gone at power-off, so outside the
+**What the first run found leaking into the decoy** [V-spike]:
+
+- **The hidden `/run`.** A file written to `/run` in the hidden session was
+  present in the decoy after the switch back, in both cycles. A stopped transient
+  unit's file did not survive; systemd garbage-collects it. Everything else the
+  hidden session leaves in `/run` carries over: logind session state,
+  `/run/utmp`, the volatile journal if the hidden journald is volatile, and stray
+  files.
+- **A hidden kernel record in the decoy's persistent journal.** The spike's probe
+  unit writes a token to `/dev/kmsg` while it stops, after the hidden journald
+  has stopped. The token was in the decoy journal once per cycle. PID 1's own
+  last lines from the hidden shutdown ("systemd-soft-reboot.service: Deactivated
+  successfully.", "Soft-rebooting.") were imported the same way. Mechanism
+  [V-src: `journald-kmsg.c`]: journald reads `/dev/kmsg` from the oldest record
+  still in the ring buffer. It skips every record whose sequence number is below
+  the value stored in `/run/systemd/journal/kernel-seqnum`, and that file is the
+  hidden journald's, carried in `/run`. So the decoy journald imports
+  **everything logged after the hidden journald stopped**: hidden unit names in
+  PID 1's stop messages, kernel messages from the hidden teardown, and any
+  `/dev/kmsg` writer. Without the file it would import the **whole** ring
+  buffer.
+
+**Mitigation, implemented in the spike** (a NAILS implementation would do the
+same): a script in the hidden `/run`, run as the `ExecStart=` of
+`systemd-soft-reboot.service` through a runtime drop-in. That service is ordered
+after `shutdown.target`, `umount.target` and `final.target`, so it is the last
+userspace code before the switch: every hidden unit, journald included, has
+stopped, and the hidden volume is unmounted. The script:
+
+1. **Scrubs `/run`.** It deletes every non-socket entry except
+   `current-system` and `booted-system` (needed by the init check and the module
+   tree), `credentials`, `systemd/inaccessible` and the mounted
+   `/run/nextroot`. Then it removes empty directories.
+2. **Seeks the decoy journald's kmsg cursor.** It writes "last kmsg sequence +
+   1", read from `/dev/kmsg` without blocking, into
+   `/run/systemd/journal/kernel-seqnum`. The decoy journald then skips every
+   record of the hidden session. Only PID 1's last generic lines, written after
+   the script, are still imported.
+
+The spike asserts the result: no planted probe, no carried non-socket file in
+`/run`, and no late hidden kernel record in the decoy journal or on the raw
+disk. [V-spike, pending the second run]
+
+Alternatives considered and rejected:
+
+- **A fresh tmpfs at `/run/nextroot/run`** instead of the bind (a private `/run`
+  per side). [V-src; effect I] PID 1 serializes its notify socket and varlink
+  server sockets as open fds bound to paths in the old `/run`
+  (`manager-serialize.c`). Socket units that are never stopped
+  (`systemd-journald.socket`, `-dev-log.socket`, udev control) are carried the
+  same way, and `socket.c` does not re-check their paths after deserialization.
+  A fresh `/run` orphans all of them: `sd_notify()` fails, so `Type=notify`
+  services (journald, logind) time out, and clients cannot reach journald by
+  path. A fresh `/run` also has no `kernel-seqnum`, so the decoy journald would
+  re-import the entire ring buffer.
+- **`dmesg --clear`** (`SYSLOG_ACTION_CLEAR`). It only moves the
+  `syslog(2)`/`SEEK_DATA` start point. journald opens `/dev/kmsg` without
+  seeking, so it still reads every record. [V-src: journald opens without a seek;
+  I: kernel `devkmsg` semantics] It would also blank the decoy's own boot
+  messages in `dmesg`, which is itself a tell.
+- **`ReadKMsg=no` for the decoy journald, via a `/run` drop-in.** When reading is
+  enabled again, journald re-opens `/dev/kmsg` and unlinks the cursor file, so it
+  again imports from the oldest record. [V-src: `manager_reopen_dev_kmsg()`]
+
+**What stays in RAM after the switch back** (gone at power-off, so outside the
 offline threat model, but visible to someone at the keyboard):
 
-- the whole `/run` tmpfs of the hidden session: the volatile journal (if the hidden
-  journald is volatile), `/run/utmp` entries, transient unit files in
-  `/run/systemd/transient`, and stray files. The spike plants a file and a
-  transient unit and reports whether they reach the decoy [V-spike];
-- the kernel ring buffer: overlay and dm-crypt messages, and records logged by
-  hidden units after the hidden journald stopped. Because
-  `/run/systemd/journal/kernel-seqnum` carries over, the **decoy journald
-  imports those late records**. On a persistent decoy they would reach the decoy
-  disk. The spike plants a late kmsg record and greps the decoy journal and the
-  raw disk for it [I; V-spike];
 - `SoftRebootsCount` (v256+): 2 per session, readable with `systemctl show`. It
-  cannot be reset without a real reboot. [V-src]
-
-Mitigations to evaluate: a last-stage hidden unit (ordered like PR #496888's
-hook) that wipes hidden residue from `/run` and advances `kernel-seqnum` past the
-current kmsg sequence. A fresh tmpfs at `/run/nextroot/run` instead of the bind
-would give the decoy a clean `/run`, but it breaks the path-bound sockets of
-units that never stop (journald, udev control). Do not use it without a test.
-[I]
+  cannot be reset without a real reboot. [V-src; V-spike: 1, 2, 3, 4]
+- The kernel ring buffer itself (`dmesg`): hidden-session kernel messages and
+  the late records stay readable until they are overwritten or the machine
+  powers off. [V-spike]
+- PID 1's last generic lines ("Soft-rebooting.") in the decoy journal, plus the
+  decoy PID 1's own "Soft-reboot finished in …, counter is now at N". On a
+  persistent decoy journal these reach disk under the same boot ID. [V-spike]
 
 **Writes on the decoy disk at deactivation** are those of an ordinary decoy boot:
 the random seed refreshed, a wtmp boot record (if utmp is built in),
@@ -332,7 +406,7 @@ Options:
 
 | Emergency path | Speed (estimate [I]) | What an observer sees | RAM afterwards |
 | --- | --- | --- | --- |
-| E1. Soft-reboot back to the decoy | 5–20 s grey-out, 90 s worst case per stuck unit | Desktop vanishes, text console, then the decoy greeter: **a logout** | Hidden `/run` and kmsg residue until power-off |
+| E1. Soft-reboot back to the decoy | VM: shell after 2.7 s, `multi-user` after 9–10 s (§1); desktop est. 5–15 s; 90 s worst case per stuck unit | Desktop vanishes, text console, then the decoy greeter: **a logout** | Hidden `/run` and kmsg residue until power-off |
 | E2. `systemctl --force soft-reboot` (skips the orderly unit stop; processes are killed) | Faster than E1, mostly the decoy's startup [I] | Same as E1, shorter | Same as E1 |
 | E3. Lock the screen at once, then E1/E2 | The lock is instant; E1/E2 runs behind it | A lock screen, then a greeter | Same as E1 |
 | E4. Power off (`--poweroff`) | Seconds | A black screen; reads as "turned off" | Cleared (the strongest answer to the threat model) |
@@ -354,7 +428,7 @@ emergency.
 | During the session, on the decoy disk | **Silent leak class:** namespaced services with binds onto the decoy fs, periodic writers without open fds, absolute-path writers [T-132] | Nothing in userspace can reach it. Remaining channels: decoy fstab entries not overlaid (§2), the ESP unless read-only, EFI NVRAM (efivarfs is carried in `/sys`) [I; V-spike for the ESP and NVRAM] |
 | Deactivation, on the decoy disk | Unmount, then a full reboot (today's standard path), including firmware and bootloader writes | An ordinary decoy boot's writes, without firmware or bootloader (lighter than today) [I; V-spike] |
 | Emergency, on the decoy disk | Live teardown; spared processes can write through absolute paths | Same as deactivation (E1/E2) or none (E4) |
-| Left in RAM | Lazily detached overlays held by spared processes; the backend open unless locked | Hidden `/run` residue, the kmsg ring buffer, `SoftRebootsCount`; the backend can be closed exactly (deferred close) |
+| Left in RAM | Lazily detached overlays held by spared processes; the backend open unless locked | With the §5 scrub: the kmsg ring buffer (`dmesg`) and `SoftRebootsCount`; the backend can be closed exactly (deferred close) |
 | Timeline as seen on the decoy disk | Decoy "running but idle" during the session | Decoy "shut down at T1, booted at T2" with the **same boot ID** and continuous kernel uptime. A persistent journal makes this visible (one boot ID with a soft-reboot transition and a gap); the amnesic-decoy requirement removes it [I] |
 
 ## 8. Alternatives (T-131 decision matrix)
@@ -368,7 +442,7 @@ inferred unless noted.
 | Silent missed-writer leak class | −− | ++ | ++ | ++ | ++ |
 | Enabler persisted on the decoy | ++ none | ++ none (set up at runtime from the hidden volume) | + none if the kernel and initrd come from the hidden volume | −− a boot entry on the decoy ESP (violates the invariant) | + none on the decoy; some firmware adds `Boot####` NVRAM entries for new devices |
 | Persistent hidden upper | ++ | ++ | + (the initrd must unlock the hidden volume, and the decoy FDE again) | + | ++ (a separate OS) |
-| Activation UX | − DM restart, logout | − logout, 5–20 s grey-out | −− full kernel boot, GPU re-init, FDE passphrase again | −− firmware plus boot | −− power cycle plus boot |
+| Activation UX | − DM restart, logout | − logout, ~10 s grey-out (VM, §1) | −− full kernel boot, GPU re-init, FDE passphrase again | −− firmware plus boot | −− power cycle plus boot |
 | Emergency keeps the desktop | + (current ruling met) | −− impossible (§6) | −− | −− | −− |
 | Deactivation UX | − full reboot today | + soft-reboot (no firmware) | − kexec back or reboot | − reboot | − reboot |
 | Kernel state reset (boot ID, kmsg, RAM) | −− never | − never | + new kernel, but old RAM is not cleared | ++ | ++ |
@@ -404,7 +478,10 @@ Reasons it cannot simply replace today's design:
 **Go/no-go criteria** (all must hold before implementation starts):
 
 1. The spike passes: both cycles, every vital check, the raw decoy disk free of
-   hidden tokens, and the LUKS mapping closed in both close modes.
+   hidden tokens, the LUKS mapping closed in both close modes, and no hidden
+   `/run` or kmsg residue in the decoy. First run: everything up to the raw-disk
+   scan passed; the `/run` and kmsg leaks it found are mitigated, and the second
+   run is pending.
 2. On real hardware: trigger to usable greeter ≤ 15 s in both directions on a
    GNOME or KDE decoy, and the GPU and Wi-Fi come back without intervention.
 3. A hidden NixOS toplevel can be entered with variant B (or C) without touching
@@ -424,8 +501,16 @@ Reasons it cannot simply replace today's design:
 - **Unmanaged decoy fstab entries** are mounted read-write by the hidden systemd
   (§2). This is the same class of silent leak this design is meant to remove, now
   per filesystem instead of per process.
-- **Late kmsg records imported by the decoy journald** (§5). They are on disk if
-  the decoy journal is persistent.
+- **The last-step scrub must really be last** (§5). Anything a later step logs
+  to `/dev/kmsg`, or writes into `/run`, reaches the decoy. Today that is only
+  PID 1's generic "Soft-rebooting." lines. If `/dev/kmsg` overflows while the
+  script reads it (a read returns `EPIPE`), the cursor can come out too low, and
+  the records after it are imported again. A NAILS implementation should read
+  until the read would block, retrying on `EPIPE`.
+- **The scrub runs in the same `/run` that PID 1 and the surviving sockets
+  use.** It keeps every socket and the paths the decoy boot needs. A NixOS
+  module or service that expects a non-socket file in `/run` to survive a
+  soft-reboot would break; the decoy-side vital checks are meant to catch that.
 - **Overlay copy-up versus a decoy that keeps changing** (§2), especially the Nix
   DB and `/etc` after a decoy rebuild between sessions.
 - **The emergency ruling conflict** (§6).

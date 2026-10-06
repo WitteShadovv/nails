@@ -18,9 +18,15 @@
 #      upper and not on the decoy disk, and that the vital paths work (units,
 #      network, login, modprobe, /boot untouched, the Nix store and daemon,
 #      the hidden volume, journald writing into the overlay).
-#   5. Mounts the decoy root at /run/nextroot and soft-reboots back, then
-#      asserts the same vital paths, that no overlay or nextroot mount is left
-#      and that the hidden volume can be closed.
+#   5. Mounts the decoy root at /run/nextroot, installs the last-step /run
+#      scrub and kmsg cursor (a runtime drop-in on systemd-soft-reboot.service)
+#      and soft-reboots back. On the decoy it asserts the same vital paths,
+#      that no overlay or nextroot mount is left, that the hidden volume can be
+#      closed, that nothing of the hidden /run survived and that no hidden
+#      kernel record reached the decoy journal.
+#
+# Timings are measured in the guest from PID 1's own timestamps
+# (ShutdownStart, Userspace and Finish) and /proc/uptime, not on the host.
 #
 # Finally it does a full power cycle through OVMF and systemd-boot, asserts the
 # decoy boots cleanly, that the ESP and the EFI boot entries changed no more
@@ -111,10 +117,9 @@ in
     };
 
   testScript = ''
-    import queue
     import secrets
     import shlex
-    import time
+    import signal
 
     BASH_STORE_PATH = "${pkgs.bash}"
     HIDDEN = "/mnt/data"
@@ -322,14 +327,6 @@ in
             machine.succeed(f"umount {PEEK}")
 
 
-    def drain_console():
-        while True:
-            try:
-                machine.last_lines.get_nowait()
-            except queue.Empty:
-                return
-
-
     def precheck_nextroot():
         # PID 1 (systemd >= 258) refuses to switch into a root where neither
         # its own binary nor /sbin/init resolves, and freezes the machine. On
@@ -343,6 +340,18 @@ in
         machine.succeed("chroot /run/nextroot /run/current-system/sw/bin/test -e /etc/os-release")
 
 
+    class ReconnectTimeout(Exception):
+        pass
+
+
+    def _alarm(_signum, _frame):
+        raise ReconnectTimeout()
+
+
+    def guest_uptime():
+        return float(machine.succeed("cut -d' ' -f1 /proc/uptime").strip())
+
+
     def soft_reboot(label):
         """Trigger a soft-reboot and reconnect the backdoor shell.
 
@@ -350,11 +359,18 @@ in
         and the new userspace starts it again. As machine.switch_root() does
         for the initrd, send the command without reading its output, mark the
         shell disconnected and reconnect; connect() discards everything until
-        the new backdoor prints its ready marker. The wait on the serial
-        console first turns a frozen PID 1 into a timeout instead of a hang.
+        the new backdoor prints its ready marker.
+
+        connect() would wait forever on a frozen PID 1, so a SIGALRM bounds it.
+        (The first run waited on the serial console with
+        wait_for_console_text() instead; that helper consumes one queued
+        console line per second, so the ~300 lines a soft-reboot prints made
+        every transition look like ~290 s. The real grey-out is measured
+        in-guest below.)
+
+        Returns the guest uptime at the trigger, for later log filtering.
         """
-        drain_console()
-        start = time.monotonic()
+        trigger = guest_uptime()
         machine.execute(
             "(systemctl soft-reboot --check-inhibitors=no || "
             "systemctl start --no-block --job-mode=replace-irreversibly soft-reboot.target)"
@@ -363,20 +379,57 @@ in
             check_output=False,
         )
         machine.connected = False
-        machine.wait_for_console_text("connecting to host", timeout=600)
-        machine.connect()
-        backdoor = time.monotonic() - start
+        previous_handler = signal.signal(signal.SIGALRM, _alarm)
+        signal.alarm(600)
+        try:
+            machine.connect()
+        except ReconnectTimeout:
+            raise AssertionError(
+                f"{label}: no backdoor 600 s after the soft-reboot (frozen PID 1?)"
+            ) from None
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous_handler)
+        backdoor = guest_uptime()
         machine.wait_for_unit("multi-user.target")
-        multi_user = time.monotonic() - start
         out_of("timeout 300 systemctl is-system-running --wait || true")
-        settled = time.monotonic() - start
-        timings.append((label, backdoor, multi_user, settled))
+        settled = guest_uptime()
+
+        # PID 1's own timestamps, all CLOCK_MONOTONIC in microseconds.
+        # ShutdownStartTimestamp is carried over a soft-reboot (systemd 256+),
+        # UserspaceTimestamp is the new PID 1's start, FinishTimestamp the end
+        # of the new boot transaction.
+        _, props = out_of(
+            "systemctl show -p ShutdownStartTimestampMonotonic "
+            "-p UserspaceTimestampMonotonic -p FinishTimestampMonotonic"
+        )
+        values = {}
+        for line in props.splitlines():
+            key, _, value = line.partition("=")
+            if value.strip().isdigit():
+                values[key] = int(value.strip()) / 1e6
+        shutdown_start = values.get("ShutdownStartTimestampMonotonic", 0.0)
+        userspace = values.get("UserspaceTimestampMonotonic", 0.0)
+        finish = values.get("FinishTimestampMonotonic", 0.0)
+        _, pid1_line = out_of(
+            "journalctl -b --no-pager -o cat | grep 'Soft-reboot finished' | tail -n 1 || true"
+        )
+        record = {
+            "label": label,
+            "shutdown_phase": userspace - shutdown_start if shutdown_start and userspace else None,
+            "startup_phase": finish - userspace if finish and userspace else None,
+            "grey_out": finish - shutdown_start if finish and shutdown_start else None,
+            "trigger_to_backdoor": backdoor - trigger,
+            "trigger_to_settled": settled - trigger,
+        }
+        timings.append(record)
         finding(
-            f"{label}: backdoor back after {backdoor:.1f}s, multi-user.target after "
-            f"{multi_user:.1f}s, system settled after {settled:.1f}s (host clock)"
+            f"{label}: in-guest timings: {record}; raw PID 1 timestamps {values}; "
+            f"PID 1 says: {pid1_line.strip()}"
         )
         _, count = out_of("systemctl show -p SoftRebootsCount --value || true")
         finding(f"{label}: SoftRebootsCount={count.strip()} (RAM-only, visible to anyone with a shell)")
+        return trigger
 
 
     def log_ram_traces(label):
@@ -423,6 +476,68 @@ in
         vital("decoy-initial", "trivial offline nix build", rc == 0 and decoy_build != "", decoy_build)
 
     pre_session = snapshot()
+
+
+    # The /run scrub and kmsg cursor for the way back (ADR 0008, section 5).
+    #
+    # It runs as the ExecStart of systemd-soft-reboot.service in the hidden
+    # root, added by a drop-in under the hidden /run. That service is ordered
+    # after shutdown.target, umount.target and final.target, so this is the last
+    # userspace code before PID 1 switches root: every hidden unit (journald
+    # included) has stopped and the hidden volume is unmounted.
+    #
+    # 1. Scrub: delete every non-socket entry under /run except what the decoy
+    #    boot needs from it (current-system/booted-system for the init check
+    #    and the module tree, credentials, systemd's inaccessible nodes) and
+    #    the mounted /run/nextroot. Sockets stay: PID 1's notify and varlink
+    #    sockets and the never-stopped socket units (journald, udev control) are
+    #    carried as open fds bound to these very inodes, and a fresh tmpfs at
+    #    /run would orphan them (see ADR 0008, section 5).
+    # 2. Cursor: the decoy journald skips kernel records whose sequence number
+    #    is below /run/systemd/journal/kernel-seqnum and imports the rest from
+    #    the start of the ring buffer. Writing "last record + 1" here makes it
+    #    skip every record the hidden session produced, including those logged
+    #    after the hidden journald stopped. Without the file it would import the
+    #    whole ring buffer.
+    #
+    # The script lives in the hidden /run: the hidden volume is already
+    # unmounted when it runs, and nothing of it reaches any disk.
+    LEAVE_SCRUB = r"""#!/run/current-system/sw/bin/bash
+    PATH=/run/current-system/sw/bin
+    find /run -xdev -mindepth 1 \( -path /run/current-system -o -path /run/booted-system \
+        -o -path /run/credentials -o -path /run/systemd/inaccessible -o -path /run/nextroot \) -prune \
+        -o ! -type s ! -type d -print0 | xargs -0 -r rm -f --
+    find /run -xdev -mindepth 1 -depth -type d -empty ! -path /run/nextroot ! -path /run/credentials \
+        ! -path '/run/systemd/inaccessible*' -delete 2>/dev/null
+    last=$(dd if=/dev/kmsg bs=16384 iflag=nonblock 2>/dev/null | grep -av '^ ' | tail -n 1 | cut -d, -f2)
+    if [ -n "$last" ]; then
+        next=$((last + 1))
+        bytes=""
+        for i in 0 1 2 3 4 5 6 7; do
+            bytes="$bytes$(printf '\\%03o' $(( (next >> (8 * i)) & 255 )))"
+        done
+        mkdir -p /run/systemd/journal
+        printf "$bytes" > /run/systemd/journal/kernel-seqnum
+    fi
+    exit 0
+    """
+
+    LEAVE_DROPIN = (
+        "[Service]\n"
+        "Type=oneshot\n"
+        "ExecStart=-/run/current-system/sw/bin/bash /run/nails-leave-scrub.sh\n"
+    )
+
+
+    def install_leave_scrub():
+        machine.succeed(
+            "cat > /run/nails-leave-scrub.sh <<'NAILS_EOF'\n" + LEAVE_SCRUB + "NAILS_EOF\n"
+            "mkdir -p /run/systemd/system/systemd-soft-reboot.service.d\n"
+            "printf '" + LEAVE_DROPIN.replace("\n", "\\n") + "' "
+            "> /run/systemd/system/systemd-soft-reboot.service.d/50-nails-scrub.conf\n"
+            "systemctl daemon-reload\n"
+            "systemctl cat systemd-soft-reboot.service"
+        )
 
 
     def enter_hidden(cycle):
@@ -528,8 +643,14 @@ in
                 vital(label, "the hidden build output is not on the decoy", rc == 0)
 
         with subtest(f"cycle {cycle}: plant RAM-residue probes for the way back"):
-            # /run is carried across a soft-reboot; does this file reach the decoy?
-            machine.succeed(f"echo {canary} > /run/nails-hidden-run-probe")
+            # /run is carried across a soft-reboot; the scrub must remove all of
+            # these (the login check above also left logind state in /run).
+            machine.succeed(
+                f"echo {canary} > /run/nails-hidden-run-probe && "
+                f"mkdir -p /run/nails-probe-dir/nested && echo {canary} > /run/nails-probe-dir/nested/file && "
+                f"echo {canary} > /run/systemd/nails-probe && "
+                f"mkdir -p /run/log/journal && echo {canary} > /run/log/journal/nails-probe"
+            )
             # A unit that stops after journald during the soft-reboot back and
             # writes to the kernel log, i.e. a record no hidden journald sees.
             # Does the decoy's journald import it from /dev/kmsg?
@@ -566,8 +687,10 @@ in
                 "mount --make-rprivate /run/nextroot"
             )
             precheck_nextroot()
+            install_leave_scrub()
 
-        soft_reboot(f"cycle{cycle}-leave")
+        leave_wall = machine.succeed("date +%s").strip()
+        leave_uptime = soft_reboot(f"cycle{cycle}-leave")
 
         with subtest(f"cycle {cycle}: back on the plain decoy root"):
             assert machine.succeed("findmnt -no FSTYPE /").strip() == "ext4"
@@ -620,19 +743,56 @@ in
                     vital(label, "cryptsetup close succeeds", False, str(exc))
                     machine.log(machine.succeed("dmsetup info data || true; fuser -vm /dev/mapper/data || true"))
 
-        with subtest(f"cycle {cycle}: RAM residue visible to the decoy"):
-            rc, _ = out_of("test -e /run/nails-hidden-run-probe")
-            finding(f"{label}: file written to /run in the hidden session survives into the decoy: {rc == 0}")
-            out_of("rm -f /run/nails-hidden-run-probe")
-            rc, _ = out_of(f"test -e /run/systemd/transient/nails-spike-late-kmsg-{cycle}.service")
-            finding(f"{label}: the hidden session's transient unit file survives in /run/systemd/transient: {rc == 0}")
+        with subtest(f"cycle {cycle}: nothing of the hidden /run reaches the decoy"):
+            for probe in (
+                "/run/nails-hidden-run-probe",
+                "/run/nails-probe-dir",
+                "/run/systemd/nails-probe",
+                "/run/log/journal/nails-probe",
+                "/run/nails-leave-scrub.sh",
+                "/run/systemd/system/systemd-soft-reboot.service.d/50-nails-scrub.conf",
+                f"/run/systemd/transient/nails-spike-late-kmsg-{cycle}.service",
+            ):
+                machine.fail(f"test -e {probe}")
+            # Every non-socket file in /run whose inode predates the trigger (ctime,
+            # which a copy that preserves mtime cannot fake) was
+            # carried over from the hidden session (the decoy boot creates its
+            # own files later). Only the kept paths may be among them.
+            residue = machine.succeed(
+                "find /run -xdev -mindepth 1 \\( -path /run/current-system -o -path /run/booted-system "
+                "-o -path /run/credentials -o -path /run/systemd/inaccessible \\) -prune "
+                f"-o ! -type s ! -type d ! -newerct @{leave_wall} -print"
+            ).split()
+            old_dirs = machine.succeed(
+                f"find /run -xdev -mindepth 1 -type d ! -newerct @{leave_wall} -print"
+            ).split()
+            finding(f"{label}: directories in /run older than the trigger (structure only): {sorted(old_dirs)}")
+            assert not residue, f"hidden /run residue in the decoy: {sorted(residue)}"
+
+        with subtest(f"cycle {cycle}: no hidden kernel record in the decoy journal"):
             late = late_kmsg_tokens[-1]
-            _, in_journal = out_of(f"journalctl --no-pager -o cat | grep -c -F {late} || true")
-            _, in_dmesg = out_of(f"dmesg | grep -c -F {late} || true")
+            in_journal = int(out_of(f"journalctl --no-pager -o cat | grep -c -F {late} || true")[1].strip() or 0)
+            in_dmesg = int(out_of(f"dmesg | grep -c -F {late} || true")[1].strip() or 0)
             finding(
-                f"{label}: late hidden kmsg record: in decoy journal x{in_journal.strip()}, "
-                f"in kernel ring buffer x{in_dmesg.strip()}"
+                f"{label}: late hidden kmsg record: in decoy journal x{in_journal}, "
+                f"in kernel ring buffer x{in_dmesg} (RAM-only)"
             )
+            # The kernel records the decoy journald imported from the window of
+            # the transition: with the cursor only PID 1's last generic lines
+            # ("Soft-rebooting.") and the decoy's own may remain.
+            _, kernel_records = out_of("journalctl -b --no-pager -o short-monotonic _TRANSPORT=kernel")
+            window = []
+            for line in kernel_records.splitlines():
+                stamp = line.strip().lstrip("[").split("]", 1)[0].strip()
+                try:
+                    if leave_uptime <= float(stamp) <= leave_uptime + 60:
+                        window.append(line)
+                except ValueError:
+                    continue
+            finding(f"{label}: kernel-transport journal records from the transition window:\n" + "\n".join(window))
+            assert in_journal == 0, "a kernel record from the hidden session reached the decoy journal"
+            _, count = out_of("systemctl show -p SoftRebootsCount --value")
+            finding(f"{label}: remaining RAM tells: SoftRebootsCount={count.strip()}, kernel ring buffer (dmesg)")
             log_ram_traces(label)
 
 
@@ -663,23 +823,31 @@ in
         vital("final-boot", "EFI variables within the control", not extra_vars, sorted(extra_vars))
 
     with subtest("no hidden token anywhere on the raw decoy disk"):
-        # One pass over the whole disk (both partitions) for every token. The
-        # late kmsg records are a reported finding, not an assertion: that
-        # channel is a known open question (ADR 0008, section 5).
-        patterns = " ".join(f"-e {t}" for t in list(hidden_tokens) + late_kmsg_tokens)
+        # One pass over the whole disk (ESP and root) for every token, in
+        # bounded windows: a raw disk has almost no newlines, so a single grep
+        # over the device buffers gigabyte-sized "lines" and the first run was
+        # OOM-killed. Each window is 65 MiB read every 64 MiB, so a token that
+        # straddles a boundary is still seen whole; grep never holds more than
+        # one window. The late kmsg tokens are asserted too: with the kmsg
+        # cursor (ADR 0008, section 5) they must not reach the decoy journal.
+        all_tokens = list(hidden_tokens) + late_kmsg_tokens
+        patterns = " ".join(f"-e {t}" for t in all_tokens)
         raw = machine.succeed(
-            f"sync; echo 3 > /proc/sys/vm/drop_caches; "
-            f"grep -a -o -F {patterns} {decoy_disk} | sort | uniq -c || true",
+            "sync; echo 3 > /proc/sys/vm/drop_caches; "
+            f"size=$(blockdev --getsize64 {decoy_disk}); "
+            "mib=$(( (size + 1048575) / 1048576 )); "
+            "for (( off = 0; off < mib; off += 64 )); do "
+            f"dd if={decoy_disk} bs=1M skip=$off count=65 status=none | grep -a -o -F {patterns} || true; "
+            "done | sort | uniq -c",
             timeout=1800,
         )
-        hits = [line for line in raw.splitlines() if any(t in line for t in hidden_tokens)]
-        late_hits = [line for line in raw.splitlines() if any(t in line for t in late_kmsg_tokens)]
-        finding(f"late hidden kmsg records on the raw decoy disk: {late_hits or 'none'}")
+        hits = [line for line in raw.splitlines() if line.strip()]
+        finding(f"raw decoy disk scan: {hits or 'no hidden token'}")
         assert not hits, "hidden tokens found on the raw decoy disk:\n" + "\n".join(hits)
 
-    machine.log("FINDING: soft-reboot timings (label, backdoor, multi-user, settled):")
-    for label, backdoor, multi_user, settled in timings:
-        machine.log(f"FINDING:   {label}: {backdoor:.1f}s / {multi_user:.1f}s / {settled:.1f}s")
+    machine.log("FINDING: in-guest soft-reboot timings (seconds):")
+    for record in timings:
+        machine.log(f"FINDING:   {record}")
     assert not vital_failures, "vital-path failures:\n" + "\n".join(vital_failures)
   '';
 }
