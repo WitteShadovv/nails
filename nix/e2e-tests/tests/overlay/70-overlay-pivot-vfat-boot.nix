@@ -39,6 +39,17 @@ in
     with subtest("phase 1: confirm the decoy boot filesystem is VFAT"):
         machine.succeed("findmnt -n -o FSTYPE /boot | grep -qx vfat")
         machine.succeed("printf %s decoy-boot > /boot/decoy-boot.txt")
+        machine.succeed("printf %s decoy-grub > /boot/decoy-grub.cfg")
+        # Age the access time of the lower files well into the past. The snapshot
+        # pivot must read them with O_NOATIME, so these must be unchanged after a
+        # full activate/deactivate cycle — a plain read on this strictatime vfat
+        # would bump them to "now".
+        for name in ["decoy-boot.txt", "decoy-grub.cfg"]:
+            machine.succeed(f"touch -a -d @1577836800 /boot/{name}")
+        boot_atimes = {
+            name: machine.succeed(f"stat -c %X /boot/{name}").strip()
+            for name in ["decoy-boot.txt", "decoy-grub.cfg"]
+        }
 
     with subtest("phase 2: activation performs snapshot pivot for /boot"):
         machine.succeed(
@@ -65,6 +76,13 @@ in
         machine.fail(f"test -e {runtime_root}")
         machine.succeed("findmnt -n -o FSTYPE /boot | grep -qx vfat")
         machine.succeed("test -f /boot/decoy-boot.txt")
+        # The snapshot copy read the lower files with O_NOATIME, so their access
+        # times are exactly what they were before activation.
+        for name, before in boot_atimes.items():
+            after = machine.succeed(f"stat -c %X /boot/{name}").strip()
+            assert after == before, (
+                f"{name} atime changed across the snapshot pivot: {before} -> {after}"
+            )
         machine.fail("test -e /boot/hidden-boot.txt")
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
         machine.succeed("test -f /mnt/data/boot/hidden-boot.txt")

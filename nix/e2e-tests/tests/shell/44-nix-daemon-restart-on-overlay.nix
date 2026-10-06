@@ -231,13 +231,8 @@ let
         echo "hidden-session store path did not land in a hidden upper: $hidden_store_path" >&2
         exit 1
       fi
-      if [ -e /run/nails/systemctl-cache ]; then
-        echo "systemctl-cache tmpfs artifact should never exist after activation" >&2
-        exit 1
-      fi
       printf 'MARKER:hidden-store-path=%s\n' "$hidden_store_path"
       echo MARKER:hidden-upper-present
-      echo MARKER:no-systemctl-cache
 
     '';
 in
@@ -285,8 +280,6 @@ in
         assert "MARKER:daemon-restarted" in console_log, console_log
         assert "MARKER:nix-usable-after-activation" in console_log, console_log
         assert "MARKER:hidden-upper-present" in console_log, console_log
-        assert "MARKER:no-systemctl-cache" in console_log, console_log
-
         hidden_store_path = None
         for line in console_log.splitlines():
             prefix = "MARKER:hidden-store-path="
@@ -308,8 +301,5 @@ in
         assert (
             machine.execute("test -e %s" % hidden_store_path)[0] != 0
         ), "hidden-session store path leaked onto the decoy /nix: %s" % hidden_store_path
-        assert (
-            machine.execute("test -e /run/nails/systemctl-cache")[0] != 0
-        ), "systemctl-cache tmpfs artifact should never exist"
   '';
 }

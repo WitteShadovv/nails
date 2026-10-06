@@ -41,7 +41,10 @@ in
       mkdir -p /boot
 
       if ! ${mountpointBin} -q /boot; then
-        ${mountBin} -t vfat /dev/vdc /boot
+        # strictatime so a plain read updates the access time: this makes the
+        # snapshot-pivot atime regression guard in overlay/70 meaningful (an
+        # O_NOATIME read must leave it untouched).
+        ${mountBin} -t vfat -o strictatime /dev/vdc /boot
       fi
     '';
   };
