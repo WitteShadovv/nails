@@ -174,4 +174,13 @@ mod tests {
         let reader = FakeJournalReader::unreadable("permission denied");
         assert!(reader.grep("nails").is_err());
     }
+
+    #[test]
+    fn real_reader_is_refused_in_the_test_runtime() {
+        // The production reader shells out to journalctl, which the process
+        // runner refuses from a test context; it must surface that as an error
+        // (the deep scan then reports the journal as not-checked) rather than
+        // claiming a clean journal.
+        assert!(JournalctlReader.grep("nails").is_err());
+    }
 }
