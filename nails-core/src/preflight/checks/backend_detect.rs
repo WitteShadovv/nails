@@ -14,6 +14,14 @@ use crate::{Filesystem, Result};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
+mod luks2;
+use luks2::{Luks2Metadata, read_luks2_header};
+
+/// Where the device nodes the LUKS2 header is read from live.
+const DEV_DIR: &str = "/dev";
+/// LUKS2 token types that name the unlock method and tie it to hardware.
+const HARDWARE_TOKENS: &[&str] = &["systemd-tpm2", "systemd-fido2", "systemd-pkcs11"];
+
 /// The mount table, which maps the hidden root to its backing device.
 const MOUNTINFO: &str = "/proc/self/mountinfo";
 /// Block devices by `major:minor`.
@@ -75,6 +83,30 @@ struct Layer {
     backing_file: Option<PathBuf>,
     /// `queue/discard_max_bytes`; non-zero means discards reach this device.
     discard_max_bytes: u64,
+    /// The device-mapper name (`dm/name`), for a device-mapper device.
+    dm_name: Option<String>,
+    /// Kernel names of the devices below this one (`slaves/`).
+    slaves: Vec<String>,
+    /// The LUKS2 header metadata, for a LUKS mapping whose header is on the
+    /// device below it (absent for a detached header or an unreadable device).
+    luks2: Option<Luks2Metadata>,
+}
+
+impl Layer {
+    /// Whether this is a Shufflecake (`dm-sflc`) volume, which the tool names
+    /// `sflc_<device>_<volume>` in `/dev/mapper`.
+    fn is_shufflecake(&self) -> bool {
+        self.dm_name.as_deref().is_some_and(|name| {
+            name.strip_prefix("sflc_")
+                .and_then(|rest| rest.split_once('_'))
+                .is_some_and(|(dev, vol)| {
+                    !dev.is_empty()
+                        && !vol.is_empty()
+                        && dev.bytes().all(|b| b.is_ascii_digit())
+                        && vol.bytes().all(|b| b.is_ascii_digit())
+                })
+        })
+    }
 }
 
 /// Pre-flight check that names deniability hazards specific to the storage
@@ -158,6 +190,11 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendDetectCheck {
 
 /// Detect the backend under `root` and turn it into a `Pass` or `Warn`.
 fn assess<F: Filesystem>(fs: &F, root: &Path) -> CheckResult {
+    assess_with_dev_dir(fs, root, Path::new(DEV_DIR))
+}
+
+/// [`assess`], reading LUKS2 headers from the device nodes in `dev_dir`.
+fn assess_with_dev_dir<F: Filesystem>(fs: &F, root: &Path, dev_dir: &Path) -> CheckResult {
     let Ok(content) = fs.read_file_content(Path::new(MOUNTINFO)) else {
         return CheckResult::Pass(format!(
             "Backend detection skipped: cannot read {MOUNTINFO}"
@@ -174,9 +211,18 @@ fn assess<F: Filesystem>(fs: &F, root: &Path) -> CheckResult {
         );
     };
 
-    let layers = device_dir_for_mount(fs, mount)
+    let mut layers = device_dir_for_mount(fs, mount)
         .map(|top| device_stack(fs, top))
         .unwrap_or_default();
+    for layer in layers
+        .iter_mut()
+        .filter(|layer| layer.crypt == Some(CryptType::Luks))
+    {
+        layer.luks2 = layer
+            .slaves
+            .first()
+            .and_then(|slave| read_luks2_header(&dev_dir.join(slave)));
+    }
     let summary = describe(&mount.fstype, &layers);
     let found = hazards(&layers, &entries);
 
@@ -260,11 +306,17 @@ fn device_stack<F: Filesystem>(fs: &F, top: PathBuf) -> Vec<Layer> {
         if layers.len() >= MAX_STACK_DEVICES {
             break;
         }
-        layers.push(read_layer(fs, &dir));
+        let mut layer = read_layer(fs, &dir);
         if let Ok(mut slaves) = fs.list_directory(&dir.join("slaves")) {
             slaves.sort();
+            layer.slaves = slaves
+                .iter()
+                .filter_map(|slave| slave.file_name())
+                .map(|name| name.to_string_lossy().into_owned())
+                .collect();
             pending.extend(slaves);
         }
+        layers.push(layer);
     }
     layers
 }
@@ -274,6 +326,7 @@ fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
     let read = |attribute: &str| fs.read_file_content(&dir.join(attribute)).ok();
 
     let dm_uuid = read("dm/uuid");
+    let dm_name = read("dm/name").map(|name| name.trim().to_string());
     let name = read("uevent")
         .as_deref()
         .and_then(parse_devname)
@@ -285,7 +338,7 @@ fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
 
     Layer {
         name,
-        is_dm: dm_uuid.is_some() || read("dm/name").is_some(),
+        is_dm: dm_uuid.is_some() || dm_name.is_some(),
         crypt: dm_uuid.as_deref().and_then(classify_dm_uuid),
         backing_file: read("loop/backing_file")
             .as_deref()
@@ -294,6 +347,9 @@ fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
             .as_deref()
             .and_then(parse_discard_max_bytes)
             .unwrap_or(0),
+        dm_name,
+        slaves: Vec::new(),
+        luks2: None,
     }
 }
 
@@ -367,6 +423,11 @@ fn describe(fstype: &str, layers: &[Layer]) -> String {
         .map(|layer| match (&layer.crypt, &layer.backing_file) {
             (Some(crypt), _) => format!("{} mapping {}", crypt.label(), layer.name),
             (None, Some(_)) => format!("loop device {} (file container)", layer.name),
+            (None, None) if layer.is_shufflecake() => format!(
+                "Shufflecake volume {} ({})",
+                layer.dm_name.as_deref().unwrap_or_default(),
+                layer.name
+            ),
             (None, None) if layer.is_dm => format!("device-mapper device {}", layer.name),
             (None, None) => format!("block device {}", layer.name),
         })
@@ -387,6 +448,9 @@ fn hazards(layers: &[Layer], entries: &[MountEntry]) -> Vec<String> {
             && layer.discard_max_bytes > 0
         {
             found.push(discard_hazard(crypt, layer));
+        }
+        if let Some(meta) = &layer.luks2 {
+            found.extend(luks2_hazards(layer, meta));
         }
 
         let Some(backing_file) = &layer.backing_file else {
@@ -419,6 +483,39 @@ fn hazards(layers: &[Layer], entries: &[MountEntry]) -> Vec<String> {
         }
     }
 
+    found
+}
+
+/// Hazards recorded in a LUKS2 header: the checks `docs/backends.md` otherwise
+/// asks for by hand with `cryptsetup luksDump`.
+fn luks2_hazards(layer: &Layer, meta: &Luks2Metadata) -> Vec<String> {
+    let mut found = Vec::new();
+    if meta.flags.iter().any(|flag| flag == "allow-discards") {
+        found.push(format!(
+            "The LUKS2 header of mapping {} stores the persistent allow-discards flag, so \
+             every open forwards TRIM and the device shows which blocks are in use. Clear \
+             it with cryptsetup refresh --persistent (without --allow-discards) and check \
+             that cryptsetup luksDump shows (no flags).",
+            layer.name
+        ));
+    }
+    let hardware: Vec<&str> = meta
+        .token_types
+        .iter()
+        .map(String::as_str)
+        .filter(|kind| HARDWARE_TOKENS.contains(kind))
+        .collect();
+    if !hardware.is_empty() {
+        found.push(format!(
+            "The LUKS2 header of mapping {} carries {} token(s), which name the unlock \
+             method in plain text; a systemd-tpm2 token also seals the key to this \
+             machine's TPM, binding the volume to the host. Remove the token with \
+             systemd-cryptenroll --wipe-slot or cryptsetup token remove --token-id if the volume \
+             must not point at this machine.",
+            layer.name,
+            hardware.join(", ")
+        ));
+    }
     found
 }
 

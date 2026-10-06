@@ -503,3 +503,148 @@ fn describe_names_each_layer_kind() {
         "xfs on device-mapper device dm-5 on dm-crypt (BITLK) mapping dm-3 on block device sdc1"
     );
 }
+
+// ------------------------------------------------------------------------
+// LUKS2 header and Shufflecake
+// ------------------------------------------------------------------------
+
+/// A LUKS2 mapping (`253:2` -> dm-2) over partition `sdb2`.
+fn luks_on_partition_fixture() -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(MOUNTINFO, &mountinfo("253:2", "ext4", "/dev/mapper/data"));
+    add_device(
+        &fs,
+        "/sys/dev/block/253:2",
+        "dm-2",
+        Some("CRYPT-LUKS2-0123456789abcdef0123456789abcdef-data"),
+        None,
+        "0",
+    );
+    fs.mock_set_directory_contents(
+        Path::new("/sys/dev/block/253:2/slaves"),
+        vec![PathBuf::from("/sys/dev/block/253:2/slaves/sdb2")],
+    );
+    add_device(
+        &fs,
+        "/sys/dev/block/253:2/slaves/sdb2",
+        "sdb2",
+        None,
+        None,
+        "0",
+    );
+    fs
+}
+
+/// A `dev` directory holding `sdb2` with a LUKS2 header carrying `json`.
+fn dev_dir_with_header(json: &str) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    let mut image = luks2::header_image(json, 16384);
+    image.extend(std::iter::repeat_n(0u8, 4096));
+    std::fs::write(dir.path().join("sdb2"), image).unwrap();
+    dir
+}
+
+#[test]
+fn luks2_header_with_persistent_discards_and_tpm_token_warns() {
+    let fs = luks_on_partition_fixture();
+    let dev = dev_dir_with_header(
+        r#"{"tokens":{"0":{"type":"systemd-tpm2"}},"config":{"flags":["allow-discards"]}}"#,
+    );
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path());
+    assert!(result.is_warn(), "{result:?}");
+    let message = result.message();
+    assert!(
+        message.contains("persistent allow-discards flag"),
+        "{message}"
+    );
+    assert!(message.contains("systemd-tpm2 token"), "{message}");
+    assert!(
+        message.contains("binding the volume to the host"),
+        "{message}"
+    );
+}
+
+#[test]
+fn luks2_header_without_flags_or_tokens_passes() {
+    let fs = luks_on_partition_fixture();
+    let dev = dev_dir_with_header(r#"{"tokens":{},"config":{"flags":[]}}"#);
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path());
+    assert!(result.is_pass(), "{result:?}");
+    assert!(
+        result.message().contains("LUKS mapping dm-2"),
+        "{}",
+        result.message()
+    );
+}
+
+#[test]
+fn a_detached_luks2_header_is_skipped() {
+    // The device below the mapping starts with ciphertext, not a LUKS header.
+    let fs = luks_on_partition_fixture();
+    let dev = tempfile::tempdir().unwrap();
+    std::fs::write(dev.path().join("sdb2"), vec![0x5Au8; 32768]).unwrap();
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path());
+    assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn a_fido2_token_names_the_method() {
+    let layer = Layer {
+        name: "dm-2".into(),
+        crypt: Some(CryptType::Luks),
+        luks2: Some(luks2::Luks2Metadata {
+            flags: Vec::new(),
+            token_types: vec!["systemd-fido2".into(), "user-defined".into()],
+        }),
+        ..Layer::default()
+    };
+    let found = hazards(&[layer], &[]);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("systemd-fido2 token"), "{found:?}");
+    assert!(!found[0].contains("user-defined"), "{found:?}");
+}
+
+#[test]
+fn a_shufflecake_volume_is_recognised() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(
+        MOUNTINFO,
+        &mountinfo("253:7", "ext4", "/dev/mapper/sflc_0_1"),
+    );
+    add_device(&fs, "/sys/dev/block/253:7", "dm-7", None, None, "0");
+    fs.mock_set_file_content("/sys/dev/block/253:7/dm/name", "sflc_0_1\n");
+    fs.mock_set_directory_contents(
+        Path::new("/sys/dev/block/253:7/slaves"),
+        vec![PathBuf::from("/sys/dev/block/253:7/slaves/sdc")],
+    );
+    add_device(
+        &fs,
+        "/sys/dev/block/253:7/slaves/sdc",
+        "sdc",
+        None,
+        None,
+        "0",
+    );
+
+    let result = assess(&fs, Path::new(ROOT));
+    assert!(result.is_pass(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("Shufflecake volume sflc_0_1 (dm-7) on block device sdc"),
+        "{}",
+        result.message()
+    );
+}
+
+#[test]
+fn shufflecake_naming_is_strict() {
+    let named = |name: &str| Layer {
+        dm_name: Some(name.into()),
+        ..Layer::default()
+    };
+    assert!(named("sflc_12_3").is_shufflecake());
+    assert!(!named("sflc_x_3").is_shufflecake());
+    assert!(!named("sflc_1").is_shufflecake());
+    assert!(!named("data").is_shufflecake());
+}
