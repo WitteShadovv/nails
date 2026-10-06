@@ -37,7 +37,9 @@ in
     assert lib.assertMsg (
       vmLib ? ${entry.distro} && vmLib.${entry.distro} ? ${entry.image}
     ) "nix-vm-test has no ${entry.distro} image ${entry.image} (see nix/distro-tests/images.nix)";
-    vmLib.${entry.distro}.${entry.image} {
+    # nix-vm-test returns { driver, driverInteractive, sandboxed }; the
+    # sandboxed run is the buildable test.
+    (vmLib.${entry.distro}.${entry.image} {
       inherit sharedDirs testScript;
-    };
+    }).sandboxed;
 }
