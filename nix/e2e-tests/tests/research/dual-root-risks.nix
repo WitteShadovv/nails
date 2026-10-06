@@ -11,8 +11,8 @@
 #
 #   setup  Graphical decoy (lightdm autologin, icewm) with a full-screen blue
 #          marker window; whole-root overlay at /run/aux/root on the LUKS
-#          volume; hidden user "aux" (uid 60123) as a /run/userdb record;
-#          user@60123.service moved into the hidden root by a runtime drop-in.
+#          volume; hidden user "aux" (uid 60777) as a /run/userdb record;
+#          user@60777.service moved into the hidden root by a runtime drop-in.
 #   R5a    A decoy service started while the hidden root is mounted: does its
 #          new mount namespace hold a copy of the hidden root, even with the
 #          hidden tree below a private (and then an unbindable) tmpfs?
@@ -51,7 +51,9 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
 
-  hiddenUid = 60123;
+  # Outside the systemd-homed range (60001-60513) and SDDM's default user
+  # list (1000-60000); 60706-61183 is unused by systemd (UIDS-GIDS).
+  hiddenUid = 60777;
   hiddenUser = "aux";
   hiddenVt = 8;
   loginVt = 9;
