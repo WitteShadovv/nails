@@ -262,8 +262,8 @@ pub use cleanup::{
 
 // Deactivation report exports (the deactivation sequence lives in `manager::deactivation`)
 pub use deactivation::{
-    DeactivationOutcome, DeactivationReport, LastDeactivationReport, PostUnmountCleanupReport,
-    read_last_deactivation_report, write_last_deactivation_report,
+    DeactivationOutcome, DeactivationReport, LastDeactivationReport, read_last_deactivation_report,
+    write_last_deactivation_report,
 };
 
 // Status command exports (State Query with Overlay Verification)

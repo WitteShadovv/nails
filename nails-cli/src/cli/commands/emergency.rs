@@ -384,8 +384,6 @@ struct EmergencyData {
     page_cache_dropped: bool,
     /// Whether the volatile runtime journal under `/run/log/journal` was scrubbed.
     runtime_journal_scrubbed: bool,
-    /// Result of the opt-in post-unmount history-truncation check, if it ran.
-    history_truncation_verified: Option<bool>,
     /// Whether the hidden root is still mounted after the teardown. `true` means
     /// the hidden filesystem is still browsable and the key is still in RAM.
     hidden_root_still_mounted: bool,
@@ -446,7 +444,6 @@ fn print_emergency_json(view: &EmergencyView) {
         state_write_errors: report.state_write_errors.clone(),
         page_cache_dropped: report.page_cache_dropped,
         runtime_journal_scrubbed: report.runtime_journal_scrubbed,
-        history_truncation_verified: report.history_truncation_verified,
         hidden_root_still_mounted: followup.hidden_root_still_mounted,
         hidden_root: followup.hidden_root.display().to_string(),
         backend_lock: followup
@@ -521,12 +518,6 @@ fn render_emergency_success(settings: &OutputSettings, view: &EmergencyView) {
         for error in &report.state_write_errors {
             out.push(format!("    - {error}"));
         }
-    }
-
-    match report.history_truncation_verified {
-        Some(true) => out.push("  History truncation verified".to_string()),
-        Some(false) => out.push("  History truncation incomplete: some files remain".to_string()),
-        None => {}
     }
 
     push_followup_lines(&mut out, settings, view.followup);

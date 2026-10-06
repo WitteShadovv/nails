@@ -8,10 +8,9 @@
 
 use super::NailsManager;
 use super::{restart_service_and_socket, select_decoy_restore_target, start_service_and_socket};
-use crate::cleanup::history::{history_cleanup_homes, truncate_all_history_files_for_homes};
+use crate::deactivation::DeactivationReport;
 #[cfg(not(test))]
 use crate::deactivation::test_gate::should_skip_shell_cleanup_before_deactivation_gate;
-use crate::deactivation::{DeactivationReport, PostUnmountCleanupReport};
 #[cfg(not(test))]
 use crate::process::kill_shells_for_teardown;
 use crate::{
@@ -51,7 +50,7 @@ enum ManagerDeactivationKind {
     /// recorded overlay list, never reboots, and ends Inactive when nothing
     /// survives. Unlike emergency it is not a panic button on a live session but
     /// a deliberate reconcile-and-clean of a system left in an inconsistent
-    /// state, so it skips the decoy-history edit a forensic teardown performs.
+    /// state.
     Recover,
 }
 
@@ -64,10 +63,6 @@ impl ManagerDeactivationKind {
             // unmounts it must finish.
             Self::Emergency | Self::Recover => DeactivationMode::Emergency,
         }
-    }
-
-    fn requires_forensic_verification(self) -> bool {
-        matches!(self, Self::Emergency)
     }
 
     fn reboots_on_success(self) -> bool {
@@ -84,71 +79,18 @@ impl ManagerDeactivationKind {
     }
 }
 
-fn build_cleanup_config<F: Filesystem>(
-    manager: &NailsManager<F>,
-    kind: ManagerDeactivationKind,
-) -> CleanupConfig {
-    let cleanup_config = CleanupConfig {
+/// The cleanup configuration the normal teardown runs through the still-mounted
+/// overlays. Emergency and recovery run no artifact cleanup at all (see
+/// [`DeactivationMode::Emergency`]), so the configuration is the same for every
+/// kind.
+fn build_cleanup_config<F: Filesystem>(manager: &NailsManager<F>) -> CleanupConfig {
+    CleanupConfig {
         clear_history: manager.config().clear_history,
         log_path: manager.config().log_path.clone(),
         hidden_volume_root: manager.config().hidden_volume_root.clone(),
         config_file_path: manager.config().loaded_config_path.clone(),
         ..CleanupConfig::default()
-    };
-
-    if kind == ManagerDeactivationKind::Emergency {
-        // Emergency clears the forensic artifacts but does NOT secure-delete and
-        // does NOT drop the page cache as part of cleanup. The hidden upper lives
-        // on the encrypted backend, so overwriting its files only wastes the time
-        // budget, and the page cache is dropped as a dedicated step *after*
-        // unmount, never before (see `run_from_trusted_state`).
-        CleanupConfig {
-            clear_history: true,
-            clear_temp_files: true,
-            clear_logs: true,
-            secure_delete: false,
-            drop_page_cache: false,
-            ..cleanup_config
-        }
-    } else {
-        cleanup_config
     }
-}
-
-/// Verify every decoy history file is small after the post-unmount edit.
-///
-/// Returns `true` when all files are below the 100-byte threshold and `false`
-/// when any history file still holds enough content to carry session artifacts,
-/// so the caller can surface an honest pass/fail to the operator.
-fn verify_history_truncation<F: Filesystem>(manager: &NailsManager<F>) -> bool {
-    let history_files = crate::cleanup::history::get_extended_history_files_for_homes(
-        &history_cleanup_homes(manager.runtime_env()),
-    );
-    let mut verification_passed = true;
-
-    for path in &history_files {
-        if let Ok(true) = manager.filesystem.path_exists(path)
-            && let Ok(content) = manager.filesystem.read_file_content(path)
-            && content.len() >= 100
-        {
-            tracing::warn!(
-                file = %path.display(),
-                size = content.len(),
-                "History file unexpectedly large after truncation"
-            );
-            verification_passed = false;
-        }
-    }
-
-    if verification_passed {
-        tracing::info!("History truncation verification passed (all files < 100 bytes)");
-    } else {
-        tracing::warn!(
-            "History truncation verification: some files may not have been fully cleaned"
-        );
-    }
-
-    verification_passed
 }
 
 impl<F: Filesystem> NailsManager<F> {
@@ -521,10 +463,8 @@ impl<F: Filesystem> NailsManager<F> {
                     duration: std::time::Duration::ZERO,
                     final_state: SystemState::Inactive,
                     was_already_inactive: true,
-                    post_unmount_cleanup: PostUnmountCleanupReport::default(),
                     force_detached_overlays: Vec::new(),
                     page_cache_dropped: false,
-                    history_truncation_verified: None,
                     runtime_journal_scrubbed: false,
                     reboot_recommended: false,
                     state_write_errors: Vec::new(),
@@ -605,7 +545,7 @@ impl<F: Filesystem> NailsManager<F> {
         // holds a path busy).
         self.prepare_emergency_pre_unmount_cleanup(kind);
 
-        let cleanup_config = build_cleanup_config(self, kind);
+        let cleanup_config = build_cleanup_config(self);
 
         #[cfg(not(test))]
         if should_skip_shell_cleanup_before_deactivation_gate(self.runtime_env()) {
@@ -631,12 +571,6 @@ impl<F: Filesystem> NailsManager<F> {
                 "Shell cleanup complete"
             );
         }
-
-        // Capture the opt-in flags before the config is moved into the
-        // orchestrator: the forensic-reboot path below edits decoy history only
-        // when the operator opted in, and secure-delete stays off unless enabled.
-        let post_unmount_opt_in = cleanup_config.post_unmount_cleanup;
-        let post_unmount_secure_delete = cleanup_config.secure_delete;
 
         let restore_decoy_profile = requires_decoy_restore(self)?;
         let orchestrator = DeactivationOrchestrator::new(cleanup_config)
@@ -674,28 +608,14 @@ impl<F: Filesystem> NailsManager<F> {
 
         self.scrub_runtime_journal_and_warn(&overlay_context, kind, &mut report);
 
-        // Post-unmount history editing on the decoy disk is opt-in (see
-        // [`CleanupConfig::post_unmount_cleanup`]): by default deactivation makes
-        // no write to any decoy filesystem after unmount, because such a write is
-        // itself a deactivation-time artifact on the decoy. The pre-teardown shell
-        // kill plus an amnesic decoy base are the real defenses. When the operator
-        // has opted in (decoy verified amnesic), the forensic-reboot path still
-        // edits history, best-effort and without secure-delete unless separately
-        // enabled.
-        if kind.requires_forensic_verification() && post_unmount_opt_in {
-            tracing::info!("Editing decoy history files after unmount (opt-in)");
-            let truncated = truncate_all_history_files_for_homes(
-                &self.filesystem,
-                &history_cleanup_homes(self.runtime_env()),
-                post_unmount_secure_delete,
-            );
-            tracing::info!(
-                truncated_count = truncated.len(),
-                "Post-unmount history edit complete"
-            );
-
-            report.history_truncation_verified = Some(verify_history_truncation(self));
-        }
+        // After the unmount every history file and temp entry a cleanup could
+        // reach is on the decoy, and editing or even reading one would leave
+        // fresh timestamps there. So no teardown kind writes to (or reads from)
+        // any decoy filesystem after the unmount: decoy-history hygiene belongs
+        // to the pre-activation cleanup, the pre-teardown shell kill stops a
+        // shell from flushing its history, and hidden-session shells keep no
+        // history file. Only RAM-backed state (the runtime journal, the page
+        // cache, the per-activation runtime root) is scrubbed here.
 
         // Record the post-teardown self-check on the hidden volume before the
         // reboot. At this point the decoy configuration is restored and the

@@ -9,8 +9,8 @@
 //! real HOME. History cleanup in this crate's tests resolves to that fixed home,
 //! never to the invoking account's, so no test can touch real history files.
 
+use super::DeactivationReport;
 use super::test_gate::maybe_block_after_deactivating_state_transition;
-use super::{DeactivationReport, PostUnmountCleanupReport};
 use crate::DeactivationOrchestrator;
 use crate::cleanup::test_utils::{TEST_HOME, assert_path_is_safe};
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;

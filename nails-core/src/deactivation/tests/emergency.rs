@@ -411,12 +411,6 @@ fn test_emergency_mode_skips_non_essential_steps() {
     assert!(report.is_successful());
     assert_eq!(report.final_state, SystemState::Inactive);
     assert!(!report.was_already_inactive);
-
-    // Emergency mode should skip post-unmount cleanup
-    assert!(
-        !report.post_unmount_cleanup.was_performed,
-        "Emergency mode should skip post-unmount cleanup"
-    );
 }
 #[test]
 fn test_emergency_mode_fails_on_inactive_state() {
@@ -834,4 +828,53 @@ fn test_emergency_reports_incomplete_not_io_error_when_the_hidden_volume_is_dead
     }
     let guard = manager.lock().unwrap();
     assert!(!guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
+}
+
+#[test]
+fn test_emergency_never_touches_decoy_history_or_temp_files_after_unmount() {
+    use crate::filesystem::MockOp;
+
+    // With the overlays gone, the history files and /tmp entries a cleanup could
+    // reach are the decoy's own. Emergency (and recovery) must leave them exactly
+    // as they are: editing them would itself leave fresh timestamps on the decoy.
+    let fixture = setup_active_manager();
+    let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
+    let history = PathBuf::from(format!("{TEST_HOME}/.bash_history"));
+    let temp_entry = PathBuf::from("/tmp/nails-session.sock");
+    {
+        let guard = fixture.lock().unwrap();
+        let fs = guard.filesystem();
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+        mount_nails_overlay(fs, &hidden_root, Path::new("/etc"));
+        fs.mock_add_file(history.to_str().unwrap(), "nails activate\nls\n");
+        fs.mock_add_file(temp_entry.to_str().unwrap(), "x");
+        fs.mock_set_files_with_pattern("/tmp", "nails", &[temp_entry.as_path()]);
+    }
+
+    fixture.lock().unwrap().emergency_deactivate().unwrap();
+
+    let guard = fixture.lock().unwrap();
+    let fs = guard.filesystem();
+    assert_eq!(
+        fs.read_file_content(&history).unwrap(),
+        "nails activate\nls\n",
+        "the decoy history file must be left untouched"
+    );
+    assert!(
+        fs.path_exists(&temp_entry).unwrap(),
+        "decoy /tmp must be left untouched"
+    );
+    let decoy_writes: Vec<_> = fs
+        .mock_ops()
+        .into_iter()
+        .filter(|op| match op {
+            MockOp::WriteFile { path }
+            | MockOp::OverwriteInPlace { path }
+            | MockOp::SecureDelete { path, .. } => {
+                !path.starts_with("/run") && !path.starts_with(&hidden_root)
+            }
+            _ => false,
+        })
+        .collect();
+    assert!(decoy_writes.is_empty(), "no decoy write: {decoy_writes:?}");
 }

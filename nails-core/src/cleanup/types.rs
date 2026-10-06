@@ -95,24 +95,6 @@ pub struct CleanupConfig {
     /// again before being deleted. This makes forensic recovery more difficult.
     #[serde(default)]
     pub secure_delete: bool,
-
-    /// Whether to edit history files on the decoy disk AFTER overlay unmount
-    /// (default: false — opt-in).
-    ///
-    /// This is off by default because writing to the decoy filesystem after it is
-    /// unmounted is itself a forensic artifact: it leaves fresh timestamps on the
-    /// decoy disk at the exact moment of deactivation. The safe posture is that
-    /// the decoy carries no hidden-session history in the first place (the
-    /// in-memory shells are SIGKILLed before teardown, so they never flush), and
-    /// any residual decoy history is wiped by the decoy base being amnesic.
-    ///
-    /// Enable this only when the decoy root is verified amnesic (a volatile
-    /// `tmpfs`/overlay backing, or `--accept-persistent-decoy`); the
-    /// decoy-persistence pre-flight reports that posture. When enabled the
-    /// post-unmount edit is best-effort, never secure-deletes by default, and is
-    /// applied to the resolved operator's home plus `/root`.
-    #[serde(default)]
-    pub post_unmount_cleanup: bool,
 }
 
 impl Default for CleanupConfig {
@@ -129,7 +111,6 @@ impl Default for CleanupConfig {
             config_file_path: None,
             drop_page_cache: false,
             secure_delete: false,
-            post_unmount_cleanup: false,
         }
     }
 }

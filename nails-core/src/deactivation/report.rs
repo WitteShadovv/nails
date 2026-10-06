@@ -10,22 +10,6 @@ use crate::{CleanupReport, SystemState};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Report of post-unmount cleanup operations on the real disk
-///
-/// This tracks the second phase of cleanup that runs AFTER overlay unmount
-/// to clean history files on the actual filesystem (not the overlay layer).
-#[derive(Debug, Clone, Default)]
-pub struct PostUnmountCleanupReport {
-    /// Items that were successfully cleaned from the real disk
-    pub cleaned_items: Vec<String>,
-
-    /// Warnings encountered during cleanup (best-effort continues)
-    pub warnings: Vec<String>,
-
-    /// Whether post-unmount cleanup was performed
-    pub was_performed: bool,
-}
-
 /// Report of deactivation operations
 ///
 /// Provides detailed accounting of what was cleaned, which overlays were unmounted,
@@ -43,10 +27,9 @@ pub struct PostUnmountCleanupReport {
 /// - `final_state`: System state after deactivation (Inactive on success,
 ///   Degraded when overlays were left behind)
 /// - `was_already_inactive`: Whether system was already inactive (idempotent case)
-/// - `post_unmount_cleanup`: Results from the post-unmount cleanup phase
 #[derive(Debug, Clone)]
 pub struct DeactivationReport {
-    /// Cleanup operation results (Phase 1: overlay layer cleanup)
+    /// Cleanup operation results (normal teardown: through the overlays)
     pub cleanup_report: CleanupReport,
 
     /// Overlays that were unmounted
@@ -72,9 +55,6 @@ pub struct DeactivationReport {
     /// Whether deactivation was a no-op (already inactive)
     pub was_already_inactive: bool,
 
-    /// Post-unmount cleanup results (Phase 2: real disk cleanup)
-    pub post_unmount_cleanup: PostUnmountCleanupReport,
-
     /// Overlays that only came down after the forced (lazy) detach fallback,
     /// because the graceful unmount failed. Empty when every overlay detached
     /// cleanly. An emergency teardown expects these when processes still hold the
@@ -84,13 +64,6 @@ pub struct DeactivationReport {
 
     /// Whether the page cache was dropped after unmount (emergency only).
     pub page_cache_dropped: bool,
-
-    /// Result of the opt-in post-unmount history-truncation check.
-    ///
-    /// `None` when the check did not run (no post-unmount edit was performed);
-    /// `Some(true)` when every decoy history file was verified small afterwards,
-    /// `Some(false)` when one was still large enough to carry artifacts.
-    pub history_truncation_verified: Option<bool>,
 
     /// Whether the volatile runtime journal under `/run/log/journal` was scrubbed
     /// after unmount.
@@ -140,7 +113,7 @@ impl std::fmt::Display for DeactivationReport {
         writeln!(f)?;
 
         // Cleanup summary (Phase 1: overlay layer)
-        writeln!(f, "Phase 1 - Overlay Cleanup:")?;
+        writeln!(f, "Overlay Cleanup:")?;
         for item in &self.cleanup_report.cleaned_items {
             writeln!(f, "  ✓ {}", item)?;
         }
@@ -187,27 +160,6 @@ impl std::fmt::Display for DeactivationReport {
         if self.page_cache_dropped {
             writeln!(f)?;
             writeln!(f, "✓ Page cache dropped")?;
-        }
-
-        if let Some(passed) = self.history_truncation_verified {
-            writeln!(f)?;
-            if passed {
-                writeln!(f, "✓ History truncation verified")?;
-            } else {
-                writeln!(f, "⚠ History truncation incomplete: some files remain")?;
-            }
-        }
-
-        // Post-unmount cleanup (Phase 2: real disk)
-        if self.post_unmount_cleanup.was_performed {
-            writeln!(f)?;
-            writeln!(f, "Phase 2 - Real Disk Cleanup:")?;
-            for item in &self.post_unmount_cleanup.cleaned_items {
-                writeln!(f, "  ✓ {}", item)?;
-            }
-            for warning in &self.post_unmount_cleanup.warnings {
-                writeln!(f, "  ⚠ {}", warning)?;
-            }
         }
 
         if self.runtime_journal_scrubbed {

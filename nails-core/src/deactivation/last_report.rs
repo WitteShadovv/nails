@@ -109,25 +109,6 @@ impl LastDeactivationReport {
             ));
         }
 
-        for warning in &report.post_unmount_cleanup.warnings {
-            findings.push(Finding::new(
-                Severity::Warn,
-                "cleanup",
-                format!("Post-unmount cleanup warning: {warning}"),
-            ));
-        }
-
-        if report.history_truncation_verified == Some(false) {
-            findings.push(
-                Finding::new(
-                    Severity::Warn,
-                    "file",
-                    "History truncation incomplete: a decoy history file still carries content",
-                )
-                .with_fix_guidance("Review decoy shell history before handing over the machine"),
-            );
-        }
-
         let status = if findings.iter().any(|f| f.severity == Severity::Critical) {
             VerifyStatus::Critical
         } else if findings.iter().any(|f| f.severity == Severity::Warn) {
@@ -227,7 +208,6 @@ mod tests {
     use super::*;
     use crate::CleanupReport;
     use crate::MockFilesystem;
-    use crate::deactivation::PostUnmountCleanupReport;
     use std::time::Duration;
 
     fn clean_report() -> DeactivationReport {
@@ -239,10 +219,8 @@ mod tests {
             duration: Duration::from_millis(1234),
             final_state: SystemState::Inactive,
             was_already_inactive: false,
-            post_unmount_cleanup: PostUnmountCleanupReport::default(),
             force_detached_overlays: Vec::new(),
             page_cache_dropped: false,
-            history_truncation_verified: None,
             runtime_journal_scrubbed: true,
             reboot_recommended: false,
             state_write_errors: Vec::new(),

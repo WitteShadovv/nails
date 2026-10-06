@@ -76,12 +76,6 @@
             "runtime_journal_scrubbed": {
               "type": "boolean"
             },
-            "history_truncation_verified": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "hidden_root_still_mounted": {
               "type": "boolean"
             },

@@ -4,7 +4,7 @@
 use super::*;
 
 #[test]
-fn test_emergency_cleanup_preserves_explicit_config_path() {
+fn test_emergency_leaves_decoy_temp_files_and_the_config_alone() {
     let fs = MockFilesystem::new();
     let _profile = setup_system_profile_stub(&fs);
 
@@ -67,11 +67,12 @@ fn test_emergency_cleanup_preserves_explicit_config_path() {
             .expect("config path query should succeed"),
         "explicit config path should survive emergency cleanup"
     );
+    // After the unmount /tmp is the decoy's: emergency cleans nothing there.
     assert!(
-        !m.filesystem()
+        m.filesystem()
             .path_exists(Path::new("/tmp/nails-status.stdout"))
             .expect("temp status file query should succeed"),
-        "other temp files should still be cleaned"
+        "emergency must not delete decoy temp files after the unmount"
     );
 }
 #[test]

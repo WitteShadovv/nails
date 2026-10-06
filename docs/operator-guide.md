@@ -65,9 +65,8 @@ Two cleanups bracket the session:
   whether it predated the session.
 - **History truncation on deactivate.** Before unmounting, teardown SIGKILLs
   every interactive shell (including root's) so none is left to flush its
-  in-memory history to the decoy. By default teardown makes **no** write to the
-  decoy after unmount; an opt-in post-unmount history edit exists for a decoy you
-  have verified amnesic (see [Shell history](#shell-history)).
+  in-memory history to the decoy. Teardown makes **no** write to (and no read
+  of) the decoy after unmount (see [Shell history](#shell-history)).
 
 Hardening the decoy's *own* shell history (environment, symlinks, boot-time
 enforcement) is decoy configuration, not something NAILS does at runtime; it is
@@ -367,12 +366,10 @@ the unmount, not by scrubbing afterwards:
 - Both standard and emergency teardown SIGKILL every interactive shell (including
   root's) before unmounting, so none runs an exit trap or flushes its in-memory
   buffer. A reboot (standard) then terminates everything else.
-- By default teardown makes no post-unmount write to the decoy, because such a
-  write is itself a deactivation-time artifact. Your protection is that the
+- Teardown makes no post-unmount write to, or read of, the decoy, because such
+  an access is itself a deactivation-time artifact. Your protection is that the
   history never reaches the decoy in the first place, backed by an amnesic decoy.
-- An **opt-in** post-unmount edit (`[cleanup] post_unmount_cleanup`) edits the
-  resolved operator's history in place for operators whose decoy root is verified
-  amnesic (volatile backing, or accepted with `--accept-persistent-decoy`).
+  Decoy-history hygiene happens in the pre-activation cleanup.
 - A **preflight** warns when the shell you run NAILS from flushes history after
   every command (`INC_APPEND_HISTORY`/`SHARE_HISTORY`, or `history -a` in bash
   `PROMPT_COMMAND`): such a shell writes the unlock/mount commands to disk before

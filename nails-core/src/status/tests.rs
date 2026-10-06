@@ -149,7 +149,7 @@ fn test_status_report_carries_hidden_root_disk_usage() {
 #[test]
 fn test_status_surfaces_last_deactivation_when_hidden_root_attached() {
     use crate::deactivation::LastDeactivationReport;
-    use crate::{CleanupReport, DeactivationReport, PostUnmountCleanupReport};
+    use crate::{CleanupReport, DeactivationReport};
 
     let fs = MockFilesystem::new();
     let config = Config {
@@ -167,10 +167,8 @@ fn test_status_surfaces_last_deactivation_when_hidden_root_attached() {
         duration: std::time::Duration::from_millis(900),
         final_state: SystemState::Inactive,
         was_already_inactive: false,
-        post_unmount_cleanup: PostUnmountCleanupReport::default(),
         force_detached_overlays: Vec::new(),
         page_cache_dropped: false,
-        history_truncation_verified: None,
         runtime_journal_scrubbed: true,
         reboot_recommended: false,
         state_write_errors: Vec::new(),

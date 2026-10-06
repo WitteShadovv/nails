@@ -50,11 +50,10 @@ NAILS does at runtime is:
    SIGKILL every interactive shell (including root's) before the overlays come
    down, so none runs an exit trap or flushes its in-memory buffer to the decoy
    (see [the flush race](#the-flush-race)). Standard deactivation then reboots.
-3. **Make no post-unmount write by default.** Editing a history file on the decoy
-   after unmount is itself a deactivation-time artifact (a fresh timestamp at the
-   moment of teardown), so the default makes no such write. An **opt-in**
-   in-place edit exists for a decoy verified amnesic
-   (`[cleanup] post_unmount_cleanup`).
+3. **Make no post-unmount write.** Editing, or even reading, a history file on
+   the decoy after unmount is itself a deactivation-time artifact (a fresh
+   timestamp at the moment of teardown), so no teardown makes such an access.
+   Decoy-history hygiene belongs to the pre-activation cleanup.
 4. **Warn on incremental flushing.** A preflight check warns when the shell you
    run NAILS from flushes history after every command
    (`INC_APPEND_HISTORY`/`SHARE_HISTORY`, or `history -a` in bash

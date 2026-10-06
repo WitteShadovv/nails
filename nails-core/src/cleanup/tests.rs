@@ -71,21 +71,7 @@ fn test_cleanup_config_default() {
     }
     assert_eq!(config.temp_dirs.len(), 1);
     assert_eq!(config.temp_dirs[0], PathBuf::from("/tmp"));
-    // Post-unmount decoy history editing is opt-in: the default performs no write
-    // to any decoy filesystem after unmount, and never secure-deletes.
-    assert!(
-        !config.post_unmount_cleanup,
-        "post-unmount decoy history editing must be off by default"
-    );
     assert!(!config.secure_delete);
-}
-
-#[test]
-fn test_cleanup_config_post_unmount_defaults_off_via_serde() {
-    // A config file that omits the key must deserialize with post-unmount editing
-    // off, matching the Default impl (no compat shim that silently re-enables it).
-    let config: CleanupConfig = serde_json::from_str("{\"clear_history\":true,\"clear_temp_files\":true,\"clear_logs\":true,\"history_patterns\":[],\"temp_dirs\":[],\"log_path\":\"/x/logs\",\"hidden_volume_root\":\"/x\"}").unwrap();
-    assert!(!config.post_unmount_cleanup);
 }
 
 #[test]
@@ -102,7 +88,6 @@ fn test_cleanup_config_custom() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
 
     assert!(!config.clear_history);
@@ -382,7 +367,6 @@ fn test_cleanup_manager_selective_cleanup() {
         config_file_path: None,
         drop_page_cache: true, // Enable memory sanitization
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
@@ -433,7 +417,6 @@ fn test_cleanup_manager_config_accessor() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
@@ -459,7 +442,6 @@ fn test_cleanup_manager_reports_temp_cleanup_errors() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
 
     let manager = CleanupManager::new(fs, config, CleanupMode::Fast);
@@ -489,7 +471,6 @@ fn test_cleanup_manager_reports_log_cleanup_errors() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
 
     let manager = CleanupManager::new(fs, config, CleanupMode::Fast);
@@ -522,7 +503,6 @@ fn test_cleanup_manager_verification_flags_remaining_log_files() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
 
     let manager = CleanupManager::new(
@@ -559,7 +539,6 @@ fn test_cleanup_manager_verification_ignores_missing_log_directory() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
 
     let manager = CleanupManager::new(
@@ -598,7 +577,6 @@ fn test_cleanup_manager_verification_flags_large_history_file() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
 
     let manager = CleanupManager::new(
@@ -661,7 +639,6 @@ fn test_cleanup_manager_temp_files_integration() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
@@ -736,7 +713,6 @@ fn test_cleanup_manager_temp_files_with_errors() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
@@ -777,7 +753,6 @@ fn test_cleanup_manager_verification_ignores_preserved_explicit_temp_config() {
         config_file_path: Some(config_path.clone()),
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
 
     let manager = CleanupManager::new(
@@ -836,7 +811,6 @@ fn test_cleanup_manager_verification_still_flags_non_preserved_temp_residue() {
         config_file_path: Some(config_path.clone()),
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
 
     let manager = CleanupManager::new(
@@ -946,7 +920,6 @@ fn test_full_cleanup_cycle_all_cleaners_invoked() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Thorough {
         verify_cleanup: false,
@@ -1152,7 +1125,6 @@ fn test_verification_fails_when_artifacts_remain() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Thorough {
         verify_cleanup: true,
@@ -1198,7 +1170,6 @@ fn test_memory_sanitization_tracking() {
         config_file_path: None,
         drop_page_cache: true, // Enable memory sanitization
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 
@@ -1256,7 +1227,6 @@ fn test_cleanup_report_tracks_canary_findings() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: false,
-        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Thorough {
         verify_cleanup: true,
@@ -1345,7 +1315,6 @@ fn test_cleanup_manager_uses_secure_delete_when_configured() {
         config_file_path: None,
         drop_page_cache: false,
         secure_delete: true, // Enable secure delete
-        post_unmount_cleanup: true,
     };
     let mode = CleanupMode::Fast;
 

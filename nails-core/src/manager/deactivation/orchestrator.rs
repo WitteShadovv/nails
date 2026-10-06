@@ -7,9 +7,9 @@ use super::decoy::{recorded_decoy_system, restore_decoy_current_system};
 use super::unmount::{
     UnmountOutcome, discovered_unmount_targets, overlay_unmount_targets, remaining_nails_mounts,
 };
-use crate::cleanup::history::{history_cleanup_homes, truncate_all_history_files_for_homes};
+use crate::cleanup::history::history_cleanup_homes;
+use crate::deactivation::DeactivationReport;
 use crate::deactivation::test_gate::maybe_block_after_deactivating_state_transition;
-use crate::deactivation::{DeactivationReport, PostUnmountCleanupReport};
 use crate::manager::NailsManager;
 use crate::{
     CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError, Result,
@@ -23,13 +23,15 @@ use std::time::Instant;
 ///
 /// - `Normal`: Full cleanup with verification, rollback on cleanup errors.
 ///   Idempotent – returns `Ok` when the system is already inactive.
-/// - `Emergency`: Fast cleanup (best-effort, non-fatal errors), skips
-///   post-unmount cleanup. Fails if the system is not in `Active` state.
+/// - `Emergency`: Detach first, best-effort throughout (a failed state write is
+///   recorded, never fatal) and no artifact cleanup at all: after the unmount
+///   only RAM-backed state is scrubbed. Fails if the system is not in `Active`
+///   state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeactivationMode {
     /// Run all steps including thorough cleanup with verification.
     Normal,
-    /// Skip non-essential cleanup for speed; cleanup errors are non-fatal.
+    /// Detach first, best-effort; no artifact cleanup touches the decoy.
     Emergency,
 }
 
@@ -39,7 +41,8 @@ pub enum DeactivationMode {
 /// duration of [`run`](DeactivationOrchestrator::run), which drives the whole
 /// teardown against one [`StateGuard`]:
 /// 1. State transition ACTIVE -> DEACTIVATING (guarded).
-/// 2. Artifact cleanup (history, temp files, logs).
+/// 2. Artifact cleanup through the still-mounted overlays (normal mode only;
+///    emergency skips it and never cleans anything on the decoy afterwards).
 /// 3. Overlay unmounting in reverse LIFO order — every target is attempted.
 /// 4. State transition DEACTIVATING -> INACTIVE.
 /// 5. Decoy restore: re-point /run/current-system at the decoy profile (symlink
@@ -192,10 +195,8 @@ impl DeactivationOrchestrator {
                 duration: start.elapsed(),
                 final_state: SystemState::Inactive,
                 was_already_inactive: true,
-                post_unmount_cleanup: PostUnmountCleanupReport::default(),
                 force_detached_overlays: Vec::new(),
                 page_cache_dropped: false,
-                history_truncation_verified: None,
                 runtime_journal_scrubbed: false,
                 reboot_recommended: false,
                 state_write_errors: Vec::new(),
@@ -231,7 +232,7 @@ impl DeactivationOrchestrator {
         // order: verify cleanup first (rolling back to ACTIVE if it fails) and
         // only then unmount.
         let cleanup_start = Instant::now();
-        let unmount_start = Instant::now();
+        let unmount_start = cleanup_start;
         let (cleanup_report, unmount_outcome, page_cache_dropped);
 
         if self.mode == DeactivationMode::Emergency {
@@ -246,32 +247,16 @@ impl DeactivationOrchestrator {
                 "Overlays unmounted"
             );
 
-            // Step 3 (emergency): best-effort cleanup AFTER unmount.
-            let report = match self.execute_emergency_cleanup(&guard) {
-                Ok(report) => {
-                    tracing::info!(
-                        cleaned_items = report.cleaned_items.len(),
-                        errors = report.errors.len(),
-                        duration_ms = cleanup_start.elapsed().as_millis() as u64,
-                        "Emergency cleanup complete (best-effort)"
-                    );
-                    report
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        phase = "cleanup",
-                        "Emergency cleanup failed (non-fatal) - continuing deactivation"
-                    );
-                    CleanupReport::default()
-                }
-            };
-
-            // Step 4 (emergency): drop the page cache, now that the overlays are
+            // Emergency runs no artifact cleanup after the unmount: with the
+            // overlays gone every history file and /tmp entry it could reach is
+            // on the decoy, and touching them would itself leave fresh traces
+            // there. Decoy-history hygiene belongs to the pre-activation cleanup;
+            // after the unmount only RAM-backed state is scrubbed.
+            // Step 3 (emergency): drop the page cache, now that the overlays are
             // gone. Best-effort and never before unmount.
             let dropped = self.drop_page_cache_after_unmount(&guard);
 
-            cleanup_report = report;
+            cleanup_report = CleanupReport::new(CleanupMode::Fast);
             unmount_outcome = outcome;
             page_cache_dropped = dropped;
         } else {
@@ -322,17 +307,6 @@ impl DeactivationOrchestrator {
         let unmounted = unmount_outcome.unmounted;
         let force_detached = unmount_outcome.force_detached;
 
-        // Step 3.5: Post-unmount cleanup on the real disk (Normal mode only).
-        let post_unmount_report = if self.mode == DeactivationMode::Emergency {
-            tracing::debug!("Skipping post-unmount cleanup in emergency mode");
-            PostUnmountCleanupReport::default()
-        } else if self.cleanup_config.post_unmount_cleanup {
-            self.execute_post_unmount_cleanup(&guard)
-        } else {
-            tracing::debug!("Post-unmount cleanup disabled in configuration");
-            PostUnmountCleanupReport::default()
-        };
-
         // Step 4: Clear overlay_status and transition to INACTIVE.
         guard.clear_overlay_status_in_cache()?;
         let inactive_state = guard.current_state()?.complete_deactivation()?;
@@ -364,7 +338,6 @@ impl DeactivationOrchestrator {
             duration_ms = duration_ms,
             state_to = ?SystemState::Inactive,
             unmounted_count = unmounted.len(),
-            post_unmount_cleaned = post_unmount_report.cleaned_items.len(),
             "Deactivation complete"
         );
 
@@ -376,10 +349,8 @@ impl DeactivationOrchestrator {
             duration: start.elapsed(),
             final_state: SystemState::Inactive,
             was_already_inactive: false,
-            post_unmount_cleanup: post_unmount_report,
             force_detached_overlays: force_detached,
             page_cache_dropped,
-            history_truncation_verified: None,
             runtime_journal_scrubbed: false,
             reboot_recommended: false,
             state_write_errors: self.take_state_write_errors(),
@@ -509,27 +480,9 @@ impl DeactivationOrchestrator {
             "Overlays unmounted"
         );
 
-        // Best-effort cleanup after unmount; its failure must never abort.
-        let cleanup_start = Instant::now();
-        let cleanup_report = match self.execute_emergency_cleanup(&guard) {
-            Ok(report) => {
-                tracing::info!(
-                    cleaned_items = report.cleaned_items.len(),
-                    errors = report.errors.len(),
-                    duration_ms = cleanup_start.elapsed().as_millis() as u64,
-                    "Emergency cleanup complete (best-effort)"
-                );
-                report
-            }
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    phase = "cleanup",
-                    "Emergency cleanup failed (non-fatal) - continuing teardown"
-                );
-                CleanupReport::default()
-            }
-        };
+        // No artifact cleanup after the unmount: everything it could reach is on
+        // the decoy now (see the trusted emergency path).
+        let cleanup_report = CleanupReport::new(CleanupMode::Fast);
 
         // Drop the page cache after unmount (best-effort).
         let page_cache_dropped = self.drop_page_cache_after_unmount(&guard);
@@ -556,10 +509,8 @@ impl DeactivationOrchestrator {
             duration: start.elapsed(),
             final_state: SystemState::Inactive,
             was_already_inactive: false,
-            post_unmount_cleanup: PostUnmountCleanupReport::default(),
             force_detached_overlays: force_detached,
             page_cache_dropped,
-            history_truncation_verified: None,
             runtime_journal_scrubbed: false,
             reboot_recommended: false,
             state_write_errors: self.take_state_write_errors(),
@@ -597,33 +548,6 @@ impl DeactivationOrchestrator {
         Ok(report)
     }
 
-    /// Fast, best-effort cleanup; errors are logged but not fatal.
-    ///
-    /// The emergency cleanup configuration was already prepared by
-    /// [`build_cleanup_config`]: it clears history, temp files and logs but does
-    /// not secure-delete the encrypted hidden upper and does not drop the page
-    /// cache (that is a dedicated post-unmount step), so this reuses
-    /// `self.cleanup_config` directly rather than forcing a second config.
-    fn execute_emergency_cleanup<F: Filesystem>(
-        &self,
-        manager: &NailsManager<F>,
-    ) -> Result<CleanupReport> {
-        let cleanup_manager = CleanupManager::new(
-            manager.filesystem().clone(),
-            self.cleanup_config.clone(),
-            CleanupMode::Fast,
-        )
-        .with_history_homes(history_cleanup_homes(manager.runtime_env()));
-
-        let report = cleanup_manager.cleanup()?;
-
-        for error in &report.errors {
-            tracing::warn!(error = %error, "Emergency cleanup error (non-fatal)");
-        }
-
-        Ok(report)
-    }
-
     /// Drop the page cache after an emergency unmount.
     ///
     /// Runs only after the overlays are detached, so a stalled backend can never
@@ -646,42 +570,6 @@ impl DeactivationOrchestrator {
                 false
             }
         }
-    }
-
-    /// Phase 2 cleanup on the real disk after overlays are unmounted.
-    fn execute_post_unmount_cleanup<F: Filesystem>(
-        &self,
-        manager: &NailsManager<F>,
-    ) -> PostUnmountCleanupReport {
-        let post_unmount_start = Instant::now();
-        tracing::info!(
-            phase = "post_unmount_cleanup",
-            "Starting Phase 2 cleanup on real disk"
-        );
-
-        // No secure-delete / whole-file scrub by default: an opt-in post-unmount
-        // edit only removes the hidden-session lines, it does not announce itself
-        // by overwriting every history file on the decoy with zeros.
-        let cleaned_items = truncate_all_history_files_for_homes(
-            manager.filesystem(),
-            &history_cleanup_homes(manager.runtime_env()),
-            self.cleanup_config.secure_delete,
-        );
-
-        let report = PostUnmountCleanupReport {
-            cleaned_items,
-            warnings: Vec::new(),
-            was_performed: true,
-        };
-
-        tracing::info!(
-            phase = "post_unmount_cleanup",
-            cleaned_count = report.cleaned_items.len(),
-            duration_ms = post_unmount_start.elapsed().as_millis() as u64,
-            "Phase 2 cleanup complete"
-        );
-
-        report
     }
 
     /// Attempt to unmount every overlay in reverse LIFO order.

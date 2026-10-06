@@ -4,7 +4,6 @@
 //! Tests for ShellType and the per-home / multi-home history file helpers
 
 use super::*;
-use crate::MockFilesystem;
 
 /// Test home directory path - safe for tests, doesn't exist on real filesystem
 const TEST_HOME: &str = "/home/testuser";
@@ -88,82 +87,6 @@ fn test_get_extended_history_files_for_home() {
 }
 
 // ============================================================================
-// truncate_all_history_files_for_home tests (no env vars needed)
-// ============================================================================
-
-#[test]
-fn test_truncate_all_history_files_for_home_truncates_existing() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
-
-    let bash_history = "/home/testuser/.bash_history";
-    let zsh_history = "/home/testuser/.zsh_history";
-    fs.mock_set_path_exists(bash_history, true);
-    fs.mock_set_file_content(bash_history, "nails activate\nls\n");
-    fs.mock_set_path_exists(zsh_history, true);
-    fs.mock_set_file_content(zsh_history, "cryptsetup open\npwd\n");
-
-    let results = truncate_all_history_files_for_home(&fs, &home, false);
-
-    assert!(results.iter().any(|r| r.contains(".bash_history")));
-    assert!(results.iter().any(|r| r.contains(".zsh_history")));
-
-    // Verify files are now empty
-    let bash_written = fs
-        .get_written_content(&PathBuf::from(bash_history))
-        .unwrap();
-    assert_eq!(bash_written, "");
-    let zsh_written = fs.get_written_content(&PathBuf::from(zsh_history)).unwrap();
-    assert_eq!(zsh_written, "");
-}
-
-#[test]
-fn test_truncate_all_history_files_for_home_with_secure_delete() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
-
-    let bash_history = "/home/testuser/.bash_history";
-    fs.mock_set_path_exists(bash_history, true);
-    fs.mock_set_file_content(bash_history, "some commands\n");
-
-    let results = truncate_all_history_files_for_home(&fs, &home, true);
-
-    assert!(!results.is_empty());
-    let bash_written = fs
-        .get_written_content(&PathBuf::from(bash_history))
-        .unwrap();
-    assert_eq!(bash_written, "");
-}
-
-#[test]
-fn test_truncate_all_history_files_for_home_skips_nonexistent() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
-    // Don't set any files as existing
-
-    let results = truncate_all_history_files_for_home(&fs, &home, false);
-
-    // No files existed, so nothing was truncated
-    assert!(results.is_empty());
-}
-
-#[test]
-fn test_truncate_all_history_files_for_home_includes_recently_used_xbel() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
-
-    let xbel_path = "/home/testuser/.local/share/recently-used.xbel";
-    fs.mock_set_path_exists(xbel_path, true);
-    fs.mock_set_file_content(xbel_path, "<xbel>some data</xbel>\n");
-
-    let results = truncate_all_history_files_for_home(&fs, &home, false);
-
-    assert!(results.iter().any(|r| r.contains("recently-used.xbel")));
-    let written = fs.get_written_content(&PathBuf::from(xbel_path)).unwrap();
-    assert_eq!(written, "");
-}
-
-// ============================================================================
 // Multi-home variants: the operator's home plus /root in one pass
 // ============================================================================
 
@@ -178,32 +101,5 @@ fn test_get_extended_history_files_for_homes_covers_every_home() {
     assert_eq!(
         files.len(),
         get_extended_history_files_for_home(&PathBuf::from("/home/operator")).len() * 2
-    );
-}
-
-#[test]
-fn test_truncate_all_history_files_for_homes_truncates_both_homes() {
-    let fs = MockFilesystem::new();
-    let homes = vec![PathBuf::from("/home/operator"), PathBuf::from("/root")];
-
-    let operator_hist = "/home/operator/.bash_history";
-    let root_hist = "/root/.bash_history";
-    fs.mock_set_path_exists(operator_hist, true);
-    fs.mock_set_file_content(operator_hist, "nails activate\n");
-    fs.mock_set_path_exists(root_hist, true);
-    fs.mock_set_file_content(root_hist, "cryptsetup open\n");
-
-    let results = truncate_all_history_files_for_homes(&fs, &homes, false);
-
-    assert!(results.iter().any(|r| r.contains("/home/operator")));
-    assert!(results.iter().any(|r| r.contains("/root")));
-    assert_eq!(
-        fs.get_written_content(&PathBuf::from(operator_hist))
-            .unwrap(),
-        ""
-    );
-    assert_eq!(
-        fs.get_written_content(&PathBuf::from(root_hist)).unwrap(),
-        ""
     );
 }

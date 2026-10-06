@@ -39,4 +39,4 @@ pub use last_report::{
     LAST_DEACTIVATION_SCHEMA_VERSION, LastDeactivationReport, read_last_deactivation_report,
     write_last_deactivation_report,
 };
-pub use report::{DeactivationReport, PostUnmountCleanupReport};
+pub use report::DeactivationReport;

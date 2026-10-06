@@ -27,16 +27,22 @@ in
     write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("plant representative cleanup targets"):
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
-        machine.succeed("mkdir -p /mnt/data/logs")
-        machine.succeed("printf 'fast-mode-log\n' > /mnt/data/logs/nails.log")
-        machine.succeed("printf 'nails fast mode history\n' >> /home/testuser/.bash_history")
-        machine.succeed("printf 'nails temp\n' > /tmp/nails-fast-mode-artifact")
-        machine.succeed("test -f /mnt/data/logs/nails.log")
-        machine.succeed("test -f /tmp/nails-fast-mode-artifact")
+    decoy_history = "/home/testuser/.bash_history"
+    # No "nails" in the name, so the pre-activation hygiene leaves it alone.
+    decoy_temp = "/tmp/fast-mode-decoy-artifact"
 
-    with subtest("emergency path uses fast cleanup semantics"):
+    def stat_times(path):
+        return machine.succeed(f"stat -c '%s %Y %X' {path}").strip()
+
+    with subtest("plant decoy files before activation and session artifacts during it"):
+        machine.succeed(f"printf 'decoy temp\n' > {decoy_temp}")
+        # Let the timestamps settle so a later read or write would show.
+        machine.succeed("sleep 1")
+        decoy_temp_before = stat_times(decoy_temp)
+        machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
+        machine.succeed("printf 'nails fast mode history\n' >> /home/testuser/.bash_history")
+
+    with subtest("emergency runs no artifact cleanup after the unmount"):
         unit_name = "nails-emergency-fast-mode"
         prefix = "/run/nails-tests/emergency-fast-mode"
         result = run_shellless_transient_command(
@@ -51,9 +57,8 @@ in
         assert result["systemd"].get("ExecMainCode") in ("exited", "0"), result
         assert result["systemd"].get("ExecMainStatus") == "0", result
         assert result["systemd"].get("Result") == "success", result
-        assert "Emergency cleanup complete (best-effort)" in combined_output, combined_output
-        assert "Starting Phase 2 cleanup on real disk" not in combined_output, combined_output
-        assert "Phase 2 cleanup complete" not in combined_output, combined_output
+        assert "Emergency cleanup complete" not in combined_output, combined_output
+        assert "Phase 2 cleanup" not in combined_output, combined_output
         # The page cache is dropped after unmount (requires root; the VM runs as
         # root), and the log must say so honestly rather than "memory sanitized".
         assert "page cache dropped" in combined_output, combined_output
@@ -64,10 +69,9 @@ in
         assert elapsed_ms is not None, combined_output
         assert elapsed_ms < 10000, f"Fast-mode emergency took too long: {elapsed_ms} ms"
 
-    with subtest("fast cleanup still removes key artifacts and leaves inactive state"):
-        machine.fail("test -f /tmp/nails-fast-mode-artifact")
-        machine.fail("test -f /mnt/data/logs/nails.log")
-        history_after = machine.succeed("cat /home/testuser/.bash_history 2>/dev/null || true")
+    with subtest("decoy files are neither written nor read after the unmount"):
+        assert stat_times(decoy_temp) == decoy_temp_before, stat_times(decoy_temp)
+        history_after = machine.succeed(f"cat {decoy_history} 2>/dev/null || true")
         assert "nails fast mode history" not in history_after, history_after
         assert_no_overlays(["/home", "/etc"])
         status = read_status_json(config_path=headless_config)

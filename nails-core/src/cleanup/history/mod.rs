@@ -33,7 +33,6 @@ mod tests_shell;
 
 pub use cleaner::HistoryCleaner;
 
-use crate::Filesystem;
 use std::path::PathBuf;
 
 /// Home directories that history cleanup must cover for the current run.
@@ -254,97 +253,4 @@ pub(crate) fn filter_fish_history(content: &str, patterns: &[String]) -> (String
         format!("{}\n", result.join("\n"))
     };
     (text, removed_count)
-}
-
-/// Truncate all known history files to zero length, given a home directory
-///
-/// This is the forensically safe approach: rather than pattern-filtering (which
-/// is fragile), truncate every known history file on the real disk. This ensures
-/// ZERO commands remain visible to an adversary.
-///
-/// # Arguments
-///
-/// * `fs` - Filesystem implementation
-/// * `home` - The home directory path (e.g., from $HOME or for testing)
-/// * `secure` - If true, use secure_delete before truncating (overwrite with zeros/random)
-///
-/// # Returns
-///
-/// Vec of descriptions of what was done (best-effort, never fails overall).
-pub fn truncate_all_history_files_for_home<F: Filesystem>(
-    fs: &F,
-    home: &std::path::Path,
-    secure: bool,
-) -> Vec<String> {
-    let history_files = get_extended_history_files_for_home(home);
-    let mut results = Vec::new();
-
-    for path in &history_files {
-        match fs.path_exists(path) {
-            Ok(true) => {
-                // Secure delete first if requested
-                if secure && let Err(e) = fs.secure_delete(path) {
-                    tracing::debug!(
-                        file = %path.display(),
-                        error = %e,
-                        "Secure delete failed, proceeding with truncation"
-                    );
-                }
-
-                // Truncate to empty
-                match fs.write_file_content(path, "") {
-                    Ok(()) => {
-                        results.push(format!("Truncated {}", path.display()));
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            file = %path.display(),
-                            error = %e,
-                            "Failed to truncate history file"
-                        );
-                    }
-                }
-            }
-            Ok(false) => {
-                // File doesn't exist, skip silently
-            }
-            Err(e) => {
-                tracing::warn!(
-                    file = %path.display(),
-                    error = %e,
-                    "Failed to check history file existence"
-                );
-            }
-        }
-    }
-
-    results
-}
-
-/// Truncate all known history files to zero length across the given homes.
-///
-/// This is the multi-home form of [`truncate_all_history_files_for_home`].
-/// Callers pass [`history_cleanup_homes`] so post-unmount cleanup covers both
-/// the operator's home and `/root` — the fix for cleanup that previously read
-/// `$HOME` and so only ever reached root's home under `sudo`.
-///
-/// # Arguments
-///
-/// * `fs` - Filesystem implementation
-/// * `homes` - Home directories to clean
-/// * `secure` - If true, use secure_delete before truncating (overwrite with zeros/random)
-///
-/// # Returns
-///
-/// Vec of descriptions of what was done (best-effort, never fails overall).
-pub fn truncate_all_history_files_for_homes<F: Filesystem>(
-    fs: &F,
-    homes: &[PathBuf],
-    secure: bool,
-) -> Vec<String> {
-    let mut results = Vec::new();
-    for home in homes {
-        results.extend(truncate_all_history_files_for_home(fs, home, secure));
-    }
-    results
 }

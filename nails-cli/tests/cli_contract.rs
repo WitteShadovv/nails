@@ -661,7 +661,6 @@ fn emergency_schema_accepts_a_complete_teardown() {
             "state_write_errors": ["inactive: state.json: read-only file system"],
             "page_cache_dropped": true,
             "runtime_journal_scrubbed": true,
-            "history_truncation_verified": null,
             "hidden_root_still_mounted": false,
             "hidden_root": "/mnt/data",
             "backend_lock": null,
