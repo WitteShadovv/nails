@@ -158,8 +158,17 @@ jobs:
       - name: Give the tests a private TMPDIR
         run: echo "TMPDIR=$(mktemp -d "$RUNNER_TEMP/tests.XXXXXX")" >> "$GITHUB_ENV"
 
+      # The real-kernel tests mount tmpfs and overlayfs in an unprivileged user +
+      # mount namespace. AppArmor on ubuntu-24.04 gives such a namespace no
+      # capabilities until this sysctl is cleared. NAILS_REQUIRE_USERNS turns a
+      # skipped kernel test into a failure, so they cannot pass vacuously here.
+      - name: Allow unprivileged user namespaces
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       # The threshold lives in the justfile; the figure goes to the job summary.
       - name: Run tests with coverage
+        env:
+          NAILS_REQUIRE_USERNS: "1"
         run: just coverage
 
       - name: Run doctests
