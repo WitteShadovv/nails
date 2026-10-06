@@ -1021,10 +1021,40 @@ impl<F: Filesystem> Verifier<F> {
             }
         }
 
-        // 2. Check hidden volume path for accessibility
+        // 2. Check hidden volume path for accessibility.
+        //
+        // Only a *genuine* hidden-volume location is an exposure. A genuine
+        // location is one of:
+        //   * an **explicitly configured** root (from a config file or a CLI
+        //     override) — something the operator pointed NAILS at; or
+        //   * a root that is a **genuinely attached** hidden volume: mounted on
+        //     its own device and carrying a NAILS marker (`state.json` or
+        //     `config/nails.toml`), the attach gate the rest of NAILS already
+        //     uses for write safety.
+        //
+        // When NAILS runs with no config (and no `--hidden-volume-root`), the
+        // root *defaults* to the binary's own install directory
+        // (`derive_hidden_volume_root`). For a read-only nix-store install that is
+        // a store path like `/nix/store/…-nails-…/bin`, which exists and — with a
+        // dedicated store image — even sits on its own device, yet is the
+        // program's install location, not a mounted hidden volume. Flagging it
+        // reported the install dir as an accessible hidden volume, a false
+        // positive that made a clean post-deactivation `verify --deep` exit
+        // non-zero. The marker requirement is what separates that read-only store
+        // dir (no marker) from a real hidden volume the binary lives on (which
+        // carries a marker), so a defaulted root is reported only when it is a
+        // genuinely attached, marked volume.
         let hidden_vol = &config.hidden_volume_root;
         paths_checked += 1;
-        if !host_context_inactive && self.filesystem.path_exists(hidden_vol)? {
+        let is_binary_default = *hidden_vol == crate::config::derive_hidden_volume_root();
+        let attached_marked_volume =
+            crate::hidden_root::HiddenRoot::verify_attached(&self.filesystem, hidden_vol, true)?
+                .is_attached();
+        let is_genuine_hidden_location = !is_binary_default || attached_marked_volume;
+        if !host_context_inactive
+            && is_genuine_hidden_location
+            && self.filesystem.path_exists(hidden_vol)?
+        {
             findings.push(
                 Finding::new(
                     Severity::Warn,

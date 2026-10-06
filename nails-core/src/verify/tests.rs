@@ -1126,6 +1126,71 @@ fn test_verify_detects_config_specific_hidden_volume() {
 }
 
 #[test]
+fn test_verify_ignores_defaulted_install_dir_without_marker() {
+    use crate::config::Config;
+
+    // No config/override: the hidden root defaults to the binary's own install
+    // directory. On a read-only store install that directory exists (and may sit
+    // on its own device), but it carries no NAILS marker, so it is the program's
+    // install location, not a mounted hidden volume, and must not be flagged.
+    let install_dir = crate::config::derive_hidden_volume_root();
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(install_dir.to_str().unwrap(), true);
+    // Give it its own device to mimic a dedicated /nix/store image; the missing
+    // marker alone must keep it from being reported.
+    fs.mock_set_device_id(std::path::Path::new("/"), 1);
+    fs.mock_set_device_id(&install_dir, 42);
+    let config = Config {
+        hidden_volume_root: install_dir,
+        ..Config::default()
+    };
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+    let hits: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "config" && f.message.contains("Hidden volume"))
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "a defaulted install dir without a NAILS marker must not be flagged: {hits:?}"
+    );
+}
+
+#[test]
+fn test_verify_flags_defaulted_root_when_attached_marked_volume() {
+    use crate::config::Config;
+
+    // The binary lives on the hidden volume itself (the normal NAILS layout), so
+    // the defaulted root *is* the hidden volume: mounted on its own device and
+    // carrying a marker. That genuine exposure must still be reported.
+    let root = crate::config::derive_hidden_volume_root();
+    let marker = root.join(crate::artifacts::STATE_FILE_NAME);
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_path_exists(marker.to_str().unwrap(), true);
+    fs.mock_set_device_id(std::path::Path::new("/"), 1);
+    fs.mock_set_device_id(&root, 42);
+    let config = Config {
+        hidden_volume_root: root,
+        ..Config::default()
+    };
+    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
+    let result = verifier.run(false).unwrap();
+    let hits: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "config" && f.message.contains("Hidden volume"))
+        .collect();
+    assert_eq!(
+        hits.len(),
+        1,
+        "an attached, marked hidden volume must be flagged"
+    );
+    assert_eq!(hits[0].severity, Severity::Warn);
+}
+
+#[test]
 fn test_verify_detects_state_file_exists() {
     use crate::config::Config;
     use std::path::PathBuf;
