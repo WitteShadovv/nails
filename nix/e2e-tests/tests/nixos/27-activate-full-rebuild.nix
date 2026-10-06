@@ -4,9 +4,14 @@
 # PATH: `nails activate` builds the hidden system toplevel explicitly
 # (`nix build …#…system.build.toplevel`), caches its `nixos-system-*` store path
 # in the state file, and switches to it before the session restart. After a
-# deactivate-with-reboot, a second activation with the unchanged config must reuse
-# the cached toplevel on the fast path — proven here by breaking the flake source
-# so that any rebuild would fail, and asserting the re-activation still succeeds.
+# deactivate-with-reboot, a second activation with the unchanged flake must reuse
+# the cached toplevel on the fast path, proven here by asserting the activation
+# logs the fast-path switch and performs no build+switch. The fast-path
+# fingerprint covers the flake source directory (the real build input), the
+# flake-ref string and the attribute name, and deliberately not the hidden
+# /etc/nixos overlay upper, which the first session's own switch-to-configuration
+# rewrites; so an unchanged flake fingerprints identically across sessions while
+# an edited flake forces a rebuild (the latter is covered at the unit level).
 #
 # The hidden system is this VM's own `nails-hidden` specialisation: the running
 # decoy system plus fixtures/hidden-config/module.nix (an /etc marker, a oneshot
@@ -116,6 +121,24 @@ in
         rc = int(machine.succeed(f"cat {stem}.rc"))
         out = machine.succeed(f"cat {stem}.out")
         return rc, out
+
+    def dump_residue_reports(label):
+        # The pre-activation decoy residue baseline is written to the hidden
+        # volume as JSON but only summarised on the console. When an activation
+        # fails, print the full report(s) so the recorded findings are visible in
+        # the test log (the hidden volume is mounted at this point).
+        reports = machine.succeed(
+            "ls -1 /mnt/data/reports/activation-residue-*.json 2>/dev/null || true"
+        ).split()
+        if not reports:
+            print(f"[{label}] no activation-residue reports under /mnt/data/reports/")
+            return
+        for report in reports:
+            report = report.strip()
+            if not report:
+                continue
+            print(f"[{label}] residue report {report}:")
+            print(machine.succeed(f"cat {shlex.quote(report)}"))
 
     def read_status(config_path):
         return json.loads(machine.succeed(f"nails --config {config_path} status --json"))["data"]
@@ -246,23 +269,28 @@ in
         assert_state("Inactive", headless_config)
         machine.fail(f"test -e {HIDDEN_MARKER}")
 
-    with subtest("re-activation takes the fast path even when the flake can no longer build"):
+    with subtest("re-activation with an unchanged flake reuses the cached toplevel on the fast path"):
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-        # Break the hidden flake source. The fingerprint covers the hidden
-        # etc/nixos and config/nixos trees (absent here) plus the flake-ref string,
-        # not this flake's source, so it is unchanged and the fast path still fires.
-        machine.succeed(
-            "echo 'this is not valid nix' > /mnt/data/nixos/flake.nix"
-        )
-        # Positive control: a rebuild of the broken flake genuinely fails, so a
-        # successful re-activation can only be the no-rebuild fast path.
-        machine.fail(f"nix build --offline --impure --no-link {shlex.quote(toplevel_attr)}")
-
+        # The fast-path fingerprint covers the flake source directory (the real
+        # build input), the flake-ref string and the attribute name — not the
+        # hidden /etc/nixos overlay upper, which the first session's own
+        # switch-to-configuration rewrites. With the flake source untouched the
+        # fingerprint matches, so the second activation reuses the cached toplevel
+        # and never rebuilds. Proving it: the activation must log the fast-path
+        # switch and must not log a build+switch.
         rc, out = run_capture(
             "activate2",
             f"nails --config {headless_config} activate --session keep -y --nixos-flake {flake_ref}",
         )
+        if rc != 0:
+            dump_residue_reports("activate2")
         assert rc == 0, f"fast-path re-activation failed: {out}"
+        assert "via fast path" in out, (
+            f"re-activation should have taken the fast path (no rebuild):\n{out}"
+        )
+        assert "NixOS build+switch complete" not in out, (
+            f"re-activation must not rebuild when the flake is unchanged:\n{out}"
+        )
 
         payload = assert_state("Active", headless_config)
         second_toplevel = payload.get("hidden_toplevel")
@@ -271,6 +299,11 @@ in
         )
         # The cached toplevel re-applies the hidden marker.
         machine.succeed(f"grep -Fx 'hidden-rebuild-active' {HIDDEN_MARKER}")
+        # Editing the flake source (the fingerprinted build input) instead forces
+        # a rebuild rather than reusing a stale toplevel; that path is covered at
+        # the unit level (nails-core: fingerprint `flake_build_hashes_the_flake_source`
+        # and preflight `test_post_mount_guards_skip_flake_validation_on_fast_path`)
+        # so this VM test keeps a single, unmutated fast-path re-activation.
 
     with subtest("final deactivate leaves no hidden overlays and bounded nixos drift"):
         canonical_deactivate(headless_config, unit_name="nails-deactivate-full-rebuild-2")
