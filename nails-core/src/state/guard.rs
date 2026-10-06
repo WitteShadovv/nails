@@ -199,6 +199,16 @@ impl<'a, F: Filesystem> StateGuard<'a, F> {
         // self is dropped here, but committed=true prevents rollback
     }
 
+    /// Change the state a rollback restores.
+    ///
+    /// A teardown calls this before its first unmount: from then on rolling back
+    /// to the captured `Active` state would claim overlays that are gone (and
+    /// invite writes through them onto the decoy), so any later early return
+    /// must leave the state at `rollback_state` instead.
+    pub fn set_rollback_state(&mut self, rollback_state: SystemState) {
+        self.previous_state = rollback_state;
+    }
+
     /// Get the previous state that will be restored on rollback
     ///
     /// # Returns

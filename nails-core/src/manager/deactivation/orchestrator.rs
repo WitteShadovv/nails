@@ -251,6 +251,7 @@ impl DeactivationOrchestrator {
 
         if self.mode == DeactivationMode::Emergency {
             // Step 2 (emergency): detach every overlay first.
+            Self::never_roll_back_to_active(&mut guard, &overlays_to_unmount);
             let outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
             guard =
                 self.finish_or_degrade(guard, &overlays_to_unmount, "deactivation", &outcome)?;
@@ -302,6 +303,7 @@ impl DeactivationOrchestrator {
             // target is detached, returning to ACTIVE would route hidden-session
             // writes onto the decoy disk, so a teardown that cannot finish ends
             // DEGRADED instead.
+            Self::never_roll_back_to_active(&mut guard, &overlays_to_unmount);
             let outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
             guard =
                 self.finish_or_degrade(guard, &overlays_to_unmount, "deactivation", &outcome)?;
@@ -325,6 +327,9 @@ impl DeactivationOrchestrator {
         guard.clear_overlay_status_in_cache()?;
         let inactive_state = guard.current_state()?.complete_deactivation()?;
         self.persist_teardown_state_or_tolerate(&mut guard, inactive_state, "inactive")?;
+        // Every overlay is down and Inactive is recorded: a later early return
+        // (the decoy restore) must keep it so.
+        guard.set_rollback_state(SystemState::Inactive);
 
         // Step 5: Point /run/current-system back at the decoy system (see
         // `restore_decoy_current_system`).
@@ -369,6 +374,24 @@ impl DeactivationOrchestrator {
             reboot_recommended: false,
             state_write_errors: self.take_state_write_errors(),
         })
+    }
+
+    /// Point the guard's rollback at `Degraded` right before the first unmount.
+    ///
+    /// Up to here a failure rolls the state back to `Active` with the overlays
+    /// intact. From the first unmount on that would be a lie: a later early
+    /// return (a failed final state write, a failed decoy restore) must leave the
+    /// state `Degraded`, listing the targets that may still need attention, never
+    /// `Active`.
+    fn never_roll_back_to_active<F: Filesystem>(
+        guard: &mut StateGuard<'_, F>,
+        targets: &[PathBuf],
+    ) {
+        guard.set_rollback_state(SystemState::Degraded {
+            since: chrono::Utc::now(),
+            reason: "teardown stopped after it began unmounting".to_string(),
+            remaining_mounts: targets.to_vec(),
+        });
     }
 
     /// After attempting every unmount, either return the guard (clean teardown)

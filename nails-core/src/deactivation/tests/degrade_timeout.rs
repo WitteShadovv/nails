@@ -137,7 +137,12 @@ fn deactivate_returns_err_within_timeout_when_inactive_write_fails() {
         result.is_err(),
         "deactivate must surface the failed DEACTIVATING->INACTIVE write"
     );
-    assert!(manager.lock().unwrap().current_state().unwrap().is_active());
+    // The overlays are already gone at this late `?` site, so the guard must not
+    // roll back to ACTIVE: it leaves the state DEGRADED, in memory and on disk.
+    let guard = manager.lock().unwrap();
+    assert!(guard.current_state().unwrap().is_degraded());
+    let on_disk = crate::StateFile::load(&guard.config().state_file_path).unwrap();
+    assert!(on_disk.state.is_degraded(), "{:?}", on_disk.state);
 }
 #[test]
 fn emergency_completes_within_timeout_when_inactive_write_fails() {
