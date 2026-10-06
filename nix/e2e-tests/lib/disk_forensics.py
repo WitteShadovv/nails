@@ -300,6 +300,91 @@ def run_journal_scan(
         shutil.rmtree(work, ignore_errors=True)
 
 
+# Bytes of context kept on each side of a token hit for the diagnostic snippet.
+_SNIPPET_CONTEXT = 80
+# How many matching paths to record per token before a token stops being scanned.
+_MAX_PATHS_PER_TOKEN = 10
+
+
+def token_snippet(
+    haystack: str, token: str, context: int = _SNIPPET_CONTEXT
+) -> str | None:
+    """A one-line context snippet around the first occurrence of ``token``.
+
+    Returns ``None`` when the token is absent. The window is ``context`` bytes on
+    each side of the hit, collapsed to a single line so a binary file's control
+    bytes cannot wreck the assertion message. Pure, so it is unit-testable without
+    an image.
+    """
+    if not token:
+        return None
+    index = haystack.find(token)
+    if index < 0:
+        return None
+    start = max(0, index - context)
+    end = min(len(haystack), index + len(token) + context)
+    window = haystack[start:end]
+    # Flatten newlines/tabs and drop other control bytes so the snippet prints on
+    # one readable line; the latin-1 decode upstream never fails, so this only
+    # tidies, never hides, the match.
+    cleaned = "".join(ch if (ch.isprintable() or ch == " ") else " " for ch in window)
+    cleaned = " ".join(cleaned.split())
+    prefix = "…" if start > 0 else ""
+    suffix = "…" if end < len(haystack) else ""
+    return f"{prefix}{cleaned}{suffix}"
+
+
+def scan_decoy_files_for_paths(
+    image: str | os.PathLike[str],
+    tokens: Iterable[str],
+    *,
+    offset: int | None = None,
+    exclude: Iterable[str] = ("var/log/journal",),
+    max_paths: int = _MAX_PATHS_PER_TOKEN,
+) -> dict[str, list[str]]:
+    """Map each present token to the decoy files that carry it, with context.
+
+    Same carve as :func:`run_decoy_file_scan`, but instead of a bare set it returns
+    ``{token: ["<relpath> :: <snippet>", …]}`` (sorted, at most ``max_paths`` per
+    token) so a failing assertion can name the offending files and show a short
+    latin-1 snippet around each hit. A token with no match is omitted.
+    """
+    offset = partition_offset(image) if offset is None else offset
+    work = Path(tempfile.mkdtemp(prefix="nails-files-"))
+    try:
+        _rdump(str(image), offset, "/", work)
+        for rel in exclude:
+            shutil.rmtree(work / rel, ignore_errors=True)
+        candidates = {token for token in tokens if token}
+        hits: dict[str, list[str]] = {}
+        for path in work.rglob("*"):
+            # A token stops being scanned once it has enough example paths; when
+            # every candidate is satisfied the walk can end early.
+            pending = {t for t in candidates if len(hits.get(t, [])) < max_paths}
+            if not pending:
+                break
+            if path.is_symlink():
+                # A symlink's target name is still evidence; scan the link text.
+                text = os.readlink(path)
+            elif path.is_file():
+                try:
+                    text = _nails_latin1(path.read_bytes())
+                except OSError:
+                    continue
+            else:
+                continue
+            # The path itself (a planted file's name) is evidence too.
+            relpath = str(path.relative_to(work))
+            haystack = text + "\n" + relpath
+            for token in pending:
+                snippet = token_snippet(haystack, token)
+                if snippet is not None:
+                    hits.setdefault(token, []).append(f"{relpath} :: {snippet}")
+        return {token: sorted(paths) for token, paths in hits.items()}
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 def run_decoy_file_scan(
     image: str | os.PathLike[str],
     tokens: Iterable[str],
@@ -323,37 +408,15 @@ def run_decoy_file_scan(
 
     Tokens are matched against raw file bytes decoded 1:1 (latin-1), so an ASCII
     token is found wherever it occurs regardless of surrounding binary content.
+    Use :func:`scan_decoy_files_for_paths` for the offending paths and snippets.
     """
-    offset = partition_offset(image) if offset is None else offset
-    work = Path(tempfile.mkdtemp(prefix="nails-files-"))
-    try:
-        _rdump(str(image), offset, "/", work)
-        for rel in exclude:
-            shutil.rmtree(work / rel, ignore_errors=True)
-        pending = {token for token in tokens if token}
-        found: set[str] = set()
-        for path in work.rglob("*"):
-            if not pending:
-                break
-            if path.is_symlink():
-                # A symlink's target name is still evidence; scan the link text.
-                text = os.readlink(path)
-            elif path.is_file():
-                try:
-                    text = _nails_latin1(path.read_bytes())
-                except OSError:
-                    continue
-            else:
-                continue
-            # The path itself (a planted file's name) is evidence too.
-            haystack = text + "\n" + str(path.relative_to(work))
-            hit = scan_tokens(haystack, pending)
-            if hit:
-                found |= hit
-                pending -= hit
-        return found
-    finally:
-        shutil.rmtree(work, ignore_errors=True)
+    # One example path per token is enough to know it occurs, and it lets the walk
+    # stop as soon as every token is accounted for — the set API's old behaviour.
+    return set(
+        scan_decoy_files_for_paths(
+            image, tokens, offset=offset, exclude=exclude, max_paths=1
+        )
+    )
 
 
 def _nails_latin1(data: bytes) -> str:

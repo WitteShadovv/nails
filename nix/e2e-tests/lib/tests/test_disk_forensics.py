@@ -89,6 +89,31 @@ class ScanTokensTest(unittest.TestCase):
         self.assertEqual(df.scan_tokens("clean", ["leak"]), set())
 
 
+class TokenSnippetTest(unittest.TestCase):
+    def test_absent_token_returns_none(self) -> None:
+        self.assertIsNone(df.token_snippet("clean content", "leak"))
+
+    def test_empty_token_returns_none(self) -> None:
+        self.assertIsNone(df.token_snippet("anything", ""))
+
+    def test_snippet_keeps_context_around_the_hit(self) -> None:
+        haystack = "loading config from /mnt/data/config/nails.toml and continuing on"
+        snippet = df.token_snippet(haystack, "nails.toml", context=8)
+        assert snippet is not None
+        self.assertIn("nails.toml", snippet)
+        # Context is bounded, so the far ends of the line are trimmed with ellipses.
+        self.assertTrue(snippet.startswith("…"))
+        self.assertTrue(snippet.endswith("…"))
+
+    def test_snippet_flattens_control_bytes_to_one_line(self) -> None:
+        haystack = "a\x00\nstate.json\t\x01b"
+        snippet = df.token_snippet(haystack, "state.json")
+        assert snippet is not None
+        self.assertNotIn("\n", snippet)
+        self.assertNotIn("\x00", snippet)
+        self.assertIn("state.json", snippet)
+
+
 class StoreDbTest(unittest.TestCase):
     def setUp(self) -> None:
         self.paths = df.read_valid_paths(_FIXTURES / "store.sqlite")

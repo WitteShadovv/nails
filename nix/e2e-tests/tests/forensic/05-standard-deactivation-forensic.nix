@@ -142,10 +142,21 @@ in
             post, registry_tokens, offset=offset
         )
         new_registry = post_registry_hits - baseline_registry_hits
-        assert not new_registry, (
-            f"activate/deactivate introduced registry tokens onto the decoy "
-            f"image: {sorted(new_registry)}"
-        )
+        if new_registry:
+            # Name the offending files and show a short latin-1 snippet around each
+            # hit so the next run points straight at the leaking path.
+            offenders = disk_forensics.scan_decoy_files_for_paths(
+                post, sorted(new_registry), offset=offset
+            )
+            detail = "\n".join(
+                f"  {token}:\n"
+                + "\n".join(f"    {location}" for location in offenders.get(token, []))
+                for token in sorted(new_registry)
+            )
+            raise AssertionError(
+                "activate/deactivate introduced registry tokens onto the decoy "
+                f"image: {sorted(new_registry)}\n{detail}"
+            )
         print("✓ post-standard image clean of canaries and registry tokens")
   '';
 }
