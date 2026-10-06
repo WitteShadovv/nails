@@ -72,7 +72,12 @@ pub(crate) fn exit_process(code: u8) -> ! {
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         tracing::error!(target: "panic", detail = %info, "aborted by an internal error");
-        eprintln!("A fatal internal error occurred; the operation was aborted.");
+        // Pipe-safe: an emergency teardown can sever stderr (journald restarts
+        // while scrubbing the runtime journal), and a plain `eprintln!` here would
+        // panic again on the broken pipe, double-panic and abort the process.
+        crate::cli::output::eprintln_tolerating_broken_pipe(
+            "A fatal internal error occurred; the operation was aborted.",
+        );
     }));
 }
 

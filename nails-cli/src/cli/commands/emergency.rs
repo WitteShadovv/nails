@@ -15,7 +15,6 @@
 //! `--countdown <SECS>` is given, and `--poweroff`/`--reboot` run only after it
 //! finishes.
 
-use std::io::Write;
 use std::path::Path;
 
 use nails_core::output::Mark;
@@ -183,12 +182,15 @@ fn dispatch_power_action<F: Filesystem>(
 /// with a Ctrl+C hint. Never gated by `--quiet`/`--json`.
 fn run_countdown(secs: u64) {
     for remaining in (1..=secs).rev() {
-        eprint!("\r  Emergency deactivation in {remaining}... (Ctrl+C to abort) ");
-        let _ = std::io::stderr().flush();
+        crate::cli::output::eprint_tolerating_broken_pipe(&format!(
+            "\r  Emergency deactivation in {remaining}... (Ctrl+C to abort) "
+        ));
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
     if secs > 0 {
-        eprintln!("\r  Emergency deactivation starting now!            ");
+        crate::cli::output::eprintln_tolerating_broken_pipe(
+            "\r  Emergency deactivation starting now!            ",
+        );
     }
 }
 
@@ -404,9 +406,13 @@ fn render_emergency_success(settings: &OutputSettings, view: &EmergencyView) {
         crate::cli::output::println_tolerating_broken_pipe(line);
     }
 
-    eprintln!();
+    // Pipe-safe: the teardown restarts journald while scrubbing the runtime
+    // journal, which severs the unit's `journal+console` stderr, so a plain
+    // `eprintln!` here would panic on the broken pipe and abort after the work is
+    // already done.
+    crate::cli::output::eprintln_tolerating_broken_pipe("");
     for line in emergency_recovery_guidance(settings) {
-        eprintln!("{line}");
+        crate::cli::output::eprintln_tolerating_broken_pipe(&line);
     }
 }
 

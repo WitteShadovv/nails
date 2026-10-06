@@ -35,6 +35,28 @@ pub fn println_tolerating_broken_pipe(line: &str) {
     let _ = write_line_tolerating_broken_pipe(&mut stdout, line);
 }
 
+/// Print `line` and a trailing newline on stderr, tolerating a broken pipe. The
+/// pipe-safe replacement for `eprintln!`.
+///
+/// An emergency teardown restarts journald as it scrubs the runtime journal,
+/// which severs the `journal+console` stream the unit's stderr is wired to; a
+/// later `eprintln!` then fails with `BrokenPipe` and panics. A teardown must
+/// never abort on its own diagnostic output, so the broken pipe is swallowed
+/// here and every other I/O error is ignored too (there is nowhere left to
+/// report it).
+pub fn eprintln_tolerating_broken_pipe(line: &str) {
+    let mut stderr = io::stderr().lock();
+    let _ = write_line_tolerating_broken_pipe(&mut stderr, line);
+}
+
+/// Write `text` to stderr with no trailing newline, flushing and tolerating a
+/// broken pipe. The pipe-safe replacement for `eprint!` followed by a flush.
+pub fn eprint_tolerating_broken_pipe(text: &str) {
+    let mut stderr = io::stderr().lock();
+    let _ = write!(stderr, "{text}");
+    let _ = stderr.flush();
+}
+
 pub mod activate;
 pub mod check;
 pub mod deactivate;
@@ -90,5 +112,16 @@ mod tests {
         let mut buffer: Vec<u8> = Vec::new();
         write_line_tolerating_broken_pipe(&mut buffer, "hello").unwrap();
         assert_eq!(buffer, b"hello\n");
+    }
+
+    #[test]
+    fn stderr_helpers_do_not_panic_on_a_broken_pipe() {
+        // The stderr helpers lock the real stderr, so they cannot be redirected
+        // to a FailingWriter here; the broken-pipe tolerance they rely on lives in
+        // write_line_tolerating_broken_pipe, which the cases above exercise. This
+        // smoke test guards against a regression that would make the wrappers
+        // themselves panic on an ordinary write.
+        eprintln_tolerating_broken_pipe("teardown diagnostic line");
+        eprint_tolerating_broken_pipe("\r  countdown ");
     }
 }
