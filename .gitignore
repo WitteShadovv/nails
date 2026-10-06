@@ -116,3 +116,6 @@ temp/
 # Editor backups
 \#*\#
 .\#*
+
+# Local E2E runner output (just e2e-local)
+/e2e-logs/

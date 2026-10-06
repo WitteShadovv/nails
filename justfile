@@ -158,6 +158,12 @@ nix-lint:
 e2e target="ci":
     ./scripts/run-e2e-tests.sh run {{ target }}
 
+# Run E2E tests locally with bounded parallelism: evaluate 4 tests per nix eval
+# process (caps evaluation memory), then build by derivation with as many VMs
+# as the host's RAM allows (3 on a 15 GiB host). Failed logs go to ./e2e-logs.
+e2e-local target="all" jobs="auto":
+    ./scripts/run-e2e-tests.sh run --jobs {{ jobs }} --eval-batch 4 --log-dir e2e-logs --durations-out e2e-logs/durations.jsonl {{ target }}
+
 # Open the interactive driver of one E2E leaf test.
 e2e-debug name:
     ./scripts/run-e2e-tests.sh interactive {{ name }}
