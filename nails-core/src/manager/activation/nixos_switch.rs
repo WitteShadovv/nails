@@ -18,7 +18,6 @@
 //! mode existed.
 
 use super::{HiddenConfigOutcome, ensure_run_current_system_symlink, select_system_profile};
-use crate::platform::ConfigLayer;
 use crate::{Filesystem, NailsError, NailsManager, Result, Verbosity};
 
 impl<F: Filesystem> NailsManager<F> {
@@ -76,10 +75,8 @@ impl<F: Filesystem> NailsManager<F> {
             })?;
         }
 
-        // Build and switch to the hidden toplevel through the config layer. `apply`
-        // takes no filesystem argument, so name the layer's `F` explicitly.
-        let applied_toplevel = ConfigLayer::<F>::apply(
-            &layer,
+        // Build and switch to the hidden toplevel through the config layer.
+        let applied_toplevel = layer.apply(
             &self.filesystem,
             builder,
             fast_path_toplevel.as_deref(),

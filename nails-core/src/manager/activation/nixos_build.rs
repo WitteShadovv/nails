@@ -13,7 +13,6 @@
 //! a host without a config layer (any FHS / Debian host, or an overlay-only run)
 //! does no NixOS work at all.
 
-use crate::platform::ConfigLayer;
 use crate::{Filesystem, NailsManager, Result, Verbosity};
 
 impl<F: Filesystem> NailsManager<F> {

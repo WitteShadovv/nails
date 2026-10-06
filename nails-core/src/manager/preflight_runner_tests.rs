@@ -9,6 +9,7 @@
 use super::{RegistryInputs, build_registry};
 use crate::config::OverlayMode;
 use crate::manager::NailsManager;
+use crate::platform::NixOsConfigLayer;
 use crate::preflight::CheckResult;
 use crate::{Config, MockFilesystem, NailsError, SystemState};
 
@@ -31,7 +32,6 @@ fn build_registry_includes_the_shared_checks() {
     let config = explicit_config();
     let inputs = RegistryInputs {
         overlay_only: false,
-        has_config_layer: true,
         read_only: true,
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
@@ -41,7 +41,8 @@ fn build_registry_includes_the_shared_checks() {
         accept_persistent_decoy: false,
     };
 
-    let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
+    let registry =
+        build_registry(&fs, &config, &inputs, Some(&NixOsConfigLayer)).expect("registry builds");
     let (results, _) = registry.run_all_detailed(&fs);
     let names = check_names(&results);
 
@@ -67,7 +68,6 @@ fn overlay_only_registry_drops_the_nixos_checks() {
     let config = explicit_config();
     let inputs = RegistryInputs {
         overlay_only: true,
-        has_config_layer: true,
         read_only: true,
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
@@ -77,7 +77,8 @@ fn overlay_only_registry_drops_the_nixos_checks() {
         accept_persistent_decoy: false,
     };
 
-    let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
+    let registry =
+        build_registry(&fs, &config, &inputs, Some(&NixOsConfigLayer)).expect("registry builds");
     let names = check_names(&registry.run_all_detailed(&fs).0);
 
     assert!(!names.iter().any(|name| name == "nixos-config"));
@@ -93,7 +94,6 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
     let config = explicit_config();
     let inputs = RegistryInputs {
         overlay_only: false,
-        has_config_layer: false,
         read_only: true,
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
@@ -103,7 +103,7 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
         accept_persistent_decoy: false,
     };
 
-    let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
+    let registry = build_registry(&fs, &config, &inputs, None).expect("registry builds");
     let names = check_names(&registry.run_all_detailed(&fs).0);
 
     assert!(!names.iter().any(|name| name == "nixos-config"));
@@ -154,7 +154,6 @@ fn read_only_registry_creates_nothing() {
     };
     let inputs = RegistryInputs {
         overlay_only: false,
-        has_config_layer: true,
         read_only: true,
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
@@ -164,7 +163,8 @@ fn read_only_registry_creates_nothing() {
         accept_persistent_decoy: false,
     };
 
-    let registry = build_registry(&fs, &config, &inputs).expect("registry builds");
+    let registry =
+        build_registry(&fs, &config, &inputs, Some(&NixOsConfigLayer)).expect("registry builds");
     let _ = registry.run_all_detailed(&fs);
 
     // The read-only registry must not stage the hidden NixOS layout or create

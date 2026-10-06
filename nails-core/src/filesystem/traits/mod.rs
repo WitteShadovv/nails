@@ -103,12 +103,15 @@ pub struct ProcessMatch {
 /// - **Send:** Required for thread-safe parallel testing
 /// - **Sync:** Required for sharing between threads
 /// - **Clone:** Required for passing to multiple managers
+/// - **'static:** Implementations own their state (no borrowed filesystems), so
+///   platform backends and config layers can be handed out as trait objects
+///   over any filesystem
 ///
 /// # Implementation Notes
 ///
 /// Operations should be **idempotent** where possible:
 /// - `unmount()` succeeds even if not mounted (no-op)
-pub trait Filesystem: Send + Sync + Clone {
+pub trait Filesystem: Send + Sync + Clone + 'static {
     // ------------------------------------------------------------------------
     // Overlay Mount Operations (Core Functionality)
     // ------------------------------------------------------------------------

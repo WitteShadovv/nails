@@ -14,7 +14,9 @@
 //! from [`Platform::config_layer`](super::Platform::config_layer); the manager
 //! routes hidden-config staging, fingerprinting, the `/etc` import injection, the
 //! build and the switch through it, and performs none of them when there is no
-//! layer. The sole implementation today is [`NixOsConfigLayer`]; FHS /
+//! layer. The layer also contributes the pre-flight checks that inspect its own
+//! configuration (the base-config reference gate and the hidden-config overlay
+//! check), so a host without a layer never runs them. The sole implementation today is [`NixOsConfigLayer`]; FHS /
 //! `DebianFamily` hosts have no layer, so "overlay-only" becomes simply "no
 //! layer" rather than a second, parallel code path.
 
@@ -27,6 +29,7 @@ use crate::nixos::{
     NixOSBuilder, SwitchAction, collect_config_tree, compute_config_fingerprint,
     inject_import_block, stage_hidden_config_symlink, stage_hidden_nixos_config,
 };
+use crate::preflight::{NixOSConfigCheck, PreFlightCheck, SuspiciousNailsReferenceCheck};
 use crate::process::{ProcessCommand, ProcessRunner};
 use crate::{
     NailsError, Result, Stopwatch, Verbosity, classify_nixos_failure_category,
@@ -57,6 +60,17 @@ pub struct ConfigPlan {
 /// mechanism. A platform without a layer — FHS / `DebianFamily` — makes the
 /// manager skip all of this, which is the whole point of the seam.
 pub trait ConfigLayer<F: Filesystem>: std::fmt::Debug + Send + Sync {
+    /// The gate that refuses activation when the decoy's base configuration
+    /// already references the hidden environment.
+    ///
+    /// Activation runs it before any side effect (even in overlay-only mode),
+    /// and the shared pre-flight registry lists it so `nails check` reports it.
+    fn base_reference_check(&self, hidden_volume_root: &Path) -> Box<dyn PreFlightCheck<F>>;
+
+    /// The checks validating the staged hidden configuration, registered when a
+    /// declarative switch will run (not in overlay-only mode).
+    fn preflight_checks(&self, hidden_volume_root: &Path) -> Vec<Box<dyn PreFlightCheck<F>>>;
+
     /// Stage the complete hidden config (module symlink plus hardware wrapper)
     /// before the pre-flight checks run.
     fn stage(&self, fs: &F, hidden_volume_root: &Path, overlay_only: bool) -> Result<()>;
@@ -128,6 +142,18 @@ pub trait ConfigLayer<F: Filesystem>: std::fmt::Debug + Send + Sync {
 pub struct NixOsConfigLayer;
 
 impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
+    fn base_reference_check(&self, hidden_volume_root: &Path) -> Box<dyn PreFlightCheck<F>> {
+        Box::new(SuspiciousNailsReferenceCheck::new(
+            hidden_volume_root.to_path_buf(),
+        ))
+    }
+
+    fn preflight_checks(&self, hidden_volume_root: &Path) -> Vec<Box<dyn PreFlightCheck<F>>> {
+        vec![Box::new(NixOSConfigCheck::new(
+            hidden_volume_root.to_path_buf(),
+        ))]
+    }
+
     fn stage(&self, fs: &F, hidden_volume_root: &Path, overlay_only: bool) -> Result<()> {
         stage_hidden_nixos_config(fs, hidden_volume_root, overlay_only)
     }

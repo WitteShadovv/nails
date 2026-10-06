@@ -12,8 +12,8 @@
 use std::path::Path;
 
 use super::{
-    ConfigLayer, HostProfile, HostTarget, NixOsConfigLayer, OverlayPolicy, Platform, PlatformKind,
-    RestoreOutcome,
+    ConfigLayer, FakeConfigLayer, HostProfile, HostTarget, NixOsConfigLayer, OverlayPolicy,
+    Platform, PlatformKind, RestoreOutcome,
 };
 use crate::Result;
 use crate::filesystem::Filesystem;
@@ -25,6 +25,7 @@ pub struct FakePlatform {
     kind: PlatformKind,
     restore_outcome: RestoreOutcome,
     has_config_layer: bool,
+    fake_layer: Option<FakeConfigLayer>,
     build_target: HostTarget,
 }
 
@@ -34,6 +35,7 @@ impl Default for FakePlatform {
             kind: PlatformKind::Fhs,
             restore_outcome: RestoreOutcome::NotRequired,
             has_config_layer: false,
+            fake_layer: None,
             build_target: HostTarget::None,
         }
     }
@@ -47,6 +49,7 @@ impl FakePlatform {
             restore_outcome: RestoreOutcome::NotRequired,
             // Only NixOS carries a declarative config layer by default.
             has_config_layer: kind == PlatformKind::NixOs,
+            fake_layer: None,
             build_target: HostTarget::None,
         }
     }
@@ -71,6 +74,15 @@ impl FakePlatform {
     /// Override whether the fake reports a declarative config layer.
     pub fn with_config_layer(mut self, has_config_layer: bool) -> Self {
         self.has_config_layer = has_config_layer;
+        self
+    }
+
+    /// Serve this recording [`FakeConfigLayer`] as the config layer instead of
+    /// the real NixOS one, and report a layer. Keep a clone to inspect the calls
+    /// and script the steps.
+    pub fn with_fake_config_layer(mut self, layer: FakeConfigLayer) -> Self {
+        self.has_config_layer = true;
+        self.fake_layer = Some(layer);
         self
     }
 
@@ -126,8 +138,13 @@ impl<F: Filesystem> Platform<F> for FakePlatform {
     where
         F: 'static,
     {
-        self.has_config_layer
-            .then(|| Box::new(NixOsConfigLayer) as Box<dyn ConfigLayer<F>>)
+        if !self.has_config_layer {
+            return None;
+        }
+        Some(match &self.fake_layer {
+            Some(layer) => Box::new(layer.clone()) as Box<dyn ConfigLayer<F>>,
+            None => Box::new(NixOsConfigLayer),
+        })
     }
 
     fn discover_build_target(&self, _fs: &F, _hidden_volume_root: &Path) -> Result<HostTarget> {

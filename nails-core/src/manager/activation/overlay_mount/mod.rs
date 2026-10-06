@@ -22,7 +22,7 @@ use super::{
     create_overlay_config, start_service_and_socket,
 };
 use crate::manager::activation::guards::NixDaemonGuard;
-use crate::platform::{ConfigLayer, NixRuntime};
+use crate::platform::NixRuntime;
 use crate::{
     DecoyWriter, FailedOverlayInfo, Filesystem, NailsError, NailsManager, OverlayConfig,
     OverlayInfo, Result, Verbosity,

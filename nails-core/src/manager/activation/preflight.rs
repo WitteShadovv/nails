@@ -7,19 +7,11 @@
 
 use crate::cleanup::history::HistoryCleaner;
 use crate::cleanup::patterns;
-use crate::platform::ConfigLayer;
 use crate::preflight::OverlayTargetsCheck;
 use crate::{
     AttachState, Filesystem, HiddenRoot, NailsError, NailsManager, PreFlightCheck, Result,
-    Stopwatch, SuspiciousNailsReferenceCheck, Verbosity,
+    Stopwatch, Verbosity,
 };
-
-fn suspicious_check_name<F: Filesystem>() -> String {
-    <SuspiciousNailsReferenceCheck as PreFlightCheck<F>>::name(
-        &SuspiciousNailsReferenceCheck::default(),
-    )
-    .to_string()
-}
 
 impl<F: Filesystem> NailsManager<F> {
     /// Run preflight checks and then stage hidden config symlink
@@ -136,23 +128,27 @@ impl<F: Filesystem> NailsManager<F> {
             self.run_static_nixos_preflight(overlay_only)?;
         }
 
-        // Suspicious-reference validation must happen before ANY activation side effects,
-        // including pre-activation cleanup and config symlink staging.
-        let suspicious_check =
-            SuspiciousNailsReferenceCheck::new(self.config.hidden_volume_root.clone());
-        match suspicious_check.run(&self.filesystem)? {
-            crate::CheckResult::Pass(_)
-            | crate::CheckResult::Warn(_)
-            | crate::CheckResult::Skipped(_) => {}
-            crate::CheckResult::Fail {
-                message,
-                remediation,
-            } => {
-                return Err(NailsError::PreFlightCheckFailed(vec![(
-                    suspicious_check_name::<F>(),
+        // The config layer's base-config reference gate must pass before ANY
+        // activation side effects, including pre-activation cleanup and config
+        // symlink staging. It belongs to the layer (on NixOS: a base `/etc/nixos`
+        // that already references the hidden environment), so it runs whenever
+        // the host has one, overlay-only included, and never on a host without.
+        if let Some(layer) = self.config_layer() {
+            let gate = layer.base_reference_check(&self.config.hidden_volume_root);
+            match gate.run(&self.filesystem)? {
+                crate::CheckResult::Pass(_)
+                | crate::CheckResult::Warn(_)
+                | crate::CheckResult::Skipped(_) => {}
+                crate::CheckResult::Fail {
                     message,
                     remediation,
-                )]));
+                } => {
+                    return Err(NailsError::PreFlightCheckFailed(vec![(
+                        gate.name().to_string(),
+                        message,
+                        remediation,
+                    )]));
+                }
             }
         }
 

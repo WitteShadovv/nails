@@ -57,6 +57,8 @@ mod unsupported;
 
 #[cfg(any(test, feature = "test-support"))]
 mod fake;
+#[cfg(any(test, feature = "test-support"))]
+mod fake_layer;
 
 #[cfg(test)]
 mod contract;
@@ -84,6 +86,10 @@ pub(crate) use nixos::{NIXOS_COMMAND_DIRS, NIXOS_SYSTEM_PROFILE_BIN};
 
 #[cfg(any(test, feature = "test-support"))]
 pub use fake::FakePlatform;
+#[cfg(any(test, feature = "test-support"))]
+pub use fake_layer::{
+    FAKE_BASE_REFERENCE_CHECK, FAKE_CONFIG_CHECK, FakeConfigLayer, FakeVerdict, LayerCall,
+};
 
 /// The display-manager service units probed by default, in order, after the
 /// generic `display-manager.service` alias. A backend overrides

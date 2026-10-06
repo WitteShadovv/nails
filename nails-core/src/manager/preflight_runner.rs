@@ -22,17 +22,8 @@ use std::path::PathBuf;
 /// these inputs and the configuration.
 #[derive(Debug, Clone)]
 pub struct RegistryInputs {
-    /// Skip the NixOS config and build-target checks (overlay-only activation).
+    /// Skip the config-layer and build-target checks (overlay-only activation).
     pub overlay_only: bool,
-    /// Whether the detected host carries a declarative config layer (NixOS).
-    ///
-    /// The NixOS config and build-target checks are registered only when the host
-    /// actually has a config layer, so a non-NixOS host (FHS / Debian) never runs
-    /// NixOS-only checks that would fail with NixOS-specific guidance even without
-    /// the `--overlay-only` flag. Resolved from the platform seam by
-    /// [`NailsManager::preflight_registry`]; unit tests that build inputs directly
-    /// set it explicitly.
-    pub has_config_layer: bool,
     /// Assemble a registry that only inspects the system: no check creates a
     /// directory or changes permissions. Activation leaves this `false` so the
     /// storage check still auto-creates the hidden layout; `nails check` sets it
@@ -66,6 +57,13 @@ pub struct RegistryInputs {
 
 /// Assemble the pre-flight check registry for a set of [`RegistryInputs`].
 ///
+/// `config_layer` is the host's declarative config layer (see
+/// [`Platform::config_layer`](crate::platform::Platform::config_layer)). It
+/// contributes its own checks — the base-config reference gate, and, unless
+/// overlay-only, the hidden-config checks plus the build-target check — so a host
+/// without a layer (FHS / Debian) never runs config checks that would fail with
+/// NixOS-specific guidance.
+///
 /// This is the one place the activation set of checks is defined. The registry
 /// it returns is read-only to run: every check only inspects the filesystem, so
 /// the same registry backs both activation and the `nails check`/`doctor`
@@ -82,14 +80,14 @@ pub fn build_registry<F: Filesystem>(
     fs: &F,
     config: &Config,
     inputs: &RegistryInputs,
+    config_layer: Option<&dyn crate::platform::ConfigLayer<F>>,
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
         BackendDetectCheck, BinaryLocationCheck, DecoyPersistenceCheck, HiddenVolumeCheck,
         HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, MountNamespaceCheck,
-        NixOSBuildTargetCheck, NixOSConfigCheck, OverlayCompatibilityCheck, OverlayTargetsCheck,
-        SleepPolicyCheck, SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
-        SuspiciousNailsReferenceCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
-        WritableTreesCheck,
+        NixOSBuildTargetCheck, OverlayCompatibilityCheck, OverlayTargetsCheck, SleepPolicyCheck,
+        SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
+        SymlinkSupportCheck, UpperFsCapabilityCheck, WritableTreesCheck,
     };
 
     let mut registry = PreFlightRegistry::new();
@@ -194,23 +192,24 @@ pub fn build_registry<F: Filesystem>(
         persistent_overlay_target_paths,
     )));
 
-    // Reports a base `/etc/nixos` that still references the hidden environment.
-    // Activation also runs this as an early gate before any staging, so a dirty
-    // base aborts before side effects; keeping it in the shared registry means
-    // `nails check` reports it too, and on a non-NixOS host it simply passes.
-    registry.add_check(Box::new(SuspiciousNailsReferenceCheck::new(
-        config.hidden_volume_root.clone(),
-    )));
+    // The config layer's base-config reference gate (on NixOS: a base
+    // `/etc/nixos` that still references the hidden environment). Activation
+    // also runs it as an early gate before any staging, so a dirty base aborts
+    // before side effects; keeping it in the shared registry means `nails check`
+    // reports it too.
+    if let Some(layer) = config_layer {
+        registry.add_check(layer.base_reference_check(&config.hidden_volume_root));
+    }
 
-    // The NixOS config and build-target checks belong to the NixOS config layer,
-    // so they are registered only on a host that has one and only when a
-    // declarative switch will run. On an FHS / Debian host (no config layer) or in
-    // overlay-only mode they are skipped entirely, so a non-NixOS host never fails
-    // pre-flight with NixOS-only remediation text.
-    if !inputs.overlay_only && inputs.has_config_layer {
-        registry.add_check(Box::new(NixOSConfigCheck::new(
-            config.hidden_volume_root.clone(),
-        )));
+    // The config-layer checks and the build-target check are registered only on
+    // a host that has a layer and only when a declarative switch will run. On an
+    // FHS / Debian host (no config layer) or in overlay-only mode they are
+    // skipped entirely, so a non-NixOS host never fails pre-flight with
+    // NixOS-only remediation text.
+    if let Some(layer) = config_layer.filter(|_| !inputs.overlay_only) {
+        for check in layer.preflight_checks(&config.hidden_volume_root) {
+            registry.add_check(check);
+        }
 
         if !inputs.flake_target_already_validated {
             registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
@@ -240,7 +239,7 @@ pub fn build_registry<F: Filesystem>(
     let accept_persistent_decoy = inputs.accept_persistent_decoy || config.accept_persistent_decoy;
     registry.add_check(Box::new(DecoyPersistenceCheck::new(
         accept_persistent_decoy,
-        inputs.has_config_layer,
+        config_layer.is_some(),
     )));
 
     registry.add_check(Box::new(SpaceCheck::new(
@@ -342,11 +341,6 @@ impl<F: Filesystem> NailsManager<F> {
 
         let inputs = RegistryInputs {
             overlay_only,
-            // The host's config layer decides whether the NixOS checks belong in
-            // the registry at all; `config_layer` returns `Some` only on NixOS
-            // (and assumes NixOS when no host profile has been detected, as in
-            // unit tests), matching the historical behaviour.
-            has_config_layer: self.config_layer().is_some(),
             read_only,
             current_state: self.current_state()?,
             flake_target_already_validated,
@@ -360,7 +354,11 @@ impl<F: Filesystem> NailsManager<F> {
             accept_persistent_decoy,
         };
 
-        build_registry(&self.filesystem, &self.config, &inputs)
+        // The host's config layer contributes its own checks; it is `Some` only
+        // on NixOS (and when no host profile has been detected), matching the
+        // historical behaviour.
+        let layer = self.config_layer();
+        build_registry(&self.filesystem, &self.config, &inputs, layer.as_deref())
     }
 
     /// Run all pre-flight checks before activation
