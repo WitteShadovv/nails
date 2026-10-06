@@ -9,7 +9,10 @@ turn every leak into a false pass.
 from __future__ import annotations
 
 import json
+import re
+import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 import disk_forensics as df
@@ -156,6 +159,123 @@ class IndicatorsIntegrationTest(unittest.TestCase):
             self.assertTrue(token, "empty image_token in registry")
         # The parsers accept the real registry tokens without choking.
         self.assertIsInstance(df.scan_tokens("no tokens here", tokens), set)
+
+
+class BodyfileTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.entries = df.parse_bodyfile(_read("bodyfile-sample.txt"))
+        self.by_path = {entry.path: entry for entry in self.entries}
+
+    def test_paths_are_relative_and_virtual_entries_skipped(self) -> None:
+        self.assertIn("etc/hosts", self.by_path)
+        self.assertFalse(any(e.path.startswith("/") for e in self.entries))
+        self.assertFalse(any(e.path.startswith("$") for e in self.entries))
+
+    def test_fields_are_parsed(self) -> None:
+        hosts = self.by_path["etc/hosts"]
+        self.assertEqual(hosts.inode, "14")
+        self.assertEqual(hosts.mode, "r/rrw-r--r--")
+        self.assertEqual(hosts.size, 3)
+        self.assertEqual(hosts.mtime, 1791328642)
+        self.assertFalse(hosts.deleted)
+
+    def test_a_name_with_a_pipe_survives(self) -> None:
+        self.assertIn("home/testuser/odd|name with space", self.by_path)
+
+    def test_deleted_symlink_loses_marker_and_target(self) -> None:
+        link = self.by_path["etc/link"]
+        self.assertTrue(link.deleted)
+        self.assertNotIn("etc/link", df.bodyfile_index(self.entries))
+
+    def test_malformed_lines_are_skipped(self) -> None:
+        self.assertEqual(df.parse_bodyfile("garbage\n0|/x|1|r/r|0|0|nan|1|1|1|1\n"), [])
+
+
+def _entry(path: str, **changes: object) -> df.BodyEntry:
+    base = df.BodyEntry(
+        path=path,
+        inode="10",
+        mode="r/rrw-r--r--",
+        uid="0",
+        gid="0",
+        size=5,
+        atime=100,
+        mtime=100,
+        ctime=100,
+        crtime=100,
+        deleted=False,
+    )
+    return replace(base, **changes)  # type: ignore[arg-type]
+
+
+class MacChangesTest(unittest.TestCase):
+    def test_changed_fields_of_existing_paths(self) -> None:
+        before = {"a": _entry("a"), "b": _entry("b"), "gone": _entry("gone")}
+        after = {
+            "a": _entry("a", mtime=200, ctime=200),
+            "b": _entry("b", atime=300),
+            "new": _entry("new"),
+        }
+        self.assertEqual(df.mac_changes(before, after), {"a": {"mtime", "ctime"}})
+        self.assertEqual(
+            df.mac_changes(before, after, df.MAC_FIELDS_OBSERVED), {"b": {"atime"}}
+        )
+
+    def test_a_replaced_inode_is_a_change(self) -> None:
+        changes = df.mac_changes({"a": _entry("a")}, {"a": _entry("a", inode="99")})
+        self.assertEqual(changes, {"a": {"inode"}})
+
+    def test_hash_changes(self) -> None:
+        before = {"a": "1", "b": "2", "c": "3"}
+        after = {"a": "1", "b": "9", "d": "4"}
+        self.assertEqual(df.hash_changes(before, after), {"b": {"content"}})
+
+
+class UnexplainedTest(unittest.TestCase):
+    def test_control_and_allowlist_explain_boot_noise(self) -> None:
+        volatile = re.compile(r"^var/")
+        test = {
+            "etc/static": {"ctime", "inode"},
+            "etc/shadow": {"mtime", "ctime"},
+            "var/log/wtmp": {"mtime"},
+            "home/u/notes": {"content"},
+        }
+        control = {"etc/static": {"ctime", "inode"}, "etc/shadow": {"ctime"}}
+        self.assertEqual(
+            df.unexplained(test, control, volatile),
+            {"etc/shadow": ["mtime"], "home/u/notes": ["content"]},
+        )
+
+    def test_format_changes_shows_old_and_new_values(self) -> None:
+        before = {"a": _entry("a")}
+        after = {"a": _entry("a", mtime=200)}
+        text = df.format_changes({"a": ["mtime"], "b": ["content"]}, before, after)
+        self.assertIn("a: mtime 100 -> 200", text)
+        self.assertIn("b: content", text)
+
+
+class HashTreeTest(unittest.TestCase):
+    def test_hashes_regular_files_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "d").mkdir()
+            (root / "d" / "f").write_bytes(b"abc")
+            (root / "l").symlink_to("d/f")
+            sums = df.hash_tree(root)
+        self.assertEqual(
+            sums,
+            {"d/f": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
+        )
+
+    def test_write_artifact_uses_the_out_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+
+            class _Machine:
+                out_dir = tmp
+
+            path = df.write_artifact(_Machine(), "x.body", "0|/a|1\n")
+            self.assertEqual(path, Path(tmp) / "forensics" / "x.body")
+            self.assertEqual(path.read_text(encoding="utf-8"), "0|/a|1\n")
 
 
 if __name__ == "__main__":

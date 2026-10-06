@@ -21,6 +21,7 @@ unit-test without Nix. The ``forensic-vm-config.nix`` test wrapper points the
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -442,3 +443,226 @@ def run_store_scan(
         return store_path_hits(read_valid_paths(db), tokens)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+# --- Bodyfiles: MAC times of existing inodes ----------------------------------
+
+
+@dataclass(frozen=True)
+class BodyEntry:
+    """One line of a sleuthkit bodyfile (``fls -r -m /``).
+
+    ``path`` is relative to the filesystem root with no leading slash, with the
+    `` -> target`` of a symlink and the ``(deleted)`` marker stripped; ``deleted``
+    records the marker. Times are Unix seconds as ``fls`` prints them.
+    """
+
+    path: str
+    inode: str
+    mode: str
+    uid: str
+    gid: str
+    size: int
+    atime: int
+    mtime: int
+    ctime: int
+    crtime: int
+    deleted: bool
+
+
+_DELETED_SUFFIXES = (" (deleted-realloc)", " (deleted)")
+
+# The fields a hidden session must not change on an existing decoy inode. atime
+# is kept out: it is reported, not asserted (see ``MAC_FIELDS_OBSERVED``).
+MAC_FIELDS = ("inode", "mode", "uid", "gid", "size", "mtime", "ctime", "crtime")
+MAC_FIELDS_OBSERVED = ("atime",)
+
+
+def parse_bodyfile(text: str) -> list[BodyEntry]:
+    """Parse bodyfile 3.x lines: ``MD5|name|inode|mode|UID|GID|size|atime|mtime|
+    ctime|crtime``.
+
+    The name is everything between the first ``|`` and the last nine, so a name
+    holding ``|`` survives. Virtual sleuthkit entries (``$OrphanFiles``) and
+    malformed lines are skipped.
+    """
+    entries: list[BodyEntry] = []
+    for line in text.splitlines():
+        head = line.split("|", 1)
+        if len(head) != 2:
+            continue
+        fields = head[1].rsplit("|", 9)
+        if len(fields) != 10:
+            continue
+        name, inode, mode, uid, gid, size, atime, mtime, ctime, crtime = fields
+        deleted = False
+        for suffix in _DELETED_SUFFIXES:
+            if name.endswith(suffix):
+                name = name[: -len(suffix)]
+                deleted = True
+                break
+        if mode.startswith("l/") and " -> " in name:
+            name = name.split(" -> ", 1)[0]
+        path = name.lstrip("/")
+        if not path or path.startswith("$Orphan"):
+            continue
+        try:
+            entry = BodyEntry(
+                path=path,
+                inode=inode,
+                mode=mode,
+                uid=uid,
+                gid=gid,
+                size=int(size),
+                atime=int(atime),
+                mtime=int(mtime),
+                ctime=int(ctime),
+                crtime=int(crtime),
+                deleted=deleted,
+            )
+        except ValueError:
+            continue
+        entries.append(entry)
+    return entries
+
+
+def bodyfile_index(entries: Iterable[BodyEntry]) -> dict[str, BodyEntry]:
+    """Allocated entries by path; deleted names are ignored (``diff`` on the fls
+    names already covers them)."""
+    return {entry.path: entry for entry in entries if not entry.deleted}
+
+
+def mac_changes(
+    before: dict[str, BodyEntry],
+    after: dict[str, BodyEntry],
+    fields: Iterable[str] = MAC_FIELDS,
+) -> dict[str, set[str]]:
+    """For every path allocated in both, the ``fields`` whose values differ.
+
+    A changed ``inode`` means the path was replaced; the other fields are then
+    compared too, because a replacement is itself the finding.
+    """
+    wanted = tuple(fields)
+    changes: dict[str, set[str]] = {}
+    for path in before.keys() & after.keys():
+        old, new = before[path], after[path]
+        changed = {f for f in wanted if getattr(old, f) != getattr(new, f)}
+        if changed:
+            changes[path] = changed
+    return changes
+
+
+def hash_changes(before: dict[str, str], after: dict[str, str]) -> dict[str, set[str]]:
+    """Paths present in both whose content hash differs, as ``{path: {"content"}}``
+    so they combine with :func:`mac_changes` in :func:`unexplained`."""
+    return {
+        path: {"content"}
+        for path in before.keys() & after.keys()
+        if before[path] != after[path]
+    }
+
+
+def unexplained(
+    test: dict[str, set[str]],
+    control: dict[str, set[str]],
+    volatile: re.Pattern[str],
+) -> dict[str, list[str]]:
+    """The test run's changes that neither the control run nor the allowlist
+    explains.
+
+    A ``(path, field)`` that also changed across the plain-reboot control run is
+    boot noise; a path matching ``volatile`` is allowlisted outright. What is
+    left changed only because of the hidden session.
+    """
+    left: dict[str, list[str]] = {}
+    for path, fields in test.items():
+        if volatile.search(path):
+            continue
+        extra = fields - control.get(path, set())
+        if extra:
+            left[path] = sorted(extra)
+    return dict(sorted(left.items()))
+
+
+def format_changes(
+    changes: dict[str, list[str]],
+    before: dict[str, BodyEntry],
+    after: dict[str, BodyEntry],
+    limit: int = 40,
+) -> str:
+    """One line per changed path with the old and new value of each field."""
+    lines: list[str] = []
+    for path, fields in list(changes.items())[:limit]:
+        parts = []
+        for field in fields:
+            if field == "content":
+                parts.append("content")
+            elif path in before and path in after:
+                parts.append(
+                    f"{field} {getattr(before[path], field)} -> "
+                    f"{getattr(after[path], field)}"
+                )
+            else:
+                parts.append(field)
+        lines.append(f"{path}: {', '.join(parts)}")
+    if len(changes) > limit:
+        lines.append(f"... and {len(changes) - limit} more")
+    return "\n".join(lines)
+
+
+def run_bodyfile(
+    image: str | os.PathLike[str], offset: int | None = None
+) -> tuple[str, list[BodyEntry]]:
+    """Run ``fls -r -m /`` over the image's Linux partition; return the raw
+    bodyfile (to keep as a test artifact, ``mactime -b`` ready) and its parse."""
+    if offset is None:
+        offset = partition_offset(image)
+    cmd = [FLS, "-r", "-m", "/"]
+    if offset:
+        cmd += ["-o", str(offset), "-b", "512"]
+    cmd.append(str(image))
+    text = _run(cmd).stdout
+    return text, parse_bodyfile(text)
+
+
+def hash_tree(root: Path) -> dict[str, str]:
+    """SHA-256 of every regular file under ``root``, keyed by relative path."""
+    sums: dict[str, str] = {}
+    for path in root.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+        sums[str(path.relative_to(root))] = digest.hexdigest()
+    return sums
+
+
+def run_content_hashes(
+    image: str | os.PathLike[str],
+    *,
+    offset: int | None = None,
+    exclude: Iterable[str] = ("var/log/journal", "nix"),
+) -> dict[str, str]:
+    """Carve the decoy root out of the image and hash every regular file."""
+    offset = partition_offset(image) if offset is None else offset
+    work = Path(tempfile.mkdtemp(prefix="nails-hashes-"))
+    try:
+        _rdump(str(image), offset, "/", work)
+        for rel in exclude:
+            shutil.rmtree(work / rel, ignore_errors=True)
+        return hash_tree(work)
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def write_artifact(machine: object, name: str, text: str) -> Path:
+    """Write ``text`` into the test's output directory (the derivation output,
+    so a failing run keeps it), falling back to a temporary directory."""
+    base = getattr(machine, "out_dir", None)
+    out = Path(base) if base else Path(tempfile.mkdtemp(prefix="nails-artifacts-"))
+    target = out / "forensics" / name
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(text, encoding="utf-8")
+    return target

@@ -6,6 +6,15 @@
 # the test red. From outside, the powered-off decoy root is imaged and its fls
 # listing (deleted names included) is diffed against the baseline image, catching
 # anything that was unlinked before the live view could see it.
+#
+# Names alone miss a decoy file that was modified in place, or replaced under the
+# same name. So each image also yields a sleuthkit bodyfile (`fls -r -m /`, kept
+# in the test output under forensics/ and ready for `mactime -b`) and a content
+# hash of every file. A control run -- the same number of plain reboots, no
+# hidden session -- records which (path, field) pairs boot noise changes; the
+# hidden-session run may change nothing beyond that and the volatile allowlist:
+# no inode, mode, owner, size, mtime, ctime or crtime of an existing decoy inode,
+# and no file contents. atime drift is reported, not asserted.
 
 { self, pkgs, ... }:
 let
@@ -18,8 +27,9 @@ in
   name = "snapshot-diff";
   meta.tags = [ "forensic" ];
 
-  # Imaging the root disk before and after the workflow; generous margin.
-  globalTimeout = 1800;
+  # Imaging the root disk three times (baseline, control, post), two extra
+  # reboots for the control run and three carve-and-hash passes; generous margin.
+  globalTimeout = 2700;
 
   nodes = {
     machine =
@@ -88,6 +98,24 @@ in
     def kept_image(paths):
         return sorted(path for path in paths if not image_volatile.search(path))
 
+    def image_state(image, label):
+        # The bodyfile (kept as a test artifact) and the content hashes of one
+        # image, read from the outside while the machine is off.
+        offset = disk_forensics.partition_offset(image)
+        body_text, body = disk_forensics.run_bodyfile(image, offset)
+        disk_forensics.write_artifact(machine, f"{label}.body", body_text)
+        hashes = disk_forensics.run_content_hashes(image, offset=offset)
+        return disk_forensics.bodyfile_index(body), hashes
+
+    def changes(before, after, fields=disk_forensics.MAC_FIELDS):
+        # (path -> changed fields) between two image states: MAC fields of the
+        # inodes allocated in both, plus content changes.
+        merged = disk_forensics.mac_changes(before[0], after[0], fields)
+        if fields == disk_forensics.MAC_FIELDS:
+            for path, kinds in disk_forensics.hash_changes(before[1], after[1]).items():
+                merged.setdefault(path, set()).update(kinds)
+        return merged
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
     headless_config = "/tmp/nails-headless.toml"
@@ -120,6 +148,25 @@ in
         initial_os_root = os_root_fingerprint()
         baseline_image = disk_forensics.snapshot(machine, "baseline")
         baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline_image))
+        baseline_state = image_state(baseline_image, "baseline")
+
+    with subtest("control run: plain reboots with no hidden session"):
+        # The workflow below spans two boots (the one after the control snapshot
+        # and the one after deactivation powers the machine off), so the control
+        # spans two plain boots as well. Whatever changes here is boot noise.
+        machine.shutdown()
+        machine.start()
+        machine.wait_for_unit("multi-user.target")
+        control_image = disk_forensics.snapshot(machine, "control")
+        control_state = image_state(control_image, "control")
+        control_changes = changes(baseline_state, control_state)
+        control_atime = changes(
+            baseline_state, control_state, disk_forensics.MAC_FIELDS_OBSERVED
+        )
+        print(
+            f"control run: {len(control_changes)} path(s) changed by boot noise, "
+            f"{len(control_atime)} with atime drift"
+        )
 
     with subtest("run a full activate/populate/deactivate workflow"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -182,6 +229,33 @@ in
         assert not appeared_image, (
             f"the disk image gained entries outside volatile paths: "
             f"{appeared_image[:40]}"
+        )
+
+    with subtest("existing decoy inodes keep their MAC times and contents"):
+        post_state = image_state(post_image, "post")
+        left = disk_forensics.unexplained(
+            changes(control_state, post_state), control_changes, image_volatile
+        )
+        atime_left = disk_forensics.unexplained(
+            changes(control_state, post_state, disk_forensics.MAC_FIELDS_OBSERVED),
+            control_atime,
+            image_volatile,
+        )
+        report = disk_forensics.format_changes(left, control_state[0], post_state[0])
+        atime_report = disk_forensics.format_changes(
+            atime_left, control_state[0], post_state[0]
+        )
+        disk_forensics.write_artifact(
+            machine,
+            "mac-diff.txt",
+            f"unexplained changes:\n{report or '(none)'}\n\n"
+            f"atime drift (reported only):\n{atime_report or '(none)'}\n",
+        )
+        if atime_left:
+            print(f"atime drift beyond the control run (not asserted):\n{atime_report}")
+        assert not left, (
+            "existing decoy inodes changed beyond boot noise and the volatile "
+            f"allowlist:\n{report}"
         )
   '';
 }
