@@ -374,7 +374,18 @@ in
         # session logs in. Without this drop-in the hidden user manager (and
         # everything it starts: the session bus, pipewire, portals) would run
         # on the decoy root.
-        dropin = "\n".join(["[Service]"] + HIDDEN_PROPS) + "\n"
+        # user@.service runs PAM ("systemd-user") on the host, before its
+        # namespace exists, so the host's pam_unix account check meets the
+        # same missing shadow entry as login did, and the manager fails with
+        # status 224/PAM (run fa0cc405). The decoy's PAM stack must not run
+        # for the hidden user anyway (it is the decoy's, and it leaves a
+        # host-rooted "(sd-pam)" helper of the hidden uid). An empty PAMName=
+        # turns PAM off for the user manager; the runtime directory that
+        # pam_systemd would announce is set directly.
+        dropin = (
+            "\n".join(["[Service]", "PAMName=", f"Environment=XDG_RUNTIME_DIR=/run/user/{UID}"] + HIDDEN_PROPS)
+            + "\n"
+        )
         machine.succeed(
             f"mkdir -p {DROPIN_DIR}",
             f"printf %s {shlex.quote(dropin)} > {DROPIN_DIR}/50-root.conf",
@@ -415,7 +426,7 @@ in
             "export DISPLAY=:1\n"
             f"echo {user_token} > \"$HOME/canary\"\n"
             f"echo {var_token} > /var/tmp/aux-canary\n"
-            "xterm &\n"
+            "xterm > \"$HOME/xterm.log\" 2>&1 &\n"
             "exec icewm\n"
         )
         machine.succeed(
@@ -459,7 +470,13 @@ in
             assert in_hidden_root(props["Leader"]), f"session leader root: {root_of(props['Leader'])}"
 
         machine.wait_until_succeeds(f"pgrep -u {UID} -x icewm", timeout=60)
-        machine.wait_until_succeeds(f"pgrep -u {UID} -x xterm", timeout=60)
+        # xterm is decoration; the claims below need hidden processes, which
+        # icewm already is. If it does not start, record why and go on.
+        try:
+            machine.wait_until_succeeds(f"pgrep -u {UID} -x xterm", timeout=30)
+        except Exception:
+            _, xlog = machine.execute(f"cat {ROOT}/home/{USER}/xterm.log 2>&1 | tail -n 20")
+            finding(f"hidden xterm did not start; its output:\n{xlog.strip() or '(empty)'}")
         # Every process of the hidden uid runs in the hidden root, except the
         # "(sd-pam)" helper of user@<uid>.service: systemd forks it for PAM
         # before it sets up the unit's mount namespace, so it keeps the host

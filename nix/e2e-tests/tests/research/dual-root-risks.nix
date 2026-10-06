@@ -361,13 +361,23 @@ in
     def decoy_state():
         """path -> short hash of (link target, content) for every file in
         the decoy state directories R2 cares about."""
-        dirs = " ".join(DECOY_STATE)
-        out = machine.succeed(
-            f"for d in {dirs}; do find $d -xdev \\( -type f -o -type l \\) 2>/dev/null; done | sort | "
-            "while read -r f; do printf '%s %s\\n' \"$f\" "
-            "\"$( (readlink \"$f\"; cat \"$f\") 2>/dev/null | sha256sum | cut -c1-16)\"; done"
-        )
-        return dict(line.rsplit(" ", 1) for line in out.splitlines() if " " in line)
+        state = {}
+        for top in DECOY_STATE:
+            # One command per path, each ending in "true": a missing
+            # directory is recorded as absent instead of failing the
+            # pipeline (the run at fa0cc405 stopped on a missing
+            # /var/lib/systemd/linger).
+            rc, _ = machine.execute(f"test -e {top} || test -L {top}")
+            if rc != 0:
+                state[top] = "absent"
+                continue
+            out = machine.succeed(
+                f"find {top} -xdev \\( -type f -o -type l \\) 2>/dev/null | sort | "
+                "while read -r f; do printf '%s %s\\n' \"$f\" "
+                "\"$( (readlink \"$f\"; cat \"$f\") 2>/dev/null | sha256sum | cut -c1-16)\"; done; true"
+            )
+            state.update(line.rsplit(" ", 1) for line in out.splitlines() if " " in line)
+        return state
 
 
     def state_diff(before, after):
@@ -499,7 +509,18 @@ in
             f"echo '{USER}:!*:::::::' >> {ROOT}/etc/shadow",
         )
         machine.fail(f"grep -q '^{USER}:' /etc/passwd /etc/group /etc/shadow")
-        dropin = "\n".join(["[Service]"] + HIDDEN_PROPS) + "\n"
+        # user@.service runs PAM ("systemd-user") on the host, before its
+        # namespace exists, so the host's pam_unix account check meets the
+        # same missing shadow entry as login did, and the manager fails with
+        # status 224/PAM (run fa0cc405). The decoy's PAM stack must not run
+        # for the hidden user anyway (it is the decoy's, and it leaves a
+        # host-rooted "(sd-pam)" helper of the hidden uid). An empty PAMName=
+        # turns PAM off for the user manager; the runtime directory that
+        # pam_systemd would announce is set directly.
+        dropin = (
+            "\n".join(["[Service]", "PAMName=", f"Environment=XDG_RUNTIME_DIR=/run/user/{UID}"] + HIDDEN_PROPS)
+            + "\n"
+        )
         machine.succeed(
             f"mkdir -p {DROPIN_DIR}",
             f"printf %s {shlex.quote(dropin)} > {DROPIN_DIR}/50-root.conf",

@@ -59,7 +59,12 @@ Run history on the KVM host:
 - 6adc66c: the hidden X server is in the hidden root (device/inode check true).
   Stopped at the hidden logind session: `login -f` failed with "Authentication
   service cannot retrieve authentication info" (see the hidden-user mechanism
-  below). Fixed in the next commit; not yet re-run.
+  below). Fixed in fa0cc40.
+- fa0cc40: the hidden logind session exists (seat0, tty9, class user, type tty,
+  service login). `user@<uid>.service` then failed with status 224/PAM: its
+  `systemd-user` PAM stack runs on the host and hit the same missing shadow
+  entry. The drop-in now turns PAM off for the hidden user manager (see below).
+  Not yet re-run.
 
 A second spike, `nix/e2e-tests/tests/research/dual-root-risks.nix`
 (`e2e.research-dual-root-risks`), probes the risks; see
@@ -138,7 +143,15 @@ session bus, PipeWire and the portals. A runtime drop-in in
 `MountAPIVFS=yes`, `BindPaths=/run` moves it into the hidden root. The drop-in is
 in RAM and goes away with a `daemon-reload` [V-src: `systemd.exec(5)`; explicit
 binds override the API VFS defaults, `namespace.c` `apivfs_table`; V-spike:
-the user manager's `/proc/<pid>/root` is the overlay].
+the user manager's `/proc/<pid>/root` is the overlay]. The unit's
+`PAMName=systemd-user` runs the **decoy's** PAM stack on the host before the
+namespace exists. For a userdb-only user that fails outright on NixOS (no
+shadow entry through nscd; V-spike fa0cc40: status 224/PAM), and in general it
+runs decoy PAM modules for the hidden user and leaves a host-rooted `(sd-pam)`
+helper. The drop-in therefore also sets an empty `PAMName=` (PAM off for the
+user manager) and `Environment=XDG_RUNTIME_DIR=/run/user/<uid>`, which is what
+pam_systemd would otherwise provide. The hidden session itself still gets its
+PAM session from `login` inside the hidden root.
 
 **A different uid for the hidden user.** With the decoy's uid, the hidden session
 would share `/run/user/<uid>`, the decoy's user manager, its session bus,
@@ -216,7 +229,7 @@ left:
 | The host **journal** | stdout of hidden units, logind's "New session … of user aux", and the unit names reach the decoy's journald. On the required volatile journal that is RAM only [V-spike: the token stays off the raw disk] | Neutral unit names; `StandardOutput=null` or a hidden journald socket; scrub the volatile journal after teardown (emergency already does) |
 | Shared `/run` | userdb records, drop-ins, `/run/user/<uid>`, utmp entries left after SIGKILL (no logout record) | Bind only the needed parts of `/run` (D+); remove what NAILS created at teardown; a private `/run/utmp` |
 | Mount-namespace copies | A decoy service that creates its own mount namespace while the hidden root is mounted (an on-demand service with `PrivateTmp=` or `ProtectSystem=`) gets a private copy of the hidden mounts. It can see the hidden root, and its copy pins the hidden filesystem, so the backend cannot close [I; V-spike logs any such namespace] | Revised (risk 5): `CLONE_NEWNS` copies private and unbindable mounts too, so a private tmpfs does not prevent copies. Mount the hidden root only in a pinned mount namespace and start units with `systemd-run --root-directory=` (systemd 259) or an `nsenter` wrapper; keep the `nsenter -m umount` sweep at teardown as a backstop |
-| `(sd-pam)` of `user@<uid>.service` | The PAM helper is forked before the unit's namespace is set up, so a hidden-uid process with the **decoy** root exists for the whole session. It only waits to call `pam_close_session()` [V-src: `exec_invoke()` order; V-spike logs it] | `cgroup.kill` never lets it reach the close; keep the decoy's `systemd-user` PAM stack free of writers (true on NixOS) |
+| `(sd-pam)` of `user@<uid>.service` | The PAM helper is forked before the unit's namespace is set up, so a hidden-uid process with the **decoy** root exists for the whole session. It only waits to call `pam_close_session()` [V-src: `exec_invoke()` order; V-spike logs it] | Superseded: the drop-in sets an empty `PAMName=`, so there is no `(sd-pam)` and the decoy's `systemd-user` stack never runs for the hidden user |
 | **Kernel** state | kmsg (overlay and dm-crypt messages), the VT history, the network identity (same netns, same MAC and IP) | As in ADR 0008; network identity is out of scope in the threat model |
 | **Observer during the session** | `ps`, `loginctl` and `systemctl` on the decoy show the hidden processes and session while they run | Emergency removes them in under a second; nothing remains at first glance |
 
