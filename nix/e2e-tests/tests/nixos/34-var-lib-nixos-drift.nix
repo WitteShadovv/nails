@@ -99,6 +99,7 @@ in
     ${emergency.prepareTty1ShellFn}
     ${emergency.waitForConsoleLogFn}
     ${emergency.rebootAfterEmergencyFn}
+    ${emergency.waitForEmergencyUnitFn}
     ${emergency.runEmergencyCommandFn}
     ${testHelpers.canonicalDeactivateFn}
 
