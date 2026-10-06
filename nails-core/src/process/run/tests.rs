@@ -625,6 +625,21 @@ fn progress_line_folds_in_the_last_build_line_and_truncates() {
 }
 
 #[test]
+fn heartbeat_last_line_shown_only_on_a_tty() {
+    // On an interactive terminal the build line is live feedback and is kept.
+    assert_eq!(
+        heartbeat_last_line(Some("linking foo"), true),
+        Some("linking foo")
+    );
+    // Off a terminal (pipe, journal, detached worker) only the neutral form is
+    // emitted, so raw build output never widens the activity fingerprint.
+    assert_eq!(heartbeat_last_line(Some("linking foo"), false), None);
+    // No build line to show stays `None` regardless of the stream.
+    assert_eq!(heartbeat_last_line(None, true), None);
+    assert_eq!(heartbeat_last_line(None, false), None);
+}
+
+#[test]
 fn format_elapsed_is_compact_and_scales() {
     assert_eq!(format_elapsed(Duration::from_secs(5)), "5s");
     assert_eq!(format_elapsed(Duration::from_secs(130)), "2m10s");

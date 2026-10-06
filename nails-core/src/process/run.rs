@@ -64,7 +64,7 @@
 use crate::{NailsError, Result};
 use std::ffi::{OsStr, OsString};
 use std::fmt;
-use std::io::{BufRead, BufReader, Read};
+use std::io::{BufRead, BufReader, IsTerminal, Read};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
@@ -666,6 +666,30 @@ pub(crate) fn progress_line(activity: &str, elapsed: Duration, last_line: Option
         Some(line) if !line.trim().is_empty() => format!("{base} — {}", truncate_line(line.trim())),
         _ => base,
     }
+}
+
+/// Resolves which build line a heartbeat may surface, given whether stderr is an
+/// interactive terminal.
+///
+/// The most recent build line is useful live feedback under a spinner on a TTY,
+/// but it is raw tool output: on a pipe, in the journal, or from a detached
+/// worker it adds nothing a human is watching and only widens the activity
+/// fingerprint if the stream is ever captured. Off a terminal the heartbeat
+/// therefore keeps only the neutral `still <activity>, <elapsed>` form.
+fn heartbeat_last_line(last_line: Option<&str>, stderr_is_tty: bool) -> Option<&str> {
+    if stderr_is_tty { last_line } else { None }
+}
+
+/// Formats a long-step heartbeat for the current output context, folding in the
+/// most recent build line only when stderr is an interactive terminal (see
+/// [`heartbeat_last_line`]). Long-step call sites use this rather than
+/// [`progress_line`] directly so the TTY gate is applied in exactly one place.
+pub(crate) fn heartbeat_line(activity: &str, elapsed: Duration, last_line: Option<&str>) -> String {
+    progress_line(
+        activity,
+        elapsed,
+        heartbeat_last_line(last_line, std::io::stderr().is_terminal()),
+    )
 }
 
 /// Returns `line` unchanged, or its first [`PROGRESS_LINE_MAX`] characters with a

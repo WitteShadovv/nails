@@ -193,7 +193,7 @@ fn run_long_step(command: &ProcessCommand, activity: &str) -> Result<(bool, Stri
         &mut |elapsed, last_line| {
             tracing::info!(
                 "{}",
-                crate::process::run::progress_line(activity, elapsed, last_line)
+                crate::process::run::heartbeat_line(activity, elapsed, last_line)
             );
         },
     )

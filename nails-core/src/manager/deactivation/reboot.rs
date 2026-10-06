@@ -258,7 +258,7 @@ pub(super) fn switch_to_decoy_for_session<F: Filesystem>(filesystem: &F) -> Resu
             &mut |elapsed, last_line| {
                 tracing::info!(
                     "{}",
-                    crate::process::run::progress_line(
+                    crate::process::run::heartbeat_line(
                         "restoring the decoy configuration",
                         elapsed,
                         last_line
