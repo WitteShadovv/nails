@@ -4,6 +4,7 @@
 //! File and path operations for RealFilesystem.
 
 use super::RealFilesystem;
+use super::noatime::EntryType;
 use crate::filesystem::{DiskUsage, Filesystem, PatternScan};
 use crate::{IoResultExt, NailsError, Result};
 use std::path::{Path, PathBuf};
@@ -129,8 +130,10 @@ pub(super) fn is_writable(path: &Path) -> Result<bool> {
     }
 }
 
+/// Read a file as UTF-8 without updating its access time, so NAILS's own reads
+/// of decoy files leave no session-time atime behind.
 pub(super) fn read_file_content(path: &Path) -> Result<String> {
-    std::fs::read_to_string(path).map_err(|e| {
+    super::noatime::read_to_string_noatime(path).map_err(|e| {
         NailsError::io(
             path,
             std::io::Error::new(
@@ -335,7 +338,7 @@ pub(super) fn find_files_with_pattern(
         return Ok(matching_files);
     }
 
-    let entries = std::fs::read_dir(dir).map_err(|e| {
+    let entries = super::noatime::read_dir_noatime(dir).map_err(|e| {
         NailsError::io(
             dir,
             std::io::Error::new(
@@ -345,8 +348,8 @@ pub(super) fn find_files_with_pattern(
         )
     })?;
 
-    for entry in entries.flatten() {
-        let path = entry.path();
+    for entry in entries {
+        let path = dir.join(&entry.name);
 
         if path.is_dir() {
             matching_files.extend(fs.find_files_with_pattern(&path, pattern)?);
@@ -382,7 +385,7 @@ fn scan_files_tolerant(dir: &Path, pattern: &str, scan: &mut PatternScan) {
         return;
     }
 
-    let entries = match std::fs::read_dir(dir) {
+    let entries = match super::noatime::read_dir_noatime(dir) {
         Ok(entries) => entries,
         Err(_) => {
             scan.unreadable.push(dir.to_path_buf());
@@ -390,13 +393,14 @@ fn scan_files_tolerant(dir: &Path, pattern: &str, scan: &mut PatternScan) {
         }
     };
 
-    for entry in entries.flatten() {
-        let path = entry.path();
-        // `file_type()` avoids a `stat` per entry and does not follow symlinks,
-        // so a symlinked directory is treated as a file and never recursed into.
-        match entry.file_type() {
-            Ok(file_type) if file_type.is_dir() => scan_files_tolerant(&path, pattern, scan),
-            Ok(file_type) if file_type.is_file() => {
+    for entry in entries {
+        let path = dir.join(&entry.name);
+        // The entry type comes from `d_type` (an `lstat` only when the filesystem
+        // leaves it unknown) and does not follow symlinks, so a symlinked
+        // directory is never recursed into.
+        match entry.resolved_type(dir) {
+            Ok(EntryType::Directory) => scan_files_tolerant(&path, pattern, scan),
+            Ok(EntryType::File) => {
                 if let Some(name) = path.file_name()
                     && name.to_string_lossy().to_lowercase().contains(pattern)
                 {

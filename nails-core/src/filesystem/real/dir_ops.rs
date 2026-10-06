@@ -3,6 +3,7 @@
 
 //! Directory listing, enumeration, copy, size, and submount operations.
 
+use super::noatime::{OpenKind, open_noatime, read_dir_noatime};
 use crate::{IoResultExt, NailsError, Result};
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
@@ -12,7 +13,7 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 pub(super) fn list_directory(dir: &Path) -> Result<Vec<PathBuf>> {
-    let entries = std::fs::read_dir(dir).map_err(|e| {
+    let entries = read_dir_noatime(dir).map_err(|e| {
         NailsError::io(
             dir,
             std::io::Error::new(
@@ -22,27 +23,13 @@ pub(super) fn list_directory(dir: &Path) -> Result<Vec<PathBuf>> {
         )
     })?;
 
-    let mut paths = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| {
-            NailsError::io(
-                dir,
-                std::io::Error::new(
-                    e.kind(),
-                    format!("Failed to read directory entry in {}: {}", dir.display(), e),
-                ),
-            )
-        })?;
-        paths.push(entry.path());
-    }
-
-    Ok(paths)
+    Ok(entries.into_iter().map(|e| dir.join(e.name)).collect())
 }
 
 pub(super) fn enumerate_root_directories() -> Result<Vec<PathBuf>> {
     let root = Path::new("/");
 
-    let entries = std::fs::read_dir(root).map_err(|e| {
+    let entries = read_dir_noatime(root).map_err(|e| {
         NailsError::io(
             root,
             std::io::Error::new(e.kind(), format!("Failed to read /: {}", e)),
@@ -52,13 +39,7 @@ pub(super) fn enumerate_root_directories() -> Result<Vec<PathBuf>> {
     let mut directories = Vec::new();
 
     for entry in entries {
-        let entry = entry.map_err(|e| {
-            NailsError::io(
-                root,
-                std::io::Error::new(e.kind(), format!("Failed to read directory entry: {e}")),
-            )
-        })?;
-        let path = entry.path();
+        let path = root.join(&entry.name);
 
         let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
             NailsError::io(
@@ -99,8 +80,9 @@ pub(super) fn enumerate_root_directories() -> Result<Vec<PathBuf>> {
     Ok(directories)
 }
 
-pub(super) fn read_directory(path: &Path) -> Result<Vec<std::fs::DirEntry>> {
-    let entries = std::fs::read_dir(path).map_err(|e| {
+/// The paths of `path`'s entries, listed without updating its access time.
+pub(super) fn read_directory(path: &Path) -> Result<Vec<PathBuf>> {
+    let entries = read_dir_noatime(path).map_err(|e| {
         NailsError::io(
             path,
             std::io::Error::new(
@@ -110,25 +92,7 @@ pub(super) fn read_directory(path: &Path) -> Result<Vec<std::fs::DirEntry>> {
         )
     })?;
 
-    let mut result = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| {
-            NailsError::io(
-                path,
-                std::io::Error::new(
-                    e.kind(),
-                    format!(
-                        "Failed to read directory entry in {}: {}",
-                        path.display(),
-                        e
-                    ),
-                ),
-            )
-        })?;
-        result.push(entry);
-    }
-
-    Ok(result)
+    Ok(entries.into_iter().map(|e| path.join(e.name)).collect())
 }
 
 pub(super) fn modified_time(path: &Path) -> Result<chrono::DateTime<chrono::Utc>> {
@@ -198,7 +162,8 @@ fn copy_dir_contents(
     dst_dir: &Path,
     hard_links: &mut HashMap<(u64, u64), PathBuf>,
 ) -> io::Result<()> {
-    for name in read_dir_noatime(src_dir)? {
+    for entry in read_dir_noatime(src_dir)? {
+        let name = entry.name;
         let src = src_dir.join(&name);
         let dst = dst_dir.join(&name);
         let meta = std::fs::symlink_metadata(&src)?;
@@ -242,47 +207,9 @@ fn copy_dir_contents(
     Ok(())
 }
 
-/// List the names in `dir`, opening it with `O_NOATIME` so the listing does not
-/// update the directory's access time.
-fn read_dir_noatime(dir: &Path) -> io::Result<Vec<std::ffi::OsString>> {
-    let fd = open_noatime(dir, true)?;
-    let dir_iter = rustix::fs::Dir::new(fd).map_err(io::Error::from)?;
-    let mut names = Vec::new();
-    for entry in dir_iter {
-        let entry = entry.map_err(io::Error::from)?;
-        let raw = entry.file_name().to_bytes();
-        if raw == b"." || raw == b".." {
-            continue;
-        }
-        names.push(OsStr::from_bytes(raw).to_os_string());
-    }
-    Ok(names)
-}
-
-/// Open `path` read-only with `O_NOATIME`, falling back to a plain open when the
-/// caller does not own the file (`EPERM`). Directories add `O_DIRECTORY`; other
-/// paths add `O_NOFOLLOW` so a race cannot redirect the read through a symlink.
-fn open_noatime(path: &Path, is_dir: bool) -> io::Result<std::os::fd::OwnedFd> {
-    use rustix::fs::{Mode, OFlags, open};
-
-    let mut base = OFlags::RDONLY | OFlags::CLOEXEC;
-    if is_dir {
-        base |= OFlags::DIRECTORY;
-    } else {
-        base |= OFlags::NOFOLLOW;
-    }
-
-    match open(path, base | OFlags::NOATIME, Mode::empty()) {
-        Ok(fd) => Ok(fd),
-        // O_NOATIME needs file ownership or CAP_FOWNER; retry without it.
-        Err(rustix::io::Errno::PERM) => open(path, base, Mode::empty()).map_err(io::Error::from),
-        Err(e) => Err(io::Error::from(e)),
-    }
-}
-
 /// Copy one regular file's contents, reading the source with `O_NOATIME`.
 fn copy_file_noatime(src: &Path, dst: &Path) -> io::Result<()> {
-    let fd = open_noatime(src, false)?;
+    let fd = open_noatime(src, OpenKind::FileNoFollow)?;
     let mut reader = std::fs::File::from(fd);
     let mut writer = std::fs::OpenOptions::new()
         .write(true)
@@ -423,7 +350,7 @@ pub(super) fn get_directory_size(path: &Path) -> Result<u64> {
         total = total.saturating_add(metadata.len());
 
         if metadata.is_dir() {
-            pending.extend(read_directory(&current)?.iter().map(|entry| entry.path()));
+            pending.extend(read_directory(&current)?);
         }
     }
 

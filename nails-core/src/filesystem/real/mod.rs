@@ -18,6 +18,7 @@
 mod dir_ops;
 mod file_ops;
 mod mount_ops;
+mod noatime;
 mod submount;
 mod system_ops;
 
