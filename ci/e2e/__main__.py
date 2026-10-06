@@ -187,6 +187,7 @@ def _command_run(args: argparse.Namespace) -> int:
     return run.run_build(
         tests,
         jobs=args.jobs,
+        eval_batch=args.eval_batch,
         durations_out=args.durations_out,
         retries=args.retries,
         log_dir=args.log_dir,
@@ -257,6 +258,12 @@ def _positive_int(text: str) -> int:
     if value < 1:
         raise argparse.ArgumentTypeError(f"{text!r} must be at least 1")
     return value
+
+
+def _jobs(text: str) -> int:
+    if text == "auto":
+        return run.auto_jobs()
+    return _positive_int(text)
 
 
 def _non_negative_int(text: str) -> int:
@@ -356,7 +363,17 @@ def build_parser() -> argparse.ArgumentParser:
     run_cmd = commands.add_parser("run", help="build resolved tests in one nix build")
     _add_target_args(run_cmd)
     run_cmd.add_argument("--shard", type=_parse_shard, metavar="i/N")
-    run_cmd.add_argument("--jobs", type=_positive_int)
+    run_cmd.add_argument(
+        "--jobs",
+        type=_jobs,
+        help="VM tests built at once (nix --max-jobs); 'auto' sizes it from RAM",
+    )
+    run_cmd.add_argument(
+        "--eval-batch",
+        type=_positive_int,
+        help="tests evaluated per nix eval process, bounding evaluation memory "
+        "(default: one process per test)",
+    )
     run_cmd.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
     run_cmd.add_argument("--durations-out", type=Path, default=DEFAULT_DURATIONS)
     run_cmd.add_argument(

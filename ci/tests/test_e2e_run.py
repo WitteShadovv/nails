@@ -105,8 +105,8 @@ class RunBuildTest(unittest.TestCase):
             '    echo "build $*" >>"$FAKE_NIX_LOG"\n'
             '    for arg in "$@"; do\n'
             '      case "$arg" in\n'
-            "        *.e2e.*)\n"
-            '          name="${arg##*.e2e.}"\n'
+            "        /nix/store/*.drv^*)\n"
+            '          name="${arg#/nix/store/}"; name="${name%.drv^*}"\n'
             "          id=$((id + 1))\n"
             '          printf \'@nix {"action":"start","type":105,"id":%d,'
             '"fields":["/nix/store/%s.drv"]}\\n\' "$id" "$name" >&2\n'
@@ -140,6 +140,98 @@ class RunBuildTest(unittest.TestCase):
         records = [json.loads(line) for line in durations.read_text().splitlines()]
         self.assertEqual([r["test"] for r in records], ["basic-workflow", "verify"])
         self.assertTrue(all(r["result"] == "pass" for r in records))
+
+    def test_builds_by_derivation_path_with_bounded_jobs(self) -> None:
+        env = {
+            **os.environ,
+            "PATH": f"{self.bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "FAKE_NIX_LOG": str(self.log),
+        }
+        with (
+            mock.patch.dict(os.environ, env, clear=True),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            status = run.run_build(
+                ["basic-workflow", "verify"],
+                jobs=3,
+                clock=iter([0.0, 5.0, 60.0, 75.0]).__next__,
+            )
+        self.assertEqual(status, 0)
+        (call,) = self.log.read_text(encoding="utf-8").splitlines()
+        args = call.split()
+        self.assertIn("--keep-going", args)
+        self.assertEqual(args[args.index("--max-jobs") + 1], "3")
+        self.assertIn("/nix/store/basic-workflow.drv^*", args)
+        self.assertFalse([a for a in args if ".e2e." in a], args)
+        self.assertIn("2 test(s), 0 failed", stderr.getvalue())
+
+
+class EvalDrvsTest(unittest.TestCase):
+    def test_batches_bound_each_nix_eval_process(self) -> None:
+        calls: list[list[str]] = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            names = json.loads(
+                "["
+                + command[-1]
+                .split("[", 1)[1]
+                .rsplit("]", 1)[0]
+                .strip()
+                .replace('" "', '", "')
+                + "]"
+            )
+            payload = {name: f"/nix/store/{name}.drv" for name in names}
+            return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
+
+        with mock.patch.object(run.subprocess, "run", side_effect=fake_run):
+            drvs = run.eval_drvs(["a", "b", "c", "d", "e"], ".#x.e2e", 2)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(c[:3] == ["nix", "eval", "--json"] for c in calls))
+        self.assertEqual(drvs["e"], "/nix/store/e.drv")
+        self.assertEqual(list(drvs), ["a", "b", "c", "d", "e"])
+
+    def test_without_a_batch_size_each_test_gets_its_own_process(self) -> None:
+        with mock.patch.object(
+            run, "_eval_drv", side_effect=lambda attr: attr + ".drv"
+        ) as single:
+            drvs = run.eval_drvs(["a", "b"], ".#x.e2e", None)
+        self.assertEqual(single.call_count, 2)
+        self.assertEqual(drvs, {"a": ".#x.e2e.a.drv", "b": ".#x.e2e.b.drv"})
+
+
+class AutoJobsTest(unittest.TestCase):
+    def meminfo(self, kib: int) -> Path:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "meminfo"
+        path.write_text(f"MemTotal:       {kib} kB\nMemFree: 1 kB\n")
+        return path
+
+    def test_a_15_gib_host_runs_three_vms(self) -> None:
+        self.assertEqual(run.auto_jobs(self.meminfo(15 * 1024 * 1024), cpus=12), 3)
+
+    def test_cores_cap_the_count(self) -> None:
+        self.assertEqual(run.auto_jobs(self.meminfo(64 * 1024 * 1024), cpus=4), 2)
+
+    def test_a_small_or_unreadable_host_still_runs_one(self) -> None:
+        self.assertEqual(run.auto_jobs(self.meminfo(2 * 1024 * 1024), cpus=8), 1)
+        self.assertEqual(run.auto_jobs(Path("/nonexistent/meminfo"), cpus=8), 1)
+
+
+class ConsoleSummaryTest(unittest.TestCase):
+    def test_lists_every_test_with_failure_logs(self) -> None:
+        text = run.format_console_summary(
+            ["a", "b", "c"],
+            {"a": run.TestOutcome("pass", 50), "b": run.TestOutcome("fail", 7)},
+            {"b": "/logs/b.log"},
+        )
+        lines = text.splitlines()
+        self.assertTrue(lines[0].startswith("pass") and lines[0].endswith("a"))
+        self.assertIn("FAIL", lines[1])
+        self.assertTrue(lines[1].endswith("log: /logs/b.log"))
+        self.assertTrue(lines[2].startswith("cached"))
+        self.assertEqual(lines[3], "3 test(s), 1 failed")
 
 
 class RetryTest(unittest.TestCase):

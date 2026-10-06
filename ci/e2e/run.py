@@ -146,10 +146,6 @@ def write_durations(
             handle.write(json.dumps(record) + "\n")
 
 
-def build_attrs(tests: Sequence[str], attr_prefix: str) -> list[str]:
-    return [f"{attr_prefix}.{test}" for test in tests]
-
-
 def _eval_drv(attr: str) -> str:
     return subprocess.run(
         ["nix", "eval", "--raw", f"{attr}.drvPath"],
@@ -157,6 +153,71 @@ def _eval_drv(attr: str) -> str:
         capture_output=True,
         text=True,
     ).stdout.strip()
+
+
+def _eval_batch(attr_prefix: str, tests: Sequence[str]) -> dict[str, str]:
+    """Evaluate the derivation paths of ``tests`` in one ``nix eval`` process."""
+    names = " ".join(json.dumps(test) for test in tests)
+    apply = (
+        "e: builtins.listToAttrs (map (n: { name = n; value = e.${n}.drvPath; }) "
+        f"[ {names} ])"
+    )
+    completed = subprocess.run(
+        ["nix", "eval", "--json", attr_prefix, "--apply", apply],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(completed.stdout)
+    return {test: str(payload[test]) for test in tests}
+
+
+def eval_drvs(
+    tests: Sequence[str], attr_prefix: str, batch_size: int | None
+) -> dict[str, str]:
+    """Map each test to its ``.drv`` path, evaluating in bounded batches.
+
+    Every test evaluates its own NixOS system, and the Nix evaluator keeps all
+    of that memory until it exits, so evaluating a whole group in the process
+    that builds it is what ran a 15 GB host out of memory. Each batch runs in
+    its own short-lived ``nix eval``, so peak evaluation memory is that of
+    ``batch_size`` tests; ``None`` evaluates every test in a process of its
+    own (the slowest and leanest setting).
+    """
+    if batch_size is None:
+        return {test: _eval_drv(f"{attr_prefix}.{test}") for test in tests}
+    drvs: dict[str, str] = {}
+    for start in range(0, len(tests), batch_size):
+        drvs.update(_eval_batch(attr_prefix, tests[start : start + batch_size]))
+    return drvs
+
+
+# Host memory one running test can take: a 2 GiB guest (4 GiB for the
+# graphical profile, which the reserve absorbs), QEMU and the driver, and the
+# raw disk images the forensic tests write into the build directory.
+GIB_PER_TEST = 3.5
+# Host memory kept free for the Nix daemon, the desktop and the page cache.
+RESERVED_GIB = 3.0
+
+
+def auto_jobs(meminfo: Path = Path("/proc/meminfo"), cpus: int | None = None) -> int:
+    """How many VM tests fit on this host at once, from its RAM and cores.
+
+    Every VM gets two cores, so at most one test per two host cores, and at
+    most as many tests as fit in RAM next to the reserve. A 15 GiB, 12-core
+    host gets 3.
+    """
+    total_kib = 0
+    try:
+        for line in meminfo.read_text(encoding="utf-8").splitlines():
+            if line.startswith("MemTotal:"):
+                total_kib = int(line.split()[1])
+                break
+    except (OSError, ValueError, IndexError):
+        total_kib = 0
+    by_memory = int((total_kib / (1024 * 1024) - RESERVED_GIB) // GIB_PER_TEST)
+    cores = cpus if cpus is not None else (os.cpu_count() or 2)
+    return max(1, min(cores // 2, by_memory))
 
 
 def missing_outputs(drv_to_test: Mapping[str, str]) -> list[str]:
@@ -195,14 +256,17 @@ def missing_outputs(drv_to_test: Mapping[str, str]) -> list[str]:
 def _build_once(
     tests: Sequence[str],
     drv_to_test: Mapping[str, str],
-    attr_prefix: str,
     jobs: int | None,
     clock: Callable[[], float],
 ) -> tuple[int, dict[str, TestOutcome]]:
+    # Build by derivation path, not by flake attribute: the paths were already
+    # evaluated in bounded batches, so this nix process evaluates nothing and
+    # its memory stays small however many tests it runs.
+    wanted = {drv: test for drv, test in drv_to_test.items() if test in tests}
     command = ["nix", "build", "--keep-going", "-L", "--log-format", "internal-json"]
     if jobs is not None:
-        command += ["--jobs", str(jobs)]
-    command += ["--no-link", *build_attrs(tests, attr_prefix)]
+        command += ["--max-jobs", str(jobs)]
+    command += ["--no-link", *(f"{drv}^*" for drv in wanted)]
 
     lines: list[str] = []
     with subprocess.Popen(
@@ -219,7 +283,6 @@ def _build_once(
             if message is not None:
                 print(message, file=sys.stderr)
         status = process.wait()
-    wanted = {drv: test for drv, test in drv_to_test.items() if test in tests}
     return status, durations_from_internal_json(lines, wanted, clock)
 
 
@@ -240,8 +303,13 @@ def run_build(
     retries: int = 0,
     log_dir: Path | None = None,
     report: Callable[[Sequence[str], Mapping[str, TestOutcome]], None] | None = None,
+    eval_batch: int | None = None,
 ) -> int:
     """Build every resolved test in one ``nix build`` and record outcomes.
+
+    The derivations are evaluated first, ``eval_batch`` tests per ``nix eval``
+    process (see :func:`eval_drvs`), and then built by path with at most
+    ``jobs`` VM tests at a time.
 
     Failed tests are rebuilt up to ``retries`` more times (Nix does not cache a
     failure); a test that passes on a retry is a flaky pass. Returns 0 when
@@ -252,10 +320,10 @@ def run_build(
     """
     if not tests:
         return 0
-    drv_to_test = {_eval_drv(f"{attr_prefix}.{test}"): test for test in tests}
-    test_to_drv = {test: drv for drv, test in drv_to_test.items()}
+    test_to_drv = eval_drvs(tests, attr_prefix, eval_batch)
+    drv_to_test = {drv: test for test, drv in test_to_drv.items()}
 
-    status, outcomes = _build_once(tests, drv_to_test, attr_prefix, jobs, clock)
+    status, outcomes = _build_once(tests, drv_to_test, jobs, clock)
     failed: list[str] = []
     if status != 0:
         failed = missing_outputs(drv_to_test)
@@ -271,7 +339,7 @@ def run_build(
             file=sys.stderr,
         )
         retry_map = {test_to_drv[test]: test for test in failed}
-        _status, retried = _build_once(failed, retry_map, attr_prefix, jobs, clock)
+        _status, retried = _build_once(failed, retry_map, jobs, clock)
         still_failed = set(missing_outputs(retry_map))
         for test in failed:
             if test not in still_failed:
@@ -279,11 +347,17 @@ def run_build(
                 outcomes[test] = TestOutcome("pass", seconds, flaky=True)
         failed = [test for test in failed if test in still_failed]
 
-    if log_dir is not None:
-        for test in failed:
-            _write_nix_log(test_to_drv[test], log_dir / f"{test}.log")
+    log_paths: dict[str, str] = {}
+    for test in failed:
+        if log_dir is not None:
+            path = log_dir / f"{test}.log"
+            _write_nix_log(test_to_drv[test], path)
+            log_paths[test] = str(path)
+        else:
+            log_paths[test] = f"nix log {test_to_drv[test]}"
     if durations_out is not None:
         write_durations(durations_out, tests, outcomes)
+    print(format_console_summary(tests, outcomes, log_paths), file=sys.stderr)
     if report is not None:
         report(tests, outcomes)
     if status != 0 and not failed and not any(o.flaky for o in outcomes.values()):
@@ -410,6 +484,32 @@ def _label(outcome: TestOutcome) -> str:
     if outcome.flaky:
         return "FLAKY (passed on retry)"
     return "pass"
+
+
+def format_console_summary(
+    tests: Sequence[str],
+    outcomes: Mapping[str, TestOutcome],
+    logs: Mapping[str, str],
+) -> str:
+    """One line per test for the terminal, each failure with its log.
+
+    A test with no recorded outcome was served from the store; it is listed as
+    ``cached`` so a reader can tell it apart from a test that booted.
+    """
+    lines = []
+    for test in tests:
+        outcome = outcomes.get(test)
+        if outcome is None:
+            label, seconds = "cached", "-"
+        else:
+            label, seconds = _label(outcome), f"{outcome.seconds}s"
+        line = f"{label:<24} {seconds:>6}  {test}"
+        if test in logs:
+            line += f"  log: {logs[test]}"
+        lines.append(line)
+    failed = sum(1 for o in outcomes.values() if o.result == "fail")
+    lines.append(f"{len(tests)} test(s), {failed} failed")
+    return "\n".join(lines)
 
 
 def format_summary(
