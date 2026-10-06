@@ -43,6 +43,7 @@
   "notify-dispatch-signal-flow": 40,
   "notify-malformed-signal": 30,
   "notify-no-notify-send": 30,
+  "notify-session-push": 120,
   "overlay-bind-mounted-target-equivalence": 64,
   "overlay-bind-sync": 58,
   "overlay-extended-targets": 102,
