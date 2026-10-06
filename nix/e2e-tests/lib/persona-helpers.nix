@@ -166,11 +166,11 @@ rec {
         if data is None:
             return node.succeed(f"{base} http://{SYNC_GUI}{path}")
         node.succeed(
-            "cat > /tmp/st-payload.json <<'JSON'\n" + json.dumps(data) + "\nJSON"
+            "cat > /run/st-payload.json <<'JSON'\n" + json.dumps(data) + "\nJSON"
         )
         return node.succeed(
             f"{base} -H 'Content-Type: application/json' "
-            f"--data-binary @/tmp/st-payload.json http://{SYNC_GUI}{path}"
+            f"--data-binary @/run/st-payload.json http://{SYNC_GUI}{path}"
         )
 
 

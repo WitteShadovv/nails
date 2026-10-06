@@ -377,6 +377,7 @@ in
 
         # QEMU has exited, so this returns at once; it also resets the driver's
         # booted/connected state so the machine can be started again.
+        # sync-lint: allow unbounded-shutdown -- QEMU has already exited above
         machine.wait_for_shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")

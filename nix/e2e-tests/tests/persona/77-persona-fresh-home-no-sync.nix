@@ -116,6 +116,7 @@ in
 
     with subtest("hard assertion: the peer never receives the canary"):
         # Give any stray push ample time to arrive, then require its absence.
+        # sync-lint: allow sleep -- absence window: no event exists to wait for
         time.sleep(30)
         peer.fail(f"test -e {PEER_SYNC}/{CANARY}")
 
@@ -130,6 +131,7 @@ in
         st_rescan(client, CLIENT_CFG, FOLDER)
         # Nothing to pull back: the canary never reached the peer and the fresh
         # upper is gone.
+        # sync-lint: allow sleep -- absence window: no event exists to wait for
         time.sleep(30)
         client.fail(f"test -e {CLIENT_SYNC}/{CANARY}")
 

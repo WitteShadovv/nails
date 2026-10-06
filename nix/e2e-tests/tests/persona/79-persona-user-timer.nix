@@ -223,6 +223,7 @@ in
         assert user_systemctl("is-active " + timer) != "active", (
             f"{timer} is active in the hidden session"
         )
+        # sync-lint: allow sleep -- absence window: the masked timer must not fire
         machine.sleep(quiet_seconds)
         hidden_runs = canary_runs("overlay")
         assert hidden_runs == 0, (

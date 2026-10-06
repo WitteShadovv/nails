@@ -427,6 +427,9 @@ jobs:
           python3 -m unittest discover -s scripts/tests -v
           python3 -m unittest discover -s ci/tests -t . -v
 
+      - name: Lint E2E synchronisation patterns
+        run: python3 -m ci.e2e_sync_lint
+
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
 

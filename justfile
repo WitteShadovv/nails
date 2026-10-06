@@ -164,6 +164,11 @@ e2e target="ci":
 e2e-local target="all" jobs="auto":
     ./scripts/run-e2e-tests.sh run --jobs {{ jobs }} --eval-batch 4 --log-dir e2e-logs --durations-out e2e-logs/durations.jsonl {{ target }}
 
+# Flag fixed sleeps, console-regex waits, /tmp captures and unbounded
+# power-off waits in the E2E tests (CI's lint-misc runs the same check).
+e2e-sync-lint:
+    python3 -m ci.e2e_sync_lint
+
 # Open the interactive driver of one E2E leaf test.
 e2e-debug name:
     ./scripts/run-e2e-tests.sh interactive {{ name }}
