@@ -581,11 +581,6 @@ impl<F: Filesystem> NailsManager<F> {
             inspect_overlay_context(self)?
         };
 
-        // Return write access to the decoy OS trees and undo the submount
-        // attachments before the overlays they sit on come down (the orchestrator
-        // unmounts the parent overlays below).
-        self.teardown_overlay_dependents(&overlay_context);
-
         if overlay_context.nix_was_overlaid {
             // Emergency does not wait for nix-daemon to stop: the overlay-rooted
             // kill below stops (stop job first) and kills any daemon still using
@@ -670,6 +665,13 @@ impl<F: Filesystem> NailsManager<F> {
             .with_mode(kind.orchestrator_mode())
             .with_decoy_profile_restore(restore_decoy_profile)
             .with_untrusted_state(untrusted_state);
+
+        // Return write access to the decoy OS trees and undo the submount
+        // attachments before the overlays they sit on come down (the orchestrator
+        // unmounts the parent overlays below). Only now, after the writer kill and
+        // the shell kill: lifting a read-only guard while a hidden-session writer
+        // still runs would let it write to the decoy tree in the meantime.
+        self.teardown_overlay_dependents(&overlay_context);
 
         Self::relinquish_journal_before_unmount(&overlay_context);
 

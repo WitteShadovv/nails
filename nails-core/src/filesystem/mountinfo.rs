@@ -231,6 +231,23 @@ pub fn escape_overlay_path(path: &Path) -> Result<String> {
     Ok(out)
 }
 
+/// Whether a read-only self-bind is stacked at `target`: a read-only mount at
+/// `target` whose parent is another mount at the same point on the same device.
+/// That is the shape of a read-only guard; a decoy mount that merely sits at
+/// `target` (a separate `/usr` partition, the root filesystem) has a parent at a
+/// different point and does not match.
+pub fn is_read_only_self_bind(entries: &[MountEntry], target: &Path) -> bool {
+    entries.iter().any(|guard| {
+        guard.mount_point == target
+            && guard.read_only()
+            && entries.iter().any(|below| {
+                below.mount_id == guard.parent_id
+                    && below.mount_point == target
+                    && below.dev == guard.dev
+            })
+    })
+}
+
 /// The NAILS-created mounts currently present, classified by kind.
 ///
 /// Discovery is what makes unmount safe: the teardown path escalates to
@@ -612,6 +629,27 @@ this is not a mountinfo line
         assert!(m.is_owned(Path::new("/nix/store")));
         // A foreign ext4 mount is never owned.
         assert!(!m.is_owned(Path::new("/home/other")));
+    }
+
+    #[test]
+    fn a_read_only_guard_is_told_apart_from_a_decoy_mount_at_the_same_path() {
+        let content = "\
+1 0 8:1 / / rw - ext4 /dev/sda1 rw
+2 1 8:2 / /usr rw - ext4 /dev/sda2 rw
+3 2 8:2 / /usr ro - ext4 /dev/sda2 rw
+4 1 8:3 / /srv ro - ext4 /dev/sda3 ro
+";
+        let entries = parse_mountinfo(content);
+        // The read-only self-bind stacked on the decoy /usr partition.
+        assert!(is_read_only_self_bind(&entries, Path::new("/usr")));
+        // The root filesystem and a decoy mount that is read-only by itself.
+        assert!(!is_read_only_self_bind(&entries, Path::new("/")));
+        assert!(!is_read_only_self_bind(&entries, Path::new("/srv")));
+        // Without the guard the bare /usr partition is no guard either.
+        let bare = parse_mountinfo(
+            "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n2 1 8:2 / /usr rw - ext4 /dev/sda2 rw\n",
+        );
+        assert!(!is_read_only_self_bind(&bare, Path::new("/usr")));
     }
 
     #[test]

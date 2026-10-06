@@ -65,6 +65,10 @@ impl Filesystem for MockFilesystem {
         self.remount_read_only_impl(target)
     }
 
+    fn is_read_only_guard(&self, target: &Path) -> Result<bool> {
+        Ok(self.mock_is_read_only_guarded(target))
+    }
+
     fn mount_tmpfs(&self, target: &Path, size: &str) -> Result<()> {
         self.mount_tmpfs_impl(target, size)
     }

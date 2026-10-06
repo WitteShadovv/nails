@@ -375,3 +375,36 @@ fn emergency_waits_at_most_a_second_for_the_activation_owner() {
             > ManagerDeactivationKind::Emergency.owner_exit_wait()
     );
 }
+
+#[test]
+fn untrusted_teardown_lifts_only_guards_it_can_see() {
+    use crate::{Config, Filesystem, MockFilesystem, NailsManager, PathKind};
+    use std::path::Path;
+
+    // A Debian host whose policy keeps / and /usr read-only. The state is
+    // untrusted, so the guard list is re-derived from the policy, but only the
+    // guard actually stacked on /usr may be undone: the decoy's own mount at /
+    // must never be unmounted just because / is a policy path.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=12\n");
+    fs.mock_add_file("/proc/1/comm", "systemd\n");
+    fs.mock_set_path_type("/", PathKind::Dir);
+    fs.mock_set_path_type("/usr", PathKind::Dir);
+    fs.remount_read_only(Path::new("/usr")).unwrap();
+    fs.mock_set_mounted(Path::new("/"), true);
+
+    let temp = tempfile::tempdir().unwrap();
+    let state_path = temp.path().join("state.json");
+    let config = Config {
+        hidden_volume_root: temp.path().to_path_buf(),
+        state_file_path: state_path.clone(),
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(fs.clone(), config, state_path);
+
+    let context = super::overlay_context::overlay_context_from_mounts(&manager).unwrap();
+    assert_eq!(
+        context.read_only_guards,
+        vec![std::path::PathBuf::from("/usr")]
+    );
+}

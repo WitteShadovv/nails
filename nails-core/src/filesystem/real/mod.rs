@@ -250,6 +250,13 @@ impl Filesystem for RealFilesystem {
         mount_ops::remount_read_only(target)
     }
 
+    fn is_read_only_guard(&self, target: &Path) -> Result<bool> {
+        Ok(crate::filesystem::mountinfo::is_read_only_self_bind(
+            &crate::filesystem::read_mountinfo()?,
+            target,
+        ))
+    }
+
     fn file_size(&self, path: &Path) -> Result<u64> {
         file_ops::file_size(path)
     }

@@ -84,15 +84,23 @@ pub(super) fn overlay_context_from_mounts<F: Filesystem>(
         .any(|p| p == Path::new("/var"));
 
     // The recorded guard list cannot be trusted on a corrupt state, so re-derive
-    // the trees the active platform's policy would have kept read-only and undo
-    // those. `unmount_bind` is idempotent, so undoing a tree that was never
-    // guarded is a harmless no-op, and this makes sure an emergency teardown
-    // always returns write access to the decoy.
+    // the trees the active platform's policy would have kept read-only, and undo
+    // only those where a read-only guard is actually stacked: unmounting a policy
+    // path that carries no guard would take down the decoy's own mount there (a
+    // separate `/usr` partition, or `/` itself).
     let read_only_guards = crate::platform::detect_platform(manager.filesystem())
         .ok()
         .map(|platform| platform.overlay_policy())
         .and_then(|policy| policy.resolve_read_only(manager.filesystem()).ok())
-        .unwrap_or_default();
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|tree| {
+            manager
+                .filesystem()
+                .is_read_only_guard(tree)
+                .unwrap_or(false)
+        })
+        .collect();
 
     Ok(OverlayContext {
         nix_was_overlaid: mounts.nix_overlay_present,

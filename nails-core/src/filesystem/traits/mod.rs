@@ -228,6 +228,14 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// [`unmount_bind`]: Self::unmount_bind
     fn remount_read_only(&self, target: &Path) -> Result<()>;
 
+    /// Whether a read-only guard (the read-only self-bind
+    /// [`remount_read_only`](Self::remount_read_only) stacks) sits on `target`.
+    ///
+    /// An untrusted teardown cannot read the recorded guard list, so it removes
+    /// only guards it can see here, never a decoy mount that merely sits at a
+    /// policy path (a separate `/usr` partition, the root filesystem itself).
+    fn is_read_only_guard(&self, target: &Path) -> Result<bool>;
+
     // ------------------------------------------------------------------------
     // Tmpfs Operations (Extended Overlay Strategy)
     // ------------------------------------------------------------------------
