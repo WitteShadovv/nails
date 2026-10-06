@@ -306,7 +306,7 @@ fn probe_trial_overlay(
     // Mirror the explicit options the real overlay mounts pass (see
     // `filesystem::real::mount_ops`): the trial must exercise the same mode.
     let options = format!(
-        "lowerdir={},upperdir={},workdir={},index=off,metacopy=off,redirect_dir=off",
+        "lowerdir={},upperdir={},workdir={},index=off,metacopy=off,redirect_dir=nofollow",
         lower.display(),
         upper.display(),
         work.display()

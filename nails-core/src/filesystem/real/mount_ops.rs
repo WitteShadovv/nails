@@ -30,16 +30,24 @@ fn canonical_target(target: &Path) -> PathBuf {
 
 /// Build the overlay mount option string.
 ///
-/// `index=off,metacopy=off,redirect_dir=off` is always appended. NAILS depends on
-/// plain, predictable copy-up semantics: `metacopy` and `redirect_dir` change
-/// where file data and rename state live across the layers (and can leave traces
-/// or complicate teardown), and `index` affects hardlink/nlink bookkeeping, so
-/// all three are disabled explicitly rather than left to the kernel default,
-/// which varies by kernel build and mount-time auto-detection. The segments are
-/// already escaped by [`escape_overlay_path`].
+/// `index=off,metacopy=off,redirect_dir=nofollow` is always appended. NAILS
+/// depends on plain, predictable copy-up semantics: `metacopy` and `redirect_dir`
+/// change where file data and rename state live across the layers (and can leave
+/// traces or complicate teardown), and `index` affects hardlink/nlink
+/// bookkeeping, so all three are disabled explicitly rather than left to the
+/// kernel default, which varies by kernel build and mount-time auto-detection.
+///
+/// `redirect_dir=nofollow` rather than `off`: `off` means "follow existing
+/// redirects" on a kernel built with `CONFIG_OVERLAY_FS_REDIRECT_ALWAYS_FOLLOW`
+/// (the upstream default) and "nofollow" otherwise, so it is itself
+/// build-dependent. `nofollow` never creates a redirect and never follows one a
+/// foreign lower layer carries, on every kernel. It is also the only mode an
+/// unprivileged user-namespace mount accepts, which lets the rootless kernel
+/// tests mount overlays with exactly these options. The segments are already
+/// escaped by [`escape_overlay_path`].
 fn overlay_mount_options(lowerdir: &str, upper: &str, work: &str) -> String {
     format!(
-        "lowerdir={lowerdir},upperdir={upper},workdir={work},index=off,metacopy=off,redirect_dir=off"
+        "lowerdir={lowerdir},upperdir={upper},workdir={work},index=off,metacopy=off,redirect_dir=nofollow"
     )
 }
 
@@ -532,7 +540,7 @@ mod tests {
         let opts = overlay_mount_options("/l", "/u", "/w");
         assert!(opts.contains("index=off"));
         assert!(opts.contains("metacopy=off"));
-        assert!(opts.contains("redirect_dir=off"));
+        assert!(opts.contains("redirect_dir=nofollow"));
     }
 
     #[test]
@@ -540,7 +548,7 @@ mod tests {
         let opts = overlay_mount_options("/a:/b", "/up", "/work");
         assert_eq!(
             opts,
-            "lowerdir=/a:/b,upperdir=/up,workdir=/work,index=off,metacopy=off,redirect_dir=off"
+            "lowerdir=/a:/b,upperdir=/up,workdir=/work,index=off,metacopy=off,redirect_dir=nofollow"
         );
     }
 
