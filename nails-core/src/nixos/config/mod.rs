@@ -55,20 +55,24 @@ use std::path::PathBuf;
 
 /// Seed written as the hidden module when a volume has none yet.
 ///
-/// It is a complete, valid NixOS module whose settings are all commented out, so
-/// a fresh volume composes and parses without changing the decoy's behaviour. The
+/// It is a complete, valid NixOS module whose optional settings are commented
+/// out, so a fresh volume composes and parses without changing the decoy's
+/// behaviour beyond the always-on safety settings. The
 /// operator uncomments the hidden-session settings they want. Keeping it a
 /// commented template (not an empty module) documents the switches that exist —
-/// volatile journald, a cleared shell history, an emergency teardown unit and a
-/// session indicator — without turning any of them on by default. It must stay
+/// volatile journald, an emergency teardown unit and a session indicator —
+/// without turning them on by default. Two settings are always on: the decoy's
+/// automatic upgrade is forced off, and interactive shells keep no history file,
+/// so a hidden-session shell that outlives the teardown cannot write its history
+/// to the decoy home. It must stay
 /// valid Nix: `nix-instantiate --parse` runs over the composed configuration
 /// before any overlay is mounted.
 pub(crate) const AUTO_GENERATED_HIDDEN_CONFIGURATION: &str = r#"{ config, lib, pkgs, ... }:
 # Hidden-session configuration.
 #
-# This module is imported only while the hidden environment is active. Every
-# setting below is commented out: uncomment the ones you want and keep the file
-# valid Nix (the trailing attribute set must stay intact).
+# This module is imported only while the hidden environment is active. The
+# optional settings below are commented out: uncomment the ones you want and keep
+# the file valid Nix (the trailing attribute set must stay intact).
 {
   # Force the decoy's automatic upgrade off while the hidden session is active.
   # An unattended rebuild would rewrite the decoy system profile and can touch
@@ -81,12 +85,15 @@ pub(crate) const AUTO_GENERATED_HIDDEN_CONFIGURATION: &str = r#"{ config, lib, p
   #   Storage=volatile
   # '';
 
-  # Start interactive shells with no persistent history.
-  # environment.interactiveShellInit = ''
-  #   unset HISTFILE
-  #   export HISTSIZE=0
-  #   export HISTFILESIZE=0
-  # '';
+  # Keep hidden-session shell history in memory only. A shell started in the
+  # hidden session that outlives the teardown would otherwise write its history
+  # into the (by then decoy) home when it exits. This stays on unconditionally.
+  environment.interactiveShellInit = ''
+    unset HISTFILE
+  '';
+  programs.fish.interactiveShellInit = ''
+    set -g fish_history ""
+  '';
 
   # An emergency teardown unit you can trigger to leave the hidden session in a
   # hurry. Point ExecStart at your own `nails emergency` wrapper.

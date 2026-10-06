@@ -302,3 +302,76 @@ fn test_inject_rc_integration_uses_home_env_without_hardcoded_home_prefix() {
     let bashrc_path = PathBuf::from(format!("{home}/.bashrc"));
     assert!(fs.read_file_content(&bashrc_path).is_ok());
 }
+
+/// Run a real interactive bash (with no rc files, so the host's own shell setup
+/// cannot interfere) that first runs `rc` as its startup lines, then one command
+/// and `exit`, in a fresh home whose history file is preset, and report whether
+/// the shell wrote that history file on exit.
+fn real_bash_writes_history(rc: &str) -> bool {
+    use std::io::Write;
+    let home = tempfile::tempdir().unwrap();
+    let history = home.path().join(".bash_history");
+    let mut child = std::process::Command::new("bash")
+        .arg("--norc")
+        .arg("--noprofile")
+        .arg("-i")
+        .env("HOME", home.path())
+        .env("HISTFILE", &history)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("bash must be available to the test");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{rc}echo hidden-session-command\nexit\n").as_bytes())
+        .unwrap();
+    child.wait().unwrap();
+    std::fs::read_to_string(&history)
+        .is_ok_and(|content| content.contains("hidden-session-command"))
+}
+
+#[test]
+fn test_rc_integration_block_keeps_bash_history_in_memory_only() {
+    // A hidden-session shell that outlives the teardown would write its history
+    // into the (by then decoy) home on exit. The managed block turns the history
+    // file off, so a real bash sourcing it writes nothing.
+    let fs = MockFilesystem::new();
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/data"),
+        ..Default::default()
+    };
+    let shell = ShellInstrumentation::new(fs, config).with_target_user(
+        crate::target_user::TargetUser::for_test(
+            1000,
+            1000,
+            "testuser",
+            "/home/testuser",
+            "/bin/bash",
+        ),
+    );
+    let block = shell.generate_rc_integration_block(ShellType::Bash);
+    // Only the history line is exercised; the sourced scripts do not exist here.
+    let history_line = block
+        .lines()
+        .find(|line| line.contains("HISTFILE"))
+        .expect("the block must turn the history file off");
+
+    assert!(
+        real_bash_writes_history(""),
+        "control: a plain interactive bash writes its history file"
+    );
+    assert!(
+        !real_bash_writes_history(&format!("{history_line}\n")),
+        "a shell sourcing the managed block must write no history file"
+    );
+    for shell_type in [ShellType::Zsh, ShellType::Fish] {
+        let block = shell.generate_rc_integration_block(shell_type);
+        assert!(
+            block.contains("unset HISTFILE") || block.contains("fish_history ''"),
+            "{block}"
+        );
+    }
+}

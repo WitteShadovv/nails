@@ -369,6 +369,10 @@ impl<F: Filesystem> ShellInstrumentation<F> {
     /// # Returns
     ///
     /// String containing the complete integration block
+    ///
+    /// The block first turns off the shell's history file: a hidden-session
+    /// shell keeps its history in memory only, so one that outlives the teardown
+    /// cannot write it into the (by then decoy) home when it exits.
     pub(super) fn generate_rc_integration_block(&self, shell_type: ShellType) -> String {
         let scripts_dir = self.scripts_dir();
         let color_sequences = color_scheme::apply_hidden_color_scheme(&self.config.color_scheme);
@@ -385,6 +389,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             ShellType::Bash => {
                 format!(
                     "{RC_BEGIN}\n\
+                     unset HISTFILE\n\
                      source {dir}/nails_prompt.bash\n\
                      source {dir}/nails_alias.sh\n\
                      printf '{colors}'\n\
@@ -396,6 +401,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             ShellType::Zsh => {
                 format!(
                     "{RC_BEGIN}\n\
+                     unset HISTFILE\n\
                      source {dir}/nails_prompt.zsh\n\
                      source {dir}/nails_alias.sh\n\
                      printf '{colors}'\n\
@@ -407,6 +413,7 @@ impl<F: Filesystem> ShellInstrumentation<F> {
             ShellType::Fish => {
                 format!(
                     "{RC_BEGIN}\n\
+                     set -g fish_history ''\n\
                      source {dir}/nails_prompt.fish\n\
                      source {dir}/nails_alias.fish\n\
                      printf '{colors}'\n\

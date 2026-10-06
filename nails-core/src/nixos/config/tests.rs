@@ -1439,3 +1439,20 @@ fn generated_hidden_module_force_disables_auto_upgrade() {
         "the autoUpgrade force-disable must be active, not commented: {active_line:?}"
     );
 }
+
+#[test]
+fn generated_hidden_module_keeps_shell_history_in_memory_only() {
+    // Hidden-session shells keep no history file: an active setting, not a
+    // commented template line, for bash/zsh and for fish.
+    for needle in ["unset HISTFILE", "set -g fish_history \"\""] {
+        let line = AUTO_GENERATED_HIDDEN_CONFIGURATION
+            .lines()
+            .find(|line| line.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} missing from the hidden module"));
+        assert!(
+            !line.trim_start().starts_with('#'),
+            "{line:?} must be active"
+        );
+    }
+    assert!(!AUTO_GENERATED_HIDDEN_CONFIGURATION.contains("HISTSIZE=0"));
+}
