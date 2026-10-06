@@ -8,7 +8,7 @@
 
 use super::NailsManager;
 use super::{
-    ensure_run_current_system_symlink, restart_service_and_socket, select_system_profile,
+    ensure_run_current_system_symlink, restart_service_and_socket, select_decoy_restore_target,
     start_service_and_socket,
 };
 use crate::cleanup::history::{history_cleanup_homes, truncate_all_history_files_for_homes};
@@ -361,6 +361,58 @@ fn requires_decoy_restore<F: Filesystem>(manager: &NailsManager<F>) -> Result<bo
         .as_ref()
         .and_then(|state_file| state_file.hidden_toplevel())
         .is_some())
+}
+
+/// The decoy system store path recorded at activation, if any.
+///
+/// Read from the cached state so deactivation can restore the exact generation
+/// that was running before the hidden switch, rather than inferring it from the
+/// system profile.
+fn recorded_decoy_system<F: Filesystem>(manager: &NailsManager<F>) -> Option<String> {
+    manager
+        .cached_state
+        .borrow()
+        .as_ref()
+        .and_then(|state_file| state_file.decoy_system.clone())
+}
+
+/// Point `/run/current-system` back at the decoy system on deactivation.
+///
+/// We never run `switch-to-configuration switch` here. The reboot that follows a
+/// Normal deactivation boots the decoy from the bootloader default (activation
+/// only ever used `test`), so a real switch would be pure redundancy — and it
+/// would reinstall the bootloader, write the ESP and rewrite EFI NVRAM and
+/// /var/lib/nixos, leaving evidence that the hidden mode existed. Swapping only
+/// the live `/run/current-system` symlink restores the decoy for any caller that
+/// does not reboot (emergency) without touching the bootloader, ESP or NVRAM.
+///
+/// The target is the decoy system recorded at activation (the exact generation
+/// that was running before the hidden switch), falling back to the newest system
+/// profile only when nothing was recorded or the recorded path is gone. A host
+/// whose system profile is absent (an impermanent or freshly imaged decoy) or
+/// stale (it points at a newer, never-switched generation) is then still restored
+/// correctly. Returns `Some(error)` when neither a recorded system nor a profile
+/// is available, or when the symlink swap failed.
+fn restore_decoy_current_system<F: Filesystem>(
+    fs: &F,
+    recorded_decoy: Option<&str>,
+) -> Result<Option<NailsError>> {
+    let Some(decoy_system) = select_decoy_restore_target(fs, recorded_decoy)? else {
+        return Ok(Some(NailsError::NixOSError(
+            "No recorded decoy system and no system profile available for decoy restore".into(),
+        )));
+    };
+    tracing::info!(
+        target = %decoy_system.display(),
+        "Restoring /run/current-system to the decoy system..."
+    );
+    Ok(ensure_run_current_system_symlink(fs, &decoy_system)
+        .err()
+        .map(|e| {
+            NailsError::NixOSError(format!(
+                "Failed to restore /run/current-system to the decoy system: {e}"
+            ))
+        }))
 }
 
 /// Send `signal` (e.g. `TERM`, `KILL`) to `pid`, best-effort.
@@ -825,6 +877,27 @@ impl<F: Filesystem> NailsManager<F> {
         );
     }
 
+    /// Fail a Normal deactivation up front if the decoy cannot be restored.
+    ///
+    /// A NixOS session (one with a recorded hidden toplevel) must be able to point
+    /// `/run/current-system` back at a decoy system afterwards: either the one
+    /// recorded at activation or the system profile. Refusing before any overlay is
+    /// detached leaves the Active session intact.
+    fn ensure_decoy_restore_possible(&self) -> Result<()> {
+        if !requires_decoy_restore(self)? {
+            return Ok(());
+        }
+        let recorded = recorded_decoy_system(self);
+        if select_decoy_restore_target(self.filesystem(), recorded.as_deref())?.is_none() {
+            return Err(NailsError::NixOSError(
+                "No recorded decoy system and no system profile found. \
+                 Cannot restore decoy configuration."
+                    .to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<DeactivationReport> {
         // The emergency panic button must work from every state, not only a
         // clean Active one: the state is Activating during the whole switch, it
@@ -907,19 +980,13 @@ impl<F: Filesystem> NailsManager<F> {
 
         // A swap device that reappeared while the hidden session ran would have
         // paged memory to the decoy disk; surface it before teardown. Skipped in
-        // emergency mode, which must stay fast and best-effort.
+        // emergency mode, which must stay fast and best-effort. The same Normal-only
+        // pre-teardown block refuses up front if the decoy could not be restored
+        // afterwards, while the Active session is still intact.
         if kind == ManagerDeactivationKind::Normal {
             let hidden_root = self.config().hidden_volume_root.clone();
             self.recheck_swap_posture("before deactivation", &hidden_root);
-        }
-
-        if kind == ManagerDeactivationKind::Normal
-            && requires_decoy_restore(self)?
-            && select_system_profile(self.filesystem())?.is_none()
-        {
-            return Err(NailsError::NixOSError(
-                "No system profile found. Cannot restore decoy configuration.".to_string(),
-            ));
+            self.ensure_decoy_restore_possible()?;
         }
 
         let overlay_context = if untrusted_state {
@@ -1578,6 +1645,10 @@ impl DeactivationOrchestrator {
         // Extract overlays BEFORE transitioning away from ACTIVE.
         let overlays_to_unmount = overlay_unmount_targets(manager, &current_state)?;
 
+        // The decoy system recorded at activation, read before the guard borrows
+        // the manager mutably. Step 5 restores `/run/current-system` to it.
+        let recorded_decoy = recorded_decoy_system(manager);
+
         // Step 1: Take the rollback guard and transition ACTIVE -> DEACTIVATING.
         let mut guard = StateGuard::new(&mut *manager, current_state.clone());
         let deactivating_state = SystemState::Deactivating {
@@ -1700,32 +1771,12 @@ impl DeactivationOrchestrator {
         let inactive_state = guard.current_state()?.complete_deactivation()?;
         self.persist_teardown_state_or_tolerate(&mut guard, inactive_state, "inactive")?;
 
-        // Step 5: Point /run/current-system back at the decoy system profile.
-        //
-        // We never run `switch-to-configuration switch` here. The reboot that
-        // follows a Normal deactivation boots the decoy from the bootloader
-        // default (activation only ever used `test`), so a real switch would be
-        // pure redundancy — and it would reinstall the bootloader, write the ESP
-        // and rewrite EFI NVRAM and /var/lib/nixos, leaving evidence that the
-        // hidden mode existed. Swapping only the live /run/current-system symlink
-        // restores the decoy for any caller that does not reboot (emergency)
-        // without touching the bootloader, ESP or NVRAM.
-        let restore_error = if !self.restore_decoy_profile {
-            None
-        } else if let Some(system_profile) = select_system_profile(guard.filesystem())? {
-            tracing::info!("Restoring /run/current-system to the decoy profile...");
-            ensure_run_current_system_symlink(guard.filesystem(), &system_profile)
-                .err()
-                .map(|e| {
-                    NailsError::NixOSError(format!(
-                        "Failed to restore /run/current-system to the decoy profile: {}",
-                        e
-                    ))
-                })
+        // Step 5: Point /run/current-system back at the decoy system (see
+        // `restore_decoy_current_system`).
+        let restore_error = if self.restore_decoy_profile {
+            restore_decoy_current_system(guard.filesystem(), recorded_decoy.as_deref())?
         } else {
-            Some(NailsError::NixOSError(
-                "No system profile available for decoy restore".into(),
-            ))
+            None
         };
 
         if let Some(err) = restore_error {

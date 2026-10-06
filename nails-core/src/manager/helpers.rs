@@ -94,6 +94,27 @@ pub(crate) fn select_system_profile<F: Filesystem>(fs: &F) -> Result<Option<Path
     Ok(None)
 }
 
+/// Resolve the toplevel to restore `/run/current-system` to on deactivation.
+///
+/// Prefers the decoy system recorded at activation (`readlink -f
+/// /run/current-system` captured before the hidden switch): it is the exact
+/// generation that was running, even on a host whose system profile is absent or
+/// points at a newer, never-switched generation. Falls back to the newest system
+/// profile only when nothing was recorded or the recorded path no longer exists.
+/// Returns `None` when neither is available, so the caller can fail loudly.
+pub(crate) fn select_decoy_restore_target<F: Filesystem>(
+    fs: &F,
+    recorded_decoy_system: Option<&str>,
+) -> Result<Option<PathBuf>> {
+    if let Some(recorded) = recorded_decoy_system {
+        let path = PathBuf::from(recorded);
+        if fs.path_exists(&path)? {
+            return Ok(Some(path));
+        }
+    }
+    select_system_profile(fs)
+}
+
 /// Ensure /run/current-system exists as a symlink to the provided system profile.
 pub(crate) fn ensure_run_current_system_symlink<F: Filesystem>(
     fs: &F,

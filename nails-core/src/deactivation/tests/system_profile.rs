@@ -40,10 +40,77 @@ fn test_deactivate_returns_error_when_no_system_profile_exists() {
 
     let err = manager.lock().unwrap().deactivate().unwrap_err();
     assert!(
-        err.to_string()
-            .contains("No system profile found. Cannot restore decoy configuration.")
+        err.to_string().contains(
+            "No recorded decoy system and no system profile found. \
+             Cannot restore decoy configuration."
+        ),
+        "unexpected error: {err}"
     );
     assert!(manager.lock().unwrap().current_state().unwrap().is_active());
+}
+
+#[test]
+#[serial]
+fn test_deactivate_restores_recorded_decoy_system_without_a_profile() {
+    // A host with no system profile (an impermanent or freshly imaged decoy) must
+    // still deactivate: activation records the decoy's running system, and the
+    // teardown restores /run/current-system to that recorded toplevel.
+    let mut env = EnvGuard::lock();
+    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+
+    // No system profile anywhere, but the recorded decoy toplevel exists.
+    let decoy_toplevel = "/nix/store/decoy00000000000000000000000-nixos-system-decoy";
+    fs.mock_set_path_exists(decoy_toplevel, true);
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let state_path = temp_dir.path().join("state.json");
+    let config = Config {
+        hidden_volume_root: temp_dir.path().to_path_buf(),
+        state_file_path: state_path.clone(),
+        log_path: temp_dir.path().join("logs"),
+        overlays: vec![],
+        ..Config::test_default()
+    };
+
+    let active_state = SystemState::Active {
+        decoy_writers: Vec::new(),
+        activated_at: chrono::Utc::now(),
+        overlays: vec![],
+    };
+    StateFile {
+        state: active_state,
+        platform: Some(crate::state::PlatformState::nixos(Some("1".to_string()))),
+        decoy_system: Some(decoy_toplevel.to_string()),
+        ..StateFile::default()
+    }
+    .save_with_custom_root(&state_path, temp_dir.path())
+    .unwrap();
+
+    let manager_inner = NailsManager::new(fs, config, state_path);
+    let manager = Arc::new(Mutex::new(manager_inner));
+
+    manager
+        .lock()
+        .unwrap()
+        .deactivate()
+        .expect("deactivation must succeed using the recorded decoy system");
+
+    let manager = manager.lock().unwrap();
+    assert_eq!(
+        manager.current_state().unwrap(),
+        SystemState::Inactive,
+        "deactivation should end Inactive"
+    );
+    // /run/current-system was restored to the recorded decoy toplevel.
+    assert_eq!(
+        manager
+            .filesystem()
+            .mock_get_symlink_target(Path::new("/run/current-system")),
+        Some(PathBuf::from(decoy_toplevel)),
+    );
 }
 #[test]
 #[serial]

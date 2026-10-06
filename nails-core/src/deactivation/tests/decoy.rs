@@ -122,7 +122,8 @@ fn test_deactivation_returns_error_when_no_decoy_profile_is_available() {
 
     assert!(
         err.to_string()
-            .contains("No system profile available for decoy restore")
+            .contains("No recorded decoy system and no system profile available for decoy restore"),
+        "unexpected error: {err}"
     );
     assert_eq!(
         manager.lock().unwrap().current_state().unwrap(),
@@ -154,6 +155,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
         },
         platform: Some(crate::state::PlatformState::nixos(Some("6".to_string()))),
         config_fingerprint: Some("deadbeefcafebabe".to_string()),
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
         overlay_status: std::collections::HashMap::new(),
@@ -287,8 +289,12 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
         .expect_err("normal deactivation should fail when no decoy profile is available");
     let err_text = err.to_string();
     assert!(
-        err_text.contains("No system profile available for decoy restore")
-            || err_text.contains("No system profile found. Cannot restore decoy configuration."),
+        err_text
+            .contains("No recorded decoy system and no system profile available for decoy restore")
+            || err_text.contains(
+                "No recorded decoy system and no system profile found. \
+                 Cannot restore decoy configuration."
+            ),
         "unexpected error: {err_text}"
     );
     assert!(

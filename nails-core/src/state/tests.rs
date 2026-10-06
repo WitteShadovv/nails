@@ -202,6 +202,7 @@ fn test_state_file_serialization() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
     };
@@ -419,6 +420,7 @@ fn test_save_load_round_trip_with_inactive_state() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
     };
@@ -479,6 +481,7 @@ fn test_save_load_round_trip_with_active_state() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
     };
@@ -593,6 +596,7 @@ fn test_save_load_multiple_overlays() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
     };
@@ -788,6 +792,7 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
     };
@@ -875,6 +880,7 @@ fn test_persist_race_condition_handling() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
     };
@@ -922,6 +928,7 @@ fn create_test_manager_with_state(
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
     };
@@ -1477,6 +1484,7 @@ fn test_state_file_permissions_are_0600() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
     };
@@ -1518,6 +1526,7 @@ fn test_checksum_round_trip_save_load() {
         submount_attachments: Vec::new(),
         integrity_sha256: None,
         config_fingerprint: None,
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
     };

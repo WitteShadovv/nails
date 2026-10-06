@@ -33,6 +33,7 @@ fn test_config_fingerprint_field_persistence() {
         state: SystemState::Inactive,
         platform: None,
         config_fingerprint: None, // First activation - no fingerprint yet
+        decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
         overlay_status: HashMap::new(),

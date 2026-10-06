@@ -180,6 +180,25 @@ pub struct StateFile {
     #[serde(default)]
     pub config_fingerprint: Option<String>,
 
+    /// Canonicalized store path of the decoy's running system, captured at
+    /// activation before the hidden switch repoints `/run/current-system`.
+    ///
+    /// Recorded from `readlink -f /run/current-system` (the booted system's
+    /// `/nix/store/…-nixos-system-*` toplevel) the moment activation begins, so
+    /// deactivation can restore the exact system that was running rather than
+    /// guessing from the system profile. The profile may be absent (an
+    /// impermanent or freshly imaged host never populates
+    /// `/nix/var/nix/profiles/system`) or point at a newer generation that was
+    /// built but never switched to, so this recorded target is the authoritative
+    /// restore point; the profile is only a fallback. `None` on a non-NixOS host
+    /// or when `/run/current-system` could not be resolved at activation. It lives
+    /// on the hidden volume and is read by the teardown that restores the decoy, so
+    /// it is only meaningful while a session is active. This is an internal restore
+    /// key, not operator-facing platform state, so it stays a flat field like
+    /// `config_fingerprint`.
+    #[serde(default)]
+    pub decoy_system: Option<String>,
+
     /// Currently mounted overlays with their configuration
     pub overlay_status: HashMap<PathBuf, OverlayInfo>,
 
@@ -286,6 +305,7 @@ impl Default for StateFile {
             state: SystemState::Inactive,
             platform: None,
             config_fingerprint: None,
+            decoy_system: None,
             overlay_status: HashMap::new(),
             failed_overlays: Vec::new(),
             nix_store_init_namespace_bound: false,

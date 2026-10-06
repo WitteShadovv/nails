@@ -53,6 +53,19 @@ impl<F: Filesystem> NailsManager<F> {
         // (fingerprint unchanged and the store path still present).
         let fast_path = fast_path_toplevel.is_some();
 
+        // Capture the decoy's running system before anything repoints
+        // /run/current-system. `readlink -f /run/current-system` is the booted
+        // decoy toplevel (`/nix/store/…-nixos-system-*`); recording it now lets
+        // deactivation restore the exact generation that was running, even on a
+        // host with no system profile or a stale one. Best-effort: a host without
+        // /run/current-system (non-NixOS) records nothing and deactivation falls
+        // back to the system profile.
+        let decoy_system = self
+            .filesystem
+            .canonicalize(std::path::Path::new("/run/current-system"))
+            .ok()
+            .map(|path| path.to_string_lossy().into_owned());
+
         // Ensure /run/current-system points at the right profile.
         if let Some(system_profile) = select_system_profile(&self.filesystem)? {
             ensure_run_current_system_symlink(&self.filesystem, &system_profile).map_err(|e| {
@@ -87,6 +100,17 @@ impl<F: Filesystem> NailsManager<F> {
                 // any prior one when this switch produced no fresh toplevel).
                 state_file.set_nixos_generation(toplevel.clone());
                 state_file.config_fingerprint = new_fingerprint.clone();
+                // Record the decoy system captured above so deactivation restores
+                // the exact generation that was running. Keep any prior recording
+                // when this activation could not resolve /run/current-system, or
+                // when the resolved target is the hidden toplevel itself — on a
+                // same-boot re-activation /run/current-system already points at the
+                // hidden system, which must never be mistaken for the decoy.
+                if let Some(ref captured) = decoy_system
+                    && toplevel.as_deref() != Some(captured.as_str())
+                {
+                    state_file.decoy_system = Some(captured.clone());
+                }
 
                 drop(cached);
                 if let Err(e) = self.save_cached_state()
@@ -281,6 +305,43 @@ mod tests {
             "the stored value must be a /nix/store/...-nixos-system-* path, got {toplevel}"
         );
         assert_eq!(saved.config_fingerprint, Some("new-fp".to_string()));
+    }
+
+    #[test]
+    #[serial]
+    fn test_switch_records_decoy_system_from_run_current_system() {
+        let mut env = EnvGuard::lock();
+        env.remove("NAILS_SYSTEM_PROFILE_PATH");
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let hidden_root = temp_dir.path();
+
+        // The decoy's running system, resolved through /run/current-system. No
+        // system profile is configured, so this recorded target is the only way a
+        // later deactivation can restore the decoy.
+        let decoy_system = "/nix/store/decoy00000000000000000000000-nixos-system-decoy";
+        let fs = MockFilesystem::new();
+        fs.create_symlink(Path::new(decoy_system), Path::new("/run/current-system"))
+            .unwrap();
+
+        let builder = flake_builder(hidden_root, StubExecutor::new());
+        let (manager, _tempdir) = TestWorld::new()
+            .with_filesystem(fs)
+            .with_hidden_root(hidden_root)
+            .with_nixos(builder)
+            .inactive()
+            .manager();
+
+        manager
+            .switch_nixos_profile(&None, &Some("fp".to_string()), Verbosity::Quiet)
+            .unwrap();
+
+        let saved = StateFile::load(&hidden_root.join("state.json")).unwrap();
+        assert_eq!(
+            saved.decoy_system.as_deref(),
+            Some(decoy_system),
+            "activation must record the decoy's running system for the teardown to restore"
+        );
     }
 
     #[test]
