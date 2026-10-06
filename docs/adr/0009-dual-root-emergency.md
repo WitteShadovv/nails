@@ -64,7 +64,10 @@ Run history on the KVM host:
   service login). `user@<uid>.service` then failed with status 224/PAM: its
   `systemd-user` PAM stack runs on the host and hit the same missing shadow
   entry. The drop-in now turns PAM off for the hidden user manager (see below).
-  Not yet re-run.
+- 1c79925: the hidden user manager runs in the hidden root (device/inode check
+  true). Stopped at "hidden writes land only in the upper": transient units get
+  systemd's default `PATH`, which is empty on NixOS (`sync: command not found`).
+  Hidden units now get the NixOS `PATH`; not yet re-run.
 
 A second spike, `nix/e2e-tests/tests/research/dual-root-risks.nix`
 (`e2e.research-dual-root-risks`), probes the risks; see
@@ -488,16 +491,21 @@ asserts only the mitigations this section claims work. Its first run (6adc66c,
 KVM host, QEMU virtual display, decoy on VT 1, hidden X on VT 8) covered setup,
 R5a and R1; it then stopped at the hidden `login -f` session (fixed since,
 see the hidden-user mechanism). Results below marked [V-spike 6adc66c] come from
-that log; [V-spike pending] probes have not run yet.
+that log. The second run (1c79925) got through R7a, R2 and R4 and stopped in R3
+on a shell pipeline over a missing file (fixed); its results are marked
+[V-spike 1c79925]. Its R4 results for probes run as hidden **units** are void:
+those units had no usable `PATH`, so `cat` was "not found" and the old probes
+printed "blocked" for any failure. The probes now print stderr and the exit
+code and classify the outcome. [V-spike pending] probes have not run yet.
 
 ### Verdicts
 
 | # | Risk | Verdict |
 | --- | --- | --- |
 | 1 | VT/DRM handover, hidden display server killed | Kernel side **solved** if the emergency path handles two races; the VM returns to the decoy in 0.1–0.4 s in all kill orders. Intel/AMD: **mitigable**, needs one hardware pass. NVIDIA: **needs real hardware**; known close-path deadlocks are a **blocker** on affected driver versions. nouveau: **needs real hardware** (no data) |
-| 2 | Shared system daemons write for the hidden user | **Mitigable** with a runtime polkit rule, a D-Bus uid deny for non-polkit daemons, and blocking CUPS. Timing-only writes (NM timestamps, upower history) **cannot** be stopped per user. Hidden-root copies of daemons on the shared bus are **impossible** |
+| 2 | Shared system daemons write for the hidden user | **Mitigable; confirmed in the VM.** Without mitigation the hidden session wrote an NM keyfile naming it, its AccountsService file and a linger file. The `/run` polkit rule left the decoy diff **empty** and is the required mitigation; the filtering proxy alone is **insufficient** (linger still written). Add a D-Bus uid deny for non-polkit daemons (bluez, fwupd) and block CUPS. Timing-only writes (NM timestamps, upower history) **cannot** be stopped per user. Hidden-root copies of daemons on the shared bus are **impossible** |
 | 3 | Idle decoy over hours | **Mitigable**: an idle+sleep inhibitor held by a host unit. Lid close needs a `handle-lid-switch` lock. A lock screen on return is expected and is not a logout |
-| 4 | Root in the hidden root reaches the decoy via `/proc/1/root` | **Mitigable**: `NoNewPrivileges=` everywhere plus a polkit deny; `PrivatePIDs=` for system-style hidden units (and the session leader, if probe R4b confirms logind accepts it). **Blocker** for `PrivatePIDs=` on `user@.service`; not available on systemd 255 |
+| 4 | Root in the hidden root reaches the decoy via `/proc/1/root` | **Mitigable**: the hidden user alone is denied (VM); `NoNewPrivileges=` stops a hidden sudoer (VM); plus the polkit deny. `PrivatePIDs=` for system-style hidden units (VM result pending). **Blocker** for `PrivatePIDs=` on `user@.service`, and `login -f` under `PrivatePIDs=` got no logind session (VM); not available on systemd 255 |
 | 5 | Mount-namespace copies of the hidden root | **Real leak** with the spike's private tmpfs (confirmed in the VM). **Solved** on systemd 259 with `systemd-run --root-directory=` from a pinned namespace; **mitigable** on 255/257 with an `nsenter` wrapper |
 | 6 | Hidden NixOS system services | **Mitigable** for file/network services as runtime units with `RootDirectory=`, after rewriting `StateDirectory=` and friends. Services that own a bus name, logind, udev, journald: **blocker** on the host bus. nspawn for headless services: viable but splits the system bus |
 | 7 | Other: audio, input, GPU, homed, AppArmor/snap, Secure Boot, seatd, DM user lists | Mostly **solved/mitigable**; **snaps on Ubuntu are a blocker** inside the hidden root (exclude them); NVIDIA D-state on kill **needs real hardware** |
@@ -686,8 +694,28 @@ mitigation (finding). B: the `/run` polkit rule (asserted: no new keyfile, no
 AccountsService change, no time-zone change, no linger file, login1 still
 usable). C: the proxy (asserted: no keyfile, no AccountsService or time-zone
 change, `session/auto` through the proxy is the hidden session). The linger
-write through the proxy and the `/proc/<proxy>/root` door are logged. [V-spike
-pending]
+write through the proxy and the `/proc/<proxy>/root` door are logged.
+
+Results [V-spike 1c79925] (exit codes: 0 = the daemon did it):
+
+| Probe | A: no mitigation | B: `/run` polkit rule | C: filtering proxy |
+| --- | --- | --- | --- |
+| NM system connection | 4 (refused: auth_admin_keep) | 4 | 8 (NM not on the bus) |
+| NM connection with `permissions=user:aux` | **0** | 4 | 8 |
+| AccountsService FindUserById | 0 | 0 | 1 (not on the bus) |
+| AccountsService SetLanguage | **0** | 1 | 1 |
+| timedated set-timezone | 1 (auth_admin_keep) | 1 | 1 |
+| `loginctl enable-linger` | **0** | 1 | **0** |
+| login1 `session/auto` | 0 | 0 | 0 |
+| Decoy-disk diff | `system-connections/probe-own-a.nmconnection`, `AccountsService/users/aux`, `systemd/linger/aux` added; `NetworkManager/timestamps` changed | **empty** | `systemd/linger/aux` added |
+
+The decoy AccountsService file did not exist after login alone; it appears
+on the first setter. So: **B (the `/run` polkit rule) is the required
+mitigation** and is sufficient for every polkit-gated write here; **C alone is
+insufficient**, because logind must stay reachable and its `set-self-linger`
+action is allowed for active sessions. C is only useful together with B (for
+daemons without polkit). The `NetworkManager/timestamps` change in A came from
+NM activating the new connection: the timing-only residual named above.
 
 **Real hardware.** Bluetooth pairing and Wi-Fi need real radios: pair a device
 and join a network from the hidden session with the D-Bus deny in place, then
@@ -784,7 +812,18 @@ its session, via `(sd-pam)`, as a hidden sudoer (hidden-root sudoers only) with
 and without `NoNewPrivileges=` (asserted blocked with it), as hidden root with
 nothing, `ProtectProc=invisible`, and `PrivatePIDs=yes` (asserted blocked); and
 a second `login -f` session whose unit has `PrivatePIDs=yes` (finding: does
-logind accept it, what does a hidden sudoer see). [V-spike pending]
+logind accept it, what does a hidden sudoer see).
+
+Results [V-spike 1c79925], valid part: the hidden user in its session cannot
+read `/proc/1/root` (EACCES). A hidden sudoer **without** `NoNewPrivileges=`
+gets root (sudo ran its command; the command itself was missing for the
+`PATH` reason above). **With `NoNewPrivileges=yes` sudo refuses**: "The 'no new
+privileges' flag is set, which prevents sudo from running as root". There is no
+`(sd-pam)` helper any more (user@ runs without PAM). **R4b: no logind session
+appeared** from `login -f` in a unit with `PrivatePIDs=yes`, so a PID
+namespace for the session leader is not available as built. The root-unit
+variants (no mitigation, `ProtectProc=invisible`, `PrivatePIDs=yes`) are void in
+this run and pending.
 
 ### 5. Mount-namespace copies
 
@@ -893,8 +932,10 @@ the host, data in the upper). [V-spike pending]
 - **Shared `/dev/shm`, SysV IPC, abstract sockets, `/run/utmp`:** RAM only, but
   visible to the decoy while the session runs and left behind after `cgroup.kill`
   (no DEAD_PROCESS utmp record). Teardown sweeps them; the hidden X server uses an
-  explicit display number and `-nolisten local`. R7a probes `/dev/shm`, abstract
-  sockets and the `/dev/dri` ACLs during and after the session.
+  explicit display number and `-nolisten local`. R7a [V-spike 1c79925]: while
+  the hidden session is active, `/dev/dri/card*` carries `user:aux:rw-` (the
+  uaccess ACL follows the active session, RAM only); a hidden unit's `/dev/shm`
+  is the host's; no listening abstract sockets were found.
 - **Observer during the session** sees the extra session and processes; accepted,
   emergency removes them. **The panic trigger** must not depend on the hidden
   session being healthy (host-side evdev watcher without a grab) [I].
