@@ -516,6 +516,61 @@ fn successful_activation_keeps_overlays_and_does_not_roll_back() {
 }
 
 #[test]
+fn successful_activation_records_its_duration_and_keeps_a_progress_record_until_done() {
+    use crate::filesystem::mock::MockOp;
+
+    let (mut manager, fs, _tmp) = rollback_test_manager();
+    let hidden_root = manager.config().hidden_volume_root.clone();
+    let progress_path = hidden_root.join(crate::progress::PROGRESS_FILE);
+
+    manager.activate(true).expect("activation should succeed");
+
+    // The progress record was written while the activation ran, before the
+    // overlays were mounted (so `status` can show the phase of a detached run)...
+    let ops = fs.mock_ops();
+    let first_progress = ops
+        .iter()
+        .position(|op| matches!(op, MockOp::WriteFile { path } if *path == progress_path))
+        .expect("progress record written during activation");
+    let first_mount = ops
+        .iter()
+        .position(|op| matches!(op, MockOp::MountOverlay { .. }))
+        .expect("overlays mounted");
+    assert!(first_progress < first_mount);
+    // ...and removed once the activation finished.
+    assert!(
+        !fs.path_exists(&progress_path).expect("probe"),
+        "progress record must not outlive the activation"
+    );
+
+    // The duration is persisted with the Active state.
+    let state_file = crate::StateFile::load(&manager.config().state_file_path).expect("load");
+    let last = state_file
+        .last_activation
+        .expect("last activation recorded on success");
+    assert!(last.finished_at <= chrono::Utc::now());
+}
+
+#[test]
+#[serial]
+fn a_failed_activation_removes_its_progress_record_and_records_no_duration() {
+    let (mut manager, fs, _tmp) = rollback_test_manager();
+    let progress_path = manager
+        .config()
+        .hidden_volume_root
+        .join(crate::progress::PROGRESS_FILE);
+
+    crate::state::save_probe::arm(&[crate::state::save_probe::FailOn::Active]);
+    let result = manager.activate(true);
+    crate::state::save_probe::disarm();
+
+    assert!(result.is_err());
+    assert!(!fs.path_exists(&progress_path).expect("probe"));
+    let state_file = crate::StateFile::load(&manager.config().state_file_path).expect("load");
+    assert!(state_file.last_activation.is_none());
+}
+
+#[test]
 #[serial]
 fn failure_at_active_state_write_unmounts_overlays_and_restores_inactive() {
     use crate::state::save_probe::{self, FailOn};
@@ -995,7 +1050,7 @@ fn no_cancel_lets_activation_complete() {
 #[test]
 fn step_progress_numbers_steps_contiguously_up_to_the_total() {
     // The layer path emits seven steps: the counter ends exactly at the total.
-    let mut step = StepProgress::new(Verbosity::Normal, 7);
+    let mut step = StepProgress::<crate::MockFilesystem>::new(Verbosity::Normal, 7);
     for _ in 0..7 {
         step.emit("phase", "message");
     }
@@ -1190,7 +1245,7 @@ fn record_hidden_added_units_records_nothing_without_an_applied_switch() {
 fn step_progress_total_follows_the_overlay_only_path() {
     // With no declarative layer the two NixOS steps are skipped, so the derived
     // total is five and the five emitted steps number 1..=5 contiguously.
-    let mut step = StepProgress::new(Verbosity::Quiet, 5);
+    let mut step = StepProgress::<crate::MockFilesystem>::new(Verbosity::Quiet, 5);
     for expected in 1..=5 {
         step.emit("phase", "message");
         assert_eq!(step.current, expected);

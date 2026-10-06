@@ -149,6 +149,16 @@ pub struct HiddenSession {
     pub display_manager: Option<String>,
 }
 
+/// How long the most recent successful activation took, and when it finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LastActivation {
+    /// Wall-clock duration of the activation, from its start to the commit to
+    /// Active, in milliseconds.
+    pub duration_ms: u64,
+    /// When the activation committed to Active.
+    pub finished_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StateFile {
     /// Schema version for the on-disk format (uses semver from Cargo.toml).
@@ -279,6 +289,15 @@ pub struct StateFile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hidden_session: Option<HiddenSession>,
 
+    /// Timing of the most recent successful activation.
+    ///
+    /// Written as activation commits to Active and kept across deactivation, so
+    /// `nails status` can tell the operator how long the last activation took
+    /// (useful to judge whether a slow rebuild is unusual). `None` until the first
+    /// successful activation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activation: Option<LastActivation>,
+
     /// Timestamp of last state modification
     pub last_modified: DateTime<Utc>,
 
@@ -328,6 +347,7 @@ impl Default for StateFile {
             submount_attachments: Vec::new(),
             hidden_added_units: Vec::new(),
             hidden_session: None,
+            last_activation: None,
             last_modified: Utc::now(),
             boot_id: None,
             owner_pid: 0,

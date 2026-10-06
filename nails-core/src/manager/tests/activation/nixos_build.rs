@@ -39,6 +39,7 @@ fn test_config_fingerprint_field_persistence() {
         runtime_root: None,
         overlay_status: HashMap::new(),
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,

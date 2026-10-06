@@ -92,6 +92,24 @@ impl std::fmt::Display for Stopwatch {
     }
 }
 
+/// Formats `elapsed` as a compact label: `45s`, `2m10s`, or `1h02m03s`.
+///
+/// Shared by the long-step heartbeat, the activation progress display and
+/// `nails status`, so every surface writes durations the same way.
+pub fn format_elapsed(elapsed: Duration) -> String {
+    let total = elapsed.as_secs();
+    let hours = total / 3600;
+    let minutes = (total % 3600) / 60;
+    let seconds = total % 60;
+    if hours > 0 {
+        format!("{hours}h{minutes:02}m{seconds:02}s")
+    } else if minutes > 0 {
+        format!("{minutes}m{seconds:02}s")
+    } else {
+        format!("{seconds}s")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

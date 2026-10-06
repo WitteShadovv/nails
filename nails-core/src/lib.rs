@@ -100,6 +100,9 @@ pub mod logging;
 // Shared marks and per-stream styles for CLI output
 pub mod output;
 
+// Activation progress record on the hidden volume (read by `status`)
+pub mod progress;
+
 // Desktop notification signal files (post-activation user feedback)
 pub mod notification;
 
@@ -173,9 +176,9 @@ pub use persona::{InheritedSource, PersonaEntry, PersonaInventory, collect_inher
 
 // State management exports
 pub use state::{
-    DecoyWriter, EMERGENCY_LOCK_TIMEOUT, FailedOverlayInfo, HiddenSession, LoadOutcome, LoadResult,
-    OverlayInfo, PlatformState, StateFile, StateLock, SubmountAttachment, SystemState,
-    decoy_writers_headline, summarize_decoy_writers,
+    DecoyWriter, EMERGENCY_LOCK_TIMEOUT, FailedOverlayInfo, HiddenSession, LastActivation,
+    LoadOutcome, LoadResult, OverlayInfo, PlatformState, StateFile, StateLock, SubmountAttachment,
+    SystemState, decoy_writers_headline, summarize_decoy_writers,
 };
 
 // Pre-flight validation exports

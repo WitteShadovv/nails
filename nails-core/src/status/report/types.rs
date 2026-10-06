@@ -412,6 +412,58 @@ pub struct StatusReport {
     /// Surfaced so the operator can see how the previous session ended.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub last_deactivation: Option<crate::deactivation::LastDeactivationReport>,
+    /// The activation in flight, while the persisted state is `Activating`:
+    /// how long it has been running and, when the activation keeps a progress
+    /// record on the hidden volume, the phase it is in. `None` otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_in_flight: Option<ActivationInFlight>,
+
+    /// Timing of the most recent successful activation, kept across
+    /// deactivation. `None` before the first successful activation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_activation: Option<crate::state::LastActivation>,
+}
+
+/// An activation that is still running, as seen by `status`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivationInFlight {
+    /// When the activation started (from the persisted `Activating` state).
+    pub started_at: DateTime<Utc>,
+    /// Seconds the activation has been running when status was taken.
+    pub elapsed_secs: u64,
+    /// The progress record the activation keeps on the hidden volume, when one
+    /// is present and readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress: Option<crate::progress::ActivationProgress>,
+}
+
+impl ActivationInFlight {
+    /// Build the in-flight view for an activation that started at `started_at`,
+    /// measured at `now`. A clock that moved backwards reports zero elapsed.
+    pub fn new(
+        started_at: DateTime<Utc>,
+        now: DateTime<Utc>,
+        progress: Option<crate::progress::ActivationProgress>,
+    ) -> Self {
+        let elapsed_secs =
+            u64::try_from(now.signed_duration_since(started_at).num_seconds()).unwrap_or(0);
+        Self {
+            started_at,
+            elapsed_secs,
+            progress,
+        }
+    }
+
+    /// One-line summary: `Mounting overlays (4/7), 2m10s` with a progress
+    /// record, or just the elapsed time without one.
+    pub fn summary(&self) -> String {
+        let elapsed =
+            crate::timing::format_elapsed(std::time::Duration::from_secs(self.elapsed_secs));
+        match &self.progress {
+            Some(p) => format!("{} ({}/{}), {elapsed}", p.label, p.step, p.total_steps),
+            None => elapsed,
+        }
+    }
 }
 
 fn default_load_outcome() -> LoadOutcome {

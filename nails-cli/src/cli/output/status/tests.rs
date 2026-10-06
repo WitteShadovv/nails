@@ -932,3 +932,28 @@ fn test_print_status_human_renders_last_deactivation() {
         COLOR,
     );
 }
+
+#[test]
+fn activation_in_flight_lines_show_elapsed_without_a_progress_record() {
+    let started_at = chrono::Utc::now() - chrono::Duration::seconds(65);
+    let report = StatusReport {
+        state: SystemState::Activating { started_at },
+        posture: Posture::Transitioning,
+        activation_in_flight: Some(nails_core::status::ActivationInFlight::new(
+            started_at,
+            started_at + chrono::Duration::seconds(65),
+            None,
+        )),
+        ..Default::default()
+    };
+    assert_eq!(
+        super::human::activation_in_flight_lines(&report, ASCII),
+        vec!["Activation:         in progress: 1m05s".to_string()]
+    );
+    assert!(super::human::activation_in_flight_lines(&inactive_report(), ASCII).is_empty());
+}
+
+#[test]
+fn last_activation_line_is_omitted_before_the_first_activation() {
+    assert_eq!(super::human::last_activation_line(&inactive_report()), None);
+}

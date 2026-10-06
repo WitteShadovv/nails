@@ -123,11 +123,45 @@
             }
           }
         },
-        "nixos_generation": { "type": "string", "minLength": 1 },
+        "hidden_toplevel": {
+          "description": "Store path of the hidden NixOS system toplevel switched to on the last activation.",
+          "type": "string",
+          "minLength": 1
+        },
+        "hidden_config_warning": {
+          "description": "Why the hidden NixOS configuration was not applied on the last activation; omitted when it is in force or none was requested.",
+          "type": "string",
+          "minLength": 1
+        },
         "hidden_root_total_bytes": { "type": "integer", "minimum": 0 },
         "hidden_root_used_bytes": { "type": "integer", "minimum": 0 },
         "hidden_root_available_bytes": { "type": "integer", "minimum": 0 },
         "hidden_root_mounted": { "type": "boolean" },
+        "activation_in_flight": {
+          "description": "Present only while the state is activating: how long the activation has been running and, when the activation keeps a progress record on the hidden volume, the phase it is in.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["started_at", "elapsed_seconds"],
+          "properties": {
+            "started_at": { "type": "string", "format": "date-time" },
+            "elapsed_seconds": { "type": "integer", "minimum": 0 },
+            "phase": { "type": "string", "minLength": 1 },
+            "phase_label": { "type": "string", "minLength": 1 },
+            "step": { "type": "integer", "minimum": 0 },
+            "total_steps": { "type": "integer", "minimum": 1 },
+            "detail": { "type": "string", "minLength": 1 }
+          }
+        },
+        "last_activation": {
+          "description": "Timing of the most recent successful activation, kept across deactivation.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["duration_ms", "finished_at"],
+          "properties": {
+            "duration_ms": { "type": "integer", "minimum": 0 },
+            "finished_at": { "type": "string", "format": "date-time" }
+          }
+        },
         "opsec_reminders": {
           "type": "array",
           "items": {

@@ -53,7 +53,7 @@ mod tests;
 mod transitions;
 
 // Re-export all public items.
-pub use file::{HiddenSession, LoadOutcome, LoadResult, PlatformState, StateFile};
+pub use file::{HiddenSession, LastActivation, LoadOutcome, LoadResult, PlatformState, StateFile};
 pub use guard::StateGuard;
 pub use lock::{EMERGENCY_LOCK_TIMEOUT, StateLock};
 pub use reconcile::{DegradedKind, EffectiveState, InterruptedPhase, reconcile};

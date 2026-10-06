@@ -592,20 +592,7 @@ fn run_streaming_to_completion(
     }
 }
 
-/// Formats `elapsed` as a compact progress label: `45s`, `2m10s`, or `1h02m03s`.
-pub(crate) fn format_elapsed(elapsed: Duration) -> String {
-    let total = elapsed.as_secs();
-    let hours = total / 3600;
-    let minutes = (total % 3600) / 60;
-    let seconds = total % 60;
-    if hours > 0 {
-        format!("{hours}h{minutes:02}m{seconds:02}s")
-    } else if minutes > 0 {
-        format!("{minutes}m{seconds:02}s")
-    } else {
-        format!("{seconds}s")
-    }
-}
+pub(crate) use crate::timing::format_elapsed;
 
 /// Reads a child pipe to EOF on a background thread.
 fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> JoinHandle<Vec<u8>> {

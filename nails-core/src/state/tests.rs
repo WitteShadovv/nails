@@ -193,6 +193,7 @@ fn test_state_file_serialization() {
         runtime_root: None,
         overlay_status,
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
             .unwrap()
             .with_timezone(&Utc),
@@ -412,6 +413,7 @@ fn test_save_load_round_trip_with_inactive_state() {
         runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
             .unwrap()
             .with_timezone(&Utc),
@@ -474,6 +476,7 @@ fn test_save_load_round_trip_with_active_state() {
         runtime_root: None,
         overlay_status,
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
             .unwrap()
             .with_timezone(&Utc),
@@ -592,6 +595,7 @@ fn test_save_load_multiple_overlays() {
         runtime_root: None,
         overlay_status,
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
@@ -789,6 +793,7 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
@@ -878,6 +883,7 @@ fn test_persist_race_condition_handling() {
         runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
@@ -927,6 +933,7 @@ fn create_test_manager_with_state(
         runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
@@ -1485,6 +1492,7 @@ fn test_state_file_permissions_are_0600() {
         runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
@@ -1526,6 +1534,7 @@ fn test_checksum_round_trip_save_load() {
         runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
             .unwrap()
             .with_timezone(&Utc),
@@ -1780,6 +1789,7 @@ fn test_compatible_version_load_with_checksum() {
 
     let state = StateFile {
         platform: Some(PlatformState::nixos(Some("gen-abc".to_string()))),
+        last_activation: None,
         last_modified: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc),
@@ -1884,6 +1894,7 @@ fn test_version_migration_preserves_data() {
                 .unwrap()
                 .with_timezone(&Utc),
         }],
+        last_activation: None,
         last_modified: DateTime::parse_from_rfc3339("2025-06-01T12:00:00Z")
             .unwrap()
             .with_timezone(&Utc),

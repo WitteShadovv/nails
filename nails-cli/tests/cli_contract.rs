@@ -406,6 +406,71 @@ fn status_json_degraded_matches_schema_and_snapshot() {
     insta::assert_json_snapshot!("status_json_degraded", redact_status(value));
 }
 
+#[test]
+fn status_reports_an_activation_in_flight_with_its_phase_and_elapsed_time() {
+    let harness = Harness::new();
+    let started_at = Utc::now() - chrono::Duration::seconds(130);
+    harness.write_state(SystemState::Activating { started_at });
+    nails_core::progress::write_progress(
+        &nails_core::RealFilesystem,
+        &harness.hidden_root,
+        &nails_core::progress::ActivationProgress {
+            phase: "overlay_mount".to_string(),
+            label: "Mounting overlays".to_string(),
+            step: 4,
+            total_steps: 7,
+            started_at,
+            phase_started_at: started_at,
+            detail: Some("mounting /home (3/12)".to_string()),
+        },
+    )
+    .expect("write progress record");
+
+    let (_code, value) = run_json(&harness.config, &["status"]);
+    assert_matches_schema(&load_schema("status"), &value);
+    let flight = &value["data"]["activation_in_flight"];
+    assert_eq!(flight["phase"], "overlay_mount", "{value}");
+    assert_eq!(flight["phase_label"], "Mounting overlays");
+    assert_eq!(flight["step"], 4);
+    assert_eq!(flight["total_steps"], 7);
+    assert_eq!(flight["detail"], "mounting /home (3/12)");
+    assert!(flight["elapsed_seconds"].as_u64().unwrap() >= 130);
+
+    let stdout = String::from_utf8(run(&harness.config, &[], &["status"]).stdout).unwrap();
+    assert!(
+        stdout.contains("Activation:         in progress: Mounting overlays (4/7), 2m"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("mounting /home (3/12)"), "{stdout}");
+}
+
+#[test]
+fn status_reports_the_last_activation_duration() {
+    let harness = Harness::new();
+    let file = StateFile {
+        state: SystemState::Inactive,
+        last_activation: Some(nails_core::LastActivation {
+            duration_ms: 92_000,
+            finished_at: fixed_instant(),
+        }),
+        ..StateFile::default()
+    };
+    file.save(&harness.state_path, harness.hidden_root.to_str().unwrap())
+        .expect("save state");
+
+    let (code, value) = run_json(&harness.config, &["status"]);
+    assert_eq!(code, 0);
+    assert_matches_schema(&load_schema("status"), &value);
+    assert_eq!(value["data"]["last_activation"]["duration_ms"], 92_000);
+    assert!(value["data"].get("activation_in_flight").is_none());
+
+    let stdout = String::from_utf8(run(&harness.config, &[], &["status"]).stdout).unwrap();
+    assert!(
+        stdout.contains("Last activation:    took 1m32s (finished 2023-11-14 22:13:20 UTC)"),
+        "{stdout}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // verify --json: schema + snapshot
 // ---------------------------------------------------------------------------

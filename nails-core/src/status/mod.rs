@@ -78,8 +78,8 @@ pub mod report;
 
 // Re-export report types
 pub use report::{
-    OpSecReminder, OverlayMountStatus, Posture, ReminderSeverity, StatusReport, VerificationStatus,
-    format_uptime, generate_opsec_reminders,
+    ActivationInFlight, OpSecReminder, OverlayMountStatus, Posture, ReminderSeverity, StatusReport,
+    VerificationStatus, format_uptime, generate_opsec_reminders,
 };
 
 pub struct StatusCommand<F: Filesystem> {
@@ -297,6 +297,20 @@ impl<F: Filesystem> StatusCommand<F> {
         // so both are `Some` only on NixOS; the status surface therefore shows the
         // hidden-system generation on NixOS alone.
         let hidden_toplevel = state_file.hidden_toplevel().map(str::to_string);
+        let last_activation = state_file.last_activation.clone();
+
+        // While an activation is in flight, report how long it has been running
+        // and, from the progress record it keeps on the hidden volume, which
+        // phase it is in. A detached activation has no terminal, so this is the
+        // operator's only view of it.
+        let activation_in_flight = match &state_file.state {
+            SystemState::Activating { started_at } => Some(ActivationInFlight::new(
+                *started_at,
+                Utc::now(),
+                crate::progress::read_progress(&self.filesystem, &self.config.hidden_volume_root),
+            )),
+            _ => None,
+        };
         let last_switch_warning = state_file.last_switch_warning().map(str::to_string);
 
         // Whether the hidden root is still a live mount. Expected while active;
@@ -364,6 +378,8 @@ impl<F: Filesystem> StatusCommand<F> {
             persona_mode: self.config.persona.mode,
             decoy_persistent,
             last_deactivation,
+            activation_in_flight,
+            last_activation,
         };
 
         Ok(report)
@@ -485,6 +501,8 @@ impl Default for StatusReport {
             persona_mode: crate::config::PersonaMode::SharedHome,
             decoy_persistent: false,
             last_deactivation: None,
+            activation_in_flight: None,
+            last_activation: None,
         }
     }
 }

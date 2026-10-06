@@ -86,6 +86,16 @@ in
         assert status["overlays"] == [], status
         assert_no_overlays(expected_overlays)
 
+        # The parked activation keeps a progress record on the hidden volume, so
+        # status shows the phase it is in and how long it has been running. An
+        # overlay-only run has five steps; it is parked in session management.
+        flight = status["activation_in_flight"]
+        assert flight["phase"] == "session_management", status
+        assert flight["step"] == 2 and flight["total_steps"] == 5, status
+        assert flight["elapsed_seconds"] >= 0, status
+        human = machine.succeed(f"nails --config {headless_config} status")
+        assert "Activation:         in progress: Preparing session management (2/5)" in human, human
+
     with subtest("the activation is interrupted, leaving a stuck Activating state"):
         # SIGKILL the parked activation so nothing finishes or rolls back the
         # switch: state.json stays frozen at Activating. This is the realistic
@@ -128,6 +138,10 @@ in
         status = read_status_json(config_path=headless_config)
         assert status["state"]["kind"] == "active", status
         assert_status_overlays(expected_overlays, status)
+        # A completed activation records its duration and leaves no activation in
+        # flight.
+        assert status["last_activation"]["duration_ms"] > 0, status
+        assert "activation_in_flight" not in status, status
         assert_expected_overlays(expected_overlays)
 
         prefix = "/run/nails-tests/emergency-from-activating-cleanup"

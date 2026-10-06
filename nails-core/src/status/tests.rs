@@ -546,6 +546,11 @@ fn test_status_report_serialization() {
         persona_mode: crate::config::PersonaMode::FreshHome,
         decoy_persistent: false,
         last_deactivation: None,
+        activation_in_flight: None,
+        last_activation: Some(crate::state::LastActivation {
+            duration_ms: 1500,
+            finished_at: Utc::now(),
+        }),
     };
 
     let json = serde_json::to_string(&report).unwrap();
@@ -1721,4 +1726,127 @@ fn test_reminder_ascii_render_is_ascii() {
         };
         assert_eq!(reminder.render(ascii), reminder.to_plain());
     }
+}
+
+#[test]
+fn activating_status_reports_phase_and_elapsed_from_the_progress_record() {
+    let fs = MockFilesystem::new();
+    let config = config_hidden();
+    fs.mock_set_path_type(HIDDEN_ROOT, crate::PathKind::Dir);
+    let started_at = Utc::now() - chrono::Duration::seconds(130);
+
+    crate::progress::write_progress(
+        &fs,
+        Path::new(HIDDEN_ROOT),
+        &crate::progress::ActivationProgress {
+            phase: "overlay_mount".to_string(),
+            label: "Mounting overlays".to_string(),
+            step: 4,
+            total_steps: 7,
+            started_at,
+            phase_started_at: started_at,
+            detail: Some("mounting /home (3/12)".to_string()),
+        },
+    )
+    .unwrap();
+
+    let state_file = StateFile {
+        state: SystemState::Activating { started_at },
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let report = StatusCommand::new(fs, config, temp_file.path().to_path_buf())
+        .run()
+        .unwrap();
+
+    let flight = report
+        .activation_in_flight
+        .expect("an activating state reports the activation in flight");
+    assert_eq!(flight.started_at, started_at);
+    assert!(
+        (130..140).contains(&flight.elapsed_secs),
+        "elapsed {}",
+        flight.elapsed_secs
+    );
+    let progress = flight.progress.as_ref().expect("progress record read");
+    assert_eq!(progress.phase, "overlay_mount");
+    assert!(
+        flight.summary().starts_with("Mounting overlays (4/7), 2m1"),
+        "{}",
+        flight.summary()
+    );
+}
+
+#[test]
+fn activating_status_without_a_progress_record_still_reports_elapsed() {
+    let fs = MockFilesystem::new();
+    let started_at = Utc::now() - chrono::Duration::seconds(5);
+    let state_file = StateFile {
+        state: SystemState::Activating { started_at },
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let report = StatusCommand::new(fs, config_hidden(), temp_file.path().to_path_buf())
+        .run()
+        .unwrap();
+
+    let flight = report.activation_in_flight.expect("in flight");
+    assert!(flight.progress.is_none());
+    assert!(flight.summary().ends_with('s'));
+}
+
+#[test]
+fn progress_record_is_ignored_outside_an_activation() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_type(HIDDEN_ROOT, crate::PathKind::Dir);
+    let now = Utc::now();
+    crate::progress::write_progress(
+        &fs,
+        Path::new(HIDDEN_ROOT),
+        &crate::progress::ActivationProgress {
+            phase: "finalize".to_string(),
+            label: "Finalizing activation".to_string(),
+            step: 7,
+            total_steps: 7,
+            started_at: now,
+            phase_started_at: now,
+            detail: None,
+        },
+    )
+    .unwrap();
+    let temp_file = create_temp_state_file(&StateFile::default());
+
+    let report = StatusCommand::new(fs, config_hidden(), temp_file.path().to_path_buf())
+        .run()
+        .unwrap();
+
+    assert!(report.activation_in_flight.is_none());
+}
+
+#[test]
+fn status_carries_the_last_activation_duration() {
+    let fs = MockFilesystem::new();
+    let finished_at = Utc::now();
+    let state_file = StateFile {
+        last_activation: Some(crate::state::LastActivation {
+            duration_ms: 92_000,
+            finished_at,
+        }),
+        ..StateFile::default()
+    };
+    let temp_file = create_temp_state_file(&state_file);
+
+    let report = StatusCommand::new(fs, config_hidden(), temp_file.path().to_path_buf())
+        .run()
+        .unwrap();
+
+    assert_eq!(
+        report.last_activation,
+        Some(crate::state::LastActivation {
+            duration_ms: 92_000,
+            finished_at,
+        })
+    );
 }

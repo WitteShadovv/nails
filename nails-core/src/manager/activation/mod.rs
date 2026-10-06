@@ -484,6 +484,7 @@ impl<F: Filesystem> NailsManager<F> {
         use crate::{StateGuard, Stopwatch};
 
         let total_timer = Stopwatch::start();
+        let started_at = chrono::Utc::now();
 
         // Clear any outcome recorded by a previous activation; the activation-scope
         // rollback guard sets this handle again only if a rollback actually runs,
@@ -603,6 +604,10 @@ impl<F: Filesystem> NailsManager<F> {
             .with_residue(residue.clone())
             .with_rollback_outcome(rollback_outcome.clone());
         guard.update_state(activating_state)?;
+        // Pre-flight confirmed the hidden volume: keep the progress record that
+        // `nails status` reads from here on (removed when activation returns).
+        let hidden_root = guard.config().hidden_volume_root.clone();
+        step.attach_file(guard.filesystem().clone(), hidden_root, started_at);
         // Record the graphical session we took over (if any) so emergency teardown
         // can end the same logind session and bring its display manager back.
         guard.record_hidden_session(&restart_plan);
@@ -755,7 +760,7 @@ impl<F: Filesystem> NailsManager<F> {
         let overlay_targets_for_copy = mounted_overlays.clone();
         let current = guard.current_state()?;
         let active_state = current.complete_activation(mounted_overlays, decoy_writers)?;
-        guard.update_state(active_state)?;
+        guard.commit_active_state(active_state, total_timer.elapsed())?;
 
         // Step 11: Success - disarm the overlay rollback so the mounts stay, commit
         // the guard (prevents state rollback) and release the manager borrow, then
@@ -840,6 +845,47 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         Ok(ActivationOutcome::Activated { hidden_config })
+    }
+
+    /// Write the Active state together with this activation's duration.
+    ///
+    /// The duration is kept across deactivation so `nails status` can report how
+    /// long the last activation took. If the write fails, the previous record is
+    /// put back before the rollback persists the state, so a failed activation
+    /// never reports a duration.
+    pub(crate) fn commit_active_state(
+        &mut self,
+        active_state: crate::SystemState,
+        elapsed: std::time::Duration,
+    ) -> Result<()> {
+        let previous = self.record_last_activation(elapsed);
+        self.update_state(active_state).inspect_err(|_| {
+            self.restore_last_activation(previous);
+        })
+    }
+
+    /// Record the duration of this activation in the cached state so it is
+    /// written out with the Active state, returning the record it replaced.
+    fn record_last_activation(
+        &self,
+        duration: std::time::Duration,
+    ) -> Option<crate::state::LastActivation> {
+        let mut cached = self.cached_state.borrow_mut();
+        let state_file = cached.as_mut()?;
+        state_file
+            .last_activation
+            .replace(crate::state::LastActivation {
+                duration_ms: u64::try_from(duration.as_millis()).unwrap_or(u64::MAX),
+                finished_at: chrono::Utc::now(),
+            })
+    }
+
+    /// Put back the last-activation record replaced by
+    /// [`record_last_activation`](Self::record_last_activation).
+    fn restore_last_activation(&self, previous: Option<crate::state::LastActivation>) {
+        if let Some(ref mut state_file) = *self.cached_state.borrow_mut() {
+            state_file.last_activation = previous;
+        }
     }
 
     /// Record (or clear) the last hidden NixOS switch warning in the cached state
@@ -1384,24 +1430,43 @@ fn format_mount_list(mounts: &[std::path::PathBuf]) -> String {
 /// so the `[n/total]` numbering stays contiguous even when the layer steps are
 /// skipped. A step is counted whatever the verbosity, so the numbering a quiet
 /// run would show matches a verbose one; only the log line is gated.
-struct StepProgress {
+struct StepProgress<F: Filesystem> {
     verbosity: Verbosity,
     current: u8,
     total: u8,
+    /// The phase id and label most recently emitted, so a progress record
+    /// attached mid-activation starts from the phase already in progress.
+    last: (&'static str, String),
+    /// The hidden-volume progress record, attached once the hidden volume is
+    /// known to be mounted (see [`StepProgress::attach_file`]).
+    file: Option<crate::progress::ProgressFileWriter<F>>,
 }
 
-impl StepProgress {
+impl<F: Filesystem> StepProgress<F> {
     fn new(verbosity: Verbosity, total: u8) -> Self {
         Self {
             verbosity,
             current: 0,
             total,
+            last: ("", String::new()),
+            file: None,
         }
     }
 
-    /// Advance to the next step and log it at Normal verbosity or above.
-    fn emit(&mut self, phase: &str, message: &str) {
+    /// The label a step message contributes to the progress record: the message
+    /// without its trailing ellipsis.
+    fn label(message: &str) -> String {
+        message.trim_end_matches('.').to_string()
+    }
+
+    /// Advance to the next step, log it at Normal verbosity or above, and update
+    /// the progress record when one is attached.
+    fn emit(&mut self, phase: &'static str, message: &str) {
         self.current += 1;
+        self.last = (phase, Self::label(message));
+        if let Some(file) = self.file.as_mut() {
+            file.phase(u32::from(self.current), phase, &self.last.1);
+        }
         if self.verbosity >= Verbosity::Normal {
             tracing::info!(
                 event = "progress",
@@ -1414,5 +1479,24 @@ impl StepProgress {
                 message
             );
         }
+    }
+
+    /// Start keeping the hidden-volume progress record, beginning with the phase
+    /// already in progress. The record is removed when this progress is dropped.
+    fn attach_file(
+        &mut self,
+        fs: F,
+        hidden_root: std::path::PathBuf,
+        started_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.file = Some(crate::progress::ProgressFileWriter::start(
+            fs,
+            hidden_root,
+            started_at,
+            u32::from(self.current),
+            u32::from(self.total),
+            self.last.0,
+            &self.last.1,
+        ));
     }
 }

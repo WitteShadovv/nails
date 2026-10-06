@@ -161,6 +161,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
         runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
+        last_activation: None,
         last_modified: chrono::Utc::now(),
         boot_id: None,
         owner_pid: 0,

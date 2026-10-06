@@ -32,6 +32,12 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Added
 
+- `nails status` shows an activation in flight while the state is `activating`: the phase,
+  step and elapsed time, read from a progress record the activation keeps on the hidden volume
+  (`progress.json`, removed when the activation returns). This is the only view of a detached
+  activation. `status` also reports how long the last successful activation took; `status --json`
+  gains the optional `activation_in_flight` and `last_activation` objects, and the state file
+  gains `last_activation`.
 - An operator guide (`docs/operator-guide.md`) organised by where each step runs, with a
   `findmnt`-driven recovery runbook and honest limits, replacing `docs/USER-SECURITY-GUIDE.md`.
 - `nails activate` writes a read-only pre-mount decoy residue report under

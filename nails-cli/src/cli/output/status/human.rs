@@ -123,6 +123,37 @@ pub(super) fn posture_lines(
     lines
 }
 
+/// The lines describing an activation still in flight: the phase and elapsed
+/// time, then the phase detail when the progress record carries one. Empty when
+/// no activation is running.
+pub(super) fn activation_in_flight_lines(
+    report: &nails_core::status::StatusReport,
+    style: Style,
+) -> Vec<String> {
+    let Some(flight) = report.activation_in_flight.as_ref() else {
+        return Vec::new();
+    };
+    let mut lines = vec![format!(
+        "Activation:         in progress: {}",
+        flight.summary()
+    )];
+    if let Some(detail) = flight.progress.as_ref().and_then(|p| p.detail.as_deref()) {
+        lines.push(format!("  {}", style.marked(Mark::Arrow, detail)));
+    }
+    lines
+}
+
+/// The last-activation line, or `None` before the first successful activation.
+pub(super) fn last_activation_line(report: &nails_core::status::StatusReport) -> Option<String> {
+    report.last_activation.as_ref().map(|last| {
+        format!(
+            "Last activation:    took {} (finished {})",
+            nails_core::timing::format_elapsed(std::time::Duration::from_millis(last.duration_ms)),
+            last.finished_at.format("%Y-%m-%d %H:%M:%S UTC")
+        )
+    })
+}
+
 /// Print the status report header: box drawing, or an ASCII rule.
 pub fn print_status_header(style: Style) {
     if style.ascii {
@@ -154,6 +185,9 @@ pub fn print_status_human(
     print_status_header(style);
 
     println!("State:              {}", state_label(report));
+    for line in activation_in_flight_lines(report, style) {
+        println!("{line}");
+    }
     for line in posture_lines(report, style) {
         println!("{line}");
     }
@@ -233,6 +267,11 @@ pub fn print_status_human(
     } else if let SystemState::Inactive = report.state {
         println!();
         println!("Run 'nails activate' to mount hidden environment");
+    }
+
+    if let Some(line) = last_activation_line(report) {
+        println!();
+        println!("{line}");
     }
 
     if let Some(line) = hidden_volume_line(report) {

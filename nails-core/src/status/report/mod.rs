@@ -7,7 +7,9 @@
 
 mod types;
 
-pub use types::{OverlayMountStatus, Posture, StatusReport, VerificationStatus};
+pub use types::{
+    ActivationInFlight, OverlayMountStatus, Posture, StatusReport, VerificationStatus,
+};
 
 use serde::{Deserialize, Serialize};
 use std::fmt;

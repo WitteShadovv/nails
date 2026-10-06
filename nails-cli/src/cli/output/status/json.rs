@@ -79,6 +79,58 @@ pub struct StatusData {
     /// attached or no report is present.
     #[serde(skip_serializing_if = "Option::is_none")]
     last_deactivation: Option<nails_core::LastDeactivationReport>,
+    /// The activation in flight (only while the state is `activating`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    activation_in_flight: Option<ActivationInFlightJson>,
+    /// Timing of the most recent successful activation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_activation: Option<LastActivationJson>,
+}
+
+#[derive(Debug, Serialize)]
+struct ActivationInFlightJson {
+    /// When the activation started (ISO 8601).
+    started_at: String,
+    /// Seconds the activation has been running.
+    elapsed_seconds: u64,
+    /// Stable identifier of the current phase, when a progress record exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<String>,
+    /// Human-readable label of the current phase.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase_label: Option<String>,
+    /// 1-based index of the current phase.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<u32>,
+    /// Number of phases the activation runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    total_steps: Option<u32>,
+    /// Finer-grained detail within the phase.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<String>,
+}
+
+impl From<&nails_core::status::ActivationInFlight> for ActivationInFlightJson {
+    fn from(flight: &nails_core::status::ActivationInFlight) -> Self {
+        let progress = flight.progress.as_ref();
+        Self {
+            started_at: flight.started_at.to_rfc3339(),
+            elapsed_seconds: flight.elapsed_secs,
+            phase: progress.map(|p| p.phase.clone()),
+            phase_label: progress.map(|p| p.label.clone()),
+            step: progress.map(|p| p.step),
+            total_steps: progress.map(|p| p.total_steps),
+            detail: progress.and_then(|p| p.detail.clone()),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct LastActivationJson {
+    /// How long the activation took, in milliseconds.
+    duration_ms: u64,
+    /// When the activation committed (ISO 8601).
+    finished_at: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -171,6 +223,17 @@ pub fn build_status_data(report: &nails_core::status::StatusReport) -> StatusDat
             })
             .collect(),
         last_deactivation: report.last_deactivation.clone(),
+        activation_in_flight: report
+            .activation_in_flight
+            .as_ref()
+            .map(ActivationInFlightJson::from),
+        last_activation: report
+            .last_activation
+            .as_ref()
+            .map(|last| LastActivationJson {
+                duration_ms: last.duration_ms,
+                finished_at: last.finished_at.to_rfc3339(),
+            }),
     }
 }
 
@@ -203,6 +266,8 @@ pub fn build_status_data_unknown(reason: String) -> StatusData {
         hidden_root_mounted: false,
         opsec_reminders: Vec::new(),
         last_deactivation: None,
+        activation_in_flight: None,
+        last_activation: None,
     }
 }
 

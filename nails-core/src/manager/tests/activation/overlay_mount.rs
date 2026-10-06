@@ -971,7 +971,15 @@ fn test_activate_explicit_mode_rejects_critical_system_root_overlay_bin() {
     assert!(matches!(&err, NailsError::InvalidState(_)), "got: {err:?}");
     // Behaviour: the refusal must name the blocked system tree.
     assert!(err.to_string().contains("/bin"), "got: {err}");
-    assert!(fs.mock_ops().is_empty());
+    // Nothing was mounted or written beyond the activation progress record that
+    // lives on the hidden volume.
+    let progress = mock_hidden_vol.join(crate::progress::PROGRESS_FILE);
+    let unexpected: Vec<_> = fs
+        .mock_ops()
+        .into_iter()
+        .filter(|op| !matches!(op, crate::filesystem::mock::MockOp::WriteFile { path } if *path == progress))
+        .collect();
+    assert!(unexpected.is_empty(), "unexpected ops: {unexpected:?}");
 }
 
 /// A failed import after the `/etc` mount rolls the overlay back and leaves the
