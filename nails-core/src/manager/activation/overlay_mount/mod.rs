@@ -17,6 +17,7 @@ mod mount_success;
 mod persona;
 mod restore;
 mod submount_attach;
+mod writer_rescan;
 
 pub(crate) use journald_fd::JournaldFdCheck;
 #[cfg(test)]
@@ -183,6 +184,21 @@ impl<F: Filesystem> NailsManager<F> {
             .map(|info| info.target.clone())
             .collect();
         tracing::info!(overlays = ?mounted_paths, "Overlays mounted");
+
+        // Post-mount rescan: walk /proc once now that every overlay is up and fold
+        // any process still holding a write-capable reference to an overlaid target
+        // into the decoy-writer set. This catches writers the pre-mount pass could
+        // not restart or that survived a service restart, tagging each as
+        // stale-lower or (for a chrooted/foreign-namespace process) unverifiable.
+        // A no-op in test/runtime-safety builds, where the /proc snapshot is empty,
+        // so existing detection results are unchanged.
+        let persistent_targets: Vec<PathBuf> = tracker
+            .mounted
+            .iter()
+            .filter(|info| info.mount_type == MountType::Persistent)
+            .map(|info| info.target.clone())
+            .collect();
+        writer_rescan::rescan_post_mount_writers(&mut outcome.decoy_writers, &persistent_targets);
 
         // Move the mounts out of the tracker (emptying it, so its drop is inert)
         // and hand them to the caller, which owns rollback from here on.
