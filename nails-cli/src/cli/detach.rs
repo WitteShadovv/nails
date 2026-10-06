@@ -302,7 +302,10 @@ pub fn maybe_detach_for_session_kill(
             if ctx.kind != SessionKind::GraphicalUser {
                 return Ok(());
             }
-        } else if let Ok(ctx) = detect_session_context(&RealSessionCommandExecutor) {
+        } else if let Ok(ctx) = detect_session_context(
+            &RealSessionCommandExecutor,
+            &nails_core::RuntimeEnv::from_process_env(),
+        ) {
             if ctx.kind != SessionKind::GraphicalUser {
                 return Ok(());
             }

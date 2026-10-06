@@ -30,7 +30,6 @@ pub use types::{
 pub(crate) mod tests_common {
     use super::types::SessionCommandExecutor;
     use crate::Result;
-    use crate::test_support::EnvGuard;
     use std::sync::Mutex;
 
     pub struct MockSessionCommandExecutor {
@@ -232,32 +231,5 @@ pub(crate) mod tests_common {
         fn loginctl_available(&self) -> bool {
             self.loginctl_available
         }
-    }
-
-    /// Takes the environment lock with every session-detection variable
-    /// removed; the guard puts them back when it is dropped.
-    pub fn cleared_session_env() -> EnvGuard {
-        let mut env = EnvGuard::lock();
-        for key in [
-            "SSH_TTY",
-            "SSH_CONNECTION",
-            "NAILS_LOGIND_AVAILABLE",
-            "XDG_SESSION_ID",
-            "NAILS_SESSION_ID",
-            "NAILS_DISPLAY_MANAGER",
-            "NAILS_TARGET_UID",
-            "NAILS_TARGET_USER",
-            "XDG_SESSION_TYPE",
-            "DISPLAY",
-            "WAYLAND_DISPLAY",
-        ] {
-            env.remove(key);
-        }
-        // The privilege-escalation variables live in one list in `target_user`;
-        // reuse it so detection tests clear the full escalation context.
-        for key in crate::target_user::PRIVILEGE_ENV_VARS {
-            env.remove(key);
-        }
-        env
     }
 }

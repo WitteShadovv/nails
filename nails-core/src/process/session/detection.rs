@@ -4,34 +4,38 @@
 //! Session detection — detecting active sessions, display servers, and session context
 
 use crate::Result;
-use crate::constants::{
-    ENV_DISPLAY_MANAGER, ENV_LOGIND_AVAILABLE, ENV_SESSION_ID, ENV_TARGET_UID, ENV_TARGET_USER,
-};
+use crate::RuntimeEnv;
 use nix::unistd::{User, getuid};
-use std::env;
 
 use super::types::{SessionCommandExecutor, SessionContext, SessionKind};
 
-/// Detect the current session context, running its probes through `executor`.
+/// Detect the current session context, running its probes through `executor`
+/// and reading every environment value off the startup snapshot `env`.
 ///
 /// Production passes [`RealSessionCommandExecutor`](super::types::RealSessionCommandExecutor),
-/// which shells out to `loginctl`/`systemctl`; tests pass a scripted executor, so
-/// the same code path is exercised in both without a build-time fork.
-pub fn detect_session_context<E: SessionCommandExecutor>(executor: &E) -> Result<SessionContext> {
-    let logind_available = match env::var(ENV_LOGIND_AVAILABLE) {
-        Ok(val) => val != "0",
-        Err(_) => executor.loginctl_available(),
+/// which shells out to `loginctl`/`systemctl`, and the [`RuntimeEnv`](crate::RuntimeEnv)
+/// `main` captured once; tests pass a scripted executor and a built `RuntimeEnv`,
+/// so the same code path is exercised in both without a build-time fork and
+/// without mutating the shared process environment.
+pub fn detect_session_context<E: SessionCommandExecutor>(
+    executor: &E,
+    env: &RuntimeEnv,
+) -> Result<SessionContext> {
+    let logind_available = match env.nails_logind_available.as_deref() {
+        Some(val) => val != "0",
+        None => executor.loginctl_available(),
     };
-    let session_id = env::var("XDG_SESSION_ID").ok();
-    let override_session_id = env::var(ENV_SESSION_ID).ok();
-    let override_dm = env::var(ENV_DISPLAY_MANAGER).ok();
-    let override_uid = env::var(ENV_TARGET_UID)
-        .ok()
+    let session_id = env.xdg_session_id.clone();
+    let override_session_id = env.nails_session_id.clone();
+    let override_dm = env.nails_display_manager.clone();
+    let override_uid = env
+        .nails_target_uid
+        .as_deref()
         .and_then(|v| v.parse::<u32>().ok());
-    let override_user = env::var(ENV_TARGET_USER).ok();
+    let override_user = env.nails_target_user.clone();
 
     // Check for SSH first
-    if env::var("SSH_TTY").is_ok() || env::var("SSH_CONNECTION").is_ok() {
+    if env.ssh_tty.is_some() || env.ssh_connection.is_some() {
         return Ok(SessionContext {
             kind: SessionKind::Ssh,
             session_id: override_session_id.or(session_id),
@@ -70,9 +74,9 @@ pub fn detect_session_context<E: SessionCommandExecutor>(executor: &E) -> Result
     }
 
     // Check for graphical session indicators
-    let session_type = env::var("XDG_SESSION_TYPE").ok();
-    let has_display = env::var("DISPLAY").is_ok();
-    let has_wayland = env::var("WAYLAND_DISPLAY").is_ok();
+    let session_type = env.xdg_session_type.clone();
+    let has_display = env.display.is_some();
+    let has_wayland = env.wayland_display.is_some();
 
     let is_graphical = match session_type.as_deref() {
         Some("wayland") | Some("x11") => true,
@@ -80,7 +84,7 @@ pub fn detect_session_context<E: SessionCommandExecutor>(executor: &E) -> Result
         _ => has_display || has_wayland,
     };
 
-    let (target_uid, target_user) = resolve_target_identity();
+    let (target_uid, target_user) = resolve_target_identity(env);
 
     if !is_graphical {
         return Ok(SessionContext {
@@ -119,8 +123,8 @@ pub fn detect_session_context<E: SessionCommandExecutor>(executor: &E) -> Result
 /// NAILS is running directly as the user: fall back to the current account,
 /// treating root as "no target user" so a root session is never reported as a
 /// graphical user.
-fn resolve_target_identity() -> (Option<u32>, Option<String>) {
-    if let Ok(user) = crate::TargetUser::resolve() {
+fn resolve_target_identity(env: &RuntimeEnv) -> (Option<u32>, Option<String>) {
+    if let Ok(user) = crate::TargetUser::resolve_with(env) {
         return (Some(user.uid), Some(user.name));
     }
 
@@ -172,7 +176,6 @@ fn detect_display_manager_in<E: SessionCommandExecutor>(
 mod tests {
     use super::super::tests_common::*;
     use super::*;
-    use serial_test::serial;
 
     #[test]
     fn detect_display_manager_none() {
@@ -272,15 +275,16 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_detects_ssh() {
-        let mut env = cleared_session_env();
-        env.set("SSH_CONNECTION", "1 2 3 4")
-            .set("NAILS_LOGIND_AVAILABLE", "0");
+        let env = RuntimeEnv {
+            ssh_connection: Some("1 2 3 4".to_string()),
+            nails_logind_available: Some("0".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::Ssh);
         assert_eq!(ctx.display_manager, None);
@@ -289,17 +293,18 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_uses_override_values() {
-        let mut env = cleared_session_env();
-        env.set("NAILS_SESSION_ID", "c2")
-            .set("NAILS_DISPLAY_MANAGER", "gdm")
-            .set("NAILS_TARGET_UID", "1000")
-            .set("NAILS_TARGET_USER", "alice");
+        let env = RuntimeEnv {
+            nails_session_id: Some("c2".to_string()),
+            nails_display_manager: Some("gdm".to_string()),
+            nails_target_uid: Some("1000".to_string()),
+            nails_target_user: Some("alice".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let exec = MockSessionCommandExecutor::new(false, true, true);
 
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.session_id, Some("c2".to_string()));
@@ -309,15 +314,16 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_detects_tty_when_not_graphical() {
-        let mut env = cleared_session_env();
-        env.set("XDG_SESSION_TYPE", "tty")
-            .set("NAILS_LOGIND_AVAILABLE", "0");
+        let env = RuntimeEnv {
+            xdg_session_type: Some("tty".to_string()),
+            nails_logind_available: Some("0".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::Tty);
         assert_eq!(ctx.display_manager, None);
@@ -325,13 +331,13 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_detects_graphical_user_and_display_manager() {
         // Drive the shared resolver through SUDO_UID pointing at a real passwd
         // entry — the current account — so the test is hermetic across hosts.
         let me = current_user();
-        let mut env = cleared_session_env();
-        env.set("DISPLAY", ":0").set("SUDO_UID", &me.uid);
+        let env = RuntimeEnv::empty()
+            .with_display(":0")
+            .with_sudo_uid(me.uid.clone());
 
         let exec = ScriptedSessionCommandExecutor::new(
             vec![Ok((true, "active".to_string(), String::new()))],
@@ -339,7 +345,7 @@ mod tests {
             true,
         );
 
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.display_manager, Some("display-manager".to_string()));
@@ -348,44 +354,47 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_honors_logind_override() {
-        let mut env = cleared_session_env();
-        env.set("XDG_SESSION_TYPE", "tty")
-            .set("NAILS_LOGIND_AVAILABLE", "0");
+        let env = RuntimeEnv {
+            xdg_session_type: Some("tty".to_string()),
+            nails_logind_available: Some("0".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         assert!(!ctx.logind_available);
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_uses_executor_logind_availability_when_not_overridden() {
-        let mut env = cleared_session_env();
-        env.set("XDG_SESSION_TYPE", "tty");
+        let env = RuntimeEnv {
+            xdg_session_type: Some("tty".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::Tty);
         assert!(ctx.logind_available);
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_uses_xdg_session_id_when_override_missing() {
-        let mut env = cleared_session_env();
-        env.set("XDG_SESSION_ID", "c7")
-            .set("NAILS_TARGET_UID", "1000")
-            .set("NAILS_DISPLAY_MANAGER", "gdm");
+        let env = RuntimeEnv {
+            xdg_session_id: Some("c7".to_string()),
+            nails_target_uid: Some("1000".to_string()),
+            nails_display_manager: Some("gdm".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         assert_eq!(ctx.session_id, Some("c7".to_string()));
         assert_eq!(ctx.display_manager, Some("gdm".to_string()));
@@ -393,16 +402,17 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_ignores_invalid_override_target_uid() {
-        let mut env = cleared_session_env();
-        env.set("NAILS_SESSION_ID", "c2")
-            .set("NAILS_TARGET_UID", "not-a-number")
-            .set("NAILS_TARGET_USER", "alice");
+        let env = RuntimeEnv {
+            nails_session_id: Some("c2".to_string()),
+            nails_target_uid: Some("not-a-number".to_string()),
+            nails_target_user: Some("alice".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
 
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         // Invalid UID means we fall back to GraphicalRoot, not GraphicalUser
         assert_eq!(ctx.kind, SessionKind::GraphicalRoot);
@@ -412,12 +422,13 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_detects_dm_when_override_missing() {
-        let mut env = cleared_session_env();
-        env.set("NAILS_SESSION_ID", "c2")
-            .set("NAILS_TARGET_UID", "1000")
-            .set("NAILS_TARGET_USER", "alice");
+        let env = RuntimeEnv {
+            nails_session_id: Some("c2".to_string()),
+            nails_target_uid: Some("1000".to_string()),
+            nails_target_user: Some("alice".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let exec = ScriptedSessionCommandExecutor::new(
             vec![Ok((true, "active".to_string(), String::new()))],
@@ -425,7 +436,7 @@ mod tests {
             true,
         );
 
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.session_id, Some("c2".to_string()));
@@ -435,15 +446,16 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_override_without_uid_returns_graphical_root() {
-        let mut env = cleared_session_env();
-        // No NAILS_TARGET_UID set
-        env.set("NAILS_SESSION_ID", "c5")
-            .set("NAILS_DISPLAY_MANAGER", "sddm");
+        // No NAILS_TARGET_UID set.
+        let env = RuntimeEnv {
+            nails_session_id: Some("c5".to_string()),
+            nails_display_manager: Some("sddm".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let exec = MockSessionCommandExecutor::new(true, true, true);
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         // Without a valid target UID, must NOT be GraphicalUser
         assert_eq!(ctx.kind, SessionKind::GraphicalRoot);
@@ -453,12 +465,11 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn detect_session_context_uses_wayland_display_when_session_type_unset() {
         let me = current_user();
-        let mut env = cleared_session_env();
-        env.set("WAYLAND_DISPLAY", "wayland-0")
-            .set("SUDO_UID", &me.uid);
+        let env = RuntimeEnv::empty()
+            .with_wayland_display("wayland-0")
+            .with_sudo_uid(me.uid.clone());
 
         let exec = ScriptedSessionCommandExecutor::new(
             vec![Ok((true, "active".to_string(), String::new()))],
@@ -466,7 +477,7 @@ mod tests {
             true,
         );
 
-        let ctx = detect_session_context(&exec).unwrap();
+        let ctx = detect_session_context(&exec, &env).unwrap();
 
         assert_eq!(ctx.kind, SessionKind::GraphicalUser);
         assert_eq!(ctx.display_manager, Some("display-manager".to_string()));

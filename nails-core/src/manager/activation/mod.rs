@@ -586,7 +586,7 @@ impl<F: Filesystem> NailsManager<F> {
         } else {
             step.emit("session_management", "Preparing session management...");
         }
-        let restart_plan = Self::handle_session_kill(verbosity, &options, &RealSessionCommands)?;
+        let restart_plan = self.handle_session_kill(verbosity, &options, &RealSessionCommands)?;
         // Test seam: lets a rollback test inject a non-default plan to drive the
         // after-overlay restart path (unkillable unprivileged otherwise).
         #[cfg(test)]

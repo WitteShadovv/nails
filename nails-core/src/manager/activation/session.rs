@@ -23,6 +23,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// pass a scripted or recording executor, so the real graphical-kill arm is
     /// exercised directly rather than through a separate test-only copy.
     pub(super) fn handle_session_kill<E: SessionCommandExecutor>(
+        &self,
         verbosity: Verbosity,
         options: &crate::ActivateOptions,
         executor: &E,
@@ -35,7 +36,7 @@ impl<F: Filesystem> NailsManager<F> {
             tracing::info!("Detecting session type for --session kill...");
         }
 
-        let session = detect_session_context(executor)?;
+        let session = detect_session_context(executor, self.runtime_env())?;
 
         match session.kind {
             SessionKind::GraphicalUser => {
@@ -98,16 +99,25 @@ impl<F: Filesystem> NailsManager<F> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::process::session::tests_common::{
-        RecordingScriptedSessionCommandExecutor, cleared_session_env,
-    };
-    use crate::{ActivateOptions, MockFilesystem};
+    use crate::process::session::tests_common::RecordingScriptedSessionCommandExecutor;
+    use crate::{ActivateOptions, Config, MockFilesystem, RuntimeEnv};
+    use std::path::PathBuf;
 
     /// An executor whose probes report no active service and no logind, so a
-    /// detected session is driven entirely by the environment variables a test
-    /// sets.
+    /// detected session is driven entirely by the snapshot a test builds.
     fn quiet_executor() -> RecordingScriptedSessionCommandExecutor {
         RecordingScriptedSessionCommandExecutor::new(Vec::new(), Vec::new(), false)
+    }
+
+    /// A mock manager carrying the given startup snapshot, so session detection
+    /// reads the operator and session off it instead of the process environment.
+    fn manager_with_env(env: RuntimeEnv) -> NailsManager<MockFilesystem> {
+        NailsManager::new(
+            MockFilesystem::new(),
+            Config::default(),
+            PathBuf::from("/tmp/state.json"),
+        )
+        .with_runtime_env(env)
     }
 
     #[test]
@@ -117,13 +127,11 @@ mod tests {
             ..ActivateOptions::default()
         };
         let executor = quiet_executor();
+        let manager = manager_with_env(RuntimeEnv::empty());
 
-        let plan = NailsManager::<MockFilesystem>::handle_session_kill(
-            Verbosity::Quiet,
-            &options,
-            &executor,
-        )
-        .unwrap();
+        let plan = manager
+            .handle_session_kill(Verbosity::Quiet, &options, &executor)
+            .unwrap();
 
         assert_eq!(plan, SessionRestartPlan::default());
         // A disabled flag short-circuits before any detection command runs.
@@ -132,9 +140,11 @@ mod tests {
 
     #[test]
     fn handle_session_kill_skips_ssh_sessions() {
-        let mut env = cleared_session_env();
-        env.set("SSH_CONNECTION", "1 2 3 4")
-            .set("NAILS_LOGIND_AVAILABLE", "0");
+        let env = RuntimeEnv {
+            ssh_connection: Some("1 2 3 4".to_string()),
+            nails_logind_available: Some("0".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let options = ActivateOptions {
             kill_session: true,
@@ -142,22 +152,22 @@ mod tests {
             ..ActivateOptions::default()
         };
         let executor = quiet_executor();
+        let manager = manager_with_env(env);
 
-        let plan = NailsManager::<MockFilesystem>::handle_session_kill(
-            Verbosity::Normal,
-            &options,
-            &executor,
-        )
-        .unwrap();
+        let plan = manager
+            .handle_session_kill(Verbosity::Normal, &options, &executor)
+            .unwrap();
 
         assert_eq!(plan, SessionRestartPlan::default());
     }
 
     #[test]
     fn handle_session_kill_skips_tty_sessions() {
-        let mut env = cleared_session_env();
-        env.set("XDG_SESSION_TYPE", "tty")
-            .set("NAILS_LOGIND_AVAILABLE", "0");
+        let env = RuntimeEnv {
+            xdg_session_type: Some("tty".to_string()),
+            nails_logind_available: Some("0".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let options = ActivateOptions {
             kill_session: true,
@@ -165,27 +175,26 @@ mod tests {
             ..ActivateOptions::default()
         };
         let executor = quiet_executor();
+        let manager = manager_with_env(env);
 
-        let plan = NailsManager::<MockFilesystem>::handle_session_kill(
-            Verbosity::Normal,
-            &options,
-            &executor,
-        )
-        .unwrap();
+        let plan = manager
+            .handle_session_kill(Verbosity::Normal, &options, &executor)
+            .unwrap();
 
         assert_eq!(plan, SessionRestartPlan::default());
     }
 
     #[test]
     fn handle_session_kill_drives_the_real_graphical_arm() {
-        // A graphical session with a known operator is forced through the
-        // pre-detach override environment, so detection reports GraphicalUser
-        // without touching the host.
-        let mut env = cleared_session_env();
-        env.set("DISPLAY", ":0")
-            .set("NAILS_TARGET_UID", "1000")
-            .set("NAILS_DISPLAY_MANAGER", "gdm.service")
-            .set("NAILS_LOGIND_AVAILABLE", "1");
+        // A graphical session with a known operator is built directly in the
+        // snapshot, so detection reports GraphicalUser without touching the host.
+        let env = RuntimeEnv {
+            display: Some(":0".to_string()),
+            nails_target_uid: Some("1000".to_string()),
+            nails_display_manager: Some("gdm.service".to_string()),
+            nails_logind_available: Some("1".to_string()),
+            ..RuntimeEnv::empty()
+        };
 
         let options = ActivateOptions {
             kill_session: true,
@@ -194,16 +203,13 @@ mod tests {
             ..ActivateOptions::default()
         };
         let executor = quiet_executor();
+        let manager = manager_with_env(env);
 
         // The graphical arm now reaches the real `kill_graphical_session` through
         // the injected executor rather than a test-only stub. Running unprivileged,
         // that function fails its root check before issuing any termination
         // command, which is exactly the real production guard.
-        let result = NailsManager::<MockFilesystem>::handle_session_kill(
-            Verbosity::Normal,
-            &options,
-            &executor,
-        );
+        let result = manager.handle_session_kill(Verbosity::Normal, &options, &executor);
 
         let err = result.expect_err("the unprivileged graphical arm must hit the root guard");
         assert!(
