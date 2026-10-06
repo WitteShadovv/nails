@@ -5,17 +5,16 @@
 //!
 //! # Test Safety Notice
 //!
-//! Tests in this module MUST use `cleanup::test_utils::TEST_HOME` and
-//! `cleanup::test_utils::set_safe_test_home()` instead of reading the real HOME
-//! environment variable. This prevents tests from accidentally operating on real
-//! user history files.
+//! Tests in this module MUST use `cleanup::test_utils::TEST_HOME` instead of the
+//! real HOME. History cleanup in this crate's tests resolves to that fixed home,
+//! never to the invoking account's, so no test can touch real history files.
 
 use super::test_gate::{
     DeactivationGateTestGuard, maybe_block_after_deactivating_state_transition,
 };
 use super::{DeactivationReport, PostUnmountCleanupReport};
 use crate::DeactivationOrchestrator;
-use crate::cleanup::test_utils::{TEST_HOME, assert_path_is_safe, set_safe_test_home};
+use crate::cleanup::test_utils::{TEST_HOME, assert_path_is_safe};
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 use crate::filesystem::{Filesystem, PathKind};
 use crate::test_support::EnvGuard;
@@ -73,19 +72,18 @@ fn spawn_deactivation_gate_releaser(
 }
 
 /// A configured stub system profile for decoy switching. Holds the backing
-/// temp dir and the environment override; both are cleaned up on drop, so the
-/// profile lives exactly as long as the test that owns it.
+/// temp dir (removed on drop) and the snapshot that points the manager at it.
 struct SystemProfileStub {
     _dir: tempfile::TempDir,
-    _env: EnvGuard,
+    /// Attach to the manager under test with `with_runtime_env`.
+    env: crate::RuntimeEnv,
 }
 
 /// Helper function to configure a stub system profile for decoy switching.
 fn setup_system_profile_stub(fs: &MockFilesystem) -> SystemProfileStub {
     let profile_root = tempfile::tempdir().expect("tempdir");
     let system_profile_path = profile_root.path().join("system");
-    let mut env_guard = EnvGuard::lock();
-    env_guard.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile_path);
+    let env = crate::RuntimeEnv::empty().with_system_profile_path(&system_profile_path);
 
     let profiles_dir = system_profile_path
         .parent()
@@ -111,7 +109,7 @@ fn setup_system_profile_stub(fs: &MockFilesystem) -> SystemProfileStub {
 
     SystemProfileStub {
         _dir: profile_root,
-        _env: env_guard,
+        env,
     }
 }
 
@@ -155,7 +153,8 @@ fn setup_active_manager() -> ManagerFixture {
         ..Config::test_default()
     };
 
-    let mut manager = NailsManager::new(fs, config, state_path);
+    let mut manager =
+        NailsManager::new(fs, config, state_path).with_runtime_env(profile.env.clone());
 
     // Set state to ACTIVE
     manager
@@ -270,14 +269,7 @@ fn run_within_timeout<R: Send + 'static>(op: impl FnOnce() -> R + Send + 'static
 /// An ACTIVE manager with no overlays and no decoy profile, so teardown runs the
 /// full state-transition sequence without needing a system profile. State writes
 /// go to a real temporary hidden volume so the save seam governs their outcome.
-fn active_manager_no_profile() -> (
-    Arc<Mutex<NailsManager<MockFilesystem>>>,
-    tempfile::TempDir,
-    EnvGuard,
-) {
-    let mut env = set_safe_test_home();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
+fn active_manager_no_profile() -> (Arc<Mutex<NailsManager<MockFilesystem>>>, tempfile::TempDir) {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
@@ -301,26 +293,21 @@ fn active_manager_no_profile() -> (
         })
         .unwrap();
 
-    (Arc::new(Mutex::new(manager)), temp_dir, env)
+    (Arc::new(Mutex::new(manager)), temp_dir)
 }
 
 /// An ACTIVE manager (with a recorded decoy generation) whose decoy-profile
 /// lookup errors: the profiles directory reports as existing but has no listable
-/// contents, so `select_system_profile` returns `Err`. Returns the environment
-/// guard so the override is restored when the test ends.
-fn active_manager_with_failing_profile_lookup() -> (
-    Arc<Mutex<NailsManager<MockFilesystem>>>,
-    tempfile::TempDir,
-    EnvGuard,
-) {
-    let mut env = set_safe_test_home();
-
+/// contents, so `select_system_profile` returns `Err`.
+fn active_manager_with_failing_profile_lookup()
+-> (Arc<Mutex<NailsManager<MockFilesystem>>>, tempfile::TempDir) {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
 
     let profiles_dir = hidden_root.join("profiles");
-    env.set("NAILS_SYSTEM_PROFILE_PATH", profiles_dir.join("system"));
+    let runtime_env =
+        crate::RuntimeEnv::empty().with_system_profile_path(profiles_dir.join("system"));
 
     let fs = MockFilesystem::new();
     // The profiles directory exists but its contents are deliberately left
@@ -352,8 +339,8 @@ fn active_manager_with_failing_profile_lookup() -> (
     .save_with_custom_root(&state_path, &hidden_root)
     .unwrap();
 
-    let manager = NailsManager::new(fs, config, state_path);
-    (Arc::new(Mutex::new(manager)), temp_dir, env)
+    let manager = NailsManager::new(fs, config, state_path).with_runtime_env(runtime_env);
+    (Arc::new(Mutex::new(manager)), temp_dir)
 }
 
 /// An ACTIVE manager tracking the given overlay targets, each mounted and
@@ -362,14 +349,7 @@ fn active_manager_with_failing_profile_lookup() -> (
 /// tracked mount order is exactly `targets`.
 fn active_manager_with_overlays(
     targets: &[&str],
-) -> (
-    Arc<Mutex<NailsManager<MockFilesystem>>>,
-    tempfile::TempDir,
-    EnvGuard,
-) {
-    let mut env = set_safe_test_home();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
+) -> (Arc<Mutex<NailsManager<MockFilesystem>>>, tempfile::TempDir) {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
@@ -420,7 +400,7 @@ fn active_manager_with_overlays(
     };
 
     let manager = NailsManager::new(fs, config, state_path);
-    (Arc::new(Mutex::new(manager)), temp_dir, env)
+    (Arc::new(Mutex::new(manager)), temp_dir)
 }
 
 mod cleanup_rollback;

@@ -5,14 +5,14 @@
 //!
 //! # Test Safety Notice
 //!
-//! Tests in this module MUST use `test_utils::TEST_HOME` and `test_utils::set_safe_test_home()`
+//! Tests in this module MUST use `test_utils::TEST_HOME`
 //! instead of reading the real HOME environment variable. This prevents tests from accidentally
 //! operating on real user history files.
 //!
 //! See `test_utils` module for details.
 
 use super::manager::CleanupManager;
-use super::test_utils::{TEST_HOME, assert_path_is_safe, set_safe_test_home};
+use super::test_utils::{TEST_HOME, assert_path_is_safe};
 use super::types::{CleanupConfig, CleanupMode, CleanupReport};
 use crate::Filesystem;
 use crate::MockFilesystem;
@@ -576,8 +576,6 @@ fn test_cleanup_manager_verification_ignores_missing_log_directory() {
 
 #[test]
 fn test_cleanup_manager_verification_flags_large_history_file() {
-    let _home = set_safe_test_home();
-
     let fs = MockFilesystem::new();
     let bash_history = format!("{}/.bash_history", TEST_HOME);
     let log_path = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT).join("logs");
@@ -884,7 +882,6 @@ fn test_cleanup_manager_verification_still_flags_non_preserved_temp_residue() {
 #[test]
 fn test_full_cleanup_cycle_all_cleaners_invoked() {
     // SAFETY: Use a fixed fake home directory to prevent touching real files.
-    let _home = set_safe_test_home();
 
     // Setup: Create comprehensive mock filesystem with data for all three cleaners
     let fs = MockFilesystem::new();
@@ -1019,7 +1016,6 @@ fn test_canary_scanner_detects_forbidden_patterns() {
     use super::canary::{CanaryConfig, CanaryScanner};
 
     // SAFETY: Use a fixed fake home directory to prevent touching real files.
-    let _home = set_safe_test_home();
 
     let fs = MockFilesystem::new();
 
@@ -1067,7 +1063,6 @@ fn test_canary_scanner_clean_when_no_patterns() {
     use super::canary::{CanaryConfig, CanaryScanner};
 
     // SAFETY: Use a fixed fake home directory to prevent touching real files.
-    let _home = set_safe_test_home();
 
     let fs = MockFilesystem::new();
 
@@ -1126,7 +1121,6 @@ fn test_secure_delete_config_propagation() {
 #[test]
 fn test_verification_fails_when_artifacts_remain() {
     // SAFETY: Use a fixed fake home directory to prevent touching real files.
-    let _home = set_safe_test_home();
 
     let fs = MockFilesystem::new();
 
@@ -1229,7 +1223,6 @@ fn test_memory_sanitization_tracking() {
 #[test]
 fn test_cleanup_report_tracks_canary_findings() {
     // SAFETY: Use a fixed fake home directory to prevent touching real files.
-    let _home = set_safe_test_home();
 
     let fs = MockFilesystem::new();
 
@@ -1316,7 +1309,6 @@ fn test_cleanup_report_display_includes_new_fields() {
 #[test]
 fn test_cleanup_manager_uses_secure_delete_when_configured() {
     // SAFETY: Use a fixed fake home directory to prevent touching real files.
-    let _home = set_safe_test_home();
 
     let fs = MockFilesystem::new();
 

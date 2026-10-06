@@ -6,9 +6,6 @@ use super::*;
 #[test]
 #[serial]
 fn test_deactivation_skips_decoy_restore_when_disabled() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
 
@@ -105,8 +102,11 @@ fn test_deactivation_restores_decoy_by_symlink_without_running_switch() {
 #[serial]
 fn test_deactivation_returns_error_when_no_decoy_profile_is_available() {
     let manager = setup_active_manager();
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
+    // Point the profile lookup back at the default location, absent from the mock.
+    manager
+        .lock()
+        .unwrap()
+        .set_runtime_env(crate::RuntimeEnv::empty());
 
     {
         let m = manager.lock().unwrap();
@@ -134,7 +134,7 @@ fn test_deactivation_returns_error_when_no_decoy_profile_is_available() {
 #[serial]
 fn test_deactivation_preserves_generation_and_fingerprint() {
     let fs = MockFilesystem::new();
-    let _profile = setup_system_profile_stub(&fs);
+    let profile = setup_system_profile_stub(&fs);
 
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
     fs.mock_set_path_exists("/mnt/hidden-volume", true);
@@ -181,7 +181,9 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
         ..Config::test_default()
     };
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    let manager = Arc::new(Mutex::new(
+        NailsManager::new(fs, config, state_path).with_runtime_env(profile.env.clone()),
+    ));
 
     {
         let m = manager.lock().unwrap();
@@ -211,9 +213,6 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
 #[test]
 #[serial]
 fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -235,8 +234,8 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
     reboot_perms.set_mode(0o755);
     std::fs::set_permissions(&reboot_script, reboot_perms).unwrap();
 
-    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile)
-        .set("NAILS_REBOOT_PATH", &reboot_script);
+    let mut runtime_env = crate::RuntimeEnv::empty().with_system_profile_path(&system_profile);
+    runtime_env.test_hooks.reboot_path = Some(reboot_script.clone().into());
 
     fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
     fs.mock_set_path_exists(system_profile.parent().unwrap().to_str().unwrap(), true);
@@ -258,17 +257,20 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
         &work_dir,
     );
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs,
-        Config {
-            hidden_volume_root: hidden_root.clone(),
-            state_file_path: state_path.clone(),
-            log_path: hidden_root.join("logs"),
-            overlays: vec![],
-            ..Config::test_default()
-        },
-        state_path.clone(),
-    )));
+    let manager = Arc::new(Mutex::new(
+        NailsManager::new(
+            fs,
+            Config {
+                hidden_volume_root: hidden_root.clone(),
+                state_file_path: state_path.clone(),
+                log_path: hidden_root.join("logs"),
+                overlays: vec![],
+                ..Config::test_default()
+            },
+            state_path.clone(),
+        )
+        .with_runtime_env(runtime_env.clone()),
+    ));
 
     {
         let guard = manager.lock().unwrap();
@@ -308,9 +310,6 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
 #[test]
 #[serial]
 fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -325,7 +324,7 @@ fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
     perms.set_mode(0o755);
     std::fs::set_permissions(&switch_script, perms).unwrap();
 
-    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
+    let runtime_env = crate::RuntimeEnv::empty().with_system_profile_path(&system_profile);
 
     fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
     fs.mock_set_path_exists(system_profile.parent().unwrap().to_str().unwrap(), true);
@@ -352,17 +351,20 @@ fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
     );
     set_state_hidden_toplevel(&state_path, &hidden_root, "1");
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs,
-        Config {
-            hidden_volume_root: hidden_root.clone(),
-            state_file_path: state_path.clone(),
-            log_path: hidden_root.join("logs"),
-            overlays: vec![],
-            ..Config::test_default()
-        },
-        state_path.clone(),
-    )));
+    let manager = Arc::new(Mutex::new(
+        NailsManager::new(
+            fs,
+            Config {
+                hidden_volume_root: hidden_root.clone(),
+                state_file_path: state_path.clone(),
+                log_path: hidden_root.join("logs"),
+                overlays: vec![],
+                ..Config::test_default()
+            },
+            state_path.clone(),
+        )
+        .with_runtime_env(runtime_env.clone()),
+    ));
 
     {
         let guard = manager.lock().unwrap();

@@ -268,6 +268,7 @@ impl<F: Filesystem> ConfigLayer<F> for FakeConfigLayer {
         _runner: &dyn ProcessRunner,
         reboot_follows: bool,
         _dispatch_reboot: &dyn Fn() -> Result<()>,
+        _env: &crate::RuntimeEnv,
     ) -> Result<RestoreOutcome> {
         self.record(LayerCall::Restore { reboot_follows });
         Ok(RestoreOutcome::SymlinkRestored)

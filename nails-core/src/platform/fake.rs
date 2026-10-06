@@ -161,6 +161,7 @@ impl<F: Filesystem> Platform<F> for FakePlatform {
         _runner: &dyn ProcessRunner,
         _reboot_follows: bool,
         _dispatch_reboot: &dyn Fn() -> Result<()>,
+        _env: &crate::RuntimeEnv,
     ) -> Result<RestoreOutcome> {
         Ok(self.restore_outcome)
     }

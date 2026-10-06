@@ -66,7 +66,7 @@ impl<F: Filesystem> NailsManager<F> {
             .map(|path| path.to_string_lossy().into_owned());
 
         // Ensure /run/current-system points at the right profile.
-        if let Some(system_profile) = select_system_profile(&self.filesystem)? {
+        if let Some(system_profile) = select_system_profile(&self.filesystem, self.runtime_env())? {
             ensure_run_current_system_symlink(&self.filesystem, &system_profile).map_err(|e| {
                 NailsError::NixOSError(format!(
                     "Failed to prepare /run/current-system for NixOS switch: {}",
@@ -130,7 +130,6 @@ mod tests {
     use super::*;
     use crate::filesystem::PathKind;
     use crate::nixos::{CommandExecutor, NixOSBuilder, SwitchAction};
-    use crate::test_support::EnvGuard;
     use crate::{MockFilesystem, StateFile, TestWorld};
     use serial_test::serial;
     use std::path::Path;
@@ -212,8 +211,6 @@ mod tests {
     #[test]
     #[serial]
     fn test_switch_wraps_run_current_system_preparation_error() {
-        let mut env = EnvGuard::lock();
-
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
         let profiles_dir = hidden_root.join("profiles");
@@ -228,8 +225,6 @@ mod tests {
         fs.mock_set_path_exists("/run/current-system", true);
         fs.mock_set_path_type("/run/current-system", PathKind::Dir);
 
-        env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
-
         let builder = flake_builder(hidden_root, StubExecutor::new());
         let (manager, _tempdir) = TestWorld::new()
             .with_filesystem(fs)
@@ -237,6 +232,8 @@ mod tests {
             .with_nixos(builder)
             .inactive()
             .manager();
+        let manager = manager
+            .with_runtime_env(crate::RuntimeEnv::empty().with_system_profile_path(&system_profile));
 
         let err = manager
             .switch_nixos_profile(&None, &Some("fp".to_string()), Verbosity::Quiet)
@@ -251,9 +248,6 @@ mod tests {
     #[test]
     #[serial]
     fn test_switch_builds_toplevel_and_persists_store_path() {
-        let mut env = EnvGuard::lock();
-        env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
 
@@ -307,9 +301,6 @@ mod tests {
     #[test]
     #[serial]
     fn test_switch_records_decoy_system_from_run_current_system() {
-        let mut env = EnvGuard::lock();
-        env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
 
@@ -344,9 +335,6 @@ mod tests {
     #[test]
     #[serial]
     fn test_switch_fast_path_reuses_cached_toplevel_without_building() {
-        let mut env = EnvGuard::lock();
-        env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
 
@@ -401,9 +389,6 @@ mod tests {
     #[test]
     #[serial]
     fn test_overlay_only_switch_is_not_requested_and_writes_no_rebuild_notification() {
-        let mut env = EnvGuard::lock();
-        env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
 
@@ -448,9 +433,6 @@ mod tests {
     #[test]
     #[serial]
     fn test_switch_fast_path_rebuilds_when_cached_toplevel_missing() {
-        let mut env = EnvGuard::lock();
-        env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
 

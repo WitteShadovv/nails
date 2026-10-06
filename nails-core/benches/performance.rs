@@ -16,7 +16,7 @@ use criterion::{BatchSize, Criterion, criterion_group, criterion_main};
 use nails_core::filesystem::PathKind;
 use nails_core::{
     CleanupConfig, Config, ConfigBuilder, DeactivationMode, DeactivationOrchestrator,
-    MockFilesystem, NailsManager, OverlayInfo, StateFile, StatusCommand, SystemState,
+    MockFilesystem, NailsManager, OverlayInfo, RuntimeEnv, StateFile, StatusCommand, SystemState,
 };
 use std::collections::HashMap;
 use std::hint::black_box;
@@ -112,7 +112,6 @@ fn status_command_fixture() -> Fixture<StatusCommand<MockFilesystem>> {
     }
 }
 
-#[allow(unsafe_code)]
 fn emergency_fixture() -> Fixture<(NailsManager<MockFilesystem>, DeactivationOrchestrator)> {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -122,11 +121,6 @@ fn emergency_fixture() -> Fixture<(NailsManager<MockFilesystem>, DeactivationOrc
 
     let safe_home = hidden_root.join("safe-home");
     std::fs::create_dir_all(&safe_home).unwrap();
-    // SAFETY: Criterion runs the setup on the bench's only thread, so nothing
-    // reads the environment concurrently.
-    unsafe {
-        std::env::set_var("HOME", &safe_home);
-    }
 
     let profiles_dir = hidden_root.join("profiles");
     let system_profile = profiles_dir.join("system-1-link");
@@ -136,10 +130,8 @@ fn emergency_fixture() -> Fixture<(NailsManager<MockFilesystem>, DeactivationOrc
     let mut perms = std::fs::metadata(&switch_script).unwrap().permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&switch_script, perms).unwrap();
-    // SAFETY: as for HOME above.
-    unsafe {
-        std::env::set_var("NAILS_SYSTEM_PROFILE_PATH", profiles_dir.join("system"));
-    }
+    // The profile location reaches the manager through its startup snapshot.
+    let runtime_env = RuntimeEnv::empty().with_system_profile_path(profiles_dir.join("system"));
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
     fs.mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_directory_contents(&profiles_dir, vec![system_profile.clone()]);
@@ -191,7 +183,7 @@ fn emergency_fixture() -> Fixture<(NailsManager<MockFilesystem>, DeactivationOrc
         ..Config::default()
     };
 
-    let manager = NailsManager::new(fs, config, state_path);
+    let manager = NailsManager::new(fs, config, state_path).with_runtime_env(runtime_env);
     let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default())
         .with_mode(DeactivationMode::Emergency)
         .with_decoy_profile_restore(false);

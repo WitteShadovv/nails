@@ -328,8 +328,9 @@ pub trait Platform<F: Filesystem>: std::fmt::Debug + Send + Sync {
         runner: &dyn ProcessRunner,
         reboot_follows: bool,
         dispatch_reboot: &dyn Fn() -> Result<()>,
+        env: &crate::RuntimeEnv,
     ) -> Result<RestoreOutcome> {
-        let _ = (fs, runner, reboot_follows, dispatch_reboot);
+        let _ = (fs, runner, reboot_follows, dispatch_reboot, env);
         Ok(RestoreOutcome::NotRequired)
     }
 }

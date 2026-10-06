@@ -132,10 +132,11 @@ impl<F: Filesystem> Platform<F> for NixOsPlatform {
         runner: &dyn ProcessRunner,
         reboot_follows: bool,
         dispatch_reboot: &dyn Fn() -> Result<()>,
+        env: &crate::RuntimeEnv,
     ) -> Result<RestoreOutcome> {
         // The decoy restore is the config layer's `restore`; the platform and the
         // layer share one implementation so they can never diverge.
-        restore_decoy_system(fs, runner, reboot_follows, dispatch_reboot)
+        restore_decoy_system(fs, runner, reboot_follows, dispatch_reboot, env)
     }
 }
 
@@ -243,7 +244,6 @@ mod tests {
     use crate::NailsError;
     use crate::filesystem::{MockFilesystem, PathKind};
     use crate::process::run::{MockProcessRunner, exited};
-    use crate::test_support::EnvGuard;
 
     const PROFILE: &str = "/nix/var/nix/profiles/system";
     const SWITCH_SCRIPT: &str = "/nix/var/nix/profiles/system/bin/switch-to-configuration";
@@ -264,13 +264,19 @@ mod tests {
     fn successful_reboot_runs_no_switch() {
         // Profile discovery reads NAILS_SYSTEM_PROFILE_PATH; hold the lock so a
         // concurrent test cannot point it elsewhere mid-read.
-        let _env = EnvGuard::lock();
         let fs = host();
         let runner = MockProcessRunner::new();
         let platform = NixOsPlatform;
 
-        let outcome =
-            Platform::restore_base_system(&platform, &fs, &runner, true, &|| Ok(())).unwrap();
+        let outcome = Platform::restore_base_system(
+            &platform,
+            &fs,
+            &runner,
+            true,
+            &|| Ok(()),
+            &crate::RuntimeEnv::empty(),
+        )
+        .unwrap();
 
         assert_eq!(outcome, RestoreOutcome::SymlinkRestored);
         assert!(
@@ -281,14 +287,18 @@ mod tests {
 
     #[test]
     fn failed_reboot_falls_back_to_session_switch() {
-        let _env = EnvGuard::lock();
         let fs = host();
         let runner = MockProcessRunner::new();
         let platform = NixOsPlatform;
 
-        let outcome = Platform::restore_base_system(&platform, &fs, &runner, true, &|| {
-            Err(NailsError::NixOSError("reboot unavailable".into()))
-        })
+        let outcome = Platform::restore_base_system(
+            &platform,
+            &fs,
+            &runner,
+            true,
+            &|| Err(NailsError::NixOSError("reboot unavailable".into())),
+            &crate::RuntimeEnv::empty(),
+        )
         .unwrap();
 
         assert_eq!(outcome, RestoreOutcome::FellBackToSessionSwitch);
@@ -303,13 +313,19 @@ mod tests {
 
     #[test]
     fn no_reboot_only_restores_symlink() {
-        let _env = EnvGuard::lock();
         let fs = host();
         let runner = MockProcessRunner::new();
         let platform = NixOsPlatform;
 
-        let outcome =
-            Platform::restore_base_system(&platform, &fs, &runner, false, &|| Ok(())).unwrap();
+        let outcome = Platform::restore_base_system(
+            &platform,
+            &fs,
+            &runner,
+            false,
+            &|| Ok(()),
+            &crate::RuntimeEnv::empty(),
+        )
+        .unwrap();
 
         assert_eq!(outcome, RestoreOutcome::SymlinkRestored);
         assert!(command_strings(&runner).is_empty());
@@ -317,25 +333,35 @@ mod tests {
 
     #[test]
     fn missing_system_profile_errors() {
-        let _env = EnvGuard::lock();
         let fs = MockFilesystem::new();
         let runner = MockProcessRunner::new();
         let platform = NixOsPlatform;
 
-        let result = Platform::restore_base_system(&platform, &fs, &runner, true, &|| Ok(()));
+        let result = Platform::restore_base_system(
+            &platform,
+            &fs,
+            &runner,
+            true,
+            &|| Ok(()),
+            &crate::RuntimeEnv::empty(),
+        );
         assert!(matches!(result, Err(NailsError::NixOSError(_))));
     }
 
     #[test]
     fn failed_switch_surfaces_error() {
-        let _env = EnvGuard::lock();
         let fs = host();
         let runner = MockProcessRunner::new().with_response(Ok(exited(1, "", "boom")));
         let platform = NixOsPlatform;
 
-        let result = Platform::restore_base_system(&platform, &fs, &runner, true, &|| {
-            Err(NailsError::NixOSError("reboot unavailable".into()))
-        });
+        let result = Platform::restore_base_system(
+            &platform,
+            &fs,
+            &runner,
+            true,
+            &|| Err(NailsError::NixOSError("reboot unavailable".into())),
+            &crate::RuntimeEnv::empty(),
+        );
         let err = result.unwrap_err();
         assert!(err.to_string().contains("Decoy session switch failed"));
     }

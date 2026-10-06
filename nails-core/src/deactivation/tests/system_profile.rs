@@ -6,9 +6,6 @@ use super::*;
 #[test]
 #[serial]
 fn test_deactivate_returns_error_when_no_system_profile_exists() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
 
@@ -55,8 +52,6 @@ fn test_deactivate_restores_recorded_decoy_system_without_a_profile() {
     // A host with no system profile (an impermanent or freshly imaged decoy) must
     // still deactivate: activation records the decoy's running system, and the
     // teardown restores /run/current-system to that recorded toplevel.
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -115,9 +110,6 @@ fn test_deactivate_restores_recorded_decoy_system_without_a_profile() {
 #[test]
 #[serial]
 fn test_deactivate_overlay_only_session_succeeds_without_system_profile() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
 
@@ -182,9 +174,6 @@ fn test_deactivate_overlay_only_session_succeeds_without_system_profile() {
 #[test]
 #[serial]
 fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();

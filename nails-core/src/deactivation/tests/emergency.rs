@@ -19,9 +19,6 @@ fn mount_nails_overlay(fs: &MockFilesystem, hidden_root: &Path, target: &Path) {
 #[test]
 #[serial]
 fn test_emergency_deactivate_from_inactive_state_with_no_mounts_succeeds() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
 
@@ -96,9 +93,6 @@ fn test_emergency_deactivate_from_deactivating_state_tears_down_overlays() {
 #[test]
 #[serial]
 fn test_recover_tears_down_remaining_mounts_from_degraded_state() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let manager = setup_manager_in_state(SystemState::Degraded {
         since: chrono::Utc::now(),
         reason: "interrupted teardown".to_string(),
@@ -123,9 +117,6 @@ fn test_recover_tears_down_remaining_mounts_from_degraded_state() {
 #[test]
 #[serial]
 fn test_recover_is_a_no_op_when_already_inactive() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let manager = setup_manager_in_state(SystemState::Inactive);
 
     let outcome = manager.lock().unwrap().recover().unwrap();
@@ -140,9 +131,6 @@ fn test_recover_is_a_no_op_when_already_inactive() {
 #[test]
 #[serial]
 fn test_recover_backs_up_a_corrupt_state_file() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let manager = setup_manager_in_state(SystemState::Activating {
         started_at: chrono::Utc::now(),
     });
@@ -169,11 +157,8 @@ fn test_recover_backs_up_a_corrupt_state_file() {
 #[test]
 #[serial]
 fn test_emergency_deactivate_force_unmount_succeeds_after_graceful_failure() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
-    let _profile = setup_system_profile_stub(&fs);
+    let profile = setup_system_profile_stub(&fs);
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
@@ -195,7 +180,9 @@ fn test_emergency_deactivate_force_unmount_succeeds_after_graceful_failure() {
         &work_dir,
     );
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    let manager = Arc::new(Mutex::new(
+        NailsManager::new(fs, config, state_path).with_runtime_env(profile.env.clone()),
+    ));
 
     {
         let manager_guard = manager.lock().unwrap();
@@ -230,11 +217,8 @@ fn test_emergency_deactivate_force_unmount_succeeds_after_graceful_failure() {
 #[test]
 #[serial]
 fn test_emergency_deactivate_restarts_nix_daemon_when_nix_store_unmount_fails() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
-    let _profile = setup_system_profile_stub(&fs);
+    let profile = setup_system_profile_stub(&fs);
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
@@ -256,7 +240,9 @@ fn test_emergency_deactivate_restarts_nix_daemon_when_nix_store_unmount_fails() 
         &work_dir,
     );
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    let manager = Arc::new(Mutex::new(
+        NailsManager::new(fs, config, state_path).with_runtime_env(profile.env.clone()),
+    ));
 
     {
         let manager_guard = manager.lock().unwrap();
@@ -294,9 +280,6 @@ fn test_emergency_deactivate_restarts_nix_daemon_when_nix_store_unmount_fails() 
 #[test]
 #[serial]
 fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -313,7 +296,7 @@ fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
     let profiles_dir = system_profile.parent().unwrap().to_path_buf();
     let generation_dir = profiles_dir.join("system-1-link");
     std::fs::create_dir_all(&generation_dir).unwrap();
-    env.set("NAILS_SYSTEM_PROFILE_PATH", &system_profile);
+    let runtime_env = crate::RuntimeEnv::empty().with_system_profile_path(&system_profile);
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
     fs.mock_set_path_type(profiles_dir.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_directory_contents(&profiles_dir, vec![generation_dir.clone()]);
@@ -334,11 +317,9 @@ fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
         &work_dir,
     );
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs,
-        config,
-        state_path.clone(),
-    )));
+    let manager = Arc::new(Mutex::new(
+        NailsManager::new(fs, config, state_path.clone()).with_runtime_env(runtime_env.clone()),
+    ));
 
     manager
         .lock()
@@ -357,11 +338,8 @@ fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
 #[test]
 #[serial]
 fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
-    let _profile = setup_system_profile_stub(&fs);
+    let profile = setup_system_profile_stub(&fs);
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
     let state_path = hidden_root.join("state.json");
@@ -383,7 +361,9 @@ fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
         &work_dir,
     );
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(fs, config, state_path)));
+    let manager = Arc::new(Mutex::new(
+        NailsManager::new(fs, config, state_path).with_runtime_env(profile.env.clone()),
+    ));
 
     {
         let manager_guard = manager.lock().unwrap();
@@ -538,7 +518,7 @@ fn test_emergency_deactivate_removes_the_runtime_copy() {
 #[test]
 #[serial]
 fn test_normal_deactivate_removes_the_runtime_copy() {
-    let (manager, _temp, _env) = active_manager_with_overlays(&["/home"]);
+    let (manager, _temp) = active_manager_with_overlays(&["/home"]);
 
     {
         let guard = manager.lock().unwrap();
@@ -568,9 +548,6 @@ fn test_normal_deactivate_removes_the_runtime_copy() {
 #[test]
 #[serial]
 fn test_emergency_stops_recorded_units_but_never_touches_the_session_or_dm() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -672,9 +649,6 @@ fn test_emergency_stops_recorded_units_but_never_touches_the_session_or_dm() {
 fn test_emergency_order_unmount_then_cleanup_then_drop_page_cache() {
     use crate::filesystem::MockOp;
 
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fixture = setup_active_manager();
     let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
     {
@@ -732,8 +706,6 @@ fn test_emergency_scrubs_the_runtime_journal_even_without_a_var_overlay() {
     // the RAM-backed /run/log/journal even though /var is not overlaid (the
     // fixture overlays /home and /etc only). Emergency must scrub that runtime
     // journal regardless, or `journalctl` keeps serving the hidden session.
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fixture = setup_active_manager();
     let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
@@ -771,8 +743,6 @@ fn test_emergency_detaches_overlays_even_when_the_final_state_write_fails() {
     // Arm the save probe to fail the final DEACTIVATING->INACTIVE write and assert
     // emergency still completes and detaches the overlay rather than erroring out
     // (or rolling back to ACTIVE, whose write would also fail).
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
 
     let fixture = setup_active_manager();
     let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();

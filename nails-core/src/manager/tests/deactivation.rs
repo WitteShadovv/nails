@@ -315,10 +315,7 @@ fn test_deactivate_requests_reboot_only_after_successful_teardown() {
         }
     }
 
-    let mut env = EnvGuard::lock();
-    env.set("NAILS_TEST_RUNTIME", "1");
     let result = manager.lock().unwrap().deactivate();
-    drop(env);
 
     assert!(
         result.is_ok(),
@@ -412,10 +409,7 @@ fn test_normal_deactivation_writes_last_deactivation_report() {
         }
     }
 
-    let mut env = EnvGuard::lock();
-    env.set("NAILS_TEST_RUNTIME", "1");
     let result = manager.lock().unwrap().deactivate();
-    drop(env);
 
     assert!(result.is_ok(), "normal deactivation should succeed");
 
@@ -625,11 +619,7 @@ fn deactivate_requests_reboot_through_injected_dispatcher_even_in_test_runtime()
         .unwrap()
         .set_host_effects(HostEffects::Simulated(recorder.clone()));
 
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-    env.set("NAILS_TEST_RUNTIME", "1");
     let result = manager.lock().unwrap().deactivate();
-    drop(env);
 
     assert!(
         result.is_ok(),
@@ -663,14 +653,11 @@ fn deactivate_surfaces_a_refusing_reboot_guard_as_an_error() {
         .unwrap()
         .set_host_effects(HostEffects::Simulated(recorder.clone()));
 
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
     let err = manager
         .lock()
         .unwrap()
         .deactivate()
         .expect_err("a refusing reboot guard must surface as an error");
-    drop(env);
 
     assert!(
         matches!(err, NailsError::NixOSError(_)),
@@ -1533,10 +1520,7 @@ fn normal_deactivation_does_not_recommend_a_reboot() {
     }
 
     // In the test runtime `deactivate()` reaches success without a real reboot.
-    let mut env = EnvGuard::lock();
-    env.set("NAILS_TEST_RUNTIME", "1");
     let report = manager.lock().unwrap().deactivate();
-    drop(env);
 
     assert!(report.is_ok(), "deactivation should succeed: {report:?}");
     assert!(

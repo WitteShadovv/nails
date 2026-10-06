@@ -81,7 +81,6 @@ fn test_cleanup_failure_rollback() {
     let manager = setup_active_manager();
     // Cleanup resolves the history files from HOME, so it points at the fake
     // home for the whole test.
-    let _home = set_safe_test_home();
 
     // Configure cleanup to FAIL by making the history file write fail
     // This triggers cleanup failure → rollback to ACTIVE
@@ -148,7 +147,6 @@ fn test_cleanup_failure_keeps_overlays_mounted() {
     let manager = setup_active_manager();
     // Cleanup resolves the history files from HOME, so it points at the fake
     // home for the whole test.
-    let _home = set_safe_test_home();
 
     // Setup overlays as mounted
     {

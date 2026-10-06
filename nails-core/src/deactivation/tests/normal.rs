@@ -108,11 +108,8 @@ fn test_successful_deactivation() {
 #[test]
 #[serial]
 fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-
     let fs = MockFilesystem::new();
-    let _profile = setup_system_profile_stub(&fs);
+    let profile = setup_system_profile_stub(&fs);
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -166,11 +163,9 @@ fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
     .save_with_custom_root(&state_path, &hidden_root)
     .unwrap();
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs,
-        config,
-        state_path.clone(),
-    )));
+    let manager = Arc::new(Mutex::new(
+        NailsManager::new(fs, config, state_path.clone()).with_runtime_env(profile.env.clone()),
+    ));
     let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
 
     let report = orchestrator
@@ -201,7 +196,7 @@ fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
 #[serial]
 fn test_deactivation_clears_failed_overlays_tracker_state() {
     let fs = MockFilesystem::new();
-    let _profile = setup_system_profile_stub(&fs);
+    let profile = setup_system_profile_stub(&fs);
 
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().to_path_buf();
@@ -230,11 +225,9 @@ fn test_deactivation_clears_failed_overlays_tracker_state() {
         .save_with_custom_root(&state_path, &hidden_root)
         .unwrap();
 
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        fs,
-        config,
-        state_path.clone(),
-    )));
+    let manager = Arc::new(Mutex::new(
+        NailsManager::new(fs, config, state_path.clone()).with_runtime_env(profile.env.clone()),
+    ));
     {
         let m = manager.lock().unwrap();
         m.filesystem().mock_set_mounted(Path::new("/home"), true);

@@ -495,28 +495,18 @@ fn test_parse_system_generation_empty() {
 
 // ========== find_newest_system_profile / select_system_profile Tests ==========
 
-/// Takes the environment lock with `NAILS_SYSTEM_PROFILE_PATH` removed, so the
-/// profile lookup uses the default `/nix/var/nix/profiles/system` even while a
-/// deactivation test elsewhere points it at a stub profile.
-fn default_system_profile_env() -> EnvGuard {
-    let mut env = EnvGuard::lock();
-    env.remove("NAILS_SYSTEM_PROFILE_PATH");
-    env
-}
-
 #[test]
 fn test_find_newest_system_profile_directory_not_exist() {
-    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
     // Profiles dir doesn't exist
-    let result = crate::manager::helpers::find_newest_system_profile(&fs);
+    let result =
+        crate::manager::helpers::find_newest_system_profile(&fs, &crate::RuntimeEnv::empty());
     assert!(result.is_ok());
     assert!(result.unwrap().is_none());
 }
 
 #[test]
 fn test_find_newest_system_profile_picks_highest_generation() {
-    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
     let profiles_dir = PathBuf::from("/nix/var/nix/profiles");
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
@@ -530,7 +520,9 @@ fn test_find_newest_system_profile_picks_highest_generation() {
         ],
     );
 
-    let result = crate::manager::helpers::find_newest_system_profile(&fs).unwrap();
+    let result =
+        crate::manager::helpers::find_newest_system_profile(&fs, &crate::RuntimeEnv::empty())
+            .unwrap();
     assert!(result.is_some());
     let path = result.unwrap();
     assert!(path.to_string_lossy().contains("system-5-link"));
@@ -538,7 +530,6 @@ fn test_find_newest_system_profile_picks_highest_generation() {
 
 #[test]
 fn test_find_newest_system_profile_no_valid_entries() {
-    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
     let profiles_dir = PathBuf::from("/nix/var/nix/profiles");
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
@@ -550,13 +541,14 @@ fn test_find_newest_system_profile_no_valid_entries() {
         ],
     );
 
-    let result = crate::manager::helpers::find_newest_system_profile(&fs).unwrap();
+    let result =
+        crate::manager::helpers::find_newest_system_profile(&fs, &crate::RuntimeEnv::empty())
+            .unwrap();
     assert!(result.is_none());
 }
 
 #[test]
 fn test_select_system_profile_finds_newest() {
-    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
     let profiles_dir = PathBuf::from("/nix/var/nix/profiles");
     fs.mock_set_path_exists(profiles_dir.to_str().unwrap(), true);
@@ -568,14 +560,13 @@ fn test_select_system_profile_finds_newest() {
         ],
     );
 
-    let result = select_system_profile(&fs).unwrap();
+    let result = select_system_profile(&fs, &crate::RuntimeEnv::empty()).unwrap();
     assert!(result.is_some());
     assert!(result.unwrap().to_string_lossy().contains("system-2-link"));
 }
 
 #[test]
 fn test_select_system_profile_falls_back_to_system_symlink() {
-    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
     // No newest generation found, but system symlink exists
     let system_path = PathBuf::from("/nix/var/nix/profiles/system");
@@ -583,17 +574,16 @@ fn test_select_system_profile_falls_back_to_system_symlink() {
     // but the system symlink itself exists
     fs.mock_set_path_exists(system_path.to_str().unwrap(), true);
 
-    let result = select_system_profile(&fs).unwrap();
+    let result = select_system_profile(&fs, &crate::RuntimeEnv::empty()).unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap(), system_path);
 }
 
 #[test]
 fn test_select_system_profile_returns_none_when_nothing_found() {
-    let _env = default_system_profile_env();
     let fs = MockFilesystem::new();
     // Neither profiles dir nor system symlink exist
-    let result = select_system_profile(&fs).unwrap();
+    let result = select_system_profile(&fs, &crate::RuntimeEnv::empty()).unwrap();
     assert!(result.is_none());
 }
 

@@ -317,7 +317,11 @@ impl DeactivationOrchestrator {
         // Step 5: Point /run/current-system back at the decoy system (see
         // `restore_decoy_current_system`).
         let restore_error = if self.restore_decoy_profile {
-            restore_decoy_current_system(guard.filesystem(), recorded_decoy.as_deref())?
+            restore_decoy_current_system(
+                guard.filesystem(),
+                recorded_decoy.as_deref(),
+                guard.runtime_env(),
+            )?
         } else {
             None
         };

@@ -34,7 +34,6 @@ fn test_deactivation_cleanup_event_includes_count() {
     let manager = setup_active_manager();
     // Cleanup resolves the history files from HOME, so it points at the fake
     // home for the whole test.
-    let _home = set_safe_test_home();
 
     // Setup overlays as mounted
     {

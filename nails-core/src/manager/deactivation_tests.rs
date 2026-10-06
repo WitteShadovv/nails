@@ -179,10 +179,8 @@ fn reboot_failure_propagates_a_failed_fallback() {
 #[serial]
 fn verify_history_truncation_fails_when_a_file_stays_large() {
     use crate::cleanup::history::{get_extended_history_files_for_homes, history_cleanup_homes};
-    use crate::cleanup::test_utils::set_safe_test_home;
     use crate::{Config, MockFilesystem, NailsManager};
 
-    let _home = set_safe_test_home();
     let files = get_extended_history_files_for_homes(&history_cleanup_homes());
     let target = files
         .first()
@@ -212,10 +210,8 @@ fn verify_history_truncation_fails_when_a_file_stays_large() {
 #[serial]
 fn verify_history_truncation_passes_when_files_are_small() {
     use crate::cleanup::history::{get_extended_history_files_for_homes, history_cleanup_homes};
-    use crate::cleanup::test_utils::set_safe_test_home;
     use crate::{Config, MockFilesystem, NailsManager};
 
-    let _home = set_safe_test_home();
     let files = get_extended_history_files_for_homes(&history_cleanup_homes());
     let target = files
         .first()

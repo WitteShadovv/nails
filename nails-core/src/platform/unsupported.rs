@@ -54,6 +54,7 @@ impl<F: Filesystem> Platform<F> for UnsupportedPlatform {
         _runner: &dyn ProcessRunner,
         _reboot_follows: bool,
         _dispatch_reboot: &dyn Fn() -> Result<()>,
+        _env: &crate::RuntimeEnv,
     ) -> Result<RestoreOutcome> {
         self.refuse()
     }
@@ -71,7 +72,14 @@ mod tests {
         let runner = MockProcessRunner::new();
         let platform = UnsupportedPlatform::new("this host is ostree / image-based");
 
-        let result = Platform::restore_base_system(&platform, &fs, &runner, true, &|| Ok(()));
+        let result = Platform::restore_base_system(
+            &platform,
+            &fs,
+            &runner,
+            true,
+            &|| Ok(()),
+            &crate::RuntimeEnv::empty(),
+        );
         match result {
             Err(NailsError::UnsupportedPlatform { reason }) => {
                 assert!(reason.contains("ostree"));

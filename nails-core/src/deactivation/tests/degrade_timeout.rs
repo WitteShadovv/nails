@@ -6,7 +6,7 @@ use super::*;
 #[test]
 #[serial]
 fn deactivate_degrades_when_a_target_cannot_unmount() {
-    let (manager, _hidden_root, _env) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
+    let (manager, _hidden_root) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
     // Fail the middle target; the teardown must still attempt the other two and
     // must NOT remount what it has already detached.
     manager
@@ -45,7 +45,7 @@ fn deactivate_degrades_when_a_target_cannot_unmount() {
 #[test]
 #[serial]
 fn emergency_deactivate_degrades_without_remount_when_a_target_cannot_unmount() {
-    let (manager, _hidden_root, _env) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
+    let (manager, _hidden_root) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
     manager
         .lock()
         .unwrap()
@@ -77,7 +77,7 @@ fn emergency_deactivate_degrades_without_remount_when_a_target_cannot_unmount() 
 fn deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
-    let (manager, _hidden_root, _env) = active_manager_no_profile();
+    let (manager, _hidden_root) = active_manager_no_profile();
     let worker = Arc::clone(&manager);
 
     let result = run_within_timeout(move || {
@@ -102,7 +102,7 @@ fn deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
 fn emergency_completes_within_timeout_when_deactivating_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
-    let (manager, _hidden_root, _env) = active_manager_no_profile();
+    let (manager, _hidden_root) = active_manager_no_profile();
     let worker = Arc::clone(&manager);
 
     let result = run_within_timeout(move || {
@@ -126,7 +126,7 @@ fn emergency_completes_within_timeout_when_deactivating_write_fails() {
 fn deactivate_returns_err_within_timeout_when_inactive_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
-    let (manager, _hidden_root, _env) = active_manager_no_profile();
+    let (manager, _hidden_root) = active_manager_no_profile();
     let worker = Arc::clone(&manager);
 
     let result = run_within_timeout(move || {
@@ -149,7 +149,7 @@ fn deactivate_returns_err_within_timeout_when_inactive_write_fails() {
 fn emergency_completes_within_timeout_when_inactive_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
-    let (manager, _hidden_root, _env) = active_manager_no_profile();
+    let (manager, _hidden_root) = active_manager_no_profile();
     let worker = Arc::clone(&manager);
 
     let result = run_within_timeout(move || {
@@ -172,7 +172,7 @@ fn emergency_completes_within_timeout_when_inactive_write_fails() {
 #[test]
 #[serial]
 fn deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
-    let (manager, _hidden_root, _env) = active_manager_with_failing_profile_lookup();
+    let (manager, _hidden_root) = active_manager_with_failing_profile_lookup();
     let worker = Arc::clone(&manager);
 
     let result = run_within_timeout(move || worker.lock().unwrap().deactivate());
@@ -186,7 +186,7 @@ fn deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
 #[test]
 #[serial]
 fn emergency_deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
-    let (manager, _hidden_root, _env) = active_manager_with_failing_profile_lookup();
+    let (manager, _hidden_root) = active_manager_with_failing_profile_lookup();
     let worker = Arc::clone(&manager);
 
     // Emergency mode has no up-front profile pre-check, so the failing lookup is
@@ -204,7 +204,7 @@ fn emergency_deactivate_returns_err_within_timeout_when_system_profile_lookup_fa
 fn deactivate_returns_err_within_timeout_when_rollback_write_also_fails() {
     use crate::state::save_probe::{self, FailOn};
 
-    let (manager, _hidden_root, _env) = active_manager_no_profile();
+    let (manager, _hidden_root) = active_manager_no_profile();
     let worker = Arc::clone(&manager);
 
     // The exact shape of the original deadlock: the initial state write fails

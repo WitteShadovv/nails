@@ -52,8 +52,9 @@ pub(super) fn recorded_decoy_system<F: Filesystem>(manager: &NailsManager<F>) ->
 pub(super) fn restore_decoy_current_system<F: Filesystem>(
     fs: &F,
     recorded_decoy: Option<&str>,
+    env: &crate::RuntimeEnv,
 ) -> Result<Option<NailsError>> {
-    let Some(decoy_system) = select_decoy_restore_target(fs, recorded_decoy)? else {
+    let Some(decoy_system) = select_decoy_restore_target(fs, recorded_decoy, env)? else {
         return Ok(Some(NailsError::NixOSError(
             "No recorded decoy system and no system profile available for decoy restore".into(),
         )));

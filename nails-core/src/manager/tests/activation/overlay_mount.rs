@@ -847,7 +847,6 @@ fn test_activation_aborts_when_base_hardware_config_is_dirty() {
     let hidden_root = temp_dir.path();
     let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
-    let _home = crate::cleanup::test_utils::set_safe_test_home();
     let bash_history = Path::new(crate::cleanup::test_utils::TEST_HOME).join(".bash_history");
     let config = explicit_overlays_config(&fs, hidden_root, &state_path, &["/home"]);
     fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
@@ -895,7 +894,6 @@ fn test_activation_aborts_when_base_hardware_config_cannot_be_read() {
     let hidden_root = temp_dir.path();
     let state_path = hidden_root.join("state.json");
     let fs = MockFilesystem::new();
-    let _home = crate::cleanup::test_utils::set_safe_test_home();
     let bash_history = Path::new(crate::cleanup::test_utils::TEST_HOME).join(".bash_history");
     let config = explicit_overlays_config(&fs, hidden_root, &state_path, &["/home"]);
     fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);

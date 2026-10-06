@@ -232,8 +232,11 @@ pub(super) fn reboot_then_restore_decoy_on_failure(
 /// This re-points the live system at the decoy without reinstalling the
 /// bootloader or writing the ESP / EFI NVRAM. The action is built from
 /// [`SwitchAction`], so it can only ever be `test`, never `switch`/`boot`.
-pub(super) fn switch_to_decoy_for_session<F: Filesystem>(filesystem: &F) -> Result<()> {
-    let Some(system_profile) = select_system_profile(filesystem)? else {
+pub(super) fn switch_to_decoy_for_session<F: Filesystem>(
+    filesystem: &F,
+    env: &crate::RuntimeEnv,
+) -> Result<()> {
+    let Some(system_profile) = select_system_profile(filesystem, env)? else {
         return Err(NailsError::NixOSError(
             "No system profile available for decoy restore".into(),
         ));
@@ -310,6 +313,7 @@ impl HostEffects {
     pub(crate) fn reboot_into_decoy<F: Filesystem>(
         &self,
         filesystem: &F,
+        env: &crate::RuntimeEnv,
     ) -> Result<PostDeactivationReboot> {
         match self {
             Self::Real => {
@@ -319,7 +323,7 @@ impl HostEffects {
                 }
 
                 reboot_then_restore_decoy_on_failure(request_reboot, || {
-                    switch_to_decoy_for_session(filesystem)
+                    switch_to_decoy_for_session(filesystem, env)
                 })
             }
             #[cfg(any(test, feature = "test-hooks"))]

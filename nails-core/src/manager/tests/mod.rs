@@ -10,7 +10,6 @@
 use super::*;
 use crate::filesystem::{Filesystem, PathKind};
 use crate::platform::{FakeConfigLayer, FakePlatform, FakeVerdict, HostTarget, LayerCall};
-use crate::test_support::EnvGuard;
 use crate::{
     MockFilesystem, OverlayConfig, OverlayInfo, StateFile, Stopwatch, SystemState, TestWorld,
     Verbosity, config::DEFAULT_HIDDEN_VOLUME_ROOT, config::OverlayMode,

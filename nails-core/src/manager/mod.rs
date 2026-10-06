@@ -169,8 +169,9 @@ pub struct NailsManager<F: Filesystem> {
     /// display/session variables, the NAILS_* knobs). The CLI reads it once in
     /// `main` and attaches it with [`with_runtime_env`](Self::with_runtime_env);
     /// activation reads the operator and session off it instead of re-reading the
-    /// process environment. Defaults to a fresh snapshot so every constructor and
-    /// test keeps working; tests inject a built [`RuntimeEnv`](crate::RuntimeEnv).
+    /// process environment. Defaults to the installed startup snapshot (empty
+    /// when none is installed, as in unit tests); tests inject a built
+    /// [`RuntimeEnv`](crate::RuntimeEnv).
     runtime_env: crate::RuntimeEnv,
 }
 
@@ -236,7 +237,7 @@ impl<F: Filesystem> NailsManager<F> {
             verbosity: crate::verbosity::Verbosity::default(),
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
             reporter: crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
-            runtime_env: crate::RuntimeEnv::from_process_env(),
+            runtime_env: (*crate::runtime_env::current()).clone(),
         }
     }
 
@@ -290,7 +291,7 @@ impl<F: Filesystem> NailsManager<F> {
             verbosity: crate::verbosity::Verbosity::default(),
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
             reporter: crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
-            runtime_env: crate::RuntimeEnv::from_process_env(),
+            runtime_env: (*crate::runtime_env::current()).clone(),
         }
     }
 
@@ -606,6 +607,11 @@ impl<F: Filesystem> NailsManager<F> {
     pub fn with_runtime_env(mut self, runtime_env: crate::RuntimeEnv) -> Self {
         self.runtime_env = runtime_env;
         self
+    }
+
+    /// Replace the attached startup environment snapshot in place.
+    pub fn set_runtime_env(&mut self, runtime_env: crate::RuntimeEnv) {
+        self.runtime_env = runtime_env;
     }
 
     /// The attached startup environment snapshot.

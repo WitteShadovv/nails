@@ -131,6 +131,7 @@ pub trait ConfigLayer<F: Filesystem>: std::fmt::Debug + Send + Sync {
         runner: &dyn ProcessRunner,
         reboot_follows: bool,
         dispatch_reboot: &dyn Fn() -> Result<()>,
+        env: &crate::RuntimeEnv,
     ) -> Result<RestoreOutcome>;
 }
 
@@ -309,8 +310,9 @@ impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
         runner: &dyn ProcessRunner,
         reboot_follows: bool,
         dispatch_reboot: &dyn Fn() -> Result<()>,
+        env: &crate::RuntimeEnv,
     ) -> Result<RestoreOutcome> {
-        restore_decoy_system(fs, runner, reboot_follows, dispatch_reboot)
+        restore_decoy_system(fs, runner, reboot_follows, dispatch_reboot, env)
     }
 }
 
@@ -358,8 +360,9 @@ pub(crate) fn restore_decoy_system<F: Filesystem>(
     runner: &dyn ProcessRunner,
     reboot_follows: bool,
     dispatch_reboot: &dyn Fn() -> Result<()>,
+    env: &crate::RuntimeEnv,
 ) -> Result<RestoreOutcome> {
-    let system_profile = select_system_profile(fs)?.ok_or_else(|| {
+    let system_profile = select_system_profile(fs, env)?.ok_or_else(|| {
         NailsError::NixOSError("No system profile available for decoy restore".into())
     })?;
 
@@ -430,7 +433,6 @@ mod tests {
     use super::*;
     use crate::filesystem::{MockFilesystem, PathKind};
     use crate::process::run::MockProcessRunner;
-    use crate::test_support::EnvGuard;
 
     const PROFILE: &str = "/nix/var/nix/profiles/system";
     const SWITCH_SCRIPT: &str = "/nix/var/nix/profiles/system/bin/switch-to-configuration";
@@ -448,16 +450,19 @@ mod tests {
     /// ESP and leave evidence the hidden mode existed).
     #[test]
     fn restore_without_reboot_runs_no_switch() {
-        // `restore_decoy_system` resolves the profile through
-        // `NAILS_SYSTEM_PROFILE_PATH`; hold the env lock with it cleared.
-        let _env = EnvGuard::lock();
         let fs = host();
         let runner = MockProcessRunner::new();
         let layer = NixOsConfigLayer;
 
-        let outcome =
-            ConfigLayer::<MockFilesystem>::restore(&layer, &fs, &runner, false, &|| Ok(()))
-                .unwrap();
+        let outcome = ConfigLayer::<MockFilesystem>::restore(
+            &layer,
+            &fs,
+            &runner,
+            false,
+            &|| Ok(()),
+            &crate::RuntimeEnv::empty(),
+        )
+        .unwrap();
 
         assert_eq!(outcome, RestoreOutcome::SymlinkRestored);
         assert!(
@@ -470,14 +475,18 @@ mod tests {
     /// decoy for the running session with `switch-to-configuration test`.
     #[test]
     fn restore_falls_back_to_session_switch_on_failed_reboot() {
-        let _env = EnvGuard::lock();
         let fs = host();
         let runner = MockProcessRunner::new();
         let layer = NixOsConfigLayer;
 
-        let outcome = ConfigLayer::<MockFilesystem>::restore(&layer, &fs, &runner, true, &|| {
-            Err(NailsError::NixOSError("reboot unavailable".into()))
-        })
+        let outcome = ConfigLayer::<MockFilesystem>::restore(
+            &layer,
+            &fs,
+            &runner,
+            true,
+            &|| Err(NailsError::NixOSError("reboot unavailable".into())),
+            &crate::RuntimeEnv::empty(),
+        )
         .unwrap();
 
         assert_eq!(outcome, RestoreOutcome::FellBackToSessionSwitch);

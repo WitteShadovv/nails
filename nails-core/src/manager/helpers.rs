@@ -11,8 +11,7 @@ mod command_cache;
 mod runtime_cache;
 mod service_controller;
 
-use crate::constants::ENV_SYSTEM_PROFILE_PATH;
-use crate::{Config, Filesystem, NailsError, Result};
+use crate::{Config, Filesystem, NailsError, Result, RuntimeEnv};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -38,15 +37,10 @@ pub(crate) use service_controller::recorder::drain as drain_recorded_service_act
 #[cfg(test)]
 pub(crate) use service_controller::recorder::record as record_service_action;
 
-/// Return the system profile path, honoring NAILS_SYSTEM_PROFILE_PATH if set.
-pub(crate) fn system_profile_path() -> PathBuf {
-    std::env::var_os(ENV_SYSTEM_PROFILE_PATH)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles/system"))
-}
-
-pub(crate) fn system_profiles_dir() -> PathBuf {
-    system_profile_path()
+/// The directory holding the system profile generations, from the system
+/// profile path in the startup snapshot (`NAILS_SYSTEM_PROFILE_PATH`).
+pub(crate) fn system_profiles_dir(env: &RuntimeEnv) -> PathBuf {
+    env.system_profile_path()
         .parent()
         .map(|p| p.to_path_buf())
         .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles"))
@@ -63,8 +57,11 @@ pub(crate) fn parse_system_generation(name: &str) -> Option<u64> {
 }
 
 /// Return the newest available system profile (system-<n>-link), if present.
-pub(crate) fn find_newest_system_profile<F: Filesystem>(fs: &F) -> Result<Option<PathBuf>> {
-    let profiles_dir = system_profiles_dir();
+pub(crate) fn find_newest_system_profile<F: Filesystem>(
+    fs: &F,
+    env: &RuntimeEnv,
+) -> Result<Option<PathBuf>> {
+    let profiles_dir = system_profiles_dir(env);
     if !fs.path_exists(&profiles_dir)? {
         return Ok(None);
     }
@@ -83,11 +80,17 @@ pub(crate) fn find_newest_system_profile<F: Filesystem>(fs: &F) -> Result<Option
 }
 
 /// Prefer the newest available system profile, fall back to the system symlink.
-pub(crate) fn select_system_profile<F: Filesystem>(fs: &F) -> Result<Option<PathBuf>> {
-    if let Some(path) = find_newest_system_profile(fs)? {
+///
+/// The profile location comes from the startup snapshot `env`, which honours
+/// `NAILS_SYSTEM_PROFILE_PATH`.
+pub(crate) fn select_system_profile<F: Filesystem>(
+    fs: &F,
+    env: &RuntimeEnv,
+) -> Result<Option<PathBuf>> {
+    if let Some(path) = find_newest_system_profile(fs, env)? {
         return Ok(Some(path));
     }
-    let system_profile = system_profile_path();
+    let system_profile = env.system_profile_path();
     if fs.path_exists(&system_profile)? {
         return Ok(Some(system_profile));
     }
@@ -105,6 +108,7 @@ pub(crate) fn select_system_profile<F: Filesystem>(fs: &F) -> Result<Option<Path
 pub(crate) fn select_decoy_restore_target<F: Filesystem>(
     fs: &F,
     recorded_decoy_system: Option<&str>,
+    env: &RuntimeEnv,
 ) -> Result<Option<PathBuf>> {
     if let Some(recorded) = recorded_decoy_system {
         let path = PathBuf::from(recorded);
@@ -112,7 +116,7 @@ pub(crate) fn select_decoy_restore_target<F: Filesystem>(
             return Ok(Some(path));
         }
     }
-    select_system_profile(fs)
+    select_system_profile(fs, env)
 }
 
 /// Ensure /run/current-system exists as a symlink to the provided system profile.

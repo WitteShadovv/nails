@@ -8,30 +8,25 @@
 //!
 //! # CRITICAL SAFETY NOTICE
 //!
-//! Tests MUST NEVER use `std::env::var("HOME")` directly, as this returns the
-//! REAL home directory of the user running the tests. Instead, tests should:
+//! Tests MUST NEVER build paths from the real home directory of the user running
+//! the tests. Instead, tests should:
 //!
-//! 1. Use `TEST_HOME` constant which is a safe fake path
-//! 2. Hold the guard from `set_safe_test_home()` for the whole of any test that
-//!    involves history files
-//! 3. Use `assert_path_is_safe()` to validate paths before filesystem operations
+//! 1. Use the `TEST_HOME` constant, which is a safe fake path. History cleanup in
+//!    this crate's tests resolves to it, never to the invoking account's home, so
+//!    no environment needs redirecting.
+//! 2. Use `assert_path_is_safe()` to validate paths before filesystem operations.
 //!
 //! # Example
 //!
 //! ```rust,ignore
-//! use nails_core::cleanup::test_utils::{TEST_HOME, set_safe_test_home};
+//! use nails_core::cleanup::test_utils::TEST_HOME;
 //!
 //! #[test]
 //! fn test_history_cleanup() {
-//!     let _home = set_safe_test_home();
-//!
-//!     // Until `_home` is dropped, std::env::var("HOME") returns TEST_HOME
 //!     let bash_history = format!("{}/.bash_history", TEST_HOME);
 //!     // ... rest of test
 //! }
 //! ```
-
-use crate::test_support::EnvGuard;
 
 /// Safe fake home directory for tests.
 ///
@@ -51,32 +46,6 @@ pub const UNSAFE_PATH_PREFIXES: &[&str] = &[
     // XDG directories that could leak to real filesystem
     "/home/", // Note: trailing slash means we allow /home/testuser but not /home/realuser
 ];
-
-/// Sets `HOME` to [`TEST_HOME`] until the returned guard is dropped.
-///
-/// The guard holds the process-environment lock, so no other test that touches
-/// the environment runs while `HOME` is redirected, and dropping it restores the
-/// real value. `#[serial]` alone would not be enough: it orders a test only
-/// against other `#[serial]` tests, not against unmarked tests that read `HOME`.
-/// Keep the guard for the whole test; extend it with `set`/`remove` when the test
-/// needs more variables.
-///
-/// # Example
-///
-/// ```rust,ignore
-/// use nails_core::cleanup::test_utils::set_safe_test_home;
-///
-/// #[test]
-/// fn test_with_safe_home() {
-///     let _home = set_safe_test_home();
-///     // ... test code
-/// }
-/// ```
-pub fn set_safe_test_home() -> EnvGuard {
-    let mut env = EnvGuard::lock();
-    env.set("HOME", TEST_HOME);
-    env
-}
 
 /// Asserts that a path is safe for test operations.
 ///
@@ -107,12 +76,9 @@ pub fn assert_path_is_safe(path: &str) {
 
     // Check if path is absolute and starts with an unsafe prefix
     if path.starts_with('/') {
-        // Get the real HOME to detect if someone accidentally used it. The lock
-        // keeps a test that is redirecting HOME from changing it mid-check.
-        let real_home = {
-            let _env = EnvGuard::lock();
-            std::env::var("HOME")
-        };
+        // Read the real HOME (no test changes it) to detect if someone
+        // accidentally built a path from it.
+        let real_home = std::env::var("HOME");
         if let Ok(real_home) = real_home {
             // If the test path starts with the REAL home directory (and real_home != TEST_HOME),
             // this is a test bug
@@ -121,8 +87,7 @@ pub fn assert_path_is_safe(path: &str) {
                     "\n\n🚨 TEST SAFETY VIOLATION 🚨\n\n\
                     Test attempted to access REAL user path: {}\n\
                     Real HOME: {}\n\n\
-                    FIX: Use test_utils::set_safe_test_home() at the start of the test,\n\
-                    or use TEST_HOME constant instead of std::env::var(\"HOME\")\n\n",
+                    FIX: Use the TEST_HOME constant instead of the real HOME\n\n",
                     path, real_home
                 );
             }

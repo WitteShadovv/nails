@@ -67,8 +67,15 @@ mod tests {
         let runner = MockProcessRunner::new();
         let platform = FhsPlatform;
 
-        let outcome =
-            Platform::restore_base_system(&platform, &fs, &runner, true, &|| Ok(())).unwrap();
+        let outcome = Platform::restore_base_system(
+            &platform,
+            &fs,
+            &runner,
+            true,
+            &|| Ok(()),
+            &crate::RuntimeEnv::empty(),
+        )
+        .unwrap();
 
         assert_eq!(outcome, RestoreOutcome::NotRequired);
         assert!(

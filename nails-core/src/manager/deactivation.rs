@@ -443,7 +443,9 @@ impl<F: Filesystem> NailsManager<F> {
             return Ok(());
         }
         let recorded = recorded_decoy_system(self);
-        if select_decoy_restore_target(self.filesystem(), recorded.as_deref())?.is_none() {
+        if select_decoy_restore_target(self.filesystem(), recorded.as_deref(), self.runtime_env())?
+            .is_none()
+        {
             return Err(NailsError::NixOSError(
                 "No recorded decoy system and no system profile found. \
                  Cannot restore decoy configuration."
@@ -714,7 +716,7 @@ impl<F: Filesystem> NailsManager<F> {
             // observe the request and a guard that refuses surfaces as an error
             // here instead of being silently swallowed.
             let host_effects = self.host_effects.clone();
-            let _outcome = host_effects.reboot_into_decoy(self.filesystem())?;
+            let _outcome = host_effects.reboot_into_decoy(self.filesystem(), self.runtime_env())?;
         }
 
         Ok(report)

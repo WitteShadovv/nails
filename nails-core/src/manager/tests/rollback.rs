@@ -699,7 +699,6 @@ fn test_rollback_tr49_cleanup_fails_remounts_overlays() {
 
     // Deactivation resolves the history files from HOME, so it stays redirected
     // for the whole test.
-    let _home = crate::cleanup::test_utils::set_safe_test_home();
     let fs = MockFilesystem::new();
     let (manager, _temp_dir) = create_rollback_test_manager(fs);
     manager

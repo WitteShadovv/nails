@@ -12,21 +12,11 @@ use super::{
     FakePlatform, FhsPlatform, HostTarget, MountHooks, NixOsPlatform, NixRuntime, Platform,
     PlatformKind, UnsupportedPlatform, discover_with_platform,
 };
-use crate::constants::ENV_SYSTEM_PROFILE_PATH;
 use crate::filesystem::{Filesystem, MockFilesystem, PathKind};
 use crate::process::run::MockProcessRunner;
-use crate::test_support::EnvGuard;
 
 /// Assert the invariants that hold for every backend.
 fn assert_contract<F: Filesystem + 'static, P: Platform<F>>(platform: &P, fs: &F) {
-    // `restore_base_system` resolves the decoy system profile through the
-    // process environment (`NAILS_SYSTEM_PROFILE_PATH`), so take the environment
-    // lock with that override cleared. Otherwise a deactivation test elsewhere
-    // can point the lookup at a stub profile absent from the mock and make the
-    // restore fail for a reason that has nothing to do with this contract.
-    let mut env = EnvGuard::lock();
-    env.remove(ENV_SYSTEM_PROFILE_PATH);
-
     let kind = platform.kind();
 
     // Kind and the policy's mount hooks agree.
@@ -116,7 +106,8 @@ fn assert_contract<F: Filesystem + 'static, P: Platform<F>>(platform: &P, fs: &F
 
     // Restoring the base system after a dispatched reboot shells out to nothing.
     let runner = MockProcessRunner::new();
-    let result = platform.restore_base_system(fs, &runner, true, &|| Ok(()));
+    let result =
+        platform.restore_base_system(fs, &runner, true, &|| Ok(()), &crate::RuntimeEnv::empty());
     match kind {
         PlatformKind::Unsupported => {
             assert!(result.is_err(), "a refused host must decline restore");
