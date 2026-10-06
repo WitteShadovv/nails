@@ -50,6 +50,84 @@ impl<F: Filesystem> Verifier<F> {
         Ok(findings)
     }
 
+    /// Grep the live systemd journal for the tokens a leaked hidden session would
+    /// leave behind, returning the findings and whether the journal was searched.
+    ///
+    /// The journald relinquish/flush hooks around every transition keep the hidden
+    /// session's records off the persistent decoy journal; this is the forensic
+    /// cross-check that they held. Each needle is a token that reveals the hidden
+    /// environment — the tool name, the hidden volume mount path, the config file
+    /// name and the encrypted-backend command names — and any journal entry that
+    /// still contains one after deactivation is a leak onto the decoy disk,
+    /// reported as a warning. When the journal cannot be searched (no journald, no
+    /// access) nothing is reported as clean: the second element is `false` so the
+    /// caller records the journal as an area it could not inspect.
+    pub(super) fn scan_journal(&self) -> (Vec<Finding>, bool) {
+        let mut findings = Vec::new();
+        let mut searched = true;
+
+        for (needle, label) in self.journal_needles() {
+            match self.journal.grep(&needle) {
+                Ok(hits) if hits.is_empty() => {}
+                Ok(hits) => {
+                    let sample = hits.first().cloned().unwrap_or_default();
+                    findings.push(
+                        Finding::new(
+                            Severity::Warn,
+                            "journal",
+                            format!(
+                                "Systemd journal has {} entr{} referencing {label} (\"{needle}\") — \
+                                 a hidden-session trace on the decoy journal",
+                                hits.len(),
+                                if hits.len() == 1 { "y" } else { "ies" },
+                            ),
+                        )
+                        .with_fix_guidance(format!(
+                            "Inspect with: journalctl --grep '{needle}'. On a persistent-journal \
+                             decoy, vacuum the journal (journalctl --rotate --vacuum-time=1s) and \
+                             switch the decoy to a volatile journal (Storage=volatile). Sample: {sample}"
+                        )),
+                    );
+                }
+                Err(_) => {
+                    // A single unreadable probe means the journal is not available
+                    // to this run at all; stop and report it as not-checked rather
+                    // than as clean.
+                    searched = false;
+                    break;
+                }
+            }
+        }
+
+        (findings, searched)
+    }
+
+    /// The tokens the journal leak search greps for, each with a human label.
+    ///
+    /// Sourced from the shared artifact registry and the active configuration so
+    /// the search never drifts from what the tool actually writes: the tool name,
+    /// the config file name, the configured hidden volume mount path and the
+    /// encrypted-backend command names a hidden session runs.
+    fn journal_needles(&self) -> Vec<(String, &'static str)> {
+        let mut needles: Vec<(String, &'static str)> = vec![
+            (crate::artifacts::TOOL_NAME.to_string(), "the tool name"),
+            (
+                crate::artifacts::CONFIG_FILE_NAME.to_string(),
+                "the configuration file name",
+            ),
+            ("cryptsetup".to_string(), "the backend unlock command"),
+        ];
+
+        if let Some(hidden_root) = self.hidden_root() {
+            let path = hidden_root.to_string_lossy().to_string();
+            if !path.is_empty() {
+                needles.push((path, "the hidden volume mount path"));
+            }
+        }
+
+        needles
+    }
+
     /// Scan one user's home for shell history containing nails commands and for
     /// desktop recency files that name the configured hidden root.
     fn scan_home(&self, home: &Path) -> Result<Vec<Finding>> {

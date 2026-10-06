@@ -1825,3 +1825,142 @@ fn test_decoy_scoped_baseline_still_catches_real_decoy_leak_and_foreign_device()
     assert!(block[0].message.contains("/dev/mapper/vault"));
     assert_eq!(block[0].severity, Severity::Warn);
 }
+
+// ========================================================================
+// Deep-scan journal leak search (T-094)
+// ========================================================================
+
+use super::journal::FakeJournalReader;
+
+/// A config-aware deep verifier over an empty mock filesystem, with the journal
+/// reader replaced by `reader`, run at the given depth.
+#[cfg(test)]
+fn journal_verifier(reader: FakeJournalReader) -> Verifier<MockFilesystem> {
+    let config = crate::config::Config {
+        hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+        ..crate::config::Config::default()
+    };
+    Verifier::with_config(
+        MockFilesystem::new(),
+        config,
+        None,
+        StateFileStatus::NotChecked,
+    )
+    .with_journal_reader(Box::new(reader))
+}
+
+#[test]
+fn deep_scan_reports_journal_tool_name_hits() {
+    let reader = FakeJournalReader::with_entries([
+        "sudo[123]: root : COMMAND=/mnt/hidden/control nails activate",
+    ]);
+    let result = journal_verifier(reader).run(true).unwrap();
+
+    let journal: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "journal")
+        .collect();
+    assert!(
+        journal.iter().any(|f| f.message.contains("the tool name")),
+        "the tool-name leak must be reported: {journal:?}"
+    );
+    assert!(journal.iter().all(|f| f.severity == Severity::Warn));
+    assert_eq!(result.status, VerifyStatus::Warning);
+}
+
+#[test]
+fn deep_scan_reports_journal_backend_and_hidden_path_hits() {
+    let reader = FakeJournalReader::with_entries([
+        "cryptsetup: activating device for /mnt/hidden",
+        "systemd: mounting /mnt/hidden",
+    ]);
+    let result = journal_verifier(reader).run(true).unwrap();
+
+    let journal: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "journal")
+        .collect();
+    assert!(
+        journal
+            .iter()
+            .any(|f| f.message.contains("the backend unlock command")),
+        "the cryptsetup leak must be reported: {journal:?}"
+    );
+    assert!(
+        journal
+            .iter()
+            .any(|f| f.message.contains("the hidden volume mount path")),
+        "the hidden volume path leak must be reported: {journal:?}"
+    );
+}
+
+#[test]
+fn deep_scan_clean_journal_reports_no_journal_findings() {
+    let reader =
+        FakeJournalReader::with_entries(["systemd: Started Daily apt download activities."]);
+    let result = journal_verifier(reader).run(true).unwrap();
+
+    assert!(
+        result.findings.iter().all(|f| f.category != "journal"),
+        "a clean journal must produce no journal findings: {:?}",
+        result.findings
+    );
+    // The journal was searched, so the honest not-checked note is the scoped one.
+    assert!(
+        result
+            .areas_not_checked
+            .iter()
+            .any(|a| a.contains("beyond the known leak tokens")),
+        "a searched journal must be noted as scoped: {:?}",
+        result.areas_not_checked
+    );
+}
+
+#[test]
+fn standard_scan_does_not_search_the_journal() {
+    // Even with a reader that would match, a non-deep scan never greps it.
+    let reader = FakeJournalReader::with_entries(["nails activate"]);
+    let result = journal_verifier(reader).run(false).unwrap();
+
+    assert!(result.findings.iter().all(|f| f.category != "journal"));
+    assert!(
+        result
+            .areas_not_checked
+            .iter()
+            .any(|a| a == "the systemd journal (not searched by verify)"),
+        "a standard scan must note the journal as unsearched: {:?}",
+        result.areas_not_checked
+    );
+}
+
+#[test]
+fn deep_scan_unreadable_journal_is_reported_as_not_checked() {
+    let reader = FakeJournalReader::unreadable("permission denied");
+    let result = journal_verifier(reader).run(true).unwrap();
+
+    assert!(
+        result.findings.iter().all(|f| f.category != "journal"),
+        "an unreadable journal must not fabricate findings: {:?}",
+        result.findings
+    );
+    assert!(
+        result
+            .areas_not_checked
+            .iter()
+            .any(|a| a == "the systemd journal (not searched by verify)"),
+        "an unreadable journal must be noted as unsearched: {:?}",
+        result.areas_not_checked
+    );
+}
+
+#[test]
+fn offline_scan_never_searches_the_journal() {
+    // An offline image scan has no live journald; the reader must be untouched.
+    let reader = FakeJournalReader::unreadable("must not be called offline");
+    let verifier = journal_verifier(reader).offline_under(std::path::PathBuf::from("/mnt/image"));
+    let result = verifier.run(true).unwrap();
+
+    assert!(result.findings.iter().all(|f| f.category != "journal"));
+}

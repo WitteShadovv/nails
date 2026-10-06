@@ -19,6 +19,14 @@
 use serde::Serialize;
 use std::path::{Path, PathBuf};
 
+/// The tool's own name as it appears on a command line.
+///
+/// A hidden session that logs to a persistent decoy journal before the overlays
+/// are mounted (sudo command lines, transient unit names) leaves this token
+/// behind, so both the deep-scan history search and the journal leak search grep
+/// for it. The single definition of the literal.
+pub const TOOL_NAME: &str = "nails";
+
 /// Directory on the hidden root that holds the configuration file.
 ///
 /// This is the single definition of the name; [`crate::config`] and

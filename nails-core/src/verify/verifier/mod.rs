@@ -73,6 +73,9 @@ pub struct Verifier<F: Filesystem> {
     state_file_status: StateFileStatus,
     context: VerifyContext,
     scope_to_decoy: bool,
+    /// Reads the systemd journal for the deep-scan leak search. Defaults to the
+    /// live `journalctl` reader; tests inject a deterministic fake.
+    journal: Box<dyn super::journal::JournalReader>,
 }
 
 impl<F: Filesystem> Verifier<F> {
@@ -85,6 +88,7 @@ impl<F: Filesystem> Verifier<F> {
             state_file_status: StateFileStatus::NotChecked,
             context: VerifyContext::Host,
             scope_to_decoy: false,
+            journal: Box::new(super::journal::JournalctlReader),
         }
     }
 
@@ -102,7 +106,18 @@ impl<F: Filesystem> Verifier<F> {
             state_file_status,
             context: VerifyContext::Host,
             scope_to_decoy: false,
+            journal: Box::new(super::journal::JournalctlReader),
         }
+    }
+
+    /// Replace the journal reader (tests inject a deterministic fake).
+    #[cfg(test)]
+    pub(crate) fn with_journal_reader(
+        mut self,
+        reader: Box<dyn super::journal::JournalReader>,
+    ) -> Self {
+        self.journal = reader;
+        self
     }
 
     /// Scope this live-host scan to the decoy, treating the configured hidden
@@ -250,9 +265,21 @@ impl<F: Filesystem> Verifier<F> {
         }
 
         // 7. Deep scan if requested (homes, histories, temp directories).
+        let mut journal_searched = false;
         if deep {
             findings.extend(self.deep_scan()?);
             checks_run += 1;
+
+            // 7b. Grep the live journal for the tokens a leaked hidden session
+            //     would leave there. Live-host only: an offline image scan has no
+            //     journald to query, so it is left to the host-side disk-image
+            //     forensics instead.
+            if !offline {
+                let (journal_findings, searched) = self.scan_journal();
+                findings.extend(journal_findings);
+                journal_searched = searched;
+                checks_run += 1;
+            }
         }
 
         // Determine overall status
@@ -270,7 +297,7 @@ impl<F: Filesystem> Verifier<F> {
             ScanDepth::Standard
         };
 
-        let mut areas_not_checked = self.areas_not_checked(deep);
+        let mut areas_not_checked = self.areas_not_checked(deep, journal_searched);
         areas_not_checked.extend(scanner_not_checked);
 
         let mut result = if self.config.is_some() {
@@ -291,9 +318,20 @@ impl<F: Filesystem> Verifier<F> {
 
     /// The honest list of areas this run did not inspect, so the headline can say
     /// what a clean result does *not* prove.
-    fn areas_not_checked(&self, deep: bool) -> Vec<String> {
+    fn areas_not_checked(&self, deep: bool, journal_searched: bool) -> Vec<String> {
         let mut areas = Vec::new();
-        areas.push("the systemd journal (not searched by verify)".to_string());
+        if journal_searched {
+            // A deep live scan greps the journal, but only for the known leak
+            // tokens (tool name, hidden volume path, backend command names), so a
+            // clean result is not proof the journal holds nothing else.
+            areas.push(
+                "the systemd journal beyond the known leak tokens (tool name, hidden volume path, \
+                 backend command names)"
+                    .to_string(),
+            );
+        } else {
+            areas.push("the systemd journal (not searched by verify)".to_string());
+        }
         if !deep {
             areas.push(
                 "shell histories and temp directories (/tmp, /var/tmp); re-run with --deep"

@@ -27,6 +27,7 @@
 //! # Ok::<(), nails_core::NailsError>(())
 //! ```
 
+mod journal;
 mod residue_report;
 mod types;
 mod verifier;
@@ -35,6 +36,7 @@ mod verifier;
 mod tests;
 
 // Re-export public types
+pub use journal::{JournalReader, JournalctlReader};
 pub use residue_report::{
     RESIDUE_REPORT_DIR, RESIDUE_REPORT_SCHEMA_VERSION, ResidueReport, ResidueReportSummary,
     write_activation_residue_report,
