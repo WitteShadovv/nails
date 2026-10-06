@@ -131,6 +131,11 @@ pub struct NailsManager<F: Filesystem> {
     /// seam.
     host_profile: Option<crate::platform::HostProfile>,
 
+    /// A backend injected by a test ([`set_fake_platform`](Self::set_fake_platform)),
+    /// answering instead of the one derived from [`host_profile`](Self::host_profile).
+    /// Always `None` in production.
+    platform_override: Option<std::sync::Arc<dyn crate::platform::Platform<F> + Send + Sync>>,
+
     /// How the post-deactivation reboot touches the host.
     ///
     /// [`HostEffects::Real`] in every constructor, which dispatches the real
@@ -211,6 +216,7 @@ impl<F: Filesystem> NailsManager<F> {
             cached_state: RefCell::new(None),
             nixos_builder: None,
             host_profile: None,
+            platform_override: None,
             host_effects: HostEffects::Real,
             verbosity: crate::verbosity::Verbosity::default(),
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
@@ -262,6 +268,7 @@ impl<F: Filesystem> NailsManager<F> {
             cached_state: RefCell::new(None),
             nixos_builder: Some(nixos_builder),
             host_profile: None,
+            platform_override: None,
             host_effects: HostEffects::Real,
             verbosity: crate::verbosity::Verbosity::default(),
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
@@ -321,6 +328,7 @@ impl<F: Filesystem> NailsManager<F> {
     /// replaces the stored profile.
     pub fn initialize_platform(&mut self) -> Result<()> {
         self.host_profile = Some(crate::platform::detect(&self.filesystem)?);
+        self.platform_override = None;
         Ok(())
     }
 
@@ -328,6 +336,55 @@ impl<F: Filesystem> NailsManager<F> {
     /// [`initialize_platform`](Self::initialize_platform).
     pub fn set_host_profile(&mut self, profile: crate::platform::HostProfile) {
         self.host_profile = Some(profile);
+        self.platform_override = None;
+    }
+
+    /// Run this manager against a [`FakePlatform`](crate::platform::FakePlatform).
+    ///
+    /// Test-support only. Stores the fake as the backend and a host profile of
+    /// the fake's kind, so every platform-derived decision (config layer,
+    /// build-target discovery, unsupported-host refusal) agrees with it — no
+    /// os-release or `/etc/nixos` fixtures needed.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_fake_platform(&mut self, fake: crate::platform::FakePlatform) {
+        self.host_profile = Some(fake.host_profile());
+        self.platform_override = Some(std::sync::Arc::new(fake));
+    }
+
+    /// Wire (or replace) the NixOS profile builder after construction.
+    ///
+    /// Lets a caller detect the host and run build-target discovery through
+    /// this manager first, then attach the builder for the discovered target.
+    pub fn set_nixos_builder(&mut self, builder: crate::nixos::NixOSBuilder) {
+        self.nixos_builder = Some(builder);
+    }
+
+    /// Resolve the declarative build target activation would select.
+    ///
+    /// Asks the host's platform backend (see
+    /// [`discover_host_target`](crate::platform::discover_host_target)) with this
+    /// manager's hidden-volume root and configured `nixos_flake`. With no host
+    /// profile detected the NixOS cascade answers, as it always has; on a host
+    /// without a config layer the answer is [`HostTarget::None`](crate::HostTarget::None).
+    pub fn discover_host_target(&self, overlay_only: bool) -> Result<crate::platform::HostTarget> {
+        let hidden_root = &self.config.hidden_volume_root;
+        let explicit = self.config.nixos_flake.as_deref();
+        match self.platform_override.as_deref() {
+            Some(platform) => crate::platform::discover_with_platform(
+                platform,
+                &self.filesystem,
+                hidden_root,
+                explicit,
+                overlay_only,
+            ),
+            None => crate::platform::discover_host_target(
+                &self.filesystem,
+                self.host_profile.as_ref(),
+                hidden_root,
+                explicit,
+                overlay_only,
+            ),
+        }
     }
 
     /// The detected host facts, if the platform seam has been initialised.
@@ -336,18 +393,20 @@ impl<F: Filesystem> NailsManager<F> {
     }
 
     /// The platform backend for the detected host, derived from
-    /// [`host_profile`](Self::host_profile).
+    /// [`host_profile`](Self::host_profile) (or the fake a test injected).
     ///
     /// Backends are zero-sized, so deriving one per call is free. Returns `None`
     /// until a profile has been set. The returned trait object refuses on an
     /// unsupported host.
-    pub fn platform(&self) -> Option<Box<dyn crate::platform::Platform<F> + Send + Sync>>
-    where
-        F: 'static,
-    {
+    pub fn platform(
+        &self,
+    ) -> Option<std::sync::Arc<dyn crate::platform::Platform<F> + Send + Sync>> {
+        if let Some(platform) = self.platform_override.as_ref() {
+            return Some(std::sync::Arc::clone(platform));
+        }
         self.host_profile
             .as_ref()
-            .map(crate::platform::platform_for::<F>)
+            .map(|profile| std::sync::Arc::from(crate::platform::platform_for::<F>(profile)))
     }
 
     /// The declarative hidden-config layer for this host, if it has one.

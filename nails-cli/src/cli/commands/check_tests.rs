@@ -8,81 +8,93 @@
 //! `nails-cli/tests/cli_integration.rs`; these focus on the pure helpers.
 
 use super::{profile_summary, session_summary};
-use nails_core::{Config, MockFilesystem};
+use nails_core::platform::FakePlatform;
+use nails_core::{Config, HostTarget, MockFilesystem, NailsManager};
 use std::path::PathBuf;
 
 #[test]
 fn profile_summary_reports_overlay_only() {
-    let fs = MockFilesystem::new();
-    let config = Config::default();
-
-    let profile = profile_summary(true, &config, &fs);
-    assert_eq!(profile.mode, "overlay-only");
-}
-
-#[test]
-fn profile_summary_reports_an_explicit_flake() {
-    let fs = MockFilesystem::new();
-    let config = Config {
-        nixos_flake: Some("/etc/nixos#host".to_string()),
-        ..Config::default()
-    };
-
-    let profile = profile_summary(false, &config, &fs);
-    assert_eq!(profile.mode, "flake");
-    assert!(profile.detail.unwrap().contains("/etc/nixos#host"));
-}
-
-#[test]
-fn profile_summary_detects_a_flake_in_the_hidden_volume() {
-    let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/mnt/vault/nixos/flake.nix", true);
-    let config = Config {
-        hidden_volume_root: PathBuf::from("/mnt/vault"),
-        nixos_flake: None,
-        ..Config::default()
-    };
-
-    let profile = profile_summary(false, &config, &fs);
-    assert_eq!(profile.mode, "flake");
-}
-
-#[test]
-fn profile_summary_reports_legacy_for_a_lone_system_profile() {
-    // The drift this fixes: `--dry-run`/`check` used to omit the system-profile
-    // probe and report "no profile switch" where activation does a legacy build.
-    // Sharing `discover_host_target` makes the summary agree: a lone system
-    // profile is a legacy build target.
-    let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
-    let config = Config {
-        hidden_volume_root: PathBuf::from("/mnt/vault"),
-        nixos_flake: None,
-        ..Config::default()
-    };
-
-    let profile = profile_summary(false, &config, &fs);
-    assert_eq!(profile.mode, "legacy");
-    assert!(
-        profile
-            .detail
-            .unwrap()
-            .contains("/etc/nixos/configuration.nix")
+    assert_eq!(
+        profile_summary(HostTarget::OverlayOnly).mode,
+        "overlay-only"
     );
 }
 
 #[test]
-fn profile_summary_is_none_without_any_nixos_target() {
-    let fs = MockFilesystem::new();
-    let config = Config {
-        hidden_volume_root: PathBuf::from("/mnt/vault"),
-        nixos_flake: None,
-        ..Config::default()
-    };
+fn profile_summary_reports_an_explicit_flake() {
+    let profile = profile_summary(HostTarget::ExplicitFlake("/cfg#host".into()));
+    assert_eq!(profile.mode, "flake");
+    assert!(profile.detail.unwrap().contains("/cfg#host"));
+}
 
-    let profile = profile_summary(false, &config, &fs);
+#[test]
+fn profile_summary_reports_a_discovered_flake() {
+    let profile = profile_summary(HostTarget::Flake(PathBuf::from("/mnt/vault/nixos")));
+    assert_eq!(profile.mode, "flake");
+    assert!(profile.detail.unwrap().contains("/mnt/vault/nixos"));
+}
+
+#[test]
+fn profile_summary_reports_a_legacy_target() {
+    let profile = profile_summary(HostTarget::Legacy(PathBuf::from("/cfg/configuration.nix")));
+    assert_eq!(profile.mode, "legacy");
+    assert!(profile.detail.unwrap().contains("/cfg/configuration.nix"));
+}
+
+#[test]
+fn profile_summary_is_none_without_any_target() {
+    let profile = profile_summary(HostTarget::None);
     assert_eq!(profile.mode, "none");
     assert!(profile.detail.is_none());
+}
+
+fn manager_on(fake: FakePlatform, nixos_flake: Option<&str>) -> NailsManager<MockFilesystem> {
+    let config = Config {
+        hidden_volume_root: PathBuf::from("/mnt/vault"),
+        nixos_flake: nixos_flake.map(str::to_string),
+        ..Config::default()
+    };
+    let mut manager = NailsManager::new(
+        MockFilesystem::new(),
+        config,
+        PathBuf::from("/mnt/vault/state.json"),
+    );
+    manager.set_fake_platform(fake);
+    manager
+}
+
+/// The summary is derived from the manager's platform-driven discovery: the
+/// target the (fake) NixOS backend reports is what `check`/`--dry-run` shows.
+#[test]
+fn summary_follows_the_platform_discovery() {
+    let manager = manager_on(
+        FakePlatform::nixos()
+            .with_build_target(HostTarget::Legacy(PathBuf::from("/cfg/configuration.nix"))),
+        None,
+    );
+    let profile = profile_summary(manager.discover_host_target(false).unwrap());
+    assert_eq!(profile.mode, "legacy");
+
+    let profile = profile_summary(manager.discover_host_target(true).unwrap());
+    assert_eq!(profile.mode, "overlay-only");
+}
+
+/// A host without a config layer auto-discovers no profile switch, matching
+/// activation, which wires no builder there.
+#[test]
+fn summary_is_none_on_a_host_without_a_config_layer() {
+    let manager = manager_on(FakePlatform::fhs(), None);
+    let profile = profile_summary(manager.discover_host_target(false).unwrap());
+    assert_eq!(profile.mode, "none");
+}
+
+/// An explicit flake is the operator's own choice and is reported on every
+/// host, exactly as before discovery moved behind the platform.
+#[test]
+fn summary_reports_an_explicit_flake_on_any_host() {
+    let manager = manager_on(FakePlatform::fhs(), Some("/cfg#host"));
+    let profile = profile_summary(manager.discover_host_target(false).unwrap());
+    assert_eq!(profile.mode, "flake");
 }
 
 #[test]

@@ -36,6 +36,7 @@ fn build_registry_includes_the_shared_checks() {
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
         operator: None,
         accept_persistent_decoy: false,
     };
@@ -71,6 +72,7 @@ fn overlay_only_registry_drops_the_nixos_checks() {
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
         operator: None,
         accept_persistent_decoy: false,
     };
@@ -96,6 +98,7 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
         operator: None,
         accept_persistent_decoy: false,
     };
@@ -156,6 +159,7 @@ fn read_only_registry_creates_nothing() {
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
         operator: None,
         accept_persistent_decoy: false,
     };
@@ -225,4 +229,92 @@ fn failing_check_is_reported_through_tracing() {
     // unconditional `output::check_result` print is gone, so this is the only
     // report of the check. `logs_contain` is injected by `traced_test`.
     assert!(logs_contain("Preflight check failed"));
+}
+
+/// The build-target check's verdict for a manager's registry.
+fn build_target_result(manager: &NailsManager<MockFilesystem>) -> Option<CheckResult> {
+    let registry = manager
+        .preflight_registry(false, true, false)
+        .expect("registry builds");
+    registry
+        .run_all_detailed(manager.filesystem())
+        .0
+        .into_iter()
+        .find(|(name, _)| name == "nixos-build-target")
+        .map(|(_, result)| result)
+}
+
+fn manager_with(fs: MockFilesystem) -> NailsManager<MockFilesystem> {
+    let config = Config {
+        hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+        ..explicit_config()
+    };
+    NailsManager::new(
+        fs,
+        config,
+        std::path::PathBuf::from("/mnt/hidden/state.json"),
+    )
+}
+
+/// The cross-path agreement case on a detected NixOS host where only the system
+/// profile exists. Activation and `check`/`--dry-run` both take the target from
+/// `discover_host_target` (activation wires its builder from it, `check` renders
+/// its profile summary from it), and the `nixos-build-target` pre-flight reports
+/// the target resolved by that same call — so all three agree on the legacy
+/// build.
+#[test]
+fn lone_system_profile_agrees_across_activation_check_and_preflight() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    let mut manager = manager_with(fs);
+    manager.set_host_profile(crate::platform::FakePlatform::nixos().host_profile());
+
+    let legacy = crate::platform::HostTarget::Legacy(std::path::PathBuf::from(
+        "/etc/nixos/configuration.nix",
+    ));
+    assert_eq!(manager.discover_host_target(false).unwrap(), legacy);
+
+    let result = build_target_result(&manager).expect("the check runs on NixOS");
+    assert!(result.is_pass(), "{result:?}");
+    assert!(result.message().contains("/etc/nixos/configuration.nix"));
+}
+
+/// With a fake platform the pre-flight reports exactly the pinned target, with
+/// no NixOS discovery fixtures on the mock host.
+#[test]
+fn preflight_reports_the_fake_platform_target() {
+    let mut manager = manager_with(MockFilesystem::new());
+    manager.set_fake_platform(crate::platform::FakePlatform::nixos().with_build_target(
+        crate::platform::HostTarget::Flake(std::path::PathBuf::from("/cfg/flake")),
+    ));
+    let result = build_target_result(&manager).expect("the check runs on NixOS");
+    assert!(result.is_pass(), "{result:?}");
+    assert!(result.message().contains("/cfg/flake"));
+
+    let mut manager = manager_with(MockFilesystem::new());
+    manager.set_fake_platform(crate::platform::FakePlatform::nixos());
+    let result = build_target_result(&manager).expect("the check runs on NixOS");
+    assert!(
+        result.is_fail(),
+        "no discovered target must fail: {result:?}"
+    );
+}
+
+/// On a host without a config layer every path agrees there is no build
+/// target: discovery says `None` (so activation wires no builder and `check`
+/// reports no switch) and the build-target check is not registered at all —
+/// even when the host carries NixOS files.
+#[test]
+fn host_without_config_layer_agrees_there_is_no_target() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+    let mut manager = manager_with(fs);
+    manager.set_fake_platform(crate::platform::FakePlatform::fhs());
+
+    assert_eq!(
+        manager.discover_host_target(false).unwrap(),
+        crate::platform::HostTarget::None
+    );
+    assert!(build_target_result(&manager).is_none());
 }

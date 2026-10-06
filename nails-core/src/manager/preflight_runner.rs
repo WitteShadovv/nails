@@ -48,6 +48,11 @@ pub struct RegistryInputs {
     /// The flake directory auto-discovery selected, validated directly by the
     /// build-target check when it runs.
     pub selected_flake_dir: Option<PathBuf>,
+    /// The build target the host's platform discovered (see
+    /// [`NailsManager::discover_host_target`]), reported by the build-target
+    /// check when neither an explicit flake nor a selected flake directory
+    /// applies. Unit tests that build inputs directly pin it.
+    pub discovered_target: crate::platform::HostTarget,
     /// The operator whose inherited decoy persona state the inherited-autostart
     /// check inspects. Resolved best-effort by [`NailsManager::preflight_registry`];
     /// `None` (the default used by unit tests that build inputs directly) makes
@@ -211,7 +216,7 @@ pub fn build_registry<F: Filesystem>(
             registry.add_check(Box::new(NixOSBuildTargetCheck::with_selected_flake_dir(
                 config.nixos_flake.clone(),
                 inputs.selected_flake_dir.clone(),
-                config.hidden_volume_root.clone(),
+                inputs.discovered_target.clone(),
             )));
         }
     }
@@ -346,6 +351,9 @@ impl<F: Filesystem> NailsManager<F> {
             current_state: self.current_state()?,
             flake_target_already_validated,
             selected_flake_dir,
+            // The same platform-driven discovery activation used to pick the
+            // builder, so the build-target check reports that very target.
+            discovered_target: self.discover_host_target(overlay_only)?,
             // Resolve the operator best-effort so the inherited-autostart check
             // can inspect the decoy state; an unresolved operator simply skips it.
             operator: crate::TargetUser::resolve().ok(),

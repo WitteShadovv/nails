@@ -9,8 +9,8 @@
 //! reboot never shells out (so the ESP, bootloader and EFI NVRAM stay untouched).
 
 use super::{
-    FakePlatform, FhsPlatform, MountHooks, NixOsPlatform, NixRuntime, Platform, PlatformKind,
-    UnsupportedPlatform,
+    FakePlatform, FhsPlatform, HostTarget, MountHooks, NixOsPlatform, NixRuntime, Platform,
+    PlatformKind, UnsupportedPlatform, discover_with_platform,
 };
 use crate::constants::ENV_SYSTEM_PROFILE_PATH;
 use crate::filesystem::{Filesystem, MockFilesystem, PathKind};
@@ -95,6 +95,25 @@ fn assert_contract<F: Filesystem + 'static, P: Platform<F>>(platform: &P, fs: &F
         kind == PlatformKind::NixOs,
     );
 
+    // Only a backend with a config layer auto-discovers a build target; the
+    // others answer `None` even with NixOS files present. An explicit flake is
+    // reported as given and `--overlay-only` short-circuits, on every backend.
+    let hidden_root = std::path::Path::new("/mnt/hidden");
+    let discovered = platform
+        .discover_build_target(fs, hidden_root)
+        .expect("discovery never fails on a mock host");
+    if platform.config_layer().is_none() {
+        assert_eq!(discovered, HostTarget::None);
+    }
+    assert_eq!(
+        discover_with_platform(platform, fs, hidden_root, Some("gh:me/cfg"), false).unwrap(),
+        HostTarget::ExplicitFlake("gh:me/cfg".to_string()),
+    );
+    assert_eq!(
+        discover_with_platform(platform, fs, hidden_root, Some("gh:me/cfg"), true).unwrap(),
+        HostTarget::OverlayOnly,
+    );
+
     // Restoring the base system after a dispatched reboot shells out to nothing.
     let runner = MockProcessRunner::new();
     let result = platform.restore_base_system(fs, &runner, true, &|| Ok(()));
@@ -119,6 +138,12 @@ fn nixos_host() -> MockFilesystem {
     fs
 }
 
+/// A host carrying every NixOS discovery location, so a backend without a
+/// config layer is shown to ignore them rather than merely finding nothing.
+fn host_with_nixos_files() -> MockFilesystem {
+    super::nixos::tests_support::full_nixos_host()
+}
+
 #[test]
 fn nixos_backend_honours_contract() {
     assert_contract(&NixOsPlatform, &nixos_host());
@@ -126,19 +151,19 @@ fn nixos_backend_honours_contract() {
 
 #[test]
 fn fhs_backend_honours_contract() {
-    assert_contract(&FhsPlatform, &MockFilesystem::new());
+    assert_contract(&FhsPlatform, &host_with_nixos_files());
 }
 
 #[test]
 fn fake_backend_honours_contract() {
     assert_contract(&FakePlatform::nixos(), &MockFilesystem::new());
-    assert_contract(&FakePlatform::fhs(), &MockFilesystem::new());
+    assert_contract(&FakePlatform::fhs(), &host_with_nixos_files());
 }
 
 #[test]
 fn unsupported_backend_honours_contract() {
     assert_contract(
         &UnsupportedPlatform::new("this host is not supported"),
-        &MockFilesystem::new(),
+        &host_with_nixos_files(),
     );
 }

@@ -159,7 +159,7 @@ pub use manager::{SimulatedHostEffects, SimulatedReboot};
 pub use platform::{
     ConfigLayer, ConfigPlan, HostProfile, HostTarget, MountHooks, NixOsConfigLayer, OverlayPolicy,
     Platform, PlatformKind, RestoreOutcome, detect, detect_platform, discover_host_target,
-    guard_read_only_trees, platform_for,
+    discover_with_platform, guard_read_only_trees, platform_for,
 };
 pub use target_user::TargetUser;
 

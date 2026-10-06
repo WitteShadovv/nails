@@ -17,6 +17,8 @@
 //!   or keeps read-only, plus which mount hooks the loop runs (the NixOS
 //!   `/nix` + `/var` + `/etc` handling, a plain FHS overlay, or nothing).
 //! - [`Platform::host_command_dirs`] — where host tools are found.
+//! - [`Platform::discover_build_target`] — which declarative build target
+//!   activation, `check`/`--dry-run` and the build-target pre-flight check use.
 //! - [`Platform::restore_base_system`] — the decoy-restore step on deactivation.
 //!
 //! ## Backends
@@ -29,10 +31,11 @@
 //!   PID 1 with a typed [`NailsError::UnsupportedPlatform`]. That refusal is the
 //!   deliverable for those hosts.
 //!
-//! The call sites that still carry their own NixOS discovery cascades
-//! (`activate`, `--dry-run` via `check`, and the `nixos-build-target` pre-flight
-//! check) are rewired onto [`discover_host_target`] in their owning chunks; this
-//! module provides the one discovery result they will share.
+//! Build-target discovery is a backend question: [`discover_host_target`] picks
+//! the backend from the detected [`HostProfile`] and asks it, so activation,
+//! `--dry-run`/`check` and the `nixos-build-target` pre-flight check share one
+//! result, and core tests pin it with [`FakePlatform`] instead of staging
+//! `/etc/nixos` fixtures.
 
 use crate::Result;
 use crate::filesystem::Filesystem;
@@ -60,7 +63,7 @@ mod contract;
 
 pub use config_layer::{ConfigLayer, ConfigPlan, NixOsConfigLayer};
 pub use detect::detect;
-pub use discover::{HostTarget, discover_host_target};
+pub use discover::{HostTarget, discover_host_target, discover_with_platform};
 pub use fhs::FhsPlatform;
 pub use host_commands::HostCommands;
 pub use nixos::NixOsPlatform;
@@ -269,6 +272,26 @@ pub trait Platform<F: Filesystem>: std::fmt::Debug + Send + Sync {
         F: 'static,
     {
         None
+    }
+
+    /// The build target this host auto-discovers when no explicit flake is
+    /// configured.
+    ///
+    /// Only a backend with a [`config_layer`](Self::config_layer) probes for
+    /// one: the NixOS backend runs the single discovery cascade (hidden flake,
+    /// `/etc/nixos` flake, legacy configuration or system profile). The default
+    /// — FHS and refused hosts — is [`HostTarget::None`] without probing
+    /// anything, so NixOS files present on such a host (Nix installed on Debian,
+    /// a stray `/etc/nixos`) never select a build target. `--overlay-only` and an
+    /// explicit flake reference are resolved by [`discover_with_platform`] before
+    /// the backend is asked.
+    fn discover_build_target(
+        &self,
+        fs: &F,
+        hidden_volume_root: &std::path::Path,
+    ) -> Result<HostTarget> {
+        let _ = (fs, hidden_volume_root);
+        Ok(HostTarget::None)
     }
 
     /// The read-only drift scanners this platform contributes to `verify`.

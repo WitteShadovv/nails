@@ -8,6 +8,7 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::nixos::{resolve_local_flake_dir, split_flake_ref};
+use crate::platform::HostTarget;
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
@@ -18,11 +19,10 @@ use std::path::{Path, PathBuf};
 /// - The directory exists
 /// - The directory contains a `flake.nix`
 ///
-/// When no flake is specified, probes auto-discovery locations in order:
-/// 1. `{hidden_volume_root}/nixos/flake.nix`
-/// 2. `/etc/nixos/flake.nix`
-/// 3. `/etc/nixos/configuration.nix`
-/// 4. `/nix/var/nix/profiles/system`
+/// When no flake is specified, it reports the target the host's platform
+/// discovered ([`discover_host_target`](crate::platform::discover_host_target)),
+/// the same answer activation and `check`/`--dry-run` use, and fails when the
+/// platform found none.
 ///
 /// This is separate from `NixOSConfigCheck` which validates the hidden storage
 /// overlay structure (symlinks, imports). This check validates the build target
@@ -31,7 +31,7 @@ use std::path::{Path, PathBuf};
 pub struct NixOSBuildTargetCheck {
     nixos_flake: Option<String>,
     selected_flake_dir: Option<PathBuf>,
-    hidden_volume_root: PathBuf,
+    discovered: HostTarget,
 }
 
 impl NixOSBuildTargetCheck {
@@ -40,12 +40,12 @@ impl NixOSBuildTargetCheck {
     /// # Arguments
     ///
     /// * `nixos_flake` - Optional flake reference from config/CLI (e.g., "/etc/nixos#hostname")
-    /// * `hidden_volume_root` - Path to hidden volume root for auto-discovery
-    pub fn new(nixos_flake: Option<String>, hidden_volume_root: PathBuf) -> Self {
+    /// * `discovered` - The build target the host's platform discovered
+    pub fn new(nixos_flake: Option<String>, discovered: HostTarget) -> Self {
         Self {
             nixos_flake,
             selected_flake_dir: None,
-            hidden_volume_root,
+            discovered,
         }
     }
 
@@ -57,12 +57,12 @@ impl NixOSBuildTargetCheck {
     pub fn with_selected_flake_dir(
         nixos_flake: Option<String>,
         selected_flake_dir: Option<PathBuf>,
-        hidden_volume_root: PathBuf,
+        discovered: HostTarget,
     ) -> Self {
         Self {
             nixos_flake,
             selected_flake_dir,
-            hidden_volume_root,
+            discovered,
         }
     }
 
@@ -121,19 +121,16 @@ impl NixOSBuildTargetCheck {
         )))
     }
 
-    /// Probe auto-discovery locations for NixOS configuration.
+    /// Report the auto-discovered build target.
     ///
-    /// Shares [`discover_host_target`](crate::platform::discover_host_target) with
+    /// The target comes from the host's platform through
+    /// [`discover_host_target`](crate::platform::discover_host_target), shared with
     /// activation and the `check`/`--dry-run` summary, so the pre-flight check can
     /// never disagree with the target activation would actually build. In
     /// particular a lone system profile resolves to the same legacy build target
-    /// here as it does on the activation path, instead of this check failing while
-    /// activation proceeds.
-    fn check_auto_discovery<F: Filesystem>(&self, fs: &F) -> Result<CheckResult> {
-        use crate::platform::{HostTarget, discover_host_target};
-
-        let target = discover_host_target(fs, &self.hidden_volume_root, None, false)?;
-        Ok(match target {
+    /// here as it does on the activation path.
+    fn check_auto_discovery(&self) -> CheckResult {
+        match &self.discovered {
             HostTarget::Flake(dir) => {
                 CheckResult::Pass(format!("Auto-discovered flake at {}", dir.display()))
             }
@@ -141,8 +138,8 @@ impl NixOSBuildTargetCheck {
                 "Auto-discovered legacy config at {}",
                 path.display()
             )),
-            // `None`/`false` arguments never yield these, but mapping them keeps
-            // the check total and in step with the shared cascade.
+            // An explicit reference is validated by `check_explicit_flake` before
+            // this runs; mapping it keeps the check total.
             HostTarget::ExplicitFlake(flake_ref) => {
                 CheckResult::Pass(format!("Auto-discovered flake reference {flake_ref}"))
             }
@@ -152,7 +149,7 @@ impl NixOSBuildTargetCheck {
             HostTarget::None => CheckResult::fail(
                 "No NixOS configuration found. Provide --nixos-flake or ensure /etc/nixos contains flake.nix or configuration.nix.".to_string()
             ),
-        })
+        }
     }
 }
 
@@ -171,7 +168,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
         } else if let Some(ref selected_flake_dir) = self.selected_flake_dir {
             self.check_selected_flake_dir(fs, selected_flake_dir)
         } else {
-            self.check_auto_discovery(fs)
+            Ok(self.check_auto_discovery())
         }
     }
 }
@@ -188,7 +185,7 @@ mod tests {
 
     #[test]
     fn test_name_and_description() {
-        let check = NixOSBuildTargetCheck::new(None, PathBuf::from("/mnt/hidden"));
+        let check = NixOSBuildTargetCheck::new(None, HostTarget::None);
         assert_eq!(
             PreFlightCheck::<MockFilesystem>::name(&check),
             "nixos-build-target"
@@ -211,7 +208,7 @@ mod tests {
 
         let check = NixOSBuildTargetCheck::new(
             Some("/etc/nixos#amnesia-virtualbox".to_string()),
-            PathBuf::from("/mnt/hidden"),
+            HostTarget::None,
         );
         let result = check.run(&fs).unwrap();
 
@@ -225,10 +222,7 @@ mod tests {
         fs.mock_set_path_exists("/etc/nixos", true);
         fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
 
-        let check = NixOSBuildTargetCheck::new(
-            Some("/etc/nixos".to_string()),
-            PathBuf::from("/mnt/hidden"),
-        );
+        let check = NixOSBuildTargetCheck::new(Some("/etc/nixos".to_string()), HostTarget::None);
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_pass());
@@ -241,7 +235,7 @@ mod tests {
 
         let check = NixOSBuildTargetCheck::new(
             Some("github:owner/repo#machine".to_string()),
-            PathBuf::from("/mnt/hidden"),
+            HostTarget::None,
         );
         let result = check.run(&fs).unwrap();
 
@@ -257,7 +251,7 @@ mod tests {
 
         let check = NixOSBuildTargetCheck::new(
             Some("path:/some/dir?foo=bar#machine".to_string()),
-            PathBuf::from("/mnt/hidden"),
+            HostTarget::None,
         );
         let result = check.run(&fs).unwrap();
 
@@ -279,7 +273,7 @@ mod tests {
 
         let check = NixOSBuildTargetCheck::new(
             Some("./relative-flake#host-alpha".to_string()),
-            PathBuf::from("/mnt/hidden"),
+            HostTarget::None,
         );
         let result = check.run(&fs).unwrap();
 
@@ -298,10 +292,7 @@ mod tests {
         fs.mock_set_path_exists(&current_dir.to_string_lossy(), true);
         fs.mock_set_path_exists(&flake_nix.to_string_lossy(), true);
 
-        let check = NixOSBuildTargetCheck::new(
-            Some(".#host-alpha".to_string()),
-            PathBuf::from("/mnt/hidden"),
-        );
+        let check = NixOSBuildTargetCheck::new(Some(".#host-alpha".to_string()), HostTarget::None);
         let result = check.run(&fs).unwrap();
 
         assert!(result.is_pass());
@@ -315,7 +306,7 @@ mod tests {
 
         let check = NixOSBuildTargetCheck::new(
             Some("/nonexistent/path#hostname".to_string()),
-            PathBuf::from("/mnt/hidden"),
+            HostTarget::None,
         );
         let result = check.run(&fs).unwrap();
 
@@ -331,7 +322,7 @@ mod tests {
 
         let check = NixOSBuildTargetCheck::new(
             Some("/etc/nixos#amnesia-virtualbox".to_string()),
-            PathBuf::from("/mnt/hidden"),
+            HostTarget::None,
         );
         let result = check.run(&fs).unwrap();
 
@@ -349,7 +340,7 @@ mod tests {
         let check = NixOSBuildTargetCheck::with_selected_flake_dir(
             None,
             Some(PathBuf::from("/mnt/hidden/nixos")),
-            PathBuf::from("/mnt/hidden"),
+            HostTarget::None,
         );
         let result = check.run(&fs).unwrap();
 
@@ -367,7 +358,7 @@ mod tests {
         let check = NixOSBuildTargetCheck::with_selected_flake_dir(
             None,
             Some(PathBuf::from("/mnt/hidden/nixos")),
-            PathBuf::from("/mnt/hidden"),
+            HostTarget::None,
         );
         let result = check.run(&fs).unwrap();
 
@@ -376,77 +367,54 @@ mod tests {
     }
 
     // ========================================================================
-    // Branch B: Auto-discovery
+    // Branch B: Auto-discovery (the target comes from the platform; the
+    // discovery cascade itself is tested in `platform::nixos`)
     // ========================================================================
 
+    fn auto(target: HostTarget) -> CheckResult {
+        NixOSBuildTargetCheck::new(None, target)
+            .run(&MockFilesystem::new())
+            .unwrap()
+    }
+
     #[test]
-    fn test_auto_discovery_hidden_volume_flake() {
-        let fs = MockFilesystem::new();
-        fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", true);
-
-        let check = NixOSBuildTargetCheck::new(None, PathBuf::from("/mnt/hidden"));
-        let result = check.run(&fs).unwrap();
-
+    fn test_auto_discovery_reports_discovered_flake() {
+        let result = auto(HostTarget::Flake(PathBuf::from("/mnt/hidden/nixos")));
         assert!(result.is_pass());
         assert!(result.message().contains("/mnt/hidden/nixos"));
     }
 
     #[test]
-    fn test_auto_discovery_etc_nixos_flake() {
-        let fs = MockFilesystem::new();
-        fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", false);
-        fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
-
-        let check = NixOSBuildTargetCheck::new(None, PathBuf::from("/mnt/hidden"));
-        let result = check.run(&fs).unwrap();
-
+    fn test_auto_discovery_reports_discovered_legacy_config() {
+        let result = auto(HostTarget::Legacy(PathBuf::from("/cfg/configuration.nix")));
         assert!(result.is_pass());
-        assert!(result.message().contains("/etc/nixos"));
+        assert!(result.message().contains("/cfg/configuration.nix"));
     }
 
     #[test]
-    fn test_auto_discovery_legacy_configuration_nix() {
-        let fs = MockFilesystem::new();
-        fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", false);
-        fs.mock_set_path_exists("/etc/nixos/flake.nix", false);
-        fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-
-        let check = NixOSBuildTargetCheck::new(None, PathBuf::from("/mnt/hidden"));
-        let result = check.run(&fs).unwrap();
-
+    fn test_auto_discovery_overlay_only_and_explicit_pass() {
+        assert!(auto(HostTarget::OverlayOnly).is_pass());
+        let result = auto(HostTarget::ExplicitFlake("gh:me/cfg".into()));
         assert!(result.is_pass());
-        assert!(result.message().contains("configuration.nix"));
-    }
-
-    #[test]
-    fn test_auto_discovery_system_profile_resolves_to_legacy_build_target() {
-        // A lone system profile resolves to the same legacy build target the
-        // activation path picks, so the check passes instead of diverging.
-        let fs = MockFilesystem::new();
-        fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", false);
-        fs.mock_set_path_exists("/etc/nixos/flake.nix", false);
-        fs.mock_set_path_exists("/etc/nixos/configuration.nix", false);
-        fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
-
-        let check = NixOSBuildTargetCheck::new(None, PathBuf::from("/mnt/hidden"));
-        let result = check.run(&fs).unwrap();
-
-        assert!(result.is_pass());
-        assert!(result.message().contains("/etc/nixos/configuration.nix"));
+        assert!(result.message().contains("gh:me/cfg"));
     }
 
     #[test]
     fn test_auto_discovery_nothing_found() {
-        let fs = MockFilesystem::new();
-        fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", false);
-        fs.mock_set_path_exists("/etc/nixos/flake.nix", false);
-        fs.mock_set_path_exists("/etc/nixos/configuration.nix", false);
-        fs.mock_set_path_exists("/nix/var/nix/profiles/system", false);
-
-        let check = NixOSBuildTargetCheck::new(None, PathBuf::from("/mnt/hidden"));
-        let result = check.run(&fs).unwrap();
-
+        let result = auto(HostTarget::None);
         assert!(result.is_fail());
         assert!(result.message().contains("--nixos-flake"));
+    }
+
+    /// The check reports the platform's answer, not a filesystem probe of its
+    /// own: NixOS files on disk cannot override what the platform discovered.
+    #[test]
+    fn test_auto_discovery_does_not_probe_the_filesystem() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+        let result = NixOSBuildTargetCheck::new(None, HostTarget::None)
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_fail());
     }
 }

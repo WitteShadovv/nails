@@ -106,7 +106,11 @@ pub fn execute(
         .unwrap_or_default();
 
     let session = session_summary();
-    let profile = profile_summary(overlay_only, config, manager.filesystem());
+    let profile = profile_summary(
+        manager
+            .discover_host_target(overlay_only)
+            .unwrap_or(nails_core::HostTarget::None),
+    );
     let inherited = inherited_summary(config, manager.filesystem());
 
     let report = CheckReport::finalize(
@@ -164,22 +168,15 @@ fn session_summary() -> SessionSummary {
 
 /// Describe which NixOS profile activation would build.
 ///
-/// Resolves the target through the one shared
-/// [`discover_host_target`](nails_core::discover_host_target), the same function
-/// [`super::build_nixos_manager`] and the `nixos-build-target` pre-flight check
-/// use, so `--dry-run` can never report a different target than activation would
-/// pick. In particular a lone system profile is reported as a legacy build here,
-/// matching activation, rather than as "no profile switch".
-fn profile_summary<F: Filesystem>(overlay_only: bool, config: &Config, fs: &F) -> ProfileSummary {
-    use nails_core::{HostTarget, discover_host_target};
-
-    let target = discover_host_target(
-        fs,
-        &config.hidden_volume_root,
-        config.nixos_flake.as_deref(),
-        overlay_only,
-    )
-    .unwrap_or(HostTarget::None);
+/// `target` comes from the manager's
+/// [`discover_host_target`](nails_core::NailsManager::discover_host_target), the
+/// same platform-driven discovery [`super::build_nixos_manager`] and the
+/// `nixos-build-target` pre-flight check use, so `--dry-run` can never report a
+/// different target than activation would pick. In particular a lone system
+/// profile is reported as a legacy build here, matching activation, rather than
+/// as "no profile switch".
+fn profile_summary(target: nails_core::HostTarget) -> ProfileSummary {
+    use nails_core::HostTarget;
 
     match target {
         HostTarget::OverlayOnly => ProfileSummary {
