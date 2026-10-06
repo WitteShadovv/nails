@@ -470,7 +470,6 @@ pub use checks::*;
 mod tests {
     use super::*;
     use crate::filesystem::MockFilesystem;
-    use serial_test::serial;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -639,7 +638,6 @@ mod tests {
     }
 
     #[test]
-    #[serial(render_state)]
     fn test_check_result_display_without_colour_keeps_unicode_without_ansi() {
         let _guard = crate::output::RenderStateTestGuard::new();
 
@@ -650,7 +648,6 @@ mod tests {
     }
 
     #[test]
-    #[serial(render_state)]
     fn test_check_result_display_ascii_uses_bracket_markers() {
         let _guard = crate::output::RenderStateTestGuard::new();
         crate::output::configure(true, true, true);
@@ -662,7 +659,6 @@ mod tests {
     }
 
     #[test]
-    #[serial(render_state)]
     fn test_check_result_display_follows_stderr_colour_only() {
         let _guard = crate::output::RenderStateTestGuard::new();
         crate::output::configure(true, false, false);

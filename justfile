@@ -37,12 +37,11 @@ test:
 doctest:
     cargo test --doc --workspace --all-features --locked
 
-# Prove the unit tests do not depend on execution order. `#[serial]` only
-# orders serial tests against each other, so a leak through the shared process
-# environment between an unmarked test and a serial one surfaces only under a
-# threaded, shuffled run; nextest isolates each test in its own process and
-# would hide it. Hence libtest, not nextest, and `--lib`, where the env-mutating
-# unit tests live. The `--shuffle-seed` flag is unstable, so the pinned stable
+# Prove the unit tests do not depend on execution order. No test mutates the
+# shared process environment (they inject a RuntimeEnv instead), and a leak
+# through any remaining shared state surfaces only under a threaded, shuffled
+# run; nextest isolates each test in its own process and would hide it. Hence
+# libtest, not nextest, and `--lib`, where most unit tests live. The `--shuffle-seed` flag is unstable, so the pinned stable
 # compiler is told to accept it with RUSTC_BOOTSTRAP rather than adding a
 # nightly toolchain.
 shuffle seeds="20":

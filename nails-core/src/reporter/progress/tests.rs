@@ -2,7 +2,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
-use serial_test::serial;
+
+/// Serialises the tests that put a TTY reporter on screen: the active spinner is
+/// process-wide (`write_log` routes through it), so two such tests must not
+/// overlap. A poisoned lock is recovered; the failed test's reporter is gone.
+fn tty_lock() -> std::sync::MutexGuard<'static, ()> {
+    static TTY_TEST_LOCK: Mutex<()> = Mutex::new(());
+    TTY_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 /// A cloneable in-memory writer, so a test keeps a handle on what a reporter
 /// wrote after handing it a boxed copy.
@@ -185,8 +194,8 @@ fn screen(raw: &str) -> Vec<String> {
 }
 
 #[test]
-#[serial]
 fn tty_reporter_shows_step_and_elapsed_and_leaves_finished_steps_behind() {
+    let _tty = tty_lock();
     let out = Buffer::default();
     let (clock, now) = manual_clock();
     let mut reporter = TtyReporter::with_clock(out.boxed(), PLAIN, now, None);
@@ -222,8 +231,8 @@ fn tty_reporter_shows_step_and_elapsed_and_leaves_finished_steps_behind() {
 }
 
 #[test]
-#[serial]
 fn tty_reporter_shows_the_last_build_line_under_the_spinner() {
+    let _tty = tty_lock();
     let out = Buffer::default();
     let (_clock, now) = manual_clock();
     let mut reporter = TtyReporter::with_clock(out.boxed(), PLAIN, now, None);
@@ -241,8 +250,8 @@ fn tty_reporter_shows_the_last_build_line_under_the_spinner() {
 }
 
 #[test]
-#[serial]
 fn log_lines_are_written_above_the_spinner() {
+    let _tty = tty_lock();
     let out = Buffer::default();
     let (_clock, now) = manual_clock();
     let mut reporter = TtyReporter::with_clock(out.boxed(), PLAIN, now, None);
@@ -270,8 +279,8 @@ fn log_lines_are_written_above_the_spinner() {
 }
 
 #[test]
-#[serial]
 fn tty_lines_are_truncated_so_they_never_wrap() {
+    let _tty = tty_lock();
     let out = Buffer::default();
     let (_clock, now) = manual_clock();
     let mut reporter = TtyReporter::with_clock(out.boxed(), PLAIN, now, None);
@@ -307,8 +316,8 @@ impl Reporter for Recorder {
 }
 
 #[test]
-#[serial]
 fn free_functions_route_to_the_active_reporter_only_while_installed() {
+    let _tty = tty_lock();
     let events = Arc::new(Mutex::new(Vec::new()));
     {
         let _scope = install(shared(Recorder(events.clone())));

@@ -7,7 +7,6 @@
 
 use super::*;
 use crate::error::Result;
-use serial_test::serial;
 use std::collections::VecDeque;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -1073,7 +1072,6 @@ fn test_build_and_switch_keeps_real_build_failures_fatal() {
 }
 
 #[test]
-#[serial]
 fn test_real_command_executor_execute_nixos_rebuild_uses_path_and_captures_output() {
     // The default executor resolves the toolchain from the caller's PATH, which
     // is how the VM tests substitute stub builds, so this one test scopes a
@@ -1103,7 +1101,6 @@ fn test_real_command_executor_execute_nixos_rebuild_uses_path_and_captures_outpu
 }
 
 #[test]
-#[serial]
 fn test_real_command_executor_execute_nixos_rebuild_returns_false_on_nonzero_exit() {
     let temp_dir = tempfile::tempdir().unwrap();
     let script = temp_dir.path().join("nixos-rebuild");
@@ -1127,7 +1124,6 @@ fn test_real_command_executor_execute_nixos_rebuild_returns_false_on_nonzero_exi
 }
 
 #[test]
-#[serial]
 fn test_real_command_executor_execute_nixos_rebuild_returns_not_found_when_missing() {
     let temp_dir = tempfile::tempdir().unwrap();
 
@@ -1144,7 +1140,6 @@ fn test_real_command_executor_execute_nixos_rebuild_returns_not_found_when_missi
 }
 
 #[test]
-#[serial]
 fn test_real_command_executor_execute_switch_to_configuration_runs_exact_script_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     let script = temp_dir.path().join("switch-to-configuration");
@@ -1164,7 +1159,6 @@ fn test_real_command_executor_execute_switch_to_configuration_runs_exact_script_
 }
 
 #[test]
-#[serial]
 fn test_real_command_executor_execute_nix_drops_nix_path_only_when_asked() {
     let temp_dir = tempfile::tempdir().unwrap();
     write_executable_script(

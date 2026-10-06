@@ -15,7 +15,6 @@ use crate::{
     Verbosity, config::DEFAULT_HIDDEN_VOLUME_ROOT, config::OverlayMode,
 };
 use chrono::Utc;
-use serial_test::serial;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

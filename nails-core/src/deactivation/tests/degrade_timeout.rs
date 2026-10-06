@@ -4,7 +4,6 @@
 use super::*;
 
 #[test]
-#[serial]
 fn deactivate_degrades_when_a_target_cannot_unmount() {
     let (manager, _hidden_root) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
     // Fail the middle target; the teardown must still attempt the other two and
@@ -43,7 +42,6 @@ fn deactivate_degrades_when_a_target_cannot_unmount() {
     assert!(guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
 }
 #[test]
-#[serial]
 fn emergency_deactivate_degrades_without_remount_when_a_target_cannot_unmount() {
     let (manager, _hidden_root) = active_manager_with_overlays(&["/home", "/etc", "/opt"]);
     manager
@@ -73,7 +71,6 @@ fn emergency_deactivate_degrades_without_remount_when_a_target_cannot_unmount() 
     assert!(guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
 }
 #[test]
-#[serial]
 fn deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
@@ -98,7 +95,6 @@ fn deactivate_returns_err_within_timeout_when_deactivating_write_fails() {
     assert!(manager.lock().unwrap().current_state().unwrap().is_active());
 }
 #[test]
-#[serial]
 fn emergency_completes_within_timeout_when_deactivating_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
@@ -122,7 +118,6 @@ fn emergency_completes_within_timeout_when_deactivating_write_fails() {
     );
 }
 #[test]
-#[serial]
 fn deactivate_returns_err_within_timeout_when_inactive_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
@@ -145,7 +140,6 @@ fn deactivate_returns_err_within_timeout_when_inactive_write_fails() {
     assert!(manager.lock().unwrap().current_state().unwrap().is_active());
 }
 #[test]
-#[serial]
 fn emergency_completes_within_timeout_when_inactive_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 
@@ -170,7 +164,6 @@ fn emergency_completes_within_timeout_when_inactive_write_fails() {
     );
 }
 #[test]
-#[serial]
 fn deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
     let (manager, _hidden_root) = active_manager_with_failing_profile_lookup();
     let worker = Arc::clone(&manager);
@@ -184,7 +177,6 @@ fn deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
     assert!(manager.lock().unwrap().current_state().unwrap().is_active());
 }
 #[test]
-#[serial]
 fn emergency_deactivate_returns_err_within_timeout_when_system_profile_lookup_fails() {
     let (manager, _hidden_root) = active_manager_with_failing_profile_lookup();
     let worker = Arc::clone(&manager);
@@ -200,7 +192,6 @@ fn emergency_deactivate_returns_err_within_timeout_when_system_profile_lookup_fa
     );
 }
 #[test]
-#[serial]
 fn deactivate_returns_err_within_timeout_when_rollback_write_also_fails() {
     use crate::state::save_probe::{self, FailOn};
 

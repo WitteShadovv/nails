@@ -4,7 +4,6 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_idempotent_deactivation() {
     // Setup manager in INACTIVE state
     let fs = MockFilesystem::new();
@@ -38,7 +37,6 @@ fn test_idempotent_deactivation() {
     assert_eq!(report.unmounted_overlays.len(), 0);
 }
 #[test]
-#[serial]
 fn test_deactivation_from_non_active_state_fails() {
     // Setup manager in ACTIVATING state (invalid for deactivation)
     let fs = MockFilesystem::new();
@@ -79,7 +77,6 @@ fn test_deactivation_from_non_active_state_fails() {
     }
 }
 #[test]
-#[serial]
 fn test_successful_deactivation() {
     let manager = setup_active_manager();
 
@@ -106,7 +103,6 @@ fn test_successful_deactivation() {
     assert_eq!(state, SystemState::Inactive);
 }
 #[test]
-#[serial]
 fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
     let fs = MockFilesystem::new();
     let profile = setup_system_profile_stub(&fs);
@@ -193,7 +189,6 @@ fn test_successful_deactivation_unmounts_all_tracked_overlays_in_lifo_order() {
     assert!(loaded.overlay_status.is_empty());
 }
 #[test]
-#[serial]
 fn test_deactivation_clears_failed_overlays_tracker_state() {
     let fs = MockFilesystem::new();
     let profile = setup_system_profile_stub(&fs);
@@ -246,7 +241,6 @@ fn test_deactivation_clears_failed_overlays_tracker_state() {
     assert!(loaded.overlay_status.is_empty());
 }
 #[test]
-#[serial]
 fn test_normal_mode_is_idempotent_on_inactive() {
     use crate::DeactivationMode;
 

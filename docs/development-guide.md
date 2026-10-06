@@ -21,29 +21,38 @@ reverse-order teardown. Those tests live in
 skipped by the normal run. CI runs them in the dedicated `privileged-mounts`
 job of `ci.yml` on every PR, which `gate` aggregates.
 
-## Tests that touch the process environment
+## Tests and the process environment
 
 All tests in a test binary share one process environment and run on parallel
-threads. `#[serial]` does not protect it, because it orders a test only against
-other `#[serial]` tests. A test that reads or writes an environment variable, or
-spawns a child that inherits one, holds an `EnvGuard`
-(`nails_core::test_support::EnvGuard`, behind the `test-support` feature):
+threads, so no test reads its inputs from, or writes them to, that environment.
+Product code does not read the environment either: `nails-cli` `main` reads it
+once into a `nails_core::RuntimeEnv` (`RuntimeEnv::from_process_env`), passes
+that snapshot to every handler, and installs it for the few leaf helpers below
+every handler (the process runner, the runtime-safety switch), which read it
+through `nails_core::runtime_env::current()`. A test builds the snapshot it
+needs and injects it:
 
 ```rust
-let mut env = EnvGuard::lock();
-env.set("SUDO_USER", "alice").remove("NAILS_TARGET_USER");
-// ... exercise the code under test ...
-// dropping `env` restores both variables and releases the lock
+let env = RuntimeEnv::empty()
+    .with_sudo_uid("1000")
+    .with_display(":0");
+let ctx = detect_session_context(&executor, &env)?;
+
+// Managers carry their own snapshot.
+let manager = NailsManager::new(fs, config, state_path)
+    .with_runtime_env(RuntimeEnv::empty().with_system_profile_path(&profile));
 ```
 
-The guard takes the single environment lock of the test binary, tolerates a
-lock poisoned by a failed test, and is re-entrant on its thread. A test that only
-reads the environment takes `let _env = EnvGuard::lock();`. Never call
-`std::env::set_var` or `remove_var` directly, and never "clean up" with
-`remove_var`: it deletes a value that existed before the test. Prefer passing a
-value in over mutating the environment at all; for example, the NixOS builder
-tests give `RealCommandExecutor::with_search_path` a stub directory instead of
-changing `PATH`.
+The test-only knobs (`NAILS_TEST_*`, the fake `systemctl`/`reboot`/`systemd-run`
+paths) live in `RuntimeEnv::test_hooks`, compiled only with the `test-hooks`
+feature. A test that exercises a leaf helper scopes a snapshot to its own thread
+with `nails_core::runtime_env::ScopedRuntimeEnv`. A subprocess test sets the
+child's variables on the `Command` and the child reads them once with
+`RuntimeEnv::from_process_env` and installs them, exactly as `main` does. Never
+call `std::env::set_var` or `remove_var`, and never change the working directory
+in a test; for example, the NixOS builder tests give
+`RealCommandExecutor::with_search_path` a stub directory, and the relative-flake
+tests spell their refs relative to the shared working directory.
 
 A shuffled run catches a test that depends on another test's leftovers. The
 shuffle flag is unstable in libtest, so it needs `RUSTC_BOOTSTRAP` on the pinned

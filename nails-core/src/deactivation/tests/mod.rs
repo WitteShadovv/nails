@@ -19,7 +19,6 @@ use crate::{
     CleanupConfig, CleanupMode, CleanupReport, Config, MockFilesystem, NailsError, NailsManager,
     StateFile, SystemState,
 };
-use serial_test::serial;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

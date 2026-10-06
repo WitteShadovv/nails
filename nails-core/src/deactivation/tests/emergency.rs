@@ -17,7 +17,6 @@ fn mount_nails_overlay(fs: &MockFilesystem, hidden_root: &Path, target: &Path) {
 }
 
 #[test]
-#[serial]
 fn test_emergency_deactivate_from_inactive_state_with_no_mounts_succeeds() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -42,7 +41,6 @@ fn test_emergency_deactivate_from_inactive_state_with_no_mounts_succeeds() {
     );
 }
 #[test]
-#[serial]
 fn test_emergency_deactivate_from_activating_state_tears_down_overlays() {
     let manager = setup_manager_in_state(SystemState::Activating {
         started_at: chrono::Utc::now(),
@@ -66,7 +64,6 @@ fn test_emergency_deactivate_from_activating_state_tears_down_overlays() {
     assert!(!guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
 }
 #[test]
-#[serial]
 fn test_emergency_deactivate_from_deactivating_state_tears_down_overlays() {
     let manager = setup_manager_in_state(SystemState::Deactivating {
         started_at: chrono::Utc::now(),
@@ -91,7 +88,6 @@ fn test_emergency_deactivate_from_deactivating_state_tears_down_overlays() {
 }
 
 #[test]
-#[serial]
 fn test_recover_tears_down_remaining_mounts_from_degraded_state() {
     let manager = setup_manager_in_state(SystemState::Degraded {
         since: chrono::Utc::now(),
@@ -115,7 +111,6 @@ fn test_recover_tears_down_remaining_mounts_from_degraded_state() {
 }
 
 #[test]
-#[serial]
 fn test_recover_is_a_no_op_when_already_inactive() {
     let manager = setup_manager_in_state(SystemState::Inactive);
 
@@ -129,7 +124,6 @@ fn test_recover_is_a_no_op_when_already_inactive() {
 }
 
 #[test]
-#[serial]
 fn test_recover_backs_up_a_corrupt_state_file() {
     let manager = setup_manager_in_state(SystemState::Activating {
         started_at: chrono::Utc::now(),
@@ -155,7 +149,6 @@ fn test_recover_backs_up_a_corrupt_state_file() {
 }
 
 #[test]
-#[serial]
 fn test_emergency_deactivate_force_unmount_succeeds_after_graceful_failure() {
     let fs = MockFilesystem::new();
     let profile = setup_system_profile_stub(&fs);
@@ -215,7 +208,6 @@ fn test_emergency_deactivate_force_unmount_succeeds_after_graceful_failure() {
     assert!(loaded.overlay_status.is_empty());
 }
 #[test]
-#[serial]
 fn test_emergency_deactivate_restarts_nix_daemon_when_nix_store_unmount_fails() {
     let fs = MockFilesystem::new();
     let profile = setup_system_profile_stub(&fs);
@@ -278,7 +270,6 @@ fn test_emergency_deactivate_restarts_nix_daemon_when_nix_store_unmount_fails() 
     );
 }
 #[test]
-#[serial]
 fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
@@ -336,7 +327,6 @@ fn test_emergency_deactivate_missing_switch_script_keeps_inactive_state() {
     assert!(loaded.overlay_status.is_empty());
 }
 #[test]
-#[serial]
 fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
     let fs = MockFilesystem::new();
     let profile = setup_system_profile_stub(&fs);
@@ -399,7 +389,6 @@ fn test_emergency_deactivate_unmounts_nix_store_when_nix_overlay_present() {
     );
 }
 #[test]
-#[serial]
 fn test_emergency_mode_skips_non_essential_steps() {
     use crate::DeactivationMode;
 
@@ -430,7 +419,6 @@ fn test_emergency_mode_skips_non_essential_steps() {
     );
 }
 #[test]
-#[serial]
 fn test_emergency_mode_fails_on_inactive_state() {
     use crate::DeactivationMode;
 
@@ -473,7 +461,6 @@ fn test_emergency_mode_fails_on_inactive_state() {
 }
 
 #[test]
-#[serial]
 fn test_emergency_deactivate_removes_the_runtime_copy() {
     let manager = setup_manager_in_state(SystemState::Activating {
         started_at: chrono::Utc::now(),
@@ -516,7 +503,6 @@ fn test_emergency_deactivate_removes_the_runtime_copy() {
 }
 
 #[test]
-#[serial]
 fn test_normal_deactivate_removes_the_runtime_copy() {
     let (manager, _temp) = active_manager_with_overlays(&["/home"]);
 
@@ -546,7 +532,6 @@ fn test_normal_deactivate_removes_the_runtime_copy() {
 }
 
 #[test]
-#[serial]
 fn test_emergency_stops_recorded_units_but_never_touches_the_session_or_dm() {
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
@@ -645,7 +630,6 @@ fn test_emergency_stops_recorded_units_but_never_touches_the_session_or_dm() {
 }
 
 #[test]
-#[serial]
 fn test_emergency_order_unmount_then_cleanup_then_drop_page_cache() {
     use crate::filesystem::MockOp;
 
@@ -698,7 +682,6 @@ fn test_emergency_order_unmount_then_cleanup_then_drop_page_cache() {
 }
 
 #[test]
-#[serial]
 fn test_emergency_scrubs_the_runtime_journal_even_without_a_var_overlay() {
     use crate::filesystem::PathKind;
 
@@ -734,7 +717,6 @@ fn test_emergency_scrubs_the_runtime_journal_even_without_a_var_overlay() {
 }
 
 #[test]
-#[serial]
 fn test_emergency_detaches_overlays_even_when_the_final_state_write_fails() {
     use crate::state::save_probe::{self, FailOn};
 

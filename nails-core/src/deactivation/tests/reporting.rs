@@ -4,7 +4,6 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_deactivation_report_new() {
     let report = DeactivationReport {
         cleanup_report: CleanupReport::default(),
@@ -27,7 +26,6 @@ fn test_deactivation_report_new() {
     assert!(!report.was_already_inactive);
 }
 #[test]
-#[serial]
 fn test_deactivation_report_display_already_inactive() {
     let report = DeactivationReport {
         cleanup_report: CleanupReport::default(),
@@ -49,7 +47,6 @@ fn test_deactivation_report_display_already_inactive() {
     assert!(output.contains("Already inactive"));
 }
 #[test]
-#[serial]
 fn test_deactivation_report_display_with_items() {
     let mut cleanup_report = CleanupReport::new(CleanupMode::Fast);
     cleanup_report.add_cleaned("Removed 3 history entries");
@@ -79,7 +76,6 @@ fn test_deactivation_report_display_with_items() {
     assert!(output.contains("Deactivation complete"));
 }
 #[test]
-#[serial]
 fn test_deactivation_orchestrator_new() {
     let _manager = setup_active_manager();
     let config = CleanupConfig::default();

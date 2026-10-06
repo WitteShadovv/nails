@@ -131,7 +131,6 @@ mod tests {
     use crate::filesystem::PathKind;
     use crate::nixos::{CommandExecutor, NixOSBuilder, SwitchAction};
     use crate::{MockFilesystem, StateFile, TestWorld};
-    use serial_test::serial;
     use std::path::Path;
     use std::sync::{Arc, Mutex};
 
@@ -209,7 +208,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_switch_wraps_run_current_system_preparation_error() {
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
@@ -246,7 +244,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_switch_builds_toplevel_and_persists_store_path() {
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
@@ -299,7 +296,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_switch_records_decoy_system_from_run_current_system() {
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
@@ -333,7 +329,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_switch_fast_path_reuses_cached_toplevel_without_building() {
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
@@ -387,7 +382,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_overlay_only_switch_is_not_requested_and_writes_no_rebuild_notification() {
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();
@@ -431,7 +425,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_switch_fast_path_rebuilds_when_cached_toplevel_missing() {
         let temp_dir = tempfile::tempdir().unwrap();
         let hidden_root = temp_dir.path();

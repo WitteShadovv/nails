@@ -4,7 +4,6 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_deactivation_skips_decoy_restore_when_disabled() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -64,7 +63,6 @@ fn test_deactivation_skips_decoy_restore_when_disabled() {
     assert!(loaded.overlay_status.is_empty());
 }
 #[test]
-#[serial]
 fn test_deactivation_restores_decoy_by_symlink_without_running_switch() {
     // Normal deactivation must restore the decoy by swapping the
     // /run/current-system symlink only. It must never run
@@ -99,7 +97,6 @@ fn test_deactivation_restores_decoy_by_symlink_without_running_switch() {
     drop(guard);
 }
 #[test]
-#[serial]
 fn test_deactivation_returns_error_when_no_decoy_profile_is_available() {
     let manager = setup_active_manager();
     // Point the profile lookup back at the default location, absent from the mock.
@@ -131,7 +128,6 @@ fn test_deactivation_returns_error_when_no_decoy_profile_is_available() {
     );
 }
 #[test]
-#[serial]
 fn test_deactivation_preserves_generation_and_fingerprint() {
     let fs = MockFilesystem::new();
     let profile = setup_system_profile_stub(&fs);
@@ -211,7 +207,6 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
     );
 }
 #[test]
-#[serial]
 fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();
@@ -308,7 +303,6 @@ fn test_deactivate_does_not_reboot_when_decoy_switch_fails() {
     assert!(manager.lock().unwrap().current_state().unwrap().is_active());
 }
 #[test]
-#[serial]
 fn test_deactivate_prepares_decoy_symlink_when_restore_is_required() {
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();

@@ -6,7 +6,6 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
@@ -124,7 +123,6 @@ fn test_activation_rebuild_failure_preserves_mounted_state_and_notifies() {
 }
 
 #[test]
-#[serial]
 fn test_activation_non_fatal_switch_failures_do_not_roll_back() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
@@ -232,7 +230,6 @@ fn test_activation_non_fatal_switch_failures_do_not_roll_back() {
 }
 
 #[test]
-#[serial]
 fn test_switch_required_rolls_overlays_back_on_switch_failure() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
@@ -316,7 +313,6 @@ fn test_switch_required_rolls_overlays_back_on_switch_failure() {
 }
 
 #[test]
-#[serial]
 fn test_reapply_clears_stale_switch_warning_on_success() {
     use crate::manager::state_management::reconcile_mounts_override;
 

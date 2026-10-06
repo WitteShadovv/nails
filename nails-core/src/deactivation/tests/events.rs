@@ -4,7 +4,6 @@
 use super::*;
 
 #[test]
-#[serial]
 #[tracing_test::traced_test]
 fn test_deactivation_emits_structured_events() {
     let manager = setup_active_manager();
@@ -28,7 +27,6 @@ fn test_deactivation_emits_structured_events() {
     assert!(logs_contain("duration_ms"));
 }
 #[test]
-#[serial]
 #[tracing_test::traced_test]
 fn test_deactivation_cleanup_event_includes_count() {
     let manager = setup_active_manager();
@@ -62,7 +60,6 @@ fn test_deactivation_cleanup_event_includes_count() {
     assert!(logs_contain("Cleanup complete") || logs_contain("cleaned_items"));
 }
 #[test]
-#[serial]
 #[tracing_test::traced_test]
 fn test_deactivation_unmount_event_includes_overlay_list() {
     let manager = setup_active_manager();
@@ -84,7 +81,6 @@ fn test_deactivation_unmount_event_includes_overlay_list() {
     assert!(logs_contain("count") || logs_contain("unmounted"));
 }
 #[test]
-#[serial]
 #[tracing_test::traced_test]
 fn test_deactivation_idempotent_log() {
     // Test idempotent deactivation logging

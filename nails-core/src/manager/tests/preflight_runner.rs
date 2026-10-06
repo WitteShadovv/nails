@@ -705,7 +705,6 @@ fn test_preflight_fails_when_explicit_flake_is_missing() {
 // ========== Read-only NixOS preflight ==========
 
 #[test]
-#[serial]
 fn test_run_read_only_nixos_preflight_reports_lock_file_problem_before_activation() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
@@ -826,7 +825,6 @@ fn manager_with_unbuildable_flake(
 }
 
 #[test]
-#[serial]
 fn test_post_mount_guards_skip_flake_validation_on_fast_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
@@ -864,7 +862,6 @@ fn test_post_mount_guards_skip_flake_validation_on_fast_path() {
 }
 
 #[test]
-#[serial]
 fn test_run_read_only_nixos_preflight_uses_metadata_and_attr_existence_checks_without_drv_eval() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();

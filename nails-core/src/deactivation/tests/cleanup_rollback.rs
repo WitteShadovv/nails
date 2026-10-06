@@ -4,7 +4,6 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_emergency_cleanup_preserves_explicit_config_path() {
     let fs = MockFilesystem::new();
     let _profile = setup_system_profile_stub(&fs);
@@ -76,7 +75,6 @@ fn test_emergency_cleanup_preserves_explicit_config_path() {
     );
 }
 #[test]
-#[serial]
 fn test_cleanup_failure_rollback() {
     let manager = setup_active_manager();
     // Cleanup resolves the history files from HOME, so it points at the fake
@@ -141,7 +139,6 @@ fn test_cleanup_failure_rollback() {
     );
 }
 #[test]
-#[serial]
 fn test_cleanup_failure_keeps_overlays_mounted() {
     // Additional test: verify overlays remain mounted after cleanup failure
     let manager = setup_active_manager();

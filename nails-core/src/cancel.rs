@@ -156,10 +156,8 @@ pub mod testing {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     #[test]
-    #[serial]
     fn checkpoint_is_ok_when_not_cancelled() {
         testing::reset();
         assert!(!is_cancelled());
@@ -167,7 +165,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn checkpoint_returns_cancelled_when_flag_is_set() {
         testing::request();
         assert!(is_cancelled());
@@ -177,7 +174,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn install_handlers_is_idempotent() {
         // Two calls must not panic or double-register; the Once guard makes the
         // second a no-op. We cannot easily observe the registration itself here,

@@ -4,7 +4,6 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_deactivate_returns_error_when_no_system_profile_exists() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -47,7 +46,6 @@ fn test_deactivate_returns_error_when_no_system_profile_exists() {
 }
 
 #[test]
-#[serial]
 fn test_deactivate_restores_recorded_decoy_system_without_a_profile() {
     // A host with no system profile (an impermanent or freshly imaged decoy) must
     // still deactivate: activation records the decoy's running system, and the
@@ -108,7 +106,6 @@ fn test_deactivate_restores_recorded_decoy_system_without_a_profile() {
     );
 }
 #[test]
-#[serial]
 fn test_deactivate_overlay_only_session_succeeds_without_system_profile() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
@@ -172,7 +169,6 @@ fn test_deactivate_overlay_only_session_succeeds_without_system_profile() {
     assert!(loaded.overlay_status.is_empty());
 }
 #[test]
-#[serial]
 fn test_deactivate_uses_overlay_metadata_when_active_overlay_list_is_incomplete() {
     let fs = MockFilesystem::new();
     let temp_dir = tempfile::tempdir().unwrap();

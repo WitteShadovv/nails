@@ -4,14 +4,12 @@
 use super::*;
 
 #[test]
-#[serial]
 fn test_deactivation_gate_returns_immediately_when_disabled() {
     let env = deactivation_gate_env(None, None);
 
     assert!(maybe_block_after_deactivating_state_transition(&env).is_ok());
 }
 #[test]
-#[serial]
 fn test_deactivation_gate_writes_default_entered_marker() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("deactivation.gate");

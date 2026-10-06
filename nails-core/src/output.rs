@@ -297,16 +297,27 @@ pub fn info(msg: &str) {
     let _ = writeln!(stdout(), "{}", format_info(msg));
 }
 
-/// Resets the global render state on creation and drop, so tests that change
-/// it do not leak into one another. Tests using it must be `#[serial(render_state)]`.
+/// Serialises the tests that change the global render state.
 #[cfg(test)]
-pub(crate) struct RenderStateTestGuard;
+static RENDER_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Holds the render-state test lock and resets the global render state on
+/// creation and drop, so tests that change it neither overlap nor leak into one
+/// another. A poisoned lock is recovered: the failed test's guard already reset
+/// the state when it unwound.
+#[cfg(test)]
+pub(crate) struct RenderStateTestGuard {
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
 
 #[cfg(test)]
 impl RenderStateTestGuard {
     pub(crate) fn new() -> Self {
+        let lock = RENDER_STATE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         configure(false, false, false);
-        Self
+        Self { _lock: lock }
     }
 }
 
@@ -320,7 +331,6 @@ impl Drop for RenderStateTestGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     const COLOR: Style = Style {
         color: true,
@@ -387,7 +397,6 @@ mod tests {
     }
 
     #[test]
-    #[serial(render_state)]
     fn unconfigured_state_has_no_colour() {
         let _guard = RenderStateTestGuard::new();
         assert_eq!(format_error("test"), "✗ test");
@@ -396,7 +405,6 @@ mod tests {
     }
 
     #[test]
-    #[serial(render_state)]
     fn colour_is_decided_per_stream() {
         let _guard = RenderStateTestGuard::new();
         configure(false, true, false);
@@ -409,7 +417,6 @@ mod tests {
     }
 
     #[test]
-    #[serial(render_state)]
     fn ascii_applies_to_both_streams() {
         let _guard = RenderStateTestGuard::new();
         configure(true, true, true);
@@ -420,7 +427,6 @@ mod tests {
     }
 
     #[test]
-    #[serial(render_state)]
     fn print_functions_do_not_panic() {
         let _guard = RenderStateTestGuard::new();
         error("test error");

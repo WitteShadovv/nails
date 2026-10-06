@@ -604,7 +604,6 @@ fn manager_ready_for_reboot_step() -> (
 }
 
 #[test]
-#[serial]
 fn deactivate_requests_reboot_through_injected_dispatcher_even_in_test_runtime() {
     // The post-teardown reboot used to be wrapped in
     // `!should_skip_host_interaction()`, so `NAILS_TEST_RUNTIME` (and this crate's
@@ -638,7 +637,6 @@ fn deactivate_requests_reboot_through_injected_dispatcher_even_in_test_runtime()
 }
 
 #[test]
-#[serial]
 fn deactivate_surfaces_a_refusing_reboot_guard_as_an_error() {
     // A guard that refuses the destructive reboot step must surface as an error,
     // never a silent `Ok`: the dispatcher records the attempt and returns the
@@ -1028,7 +1026,6 @@ fn setup_active_with_home_overlay() -> (
 /// runs at activation, so even a layer whose gate would refuse cannot fail a
 /// teardown late, and nothing is staged or imported on the way out.
 #[test]
-#[serial]
 fn test_deactivation_succeeds_when_base_config_clean_after_unmount() {
     let (manager, fs_clone, state_path, _temp_dir) = setup_active_with_etc_overlay();
     let layer = use_scripted_nixos_layer(
@@ -1058,7 +1055,6 @@ fn test_deactivation_succeeds_when_base_config_clean_after_unmount() {
 
 /// The same holds when `/etc` was never overlaid.
 #[test]
-#[serial]
 fn test_deactivation_skips_base_check_when_etc_not_overlaid() {
     let (manager, _fs_clone, _state_path, _temp_dir) = setup_active_with_home_overlay();
     let layer = use_scripted_nixos_layer(
@@ -1084,7 +1080,6 @@ fn test_deactivation_skips_base_check_when_etc_not_overlaid() {
 /// The hidden import lands only in the overlaid /etc, which deactivation removes.
 /// Uses Explicit mode with a /home overlay (avoids Auto-mode overlay discovery complexity).
 #[test]
-#[serial]
 fn test_full_cycle_base_config_clean_after_deactivation() {
     let temp_dir = tempfile::tempdir().unwrap();
     let mock_hidden_vol = temp_dir.path();
@@ -1320,7 +1315,6 @@ fn test_normal_deactivate_on_untrusted_state_still_refuses() {
 /// the unmount, restarts journald onto the decoy /var, then rotates and scrubs the
 /// volatile runtime journal under /run/log/journal — in that order.
 #[test]
-#[serial]
 fn emergency_teardown_handles_journal_in_order_and_scrubs_runtime_store() {
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
     let mock_hidden_vol = temp_dir.path();
@@ -1451,7 +1445,6 @@ fn emergency_teardown_handles_journal_in_order_and_scrubs_runtime_store() {
 /// A normal (rebooting) deactivation does not set the reboot recommendation: the
 /// reboot is part of the flow, so there is no residual-residue warning to raise.
 #[test]
-#[serial]
 fn normal_deactivation_does_not_recommend_a_reboot() {
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
     let mock_hidden_vol = temp_dir.path();

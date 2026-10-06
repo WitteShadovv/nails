@@ -9,7 +9,6 @@ use super::reboot::{
 use crate::nixos::SwitchAction;
 use crate::runtime_env::TestHooks;
 use crate::{NailsError, RuntimeEnv};
-use serial_test::serial;
 use std::cell::Cell;
 use std::ffi::OsStr;
 use std::fs;
@@ -35,7 +34,6 @@ fn write_executable_script(path: &std::path::Path, body: &str) {
 }
 
 #[test]
-#[serial]
 fn request_reboot_uses_configured_systemctl_override() {
     let temp_dir = tempfile::tempdir().unwrap();
     let marker = temp_dir.path().join("systemctl-arg.txt");
@@ -57,7 +55,6 @@ fn request_reboot_uses_configured_systemctl_override() {
 }
 
 #[test]
-#[serial]
 fn request_reboot_falls_back_to_override_reboot_binary_when_systemctl_fails() {
     let temp_dir = tempfile::tempdir().unwrap();
     let systemctl = temp_dir.path().join("systemctl");
@@ -81,7 +78,6 @@ fn request_reboot_falls_back_to_override_reboot_binary_when_systemctl_fails() {
 }
 
 #[test]
-#[serial]
 fn request_reboot_fails_closed_in_test_runtime() {
     let err =
         request_reboot(&RuntimeEnv::empty()).expect_err("request_reboot must be blocked in tests");
@@ -89,7 +85,6 @@ fn request_reboot_fails_closed_in_test_runtime() {
 }
 
 #[test]
-#[serial]
 fn reboot_override_never_falls_back_to_real_host_commands() {
     let temp_dir = tempfile::tempdir().unwrap();
     let broken_systemctl = temp_dir.path().join("systemctl");
@@ -182,7 +177,6 @@ fn reboot_failure_propagates_a_failed_fallback() {
 }
 
 #[test]
-#[serial]
 fn verify_history_truncation_fails_when_a_file_stays_large() {
     use crate::cleanup::history::{get_extended_history_files_for_homes, history_cleanup_homes};
     use crate::{Config, MockFilesystem, NailsManager};
@@ -213,7 +207,6 @@ fn verify_history_truncation_fails_when_a_file_stays_large() {
 }
 
 #[test]
-#[serial]
 fn verify_history_truncation_passes_when_files_are_small() {
     use crate::cleanup::history::{get_extended_history_files_for_homes, history_cleanup_homes};
     use crate::{Config, MockFilesystem, NailsManager};

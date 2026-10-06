@@ -14,7 +14,6 @@ use crate::overlay::SurvivingWriter;
 use crate::{
     Config, Filesystem, MockFilesystem, NailsError, NailsManager, OverlayConfig, SystemState,
 };
-use serial_test::serial;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -45,7 +44,6 @@ fn spawn_gate_releaser(gate_path: PathBuf, entered_path: PathBuf) -> std::thread
 }
 
 #[test]
-#[serial]
 fn test_activation_gate_returns_immediately_when_disabled() {
     let env = activation_gate_env(None, None);
 
@@ -53,7 +51,6 @@ fn test_activation_gate_returns_immediately_when_disabled() {
 }
 
 #[test]
-#[serial]
 fn test_activation_gate_writes_default_entered_marker() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("activation.gate");
@@ -73,7 +70,6 @@ fn test_activation_gate_writes_default_entered_marker() {
 }
 
 #[test]
-#[serial]
 fn test_activation_gate_writes_custom_entered_marker_and_creates_parent_dirs() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("activation.gate");
@@ -96,7 +92,6 @@ fn test_activation_gate_writes_custom_entered_marker_and_creates_parent_dirs() {
 }
 
 #[test]
-#[serial]
 fn test_activation_gate_reports_directory_creation_failures() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let blocker = temp_dir.path().join("not-a-directory");
@@ -110,7 +105,6 @@ fn test_activation_gate_reports_directory_creation_failures() {
 }
 
 #[test]
-#[serial]
 fn test_activation_gate_reports_marker_write_failures() {
     let temp_dir = tempfile::tempdir().expect("tempdir");
     let gate_path = temp_dir.path().join("activation.gate");
@@ -600,7 +594,6 @@ fn the_login_dispatcher_sees_the_activation_in_progress_from_the_activating_stat
 }
 
 #[test]
-#[serial]
 fn a_failed_activation_removes_its_progress_record_and_records_no_duration() {
     let (mut manager, fs, _tmp) = rollback_test_manager();
     let progress_path = manager
@@ -623,7 +616,6 @@ fn a_failed_activation_removes_its_progress_record_and_records_no_duration() {
 }
 
 #[test]
-#[serial]
 fn failure_at_active_state_write_unmounts_overlays_and_restores_inactive() {
     use crate::state::save_probe::{self, FailOn};
 
@@ -656,7 +648,6 @@ fn failure_at_active_state_write_unmounts_overlays_and_restores_inactive() {
 }
 
 #[test]
-#[serial]
 fn failure_before_any_mount_records_no_rollback() {
     let (mut manager, _fs, _tmp) = rollback_test_manager();
 
@@ -676,7 +667,6 @@ fn failure_before_any_mount_records_no_rollback() {
 }
 
 #[test]
-#[serial]
 fn failure_during_rollback_unmount_marks_state_degraded() {
     use crate::state::save_probe::{self, FailOn};
 
@@ -714,7 +704,6 @@ fn failure_during_rollback_unmount_marks_state_degraded() {
 }
 
 #[test]
-#[serial]
 fn failed_session_restart_unmounts_before_restart_and_restores_inactive() {
     use super::guards::test_hooks::{SessionRestartTestGuard, recorded_systemctl};
     use super::rollback::test_events::{ActivationEvent, EventRecorder};
@@ -876,7 +865,6 @@ fn restart_session_after_success_propagates_a_failed_start() {
 }
 
 #[test]
-#[serial]
 fn session_restart_guard_restarts_the_session_on_drop() {
     use super::guards::SessionRestartGuard;
     use super::guards::test_hooks::{
@@ -913,7 +901,6 @@ fn session_restart_guard_restarts_the_session_on_drop() {
 }
 
 #[test]
-#[serial]
 fn session_restart_guard_issues_nothing_when_disarmed() {
     use super::guards::SessionRestartGuard;
     use super::guards::test_hooks::{
@@ -938,7 +925,6 @@ fn session_restart_guard_issues_nothing_when_disarmed() {
 }
 
 #[test]
-#[serial]
 fn session_restart_guard_issues_nothing_for_an_empty_plan() {
     use super::guards::SessionRestartGuard;
     use super::guards::test_hooks::{
@@ -1052,7 +1038,6 @@ fn rebuild_space_check_skips_when_no_rebuild_is_expected() {
 // ===========================================================================
 
 #[test]
-#[serial]
 fn cancel_before_overlay_step_returns_cancelled_with_no_mounts_and_inactive_state() {
     use crate::cancel;
 
@@ -1084,7 +1069,6 @@ fn cancel_before_overlay_step_returns_cancelled_with_no_mounts_and_inactive_stat
 }
 
 #[test]
-#[serial]
 fn no_cancel_lets_activation_complete() {
     use crate::cancel;
 

@@ -5,8 +5,7 @@
 //!
 //! Every test drives [`resolve_from`] through injected sources, so the real
 //! environment, passwd database and logind are never consulted and the invoking
-//! user is irrelevant. No environment mutation is required, so these tests do
-//! not need `#[serial]`.
+//! user is irrelevant.
 
 use super::*;
 use std::collections::HashMap;

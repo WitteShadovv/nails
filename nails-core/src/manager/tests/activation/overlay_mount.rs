@@ -138,7 +138,6 @@ fn test_activate_walks_proc_once_per_phase_not_per_target() {
 }
 
 #[test]
-#[serial]
 fn test_activate_auto_mode_rollback_restarts_journald_and_nix_daemon_after_unmounts() {
     // When a later overlay fails after /nix and /var were mounted, activation
     // rolls everything back and only then restarts the services that were moved
@@ -1329,7 +1328,6 @@ fn test_read_only_guard_fails_closed_when_root_is_busy() {
 }
 
 #[test]
-#[serial]
 fn test_var_overlay_rehomes_journald_with_restart_flush_and_fd_check() {
     // A successful /var overlay relinquishes the persistent journal before the
     // mount, then re-homes journald with a real restart (stop socket, stop
@@ -1389,7 +1387,6 @@ fn test_var_overlay_rehomes_journald_with_restart_flush_and_fd_check() {
 }
 
 #[test]
-#[serial]
 fn test_var_overlay_rolls_back_when_journald_fds_not_in_overlay() {
     // If journald's fds do not resolve into the overlay after the restart, the
     // whole activation rolls back rather than leaking to the decoy journal.

@@ -138,11 +138,6 @@ mod runtime_safety;
 // pre-overlay /nix/store bind, recorded in state and torn down as a unit.
 pub(crate) mod runtime_root;
 
-// Test helpers shared across modules and with downstream test code (the
-// process-environment guard). Off in release builds.
-#[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
-
 // Re-export for convenience
 pub use artifacts::{
     ARTIFACTS, Artifact, ArtifactKind, ArtifactScope, ArtifactSeverity, indicators_json,

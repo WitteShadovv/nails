@@ -126,7 +126,6 @@ pub(crate) fn cached_current_system_profile() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
 
     #[test]
     fn test_store_bind_source_is_inside_the_runtime_root() {
@@ -140,7 +139,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_resolve_current_system_profile_never_self_references() {
         // Whatever resolves, it is a real generation path, never the literal
         // /run/current-system (which would make the restored symlink a self-loop).
