@@ -639,7 +639,22 @@ impl<F: Filesystem> NailsManager<F> {
         // teardown reported a problem.
         self.teardown_backend_runtime_copy();
 
-        let mut report = result?;
+        let mut report = match result {
+            Ok(report) => report,
+            Err(error) => {
+                // A teardown that failed after detaching overlays (incomplete, or a
+                // late error) still scrubs the RAM-backed state: the runtime journal,
+                // the pivot staging and runtime root, and the page cache. One that
+                // failed before any unmount rolled back to Active and keeps running,
+                // so nothing is scrubbed from under the live session.
+                if !matches!(self.current_state(), Ok(SystemState::Active { .. })) {
+                    orchestrator.cleanup_after_failed_teardown(self);
+                    let mut scratch = DeactivationReport::default();
+                    self.scrub_runtime_journal_and_warn(&overlay_context, kind, &mut scratch);
+                }
+                return Err(error);
+            }
+        };
 
         self.scrub_runtime_journal_and_warn(&overlay_context, kind, &mut report);
 

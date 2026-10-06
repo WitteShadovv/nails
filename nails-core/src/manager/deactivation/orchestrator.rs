@@ -588,6 +588,16 @@ impl DeactivationOrchestrator {
         Ok(report)
     }
 
+    /// The RAM-only cleanup a teardown that failed after detaching overlays still
+    /// owes: the pivot staging and runtime root, and (emergency) the page cache.
+    /// Best-effort; the caller returns the teardown's error afterwards.
+    pub(super) fn cleanup_after_failed_teardown<F: Filesystem>(&self, manager: &NailsManager<F>) {
+        self.cleanup_pivot_staging(manager);
+        if self.mode == DeactivationMode::Emergency {
+            self.drop_page_cache_after_unmount(manager);
+        }
+    }
+
     /// Drop the page cache after an emergency unmount.
     ///
     /// Runs only after the overlays are detached, so a stalled backend can never

@@ -90,6 +90,26 @@ pub struct DeactivationReport {
     pub state_write_errors: Vec<String>,
 }
 
+impl Default for DeactivationReport {
+    /// An empty report of a teardown that ended `Inactive` having done nothing.
+    fn default() -> Self {
+        Self {
+            cleanup_report: CleanupReport::default(),
+            unmounted_overlays: Vec::new(),
+            failed_overlays: Vec::new(),
+            remaining_mounts: Vec::new(),
+            duration: Duration::ZERO,
+            final_state: SystemState::Inactive,
+            was_already_inactive: false,
+            force_detached_overlays: Vec::new(),
+            page_cache_dropped: false,
+            runtime_journal_scrubbed: false,
+            reboot_recommended: false,
+            state_write_errors: Vec::new(),
+        }
+    }
+}
+
 impl DeactivationReport {
     /// Check if deactivation completed successfully
     ///

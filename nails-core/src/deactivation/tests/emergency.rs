@@ -1004,3 +1004,45 @@ fn test_untrusted_emergency_repoints_a_hidden_current_system_at_the_booted_decoy
         Path::new("/nix/store/booted-decoy")
     );
 }
+
+#[test]
+fn test_incomplete_emergency_still_scrubs_ram_backed_state() {
+    use crate::filesystem::{MockOp, PathKind};
+
+    // A mount that cannot be removed ends the teardown in an error, but the
+    // runtime journal and the page cache hold hidden-session data in RAM all the
+    // same: both are scrubbed before the error is returned.
+    let fixture = setup_active_manager();
+    let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
+    let machine_dir = PathBuf::from("/run/log/journal/0a1b2c3d");
+    {
+        let guard = fixture.lock().unwrap();
+        let fs = guard.filesystem();
+        mount_nails_overlay(fs, &hidden_root, Path::new("/home"));
+        mount_nails_overlay(fs, &hidden_root, Path::new("/etc"));
+        fs.mock_set_unmount_should_fail("/home", true);
+        fs.mock_set_path_exists("/proc/sys/vm/drop_caches", true);
+        fs.mock_set_path_type("/run/log/journal", PathKind::Dir);
+        fs.mock_set_path_type(machine_dir.to_str().unwrap(), PathKind::Dir);
+        fs.mock_set_directory_contents(Path::new("/run/log/journal"), vec![machine_dir.clone()]);
+    }
+
+    let result = fixture.lock().unwrap().emergency_deactivate();
+    assert!(
+        matches!(result, Err(NailsError::DeactivationIncomplete { .. })),
+        "{result:?}"
+    );
+
+    let guard = fixture.lock().unwrap();
+    let fs = guard.filesystem();
+    assert!(
+        !fs.path_exists(&machine_dir).unwrap(),
+        "runtime journal must be scrubbed"
+    );
+    assert!(
+        fs.mock_ops()
+            .iter()
+            .any(|op| matches!(op, MockOp::WriteKernelTunable { value, .. } if value == "3")),
+        "the page cache must be dropped"
+    );
+}
