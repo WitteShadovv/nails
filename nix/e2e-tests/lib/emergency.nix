@@ -25,6 +25,18 @@
   rebootAfterEmergencyFn = ''
     def reboot_after_emergency():
         machine.send_key("ctrl-alt-delete")
+        # Bounded: the driver's wait_for_shutdown() has no deadline, so a
+        # power-off that never comes would hold the test until globalTimeout.
+        _nails_qemu = machine.process
+        if _nails_qemu is not None:
+            try:
+                _nails_qemu.wait(timeout=180)
+            except __import__("subprocess").TimeoutExpired:
+                raise AssertionError(
+                    f"reboot_after_emergency: VM did not power off within 180s\n"
+                    + "--- serial console tail ---\n"
+                    + "\n".join(machine.get_console_log().splitlines()[-100:])
+                ) from None
         machine.wait_for_shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")

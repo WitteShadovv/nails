@@ -81,6 +81,18 @@ in
             + config_path
             + " deactivate -y",
         )
+        # Bounded: the driver's wait_for_shutdown() has no deadline, so a
+        # power-off that never comes would hold the test until globalTimeout.
+        _nails_qemu = machine.process
+        if _nails_qemu is not None:
+            try:
+                _nails_qemu.wait(timeout=300)
+            except __import__("subprocess").TimeoutExpired:
+                raise AssertionError(
+                    f"real sudo deactivate: VM did not power off within 300s\n"
+                    + "--- serial console tail ---\n"
+                    + "\n".join(machine.get_console_log().splitlines()[-100:])
+                ) from None
         machine.wait_for_shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")
