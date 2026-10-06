@@ -131,12 +131,31 @@ in
         xorg_pids_before = xorg_pids()
         assert xorg_pids_before, "the X server must be running before the teardown"
 
+        # Interactive shells the operator owns, each with a controlling pty — the
+        # terminal window's own shell is one of them. The pre-unmount cleanup
+        # SIGKILLs interactive shells so none flushes its history onto the decoy;
+        # with a window manager as the session's main process that only closes the
+        # terminal window, leaving the session (and X) alive.
+        def interactive_user_shells():
+            rc, out = machine.execute(
+                "ps -u testuser -o pid=,tty=,comm= | "
+                "awk '$2 ~ /pts/ && ($3 == \"bash\" || $3 == \"zsh\" || $3 == \"fish\") "
+                "{ print $1 }'"
+            )
+            return sorted(out.split()) if rc == 0 else []
+
+        shells_before = interactive_user_shells()
+
         # Emergency must complete the overlay teardown even though a live process
         # (the X server) holds a path busy, so capture its output and exit rather
-        # than demanding a clean exit.
+        # than demanding a clean exit. Always log it: the teardown runs detached,
+        # so this is the only place its reasoning is visible when an assertion
+        # below fails.
         emergency_rc, emergency_out = machine.execute(
             f"nails --config {headless_config} emergency 2>&1"
         )
+        print(f"nails emergency exited rc={emergency_rc}; output follows:")
+        print(emergency_out)
 
         # Every hidden overlay is released (lazily where the X server still held
         # it), and the hidden-added service is stopped.
@@ -166,6 +185,16 @@ in
             f"X server PID changed: {xorg_pids_before} -> {xorg_pids_after}"
         )
         machine.succeed("systemctl is-active user@1000.service")
+
+        # The terminal's interactive shell was SIGKILLed by the pre-unmount
+        # cleanup even though its session was spared: the kill still does its job
+        # (no history flushed to the decoy), it just no longer ends the desktop.
+        if shells_before:
+            survivors = set(shells_before) & set(interactive_user_shells())
+            assert not survivors, (
+                "pre-unmount cleanup must kill the terminal's interactive shell: "
+                f"{sorted(survivors)} survived"
+            )
 
         assert_status_state("inactive", config_path=headless_config)
 

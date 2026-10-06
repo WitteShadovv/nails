@@ -13,10 +13,10 @@
 //! display manager, the X server, the logind session leader and its session
 //! wrapper, the window/session manager and its clients, and the user's systemd
 //! manager — reads as "overlay-rooted" and would otherwise be signalled. Killing
-//! any link of that chain (in the configured e2e session the chain is
-//! `lightdm → session-child → Xsession → xterm`, where `xterm` is the client the
-//! session waits on) ends the logind session, so lightdm restarts X and shows a
-//! greeter — i.e. logs the operator out.
+//! the session leader, its session wrapper, or whichever client the session
+//! waits on (the window/session manager on an ordinary desktop) ends the logind
+//! session, so the display manager restarts the X server and shows a greeter —
+//! i.e. logs the operator out.
 //!
 //! # Policy: spare the whole graphical session (kill-policy "option 2")
 //!
@@ -28,17 +28,17 @@
 //!   * **Option 2** — spare *everything* in the operator's graphical session and
 //!     kill overlay-rooted processes only outside it.
 //!
-//! Option 3 cannot be made reliable here. The configured session has **no window
-//! manager** — the "desktop" is a single `xterm` the `Xsession` script waits on —
-//! so the only session-critical in-scope process is that foreground client, and
-//! there is no WM-agnostic structural signal that separates "the client the
-//! session waits on" from an ordinary application in the same scope without
-//! probing X properties such as `_NET_SUPPORTING_WM_CHECK` (heavy, X-only, and
-//! absent for a bare `xterm`). A misclassification kills the client, which ends
-//! the session — exactly the "logs the operator out" failure the policy forbids.
-//! Since the overriding requirement is that the operator still ends up with a
-//! running desktop, this guard implements option 2: the whole graphical session
-//! is spared, and overlay-rooted processes **outside** it are still killed.
+//! Option 3 cannot be made reliable: there is no WM-agnostic structural signal
+//! that separates the session-critical "spine" (the leader, the session wrapper,
+//! and whichever client the session waits on) from an ordinary application in the
+//! same session scope without probing X properties such as
+//! `_NET_SUPPORTING_WM_CHECK` (heavy, X-only, and absent for a session whose main
+//! client is not an EWMH-compliant window manager). A misclassification kills a
+//! spine process, which ends the session — exactly the "logs the operator out"
+//! failure the policy forbids. Since the overriding requirement is that the
+//! operator still ends up with a running desktop, this guard implements option 2:
+//! the whole graphical session is spared, and overlay-rooted processes **outside**
+//! it are still killed.
 //!
 //! # Residual exposure
 //!
@@ -306,7 +306,7 @@ mod tests {
             "c1",
             &[("Class", "user"), ("Type", "x11"), ("User", "1000")],
         ));
-        // The session wrapper / Xsession / xterm all live in the session scope.
+        // The session leader, its session wrapper and every client live here.
         assert!(guard.covers("0::/user.slice/user-1000.slice/session-c1.scope"));
         assert!(
             guard.covers("0::/user.slice/user-1000.slice/session-c1.scope/init.scope/whatever")
