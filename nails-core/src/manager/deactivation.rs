@@ -32,8 +32,8 @@ pub use orchestrator::{DeactivationMode, DeactivationOrchestrator};
 use overlay_context::{OverlayContext, inspect_overlay_context, overlay_context_from_mounts};
 use process_teardown::{
     candidate_is_overlay_rooted, current_process_ancestry, is_own_invocation_process,
-    overlay_mount_devices, owner_pid_to_signal, process_references_overlay_device,
-    read_proc_cgroup, read_session_and_pgid, self_session_and_pgid, signal_pid,
+    owner_pid_to_signal, read_proc_cgroup, read_session_and_pgid, self_session_and_pgid,
+    signal_pid,
 };
 
 pub use reboot::{HostEffects, PostTeardownPower};
@@ -136,12 +136,18 @@ impl<F: Filesystem> NailsManager<F> {
     }
 
     /// The live NAILS overlay mount points, for the emergency overlay-rooted
-    /// process scan. Best-effort: a discovery error yields an empty list rather
-    /// than blocking the teardown.
+    /// process scan. The read-only `/nix/store` restore bind is left out: it
+    /// shares the decoy filesystem and cannot be written through, so a process
+    /// using it is no writer to stop. Best-effort: a discovery error yields an
+    /// empty list rather than blocking the teardown.
     fn emergency_overlay_targets(&self) -> Vec<PathBuf> {
         let hidden_root = self.config().hidden_volume_root.clone();
         match self.filesystem().discover_nails_mounts(Some(&hidden_root)) {
-            Ok(discovered) => discovered.owned_mount_points(),
+            Ok(discovered) => discovered
+                .owned_mount_points()
+                .into_iter()
+                .filter(|point| discovered.nix_store_bind.as_ref() != Some(point))
+                .collect(),
             Err(e) => {
                 tracing::warn!(error = %e, "Could not enumerate NAILS mounts for emergency process cleanup");
                 Vec::new()
@@ -201,12 +207,14 @@ impl<F: Filesystem> NailsManager<F> {
     /// a reference *inside the overlay* from one on the decoy directory the overlay
     /// is mounted over: a decoy process whose cwd is `/tmp` (set before activation)
     /// still reads back as `/tmp` and would be signalled, even though it is on the
-    /// decoy device and neither pins the overlay nor can write into its upper. So a
-    /// path-matched candidate is kept only when a reference of its really resolves
-    /// onto one of the overlay mounts' own devices (each overlay mount has its own
-    /// anonymous `st_dev`); an unverifiable writer (foreign mount namespace or
-    /// chroot, where the device cannot be trusted) is kept fail-safe, as is every
-    /// candidate when no overlay device could be read at all.
+    /// decoy and neither pins the overlay nor can write into its upper. So a
+    /// path-matched candidate is kept only when a reference of its — cwd, root,
+    /// any open fd or a shared-writable mapping — really lives on one of the
+    /// writable NAILS mounts, judged by mount id (see [`crate::process::mount_refs`];
+    /// `st_dev` cannot be used, as an overlay's non-directory files report their
+    /// layer's device). An unverifiable writer (foreign mount namespace or chroot,
+    /// where mount ids are not comparable) is kept fail-safe, as is every
+    /// candidate when the NAILS mount ids could not be read at all.
     ///
     /// On a graphical host the whole desktop is overlay-rooted (the session logs
     /// back in under the overlays), so the display manager, X server, logind
@@ -229,10 +237,18 @@ impl<F: Filesystem> NailsManager<F> {
             }
         };
 
-        // The device id behind each overlay mount point. A reference that resolves
-        // onto one of these is genuinely inside the overlay; one on the decoy
-        // device only collided on the path string.
-        let overlay_devices = overlay_mount_devices(targets);
+        // The mount ids of the writable NAILS mounts. A reference on one of these
+        // is genuinely inside an overlay; one elsewhere only collided on the path
+        // string.
+        let hidden_root = self.config().hidden_volume_root.clone();
+        let overlay_mount_ids = crate::filesystem::read_mountinfo()
+            .map(|entries| {
+                crate::filesystem::NailsMounts::owned_writable_mount_ids(
+                    &entries,
+                    Some(&hidden_root),
+                )
+            })
+            .unwrap_or_default();
 
         // The processes that keep the operator's graphical session alive. Emergency
         // detaches the overlays from under a running desktop without logging the
@@ -274,16 +290,21 @@ impl<F: Filesystem> NailsManager<F> {
                     );
                     continue;
                 }
-                let on_overlay_device = !overlay_devices.is_empty()
-                    && process_references_overlay_device(info.pid, &overlay_devices);
+                let unverifiable = info.is_unverifiable_writer
+                    || !crate::process::mount_refs::same_mount_namespace(info.pid);
+                let on_overlay_mount = !overlay_mount_ids.is_empty()
+                    && crate::process::mount_refs::process_references_mounts(
+                        info.pid,
+                        &overlay_mount_ids,
+                    );
                 if !candidate_is_overlay_rooted(
-                    info.is_unverifiable_writer,
-                    on_overlay_device,
-                    !overlay_devices.is_empty(),
+                    unverifiable,
+                    on_overlay_mount,
+                    !overlay_mount_ids.is_empty(),
                 ) {
                     tracing::debug!(
                         pid = info.pid,
-                        "Sparing a decoy-side process (path matched an overlay target but its references are on the decoy device)"
+                        "Sparing a decoy-side process (path matched an overlay target but no reference lives on a NAILS mount)"
                     );
                     continue;
                 }

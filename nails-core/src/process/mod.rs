@@ -48,6 +48,7 @@
 pub(crate) mod cgroup_unit;
 pub mod classification;
 pub mod detection;
+pub(crate) mod mount_refs;
 pub mod restart;
 pub mod run;
 pub mod session;

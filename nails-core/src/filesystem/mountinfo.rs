@@ -389,6 +389,39 @@ impl NailsMounts {
         points
     }
 
+    /// The mount ids of the writable NAILS-created mounts in `entries`: the
+    /// overlays, the fresh-home persona binds, everything staged in the runtime
+    /// root and the runtime root tmpfs itself.
+    ///
+    /// The teardown's overlay-rooted kill compares process references against
+    /// these ids. A read-only mount is left out — above all the `/nix/store`
+    /// restore bind, which shares the decoy filesystem and cannot be written
+    /// through — and so is the decoy's own mount at the same mount point as an
+    /// overlay (a separate `/home` partition the `/home` overlay sits on): only
+    /// the entry NAILS created counts.
+    pub fn owned_writable_mount_ids(
+        entries: &[MountEntry],
+        hidden_root: Option<&Path>,
+    ) -> std::collections::HashSet<i32> {
+        let mounts = Self::from_entries(entries, hidden_root);
+        entries
+            .iter()
+            .filter(|e| !e.read_only())
+            .filter(|e| {
+                let mp = &e.mount_point;
+                let overlay = e.fstype == "overlay"
+                    && (mounts.persistent_overlays.contains(mp)
+                        || mounts.ephemeral_overlays.contains(mp));
+                let persona = mounts.persona_binds.contains(mp)
+                    && crate::config::persona::is_persona_home_root(&e.root);
+                let staged = mounts.pivot_binds.contains(mp) && e.source != Path::new(NIX_STORE);
+                let runtime_root = e.fstype == "tmpfs" && mounts.runtime_tmpfs.as_ref() == Some(mp);
+                overlay || persona || staged || runtime_root
+            })
+            .map(|e| e.mount_id)
+            .collect()
+    }
+
     /// Whether `target` is a mount NAILS created and may therefore unmount.
     ///
     /// `target` must already be canonicalized, since mountinfo records canonical
@@ -579,6 +612,32 @@ this is not a mountinfo line
         assert!(m.is_owned(Path::new("/nix/store")));
         // A foreign ext4 mount is never owned.
         assert!(!m.is_owned(Path::new("/home/other")));
+    }
+
+    #[test]
+    fn owned_writable_mount_ids_skip_the_store_bind_and_the_decoy_underneath() {
+        let hidden = Path::new("/mnt/hidden");
+        let root = "/run/0123456789abcdef";
+        let content = [
+            // The decoy's own /home partition, which the /home overlay sits on.
+            "9 1 8:3 / /home rw - ext4 /dev/sdb1 rw".to_string(),
+            overlay_line(10, "/home", "/mnt/hidden/home/upper", "/mnt/hidden/home/work"),
+            overlay_line(12, "/nix", "/mnt/hidden/nix/upper", "/mnt/hidden/nix/work"),
+            "14 1 8:1 /store /nix/store ro - ext4 /dev/sda1 ro".to_string(),
+            format!("20 1 0:70 / {root} rw - tmpfs tmpfs rw,mode=700"),
+            format!(
+                "21 20 0:61 / {root}/etc rw - overlay overlay rw,lowerdir=/etc,upperdir=/mnt/hidden/etc/upper,workdir=/mnt/hidden/etc/work"
+            ),
+            format!("22 20 8:1 /nix/store {root}/original-nix-store ro - ext4 /dev/sda1 ro"),
+            "15 1 8:2 / /home/other rw - ext4 /dev/sdc1 rw".to_string(),
+        ]
+        .join("\n");
+        let ids = NailsMounts::owned_writable_mount_ids(&parse_mountinfo(&content), Some(hidden));
+        let mut ids: Vec<i32> = ids.into_iter().collect();
+        ids.sort_unstable();
+        // The overlays, the runtime root and its staging overlay; never the
+        // read-only store binds, the decoy /home underneath, or a foreign mount.
+        assert_eq!(ids, vec![10, 12, 20, 21]);
     }
 
     #[test]
