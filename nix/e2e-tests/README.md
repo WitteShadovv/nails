@@ -114,7 +114,7 @@ Use only:
 - `overlay`
 - `state`
 - `contract`
-- `research` (design-decision experiments: excluded from `all`, run by name or with the `research` group)
+- `research` (design-decision spikes under `tests/research/`: in no other group and not in `all`; see [Research spikes](#research-spikes-testsresearch))
 
 ## Running tests
 
@@ -243,6 +243,24 @@ allowlist of volatile paths instead (see `tests/forensic/06-snapshot-diff.nix`).
 6. Use `with subtest(...)` for each logical phase.
 7. Assert against the booted guest with hard `assert ...` or `machine.fail(...)`; never a `print("Note: ...")` escape hatch (the `e2e-soft-assertions` lint rejects it).
 8. Verify with a direct `nix build` target before sending for review.
+
+## Research spikes (`tests/research/`)
+
+A spike that answers a design question rather than guarding behaviour lives
+under `tests/research/` and carries the `research` tag; `default.nix` asserts
+that the two go together. A spike builds like any test
+(`nix build .#legacyPackages.x86_64-linux.e2e.<name> -L`, or the whole
+`e2e.research` link farm), but it is not a leaf test: it is in no tag group, not
+in `ci` or `all`, not in the shards or `--affected`, not a runner target, and
+needs no entry in `shard-durations.json`. Its log is the deliverable: lines
+starting with `FINDING:` are research output, not assertions.
+
+- `research-emergency-cgroup-kill`: shows that systemd restarts a killed
+  `Restart=always` unit onto the decoy unless a stop job is enqueued first
+  ([ADR 0007](../../docs/adr/0007-emergency-architecture.md)).
+- `research-soft-reboot-whole-root`: enters a whole-root overlay with
+  `systemctl soft-reboot` and returns, checking the vital paths and the decoy
+  disk ([ADR 0008](../../docs/adr/0008-whole-root-soft-reboot.md)).
 
 ## Adding a fixture
 

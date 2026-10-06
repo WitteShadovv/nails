@@ -35,7 +35,12 @@ def scan_nix_metadata() -> dict[str, Any]:
         raise AssertionError("defaultGlobalTimeout not found in default.nix")
     default_timeout = int(default_match.group(1))
     timeouts: dict[str, int] = {}
-    for path in sorted((REPO_ROOT / "nix" / "e2e-tests" / "tests").rglob("*.nix")):
+    tests_root = REPO_ROOT / "nix" / "e2e-tests" / "tests"
+    for path in sorted(tests_root.rglob("*.nix")):
+        # Research spikes are not leaf tests (default.nix asserts that the
+        # `research` tag and this directory go together) and carry no weight.
+        if path.relative_to(tests_root).parts[0] == "research":
+            continue
         text = path.read_text(encoding="utf-8")
         names = re.findall(r'^  name = "([^"]+)";$', text, re.M)
         if len(names) != 1:

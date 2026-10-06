@@ -254,7 +254,8 @@
       distroTests = lib.filterAttrs (name: _: !(lib.hasPrefix "_" name)) rawDistroTests;
       distroMetadata = rawDistroTests._metadata;
       e2eTestMetadata = {
-        availableTargets = builtins.attrNames e2eTests;
+        # Research spikes build as `e2e.<name>` but are not runner targets.
+        availableTargets = lib.subtractLists rawE2eTests._researchTargets (builtins.attrNames e2eTests);
         leafTests = rawE2eTests._testNames;
         groups = rawE2eTests._groups;
         timeouts = lib.mapAttrs (_: meta: meta.timeout) rawE2eTests._meta;

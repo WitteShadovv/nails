@@ -60,8 +60,32 @@ let
         [ ]
     ) (builtins.attrNames entries);
 
-  rawSpecs = map (path: import path { inherit self pkgs nixpkgs; }) (collectTestFiles testsRoot);
+  # Research spikes (tests/research/, tag `research`) are buildable as
+  # `e2e.<name>` and through the `research` link farm, but they are not leaf
+  # tests: they stay out of `all`, every tag group, the CI shards and
+  # `--affected`, and need no shard weight. The tag and the directory must
+  # agree, because the shard planner's host-side tests skip the directory
+  # without evaluating any Nix.
+  researchTag = "research";
+  researchDir = toString testsRoot + "/research/";
+
+  rawSpecPairs = map (path: {
+    inherit path;
+    spec = import path { inherit self pkgs nixpkgs; };
+  }) (collectTestFiles testsRoot);
+  rawSpecs = map (pair: pair.spec) rawSpecPairs;
   rawNames = map (spec: spec.name) rawSpecs;
+
+  isResearch = spec: lib.elem researchTag (spec.meta.tags or [ ]);
+
+  _assertResearchLayout = lib.all (
+    pair:
+    let
+      inResearchDir = lib.hasPrefix researchDir (toString pair.path);
+    in
+    lib.assertMsg (inResearchDir == isResearch pair.spec)
+      "E2E test ${pair.spec.name}: the `${researchTag}` tag and the tests/research/ directory must go together"
+  ) rawSpecPairs;
 
   _assertUniqueNames =
     if builtins.length rawNames == builtins.length (lib.unique rawNames) then
@@ -160,6 +184,9 @@ let
     ) rawSpecs
   );
 
+  leafSpecs = lib.filter (spec: !isResearch spec) rawSpecs;
+  researchNames = map (spec: spec.name) (lib.filter isResearch rawSpecs);
+
   metadata = builtins.listToAttrs (
     map (
       spec:
@@ -167,10 +194,10 @@ let
         tags = if spec ? meta && spec.meta ? tags then spec.meta.tags else [ ];
         timeout = effectiveTimeout spec;
       }
-    ) rawSpecs
+    ) leafSpecs
   );
 
-  testNames = builtins.attrNames tests;
+  testNames = builtins.attrNames (removeAttrs tests researchNames);
 
   linkFarmForNames =
     groupName: names:
@@ -182,11 +209,6 @@ let
     );
 
   namesWithTag = tag: lib.filter (name: lib.elem tag (metadata.${name}.tags or [ ])) testNames;
-
-  # Research specs back a design decision (an ADR) rather than guard shipped
-  # behaviour. They are built only by name or through the `research` group and
-  # stay out of `all`, so the nightly full suite never runs them.
-  researchNames = namesWithTag "research";
 
   ciNames = lib.filter (name: builtins.elem name testNames) [
     "basic-workflow"
@@ -218,28 +240,32 @@ let
     state = namesWithTag "state";
     contract = namesWithTag "contract";
     faults = namesWithTag "faults";
-    research = researchNames;
     ci = ciNames;
-    all = lib.subtractLists researchNames testNames;
+    all = testNames;
   };
 
-  groups = lib.mapAttrs linkFarmForNames groupMembers;
+  groups = lib.mapAttrs linkFarmForNames groupMembers // {
+    ${researchTag} = linkFarmForNames researchTag researchNames;
+  };
 
   # Tests and groups share one attribute set, and the runner resolves a name
   # as a test before a group, so a shared name would hide one of them.
-  shadowedGroups = lib.intersectLists testNames (builtins.attrNames groupMembers);
+  shadowedGroups = lib.intersectLists rawNames (builtins.attrNames groups);
   _assertNoShadowedGroups = lib.assertMsg (
     shadowedGroups == [ ]
   ) "E2E test names must differ from group names: ${lib.concatStringsSep ", " shadowedGroups}";
 in
 builtins.seq _assertUniqueNames (
-  builtins.seq _assertNoShadowedGroups (
-    tests
-    // groups
-    // {
-      _groups = groupMembers;
-      _meta = metadata;
-      _testNames = testNames;
-    }
+  builtins.seq _assertResearchLayout (
+    builtins.seq _assertNoShadowedGroups (
+      tests
+      // groups
+      // {
+        _groups = groupMembers;
+        _meta = metadata;
+        _testNames = testNames;
+        _researchTargets = researchNames ++ [ researchTag ];
+      }
+    )
   )
 )
