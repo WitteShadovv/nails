@@ -133,6 +133,11 @@ pub mod persona;
 
 mod runtime_safety;
 
+// Real-kernel test support: re-run a test in a child process, optionally inside
+// an unprivileged user + mount namespace. Test-only; never in a shipped binary.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
 // The per-activation runtime scaffolding root: one random-named, volatile tmpfs
 // under /run that holds pivot staging, the vfat snapshot tmpfs and the
 // pre-overlay /nix/store bind, recorded in state and torn down as a unit.

@@ -1,0 +1,384 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Real-kernel test support: run a test body in a re-executed child process,
+//! optionally inside a fresh, unprivileged user + mount namespace.
+//!
+//! The mocks cannot show what the kernel does: which device an overlay reports
+//! for its files, what `/proc/<pid>/fdinfo` says about an fd opened before a
+//! mount, whether a read bumps an access time, what a write to a closed pipe
+//! returns. These helpers let an ordinary `cargo test` ask the kernel directly,
+//! with no root and no effect on the host.
+//!
+//! [`Rerun`] spawns the current test binary again, filtered to the one calling
+//! test (`--exact`), and marks the child through [`CHILD_ENV`]. In the child the
+//! same test function calls [`Rerun::run`] again, which now runs the body. With
+//! [`Rerun::in_user_mount_ns`] the child is moved into a new user namespace (the
+//! caller's uid and gid mapped to 0) and a new mount namespace *before* `exec`,
+//! while it is still single-threaded, as `unshare(CLONE_NEWUSER)` requires. Its
+//! root mount is then made recursively private, so every mount the body makes
+//! (tmpfs, overlay, bind) is invisible to the host and disappears when the child
+//! exits, even after a panic.
+//!
+//! Re-executing instead of forking keeps the child a fresh process: no other
+//! test thread can be holding a lock at the moment of the fork, and the same
+//! pattern works under libtest and nextest alike.
+//!
+//! A host that cannot create the namespaces (user namespaces disabled, or
+//! Ubuntu's `kernel.apparmor_restrict_unprivileged_userns=1`, which grants the
+//! namespace no capabilities) yields [`Outcome::Skipped`] with the reason, so the
+//! test passes vacuously there. Setting [`REQUIRE_USERNS_ENV`] to `1` turns that
+//! skip into a failure; CI sets it in the job that must exercise these tests.
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+/// Environment variable naming the test the re-executed child must run.
+pub const CHILD_ENV: &str = "NAILS_TEST_CHILD";
+
+/// Set to `1` to fail, instead of skip, when no user namespace is available.
+pub const REQUIRE_USERNS_ENV: &str = "NAILS_REQUIRE_USERNS";
+
+/// Exit status of a child that found no usable namespace (the automake "skip").
+const SKIP_EXIT: i32 = 77;
+
+/// Prefix of the line a skipping child prints on stderr, followed by the reason.
+const SKIP_MARKER: &str = "NAILS_TEST_SKIP: ";
+
+/// The libtest name of the test function `$f`, for [`Rerun::new`].
+///
+/// libtest names a test by its module path without the crate name: a function at
+/// the top of an integration test file is just `f`, one in a library module is
+/// `module::tests::f`.
+#[macro_export]
+macro_rules! test_path {
+    ($f:ident) => {{
+        let full = concat!(module_path!(), "::", stringify!($f));
+        full.split_once("::").map_or(full, |(_, rest)| rest)
+    }};
+}
+
+/// How a [`Rerun`] ended, seen from the calling test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use = "a skipped real-kernel test asserted nothing"]
+pub enum Outcome {
+    /// The body ran (in this process, when this is the child) and passed.
+    Ran,
+    /// The host could not provide the namespaces; the body did not run.
+    Skipped(String),
+}
+
+/// A re-execution of the calling test in a child process. See the module docs.
+pub struct Rerun<'a> {
+    test_path: &'a str,
+    user_mount_ns: bool,
+    stderr: Option<Stdio>,
+}
+
+impl<'a> Rerun<'a> {
+    /// Re-run the test named `test_path` (use [`test_path!`]).
+    pub fn new(test_path: &'a str) -> Self {
+        Self {
+            test_path,
+            user_mount_ns: false,
+            stderr: None,
+        }
+    }
+
+    /// Run the child in a fresh user + mount namespace, as uid 0 inside it.
+    pub fn in_user_mount_ns(mut self) -> Self {
+        self.user_mount_ns = true;
+        self
+    }
+
+    /// Give the child this stderr instead of a pipe the parent reads.
+    ///
+    /// The child's own failure output then goes there too, so a failure is
+    /// reported by exit status only.
+    pub fn stderr(mut self, stderr: Stdio) -> Self {
+        self.stderr = Some(stderr);
+        self
+    }
+
+    /// In the child, run `body`; in the parent, spawn the child and judge it.
+    ///
+    /// # Panics
+    ///
+    /// In the parent, when the child fails, cannot be spawned for a reason other
+    /// than missing namespace support, or skips while [`REQUIRE_USERNS_ENV`] is
+    /// set.
+    pub fn run(self, body: impl FnOnce()) -> Outcome {
+        if std::env::var_os(CHILD_ENV).is_some_and(|name| name == self.test_path) {
+            if self.user_mount_ns {
+                make_mounts_private_or_skip();
+            }
+            body();
+            return Outcome::Ran;
+        }
+        let test_path = self.test_path;
+        let outcome = self.spawn_and_wait();
+        if let Outcome::Skipped(reason) = &outcome {
+            assert!(
+                std::env::var(REQUIRE_USERNS_ENV).as_deref() != Ok("1"),
+                "{REQUIRE_USERNS_ENV}=1 but the test was skipped: {reason}"
+            );
+            eprintln!("skipped {test_path}: {reason}");
+        }
+        outcome
+    }
+
+    fn spawn_and_wait(self) -> Outcome {
+        let exe = std::env::current_exe().expect("locate the running test binary");
+        let mut cmd = Command::new(exe);
+        cmd.args([
+            self.test_path,
+            "--exact",
+            "--include-ignored",
+            "--nocapture",
+        ])
+        .args(["--test-threads", "1"])
+        .env(CHILD_ENV, self.test_path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped());
+        let captures_stderr = self.stderr.is_none();
+        cmd.stderr(self.stderr.unwrap_or_else(Stdio::piped));
+        if self.user_mount_ns {
+            enter_user_mount_ns_before_exec(&mut cmd);
+        }
+
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(err) if self.user_mount_ns && is_namespace_refusal(&err) => {
+                return Outcome::Skipped(format!(
+                    "cannot create a user + mount namespace ({err}); user namespaces \
+                     are unavailable to this process"
+                ));
+            }
+            Err(err) => panic!("spawn the child test process: {err}"),
+        };
+        // Drain stderr on a thread so a chatty child cannot deadlock on a full pipe.
+        let stderr_reader = child.stderr.take().map(|mut pipe| {
+            std::thread::spawn(move || {
+                let mut text = String::new();
+                let _ = pipe.read_to_string(&mut text);
+                text
+            })
+        });
+        let mut stdout = String::new();
+        if let Some(mut pipe) = child.stdout.take() {
+            let _ = pipe.read_to_string(&mut stdout);
+        }
+        let status = child.wait().expect("wait for the child test process");
+        let stderr = stderr_reader
+            .map(|t| t.join().unwrap_or_default())
+            .unwrap_or_default();
+
+        if status.code() == Some(SKIP_EXIT) {
+            let reason = stderr
+                .lines()
+                .find_map(|line| line.strip_prefix(SKIP_MARKER))
+                .unwrap_or("the child reported no reason");
+            return Outcome::Skipped(reason.to_string());
+        }
+        assert!(
+            status.success(),
+            "child test {} failed with {status}{}\n--- child stdout ---\n{stdout}\n--- child stderr ---\n{stderr}",
+            self.test_path,
+            if captures_stderr {
+                ""
+            } else {
+                " (its stderr was redirected)"
+            },
+        );
+        // A child that matched no test also exits 0; make sure the body ran.
+        assert!(
+            stdout.contains("1 passed"),
+            "child test {} did not run exactly one test (is the test path right?)\n{stdout}",
+            self.test_path
+        );
+        Outcome::Ran
+    }
+}
+
+/// Whether a spawn error is the kernel refusing the namespaces, not a bug.
+fn is_namespace_refusal(err: &std::io::Error) -> bool {
+    use nix::errno::Errno;
+    err.raw_os_error().is_some_and(|code| {
+        [
+            Errno::EPERM,
+            Errno::EACCES,
+            Errno::EINVAL,
+            Errno::ENOSPC,
+            Errno::EUSERS,
+            Errno::ENOSYS,
+        ]
+        .iter()
+        .any(|errno| *errno as i32 == code)
+    })
+}
+
+/// Arrange for `cmd`'s child to unshare a user and a mount namespace and map the
+/// caller's ids to root, between `fork` and `exec`.
+fn enter_user_mount_ns_before_exec(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+
+    // Formatted here, in the parent: the pre-exec hook must not allocate.
+    let uid_map = format!("0 {} 1\n", nix::unistd::getuid());
+    let gid_map = format!("0 {} 1\n", nix::unistd::getgid());
+    let hook = move || -> std::io::Result<()> {
+        use nix::sched::{CloneFlags, unshare};
+        unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS)?;
+        // setgroups must be denied before an unprivileged gid_map write. Kernels
+        // older than 3.19 lack the file and need no denial.
+        match write_proc(c"/proc/self/setgroups", b"deny") {
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            other => other?,
+        }
+        write_proc(c"/proc/self/uid_map", uid_map.as_bytes())?;
+        write_proc(c"/proc/self/gid_map", gid_map.as_bytes())
+    };
+    #[allow(unsafe_code)]
+    // SAFETY: the hook runs in the forked child before exec. It only makes the
+    // unshare(2), open(2), write(2) and close(2) system calls on borrowed,
+    // pre-formatted data: no allocation, no lock, nothing async-signal-unsafe.
+    unsafe {
+        cmd.pre_exec(hook);
+    }
+}
+
+/// Write `data` to a `/proc` control file with raw system calls.
+fn write_proc(path: &std::ffi::CStr, data: &[u8]) -> std::io::Result<()> {
+    use rustix::fs::{Mode, OFlags, open};
+    let fd = open(path, OFlags::WRONLY | OFlags::CLOEXEC, Mode::empty())?;
+    let written = rustix::io::write(&fd, data)?;
+    if written == data.len() {
+        Ok(())
+    } else {
+        Err(std::io::Error::from(std::io::ErrorKind::WriteZero))
+    }
+}
+
+/// In the namespaced child: make every mount private, or skip when the
+/// namespace carries no mount capability.
+fn make_mounts_private_or_skip() {
+    use nix::mount::{MsFlags, mount};
+    if let Err(errno) = mount(
+        None::<&str>,
+        "/",
+        None::<&str>,
+        MsFlags::MS_REC | MsFlags::MS_PRIVATE,
+        None::<&str>,
+    ) {
+        eprintln!(
+            "{SKIP_MARKER}the user namespace grants no mount capability ({errno}); on \
+             Ubuntu 24.04 set kernel.apparmor_restrict_unprivileged_userns=0"
+        );
+        std::process::exit(SKIP_EXIT);
+    }
+}
+
+/// A fresh tmpfs on a temporary directory, for use inside the namespaced child.
+///
+/// overlayfs needs its upper and work layers on a filesystem it accepts as an
+/// upper, and an atime test needs a filesystem whose atime policy it controls;
+/// a private tmpfs gives both, whatever backs the host's temp directory. Drop
+/// detaches the tmpfs before the directory is removed, so nothing is left in
+/// `TMPDIR` even when the body panics.
+pub struct ScratchTmpfs {
+    dir: tempfile::TempDir,
+}
+
+impl ScratchTmpfs {
+    /// Mount a tmpfs with the given extra options (`""` for none).
+    ///
+    /// # Panics
+    ///
+    /// When the mount fails; call it only inside [`Rerun::in_user_mount_ns`].
+    pub fn new(options: &str) -> Self {
+        Self::with_flags(nix::mount::MsFlags::empty(), options)
+    }
+
+    /// Mount a tmpfs where every read updates the access time.
+    ///
+    /// # Panics
+    ///
+    /// As [`ScratchTmpfs::new`].
+    pub fn strictatime() -> Self {
+        Self::with_flags(nix::mount::MsFlags::MS_STRICTATIME, "")
+    }
+
+    fn with_flags(flags: nix::mount::MsFlags, options: &str) -> Self {
+        let dir = tempfile::tempdir().expect("create the scratch mount point");
+        let data = if options.is_empty() {
+            "mode=0755".to_string()
+        } else {
+            format!("mode=0755,{options}")
+        };
+        nix::mount::mount(
+            Some("tmpfs"),
+            dir.path(),
+            Some("tmpfs"),
+            flags,
+            Some(data.as_str()),
+        )
+        .expect("mount the scratch tmpfs (only inside a user + mount namespace)");
+        Self { dir }
+    }
+
+    /// The tmpfs root.
+    pub fn path(&self) -> &Path {
+        self.dir.path()
+    }
+
+    /// `rel` under the tmpfs root, created as a directory.
+    pub fn mkdir(&self, rel: &str) -> PathBuf {
+        let path = self.dir.path().join(rel);
+        std::fs::create_dir_all(&path).expect("create a scratch directory");
+        path
+    }
+}
+
+impl Drop for ScratchTmpfs {
+    fn drop(&mut self) {
+        let _ = nix::mount::umount2(self.dir.path(), nix::mount::MntFlags::MNT_DETACH);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Outcome, Rerun, ScratchTmpfs};
+
+    #[test]
+    fn child_runs_the_body_in_a_user_namespace_as_root() {
+        let outcome = Rerun::new(crate::test_path!(
+            child_runs_the_body_in_a_user_namespace_as_root
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            assert!(
+                nix::unistd::getuid().is_root(),
+                "uid 0 inside the namespace"
+            );
+            let scratch = ScratchTmpfs::new("size=1M");
+            std::fs::write(scratch.path().join("probe"), b"ok").unwrap();
+            let mounts = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+            assert!(
+                mounts.contains(&scratch.path().display().to_string()),
+                "the scratch tmpfs is listed in this namespace's mountinfo"
+            );
+        });
+        assert!(matches!(outcome, Outcome::Ran | Outcome::Skipped(_)));
+    }
+
+    #[test]
+    fn plain_rerun_needs_no_namespace() {
+        let outcome = Rerun::new(crate::test_path!(plain_rerun_needs_no_namespace)).run(|| {
+            assert_eq!(
+                std::env::var(super::CHILD_ENV).as_deref(),
+                Ok("test_support::tests::plain_rerun_needs_no_namespace")
+            );
+        });
+        assert_eq!(outcome, Outcome::Ran);
+    }
+}
