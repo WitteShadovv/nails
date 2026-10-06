@@ -40,10 +40,10 @@ def run_command_capture(machine: Machine, label: str, command: str) -> CommandRe
 
     The command's exit status is recorded rather than asserted, so a command
     that is expected to fail is still inspected field by field. Output is
-    redirected to files under ``/tmp`` named after ``label`` (which must be
+    redirected to files under ``/run`` named after ``label`` (which must be
     unique within a test) and read back afterwards.
     """
-    prefix = f"/tmp/{label}"
+    prefix = f"/run/{label}"
     stdout_path = f"{prefix}.stdout"
     stderr_path = f"{prefix}.stderr"
     rc_path = f"{prefix}.rc"

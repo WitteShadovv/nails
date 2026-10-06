@@ -26,7 +26,7 @@
     import uuid
 
     def run_command_capture(label, command):
-        stem = f"/tmp/{label}-{uuid.uuid4().hex}"
+        stem = f"/run/{label}-{uuid.uuid4().hex}"
         machine.succeed(
             "bash -lc "
             + __import__("shlex").quote(

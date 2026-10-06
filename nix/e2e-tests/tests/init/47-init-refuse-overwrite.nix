@@ -33,11 +33,11 @@ in
 
     with subtest("init fails rather than replacing conflicting content"):
         machine.succeed(
-            "bash -lc 'set +e; nails init /mnt/data > /tmp/init-overwrite.stdout 2>/tmp/init-overwrite.stderr; printf \"%s\" \"$?\" > /tmp/init-overwrite.rc'"
+            "bash -lc 'set +e; nails init /mnt/data > /run/init-overwrite.stdout 2>/run/init-overwrite.stderr; printf \"%s\" \"$?\" > /run/init-overwrite.rc'"
         )
-        rc = int(machine.succeed("cat /tmp/init-overwrite.rc").strip())
-        stdout = machine.succeed("cat /tmp/init-overwrite.stdout")
-        stderr = machine.succeed("cat /tmp/init-overwrite.stderr")
+        rc = int(machine.succeed("cat /run/init-overwrite.rc").strip())
+        stdout = machine.succeed("cat /run/init-overwrite.stdout")
+        stderr = machine.succeed("cat /run/init-overwrite.stderr")
         combined = stdout + stderr
 
         assert rc != 0, f"init unexpectedly succeeded: stdout={stdout!r} stderr={stderr!r}"
@@ -54,10 +54,10 @@ in
         # is mounted there. init must refuse before writing anything.
         machine.succeed("rm -rf /root/nails-unmounted && mkdir -p /root/nails-unmounted")
         machine.succeed(
-            "bash -lc 'set +e; nails init /root/nails-unmounted > /tmp/init-unmounted.stdout 2>/tmp/init-unmounted.stderr; printf \"%s\" \"$?\" > /tmp/init-unmounted.rc'"
+            "bash -lc 'set +e; nails init /root/nails-unmounted > /run/init-unmounted.stdout 2>/run/init-unmounted.stderr; printf \"%s\" \"$?\" > /run/init-unmounted.rc'"
         )
-        rc = int(machine.succeed("cat /tmp/init-unmounted.rc").strip())
-        combined = machine.succeed("cat /tmp/init-unmounted.stdout /tmp/init-unmounted.stderr")
+        rc = int(machine.succeed("cat /run/init-unmounted.rc").strip())
+        combined = machine.succeed("cat /run/init-unmounted.stdout /run/init-unmounted.stderr")
         assert rc != 0, f"init unexpectedly accepted an unmounted directory: {combined!r}"
         assert "mount the hidden volume first" in combined, combined
         machine.succeed('test -z "$(ls -A /root/nails-unmounted)"')

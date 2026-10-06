@@ -49,7 +49,7 @@ in
             "state-concurrent-primary",
             f"{env_prefix} nails --config {headless_config} activate --overlay-only --session keep -y",
         )
-        primary_rc_path = "/tmp/state-concurrent-primary.rc"
+        primary_rc_path = "/run/state-concurrent-primary.rc"
         machine.wait_until_succeeds(
             f"test -f {entered_path} || test -f {primary_rc_path}",
             timeout=180,

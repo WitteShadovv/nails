@@ -48,7 +48,7 @@ in
             "state-observability-primary",
             f"{env_prefix} nails --config {headless_config} activate --overlay-only --session keep -y",
         )
-        primary_rc_path = "/tmp/state-observability-primary.rc"
+        primary_rc_path = "/run/state-observability-primary.rc"
         machine.wait_until_succeeds(
             f"test -f {entered_path} || test -f {primary_rc_path}",
             timeout=180,

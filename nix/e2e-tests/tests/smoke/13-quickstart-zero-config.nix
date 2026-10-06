@@ -47,9 +47,9 @@ in
         machine.succeed(
             "su - testuser -c "
             + "'sudo /mnt/data/nails status --json "
-            + "> /tmp/nails-status.json 2>/tmp/nails-status.err'"
+            + "> /run/nails-status.json 2>/run/nails-status.err'"
         )
-        payload = json.loads(machine.succeed("cat /tmp/nails-status.json"))
+        payload = json.loads(machine.succeed("cat /run/nails-status.json"))
         return payload.get("data", payload)
 
 

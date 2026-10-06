@@ -147,14 +147,14 @@ in
             "bash -lc "
             + shlex.quote(
                 command
-                + " > /tmp/nails-status.stdout 2>/tmp/nails-status.stderr"
+                + " > /run/nails-status.stdout 2>/run/nails-status.stderr"
             )
         )
-        stdout = machine.succeed("cat /tmp/nails-status.stdout")
+        stdout = machine.succeed("cat /run/nails-status.stdout")
         try:
             payload = json.loads(stdout)
         except ValueError as err:
-            stderr = machine.succeed("cat /tmp/nails-status.stderr")
+            stderr = machine.succeed("cat /run/nails-status.stderr")
             raise AssertionError(
                 f"status --json exited {rc} without a JSON payload: "
                 f"stdout={stdout!r}, stderr={stderr!r}"
@@ -166,7 +166,7 @@ in
         rc, data = read_status_json_with_rc(config_path=config_path)
         assert rc == 0, (
             f"status --json exited {rc}: {data}; stderr: "
-            + machine.succeed("cat /tmp/nails-status.stderr")
+            + machine.succeed("cat /run/nails-status.stderr")
         )
         return data
   '';

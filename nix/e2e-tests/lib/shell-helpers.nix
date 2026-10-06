@@ -6,7 +6,7 @@ in
     def run_command_capture(label, command):
         import shlex
 
-        prefix = "/tmp/" + label
+        prefix = "/run/" + label
         machine.succeed(
             "bash -lc "
             + shlex.quote(

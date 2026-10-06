@@ -30,9 +30,9 @@ class FakeMachine:
 class RunCommandCaptureTest(unittest.TestCase):
     def test_returns_the_superset_shape(self) -> None:
         reads = {
-            "cat /tmp/demo.stdout || true": "out\n",
-            "cat /tmp/demo.stderr || true": "err\n",
-            "cat /tmp/demo.rc": "7",
+            "cat /run/demo.stdout || true": "out\n",
+            "cat /run/demo.stderr || true": "err\n",
+            "cat /run/demo.rc": "7",
         }
         machine = FakeMachine(reads)
 
@@ -45,13 +45,13 @@ class RunCommandCaptureTest(unittest.TestCase):
                 "stdout": "out\n",
                 "stderr": "err\n",
                 "combined": "out\nerr\n",
-                "stdout_path": "/tmp/demo.stdout",
-                "stderr_path": "/tmp/demo.stderr",
+                "stdout_path": "/run/demo.stdout",
+                "stderr_path": "/run/demo.stderr",
             },
         )
 
     def test_runs_the_command_without_asserting_success(self) -> None:
-        machine = FakeMachine({"cat /tmp/demo.rc": "0"})
+        machine = FakeMachine({"cat /run/demo.rc": "0"})
 
         run_command_capture(machine, "demo", "nails status")
 
@@ -64,12 +64,12 @@ class RunCommandCaptureTest(unittest.TestCase):
         self.assertIn('printf "%s" "$?"', runner)
 
     def test_label_scopes_every_capture_path(self) -> None:
-        machine = FakeMachine({"cat /tmp/other.rc": "0"})
+        machine = FakeMachine({"cat /run/other.rc": "0"})
 
         result = run_command_capture(machine, "other", "true")
 
-        self.assertEqual(result["stdout_path"], "/tmp/other.stdout")
-        self.assertEqual(result["stderr_path"], "/tmp/other.stderr")
+        self.assertEqual(result["stdout_path"], "/run/other.stdout")
+        self.assertEqual(result["stderr_path"], "/run/other.stderr")
 
 
 if __name__ == "__main__":

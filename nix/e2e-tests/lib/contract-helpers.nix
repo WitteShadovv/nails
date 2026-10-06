@@ -3,7 +3,7 @@
     def run_command_capture(name, command):
         import shlex
 
-        prefix = f"/tmp/{name}"
+        prefix = f"/run/{name}"
         stdout_path = f"{prefix}.stdout"
         stderr_path = f"{prefix}.stderr"
         rc_path = f"{prefix}.rc"
@@ -36,7 +36,7 @@
         # colour auto-detection off. Give the pty the terminal type a real
         # interactive session would carry so TTY behaviour is what is tested.
 
-        prefix = f"/tmp/{name}"
+        prefix = f"/run/{name}"
         typescript = f"{prefix}.typescript"
         stderr_path = f"{prefix}.script.stderr"
         rc_path = f"{prefix}.rc"
