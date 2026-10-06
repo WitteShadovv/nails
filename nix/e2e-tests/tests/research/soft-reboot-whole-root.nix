@@ -120,6 +120,7 @@ in
     import secrets
     import shlex
     import signal
+    import time
 
     BASH_STORE_PATH = "${pkgs.bash}"
     HIDDEN = "/mnt/data"
@@ -141,6 +142,7 @@ in
     timings = []
     hidden_tokens = {}
     late_kmsg_tokens = []
+    run_snapshots = {}
 
 
     def finding(message):
@@ -352,6 +354,20 @@ in
         return float(machine.succeed("cut -d' ' -f1 /proc/uptime").strip())
 
 
+    # Console lines that mean the new userspace will never start the backdoor.
+    STUCK_MARKERS = (
+        "Reached target Emergency Mode",
+        "Started Emergency Shell",
+        "Reached target Rescue Mode",
+        "Freezing execution",
+        "Switch root target contains no usable init",
+    )
+
+
+    def console_since(index):
+        return machine.full_console_log[index:]
+
+
     def soft_reboot(label):
         """Trigger a soft-reboot and reconnect the backdoor shell.
 
@@ -361,16 +377,17 @@ in
         shell disconnected and reconnect; connect() discards everything until
         the new backdoor prints its ready marker.
 
-        connect() would wait forever on a frozen PID 1, so a SIGALRM bounds it.
-        (The first run waited on the serial console with
-        wait_for_console_text() instead; that helper consumes one queued
-        console line per second, so the ~300 lines a soft-reboot prints made
-        every transition look like ~290 s. The real grey-out is measured
-        in-guest below.)
+        Before connecting, poll the full console log (appended directly by the
+        driver's reader thread, unlike the one-line-per-second queue behind
+        wait_for_console_text()) until the new backdoor announces itself on
+        ttyS0, and fail at once with diagnostics if the new userspace lands in
+        emergency mode or PID 1 freezes. connect() itself stays bounded by an
+        alarm as a last resort.
 
         Returns the guest uptime at the trigger, for later log filtering.
         """
         trigger = guest_uptime()
+        console_index = len(machine.full_console_log)
         machine.execute(
             "(systemctl soft-reboot --check-inhibitors=no || "
             "systemctl start --no-block --job-mode=replace-irreversibly soft-reboot.target)"
@@ -379,14 +396,31 @@ in
             check_output=False,
         )
         machine.connected = False
+        deadline = time.monotonic() + 600
+        while True:
+            lines = console_since(console_index)
+            stuck = [line for line in lines if any(m in line for m in STUCK_MARKERS)]
+            if stuck:
+                causes = [
+                    line
+                    for line in lines
+                    if any(k in line for k in ("Timed out", "timed out", "Dependency failed", "Failed to"))
+                ]
+                machine.log(f"{label}: causes on the console:\n" + "\n".join(causes[-60:]))
+                machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
+                raise AssertionError(f"{label}: the new userspace is stuck: {stuck[0]}")
+            if any("connecting to host" in line for line in lines):
+                break
+            if time.monotonic() > deadline:
+                machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
+                raise AssertionError(f"{label}: no backdoor 600 s after the soft-reboot")
+            time.sleep(0.5)
         previous_handler = signal.signal(signal.SIGALRM, _alarm)
-        signal.alarm(600)
+        signal.alarm(120)
         try:
             machine.connect()
         except ReconnectTimeout:
-            raise AssertionError(
-                f"{label}: no backdoor 600 s after the soft-reboot (frozen PID 1?)"
-            ) from None
+            raise AssertionError(f"{label}: backdoor announced itself but never connected") from None
         finally:
             signal.alarm(0)
             signal.signal(signal.SIGALRM, previous_handler)
@@ -486,35 +520,67 @@ in
     # userspace code before PID 1 switches root: every hidden unit (journald
     # included) has stopped and the hidden volume is unmounted.
     #
-    # 1. Scrub: delete every non-socket entry under /run except what the decoy
-    #    boot needs from it (current-system/booted-system for the init check
-    #    and the module tree, credentials, systemd's inaccessible nodes) and
-    #    the mounted /run/nextroot. Sockets stay: PID 1's notify and varlink
-    #    sockets and the never-stopped socket units (journald, udev control) are
-    #    carried as open fds bound to these very inodes, and a fresh tmpfs at
-    #    /run would orphan them (see ADR 0008, section 5).
+    # 1. Scrub, as an allowlist of what to DELETE. The second run showed why a
+    #    "keep" list is wrong: deleting /run/udev left the decoy without a
+    #    device database, and systemd-udev-trigger.service (DefaultDependencies=no,
+    #    RemainAfterExit=yes, no shutdown conflict) stays "active" across a
+    #    soft-reboot and never re-triggers, so every .device job timed out
+    #    after 300 s and the decoy fell into emergency mode. /run is the state
+    #    the next userspace is built to inherit; only remove what the hidden
+    #    session added:
+    #    a. known per-session state of units that are all stopped by now:
+    #       the runtime journal, logind's sessions/users/seats/inhibitors,
+    #       transient and runtime unit files (including this drop-in), utmp,
+    #       and the leftover mountpoint dirs of /run/user/<uid>;
+    #    b. every entry at the top of /run and of /run/systemd that is not in
+    #       the snapshot taken in the decoy just before entering (written to
+    #       /run/nails-run-snapshot), i.e. what hidden services created.
+    #    Never touched: sockets (PID 1's notify and varlink sockets and the
+    #    never-stopped socket units are carried as fds bound to these inodes),
+    #    /run/udev, /run/credentials, /run/current-system, /run/booted-system
+    #    and the mounted /run/nextroot.
     # 2. Cursor: the decoy journald skips kernel records whose sequence number
     #    is below /run/systemd/journal/kernel-seqnum and imports the rest from
     #    the start of the ring buffer. Writing "last record + 1" here makes it
     #    skip every record the hidden session produced, including those logged
-    #    after the hidden journald stopped. Without the file it would import the
-    #    whole ring buffer.
+    #    after the hidden journald stopped.
     #
     # The script lives in the hidden /run: the hidden volume is already
     # unmounted when it runs, and nothing of it reaches any disk.
     LEAVE_SCRUB = r"""#!/run/current-system/sw/bin/bash
     PATH=/run/current-system/sw/bin
-    find /run -xdev -mindepth 1 \( -path /run/current-system -o -path /run/booted-system \
-        -o -path /run/credentials -o -path /run/systemd/inaccessible -o -path /run/nextroot \) -prune \
-        -o ! -type s ! -type d -print0 | xargs -0 -r rm -f --
-    find /run -xdev -mindepth 1 -depth -type d -empty ! -path /run/nextroot ! -path /run/credentials \
-        ! -path '/run/systemd/inaccessible*' -delete 2>/dev/null
+    snap=/run/nails-run-snapshot
+    del() {
+        [ -S "$1" ] && return 0
+        [ -e "$1" ] || [ -L "$1" ] || return 0
+        # Spike diagnostics only: the names land in the kernel ring buffer
+        # (RAM). The cursor below keeps them out of the decoy journal; a real
+        # implementation must not log them at all.
+        echo "nails-scrub: removing $1" > /dev/kmsg
+        rm -rf --one-file-system -- "$1"
+    }
+    for p in /run/log/journal/* /run/systemd/sessions/* /run/systemd/users/* /run/systemd/seats/*              /run/systemd/inhibit/* /run/systemd/shutdown/* /run/systemd/transient/*              /run/systemd/system/* /run/systemd/system.control/* /run/utmp; do
+        del "$p"
+    done
+    for p in /run/user/*; do
+        [ -d "$p" ] && rmdir -- "$p" 2>/dev/null
+    done
+    if [ -r "$snap" ]; then
+        for p in /run/* /run/.[!.]* /run/systemd/* /run/systemd/.[!.]*; do
+            case "$p" in
+                /run/nextroot|/run/udev|/run/credentials|/run/current-system|/run/booted-system|/run/systemd|"$snap") continue ;;
+            esac
+            [ -e "$p" ] || [ -L "$p" ] || continue
+            grep -qxF -- "$p" "$snap" || del "$p"
+        done
+    fi
+    rm -f -- "$snap" /run/nails-leave-scrub.sh
     last=$(dd if=/dev/kmsg bs=16384 iflag=nonblock 2>/dev/null | grep -av '^ ' | tail -n 1 | cut -d, -f2)
     if [ -n "$last" ]; then
         next=$((last + 1))
         bytes=""
         for i in 0 1 2 3 4 5 6 7; do
-            bytes="$bytes$(printf '\\%03o' $(( (next >> (8 * i)) & 255 )))"
+            bytes="$bytes$(printf '\%03o' $(( (next >> (8 * i)) & 255 )))"
         done
         mkdir -p /run/systemd/journal
         printf "$bytes" > /run/systemd/journal/kernel-seqnum
@@ -557,6 +623,14 @@ in
                 machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
             else:
                 machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+            # The decoy's /run, two levels deep, just before entering. The
+            # leave scrub deletes what is not in it; the residue check below
+            # compares against it.
+            snapshot_text = machine.succeed(
+                "find /run -xdev -mindepth 1 -maxdepth 2 | LC_ALL=C sort > /run/nails-run-snapshot.tmp && "
+                "mv /run/nails-run-snapshot.tmp /run/nails-run-snapshot && cat /run/nails-run-snapshot"
+            )
+            run_snapshots[cycle] = set(snapshot_text.split())
             machine.succeed(
                 "set -eux; "
                 f"mkdir -p {UPPER} {WORK} /run/nails-lower /run/nextroot; "
@@ -754,20 +828,27 @@ in
                 f"/run/systemd/transient/nails-spike-late-kmsg-{cycle}.service",
             ):
                 machine.fail(f"test -e {probe}")
-            # Every non-socket file in /run whose inode predates the trigger (ctime,
-            # which a copy that preserves mtime cannot fake) was
-            # carried over from the hidden session (the decoy boot creates its
-            # own files later). Only the kept paths may be among them.
-            residue = machine.succeed(
-                "find /run -xdev -mindepth 1 \\( -path /run/current-system -o -path /run/booted-system "
-                "-o -path /run/credentials -o -path /run/systemd/inaccessible \\) -prune "
-                f"-o ! -type s ! -type d ! -newerct @{leave_wall} -print"
-            ).split()
-            old_dirs = machine.succeed(
-                f"find /run -xdev -mindepth 1 -type d ! -newerct @{leave_wall} -print"
-            ).split()
-            finding(f"{label}: directories in /run older than the trigger (structure only): {sorted(old_dirs)}")
-            assert not residue, f"hidden /run residue in the decoy: {sorted(residue)}"
+            # An entry two levels deep whose inode predates the trigger (ctime,
+            # which a copy preserving mtime cannot fake) was carried over the
+            # switch; the decoy boot creates its own entries later. Carried
+            # entries must have existed in the decoy before entering, apart from
+            # the transition's own /run/nextroot. Sockets are carried by design.
+            # /run/udev is kept on purpose (device database) and reported.
+            carried = set(
+                machine.succeed(
+                    "find /run -xdev -mindepth 1 -maxdepth 2 \\( -path /run/udev -o -path /run/credentials \\) "
+                    f"-prune -o ! -type s ! -newerct @{leave_wall} -print"
+                ).split()
+            )
+            residue = sorted(carried - run_snapshots[cycle] - {"/run/nextroot"})
+            finding(f"{label}: entries carried from before the switch, all pre-existing: {len(carried)}")
+            _, udev_new = out_of(
+                f"find /run/udev -xdev -mindepth 1 -maxdepth 2 ! -newerct @{leave_wall} | wc -l"
+            )
+            finding(f"{label}: /run/udev entries carried (kept on purpose): {udev_new.strip()}")
+            _, scrub_log = out_of("dmesg | grep 'nails-scrub:' | tail -n 40 || true")
+            finding(f"{label}: what the scrub removed (from its own kmsg lines):\n{scrub_log}")
+            assert not residue, f"hidden /run residue in the decoy: {residue}"
 
         with subtest(f"cycle {cycle}: no hidden kernel record in the decoy journal"):
             late = late_kmsg_tokens[-1]

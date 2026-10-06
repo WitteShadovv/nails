@@ -59,7 +59,12 @@ daemon, LUKS, journald writing into the upper, strict and deferred close. The
 run then failed in its last step: the raw-disk grep ran out of memory in the
 guest, so the final power cycle did not run. It also found two leaks, now
 mitigated in the spike (§5), and a timing artefact (§1). The run's results are
-marked [V-spike] below. The fixes are waiting for a second run.
+marked [V-spike] below.
+
+**Second run (commit `8c69ea8`):** cycle 1 entered in the same times. On the way
+back, the first version of the `/run` scrub sent the decoy into emergency mode
+after a 300 s device timeout (§5). The scrub was rewritten as an allowlist of
+what to delete; a third run is pending.
 
 ## 1. Soft-reboot semantics
 
@@ -341,19 +346,49 @@ after `shutdown.target`, `umount.target` and `final.target`, so it is the last
 userspace code before the switch: every hidden unit, journald included, has
 stopped, and the hidden volume is unmounted. The script:
 
-1. **Scrubs `/run`.** It deletes every non-socket entry except
-   `current-system` and `booted-system` (needed by the init check and the module
-   tree), `credentials`, `systemd/inaccessible` and the mounted
-   `/run/nextroot`. Then it removes empty directories.
+1. **Scrubs `/run`, deleting only what the hidden session added.** The first
+   version deleted everything except a keep list. In the second run that sent
+   the decoy into emergency mode [V-spike]. It had deleted the udev database
+   in `/run/udev`. `systemd-udev-trigger.service` has
+   `DefaultDependencies=no`, `RemainAfterExit=yes` and no shutdown conflict, so
+   it stays "active" across a soft-reboot and never re-triggers [V-src: unit
+   file]. Every `.device` job (`/dev/hvc0`, the ESP, `eth1`) timed out after
+   300 s, `local-fs.target` failed, and the decoy fell into emergency mode.
+   `/run` is the state the next userspace is built to inherit, so the scrub is
+   now an allowlist of what to delete:
+
+   | Deleted | Why |
+   | --- | --- |
+   | `/run/log/journal/*` | the hidden runtime journal; journald has stopped |
+   | `/run/systemd/{sessions,users,seats,inhibit,shutdown}/*` | logind's state of the hidden session; logind has stopped and every session process is dead |
+   | `/run/systemd/{transient,system,system.control}/*` | hidden transient and runtime unit files and drop-ins (including the scrub's own) |
+   | `/run/utmp` | hidden logins; `systemd-update-utmp` recreates it at the decoy start |
+   | `/run/user/<uid>` (empty dirs only) | mountpoints of the hidden user runtime dirs; their tmpfs mounts are not carried |
+   | top-level entries of `/run` and of `/run/systemd` that are not in a snapshot taken in the decoy just before entering | runtime directories and files of hidden services, and stray files |
+
+   | Kept | Why |
+   | --- | --- |
+   | every socket | PID 1's notify and varlink sockets and the never-stopped socket units are carried as fds bound to these inodes |
+   | `/run/udev` | the device database the decoy's device units are rebuilt from (see above). It may hold records for devices the hidden session created; the spike reports how many entries are carried |
+   | `/run/credentials`, `/run/current-system`, `/run/booted-system`, `/run/nextroot` | system credentials, the init check and module tree, and the transition itself |
+   | everything else that was in the snapshot | the decoy's own pre-entry state; deleting it is what broke the second run |
+
 2. **Seeks the decoy journald's kmsg cursor.** It writes "last kmsg sequence +
    1", read from `/dev/kmsg` without blocking, into
    `/run/systemd/journal/kernel-seqnum`. The decoy journald then skips every
    record of the hidden session. Only PID 1's last generic lines, written after
    the script, are still imported.
 
-The spike asserts the result: no planted probe, no carried non-socket file in
-`/run`, and no late hidden kernel record in the decoy journal or on the raw
-disk. [V-spike, pending the second run]
+The spike asserts the result. No planted probe may survive, at any depth. Every
+entry two levels deep that was carried over the switch must already have been
+in the pre-entry snapshot: carried means its inode change time predates the
+trigger, and sockets and `/run/udev` are exempt. No late hidden kernel record
+may be in the decoy journal or on the raw disk. As spike-only diagnostics, the
+scrub logs every path it removes to `/dev/kmsg`. That puts the names in the
+ring buffer (RAM), though not in the journal, because of the cursor; a real
+implementation must not log them. If the next userspace reaches emergency mode
+or PID 1 freezes, the spike now fails within seconds and prints the timeouts
+and failed dependencies from the console. [V-spike, pending the third run]
 
 Alternatives considered and rejected:
 
@@ -507,10 +542,13 @@ Reasons it cannot simply replace today's design:
   script reads it (a read returns `EPIPE`), the cursor can come out too low, and
   the records after it are imported again. A NAILS implementation should read
   until the read would block, retrying on `EPIPE`.
-- **The scrub runs in the same `/run` that PID 1 and the surviving sockets
-  use.** It keeps every socket and the paths the decoy boot needs. A NixOS
-  module or service that expects a non-socket file in `/run` to survive a
-  soft-reboot would break; the decoy-side vital checks are meant to catch that.
+- **The scrub runs in the same `/run` that PID 1 and the surviving units
+  use.** Deleting state that a unit kept "active" across the soft-reboot relies
+  on breaks the next boot (the second run's udev failure). The scrub therefore
+  deletes only an allowlist, plus entries missing from the pre-entry snapshot.
+  A hidden configuration with its own never-stopped units (`DefaultDependencies=no`,
+  `RemainAfterExit=yes`) could still leave state that the decoy would then
+  reuse.
 - **Overlay copy-up versus a decoy that keeps changing** (§2), especially the Nix
   DB and `/etc` after a decoy rebuild between sessions.
 - **The emergency ruling conflict** (§6).
