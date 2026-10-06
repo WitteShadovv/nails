@@ -55,8 +55,6 @@ let
   # list (1000-60000); 60706-61183 is unused by systemd (UIDS-GIDS).
   hiddenUid = 60777;
   hiddenUser = "aux";
-  hiddenVt = 8;
-  loginVt = 9;
 in
 {
   name = "research-dual-root-risks";
@@ -117,7 +115,7 @@ in
 
         (pkgs.writeShellScriptBin "aux-display" ''
           ${exports}
-          exec ${dm.xserverBin} ${xArgs} :1 vt${toString hiddenVt} -nolisten local -logfile /var/log/X.1.log
+          exec ${dm.xserverBin} ${xArgs} :1 vt"$1" -nolisten local -logfile /var/log/X.1.log
         '')
 
         # Times one VT switch done either with chvt or through logind.
@@ -168,8 +166,10 @@ in
     LOWER = AUX + "/lower"
     UID = ${toString hiddenUid}
     USER = "${hiddenUser}"
-    HIDDEN_VT = ${toString hiddenVt}
-    LOGIN_VT = ${toString loginVt}
+    # Discovered after boot (free_vts); the decoy VT varies.
+    HIDDEN_VT = 0
+    LOGIN_VT = 0
+    PIDNS_VT = 0
     LOGIN = "${pkgs.shadow}/bin/login"
     SW = "/run/current-system/sw/bin"
     SLICE = "aux.slice"
@@ -236,7 +236,33 @@ in
 
 
     def root_of(pid):
-        return machine.succeed(f"readlink /proc/{pid}/root").strip()
+        """How the host sees a process's root: readlink of /proc/<pid>/root
+        plus whether it is the hidden root. readlink alone cannot tell: for a
+        process whose root is the root mount of another mount namespace
+        (RootDirectory= moves the overlay to "/" there), the kernel prints "/"
+        to a reader in the host namespace. Comparing device and inode of the
+        directory itself is exact."""
+        link = machine.succeed(f"readlink /proc/{pid}/root").strip()
+        return f"{link} (hidden root: {in_hidden_root(pid)})"
+
+
+    def in_hidden_root(pid):
+        rc, out = machine.execute(f"stat -L -c %d:%i /proc/{pid}/root/")
+        want = machine.succeed(f"stat -L -c %d:%i {ROOT}/").strip()
+        return rc == 0 and out.strip() == want
+
+
+    def free_vts(decoy_vt, count):
+        """VTs no logind session uses, from 8 up; the decoy's VT is discovered
+        (lightdm may run it on VT 1 or VT 7)."""
+        out = machine.succeed("loginctl list-sessions --no-legend --json=short || echo '[]'").strip()
+        used = {decoy_vt}
+        for s in json.loads(out or "[]"):
+            vt = machine.succeed(f"loginctl show-session {s['session']} -p VTNr --value").strip()
+            if vt.isdigit():
+                used.add(int(vt))
+        free = [n for n in range(8, 64) if n not in used]
+        return free[:count]
 
 
     # ------------------------------------------------------------------
@@ -284,7 +310,6 @@ in
     # tty, so a second session (R4b) has its own queue.
     # ------------------------------------------------------------------
     HOME_Q = f"{ROOT}/home/{USER}"
-    Q = f"{HOME_Q}/q-tty{LOGIN_VT}"
     PROFILE = (
         "cd \"$HOME\"\n"
         "q=q-$(basename \"$(tty)\")\n"
@@ -301,7 +326,8 @@ in
     )
 
 
-    def in_session(script, timeout=120, q=Q):
+    def in_session(script, timeout=120, q=""):
+        q = q or f"{HOME_Q}/q-tty{LOGIN_VT}"
         machine.wait_until_succeeds(f"test -d {q}", timeout=60)
         machine.succeed(f"rm -f {q}/done {q}/out")
         machine.succeed(
@@ -393,7 +419,8 @@ in
     machine.wait_until_succeeds("pgrep -u testuser -x icewm", timeout=120)
     decoy_sid = [s for s in sessions_of(1000) if session_prop(s, "Type") == "x11"][0]
     decoy_vt = int(session_prop(decoy_sid, "VTNr"))
-    assert decoy_vt not in (HIDDEN_VT, LOGIN_VT), f"decoy runs on VT {decoy_vt}"
+    HIDDEN_VT, LOGIN_VT, PIDNS_VT = free_vts(decoy_vt, 3)
+    finding(f"hidden display VT {HIDDEN_VT}, hidden logins on tty{LOGIN_VT} and tty{PIDNS_VT}")
     machine.wait_until_succeeds(f"test \"$(cat /sys/class/tty/tty0/active)\" = tty{decoy_vt}")
 
     # A full-screen blue window on the decoy display makes "the decoy is on
@@ -497,7 +524,7 @@ in
         display_round[0] += 1
         n = display_round[0]
         machine.succeed(f"rm -f {ROOT}/tmp/.X11-unix/X1 {ROOT}/tmp/.X1-lock")
-        rc, out = hidden_run(f"aux-display-{n}", f"{SW}/aux-display")
+        rc, out = hidden_run(f"aux-display-{n}", f"{SW}/aux-display {HIDDEN_VT}")
         assert rc == 0, out
         machine.wait_until_succeeds(f"test -S {ROOT}/tmp/.X11-unix/X1", timeout=60)
         machine.wait_until_succeeds(f"test \"$(cat /sys/class/tty/tty0/active)\" = tty{HIDDEN_VT}", timeout=30)
@@ -524,8 +551,8 @@ in
         assert c["decoy"] > 0.4, f"decoy not rendered after the hidden X was killed: {c}"
         assert xpid in decoy_x_pids(), "the decoy X server changed"
         finding(f"R1a: total {round(time.monotonic() - t0, 2)}s; Xorg log of the decoy after return:")
-        _, log = machine.execute("tail -n 15 /var/log/X.0.log 2>/dev/null || true")
-        finding(log.strip() or "(no /var/log/X.0.log)")
+        _, xlog = machine.execute("tail -n 15 /var/log/X.0.log 2>/dev/null || true")
+        finding(xlog.strip() or "(no /var/log/X.0.log)")
 
     with subtest("R1b: emergency order, switch first then kill"):
         cg = start_hidden_display()
@@ -577,7 +604,7 @@ in
         machine.succeed(f"chvt {LOGIN_VT}")
         machine.wait_until_succeeds(f"test \"$(loginctl show-session {hidden_sid} -p Active --value)\" = yes", timeout=20)
         hidden_leader = session_prop(hidden_sid, "Leader")
-        assert root_of(hidden_leader) == ROOT
+        assert in_hidden_root(hidden_leader), f"session leader root: {root_of(hidden_leader)}"
         out = in_session("id; echo $XDG_RUNTIME_DIR; readlink /proc/self/root; cat /proc/self/cgroup\n")
         finding(f"hidden session {hidden_sid} (leader {hidden_leader}) active; probe loop says:\n{out.strip()}")
         um = machine.succeed(f"systemctl show user@{UID}.service -p MainPID --value").strip()
@@ -737,7 +764,7 @@ in
             "aux-login-pidns",
             f"{LOGIN} -f {USER}",
             extra=[
-                f"TTYPath=/dev/tty{LOGIN_VT + 1}",
+                f"TTYPath=/dev/tty{PIDNS_VT}",
                 "StandardInput=tty",
                 "StandardOutput=tty",
                 "TTYReset=yes",
@@ -759,7 +786,7 @@ in
             out = in_session(
                 f"echo pid1=$(cat /proc/1/comm); ls /proc | grep -c '^[0-9]'; "
                 f"/run/wrappers/bin/sudo -n cat /proc/1/root{DECOY_ONLY}/marker 2>&1 || echo blocked\n",
-                q=f"{HOME_Q}/q-tty{LOGIN_VT + 1}",
+                q=f"{HOME_Q}/q-tty{PIDNS_VT}",
             )
             finding(f"R4b: hidden session under PrivatePIDs=yes: {second} {props}; inside: {out.split()}")
 

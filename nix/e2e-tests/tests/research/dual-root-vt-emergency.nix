@@ -51,8 +51,6 @@ let
   # session runs.
   hiddenUid = 60123;
   hiddenUser = "aux";
-  hiddenVt = 8;
-  loginVt = 9;
 in
 {
   name = "research-dual-root-vt-emergency";
@@ -95,7 +93,7 @@ in
         # inside the overlay, i.e. to the upper.
         (pkgs.writeShellScriptBin "aux-display" ''
           ${exports}
-          exec ${dm.xserverBin} ${xArgs} :1 vt${toString hiddenVt} -nolisten local -logfile /var/log/X.1.log
+          exec ${dm.xserverBin} ${xArgs} :1 vt"$1" -nolisten local -logfile /var/log/X.1.log
         '')
 
         # Emergency, as NAILS would run it from the host side. It prints
@@ -163,8 +161,9 @@ in
     LOWER = AUX + "/lower"
     UID = ${toString hiddenUid}
     USER = "${hiddenUser}"
-    HIDDEN_VT = ${toString hiddenVt}
-    LOGIN_VT = ${toString loginVt}
+    # Discovered after boot (free_vts); the decoy VT varies.
+    HIDDEN_VT = 0
+    LOGIN_VT = 0
     LOGIN = "${pkgs.shadow}/bin/login"
     SLICE = "aux.slice"
     SLICE_CG = "/sys/fs/cgroup/aux.slice"
@@ -245,7 +244,33 @@ in
 
 
     def root_of(pid):
-        return machine.succeed(f"readlink /proc/{pid}/root").strip()
+        """How the host sees a process's root: readlink of /proc/<pid>/root
+        plus whether it is the hidden root. readlink alone cannot tell: for a
+        process whose root is the root mount of another mount namespace
+        (RootDirectory= moves the overlay to "/" there), the kernel prints "/"
+        to a reader in the host namespace. Comparing device and inode of the
+        directory itself is exact."""
+        link = machine.succeed(f"readlink /proc/{pid}/root").strip()
+        return f"{link} (hidden root: {in_hidden_root(pid)})"
+
+
+    def in_hidden_root(pid):
+        rc, out = machine.execute(f"stat -L -c %d:%i /proc/{pid}/root/")
+        want = machine.succeed(f"stat -L -c %d:%i {ROOT}/").strip()
+        return rc == 0 and out.strip() == want
+
+
+    def free_vts(decoy_vt, count):
+        """VTs no logind session uses, from 8 up; the decoy's VT is discovered
+        (lightdm may run it on VT 1 or VT 7)."""
+        out = machine.succeed("loginctl list-sessions --no-legend --json=short || echo '[]'").strip()
+        used = {decoy_vt}
+        for s in json.loads(out or "[]"):
+            vt = machine.succeed(f"loginctl show-session {s['session']} -p VTNr --value").strip()
+            if vt.isdigit():
+                used.add(int(vt))
+        free = [n for n in range(8, 64) if n not in used]
+        return free[:count]
 
 
     def sectors_written(dev):
@@ -271,7 +296,8 @@ in
         s for s in sessions_of(1000) if session_prop(s, "Type") == "x11"
     ][0]
     decoy_vt = int(session_prop(decoy_sid, "VTNr"))
-    assert decoy_vt not in (HIDDEN_VT, LOGIN_VT), f"decoy runs on VT {decoy_vt}"
+    HIDDEN_VT, LOGIN_VT = free_vts(decoy_vt, 2)
+    finding(f"hidden display on VT {HIDDEN_VT}, hidden login on tty{LOGIN_VT}")
     machine.wait_until_succeeds(f"test \"$(cat /sys/class/tty/tty0/active)\" = tty{decoy_vt}")
     decoy_dev = machine.succeed("findmnt -no SOURCE /").strip()
     finding(f"decoy session {decoy_sid} on VT {decoy_vt}, root device {decoy_dev}")
@@ -347,7 +373,7 @@ in
     writes_session_start = sectors_written(decoy_dev)
 
     with subtest("hidden display server on its own VT, decoy stays logged in"):
-        rc, out = hidden_run("aux-display", "/run/current-system/sw/bin/aux-display")
+        rc, out = hidden_run("aux-display", f"/run/current-system/sw/bin/aux-display {HIDDEN_VT}")
         assert rc == 0, out
         machine.wait_until_succeeds(f"test -S {ROOT}/tmp/.X11-unix/X1", timeout=60)
         machine.wait_until_succeeds(
@@ -356,7 +382,8 @@ in
         # The display socket exists only in the upper, not on the decoy.
         machine.fail("test -e /tmp/.X11-unix/X1")
         x_hidden = unit_prop("aux-display.service", "MainPID")
-        assert root_of(x_hidden) == ROOT, f"hidden X root: {root_of(x_hidden)}"
+        finding(f"hidden X server {x_hidden}: root {root_of(x_hidden)}")
+        assert in_hidden_root(x_hidden), f"hidden X root: {root_of(x_hidden)}"
         # logind follows the VT: the decoy session is still there, inactive.
         assert session_prop(decoy_sid, "State") in ("online", "active"), session_prop(decoy_sid, "State")
         assert session_prop(decoy_sid, "Active") == "no"
@@ -408,7 +435,7 @@ in
             }
             finding(f"hidden logind session {logind_session}: {props}")
             assert props["Seat"] == "seat0", props
-            assert root_of(props["Leader"]) == ROOT, f"session leader root: {root_of(props['Leader'])}"
+            assert in_hidden_root(props["Leader"]), f"session leader root: {root_of(props['Leader'])}"
 
         machine.wait_until_succeeds(f"pgrep -u {UID} -x icewm", timeout=60)
         machine.wait_until_succeeds(f"pgrep -u {UID} -x xterm", timeout=60)
@@ -419,11 +446,10 @@ in
         # never lets it reach.
         for pid in machine.succeed(f"pgrep -u {UID}").split():
             comm = machine.succeed(f"cat /proc/{pid}/comm").strip()
-            r = root_of(pid)
             if comm == "(sd-pam)":
-                finding(f"hidden-uid helper {comm} (pid {pid}) has root {r}")
+                finding(f"hidden-uid helper {comm} (pid {pid}) has root {root_of(pid)}")
                 continue
-            assert r == ROOT, f"hidden process {pid} ({comm}) has root {r}"
+            assert in_hidden_root(pid), f"hidden process {pid} ({comm}) has root {root_of(pid)}"
         # The decoy side cannot reach the hidden display: no path socket in its
         # /tmp, and no abstract socket.
         machine.fail("DISPLAY=:1 xprop -root >/dev/null 2>&1")
@@ -432,7 +458,7 @@ in
         um = um.strip()
         if rc == 0 and um not in ("", "0"):
             finding(f"user@{UID} root: {root_of(um)}")
-            assert root_of(um) == ROOT, "the hidden user manager must run in the hidden root"
+            assert in_hidden_root(um), "the hidden user manager must run in the hidden root"
         else:
             finding(f"user@{UID} not running (no logind session or manager failed)")
         time.sleep(2)
@@ -519,7 +545,8 @@ in
         machine.fail(f"pgrep -u {UID}")
         machine.succeed(f"! grep -q '^populated 1' {SLICE_CG}/cgroup.events")
         hidden_roots = machine.succeed(
-            f"for p in /proc/[0-9]*; do [ \"$(readlink $p/root 2>/dev/null)\" = {ROOT} ] && echo $p; done; true"
+            f"want=$(stat -L -c %d:%i {ROOT}/); for p in /proc/[0-9]*; do "
+            "[ \"$(stat -L -c %d:%i $p/root/ 2>/dev/null)\" = \"$want\" ] && echo $p; done; true"
         ).split()
         assert not hidden_roots, f"processes still rooted in the hidden root: {hidden_roots}"
         machine.wait_until_succeeds(f"test -z \"$(loginctl list-sessions --no-legend | awk '$2 == {UID}')\"", timeout=30)
@@ -571,13 +598,13 @@ in
         assert wtmp_after == wtmp_before, "the decoy wtmp changed"
         machine.fail(f"test -e /home/{USER}")
         machine.fail("test -e /etc/aux-canary")
-        patterns = " ".join(f"-e {t}" for t in tokens)
+        patterns = " ".join(f"-e {tok}" for tok in tokens)
         raw = machine.succeed(
             f"sync; echo 3 > /proc/sys/vm/drop_caches; "
             f"grep -a -o -F {patterns} {decoy_dev} | sort | uniq -c || true",
             timeout=1800,
         )
-        hits = [line for line in raw.splitlines() if any(t in line for t in tokens)]
+        hits = [line for line in raw.splitlines() if any(tok in line for tok in tokens)]
         assert not hits, "hidden tokens found on the raw decoy disk:\n" + "\n".join(hits)
 
     machine.log("FINDING: summary")
