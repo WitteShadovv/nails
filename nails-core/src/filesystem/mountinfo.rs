@@ -194,10 +194,14 @@ pub fn read_mountinfo() -> Result<Vec<MountEntry>> {
 /// as it was passed to `mount(2)`, still holding the overlay syntax's own
 /// backslash escapes (`\,`, `\:`, `\\` from [`escape_overlay_path`]), and
 /// `seq_show_option` then octal-escapes `,`, space, tab, newline and backslash
-/// when printing it. Decoding therefore runs in reverse: split the options on
-/// `,` (a comma inside a value is always `\054` from the kernel, or `\,` in a
-/// hand-written string), undo the kernel's octal escapes, split `lowerdir` on
-/// unescaped `:`, and finally drop the overlay backslash escapes.
+/// (never `:`) when printing it. A layer `/a,b:c` mounted by NAILS therefore
+/// reads back as `/a\134\054b\134:c`; one mounted through mount(8), which hands
+/// each option to fsconfig(2) whole and so needs no `\,`, reads back as
+/// `/a\054b\134:c`. Decoding runs in reverse: split the options on `,` (a comma
+/// inside a value is always `\054` from the kernel, or `\,` in a hand-written
+/// string), undo the kernel's octal escapes, split `lowerdir` on unescaped `:`,
+/// and finally drop the overlay backslash escapes. Both kernel forms and the
+/// single-escaped form NAILS builds for `mount(2)` decode alike.
 pub fn parse_overlay_opts(super_opts: &str) -> OverlayOpts {
     let path = |value: &str| PathBuf::from(unescape_overlay(value));
     let mut opts = OverlayOpts::default();
@@ -640,6 +644,52 @@ this is not a mountinfo line
         );
         assert_eq!(opts.upperdir, Some(PathBuf::from("/up per")));
         assert_eq!(opts.workdir, Some(PathBuf::from("/work")));
+    }
+
+    #[test]
+    fn parse_overlay_opts_decodes_the_doubly_escaped_kernel_form() {
+        // Verbatim from /proc/self/mountinfo on Linux 7.2 for an overlay mounted
+        // by RealFilesystem::mount_overlay with lower `lower, with:colon`, upper
+        // `upper\dir` and work `work dir` (see tests/kernel_semantics.rs). The
+        // kernel octal-escapes the backslashes NAILS added, so `\,` reads back
+        // as `\134\054` and `\:` as `\134:`.
+        let opts = parse_overlay_opts(
+            "rw,lowerdir=/t/lower\\134\\054\\040with\\134:colon,upperdir=/t/upper\\134\\134dir,\
+             workdir=/t/work\\040dir,redirect_dir=nofollow,uuid=null",
+        );
+        assert_eq!(opts.lowerdir, vec![PathBuf::from("/t/lower, with:colon")]);
+        assert_eq!(opts.upperdir, Some(PathBuf::from("/t/upper\\dir")));
+        assert_eq!(opts.workdir, Some(PathBuf::from("/t/work dir")));
+    }
+
+    #[test]
+    fn parse_overlay_opts_decodes_a_captured_fsconfig_mount() {
+        // Captured by scripts/capture-kernel-fixtures.sh: mount(8) hands each
+        // option to fsconfig(2) separately, so the comma needs no `\,` and the
+        // kernel prints it as a bare `\054`. Both forms must decode alike.
+        let scene = include_str!("../../tests/fixtures/kernel/userns/mountinfo-overlay-scene.txt");
+        let overlay = parse_mountinfo(scene)
+            .into_iter()
+            .find(|e| e.fstype == "overlay")
+            .expect("the captured overlay line");
+        let opts = parse_overlay_opts(&overlay.super_opts);
+        assert_eq!(
+            opts.lowerdir,
+            vec![PathBuf::from("/fixture/lower, with:colon")]
+        );
+        assert_eq!(opts.upperdir, Some(PathBuf::from("/fixture/upper\\dir")));
+        assert_eq!(opts.workdir, Some(PathBuf::from("/fixture/work dir")));
+    }
+
+    #[test]
+    fn parse_overlay_opts_keeps_a_literal_backslash_before_digits() {
+        // Path `/a\101`: escaped to `/a\\101` for mount, shown as `/a\134\134101`.
+        let opts = parse_overlay_opts("rw,lowerdir=/l,upperdir=/a\\134\\134101,workdir=/w");
+        assert_eq!(opts.upperdir, Some(PathBuf::from("/a\\101")));
+        // The same path in the single-escaped form (`\\` before the digits) is a
+        // literal backslash, not an octal escape (a proptest shrink).
+        let opts = parse_overlay_opts("lowerdir=/\\\\000,upperdir=/u,workdir=/w");
+        assert_eq!(opts.lowerdir, vec![PathBuf::from("/\\000")]);
     }
 
     #[test]

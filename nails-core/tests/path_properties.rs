@@ -172,7 +172,9 @@ fn kernel_escape(path: &str, extra: &[char]) -> String {
 /// path still carries [`escape_overlay_path`]'s backslash escapes (`\,`, `\:`,
 /// `\\`), and `seq_show_option` then octal-escapes `,`, space, tab, newline
 /// and backslash once more when it prints the value; `:` is never escaped by
-/// the kernel. Paths holding a newline cannot be mounted at all.
+/// the kernel. So `/a,b:c` reads back as `/a\134\054b\134:c` (verified against
+/// a live mount in `tests/kernel_semantics.rs` and the captured fixtures).
+/// Paths holding a newline cannot be mounted at all.
 fn kernel_overlay_opts(lowers: &[String], upper: &str, work: &str) -> String {
     let nails = |p: &str| escape_overlay_path(Path::new(p)).unwrap();
     let show = |value: &str| kernel_escape(value, &[',']);
