@@ -95,12 +95,18 @@ in
     }
 
     def run_capture(label, command):
-        stem = f"/tmp/{label}-{uuid.uuid4().hex}"
+        # /run, not /tmp: activation overlays /tmp, which would hide the
+        # capture files from the post-activation reads. The bound turns a hung
+        # step into a failure that still prints its output.
+        stem = f"/run/{label}-{uuid.uuid4().hex}"
         machine.succeed(
             "bash -lc "
             + shlex.quote(
-                "set +e; " + command + f" > {stem}.out 2>&1; printf '%s' \"$?\" > {stem}.rc"
-            )
+                "set +e; timeout 900 "
+                + command
+                + f" > {stem}.out 2>&1; printf '%s' \"$?\" > {stem}.rc"
+            ),
+            timeout=1000,
         )
         rc = int(machine.succeed(f"cat {stem}.rc"))
         out = machine.succeed(f"cat {stem}.out")
