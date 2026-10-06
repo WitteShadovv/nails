@@ -241,10 +241,12 @@ in
         unit_name="nails-deactivate",
         shutdown_timeout=300,
         diagnostics_timeout=90,
+        failure_grace=30,
     ):
         import shlex
         import subprocess
         import threading
+        import time
 
         def collect_shutdown_diagnostics():
             quoted_unit = shlex.quote(unit_name)
@@ -300,18 +302,72 @@ in
             )
         )
 
+        def unit_failed_while_running(wait_limit):
+            # True only when the deactivate unit has failed and the system is
+            # not shutting down: a unit stopped by the power-off it requested
+            # can also read as failed, and that is the success path. The query
+            # runs on a daemon thread because the guest shell may vanish at any
+            # moment of a power-off, and a read from a dead shell never returns.
+            answer = []
+            quoted_unit = shlex.quote(unit_name)
+
+            def query():
+                try:
+                    _, output = machine.execute(
+                        f"timeout 5s systemctl is-failed --quiet {quoted_unit} "
+                        "&& ! systemctl is-system-running 2>/dev/null "
+                        "| grep -qx stopping && echo FAILED || true",
+                        check_return=False,
+                        timeout=10,
+                    )
+                    answer.append(output.strip() == "FAILED")
+                except Exception:  # noqa: BLE001 - shell gone: shutdown is underway
+                    answer.append(False)
+
+            worker = threading.Thread(target=query, daemon=True)
+            worker.start()
+            worker.join(wait_limit)
+            return bool(answer and answer[0])
+
         # Wait on QEMU itself rather than polling the guest: the guest shell
-        # goes away during power-off, so only the host process is reliable.
+        # goes away during power-off, so only the host process is reliable. The
+        # guest is consulted only to fail fast: a deactivation whose unit has
+        # failed will never power the VM off, and waiting out the whole
+        # shutdown_timeout for it cost 300 s per failure. A failed unit gets a
+        # grace period in case the power-off is in fact already under way.
         timed_out = False
+        failed_early = False
         process = machine.process
         if process is not None:
             with machine.nested(
                 f"waiting up to {shutdown_timeout}s for the VM to power off"
             ):
-                try:
-                    process.wait(timeout=shutdown_timeout)
-                except subprocess.TimeoutExpired:
-                    timed_out = True
+                deadline = time.monotonic() + shutdown_timeout
+                failed_since = None
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out = True
+                        break
+                    try:
+                        process.wait(timeout=min(5, remaining))
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                    remaining = deadline - time.monotonic()
+                    if failed_since is None:
+                        if remaining > 1 and unit_failed_while_running(
+                            min(15, remaining)
+                        ):
+                            failed_since = time.monotonic()
+                    elif time.monotonic() - failed_since >= failure_grace:
+                        failed_early = True
+                        break
+        if failed_early:
+            raise AssertionError(
+                f"canonical_deactivate: {unit_name} failed and the VM was still "
+                f"running {failure_grace}s later\n" + collect_shutdown_diagnostics()
+            )
         if timed_out:
             raise AssertionError(
                 f"canonical_deactivate: VM did not power off within "

@@ -98,6 +98,22 @@ class FakeMachine:
         self.calls.append(("wait_for_unit", unit))
 
 
+class FailedUnitMachine(FakeMachine):
+    """A guest whose deactivate unit has failed while the system keeps running."""
+
+    def execute(
+        self,
+        command: str,
+        check_return: bool = True,
+        check_output: bool = True,
+        timeout: int | None = 900,
+    ) -> tuple[int, str]:
+        if "systemctl is-failed" in command:
+            self.calls.append(("probe", command))
+            return (-1, "FAILED\n")
+        return super().execute(command, check_return, check_output, timeout)
+
+
 def load_helper(machine: FakeMachine) -> Callable[..., Any]:
     source = extract_snippet(
         TEST_HELPERS.read_text(encoding="utf-8"), "canonicalDeactivateFn"
@@ -197,6 +213,35 @@ class CanonicalDeactivateTest(unittest.TestCase):
         self.assertIn("console line 149", lines)
         self.assertIn("console line 50", lines)
         self.assertNotIn("console line 49", lines)
+
+    def test_a_failed_unit_fails_fast_instead_of_waiting_out_the_deadline(
+        self,
+    ) -> None:
+        machine = FailedUnitMachine(self.spawn_hung_qemu())
+        helper = load_helper(machine)
+
+        started = time.monotonic()
+        with self.assertRaises(AssertionError) as raised:
+            helper("/etc/nails/nails.yaml", shutdown_timeout=120, failure_grace=1)
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 30)
+        message = str(raised.exception)
+        self.assertIn("nails-deactivate failed and the VM was still running", message)
+        for section in DIAGNOSTIC_SECTIONS:
+            self.assertIn(section, message)
+        self.assertNotIn(("start",), machine.calls)
+
+    def test_a_failed_unit_that_still_powers_off_is_a_success(self) -> None:
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(7)"])
+        self.addCleanup(process.wait)
+        machine = FailedUnitMachine(process)
+
+        load_helper(machine)("/etc/nails/nails.yaml", failure_grace=20)
+
+        self.assertEqual(
+            machine.calls[-2:], [("start",), ("wait_for_unit", "multi-user.target")]
+        )
 
     def test_custom_unit_name_is_used_for_diagnostics(self) -> None:
         machine = FakeMachine(self.spawn_hung_qemu())
