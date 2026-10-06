@@ -216,7 +216,12 @@ def snapshot(machine: object, label: str, *, restart: bool = True) -> Path:
     raw = out_dir / f"{label}.raw"
     _run([QEMU_IMG, "convert", "-O", "raw", str(image), str(raw)])
     if restart:
+        # start() runs the VM's start script outside any driver log block, and
+        # with useNixStoreImage that script rebuilds the erofs store image on
+        # every start, so time it here or it disappears from the profile.
+        started = time.monotonic()
         machine.start()  # type: ignore[attr-defined]
+        _log_duration("machine.start", started)
         machine.wait_for_unit("multi-user.target")  # type: ignore[attr-defined]
     return raw
 
