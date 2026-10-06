@@ -148,13 +148,16 @@ fn split_raw(s: &str, delim: char) -> Vec<String> {
 ///
 /// Fields are single-space separated and any embedded whitespace is octal-
 /// escaped, so splitting on `' '` is both correct and necessary — splitting on
-/// arbitrary whitespace would corrupt a path containing a tab.
+/// arbitrary whitespace would corrupt a path containing a tab. Empty fields are
+/// kept: a mount whose source is the empty string (`mount -t tmpfs "" /x`) is
+/// printed as nothing between two spaces, and dropping that empty token would
+/// shift the super options into the source and discard the whole line.
 pub fn parse_mountinfo(content: &str) -> Vec<MountEntry> {
     content.lines().filter_map(parse_line).collect()
 }
 
 fn parse_line(line: &str) -> Option<MountEntry> {
-    let tokens: Vec<&str> = line.split(' ').filter(|t| !t.is_empty()).collect();
+    let tokens: Vec<&str> = line.trim_start().split(' ').collect();
     // Need at least: id parent dev root mount_point opts - fstype source super.
     let sep = tokens.iter().position(|&t| t == "-")?;
     if sep < 6 || sep + 3 >= tokens.len() {
@@ -187,24 +190,83 @@ pub fn read_mountinfo() -> Result<Vec<MountEntry>> {
 
 /// Recover `lowerdir`/`upperdir`/`workdir` from an overlay super-option string.
 ///
-/// Options are comma-separated and lower layers colon-separated; a `\,` or `\:`
-/// inside a path is honoured, then every path is [`unescape`]d.
+/// The paths carry two layers of escaping. The kernel stores each value exactly
+/// as it was passed to `mount(2)`, still holding the overlay syntax's own
+/// backslash escapes (`\,`, `\:`, `\\` from [`escape_overlay_path`]), and
+/// `seq_show_option` then octal-escapes `,`, space, tab, newline and backslash
+/// when printing it. Decoding therefore runs in reverse: split the options on
+/// `,` (a comma inside a value is always `\054` from the kernel, or `\,` in a
+/// hand-written string), undo the kernel's octal escapes, split `lowerdir` on
+/// unescaped `:`, and finally drop the overlay backslash escapes.
 pub fn parse_overlay_opts(super_opts: &str) -> OverlayOpts {
+    let path = |value: &str| PathBuf::from(unescape_overlay(value));
     let mut opts = OverlayOpts::default();
     for raw in split_raw(super_opts, ',') {
         if let Some(v) = raw.strip_prefix("lowerdir=") {
-            opts.lowerdir = split_raw(v, ':')
+            opts.lowerdir = split_raw(&unescape_octal(v), ':')
                 .into_iter()
                 .filter(|s| !s.is_empty())
-                .map(|s| PathBuf::from(unescape(&s)))
+                .map(|s| path(&s))
                 .collect();
         } else if let Some(v) = raw.strip_prefix("upperdir=") {
-            opts.upperdir = Some(PathBuf::from(unescape(v)));
+            opts.upperdir = Some(path(&unescape_octal(v)));
         } else if let Some(v) = raw.strip_prefix("workdir=") {
-            opts.workdir = Some(PathBuf::from(unescape(v)));
+            opts.workdir = Some(path(&unescape_octal(v)));
         }
     }
     opts
+}
+
+/// Undo only the kernel's `\ooo` octal escapes, leaving every other backslash
+/// escape (`\\`, `\,`, `\:`) in place, pair and all, for [`unescape_overlay`].
+/// Kernel output never holds such a pair (it prints a backslash as `\134`), so
+/// keeping pairs intact only matters for an option string that was never
+/// through the kernel, such as the one nails builds for `mount(2)`.
+pub(crate) fn unescape_octal(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\'
+            && i + 4 <= b.len()
+            && b[i + 1..i + 4].iter().all(|x| (b'0'..=b'7').contains(x))
+        {
+            let v = u16::from(b[i + 1] - b'0') * 64
+                + u16::from(b[i + 2] - b'0') * 8
+                + u16::from(b[i + 3] - b'0');
+            if let Ok(byte) = u8::try_from(v) {
+                out.push(byte);
+                i += 4;
+                continue;
+            }
+        }
+        if b[i] == b'\\' && i + 1 < b.len() {
+            out.extend_from_slice(&b[i..i + 2]);
+            i += 2;
+            continue;
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Undo the overlay option syntax's escapes: a backslash takes the next
+/// character literally (the inverse of [`escape_overlay_path`]).
+fn unescape_overlay(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some(next) => out.push(next),
+                None => out.push('\\'),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Escape a path for use inside an overlay mount option value.
@@ -468,6 +530,32 @@ mod tests {
     const OCT_SPACE: &str = "\\040";
     const OCT_TAB: &str = "\\011";
     const OCT_BACKSLASH: &str = "\\134";
+
+    #[test]
+    fn a_mount_with_an_empty_source_is_kept() {
+        // `mount -t tmpfs "" /mnt/x` prints nothing between two spaces.
+        let entries =
+            parse_mountinfo("40 22 0:50 / /mnt/x rw,relatime shared:9 - tmpfs  rw,size=10k\n");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].mount_point, PathBuf::from("/mnt/x"));
+        assert_eq!(entries[0].source, PathBuf::new());
+        assert_eq!(entries[0].super_opts, "rw,size=10k");
+    }
+
+    #[test]
+    fn overlay_paths_are_decoded_through_both_escape_layers() {
+        // NAILS mounted upperdir=/h/a\,b and lowerdir=/l\:x; the kernel prints
+        // the stored strings with `\` and `,` octal-escaped.
+        let opts = parse_overlay_opts(
+            "rw,lowerdir=/l\\134:x:/m,upperdir=/h/a\\134\\054b,workdir=/w\\040d",
+        );
+        assert_eq!(
+            opts.lowerdir,
+            vec![PathBuf::from("/l:x"), PathBuf::from("/m")]
+        );
+        assert_eq!(opts.upperdir, Some(PathBuf::from("/h/a,b")));
+        assert_eq!(opts.workdir, Some(PathBuf::from("/w d")));
+    }
 
     #[test]
     fn unescape_decodes_kernel_octal_escapes() {

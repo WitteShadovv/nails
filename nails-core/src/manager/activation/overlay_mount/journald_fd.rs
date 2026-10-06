@@ -388,4 +388,29 @@ mod fdinfo_tests {
         assert!(!fdinfo_is_writable("pos:\t0\nmnt_id:\t42\n"));
         assert!(!fdinfo_is_writable("flags:\tnope\n"));
     }
+
+    proptest::proptest! {
+        /// `mnt_id:` and the writable verdict are recovered from any fdinfo body
+        /// laid out as the kernel writes it, and arbitrary text never panics.
+        #[test]
+        fn fuzz_fdinfo_mnt_id_and_access_mode(
+            mnt_id in 0i32..1_000_000,
+            flags in 0u32..0o20000000,
+            extra in proptest::collection::vec("[a-z_]{1,10}:\t[0-9a-f ]{0,16}", 0..3),
+            noise in "\\PC{0,120}",
+        ) {
+            let mut body = format!("pos:\t0\nflags:\t0{flags:o}\nmnt_id:\t{mnt_id}\nino:\t7\n");
+            for line in &extra {
+                body.push_str(line);
+                body.push('\n');
+            }
+            proptest::prop_assert_eq!(parse_fdinfo_mnt_id(&body), Some(mnt_id));
+            proptest::prop_assert_eq!(
+                fdinfo_is_writable(&body),
+                flags & 0o3 != 0 || flags & 0o2000 != 0
+            );
+            let _ = parse_fdinfo_mnt_id(&noise);
+            let _ = fdinfo_is_writable(&noise);
+        }
+    }
 }

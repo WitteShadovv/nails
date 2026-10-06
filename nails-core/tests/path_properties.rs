@@ -166,16 +166,22 @@ fn kernel_escape(path: &str, extra: &[char]) -> String {
     out
 }
 
-/// Overlay super options as the kernel shows them: `,` and `:` inside a
-/// path are escaped as well, since they separate options and lower layers.
+/// Overlay super options as the kernel shows them for a mount nails made.
+///
+/// The kernel keeps each value exactly as nails passed it to `mount(2)`, so a
+/// path still carries [`escape_overlay_path`]'s backslash escapes (`\,`, `\:`,
+/// `\\`), and `seq_show_option` then octal-escapes `,`, space, tab, newline
+/// and backslash once more when it prints the value; `:` is never escaped by
+/// the kernel. Paths holding a newline cannot be mounted at all.
 fn kernel_overlay_opts(lowers: &[String], upper: &str, work: &str) -> String {
-    let esc = |p: &str| kernel_escape(p, &[',', ':']);
-    let lowers: Vec<String> = lowers.iter().map(|l| esc(l)).collect();
+    let nails = |p: &str| escape_overlay_path(Path::new(p)).unwrap();
+    let show = |value: &str| kernel_escape(value, &[',']);
+    let lowers: Vec<String> = lowers.iter().map(|l| nails(l)).collect();
     format!(
         "rw,lowerdir={},upperdir={},workdir={}",
-        lowers.join(":"),
-        esc(upper),
-        esc(work)
+        show(&lowers.join(":")),
+        show(&nails(upper)),
+        show(&nails(work))
     )
 }
 
@@ -223,9 +229,9 @@ proptest! {
     #[test]
     fn overlay_options_in_mountinfo_round_trip(
         mount_point in any_path(),
-        lowers in prop::collection::vec(any_path(), 1..4),
-        upper in any_path(),
-        work in any_path(),
+        lowers in prop::collection::vec(mountable_path(), 1..4),
+        upper in mountable_path(),
+        work in mountable_path(),
     ) {
         let line = overlay_line(30, &mount_point, &kernel_overlay_opts(&lowers, &upper, &work));
 
@@ -242,8 +248,8 @@ proptest! {
 
     #[test]
     fn overlay_mounted_from_any_hidden_root_is_recognised_as_owned(
-        hidden_root in any_path(),
-        mount_point in any_path(),
+        hidden_root in mountable_path(),
+        mount_point in mountable_path(),
     ) {
         // A hidden root with a space once read as "not mounted", so teardown
         // skipped its overlays. Ownership must hold for any root.

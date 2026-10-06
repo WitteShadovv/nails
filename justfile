@@ -33,6 +33,12 @@ line-count:
 test:
     cargo nextest run --workspace --all-features --locked --no-fail-fast
 
+# Long property-based run of the parser tests (the `fuzz_` proptests): the
+# same properties `test` runs with the default case count, here with `cases`
+# generated inputs each. A failure prints the minimal input that breaks it.
+fuzz cases="100000":
+    PROPTEST_CASES={{ cases }} cargo test -p nails-core --lib --locked --release -- fuzz_
+
 # Run the documentation tests, which nextest does not execute.
 doctest:
     cargo test --doc --workspace --all-features --locked

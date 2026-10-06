@@ -130,15 +130,35 @@ fn parse_os_release(content: &str) -> OsReleaseFields {
 }
 
 /// Strip one layer of matching single or double quotes from an os-release value.
-fn unquote(value: &str) -> &str {
+///
+/// os-release(5) follows shell quoting: inside double quotes a backslash escapes
+/// `$`, `"`, `\` and `` ` `` (and stays literal before anything else), while a
+/// single-quoted value is taken verbatim.
+fn unquote(value: &str) -> std::borrow::Cow<'_, str> {
     let bytes = value.as_bytes();
-    if bytes.len() >= 2
-        && (bytes[0] == b'"' || bytes[0] == b'\'')
-        && bytes[bytes.len() - 1] == bytes[0]
-    {
-        &value[1..value.len() - 1]
-    } else {
-        value
+    if bytes.len() < 2 || bytes[bytes.len() - 1] != bytes[0] {
+        return value.into();
+    }
+    let inner = &value[1..value.len() - 1];
+    match bytes[0] {
+        b'\'' => inner.into(),
+        b'"' => {
+            let mut out = String::with_capacity(inner.len());
+            let mut chars = inner.chars().peekable();
+            while let Some(c) = chars.next() {
+                if c == '\\'
+                    && let Some(&next) = chars.peek()
+                    && matches!(next, '$' | '"' | '\\' | '`')
+                {
+                    out.push(next);
+                    chars.next();
+                } else {
+                    out.push(c);
+                }
+            }
+            out.into()
+        }
+        _ => value.into(),
     }
 }
 
@@ -419,5 +439,57 @@ mod tests {
         assert_eq!(unquote("\"12\""), "12");
         assert_eq!(unquote("'bookworm'"), "bookworm");
         assert_eq!(unquote("plain"), "plain");
+        assert_eq!(unquote(r#""a \"b\" \$c \\ \x""#), r#"a "b" $c \ \x"#);
+        assert_eq!(unquote(r"'a \$b'"), r"a \$b");
+    }
+
+    /// Render a value the way os-release(5) allows: bare when it holds only
+    /// safe characters, otherwise double-quoted with `$ " \\ `` escaped, or
+    /// single-quoted when it holds no single quote.
+    fn render_os_release_value(value: &str, single: bool) -> String {
+        let safe = !value.is_empty()
+            && value
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'));
+        if safe {
+            value.to_string()
+        } else if single && !value.contains('\'') {
+            format!("'{value}'")
+        } else {
+            let mut out = String::from("\"");
+            for c in value.chars() {
+                if matches!(c, '$' | '"' | '\\' | '`') {
+                    out.push('\\');
+                }
+                out.push(c);
+            }
+            out.push('"');
+            out
+        }
+    }
+
+    proptest::proptest! {
+        /// VERSION_ID and ID_LIKE survive os-release quoting and escaping.
+        #[test]
+        fn fuzz_os_release_values_round_trip(
+            version in "[a-zA-Z0-9 .$\"'\\\\`_-]{0,16}",
+            like in proptest::collection::vec("[a-z][a-z0-9]{0,6}", 0..3),
+            single in proptest::bool::ANY,
+        ) {
+            let content = format!(
+                "# generated\nNAME=\"Some Linux\"\nID=debian\nID_LIKE={}\nVERSION_ID={}\n",
+                render_os_release_value(&like.join(" "), single),
+                render_os_release_value(&version, single),
+            );
+            let fields = parse_os_release(&content);
+            proptest::prop_assert_eq!(fields.id.as_deref(), Some("debian"));
+            proptest::prop_assert_eq!(fields.version_id.as_deref(), Some(version.as_str()), "{}", content);
+            proptest::prop_assert_eq!(fields.id_like, like);
+        }
+
+        #[test]
+        fn fuzz_os_release_never_panics(text in "\\PC{0,300}") {
+            let _ = parse_os_release(&text);
+        }
     }
 }

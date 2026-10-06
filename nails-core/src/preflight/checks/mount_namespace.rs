@@ -86,7 +86,7 @@ fn namespaces_match(self_ns: NamespaceId, init_ns: NamespaceId) -> bool {
 ///
 /// Any mount whose mount point is `/` and whose optional fields include a token
 /// starting with `shared:` means the root is shared-propagation.
-fn root_has_shared_propagation(mountinfo: &str) -> bool {
+pub(crate) fn root_has_shared_propagation(mountinfo: &str) -> bool {
     for line in mountinfo.lines() {
         let tokens: Vec<&str> = line.split(' ').filter(|t| !t.is_empty()).collect();
         let Some(sep) = tokens.iter().position(|&t| t == "-") else {

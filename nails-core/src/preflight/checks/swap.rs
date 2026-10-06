@@ -95,9 +95,12 @@ pub fn classify_swap<F: Filesystem>(fs: &F) -> SwapPosture {
             continue;
         }
         let mut cols = line.split_whitespace();
-        let Some(filename) = cols.next() else {
+        let Some(raw_filename) = cols.next() else {
             continue;
         };
+        // The kernel octal-escapes whitespace and backslashes in the path.
+        let decoded = crate::filesystem::mountinfo::unescape_octal(raw_filename);
+        let filename = decoded.as_str();
         let kind = cols.next().unwrap_or("");
         let (device_severity, detail) = classify_device(fs, filename, kind);
         if device_severity != SwapSeverity::Pass {
@@ -195,7 +198,21 @@ fn classify_device<F: Filesystem>(fs: &F, filename: &str, kind: &str) -> (SwapSe
         );
     }
 
-    if let Some(name) = filename.strip_prefix("/dev/mapper/") {
+    // swapon resolves /dev/mapper/<name> to the node it links to, so a dm-crypt
+    // swap usually shows up as /dev/dm-N; its mapper name is in sysfs.
+    let mapper_name = match filename.strip_prefix("/dev/mapper/") {
+        Some(name) => Some(name.to_string()),
+        None => filename
+            .strip_prefix("/dev/")
+            .filter(|node| node.starts_with("dm-"))
+            .and_then(|node| {
+                fs.read_file_content(&PathBuf::from(format!("/sys/block/{node}/dm/name")))
+                    .ok()
+            })
+            .map(|name| name.trim().to_string())
+            .filter(|name| !name.is_empty()),
+    };
+    if let Some(name) = mapper_name.as_deref() {
         return if crypttab_random_key(fs, name) {
             (
                 SwapSeverity::Warn,
@@ -510,6 +527,39 @@ mod tests {
         fs.mock_add_file(SYS_POWER_RESUME, "0:0\n");
         let result = SwapCheck::new().run(&fs).unwrap();
         assert!(result.is_pass(), "{result:?}");
+    }
+
+    #[test]
+    fn a_dm_node_resolves_to_its_crypttab_entry() {
+        // swapon resolves /dev/mapper/cryptswap to /dev/dm-1 in /proc/swaps.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/dm-1\tpartition\t1048572\t0\t-2"]),
+        );
+        fs.mock_add_file("/sys/block/dm-1/dm/name", "cryptswap\n");
+        fs.mock_add_file(
+            CRYPTTAB,
+            "cryptswap /dev/sda3 /dev/urandom swap,cipher=aes-xts-plain64\n",
+        );
+        let posture = classify_swap(&fs);
+        assert_eq!(
+            posture.severity,
+            SwapSeverity::Warn,
+            "{:?}",
+            posture.findings
+        );
+    }
+
+    #[test]
+    fn an_escaped_swap_file_path_is_decoded() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/swap\\040file\tfile\t1048572\t0\t-2"]),
+        );
+        let posture = classify_swap(&fs);
+        assert_eq!(posture.disk_swap_devices, vec!["/swap file".to_string()]);
     }
 
     #[test]
