@@ -1,0 +1,3 @@
+5363 5332 0:111 / /fixture rw,relatime - tmpfs scratch rw,mode=755,uid=1000,gid=100
+5368 5363 0:112 / /fixture/var rw,relatime - tmpfs basevar rw,mode=755,uid=1000,gid=100
+5377 5368 0:113 / /fixture/var rw,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/fixture/lower\054\040with\134:colon,upperdir=/fixture/upper\134\134dir,workdir=/fixture/work\040dir,redirect_dir=nofollow,uuid=null
