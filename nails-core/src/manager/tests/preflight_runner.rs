@@ -800,6 +800,95 @@ fn test_run_read_only_nixos_preflight_reports_lock_file_problem_before_activatio
     }
 }
 
+/// Build a manager whose hidden flake fails `nix flake metadata`, so the
+/// post-overlay flake validation would error if it ran.
+fn manager_with_unbuildable_flake(
+    hidden_root: &std::path::Path,
+    state_path: &std::path::Path,
+) -> NailsManager<MockFilesystem> {
+    let explicit_flake_dir = hidden_root.join("explicit-flake");
+    std::fs::create_dir_all(&explicit_flake_dir).unwrap();
+    std::fs::write(
+        explicit_flake_dir.join("flake.nix"),
+        "this is not valid nix\n",
+    )
+    .unwrap();
+
+    let bin_dir = hidden_root.join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let nix_script = bin_dir.join("nix");
+    std::fs::write(
+        &nix_script,
+        "#!/usr/bin/env sh\nprintf 'error: flake cannot be evaluated\\n' 1>&2\nexit 1\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&nix_script).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&nix_script, perms).unwrap();
+    }
+
+    let builder = crate::nixos::NixOSBuilder::new_with_flake_ref(
+        format!("{}#host-alpha", explicit_flake_dir.display()),
+        hidden_root.join("nails-system"),
+    )
+    .with_executor(Box::new(
+        crate::nixos::RealCommandExecutor::with_search_path(&bin_dir),
+    ));
+
+    NailsManager::with_nixos(
+        MockFilesystem::new(),
+        Config {
+            hidden_volume_root: hidden_root.to_path_buf(),
+            state_file_path: state_path.to_path_buf(),
+            nixos_flake: Some(format!("{}#host-alpha", explicit_flake_dir.display())),
+            ..Config::test_default()
+        },
+        state_path.to_path_buf(),
+        builder,
+    )
+}
+
+#[test]
+#[serial]
+fn test_post_mount_guards_skip_flake_validation_on_fast_path() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let manager = manager_with_unbuildable_flake(hidden_root, &state_path);
+
+    let options = crate::ActivateOptions::default();
+    assert!(
+        !options.skip_flake_validation,
+        "the default run validates the flake unless the fast path opts out"
+    );
+
+    // Fast path (a cached toplevel is carried forward): the flake is the one a
+    // previous activation already built, so it is not re-validated — even though
+    // it can no longer evaluate.
+    let fast_path = Some("/nix/store/0-nixos-system-host".to_string());
+    manager
+        .run_post_mount_guards(&options, &fast_path)
+        .expect("fast-path re-activation must not re-validate the flake");
+
+    // No fast path: a rebuild is expected, so the broken flake is caught here and
+    // the overlays roll back.
+    let err = manager
+        .run_post_mount_guards(&options, &None)
+        .expect_err("a full rebuild must still validate the flake");
+    match err {
+        NailsError::PreFlightCheckFailed(failures) => assert!(
+            failures
+                .iter()
+                .any(|(name, _, _)| name == "nixos-build-target"),
+            "the broken flake must fail nixos-build-target: {failures:?}"
+        ),
+        other => panic!("expected PreFlightCheckFailed, got {other:?}"),
+    }
+}
+
 #[test]
 #[serial]
 fn test_run_read_only_nixos_preflight_uses_metadata_and_attr_existence_checks_without_drv_eval() {

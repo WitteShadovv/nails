@@ -1196,12 +1196,21 @@ impl<F: Filesystem> NailsManager<F> {
     /// now that `/nix` and `/root` are overlaid, then re-check free space against
     /// the rebuild floor. Returning an error leaves the overlays to roll back
     /// before any build or session restart.
-    fn run_post_mount_guards(
+    ///
+    /// The flake validation is skipped on the fast path: a carried-forward
+    /// toplevel means the fingerprint matched, so the build inputs are byte-for-byte
+    /// the ones a previous activation already built and validated. Re-validating
+    /// them would make the fast path require the flake to still evaluate, defeating
+    /// the point of reusing a cached toplevel — an operator whose flake is
+    /// temporarily broken could no longer re-enter a hidden session that needs no
+    /// rebuild. A changed flake invalidates the fingerprint, drops the fast path
+    /// and is validated here as usual.
+    pub(crate) fn run_post_mount_guards(
         &self,
         options: &crate::ActivateOptions,
         fast_path_toplevel: &Option<String>,
     ) -> Result<()> {
-        if !options.skip_flake_validation {
+        if !options.skip_flake_validation && fast_path_toplevel.is_none() {
             self.run_read_only_nixos_preflight(options.overlay_only)?;
         }
         self.ensure_rebuild_space_before_build(fast_path_toplevel)
