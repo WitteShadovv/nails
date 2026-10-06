@@ -63,8 +63,15 @@ in
         # A registry token that already occurs on the stock decoy image (e.g. the
         # generic "configuration.nix" under /etc/nixos) is decoy-native; only a
         # token that appears *after* the cycle can be a leak, so subtract the
-        # baseline strings up front.
-        baseline_registry_hits = disk_forensics.run_strings_scan(baseline, registry_tokens)
+        # baseline up front. Scan the decoy's files (journal excluded): every
+        # command here runs through a journaled service, so nails' diagnostic
+        # stderr naming its own files would otherwise read as a decoy trace even
+        # though nothing was written to the decoy. The journal's own hygiene is
+        # covered by the canary journal scan below.
+        baseline_offset = disk_forensics.partition_offset(baseline)
+        baseline_registry_hits = disk_forensics.run_decoy_file_scan(
+            baseline, registry_tokens, offset=baseline_offset
+        )
 
     with subtest("activate and plant hidden canaries"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -129,8 +136,11 @@ in
         assert not journal_hits, f"journal retained a canary line: {sorted(journal_hits)}"
 
         # Registry tokens that were not already on the baseline image must not be
-        # introduced by the cycle.
-        post_registry_hits = disk_forensics.run_strings_scan(post, registry_tokens)
+        # introduced onto the decoy's files by the cycle (journal excluded; see
+        # the baseline capture above).
+        post_registry_hits = disk_forensics.run_decoy_file_scan(
+            post, registry_tokens, offset=offset
+        )
         new_registry = post_registry_hits - baseline_registry_hits
         assert not new_registry, (
             f"activate/deactivate introduced registry tokens onto the decoy "

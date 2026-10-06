@@ -158,7 +158,14 @@ def diff(before: Iterable[str], after: Iterable[str]) -> set[str]:
 
 
 def _run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, check=True, text=True, capture_output=True)
+    # Several of these tools (notably ``fls`` and ``strings``) echo raw on-disk
+    # filenames and byte sequences that are not valid UTF-8. Decode with
+    # replacement rather than letting an undecodable byte abort the whole scan:
+    # the tokens we search for are ASCII, so a replacement char never hides or
+    # invents a match.
+    return subprocess.run(
+        cmd, check=True, text=True, capture_output=True, errors="replace"
+    )
 
 
 def root_image(machine: object) -> Path:
@@ -245,9 +252,7 @@ def run_fls(image: str | os.PathLike[str], offset: int | None = None) -> list[Fl
     return parse_fls(proc.stdout)
 
 
-def run_strings_scan(
-    image: str | os.PathLike[str], tokens: Iterable[str]
-) -> set[str]:
+def run_strings_scan(image: str | os.PathLike[str], tokens: Iterable[str]) -> set[str]:
     """Which of ``tokens`` appear anywhere in the raw image bytes."""
     proc = _run([STRINGS, "-a", str(image)])
     return scan_tokens(proc.stdout, tokens)
@@ -293,6 +298,68 @@ def run_journal_scan(
         return scan_tokens("\n".join(text_parts), tokens)
     finally:
         shutil.rmtree(work, ignore_errors=True)
+
+
+def run_decoy_file_scan(
+    image: str | os.PathLike[str],
+    tokens: Iterable[str],
+    *,
+    offset: int | None = None,
+    exclude: Iterable[str] = ("var/log/journal",),
+) -> set[str]:
+    """Which ``tokens`` occur in the decoy's on-disk *files*, journal excluded.
+
+    This answers "did the activate/deactivate cycle plant a nails artifact onto
+    the decoy filesystem?" — a file whose name or content carries a registry
+    token. It deliberately does not read the persistent journal: in this VM every
+    command runs through a journaled service, so nails' own diagnostic stderr
+    (which names its files, e.g. ``state.json`` or ``config/nails.toml``) is
+    recorded in the journal even though nothing was written onto the decoy. That
+    capture of the operator's console is a property of the harness, not a decoy
+    trace — on a real host the operator's terminal output never reaches the decoy
+    disk. Session-*content* leaking into the journal is still caught by the
+    dedicated ``run_journal_scan``. With ``useNixStoreImage`` the Nix store is a
+    separate drive, so carving the root partition does not pull in the store.
+
+    Tokens are matched against raw file bytes decoded 1:1 (latin-1), so an ASCII
+    token is found wherever it occurs regardless of surrounding binary content.
+    """
+    offset = partition_offset(image) if offset is None else offset
+    work = Path(tempfile.mkdtemp(prefix="nails-files-"))
+    try:
+        _rdump(str(image), offset, "/", work)
+        for rel in exclude:
+            shutil.rmtree(work / rel, ignore_errors=True)
+        pending = {token for token in tokens if token}
+        found: set[str] = set()
+        for path in work.rglob("*"):
+            if not pending:
+                break
+            if path.is_symlink():
+                # A symlink's target name is still evidence; scan the link text.
+                text = os.readlink(path)
+            elif path.is_file():
+                try:
+                    text = _nails_latin1(path.read_bytes())
+                except OSError:
+                    continue
+            else:
+                continue
+            # The path itself (a planted file's name) is evidence too.
+            haystack = text + "\n" + str(path.relative_to(work))
+            hit = scan_tokens(haystack, pending)
+            if hit:
+                found |= hit
+                pending -= hit
+        return found
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def _nails_latin1(data: bytes) -> str:
+    # latin-1 maps every byte to a code point 1:1, so ASCII tokens survive intact
+    # and no byte can abort decoding.
+    return data.decode("latin-1")
 
 
 def run_store_scan(
