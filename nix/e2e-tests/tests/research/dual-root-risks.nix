@@ -277,33 +277,38 @@ in
 
     # ------------------------------------------------------------------
     # The hidden session's command loop (R2, R4): the hidden user's login
-    # shell runs whatever script the host drops into ~/q, inside the
-    # hidden logind session, and writes the output back.
+    # shell runs whatever script the host drops into ~/q-<tty>, inside the
+    # hidden logind session, and writes the output back. One directory per
+    # tty, so a second session (R4b) has its own queue.
     # ------------------------------------------------------------------
-    Q = f"{ROOT}/home/{USER}/q"
+    HOME_Q = f"{ROOT}/home/{USER}"
+    Q = f"{HOME_Q}/q-tty{LOGIN_VT}"
     PROFILE = (
         "cd \"$HOME\"\n"
+        "q=q-$(basename \"$(tty)\")\n"
+        "mkdir -p $q\n"
         "while :; do\n"
-        "  if [ -f q/run.sh ]; then\n"
-        "    mv q/run.sh q/cur.sh\n"
-        "    sh q/cur.sh > q/out 2>&1\n"
-        "    rm -f q/cur.sh\n"
-        "    touch q/done\n"
+        "  if [ -f $q/run.sh ]; then\n"
+        "    mv $q/run.sh $q/cur.sh\n"
+        "    sh $q/cur.sh > $q/out 2>&1\n"
+        "    rm -f $q/cur.sh\n"
+        "    touch $q/done\n"
         "  fi\n"
         "  sleep 0.2\n"
         "done\n"
     )
 
 
-    def in_session(script, timeout=120):
-        machine.succeed(f"rm -f {Q}/done {Q}/out")
+    def in_session(script, timeout=120, q=Q):
+        machine.wait_until_succeeds(f"test -d {q}", timeout=60)
+        machine.succeed(f"rm -f {q}/done {q}/out")
         machine.succeed(
-            f"printf %s {shlex.quote(script)} > {Q}/run.tmp",
-            f"chown {UID}:{UID} {Q}/run.tmp",
-            f"mv {Q}/run.tmp {Q}/run.sh",
+            f"printf %s {shlex.quote(script)} > {q}/run.tmp",
+            f"chown {UID}:{UID} {q}/run.tmp",
+            f"mv {q}/run.tmp {q}/run.sh",
         )
-        machine.wait_until_succeeds(f"test -e {Q}/done", timeout=timeout)
-        return machine.succeed(f"cat {Q}/out")
+        machine.wait_until_succeeds(f"test -e {q}/done", timeout=timeout)
+        return machine.succeed(f"cat {q}/out")
 
 
     def results(out):
@@ -421,7 +426,7 @@ in
         )
         machine.fail(f"test -e {ROOT}{DECOY_ONLY}/marker")
         machine.succeed(
-            f"mkdir -p {ROOT}/home/{USER}/q",
+            f"mkdir -p {ROOT}/home/{USER}",
             f"chown -R {UID}:{UID} {ROOT}/home/{USER}",
             f"chmod 700 {ROOT}/home/{USER}",
         )
@@ -710,6 +715,38 @@ in
             extra=["PrivatePIDs=yes"], wait=True,
         )
         finding(f"R4: with PrivatePIDs=yes the hidden unit sees this many PIDs / PID 1 is: {out.split()}")
+        # user@.service cannot take PrivatePIDs=: systemd refuses "--user mode
+        # as PID 1" (v259 src/core/main.c). The session leader can: a second
+        # hidden login session whose unit has its own PID namespace.
+        hidden_run(
+            "aux-login-pidns",
+            f"{LOGIN} -f {USER}",
+            extra=[
+                f"TTYPath=/dev/tty{LOGIN_VT + 1}",
+                "StandardInput=tty",
+                "StandardOutput=tty",
+                "TTYReset=yes",
+                "PrivatePIDs=yes",
+            ],
+        )
+        second = None
+        for _ in range(30):
+            others = [s for s in sessions_of(UID) if s != hidden_sid]
+            if others:
+                second = others[0]
+                break
+            time.sleep(1)
+        if second is None:
+            _, status = machine.execute("systemctl status --no-pager aux-login-pidns.service 2>&1 | tail -n 20")
+            finding(f"R4b: no logind session from login -f under PrivatePIDs=yes:\n{status}")
+        else:
+            props = {p: session_prop(second, p) for p in ("Seat", "TTY", "Leader", "Scope")}
+            out = in_session(
+                f"echo pid1=$(cat /proc/1/comm); ls /proc | grep -c '^[0-9]'; "
+                f"/run/wrappers/bin/sudo -n cat /proc/1/root{DECOY_ONLY}/marker 2>&1 || echo blocked\n",
+                q=f"{HOME_Q}/q-tty{LOGIN_VT + 1}",
+            )
+            finding(f"R4b: hidden session under PrivatePIDs=yes: {second} {props}; inside: {out.split()}")
 
     # ==================================================================
     # R3: idle over time.
