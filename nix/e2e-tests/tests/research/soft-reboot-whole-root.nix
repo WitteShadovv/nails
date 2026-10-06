@@ -143,6 +143,7 @@ in
     hidden_tokens = {}
     late_kmsg_tokens = []
     run_snapshots = {}
+    utab_snapshots = {}
 
 
     def finding(message):
@@ -261,8 +262,17 @@ in
                 f"InvocationID {invocation} unchanged",
             )
         try:
+            # Wait for login's own "Password:" prompt before typing the
+            # password: login turns echo off with a flush, which discards
+            # typeahead. The final cold boot of the last run sent the password
+            # 0.05 s after `pgrep -x login` matched and failed authentication;
+            # the soft-reboot phases only passed because pgrep happened to
+            # need one more 1 s poll. Clear tty1 first, so a "Password:" left on
+            # the screen by an earlier phase cannot match (VT 1 is never
+            # deallocated by a soft-reboot).
+            machine.succeed("printf '\\033[H\\033[2J' > /dev/tty1")
             machine.send_chars("testuser\n")
-            machine.wait_until_succeeds("pgrep -x login", timeout=60)
+            machine.wait_until_tty_matches("1", "Password: ", timeout=60)
             machine.send_chars("test\n")
             machine.wait_until_succeeds(
                 "loginctl list-sessions --no-legend | grep -q testuser", timeout=60
@@ -569,7 +579,9 @@ in
         echo "nails-scrub: removing $1" > /dev/kmsg
         rm -rf --one-file-system -- "$1"
     }
-    for p in /run/log/journal/* /run/systemd/sessions/* /run/systemd/users/* /run/systemd/seats/*              /run/systemd/inhibit/* /run/systemd/shutdown/* /run/systemd/transient/*              /run/systemd/system/* /run/systemd/system.control/* /run/utmp; do
+    for p in /run/log/journal/* /run/systemd/sessions/* /run/systemd/users/* /run/systemd/seats/* \
+             /run/systemd/inhibit/* /run/systemd/shutdown/* /run/systemd/transient/* \
+             /run/systemd/system/* /run/systemd/system.control/* /run/utmp; do
         del "$p"
     done
     for p in /run/user/*; do
@@ -584,13 +596,16 @@ in
             grep -qxF -- "$p" "$snap" || del "$p"
         done
     fi
-    rm -f -- "$snap" /run/nails-leave-scrub.sh
+    if [ -f /run/nails-utab-snapshot ] && [ -e /run/mount/utab ]; then
+        cat /run/nails-utab-snapshot > /run/mount/utab
+    fi
+    rm -f -- "$snap" /run/nails-utab-snapshot /run/nails-leave-scrub.sh
     last=$(dd if=/dev/kmsg bs=16384 iflag=nonblock 2>/dev/null | grep -av '^ ' | tail -n 1 | cut -d, -f2)
     if [ -n "$last" ]; then
         next=$((last + 1))
         bytes=""
         for i in 0 1 2 3 4 5 6 7; do
-            bytes="$bytes$(printf '\%03o' $(( (next >> (8 * i)) & 255 )))"
+            bytes="$bytes$(printf '\\%03o' $(( (next >> (8 * i)) & 255 )))"
         done
         mkdir -p /run/systemd/journal
         printf "$bytes" > /run/systemd/journal/kernel-seqnum
@@ -641,6 +656,15 @@ in
                 "mv /run/nails-run-snapshot.tmp /run/nails-run-snapshot && cat /run/nails-run-snapshot"
             )
             run_snapshots[cycle] = set(snapshot_text.splitlines())
+            # libmount's utab (userspace mount options) is a kept file whose
+            # content the hidden session extends: every userspace start adds
+            # lines for its x-* mounts, and mounts dropped by the switch are
+            # never removed from it. Save the decoy's copy; the scrub restores
+            # it.
+            utab_snapshots[cycle] = machine.succeed(
+                "if [ -e /run/mount/utab ]; then cp /run/mount/utab /run/nails-utab-snapshot; "
+                "cat /run/mount/utab; fi"
+            )
             machine.succeed(
                 "set -eux; "
                 f"mkdir -p {UPPER} {WORK} /run/nails-lower /run/nextroot; "
@@ -863,6 +887,26 @@ in
                 "{ echo \"== $f\"; cat \"$f\" 2>/dev/null | head -n 20; }; done; true"
             )
             finding(f"{label}: content of kept files the hidden session could touch:\n{kept_content}")
+            # Every utab line must either predate entering (restored by the
+            # scrub) or describe a mount that is live in the decoy now.
+            live_ids = set(
+                machine.succeed("cut -d' ' -f1 /proc/self/mountinfo").split()
+            )
+            _, utab_now = out_of("cat /run/mount/utab 2>/dev/null || true")
+            before = set(utab_snapshots[cycle].splitlines())
+            foreign = []
+            for line in utab_now.splitlines():
+                if not line.strip() or line in before:
+                    continue
+                ident = next((f[3:] for f in line.split() if f.startswith("ID=")), None)
+                if ident not in live_ids:
+                    foreign.append(line)
+            stale = [line for line in before if line.strip() and line in utab_now.splitlines()]
+            finding(
+                f"{label}: utab lines kept from before entering: {len(stale)}, "
+                f"lines from the decoy's new mounts: {len(utab_now.splitlines()) - len(stale)}"
+            )
+            assert not foreign, f"utab lines from the hidden session in the decoy: {foreign}"
             _, scrub_log = out_of("dmesg | grep 'nails-scrub:' | tail -n 40 || true")
             finding(f"{label}: what the scrub removed (from its own kmsg lines):\n{scrub_log}")
             assert not residue, f"hidden /run residue in the decoy: {residue}"

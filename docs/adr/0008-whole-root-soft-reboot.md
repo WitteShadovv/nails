@@ -1,6 +1,6 @@
 # 8. Whole-root overlay entered by soft-reboot
 
-- Status: proposed (research; a decision waits on the spike results)
+- Status: proposed (the spike passes; the decision waits on the remaining go/no-go criteria)
 - Date: 2026-10-06
 - Backlog: T-132 (whole-root / soft-reboot design), T-131 (alternatives matrix)
 - Related: [ADR 0005](0005-live-overlay-vs-boot-time-overlay.md), [threat model](../threat-model.md)
@@ -69,7 +69,26 @@ what to delete.
 **Third run (commit `7b30b12`):** the way back worked: shutdown phase 1.2 s,
 backdoor after 3.0 s, and 783 `/run/udev` entries carried. The residue check
 caught one carried entry not in the snapshot, the empty `/run/initramfs`
-mountpoint (§5). It is now removed, and a fourth run is pending.
+mountpoint (§5). The scrub now removes it.
+
+**Fourth run (commit `688eea6`):** **everything passed:**
+- both cycles, and every vital check in the hidden root and on the decoy;
+- the `/run` residue checks;
+- no hidden kernel record in the decoy journal;
+- the full power cycle through OVMF and systemd-boot (ESP and EFI variables
+  within the plain-reboot control);
+- the raw decoy disk scan: no hidden token on the disk.
+
+One collected vital check failed: the password login on tty1 after the final
+cold boot. It was a test race, not a host problem. The test sent the password
+0.05 s after `login` appeared, before login had switched echo off; that switch
+flushes typeahead, so the password was lost and authentication failed. The same
+check had passed in every decoy phase after the hidden sessions, against the same
+`/etc/shadow`. The test now waits for login's `Password:` prompt.
+
+The run also showed that libmount's `/run/mount/utab` accumulates lines across
+transitions (§5); the scrub now restores it. Both fixes are in the commit
+after `688eea6`; a confirming run is pending.
 
 ## 1. Soft-reboot semantics
 
@@ -131,18 +150,20 @@ Two consequences matter for NAILS:
 
 - **Timing.** Red Hat's bootc material only says "seconds", against minutes for
   a full reboot. [V-src, qualitative] Measured in the spike VM (2 vCPUs,
-  headless NixOS, from the guest's serial-console kernel timestamps) [V-spike]:
+  headless NixOS), fourth run, from PID 1's own timestamps and `/proc/uptime`
+  in the guest [V-spike]:
 
-  | Transition | Trigger to "Soft-rebooting." (shutdown phase) | Trigger to backdoor shell | Trigger to `multi-user.target` (PID 1: "Soft-reboot finished in") |
-  | --- | --- | --- | --- |
-  | cycle 1, enter | 1.2 s | 3.0 s | 9.1 s |
-  | cycle 1, leave | 1.0 s | 2.7 s | 9.1 s |
-  | cycle 2, enter | 2.4 s | 6.4 s | 13.5 s |
-  | cycle 2, leave | 0.7 s | 2.7 s | 9.6 s |
+  | Transition | Shutdown phase (ShutdownStart to new PID 1) | Startup phase (new PID 1 to `multi-user`) | Grey-out (PID 1: "Soft-reboot finished in") | Trigger to backdoor shell | Trigger to settled |
+  | --- | --- | --- | --- | --- | --- |
+  | cycle 1, enter | 1.01 s | 8.22 s | 9.24 s | 3.53 s | 9.75 s |
+  | cycle 1, leave | 1.01 s | 8.46 s | 9.47 s | 3.03 s | 10.42 s |
+  | cycle 2, enter | 2.17 s | 12.35 s | 14.53 s | 6.61 s | 14.95 s |
+  | cycle 2, leave | 0.89 s | 9.16 s | 10.04 s | 3.04 s | 10.93 s |
 
-  About 6 s of every figure in the last column is dhcpcd waiting for its lease
+  The second run's console timestamps agree (grey-out 9.1, 9.1, 13.5 and 9.6 s).
+  About 6 s of every startup phase is dhcpcd waiting for its lease
   (`multi-user.target` waits for the DHCP client in this VM). Userspace is usable
-  2.7 to 6.4 s after the trigger. For comparison, the kernel-to-`multi-user`
+  3.0 to 6.6 s after the trigger. For comparison, the kernel-to-`multi-user`
   time of a full boot in the same VM is 13.3 s, on top of OVMF and systemd-boot.
   The first run reported ~290 s per transition. That was an artefact:
   the driver's `wait_for_console_text()` consumes one queued console line per
@@ -369,6 +390,7 @@ stopped, and the hidden volume is unmounted. The script:
    | `/run/systemd/{transient,system,system.control}/*` | hidden transient and runtime unit files and drop-ins (including the scrub's own) |
    | `/run/utmp` | hidden logins; `systemd-update-utmp` recreates it at the decoy start |
    | `/run/user/<uid>` (empty dirs only) | mountpoints of the hidden user runtime dirs; their tmpfs mounts are not carried |
+   | `/run/mount/utab` content: restored to the copy taken at entry | lines appended by the hidden userspace for its mounts (§5, "What stays in RAM") |
    | entries up to two levels below `/run` that are not in a snapshot taken in the decoy just before entering | runtime directories, lock files and stray files of the hidden session, plus what the hidden *shutdown* created (`/run/nologin`, `/run/systemd/ask-password-block`, `/run/initramfs`, see below) |
 
    | Kept | Why |
@@ -409,8 +431,8 @@ scrub logs every path it removes to `/dev/kmsg`. That puts the names in the
 ring buffer (RAM), though not in the journal, because of the cursor; a real
 implementation must not log them. If the next userspace reaches emergency mode
 or PID 1 freezes, the spike now fails within seconds and prints the timeouts
-and failed dependencies from the console. [V-spike: the third run removed every
-probe; the `/run/initramfs` fix is pending]
+and failed dependencies from the console. [V-spike: the fourth run passed every
+residue assertion in both cycles]
 
 Alternatives considered and rejected:
 
@@ -440,10 +462,51 @@ offline threat model, but visible to someone at the keyboard):
   cannot be reset without a real reboot. [V-src; V-spike: 1, 2, 3, 4]
 - The kernel ring buffer itself (`dmesg`): hidden-session kernel messages and
   the late records stay readable until they are overwritten or the machine
-  powers off. [V-spike]
-- PID 1's last generic lines ("Soft-rebooting.") in the decoy journal, plus the
-  decoy PID 1's own "Soft-reboot finished in …, counter is now at N". On a
-  persistent decoy journal these reach disk under the same boot ID. [V-spike]
+  powers off. The late probe record was in the ring buffer once and in the
+  decoy journal zero times in both cycles. [V-spike]
+- **Records written after the scrub** are imported by the decoy journald,
+  because the cursor cannot cover what comes after it. In the fourth run these
+  were PID 1's "systemd-soft-reboot.service: Deactivated successfully.",
+  "Finished Reboot System Userspace.", "Soft-rebooting." and "Sending SIGKILL
+  to PID … ((sd-close))", plus one kernel line:
+  `EXT4-fs (dm-0): unmounting filesystem <UUID of the hidden filesystem>`.
+  The kernel prints that line when the switch releases the last reference to
+  the hidden superblock. That happens after any userspace hook, so no ordering
+  can put the cursor past it. It does not widen the existing channel: the
+  operator opens and mounts the hidden volume *on the decoy* before entering,
+  and the decoy journal already holds `EXT4-fs (dm-0): mounted filesystem
+  <same UUID>` from that step (today's design has the same record). Both reach
+  disk only on a persistent decoy journal. The volatile journal the decoy
+  requirements demand keeps both in RAM. [V-spike] Skipping a fixed margin of
+  sequence numbers would hide it, but it would also drop the decoy PID 1's
+  first kernel-logged lines. That was not adopted.
+- The decoy PID 1's own "Soft-reboot finished in …, counter is now at N". On a
+  persistent decoy journal it reaches disk under the same boot ID. [V-spike]
+- **`/run/mount/utab`** (libmount's userspace mount options), a kept file. Every
+  userspace start appends lines for its `x-*` mounts (here the 9p shares), and
+  mounts dropped by the switch are never removed. The fourth run showed one
+  extra pair of lines per transition. With hidden-only mounts, this would put
+  hidden mount targets in the decoy's `/run`. The scrub now saves the decoy's
+  copy at entry and restores it. The spike asserts that every remaining line
+  either predates entering or describes a mount that is live in the decoy.
+  [V-spike for the growth; the restore awaits the next run]
+
+**What the scrub removed in the fourth run** (cycle 1; cycle 2 the same, from
+its own kmsg diagnostics) [V-spike]:
+- `/run/log/journal/nails-probe`;
+- `/run/systemd/users/1000` and `/run/systemd/seats/seat0`;
+- `/run/systemd/system/systemd-soft-reboot.service.d` (its own drop-in);
+- `/run/utmp`;
+- `/run/nologin` and `/run/systemd/ask-password-block` (created by the hidden
+  shutdown);
+- `/run/initramfs` (unmounted first);
+- the spike's own `/run/nails-lower`, `/run/decoy-peek` and
+  `/run/nails-leave-scrub.sh`;
+- the planted probes `/run/nails-probe-dir`, `/run/nails-hidden-run-probe` and
+  `/run/systemd/nails-probe`.
+
+Kept: 25–26 carried entries two levels deep, all present before entering, and
+782–783 `/run/udev` entries.
 
 **Writes on the decoy disk at deactivation** are those of an ordinary decoy boot:
 the random seed refreshed, a wtmp boot record (if utmp is built in),
@@ -536,9 +599,8 @@ Reasons it cannot simply replace today's design:
 
 1. The spike passes: both cycles, every vital check, the raw decoy disk free of
    hidden tokens, the LUKS mapping closed in both close modes, and no hidden
-   `/run` or kmsg residue in the decoy. First run: everything up to the raw-disk
-   scan passed; the `/run` and kmsg leaks it found are mitigated, and the second
-   run is pending.
+   `/run` or kmsg residue in the decoy. **Met in the fourth run** (commit
+   `688eea6`), apart from a test-side login race that has since been fixed.
 2. On real hardware: trigger to usable greeter ≤ 15 s in both directions on a
    GNOME or KDE decoy, and the GPU and Wi-Fi come back without intervention.
 3. A hidden NixOS toplevel can be entered with variant B (or C) without touching
