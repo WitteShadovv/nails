@@ -11,7 +11,7 @@
 #      leaves. This is the boot-noise baseline (update-users-groups and the decoy
 #      switch-to-configuration run on every boot regardless of NAILS).
 #   2. STANDARD: re-baselines, activates the committed hidden configuration with a
-#      real offline toplevel build (the hidden config is overlaid onto /etc and
+#      real offline toplevel switch (the hidden config is overlaid onto /etc and
 #      /var, so the hidden switch writes the user state into the overlay upper on
 #      the hidden volume, not the decoy), then deactivates with reboot.
 #   3. EMERGENCY: re-activates (reusing the cached toplevel) and tears down through
@@ -25,21 +25,28 @@
 # canary is proven present while the session is live, so its absence afterwards is
 # containment, not a vacuous pass.
 #
-# NOTE (evaluate under nix): this performs a genuine offline toplevel build inside
+# The hidden system is this VM's own `nails-hidden` specialisation (the running
+# decoy plus fixtures/hidden-config/module.nix), built on the host with the VM and
+# already in the guest store; the committed hidden flake points at it through
+# `builtins.storePath`, substituted at test time. The guest never evaluates
+# nixpkgs — a genuine in-VM NixOS evaluation offline is not feasible without
+# reproducing the test framework's own modules. Switching to a specialisation of
+# the running system (not a bare one) keeps the driver backdoor and the qemu-vm
+# filesystems in the hidden config, so switch-to-configuration never tears the
+# driver down.
+#
+# NOTE (evaluate under nix): this performs a genuine offline toplevel switch inside
 # an impermanent (tmpfs-root, on-disk store image) VM and exercises both
-# deactivation modes. The tmpfs-root override, the offline closure of the
-# canary-augmented hidden fixture, and the containment of the canary onto the
-# overlay (rather than the persisted decoy) can only be confirmed with
-# `nix build .#checks.x86_64-linux.var-lib-nixos-drift` on a Nix host. If the
-# canary assertion reproduces there, the overlay is not covering the
-# /var/lib/nixos bind submount; that must be converted to a tracked expected-fail
-# with a linked TODO and a code fix (overlay handling for /var/lib/nixos; evaluate
-# userborn/systemd-sysusers), not silenced.
+# deactivation modes. The tmpfs-root override, the specialisation toplevel, and the
+# containment of the canary onto the overlay (rather than the persisted decoy) can
+# only be confirmed with `nix build .#checks.x86_64-linux.var-lib-nixos-drift` on a
+# Nix host. If the canary assertion reproduces there, the overlay is not covering
+# the /var/lib/nixos bind submount; that must be converted to a tracked
+# expected-fail with a linked TODO and a code fix (overlay handling for
+# /var/lib/nixos; evaluate userborn/systemd-sysusers), not silenced.
 
 {
   self,
-  pkgs,
-  nixpkgs,
   ...
 }:
 let
@@ -47,11 +54,6 @@ let
   testHelpers = import ./../../lib/test-helpers.nix;
   emergency = import ./../../lib/emergency.nix;
   fixtureDir = ./../../fixtures/hidden-config;
-  nixpkgsPath = pkgs.path;
-  # The hidden toplevel, built here against the guest's own nixpkgs so the store
-  # path matches what the in-guest flake build computes. Seeded into the guest
-  # store below so the offline build finds it already present.
-  hiddenToplevel = import ./../../lib/hidden-toplevel.nix { inherit pkgs nixpkgs; };
   # The emergency runner bakes the config path into its unit; the test writes the
   # /var-overlaying config to this same path at runtime.
   varConfig = "/tmp/nails-var.toml";
@@ -78,17 +80,19 @@ in
         "nix-command"
         "flakes"
       ];
-      # Force the hidden build fully offline: nothing may be substituted. mkForce
-      # so no profile or the qemu-vm defaults can reintroduce a substituter the
-      # offline guest would then try (and fail) to reach.
+      # The hidden toplevel is already in the guest store (it is the `nails-hidden`
+      # specialisation below, built with the VM), so the offline `nix build` only
+      # realises an already-present path. mkForce [] keeps the guest from querying
+      # an unreachable substituter — no profile or qemu-vm default may reintroduce
+      # one.
       nix.settings.substituters = lib.mkForce [ ];
-      # Seed nixpkgs *and* the prebuilt hidden toplevel into the guest store so the
-      # hidden build finds its output already present and neither builds nor
-      # fetches anything.
-      virtualisation.additionalPaths = [
-        pkgs.path
-        hiddenToplevel
-      ];
+      # The hidden system: the running decoy plus the marker module. Declaring it as
+      # a specialisation builds its toplevel on the host with the VM and places it
+      # in the guest store, and keeps the VM's own instrumentation in the hidden
+      # config so switch-to-configuration never tears the driver down.
+      specialisation.nails-hidden.configuration = {
+        imports = [ ./../../fixtures/hidden-config/module.nix ];
+      };
     };
 
   testScript = _: ''
@@ -236,27 +240,35 @@ in
     var_config = "${varConfig}"
     write_var_config(var_config)
 
-    with subtest("prepare the committed hidden-config fixture as a real offline flake"):
+    with subtest("point the committed hidden flake at the prebuilt specialisation toplevel"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         machine.succeed("mkdir -p /mnt/data/nixos")
         machine.succeed("cp -rT ${fixtureDir} /mnt/data/nixos")
         machine.succeed("chmod -R u+w /mnt/data/nixos")
+        # The hidden toplevel is the VM's own `nails-hidden` specialisation, already
+        # in the guest store. Resolve its store path and substitute it into the
+        # flake so the guest's `nix build` realises that exact path offline instead
+        # of evaluating nixpkgs.
+        spec_toplevel = machine.succeed(
+            "readlink -f /run/current-system/specialisation/nails-hidden"
+        ).strip()
+        assert nixos_system_re.match(spec_toplevel), (
+            f"specialisation toplevel is not a nixos-system store path: {spec_toplevel!r}"
+        )
         machine.succeed(
             "sed -i "
-            + shlex.quote("s|@nixpkgs@|path:${nixpkgsPath}|")
+            + shlex.quote(f"s|@toplevel@|{spec_toplevel}|")
             + " /mnt/data/nixos/flake.nix"
         )
-        machine.succeed("nix flake lock --offline /mnt/data/nixos")
         assert_state("Inactive", var_config)
 
-    with subtest("the seeded toplevel is what the guest computes (nothing left to build)"):
-        # The offline rebuild only works because the guest computes the *same*
-        # toplevel store path the host seeded into the store
-        # (virtualisation.additionalPaths). A divergence would make `nails activate`
-        # rebuild the whole closure from source with no substituters — long enough
-        # to blow the global timeout, whose only symptom is an opaque driver
-        # "[Errno 9] Bad file descriptor". Surface it here, fast: a dry-run
-        # evaluation of the toplevel must schedule no builds and no fetches.
+    with subtest("the hidden toplevel is already realised (nothing to build offline)"):
+        # The flake's toplevel is a `builtins.storePath` of the prebuilt
+        # specialisation, so a dry-run must schedule no build and no fetch. If it
+        # does, the substitution or the specialisation closure is wrong, and a real
+        # activation would stall offline with no substituters — long enough to blow
+        # the global timeout, whose only symptom is an opaque driver "[Errno 9] Bad
+        # file descriptor". Surface it here, fast.
         toplevel_attr = (
             "/mnt/data/nixos#nixosConfigurations.nails-e2e.config.system.build.toplevel"
         )
@@ -269,8 +281,7 @@ in
         print(plan)
         assert rc == 0, f"evaluating the hidden toplevel failed offline:\n{plan}"
         assert "will be built" not in plan and "will be fetched" not in plan, (
-            "the seeded hidden toplevel does not match the guest-computed one, so "
-            f"the offline activation would rebuild from source:\n{plan}"
+            f"the hidden toplevel is not already realised offline:\n{plan}"
         )
 
     control_drift = set()
