@@ -1,7 +1,7 @@
 # 9. Dual root on one seat: whole-root isolation with a non-disruptive emergency
 
 - Status: proposed (research; a decision waits on the spike and the hardware matrix)
-- Date: 2026-10-06
+- Date: 2026-10-06 (risk assessment added 2026-10-07)
 - Related: [ADR 0005](0005-live-overlay-vs-boot-time-overlay.md),
   [ADR 0008](0008-whole-root-soft-reboot.md), [threat model](../threat-model.md),
   [operator guide](../operator-guide.md#standard-vs-emergency-vs-recover)
@@ -51,6 +51,11 @@ with
 `nix build .#legacyPackages.x86_64-linux.e2e.research-dual-root-vt-emergency -L`.
 At the time of writing it has **not run yet**. It evaluates to a system closure
 with a read-only store, but no Nix daemon or KVM was available.
+
+A second spike, `nix/e2e-tests/tests/research/dual-root-risks.nix`
+(`e2e.research-dual-root-risks`), probes the risks; see
+[Risk assessment](#risk-assessment). It is independent of the first, so the two
+fail separately, and it has not run yet either.
 
 ## The core idea
 
@@ -188,10 +193,10 @@ left:
 | Channel | Leak | Mitigation |
 | --- | --- | --- |
 | Shared **system** daemons over the host system bus: NetworkManager (`/etc/NetworkManager/system-connections`, `/var/lib/NetworkManager`), bluetoothd (`/var/lib/bluetooth`), CUPS (`/var/spool/cups`, `/var/cache/cups`), AccountsService (`/var/lib/AccountsService/users`), boltd, power-profiles-daemon, fwupd, PackageKit, udisks2 (mounts appear in the host namespace) | Writes on the **decoy disk** made on the hidden user's behalf. A seat0 session is "active", so polkit's `allow_active` lets it add Wi-Fi networks, pair devices and print | D+ below: give the hidden root a filtered system bus that forwards only `org.freedesktop.login1` (and what the compositor needs), and run its own instances of stateful daemons in the hidden root. Until then, list these daemons in the operator guide as residual channels |
-| `/proc/<pid>/root` and `/proc/<pid>/cwd` of host processes | A **root** process in the hidden root can reach the decoy filesystem through `/proc/1/root` (same PID namespace). An unprivileged hidden user cannot (ptrace access check) [V-spike: both probes are logged] | A PID namespace for the hidden tree (`PrivatePIDs=`, systemd ≥ 257, or `unshare --pid`); keep hidden system services few |
+| `/proc/<pid>/root` and `/proc/<pid>/cwd` of host processes | A **root** process in the hidden root can reach the decoy filesystem through `/proc/1/root` (same PID namespace). An unprivileged hidden user cannot (ptrace access check) [V-spike: both probes are logged] | A PID namespace for the hidden tree (`PrivatePIDs=`, systemd ≥ 257, or `unshare --pid`; not possible for `user@.service`, risk 4), `NoNewPrivileges=` on every hidden unit; keep hidden system services few |
 | The host **journal** | stdout of hidden units, logind's "New session … of user aux", and the unit names reach the decoy's journald. On the required volatile journal that is RAM only [V-spike: the token stays off the raw disk] | Neutral unit names; `StandardOutput=null` or a hidden journald socket; scrub the volatile journal after teardown (emergency already does) |
 | Shared `/run` | userdb records, drop-ins, `/run/user/<uid>`, utmp entries left after SIGKILL (no logout record) | Bind only the needed parts of `/run` (D+); remove what NAILS created at teardown; a private `/run/utmp` |
-| Mount-namespace copies | A decoy service that creates its own mount namespace while the hidden root is mounted (an on-demand service with `PrivateTmp=` or `ProtectSystem=`) gets a private copy of the hidden mounts. It can see the hidden root, and its copy pins the hidden filesystem, so the backend cannot close [I; V-spike logs any such namespace] | Build the hidden root below a private tmpfs, so mounts made before a service starts are not propagated. At teardown, find namespaces whose `mountinfo` holds the hidden root and unmount the copy inside each with `nsenter -m` (structural, not heuristic). Longer term, mount the hidden root only inside a dedicated mount namespace |
+| Mount-namespace copies | A decoy service that creates its own mount namespace while the hidden root is mounted (an on-demand service with `PrivateTmp=` or `ProtectSystem=`) gets a private copy of the hidden mounts. It can see the hidden root, and its copy pins the hidden filesystem, so the backend cannot close [I; V-spike logs any such namespace] | Revised (risk 5): `CLONE_NEWNS` copies private and unbindable mounts too, so a private tmpfs does not prevent copies. Mount the hidden root only in a pinned mount namespace and start units with `systemd-run --root-directory=` (systemd 259) or an `nsenter` wrapper; keep the `nsenter -m umount` sweep at teardown as a backstop |
 | `(sd-pam)` of `user@<uid>.service` | The PAM helper is forked before the unit's namespace is set up, so a hidden-uid process with the **decoy** root exists for the whole session. It only waits to call `pam_close_session()` [V-src: `exec_invoke()` order; V-spike logs it] | `cgroup.kill` never lets it reach the close; keep the decoy's `systemd-user` PAM stack free of writers (true on NixOS) |
 | **Kernel** state | kmsg (overlay and dm-crypt messages), the VT history, the network identity (same netns, same MAC and IP) | As in ADR 0008; network identity is out of scope in the threat model |
 | **Observer during the session** | `ps`, `loginctl` and `systemctl` on the decoy show the hidden processes and session while they run | Emergency removes them in under a second; nothing remains at first glance |
@@ -253,6 +258,10 @@ These steps take D towards container-grade isolation without giving up the host
 logind:
 
 1. A PID namespace for the hidden tree (closes the `/proc/<pid>/root` path).
+   Revised by the risk assessment (risk 4): `PrivatePIDs=` works for hidden
+   system-style units (the session leader is being probed) but not for
+   `user@.service`, so
+   the step is `NoNewPrivileges=` everywhere plus `PrivatePIDs=` where possible.
 2. A private `/run` in the hidden root with only the host system-bus socket, the
    logind state directories (`/run/systemd/{seats,sessions,users}`), `/run/udev`
    (read-only) and `/run/user/<uid>` bound in.
@@ -262,6 +271,11 @@ logind:
    daemons the hidden desktop needs. They are started by the host PID 1 as units
    with `RootDirectory=`, joined to the hidden namespaces with
    `JoinsNamespaceOf=`, and talk to a hidden dbus-daemon.
+   Revised by the risk assessment (risk 2): hidden copies of daemons that own a
+   bus name cannot share the host bus, and a hidden bus loses
+   `org.freedesktop.login1`. The step becomes a runtime polkit rule, a D-Bus
+   uid deny for bluez/fwupd, blocked CUPS, and optionally the proxy, applied
+   after PAM has created the session.
 4. Optionally a private network namespace. Wi-Fi moves with its `phy` (nspawn
    supports this since v256 [V-web]; plain `iw phy … set netns` works for units).
    The decoy then shows its network as disconnected until emergency returns the
@@ -422,33 +436,437 @@ noted.
 6. A Debian trixie / Ubuntu noble variant of the spike passes on the nix-vm-test
    tier, including `libnss-systemd` resolution of the hidden user.
 
-## Risks
+## Risk assessment
 
-- **VT/DRM handover on proprietary drivers** (NVIDIA): black screen after the
-  switch back. That would be the worst possible emergency outcome. Mitigation:
-  the hardware matrix, and N as the fallback.
-- **The decoy desktop reacting to being inactive for hours**: screen lock (fine),
-  idle suspend (not fine while the hidden session runs), or a desktop that
-  treats a long-inactive session specially [I]. Mitigation: inhibitors, and
-  measuring it.
-- **Shared system daemons** writing decoy-disk state on the hidden user's behalf
-  until D+ step 3 exists. This is the same *class* of leak as T-132, but limited
-  to a short, enumerable list of D-Bus services instead of every process.
-- **Root inside the hidden root** without a PID namespace can reach the decoy
-  through `/proc/1/root`.
-- **Observer during the session** sees an extra logind session and processes with
-  `loginctl`/`ps`. That is accepted, because emergency removes them.
-- **Display managers that react to a new seat0 session**: GDM's or SDDM's user
-  switcher may list the hidden session while it exists [I]. Hidden sessions
-  should use a class or type the greeter ignores, which needs checking per
-  display manager.
-- **Keyboard VT switching** (Ctrl+Alt+F*n*) lets anyone at the keyboard switch
-  between the two desktops while the hidden one runs. That is also a feature: an
-  instant, non-destructive "boss key". Hidden compositors can disable it if the
-  operator prefers.
-- **The panic trigger** must not depend on the hidden session being healthy. A
-  host-side watcher that NAILS runs from the hidden volume, reading evdev without
-  a grab, can fire emergency even if the hidden compositor hangs [I].
+Checked on 2026-10-07, before any implementation. Each risk was researched in
+upstream source at the versions that matter: systemd v259.3 (pinned nixpkgs),
+v257 (Debian trixie, Ubuntu 25.10) and v255 (Ubuntu noble), Linux 6.18, polkit
+124–127, NetworkManager 1.56.0, accountsservice 23.13.9, xdg-dbus-proxy 0.1.6,
+kbd 2.9.0, the NVIDIA open kernel modules up to 615.71.09, gnome-settings-daemon
+and gnome-shell `main`. Where a VM can show something, the second spike probes
+it:
+
+```
+nix build .#legacyPackages.x86_64-linux.e2e.research-dual-root-risks -L
+```
+
+(`nix/e2e-tests/tests/research/dual-root-risks.nix`, tag `research`,
+independent of the first spike). It logs `FINDING:` lines for measurements and
+asserts only the mitigations this section claims work. **It has not run yet.**
+Probe results marked [V-spike] must be filled in from its log.
+
+### Verdicts
+
+| # | Risk | Verdict |
+| --- | --- | --- |
+| 1 | VT/DRM handover, hidden display server killed | Kernel side **solved** if the emergency path handles two races. Intel/AMD: **mitigable**, needs one hardware pass. NVIDIA: **needs real hardware**; known close-path deadlocks are a **blocker** on affected driver versions. nouveau: **needs real hardware** (no data) |
+| 2 | Shared system daemons write for the hidden user | **Mitigable** with a runtime polkit rule, a D-Bus uid deny for non-polkit daemons, and blocking CUPS. Timing-only writes (NM timestamps, upower history) **cannot** be stopped per user. Hidden-root copies of daemons on the shared bus are **impossible** |
+| 3 | Idle decoy over hours | **Mitigable**: an idle+sleep inhibitor held by a host unit. Lid close needs a `handle-lid-switch` lock. A lock screen on return is expected and is not a logout |
+| 4 | Root in the hidden root reaches the decoy via `/proc/1/root` | **Mitigable**: `NoNewPrivileges=` everywhere plus a polkit deny; `PrivatePIDs=` for system-style hidden units (and the session leader, if probe R4b confirms logind accepts it). **Blocker** for `PrivatePIDs=` on `user@.service`; not available on systemd 255 |
+| 5 | Mount-namespace copies of the hidden root | **Real leak** with the spike's private tmpfs. **Solved** on systemd 259 with `systemd-run --root-directory=` from a pinned namespace; **mitigable** on 255/257 with an `nsenter` wrapper |
+| 6 | Hidden NixOS system services | **Mitigable** for file/network services as runtime units with `RootDirectory=`, after rewriting `StateDirectory=` and friends. Services that own a bus name, logind, udev, journald: **blocker** on the host bus. nspawn for headless services: viable but splits the system bus |
+| 7 | Other: audio, input, GPU, homed, AppArmor/snap, Secure Boot, seatd, DM user lists | Mostly **solved/mitigable**; **snaps on Ubuntu are a blocker** inside the hidden root (exclude them); NVIDIA D-state on kill **needs real hardware** |
+
+### 1. VT/DRM handover
+
+**Evidence.**
+
+- `VT_ACTIVATE` is asynchronous. If the old VT is in `VT_PROCESS` mode, the
+  kernel signals its owner and waits for `VT_RELDISP`, with **no timeout**. If
+  the signal cannot be delivered (the owner was reaped), it resets the VT to
+  `VT_AUTO` and completes the switch; the in-tree comment admits a switch can
+  get "lost" if the owner dies after the signal [V-src: `vt_ioctl.c`
+  `change_console`, `complete_change_console`, `vt_reldisp`]. `vt_reldisp`
+  accepts `CAP_SYS_TTY_CONFIG`, so root can acknowledge a pending release on
+  behalf of a dead X server.
+- `cgroup.events populated 0` fires at task-dead time, after `exit_files`, so
+  the hidden server's DRM fds (and DRM master) are gone, but the zombie can still
+  receive the release signal until it is reaped [V-src: `kernel/exit.c`,
+  `cgroup.c` `do_cgroup_task_dead`].
+- DRM master drop does **no** modeset. If the dying client's framebuffer is
+  being scanned out, its planes are disabled, so the screen goes black, not
+  frozen on the hidden frame. fbdev restore runs only at last close, which never
+  happens while the decoy holds the device [V-src: `drm_auth.c`,
+  `drm_framebuffer.c`, `drm_file.c`]. `DRM_IOCTL_SET_MASTER` fails with
+  `EBUSY` while any master exists, even for root.
+- Only the decoy display server repaints on return: Xorg `EnterVT` does
+  `SetMaster` (failure ignored) plus a full modeset; mutter and wlroots do a
+  full re-modeset on logind `ResumeDevice` [V-src]. If the decoy's
+  `SetMaster` fails because the hidden server still holds master, Xorg stays
+  black until the next VT switch, and logind keeps a logind-managed device
+  paused [V-src: `logind-session-device.c` "hope there is no-one else"].
+- `chvt` (kbd ≥ 2.3; 2.9.0 pinned) retries `VT_ACTIVATE` every second with no
+  deadline, which recovers a lost switch, but also blocks forever on a live, hung
+  owner [V-src: `chvt.c`]. `loginctl activate` is a single `VT_ACTIVATE`
+  without waiting or retry, and needs D-Bus at emergency time [V-src:
+  `terminal-util.c chvt()`]. It is not faster.
+- A logind-controlled hidden compositor is more robust than a rootful X: logind
+  owns the VT (`VT_PROCESS` with its own signals), drops master and revokes
+  input itself on leave, and restores the VT when the controller dies [V-src:
+  `logind-session.c`]. A hung hidden compositor cannot block the switch.
+- **NVIDIA.** Master drop and fd close run a modeset inside the close path in
+  both `fbdev=1` and `fbdev=0` modes. Open reports: VT return freezes on 580.95.05
+  (open-gpu-kernel-modules #957, 2025-11), KWin finds no usable output after VT
+  leave/enter on 595.x (#1378, 2026-09), black screen with GLX-vblank X
+  compositors since 545 (NVIDIA forum 328357), `fbdev=0` black VT on kernel ≥ 7.0
+  until 610.57.04, and an `nvkms_close` deadlock on 580.126.09 where "SIGKILL is
+  ineffective" and VT switching is blocked until reboot (forum 367587), plus a
+  pm-lock/RM-lock deadlock on 615.71.09 with VRR/HDR (#1371) [V-web]. The
+  deadlock class is the worst case: the hidden server cannot die, master is never
+  freed, the decoy cannot take the screen.
+- Intel/AMD: no systematic current breakage found; individual regressions exist
+  (i915 freeze on VT return since 6.16, LKML 2026-02) [V-web].
+
+**Mitigation (emergency path).**
+
+1. `VT_ACTIVATE` to the decoy VT and poll `VT_GETSTATE` for at most 1–2 s
+   (never an unbounded `chvt`).
+2. `cgroup.kill` the hidden slices and wait (bounded) for `populated 0`.
+3. If the decoy VT is not active yet: `VT_RELDISP 1` on the hidden `/dev/ttyN`,
+   or re-issue `VT_ACTIVATE` every 50–100 ms; make sure the hidden X server's
+   parent is in the killed tree, so the zombie is reaped.
+4. Optionally confirm the decoy holds master (`/sys/kernel/debug/dri/*/clients`).
+5. Prefer a logind-managed hidden display server (`Xorg vt$XDG_VTNR -keeptty`, or
+   a Wayland compositor) over a rootful X server.
+6. NVIDIA: `nvidia-drm.modeset=1 fbdev=1`, no VRR/HDR (or
+   `nvidia_modeset.conceal_vrr_caps=1`), `NVreg_PreserveVideoMemoryAllocations=1`;
+   pin driver versions that pass the matrix. Option N stays the fallback.
+
+**VM probe.** R1a–R1d: hidden rootful X on VT 8 with a full-screen red window,
+decoy with a full-screen blue window; screenshots are classified by colour
+share and pixel variance. R1a kills the hidden X while its VT is active and then
+switches; R1b switches then kills (the product order); R1c kills while the
+switch is in flight; R1d times `loginctl activate` against `chvt` (five rounds
+each) to "VT active" and "logind session active". Asserted: the decoy renders
+after each. [V-spike pending]
+
+**Real hardware.** Section "Hardware test matrix" below.
+
+### 2. Shared system daemons
+
+**Evidence** (polkit defaults are any/inactive/active from the upstream
+`.policy` files):
+
+| Daemon | Decoy-disk write for the hidden user | Gate | Names the user |
+| --- | --- | --- | --- |
+| NetworkManager | keyfile in `/etc/NetworkManager/system-connections` (`settings.modify.own`: auth_self_keep/yes/**yes**; `.system`: auth_admin_keep with the default build); `timestamps` on any activation; DHCP leases; `seen-bssids` | polkit, except timestamps | keyfile: `permissions=user:<name>`; gnome-shell sets it itself |
+| AccountsService | `/var/lib/AccountsService/users/<name>` on any setter (`change-own-user-data` yes/yes/yes); FindUser* only in RAM | polkit | yes (file name) |
+| logind | `/var/lib/systemd/linger/<name>` (`set-self-linger` yes/yes/yes); hibernation image (`hibernate` …/yes) | polkit | yes |
+| bluetoothd | link keys and device cache in `/var/lib/bluetooth` | **D-Bus policy only, no polkit** | no |
+| CUPS | spool files with `job-originating-user-name`; `subscriptions.conf` `Owner <name>` written as soon as GNOME's print-notifications plugin starts | IPP over `/run/cups/cups.sock` or :631, not D-Bus | yes |
+| PackageKit | `transactions.db` with uid and cmdline; `proxy(uid, session)` | polkit (refresh, proxy: …/yes) | yes (uid) |
+| colord | `storage.db` rows with uid | polkit (…/yes) | yes (uid) |
+| udisks2 | Debian/Ubuntu only: `/media/<user>` and `/var/lib/udisks2/mounted-fs-persistent` | polkit (mount …/yes) | yes on Debian; NixOS uses `/run` |
+| fwupd | metadata refresh without polkit | none | no |
+| power-profiles-daemon, systemd-rfkill, upower history | state files | polkit / none | no (timing only) |
+| timedated, localed, hostnamed, PID 1 unit files | `/etc` | auth_admin_keep (NixOS also patches the setters off) | no |
+| systemd-coredump | `/var/lib/systemd/coredump/core.<comm>.<uid>…` and a journal record | the kernel pipes hidden crashes to the host helper | yes |
+
+[V-src for all; full citations in the research notes summarised under Sources.]
+
+**Mitigation options.**
+
+- **polkit rule in `/run/polkit-1/rules.d`: works** for every polkit-gated write.
+  polkit reads `/run/polkit-1/rules.d` since **126** (Debian trixie yes, Ubuntu
+  noble's 124 no; NixOS has 127). Files sort by basename across directories, so
+  `00-….rules` runs first; `systemctl reload polkit` (SIGHUP, `Type=notify-reload`)
+  picks it up without a new mount namespace. `subject.user` falls back to the
+  decimal uid if `getpwuid()` fails, so the rule matches both [V-src:
+  `polkitbackendduktapeauthority.c`, `polkitbackendcommon.c`]. On polkit ≤ 125:
+  bind-mount a tmpfs copy over `/etc/polkit-1/rules.d` plus SIGHUP. The rule
+  should deny everything except the login1 actions a desktop needs, and also deny
+  `set-self-linger`, `hibernate*` and `set-reboot-*`.
+- **D-Bus `<policy user="<uid>">` deny: works**, and is the only option for
+  bluez and fwupd. Both dbus-daemon and dbus-broker parse a numeric uid without
+  NSS; user policies override `context="default"` allows. Neither reads policy
+  from `/run`, so it needs a bind mount of a tmpfs copy over the bus config plus
+  `ReloadConfig`, or a static uid-free `<includedir>/run/dbus-1/system.d</includedir>`
+  on the decoy (an enabler, ADR 0005's objection) [V-src].
+- **CUPS:** do not bind `/run/cups` into the hidden root and reject the hidden
+  uid on port 631 (`nft … meta skuid <uid> tcp dport 631 reject`, runtime).
+- **xdg-dbus-proxy as the hidden root's system bus: works with constraints.**
+  Unix fds pass through. The bus sees the proxy's credentials, so the proxy must
+  run as the hidden uid (EXTERNAL auth) and inside the hidden session's scope
+  (logind resolves `session/auto` from the peer's cgroup; TakeControl checks
+  only the euid) [V-src: `flatpak-proxy.c`, `logind-dbus.c`,
+  `logind-session-dbus.c`]. PAM's `CreateSession` must run as root on the real
+  bus, so the filter can only be applied **after** login: the spike bind-mounts
+  the proxy socket over `/run/dbus/system_bus_socket` inside the hidden mount
+  namespaces with `nsenter`. A product would do this from a privileged session
+  helper between `pam_open_session()` and the privilege drop. Two caveats: an
+  allowlisted `org.freedesktop.login1` still lets `set-self-linger` through, so
+  the polkit rule is needed anyway; and the proxy is a host-rooted, dumpable
+  process of the hidden uid, so `/proc/<proxy>/root` is a door to the decoy for
+  the hidden uid (deliberate misuse only, outside the threat model).
+- **Hidden-root copies of NetworkManager, AccountsService etc. on the host bus:
+  impossible** (well-known names are unique per bus). With a second, hidden bus
+  the compositor still needs `org.freedesktop.login1` on the same bus; no
+  existing tool forwards one name between buses. Rejected.
+- **Private network namespace:** partial. It stops hidden network use from
+  touching the decoy NM's state only if the device is first unmanaged through a
+  runtime drop-in in `/run/NetworkManager/conf.d` (otherwise its disappearance
+  writes timestamps). Wi-Fi moves with `iw phy … set netns` and returns to the
+  init namespace when the namespace dies [V-src: `net/wireless/core.c`]. It does
+  not cut D-Bus or path sockets.
+- **Cross-cutting:** `LimitCORE=1` on hidden units (the kernel skips the pipe
+  helper at a limit of 1), `AllowHibernation=no` in `/run/systemd/sleep.conf.d`,
+  `memory.swap.max=0` on the hidden slices, hidden user never in `wheel`.
+
+**Residual.** NM `timestamps`/`seen-bssids` on activation, upower history and
+rfkill state cannot be stopped per user. They do not name the user, but their
+timing correlates with hidden sessions. Document them.
+
+**VM probe.** R2-A/B/C: as the hidden user inside its active seat0 session,
+`nmcli connection add` (system and `permissions=user:aux`), AccountsService
+`SetLanguage`, `timedatectl set-timezone`, `loginctl enable-linger`; hashes of
+`/etc/NetworkManager`, `/var/lib/NetworkManager`, `/var/lib/AccountsService`,
+`/etc/localtime` and `/var/lib/systemd/linger` before and after. A: no
+mitigation (finding). B: the `/run` polkit rule (asserted: no new keyfile, no
+AccountsService change, no time-zone change, no linger file, login1 still
+usable). C: the proxy (asserted: no keyfile, no AccountsService or time-zone
+change, `session/auto` through the proxy is the hidden session). The linger
+write through the proxy and the `/proc/<proxy>/root` door are logged. [V-spike
+pending]
+
+**Real hardware.** Bluetooth pairing and Wi-Fi need real radios: pair a device
+and join a network from the hidden session with the D-Bus deny in place, then
+diff `/var/lib/bluetooth` and `/var/lib/NetworkManager`.
+
+### 3. Idle decoy over hours
+
+**Evidence.**
+
+- logind is idle only if no idle inhibitor exists **and** every user/greeter
+  session reports idle; an inactive session counts as idle only if its own hint
+  says so [V-src: `logind-core.c manager_get_idle_hint`]. Graphical sessions
+  report what the desktop sends with `SetIdleHint` (GNOME does; KDE does not:
+  KDE bug 448942, so a Plasma decoy never becomes logind-idle). TTY sessions use
+  the tty atime.
+- logind re-reads its configuration on SIGHUP, but arms the idle timer only at
+  startup and only when `IdleAction` is not `ignore` [V-src: `logind.c`
+  `manager_dispatch_idle_action`, called once from `manager_startup`]. So a
+  `/run/systemd/logind.conf.d` drop-in cannot turn idle actions **on** at
+  runtime, and NixOS never restarts logind ("restarting breaks X11").
+- An idle block inhibitor makes the system non-idle; a sleep block refuses
+  `Suspend` calls, and since v257 even root's and the caller's own [V-src:
+  `logind-core.c`, `logind-dbus.c verify_shutdown_creds`, NEWS v257].
+  `LidSwitchIgnoreInhibited=yes` is the default, so only a `handle-lid-switch`
+  lock stops the lid; handle-* locks from processes in an inactive session are
+  ignored, locks from a system unit count [V-src: `logind-action.c`,
+  `logind-inhibit.c`].
+- Traces: inhibitor state is in `/run/systemd/inhibit` (RAM); start/stop is
+  logged at debug level only, but a **refused** action logs at error level
+  "Refusing … inhibited by UID …/user, PID …/comm" [V-src: `logind-action.c`].
+  On the required volatile journal that is RAM only; the `--who`/`--why` must be
+  neutral because `systemd-inhibit --list` shows them live.
+- GNOME: gsd-power ignores idle transitions and clears its suspend timers while
+  the session is inactive, and forces "normal" when it becomes active again
+  [V-src: `gsd-power-manager.c`]; in a VM it disables suspend-on-idle entirely,
+  so a VM cannot show the real path. gnome-shell locks on logind `Lock`,
+  `PrepareForSleep` and its own idle watch; whether that idle watch fires while
+  inactive is unverified, so a lock screen on return is likely. KDE PowerDevil
+  clears idle timeouts on inactive sessions (bug 369584, fixed 5.7).
+- A lock is not a logout: `LockSession` only emits the session's `Lock` signal
+  [V-src: `logind-session-dbus.c`].
+
+**Mitigation.** A host system unit in the hidden slice holds
+`systemd-inhibit --what=idle:sleep:handle-lid-switch --mode=block` with neutral
+names, only while the hidden session runs (emergency kills it with the slice).
+Alternative for sleep: `--mode=delay` and react to `PrepareForSleep` by running
+emergency within `InhibitDelayMaxSec`, which logs no refusal. Accept the decoy
+lock screen on return (go/no-go 3).
+
+**VM probe.** R3: the decoy has `IdleAction=suspend`, `IdleActionSec=20s` and
+a stubbed `systemd-suspend.service`; the decoy session's idle hint is set by
+root, the hidden tty session is idle by atime. Control without an inhibitor
+(finding), then 75 s with the inhibitor (asserted: no "System idle" from logind
+and no stubbed suspend, provided the control fired), then a decoy-user `Suspend`
+call against the sleep lock (finding). [V-spike pending]
+
+**Real hardware.** GNOME and KDE decoys left inactive for 1 h and 8 h on a laptop
+on battery and on AC, lid closed and open, with the inhibitor; record lock
+screen, blank, suspend and the first frame on return.
+
+### 4. `/proc/1/root`
+
+**Evidence.**
+
+- An unprivileged hidden uid cannot follow `/proc/<pid>/root` of another uid,
+  and not even of its own uid when the target is not dumpable [V-src:
+  `fs/proc/base.c proc_fd_access_allowed`, `kernel/ptrace.c`]. `(sd-pam)` of
+  `user@.service` drops privileges without exec, so `commit_creds` sets it to
+  `suid_dumpable` (2 on NixOS via `50-coredump.conf`), and it is safe. Any
+  host-rooted process of the hidden uid that **did** exec (the filtering proxy,
+  a host-side greeter) is dumpable and is a door.
+- `ProtectProc=invisible` / `hidepid=2` do not affect root [V-src:
+  systemd.exec(5)].
+- `PrivatePIDs=` exists since v257 (trixie, Ubuntu 25.10, 26.04, our 259; not
+  noble's 255), service units only, not `Type=forking`. `setup_pam()` runs
+  before the PID namespace is created, so pam_systemd still registers from the
+  host PID namespace [V-src: `exec-invoke.c`]. It cannot be used on
+  `user@.service`: `systemd --user` refuses to run as PID 1 ("Can't run --user
+  mode as PID 1", `main.c`).
+- NixOS's `/run/wrappers` allows setuid, so a hidden root that binds the host
+  `/run` gets `/run/wrappers/bin/sudo`; it reads the hidden root's
+  `/etc/sudoers`. `NoNewPrivileges=yes` blocks setuid and file capabilities, but
+  not root reached through IPC (polkit-mediated `systemd-run`, `pkexec`, udisks
+  …) [V-src: systemd.exec(5)].
+
+**Mitigation.** `NoNewPrivileges=yes`, an empty `CapabilityBoundingSet=`,
+`RestrictSUIDSGID=yes` on every hidden unit and the user@ drop-in; the polkit
+rule from risk 2; `PrivatePIDs=yes` on hidden system-style units and, if R4b
+shows logind accepts it, on the session leader's unit; no host-rooted exec'd process running as the hidden uid.
+On 255: an `unshare --pid --fork --mount-proc` wrapper.
+
+**VM probe.** R4: `/proc/1/root/<decoy-only tmpfs>` read as the hidden user in
+its session, via `(sd-pam)`, as a hidden sudoer (hidden-root sudoers only) with
+and without `NoNewPrivileges=` (asserted blocked with it), as hidden root with
+nothing, `ProtectProc=invisible`, and `PrivatePIDs=yes` (asserted blocked); and
+a second `login -f` session whose unit has `PrivatePIDs=yes` (finding: does
+logind accept it, what does a hidden sudoer see). [V-spike pending]
+
+### 5. Mount-namespace copies
+
+**Evidence.** `CLONE_NEWNS` copies **every** mount, private and unbindable
+included (`copy_mnt_ns` passes `CL_COPY_UNBINDABLE`); only nsfs bind mounts of
+mount namespaces are skipped [V-src: `fs/namespace.c`;
+`sharedsubtree.rst` §g]. So the spike's "private tmpfs at `/run/aux`" does
+**not** stop a decoy service started later (with `PrivateTmp=`,
+`ProtectSystem=`, or any D-Bus-activated daemon with a sandbox, such as
+accounts-daemon or timedated) from holding a frozen copy that pins the hidden
+filesystem. The first spike's teardown already unmounts such copies with
+`nsenter`; that works but is cleanup, not prevention, and the copies can see
+the hidden root while they exist.
+
+**Mitigation.**
+
+- **systemd 259 (NixOS pin, Ubuntu 26.04):** build the overlay inside a mount
+  namespace pinned on a file in `/run` (the pin is not copied into other
+  namespaces), and start hidden units with
+  `nsenter --mount=<pin> systemd-run --root-directory=<path> …`. systemd-run
+  opens the tree with `open_tree(OPEN_TREE_CLONE)` in the caller's namespace and
+  passes the fd as `RootDirectoryFileDescriptor=`; PID 1 moves it into the unit's
+  own namespace [V-src: `run.c`, `namespace.c`]. The host tree never contains the
+  overlay, and the units keep systemd's sandboxing. Limits: transient services
+  only (not scopes, not `user@.service`; the user manager would need its own
+  wrapper).
+- **255/257:** the same pinned namespace with an `nsenter --mount=… --root=…`
+  ExecStart wrapper, losing `RootDirectory=`/`BindPaths=` sandboxing.
+
+**VM probe.** R5a (finding): a decoy service with `PrivateTmp=` started after
+activation, with the hidden tree below a private, then an unbindable tmpfs. R5b
+(asserted): an overlay that exists only in a pinned namespace is absent from the
+host and from a decoy service started later; units entering it with `nsenter`
+and with `systemd-run --root-directory=` are logged. [V-spike pending]
+
+### 6. Hidden NixOS system services
+
+**Evidence.**
+
+- With `RootDirectory=`, `StateDirectory=`, `CacheDirectory=` and
+  `LogsDirectory=` are created on the **host** under `/var/lib`, `/var/cache`,
+  `/var/log` and bind-mounted in [V-src: `exec-invoke.c` `setup_exec_directory`
+  joins the host prefix]. That is a decoy-disk write with the service's name.
+  `EnvironmentFile=` and the PAM stack are read on the host before the namespace
+  exists.
+- Portable services (`portablectl attach --runtime`, directory images) are the
+  upstream form of "units from another root", but they keep state on the host by
+  design and add `PORTABLE=` journal fields [V-src: `portable.c`].
+- Bus-name owners (NetworkManager, accounts-daemon, …), logind, udev and
+  journald cannot run a second time on the host bus (risk 2).
+- logind in nspawn has no graphical seat (systemd #35114, #36673).
+
+**Mitigation.** NAILS generates **runtime unit files** (not transient units) in
+`/run/systemd/system` from the hidden toplevel's units, adds the hidden-root
+properties (or the risk-5 fd mechanism), and rewrites `StateDirectory=` and
+friends into directories that already exist in the hidden root. Units that own
+a bus name or need a real init are dropped, or run in an nspawn container with
+its own bus (headless only). A hybrid "nspawn for headless services plus the
+dual-root desktop" is viable but gives the hidden session two system buses.
+
+**VM probe.** R6: a hidden unit with `StateDirectory=`/`LogsDirectory=` (finding:
+where the directories appear), and the rewritten variant (asserted: nothing on
+the host, data in the upper). [V-spike pending]
+
+### 7. Other risks
+
+- **Audio: mitigable.** uaccess ACLs follow the active session; PipeWire 1.6.2
+  watches `/dev/snd` with inotify and drops or re-adds cards as access changes
+  [V-src: `alsa-udev.c`]. WirePlumber's device reservation is per user. After
+  emergency the decoy's PipeWire re-adds the card once the hidden one's fds are
+  closed. Breaks if either user is in the `audio` group (Debian installers used
+  to add the first user); check it. Bluetooth audio needs real hardware.
+- **Input: solved** for logind-managed displays (`EVIOCREVOKE` on leave); grabs die
+  with the fd. New risk: Ctrl+Alt+F*n* from the decoy into an unlocked hidden
+  desktop; lock the hidden session on deactivation or treat an unexpected
+  deactivation as a trigger.
+- **GPU held at SIGKILL: solved** normally (DRM scheduler discards queued jobs for
+  a SIGKILLed task; master released at close). D-state on NVIDIA (pinned memory,
+  nvkms deadlocks) **needs real hardware**; emergency must time out and report
+  stuck tasks.
+- **systemd-homed: solved** if the hidden record is a plain `/run/userdb` record
+  (homed never writes it) and its uid avoids 60001–60513. A homed decoy with
+  lock-on-suspend shows its lock screen after resume. The spike uses uid 60777
+  (unused range 60706–61183, outside SDDM's default 1000–60000).
+- **DM user lists: mitigable.** accounts-daemon lists only `/etc/passwd` users,
+  but gnome-shell's user manager adds every user with a seat session (in memory)
+  and GDM would show it; SDDM enumerates NSS, so userdb users within its uid
+  range. Use a uid above 60000 in the unused range, a login shell missing from the
+  host `/etc/shells` (accountsservice then treats the user as a system account),
+  and a locked password.
+- **AppArmor: same attachment** (paths are namespace-relative, the hidden root
+  mirrors the host). **Snaps: blocker** inside the hidden root: snap-confine joins
+  preserved namespaces under `/run/snapd/ns` built from the host root, and the
+  overlay of `/` has no `/snap` loop mounts. Exclude snaps; use debs or user
+  Flatpaks. SELinux: untested.
+- **Secure Boot / lockdown: orthogonal** (no lockdown reason covers overlayfs,
+  namespaces, `cgroup.kill` or VT ioctls; it blocks hibernation, which helps).
+- **seatd vs logind: solved.** libseat's logind backend finds the session from
+  `XDG_SESSION_ID`; sway/labwc work; GNOME and Plasma need the user@ drop-in
+  because they start as user units.
+- **Shared `/dev/shm`, SysV IPC, abstract sockets, `/run/utmp`:** RAM only, but
+  visible to the decoy while the session runs and left behind after `cgroup.kill`
+  (no DEAD_PROCESS utmp record). Teardown sweeps them; the hidden X server uses an
+  explicit display number and `-nolisten local`. R7a probes `/dev/shm`, abstract
+  sockets and the `/dev/dri` ACLs during and after the session.
+- **Observer during the session** sees the extra session and processes; accepted,
+  emergency removes them. **The panic trigger** must not depend on the hidden
+  session being healthy (host-side evdev watcher without a grab) [I].
+
+### Hardware test matrix (what the VM cannot answer)
+
+1. GPUs: NVIDIA proprietary and open at 570, 580 (incl. 580.95.05, 580.126.09),
+   595, ≥ 610.57.04 and 615 with `modeset`/`fbdev` 0/1; amdgpu (RDNA2/3), i915
+   (Gen9/12), xe, nouveau. Kernels 6.12, 6.18 and 7.x.
+2. Decoys: GNOME Wayland, Plasma 6 Wayland, sway, an X11 desktop with a GLX
+   compositor and without one.
+3. Hidden display: rootful Xorg vs logind-managed Xorg, mutter, KWin, sway.
+4. Emergency variants: the bounded sequence above vs plain `chvt` vs
+   `loginctl activate`; hidden server idle, under GPU load, mid-flip, and
+   wedged.
+5. Displays: eDP, HDMI, DP, MST dock, two monitors, VRR and HDR on/off, monitor
+   in DPMS standby.
+6. Duration: 1 min, 1 h, 8 h before emergency; record lock screen, blank and
+   stale clock.
+7. Measure time to a visible decoy, any visible hidden frame or console flash,
+   the DRM master owner, and journal errors (`drmSetMaster failed`, flip
+   timeouts, Xid, hung tasks). 50 cycles per cell.
+8. Radios: Bluetooth pairing and Wi-Fi from the hidden session with the D-Bus
+   deny and the polkit rule; diff the decoy state directories.
+
+### What this changes in the design
+
+- The emergency path is the bounded sequence in risk 1, not "chvt, then kill".
+- D+ step 1 becomes `NoNewPrivileges=` plus `PrivatePIDs=` where systemd allows
+  it; the user manager cannot have a PID namespace.
+- D+ step 3 is replaced: no hidden copies of bus-name daemons; instead the
+  polkit rule, a D-Bus uid deny and blocked CUPS, optionally the filtering proxy.
+- The mount-namespace mitigation is the pinned namespace plus
+  `systemd-run --root-directory=` (259), not the private tmpfs.
+- Hidden NixOS services need unit rewriting (`StateDirectory=` etc.).
+- The hidden user gets a uid in 60706–61183, a shell outside `/etc/shells`, a
+  locked password, no `wheel`, `LimitCORE=1`, no swap, no hibernation.
+- Ubuntu: no snaps inside the hidden root.
 
 ## What the spike does and does not show
 
@@ -463,8 +881,10 @@ lastlog2 went, the `(sd-pam)` helper's root, other mount namespaces holding a
 copy of the hidden root, and the decoy's sector-write counters.
 
 It does not show: real GPUs (QEMU's virtual display only), NVIDIA, Wayland
-compositors under logind, GNOME/KDE, the shared-daemon audit, a private `/run`,
-the PID namespace, or a hidden NixOS toplevel. In the spike the logind session
+compositors under logind, GNOME/KDE, a private `/run`, or a hidden NixOS
+toplevel. The shared-daemon audit, the PID namespace, the screen after a killed
+hidden display server, idle inhibitors and the mount-namespace alternatives are
+in the second spike (risk assessment). In the spike the logind session
 (tty9) and the display (VT 8) are on different VTs, to keep the spike to a
 rootful X server; a product would start a logind-managed compositor from the
 session on the same VT.
@@ -501,3 +921,50 @@ session on the same VT.
   `services/x11/display-managers/lightdm.nix` (xserver wrapper),
   `system/boot/systemd.nix` (nss-systemd in `nsswitch.conf`)
 - xdg-dbus-proxy (filtering D-Bus proxy): https://github.com/flatpak/xdg-dbus-proxy
+
+Risk assessment (2026-10-07):
+
+- Kernel VT switch and release handshake, lost switches:
+  https://github.com/torvalds/linux/blob/v6.18/drivers/tty/vt/vt_ioctl.c ;
+  DRM master release and framebuffer removal:
+  https://github.com/torvalds/linux/blob/v6.18/drivers/gpu/drm/drm_auth.c ,
+  https://github.com/torvalds/linux/blob/v6.18/drivers/gpu/drm/drm_framebuffer.c
+- kbd `chvt` retries: https://github.com/legionus/kbd/blob/v2.9.0/src/chvt.c ;
+  logind VT handling and paused devices:
+  https://github.com/systemd/systemd/blob/v259/src/login/logind-session.c ,
+  https://github.com/systemd/systemd/blob/v259/src/login/logind-session-device.c
+- NVIDIA VT-return and close-path reports:
+  https://github.com/NVIDIA/open-gpu-kernel-modules/issues/957 ,
+  https://github.com/NVIDIA/open-gpu-kernel-modules/issues/1371 ,
+  https://forums.developer.nvidia.com/t/vt-switch-results-in-black-screen-cursor-on-xorg-with-certain-compositors-545/328357 ,
+  https://forums.developer.nvidia.com/t/nvkms-close-deadlock-on-semaphore-held-by-xorg-parked-in-nvkms-yield-580-126-09-rtx-3050-6-17-kernel/367587 ,
+  https://forums.developer.nvidia.com/t/nvidia-drm-fbdev-0-with-kernel-7-x-causes-vt-black-screen/373248
+- polkit rule directories (`/run/polkit-1/rules.d` since 126) and reload:
+  https://github.com/polkit-org/polkit/blob/127/src/polkitbackend/polkitbackendduktapeauthority.c ,
+  https://github.com/polkit-org/polkit/blob/125/src/polkitbackend/polkitbackendduktapeauthority.c ,
+  https://github.com/polkit-org/polkit/blob/127/data/polkit.service.in
+- Daemon policies and writes:
+  https://gitlab.freedesktop.org/accountsservice/accountsservice/-/blob/23.13.9/data/org.freedesktop.accounts.policy.in ,
+  https://gitlab.freedesktop.org/NetworkManager/NetworkManager/-/blob/1.56.0/src/core/settings/nm-settings.c ,
+  https://github.com/systemd/systemd/blob/v259/src/login/org.freedesktop.login1.policy ,
+  https://github.com/bluez/bluez/blob/master/src/bluetooth.conf ,
+  https://github.com/OpenPrinting/cups/blob/v2.4.16/scheduler/subscriptions.c
+- xdg-dbus-proxy credential and fd forwarding:
+  https://github.com/flatpak/xdg-dbus-proxy/blob/0.1.6/flatpak-proxy.c ;
+  logind session lookup from the sender:
+  https://github.com/systemd/systemd/blob/v259/src/login/logind-dbus.c
+- logind idle computation and idle timer:
+  https://github.com/systemd/systemd/blob/v259/src/login/logind-core.c ,
+  https://github.com/systemd/systemd/blob/v259/src/login/logind.c ;
+  KDE does not set the idle hint: https://bugs.kde.org/show_bug.cgi?id=448942
+- `systemd --user` refuses PID 1:
+  https://github.com/systemd/systemd/blob/v259/src/core/main.c ; `PrivatePIDs=`:
+  https://github.com/systemd/systemd/blob/v259/src/core/exec-invoke.c
+- Mount-namespace copies: https://github.com/torvalds/linux/blob/v6.18/fs/namespace.c
+  (`copy_mnt_ns`), https://docs.kernel.org/filesystems/sharedsubtree.html ;
+  `systemd-run --root-directory=`:
+  https://github.com/systemd/systemd/blob/v259/src/run/run.c
+- PipeWire device access: https://github.com/PipeWire/pipewire/blob/1.6.2/spa/plugins/alsa/alsa-udev.c ;
+  snap-confine namespaces:
+  https://github.com/canonical/snapd/blob/master/cmd/snap-confine/README.mount_namespace ;
+  uid ranges: https://systemd.io/UIDS-GIDS/
