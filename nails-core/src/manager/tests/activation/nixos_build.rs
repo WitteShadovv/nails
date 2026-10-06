@@ -43,6 +43,7 @@ fn test_config_fingerprint_field_persistence() {
         last_modified: Utc::now(),
         boot_id: None,
         owner_pid: 0,
+        owner_start_time: None,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
         submount_attachments: Vec::new(),

@@ -317,6 +317,15 @@ pub struct StateFile {
     #[serde(default)]
     pub owner_pid: u32,
 
+    /// Start time of [`owner_pid`](Self::owner_pid), in clock ticks since boot
+    /// (field 22 of `/proc/<pid>/stat`), captured at write time.
+    ///
+    /// A pid alone can be reused; the pid and its start time (within the same
+    /// boot) identify one process, so a teardown signals the recorded owner only
+    /// when both still match.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_start_time: Option<u64>,
+
     /// SHA-256 integrity digest over the rest of the file.
     ///
     /// This detects *corruption* (truncation, partial writes, bit rot), not
@@ -351,6 +360,7 @@ impl Default for StateFile {
             last_modified: Utc::now(),
             boot_id: None,
             owner_pid: 0,
+            owner_start_time: None,
             integrity_sha256: None,
         }
     }
@@ -530,6 +540,7 @@ impl StateFile {
         let mut final_state = self.clone();
         final_state.boot_id = read_boot_id();
         final_state.owner_pid = std::process::id();
+        final_state.owner_start_time = crate::process::proc_start_time(final_state.owner_pid);
 
         // 2. Compute the integrity digest over the state with the digest field
         //    cleared, so the hash is deterministic and self-verifying on load.

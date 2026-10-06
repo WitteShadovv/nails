@@ -247,6 +247,24 @@ pub(super) fn owner_pid_to_signal(
     }
 }
 
+/// Whether a live process is still the activation owner the state recorded.
+///
+/// The pid must carry the recorded start time, and when both boot ids are known
+/// they must be equal (start times count from boot). A state written without a
+/// start time cannot prove the identity, so it never matches.
+pub(super) fn owner_identity_matches(
+    recorded_start: Option<u64>,
+    recorded_boot: Option<&str>,
+    live_start: Option<u64>,
+    live_boot: Option<&str>,
+) -> bool {
+    let same_boot = match (recorded_boot, live_boot) {
+        (Some(recorded), Some(live)) => recorded == live,
+        _ => true,
+    };
+    same_boot && recorded_start.is_some() && recorded_start == live_start
+}
+
 /// How long the batched `systemctl stop --no-block` may take. It only enqueues
 /// jobs, so it returns at once on a healthy manager; the deadline keeps a wedged
 /// manager from delaying the kill and the unmount behind it.
@@ -277,5 +295,54 @@ pub(super) fn enqueue_unit_stops(units: &std::collections::BTreeSet<String>) {
         .deadline(STOP_ENQUEUE_BUDGET);
     if let Err(e) = RealProcessRunner.run(&command) {
         tracing::warn!(error = %e, "Could not enqueue the stop jobs; continuing with the kill");
+    }
+}
+
+#[cfg(test)]
+mod owner_identity_tests {
+    use super::owner_identity_matches;
+
+    #[test]
+    fn only_the_same_process_in_the_same_boot_matches() {
+        assert!(owner_identity_matches(
+            Some(500),
+            Some("b1"),
+            Some(500),
+            Some("b1")
+        ));
+        // A reused pid carries a different start time.
+        assert!(!owner_identity_matches(
+            Some(500),
+            Some("b1"),
+            Some(900),
+            Some("b1")
+        ));
+        // Start times from another boot prove nothing.
+        assert!(!owner_identity_matches(
+            Some(500),
+            Some("b0"),
+            Some(500),
+            Some("b1")
+        ));
+        // A state without a start time cannot prove the identity.
+        assert!(!owner_identity_matches(
+            None,
+            Some("b1"),
+            Some(500),
+            Some("b1")
+        ));
+        assert!(!owner_identity_matches(Some(500), None, None, None));
+    }
+
+    #[test]
+    fn the_running_test_process_matches_itself() {
+        let pid = std::process::id();
+        let start = crate::process::proc_start_time(pid);
+        assert!(owner_identity_matches(
+            start,
+            None,
+            crate::process::proc_start_time(pid),
+            None
+        ));
     }
 }

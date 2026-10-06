@@ -161,6 +161,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
         last_modified: chrono::Utc::now(),
         boot_id: None,
         owner_pid: 0,
+        owner_start_time: None,
         nix_store_init_namespace_bound: false,
         read_only_guards: Vec::new(),
         submount_attachments: Vec::new(),

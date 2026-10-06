@@ -377,8 +377,10 @@ impl<F: Filesystem> NailsManager<F> {
 
     /// Emergency/recover only: a still-running activation owner could keep writing
     /// into the overlays while we tear them down, re-dirtying the decoy. Try-lock,
-    /// not a hard gate: SIGTERM a recorded owner pid that is alive and is not us,
-    /// wait up to ~3s for it to exit, then proceed unconditionally. Never fails
+    /// not a hard gate: SIGTERM a recorded owner pid that is alive, is not us, is
+    /// still the process that wrote the state (pid plus start time, same boot) and
+    /// is outside the graphical session, wait briefly for it to exit, then proceed
+    /// unconditionally. Never fails
     /// closed — a ptraced or uninterruptible owner must not block the panic
     /// button. Best-effort and a no-op in test/test-like runtimes.
     fn signal_owner_pid_before_teardown(&self, kind: ManagerDeactivationKind) {
@@ -387,14 +389,39 @@ impl<F: Filesystem> NailsManager<F> {
         }
         // Read the recorded owner fresh; a corrupt/unreadable state file simply
         // means no owner to signal, and the teardown continues.
-        let owner_pid = match crate::StateFile::load(&self.state_file_path) {
-            Ok(state_file) => state_file.owner_pid,
-            Err(_) => return,
+        let Ok(state_file) = crate::StateFile::load(&self.state_file_path) else {
+            return;
         };
-        let Some(pid) = owner_pid_to_signal(kind, owner_pid, std::process::id()) else {
+        let Some(pid) = owner_pid_to_signal(kind, state_file.owner_pid, std::process::id()) else {
             return;
         };
         if !crate::manager::state_management::pid_is_alive(pid) {
+            return;
+        }
+        // A pid alone may have been reused: signal only the very process that
+        // wrote the state, identified by its start time within the same boot.
+        if !process_teardown::owner_identity_matches(
+            state_file.owner_start_time,
+            state_file.boot_id.as_deref(),
+            crate::process::proc_start_time(pid),
+            crate::state::read_boot_id().as_deref(),
+        ) {
+            tracing::info!(
+                pid,
+                "Recorded owner pid now names another process; not signalling it"
+            );
+            return;
+        }
+        // Never signal a process of the operator's graphical session (emergency
+        // never logs the operator out), whatever the state file claims.
+        let session_guard = session_guard::GraphicalSessionGuard::detect(
+            &session_guard::BoundedLoginctl::new(session_guard::SESSION_DETECTION_BUDGET),
+        );
+        if read_proc_cgroup(pid).is_some_and(|cgroup| session_guard.covers(&cgroup)) {
+            tracing::info!(
+                pid,
+                "Recorded owner belongs to the graphical session; not signalling it"
+            );
             return;
         }
         // PID reuse can make a stale recorded owner collide with a process in this
