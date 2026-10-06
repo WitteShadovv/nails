@@ -190,6 +190,11 @@ in
 
     HIDDEN_PROPS = [
         f"RootDirectory={ROOT}",
+        # Units get systemd's default PATH (/usr/bin, ...), which has nothing
+        # on NixOS: run fa0cc40/1c79925 failed on `sync: command not found`,
+        # and probes that print "blocked" on any failure reported a missing
+        # `cat` as blocked. Set the NixOS PATH explicitly.
+        "Environment=PATH=/run/wrappers/bin:/run/current-system/sw/bin",
         "MountAPIVFS=yes",
         "BindPaths=/run",
         "BindReadOnlyPaths=${builtins.storeDir}",
@@ -565,7 +570,7 @@ in
         n = display_round[0]
         machine.succeed(f"rm -f {ROOT}/tmp/.X11-unix/X1 {ROOT}/tmp/.X1-lock")
         rc, out = hidden_run(f"aux-display-{n}", f"{SW}/aux-display {HIDDEN_VT}")
-        assert rc == 0, out
+        assert rc == 0, f"hidden unit failed: rc={rc} out={out!r}"
         machine.wait_until_succeeds(f"test -S {ROOT}/tmp/.X11-unix/X1", timeout=60)
         machine.wait_until_succeeds(f"test \"$(cat /sys/class/tty/tty0/active)\" = tty{HIDDEN_VT}", timeout=30)
         hidden_run(
@@ -757,22 +762,44 @@ in
         # Deliberate bypasses, for the record (the threat model does not
         # cover malicious hidden code).
         out = in_session(
-            f"ls -d /proc/{proxy_pid}/root/run/dbus/system_bus_socket && echo REACH-BUS || echo NO-BUS\n"
-            f"cat /proc/{proxy_pid}/root{DECOY_ONLY}/marker 2>/dev/null || echo NO-DECOY\n"
+            f"ls -d /proc/{proxy_pid}/root/run/dbus/system_bus_socket 2>&1; echo rc=$?\n"
+            f"cat /proc/{proxy_pid}/root{DECOY_ONLY}/marker 2>&1; echo rc=$?\n"
         )
         finding(f"R2-C/R4: a hidden-uid process on the host root (the proxy) is a door for the hidden user:\n{out.strip()}")
 
     # ==================================================================
     # R4: /proc/1/root.
     # ==================================================================
+    def reach(out):
+        """Classify a /proc/<pid>/root probe. Every probe prints the command's
+        stderr and exit code, so a missing tool can no longer pass as
+        "blocked" (it did in run 1c79925, where units had no PATH)."""
+        if DECOY_MARK in out:
+            return "reached"
+        if "no new privileges" in out:
+            return "nnp-refused"
+        if "Permission denied" in out:
+            return "denied"
+        if "No such file or directory" in out:
+            return "absent"
+        return "error"
+
+
+    def cat_probe(path):
+        return f"cat {path} 2>&1; echo rc=$?"
+
+
     with subtest("R4: /proc/1/root from the hidden root"):
-        probe = f"/bin/sh -c 'cat /proc/1/root{DECOY_ONLY}/marker 2>/dev/null || echo blocked'"
-        out = in_session(f"cat /proc/1/root{DECOY_ONLY}/marker 2>/dev/null || echo blocked\n")
-        finding(f"R4: hidden user in its session: {out.strip()}")
+        target = f"/proc/1/root{DECOY_ONLY}/marker"
+        probe = f"/bin/sh -c {shlex.quote(cat_probe(target))}"
+        out = in_session(cat_probe(target) + "\n")
+        finding(f"R4: hidden user in its session: {reach(out)} ({out.strip()})")
         sdpam = machine.succeed(f"pgrep -u {UID} -x '(sd-pam)' || true").split()
         if sdpam:
-            out = in_session(f"cat /proc/{sdpam[0]}/root{DECOY_ONLY}/marker 2>/dev/null || echo blocked\n")
-            finding(f"R4: hidden user via the (sd-pam) helper's /proc/<pid>/root (host-rooted, same uid): {out.strip()}")
+            out = in_session(cat_probe(f"/proc/{sdpam[0]}/root{DECOY_ONLY}/marker") + "\n")
+            finding(f"R4: hidden user via (sd-pam)'s /proc/<pid>/root: {reach(out)} ({out.strip()})")
+        else:
+            finding("R4: no (sd-pam) helper for the hidden uid (user@ runs without PAM)")
         # A hidden sudoer: sudoers inside the hidden root only (upper).
         sudoers = machine.succeed(f"cat {ROOT}/etc/sudoers")
         machine.succeed(
@@ -782,28 +809,28 @@ in
             f"chmod 0440 {ROOT}/etc/sudoers",
         )
         machine.fail(f"grep -q '^{USER} ' /etc/sudoers")
-        sudo_probe = (
-            f"/bin/sh -c '/run/wrappers/bin/sudo -n cat /proc/1/root{DECOY_ONLY}/marker 2>&1 || echo blocked'"
-        )
+        sudo_probe = f"/bin/sh -c {shlex.quote('/run/wrappers/bin/sudo -n ' + cat_probe(target))}"
         _, out = hidden_run("aux-r4-sudo", sudo_probe, extra=[f"User={UID}", f"Group={UID}"], wait=True)
-        finding(f"R4: hidden sudoer without NoNewPrivileges: {out.strip()}")
+        finding(f"R4: hidden sudoer without NoNewPrivileges: {reach(out)} ({out.strip()})")
         _, out = hidden_run(
             "aux-r4-sudo-nnp", sudo_probe, extra=[f"User={UID}", f"Group={UID}", "NoNewPrivileges=yes"], wait=True
         )
-        finding(f"R4: hidden sudoer with NoNewPrivileges=yes: {out.strip()}")
-        assert DECOY_MARK not in out, "NoNewPrivileges= must stop the hidden sudoer"
+        finding(f"R4: hidden sudoer with NoNewPrivileges=yes: {reach(out)} ({out.strip()})")
+        assert reach(out) == "nnp-refused", f"NoNewPrivileges= must stop the hidden sudoer: {out!r}"
         _, out = hidden_run("aux-r4-root", probe, wait=True)
-        finding(f"R4: hidden root, no mitigation: {out.strip()}")
+        finding(f"R4: hidden root, no mitigation: {reach(out)} ({out.strip()})")
         _, out = hidden_run("aux-r4-hidepid", probe, extra=["ProtectProc=invisible"], wait=True)
-        finding(f"R4: hidden root with ProtectProc=invisible: {out.strip()}")
+        finding(f"R4: hidden root with ProtectProc=invisible: {reach(out)} ({out.strip()})")
         _, out = hidden_run("aux-r4-pidns", probe, extra=["PrivatePIDs=yes"], wait=True)
-        finding(f"R4: hidden root with PrivatePIDs=yes: {out.strip()}")
-        assert DECOY_MARK not in out, "PrivatePIDs= must hide the decoy's PID 1"
+        finding(f"R4: hidden root with PrivatePIDs=yes: {reach(out)} ({out.strip()})")
+        assert reach(out) in ("absent", "denied"), f"PrivatePIDs= must hide the decoy's PID 1: {out!r}"
         _, out = hidden_run(
-            "aux-r4-pidns-ls", "/bin/sh -c 'ls /proc | grep -c \"^[0-9]\"; readlink /proc/1/exe'",
-            extra=["PrivatePIDs=yes"], wait=True,
+            "aux-r4-pidns-ls",
+            "/bin/sh -c 'ls /proc | grep -c \"^[0-9]\"; readlink /proc/1/exe; cat /proc/1/comm'",
+            extra=["PrivatePIDs=yes"],
+            wait=True,
         )
-        finding(f"R4: with PrivatePIDs=yes the hidden unit sees this many PIDs / PID 1 is: {out.split()}")
+        finding(f"R4: with PrivatePIDs=yes the hidden unit sees this many PIDs / PID 1 exe / comm: {out.split()}")
         # user@.service cannot take PrivatePIDs=: systemd refuses "--user mode
         # as PID 1" (v259 src/core/main.c). The session leader can: a second
         # hidden login session whose unit has its own PID namespace.
@@ -848,7 +875,7 @@ in
 
 
     def cursor():
-        return machine.succeed("journalctl -n 0 --show-cursor --no-pager | sed -n 's/^-- cursor: //p'").strip()
+        return machine.succeed("journalctl -n 1 -q --show-cursor --no-pager -o cat | sed -n 's/^-- cursor: //p'; true").strip()
 
 
     with subtest("R3: IdleAction=suspend against an inhibitor"):
@@ -856,7 +883,7 @@ in
             "busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager IdleAction; "
             "busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager IdleActionUSec"
         ).replace("\n", " "))
-        boot_suspends = machine.succeed("cat /run/suspend-probe 2>/dev/null | wc -l").strip()
+        boot_suspends = machine.succeed("wc -l < /run/suspend-probe 2>/dev/null || echo 0").strip()
         finding(f"R3: stubbed suspends before the test (the idle period during boot counts): {boot_suspends}")
         machine.succeed("rm -f /run/suspend-probe")
         # An idle decoy desktop: GNOME and KDE set the session idle hint when
@@ -902,7 +929,7 @@ in
             "org.freedesktop.login1.Session SetIdleHint b false"
         )
         finding("R3: stubbed suspends during the inhibitor phase: "
-                + machine.succeed("cat /run/suspend-probe 2>/dev/null | wc -l").strip())
+                + machine.succeed("wc -l < /run/suspend-probe 2>/dev/null || echo 0").strip())
 
     # ==================================================================
     # R6: a hidden system service as a host unit.
@@ -922,7 +949,7 @@ in
         rc, out = hidden_run(
             "auxsvc2", "/bin/sh -c 'echo s > /var/lib/auxsvc2/s; echo l > /var/log/auxsvc2/l'", wait=True
         )
-        assert rc == 0, out
+        assert rc == 0, f"hidden unit failed: rc={rc} out={out!r}"
         machine.fail("test -e /var/lib/auxsvc2 || test -e /var/log/auxsvc2")
         machine.succeed(f"test -e {UPPER}/var/lib/auxsvc2/s")
 
@@ -946,7 +973,7 @@ in
         machine.succeed("nsenter --mount=/run/aux-ns/mnt findmnt /run/aux-ns/root")
         machine.fail("findmnt /run/aux-ns/root")
         rc, out = machine.execute(
-            "systemd-run --wait --pipe --quiet --collect --unit=aux-ns-run "
+            "systemd-run --wait --pipe --quiet --collect --unit=aux-ns-run -E PATH=/run/current-system/sw/bin "
             "nsenter --mount=/run/aux-ns/mnt --root=/run/aux-ns/root /bin/sh -c 'readlink /proc/self/root; "
             "echo x > /etc/aux-ns-probe && echo wrote'"
         )
@@ -957,7 +984,7 @@ in
         # (RootDirectoryFileDescriptor=), so a unit keeps systemd's own
         # sandboxing while the overlay never exists in the host tree.
         rc, out = machine.execute(
-            "nsenter --mount=/run/aux-ns/mnt systemd-run --wait --pipe --quiet --collect "
+            "nsenter --mount=/run/aux-ns/mnt systemd-run --wait --pipe --quiet --collect -E PATH=/run/current-system/sw/bin "
             "--unit=aux-ns-fd --root-directory=/run/aux-ns/root -p MountAPIVFS=yes "
             "-p BindReadOnlyPaths=${builtins.storeDir} "
             "/bin/sh -c 'echo y > /etc/aux-ns-fd-probe && echo wrote; cat /proc/self/mountinfo | head -n 1'"

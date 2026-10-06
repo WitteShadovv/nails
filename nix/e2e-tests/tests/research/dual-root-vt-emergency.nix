@@ -178,6 +178,11 @@ in
     # bound read-only; on a real install it is part of the root overlay.
     HIDDEN_PROPS = [
         f"RootDirectory={ROOT}",
+        # Units get systemd's default PATH (/usr/bin, ...), which has nothing
+        # on NixOS: run fa0cc40/1c79925 failed on `sync: command not found`,
+        # and probes that print "blocked" on any failure reported a missing
+        # `cat` as blocked. Set the NixOS PATH explicitly.
+        "Environment=PATH=/run/wrappers/bin:/run/current-system/sw/bin",
         "MountAPIVFS=yes",
         "BindPaths=/run",
         "BindReadOnlyPaths=${builtins.storeDir}",
@@ -404,7 +409,7 @@ in
 
     with subtest("hidden display server on its own VT, decoy stays logged in"):
         rc, out = hidden_run("aux-display", f"/run/current-system/sw/bin/aux-display {HIDDEN_VT}")
-        assert rc == 0, out
+        assert rc == 0, f"hidden unit failed: rc={rc} out={out!r}"
         machine.wait_until_succeeds(f"test -S {ROOT}/tmp/.X11-unix/X1", timeout=60)
         machine.wait_until_succeeds(
             f"test \"$(cat /sys/class/tty/tty0/active)\" = tty{HIDDEN_VT}", timeout=30
@@ -416,8 +421,9 @@ in
         assert in_hidden_root(x_hidden), f"hidden X root: {root_of(x_hidden)}"
         # logind follows the VT: the decoy session is still there, inactive.
         assert session_prop(decoy_sid, "State") in ("online", "active"), session_prop(decoy_sid, "State")
-        assert session_prop(decoy_sid, "Active") == "no"
-        assert decoy_x_pids() == x_before
+        active = session_prop(decoy_sid, "Active")
+        assert active == "no", f"decoy session Active={active!r} while the hidden VT is in front"
+        assert decoy_x_pids() == x_before, f"decoy X changed: {x_before} -> {decoy_x_pids()}"
 
     with subtest("hidden logind session from inside the hidden root"):
         user_token = token("user-home")
@@ -466,7 +472,7 @@ in
                 for p in ("Seat", "VTNr", "TTY", "Class", "Type", "Service", "Leader")
             }
             finding(f"hidden logind session {logind_session}: {props}")
-            assert props["Seat"] == "seat0", props
+            assert props["Seat"] == "seat0", f"hidden session not on seat0: {props}"
             assert in_hidden_root(props["Leader"]), f"session leader root: {root_of(props['Leader'])}"
 
         machine.wait_until_succeeds(f"pgrep -u {UID} -x icewm", timeout=60)
@@ -509,7 +515,7 @@ in
             f"/bin/sh -c 'echo {root_token} > /etc/aux-canary && sync'",
             wait=True,
         )
-        assert rc == 0, out
+        assert rc == 0, f"hidden unit failed: rc={rc} out={out!r}"
         machine.succeed(f"grep -q {root_token} {UPPER}/etc/aux-canary")
         machine.succeed(f"grep -q {user_token} {UPPER}/home/{USER}/canary")
         machine.succeed(f"grep -q {var_token} {UPPER}/var/tmp/aux-canary")
@@ -560,19 +566,20 @@ in
         )
         machine.screenshot("decoy-after")
 
-        assert timings["vt"] == f"tty{decoy_vt}", timings
-        assert int(timings["active_ms"]) < 5000, timings
-        assert int(timings["dead_ms"]) < 5000, timings
+        assert timings["vt"] == f"tty{decoy_vt}", f"emergency ended on {timings['vt']}, decoy is tty{decoy_vt}: {timings}"
+        assert int(timings["active_ms"]) < 5000, f"decoy VT not active within 5 s: {timings}"
+        assert int(timings["dead_ms"]) < 5000, f"hidden tree not dead within 5 s: {timings}"
 
         # The decoy desktop is the very same session: same X server, same
         # display manager, same logind session and leader, active again.
-        assert active_vt() == f"tty{decoy_vt}"
+        assert active_vt() == f"tty{decoy_vt}", f"active VT {active_vt()}, decoy is tty{decoy_vt}"
         assert decoy_x_pids() == x_before, f"decoy X changed: {x_before} -> {decoy_x_pids()}"
-        assert unit_prop("display-manager.service", "MainPID") == dm_pid_before
-        assert (
-            unit_prop("display-manager.service", "ActiveEnterTimestampMonotonic") == dm_enter_before
-        )
-        assert session_prop(decoy_sid, "Leader") == decoy_leader_before
+        dm_pid_after = unit_prop("display-manager.service", "MainPID")
+        assert dm_pid_after == dm_pid_before, f"display manager PID {dm_pid_before} -> {dm_pid_after}"
+        dm_enter_after = unit_prop("display-manager.service", "ActiveEnterTimestampMonotonic")
+        assert dm_enter_after == dm_enter_before, f"display manager restarted: {dm_enter_before} -> {dm_enter_after}"
+        leader_after = session_prop(decoy_sid, "Leader")
+        assert leader_after == decoy_leader_before, f"decoy session leader {decoy_leader_before} -> {leader_after}"
         machine.wait_until_succeeds(
             f"test \"$(loginctl show-session {decoy_sid} -p Active --value)\" = yes", timeout=10
         )
