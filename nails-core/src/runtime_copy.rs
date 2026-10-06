@@ -229,6 +229,8 @@ pub fn start_watch_unit() {
         .arg(WATCH_UNIT_NAME)
         .arg("--collect")
         .arg("--quiet")
+        // A crash of the watcher must not dump core onto the decoy.
+        .arg("--property=LimitCORE=0")
         .arg(&binary)
         .arg("watch");
 

@@ -180,6 +180,8 @@ pub fn start_sleep_guard_unit() {
         .arg(SLEEP_GUARD_UNIT_NAME)
         .arg("--collect")
         .arg("--quiet")
+        // A crash of the guard must not dump core onto the decoy.
+        .arg("--property=LimitCORE=0")
         .arg(&binary)
         .arg("sleep-guard");
 

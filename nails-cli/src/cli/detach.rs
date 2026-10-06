@@ -332,7 +332,9 @@ pub fn maybe_detach_for_session_kill(
         // unit would stop the whole transient service and abandon the activation
         // mid-flight. `continue` keeps the unit — and the nails worker driving the
         // rollback — alive so the kill is survivable.
-        .arg("--property=OOMPolicy=continue");
+        .arg("--property=OOMPolicy=continue")
+        // A crash before /var is overlaid must not dump core onto the decoy.
+        .arg("--property=LimitCORE=0");
 
     // Set environment variables for the service
     cmd.arg(format!("--setenv={}=1", ENV_DETACHED));
@@ -419,6 +421,8 @@ pub fn maybe_detach_for_deactivation(env: &RuntimeEnv) -> Result<(), NailsError>
         // Survive an OOM kill of a child so a teardown unit is never abandoned
         // half-done; see the activation path above for the rationale.
         .arg("--property=OOMPolicy=continue")
+        // A crash must not dump core onto the decoy.
+        .arg("--property=LimitCORE=0")
         .arg("--working-directory=/")
         .arg(format!("--setenv={}=1", ENV_DETACHED))
         .arg("--setenv=XDG_SESSION_ID=")
@@ -479,6 +483,7 @@ pub fn run_detached_close_command(env: &RuntimeEnv, argv: &[String]) -> Result<(
         // backend, so the debug journal escape hatch must not reroute it.
         .arg("--property=StandardOutput=null")
         .arg("--property=StandardError=null")
+        .arg("--property=LimitCORE=0")
         .arg("--");
     cmd.args(argv);
 

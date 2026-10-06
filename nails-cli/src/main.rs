@@ -39,6 +39,9 @@ fn command_writes_logs(command: &Commands) -> bool {
 }
 
 fn main() -> std::process::ExitCode {
+    // First, before parsing: no crash from here on may dump core onto the decoy.
+    let core_dump_error = nails::cli::disable_core_dumps();
+
     let cli = Cli::parse_checked();
 
     // Read the environment exactly once. Every handler receives this snapshot,
@@ -73,6 +76,10 @@ fn main() -> std::process::ExitCode {
     // keep source paths and payloads off stderr, so a detached worker's crash
     // never lands in the decoy journal. Installed after the subscriber exists.
     nails::cli::install_panic_hook();
+
+    if let Some(err) = core_dump_error {
+        tracing::debug!(error = %err, "could not fully disable core dumps");
+    }
 
     execute_command(cli, &settings, &runtime_env).to_exit_code()
 }

@@ -517,6 +517,10 @@ fn deactivation_detach_uses_explicit_systemd_run_override() {
         logged_args.contains("--property=OOMPolicy=continue"),
         "the detached deactivation unit must survive a child OOM kill: {logged_args}"
     );
+    assert!(
+        logged_args.contains("--property=LimitCORE=0"),
+        "the detached deactivation unit must not dump core: {logged_args}"
+    );
     assert!(logged_args.contains("--working-directory=/"));
     assert!(logged_args.contains(&format!("--setenv=NAILS_TARGET_UID={}", me.uid)));
     assert!(logged_args.contains(&format!("--setenv=NAILS_TARGET_USER={}", me.name)));
@@ -703,6 +707,10 @@ fn session_detach_uses_neutral_unit_and_discards_output() {
         "the detached activation unit must survive a child OOM kill: {logged_args}"
     );
     assert!(
+        logged_args.contains("--property=LimitCORE=0"),
+        "the detached activation unit must not dump core: {logged_args}"
+    );
+    assert!(
         logged_args.contains("--property=StandardOutput=null"),
         "worker stdout must be discarded by default: {logged_args}"
     );
@@ -818,6 +826,7 @@ fn run_detached_close_command_discards_streams_and_hides_the_command_line() {
         recorded.contains("--property=StandardError=null"),
         "{recorded}"
     );
+    assert!(recorded.contains("--property=LimitCORE=0"), "{recorded}");
     // PID 1 sees only the neutral description, never the close command line.
     assert!(
         recorded.contains(&format!(

@@ -49,6 +49,16 @@ fn lower_oom_score() {
     }
 }
 
+/// Disable core dumps for this process and every child it spawns, best-effort.
+///
+/// `main` calls this before anything else: a crash before `/var` is overlaid
+/// would otherwise dump the process memory onto the decoy disk (a `core` file or
+/// a systemd-coredump entry). Returns the error, if any, so `main` can log it
+/// once the subscriber exists; a failure never stops the command.
+pub fn disable_core_dumps() -> Option<std::io::Error> {
+    nails_core::process::hardening::disable_core_dumps().err()
+}
+
 /// Execute the CLI command - extracted for testability.
 ///
 /// `settings` are the output settings `main` resolved once from the global
