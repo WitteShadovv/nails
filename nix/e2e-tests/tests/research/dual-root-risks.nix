@@ -480,6 +480,25 @@ in
             f"ln -sf {USER}.group /run/userdb/{UID}.group",
         )
         machine.succeed(f"getent passwd {USER} | grep -q ':{UID}:'")
+        # NixOS glibc reaches NSS modules such as nss-systemd only through
+        # nscd, and nscd has no shadow database. So getspnam() of a
+        # /run/userdb-only user fails, and pam_unix's account check in
+        # `login -f` returns PAM_AUTHINFO_UNAVAIL ("Authentication service
+        # cannot retrieve authentication info"); the first runs on the KVM
+        # host stopped there. The hidden root is the hidden system's own
+        # /etc, so the user also gets ordinary passwd/group/shadow entries
+        # there. They land in the upper only; the host keeps resolving the
+        # user from /run/userdb (logind, PID 1, user@.service).
+        _, shadow = machine.execute(f"getent shadow {USER} >/dev/null && echo found || echo missing")
+        finding(f"host getent shadow for the /run/userdb-only user: {shadow.strip()}")
+        machine.succeed(
+            f"echo '{USER}:x:{UID}:{UID}::/home/{USER}:/run/current-system/sw/bin/bash' >> {ROOT}/etc/passwd",
+            f"echo '{USER}:x:{UID}:' >> {ROOT}/etc/group",
+            # Locked password, no aging fields (an empty last-change field
+            # means "no aging", so pam_unix does not demand a new password).
+            f"echo '{USER}:!*:::::::' >> {ROOT}/etc/shadow",
+        )
+        machine.fail(f"grep -q '^{USER}:' /etc/passwd /etc/group /etc/shadow")
         dropin = "\n".join(["[Service]"] + HIDDEN_PROPS) + "\n"
         machine.succeed(
             f"mkdir -p {DROPIN_DIR}",
@@ -599,7 +618,14 @@ in
             f"{LOGIN} -f {USER}",
             extra=[f"TTYPath=/dev/tty{LOGIN_VT}", "StandardInput=tty", "StandardOutput=tty", "TTYReset=yes"],
         )
-        machine.wait_until_succeeds(f"loginctl list-sessions --no-legend | awk '$2 == {UID}' | grep -q .", timeout=60)
+        try:
+            machine.wait_until_succeeds(
+                f"loginctl list-sessions --no-legend | awk '$2 == {UID}' | grep -q .", timeout=60
+            )
+        except Exception:
+            _, status = machine.execute("journalctl -b --no-pager | grep -e ' login\\[' -e ' aux-login' | tail -n 30")
+            finding(f"no logind session from `login -f` inside the hidden root:\n{status}")
+            raise
         hidden_sid = sessions_of(UID)[0]
         machine.succeed(f"chvt {LOGIN_VT}")
         machine.wait_until_succeeds(f"test \"$(loginctl show-session {hidden_sid} -p Active --value)\" = yes", timeout=20)
@@ -779,7 +805,7 @@ in
                 break
             time.sleep(1)
         if second is None:
-            _, status = machine.execute("systemctl status --no-pager aux-login-pidns.service 2>&1 | tail -n 20")
+            _, status = machine.execute("journalctl -b --no-pager | grep -e ' login\\[' -e ' aux-login-pidns' | tail -n 30")
             finding(f"R4b: no logind session from login -f under PrivatePIDs=yes:\n{status}")
         else:
             props = {p: session_prop(second, p) for p in ("Seat", "TTY", "Leader", "Scope")}

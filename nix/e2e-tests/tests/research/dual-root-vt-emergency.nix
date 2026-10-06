@@ -349,6 +349,25 @@ in
             f"ln -sf {USER}.group /run/userdb/{UID}.group",
         )
         machine.succeed(f"getent passwd {USER} | grep -q ':{UID}:'")
+        # NixOS glibc reaches NSS modules such as nss-systemd only through
+        # nscd, and nscd has no shadow database. So getspnam() of a
+        # /run/userdb-only user fails, and pam_unix's account check in
+        # `login -f` returns PAM_AUTHINFO_UNAVAIL ("Authentication service
+        # cannot retrieve authentication info"); the first runs on the KVM
+        # host stopped there. The hidden root is the hidden system's own
+        # /etc, so the user also gets ordinary passwd/group/shadow entries
+        # there. They land in the upper only; the host keeps resolving the
+        # user from /run/userdb (logind, PID 1, user@.service).
+        _, shadow = machine.execute(f"getent shadow {USER} >/dev/null && echo found || echo missing")
+        finding(f"host getent shadow for the /run/userdb-only user: {shadow.strip()}")
+        machine.succeed(
+            f"echo '{USER}:x:{UID}:{UID}::/home/{USER}:/run/current-system/sw/bin/bash' >> {ROOT}/etc/passwd",
+            f"echo '{USER}:x:{UID}:' >> {ROOT}/etc/group",
+            # Locked password, no aging fields (an empty last-change field
+            # means "no aging", so pam_unix does not demand a new password).
+            f"echo '{USER}:!*:::::::' >> {ROOT}/etc/shadow",
+        )
+        machine.fail(f"grep -q '^{USER}:' /etc/passwd /etc/group /etc/shadow")
         machine.fail(f"grep -q '^{USER}:' /etc/passwd")
 
         # user@60123.service is started by the host PID 1 when the hidden
@@ -421,7 +440,9 @@ in
                 break
             time.sleep(1)
         if logind_session is None:
-            _, status = machine.execute("systemctl status --no-pager aux-login.service 2>&1 | tail -n 30")
+            _, status = machine.execute(
+                "journalctl -b --no-pager | grep -e ' login\\[' -e ' aux-login' | tail -n 30"
+            )
             finding(f"no logind session from `login -f` inside the hidden root:\n{status}")
             hidden_run(
                 "aux-client",

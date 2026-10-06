@@ -49,13 +49,23 @@ measured against that baseline.
 The spike is `nix/e2e-tests/tests/research/dual-root-vt-emergency.nix`; build it
 with
 `nix build .#legacyPackages.x86_64-linux.e2e.research-dual-root-vt-emergency -L`.
-At the time of writing it has **not run yet**. It evaluates to a system closure
-with a read-only store, but no Nix daemon or KVM was available.
+Run history on the KVM host:
+
+- 50a9a26: stopped at the first root check. `readlink /proc/<pid>/root` prints
+  `/` to a host reader for a process whose root is the root mount of another
+  mount namespace, which is what `RootDirectory=` sets up; the hidden X socket
+  had in fact appeared only in the upper. The spikes now compare device and
+  inode of `/proc/<pid>/root/` with the overlay root.
+- 6adc66c: the hidden X server is in the hidden root (device/inode check true).
+  Stopped at the hidden logind session: `login -f` failed with "Authentication
+  service cannot retrieve authentication info" (see the hidden-user mechanism
+  below). Fixed in the next commit; not yet re-run.
 
 A second spike, `nix/e2e-tests/tests/research/dual-root-risks.nix`
 (`e2e.research-dual-root-risks`), probes the risks; see
 [Risk assessment](#risk-assessment). It is independent of the first, so the two
-fail separately, and it has not run yet either.
+fail separately. Its 6adc66c run reached the same `login -f` failure after R1
+and R5a; those results are in the risk assessment.
 
 ## The core idea
 
@@ -111,6 +121,15 @@ nss-systemd and libuserdb in-process, without `systemd-userdbd` [V-src:
 `userdb.c` falls back to `dropin_user_record_by_*()`]. It lives in RAM. NixOS
 puts `systemd` in `passwd`/`group` in `nsswitch.conf` by default [V-src];
 Debian/Ubuntu need `libnss-systemd` installed [I: check the default install].
+That is enough for logind, PID 1 and `user@.service`, but **not** for PAM in
+the hidden root: NixOS's glibc reaches NSS modules only through nscd, and nscd
+has no shadow database, so `getspnam()` of a userdb-only user fails and
+pam_unix's account check returns `PAM_AUTHINFO_UNAVAIL` [V-spike 6adc66c:
+"Authentication service cannot retrieve authentication info" from `login -f`].
+The hidden root is the hidden system's own `/etc`, so the hidden user also gets
+ordinary `passwd`/`group`/`shadow` entries there (locked password, no aging);
+they land in the upper only. On distributions whose glibc loads nss-systemd
+directly this is not needed, but it does no harm.
 
 **The hidden user manager in the hidden root.** `user@<uid>.service` is started
 by the host PID 1, so by default it would run on the decoy root, and with it the
@@ -452,18 +471,21 @@ nix build .#legacyPackages.x86_64-linux.e2e.research-dual-root-risks -L
 
 (`nix/e2e-tests/tests/research/dual-root-risks.nix`, tag `research`,
 independent of the first spike). It logs `FINDING:` lines for measurements and
-asserts only the mitigations this section claims work. **It has not run yet.**
-Probe results marked [V-spike] must be filled in from its log.
+asserts only the mitigations this section claims work. Its first run (6adc66c,
+KVM host, QEMU virtual display, decoy on VT 1, hidden X on VT 8) covered setup,
+R5a and R1; it then stopped at the hidden `login -f` session (fixed since,
+see the hidden-user mechanism). Results below marked [V-spike 6adc66c] come from
+that log; [V-spike pending] probes have not run yet.
 
 ### Verdicts
 
 | # | Risk | Verdict |
 | --- | --- | --- |
-| 1 | VT/DRM handover, hidden display server killed | Kernel side **solved** if the emergency path handles two races. Intel/AMD: **mitigable**, needs one hardware pass. NVIDIA: **needs real hardware**; known close-path deadlocks are a **blocker** on affected driver versions. nouveau: **needs real hardware** (no data) |
+| 1 | VT/DRM handover, hidden display server killed | Kernel side **solved** if the emergency path handles two races; the VM returns to the decoy in 0.1–0.4 s in all kill orders. Intel/AMD: **mitigable**, needs one hardware pass. NVIDIA: **needs real hardware**; known close-path deadlocks are a **blocker** on affected driver versions. nouveau: **needs real hardware** (no data) |
 | 2 | Shared system daemons write for the hidden user | **Mitigable** with a runtime polkit rule, a D-Bus uid deny for non-polkit daemons, and blocking CUPS. Timing-only writes (NM timestamps, upower history) **cannot** be stopped per user. Hidden-root copies of daemons on the shared bus are **impossible** |
 | 3 | Idle decoy over hours | **Mitigable**: an idle+sleep inhibitor held by a host unit. Lid close needs a `handle-lid-switch` lock. A lock screen on return is expected and is not a logout |
 | 4 | Root in the hidden root reaches the decoy via `/proc/1/root` | **Mitigable**: `NoNewPrivileges=` everywhere plus a polkit deny; `PrivatePIDs=` for system-style hidden units (and the session leader, if probe R4b confirms logind accepts it). **Blocker** for `PrivatePIDs=` on `user@.service`; not available on systemd 255 |
-| 5 | Mount-namespace copies of the hidden root | **Real leak** with the spike's private tmpfs. **Solved** on systemd 259 with `systemd-run --root-directory=` from a pinned namespace; **mitigable** on 255/257 with an `nsenter` wrapper |
+| 5 | Mount-namespace copies of the hidden root | **Real leak** with the spike's private tmpfs (confirmed in the VM). **Solved** on systemd 259 with `systemd-run --root-directory=` from a pinned namespace; **mitigable** on 255/257 with an `nsenter` wrapper |
 | 6 | Hidden NixOS system services | **Mitigable** for file/network services as runtime units with `RootDirectory=`, after rewriting `StateDirectory=` and friends. Services that own a bus name, logind, udev, journald: **blocker** on the host bus. nspawn for headless services: viable but splits the system bus |
 | 7 | Other: audio, input, GPU, homed, AppArmor/snap, Secure Boot, seatd, DM user lists | Mostly **solved/mitigable**; **snaps on Ubuntu are a blocker** inside the hidden root (exclude them); NVIDIA D-state on kill **needs real hardware** |
 
@@ -538,7 +560,33 @@ share and pixel variance. R1a kills the hidden X while its VT is active and then
 switches; R1b switches then kills (the product order); R1c kills while the
 switch is in flight; R1d times `loginctl activate` against `chvt` (five rounds
 each) to "VT active" and "logind session active". Asserted: the decoy renders
-after each. [V-spike pending]
+after each.
+
+Results [V-spike 6adc66c]:
+
+| Step | Screen (share of decoy blue / hidden red / black) | Time to decoy on screen |
+| --- | --- | --- |
+| Reference, decoy only | 0.931 / 0 / 0.002, stddev 30.6 | — |
+| R1a: hidden X killed on its own VT, before any switch | 0 / 0 / **1.0**, stddev 0 (VT 8 still active) | — |
+| R1a: then `chvt` to the decoy | 0.931 / 0 / 0.002 | 0.13 s (0.26 s total) |
+| R1b: `chvt`, then kill (product order) | 0.931 / 0 / 0.002 | 0.12 s |
+| R1c: kill racing the switch | 0.931 / 0 / 0.002, VT 1 active | 0.20 s |
+
+The black screen after the kill confirms the source reading: the dying client's
+framebuffer is removed and nothing is left on screen, neither the hidden frame
+nor a console. The decoy Xorg repainted with a full modeset on `EnterVT` in every
+case. R1d over five rounds each (milliseconds from the command; first round
+includes cold caches):
+
+| Method | Command returned | Kernel VT active | logind session active | Decoy on screen (host polling) |
+| --- | --- | --- | --- | --- |
+| `chvt` | 74–117 | 97–274 | 130–381 | 0.07–0.25 s |
+| `loginctl activate` | 33–145 | 97–332 | 127–415 | 0.07–0.17 s |
+
+`loginctl activate` returns sooner (it does not wait for the switch) but the
+switch itself takes the same time; neither is faster. The emergency path keeps
+the bounded switch with its own polling. These are virtio-gpu numbers; real
+modesets are slower.
 
 **Real hardware.** Section "Hardware test matrix" below.
 
@@ -757,7 +805,12 @@ the hidden root while they exist.
 activation, with the hidden tree below a private, then an unbindable tmpfs. R5b
 (asserted): an overlay that exists only in a pinned namespace is absent from the
 host and from a decoy service started later; units entering it with `nsenter`
-and with `systemd-run --root-directory=` are logged. [V-spike pending]
+and with `systemd-run --root-directory=` are logged.
+
+Results: R5a [V-spike 6adc66c] **confirms the leak**: a decoy service with
+`PrivateTmp=` started after activation held a copy of the hidden root, both with
+the hidden tree below a private tmpfs and with that tmpfs made unbindable. R5b
+[V-spike pending].
 
 ### 6. Hidden NixOS system services
 
