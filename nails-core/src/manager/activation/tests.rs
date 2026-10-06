@@ -1209,3 +1209,53 @@ fn step_progress_total_follows_the_overlay_only_path() {
     }
     assert_eq!(step.total, 5);
 }
+
+#[test]
+fn activation_without_a_hidden_switch_takes_no_unit_snapshots() {
+    // An overlay-only run has no builder, so the hidden switch cannot run and
+    // nothing could be recorded as hidden-added. The before/after unit snapshots
+    // are pure cost there (enumerating every unit stalled a real activation for
+    // half a minute), so they must not be taken at all.
+    let (mut manager, _fs, _tmp) = rollback_test_manager();
+    assert!(!manager.hidden_switch_configured());
+    let _ = crate::manager::helpers::drain_recorded_service_actions();
+
+    manager.activate(true).expect("activation should succeed");
+
+    let actions = crate::manager::helpers::drain_recorded_service_actions();
+    assert!(
+        !actions.iter().any(|action| action.starts_with("snapshot:")),
+        "no unit snapshot may run without a hidden switch: {actions:?}"
+    );
+}
+
+#[test]
+fn hidden_switch_is_configured_only_with_a_builder_and_a_layer() {
+    let config = Config::test_default();
+    let state_path = PathBuf::from("/mnt/data/state.json");
+
+    // No builder (overlay-only): no switch.
+    let manager = NailsManager::new(MockFilesystem::new(), config.clone(), state_path.clone());
+    assert!(!manager.hidden_switch_configured());
+
+    // A builder and a config layer (no host profile reads as NixOS): a switch.
+    let builder = crate::NixOSBuilder::new(
+        PathBuf::from("/mnt/data/nixos"),
+        PathBuf::from("/nix/var/nix/profiles/nails-system"),
+    );
+    let mut manager = NailsManager::with_nixos(MockFilesystem::new(), config, state_path, builder);
+    assert!(manager.hidden_switch_configured());
+
+    // A builder on a host without a declarative layer (FHS): no switch.
+    manager.set_host_profile(crate::platform::HostProfile {
+        kind: crate::platform::PlatformKind::Fhs,
+        id: Some("debian".to_string()),
+        id_like: vec![],
+        version_id: Some("12".to_string()),
+        is_systemd: true,
+        is_ostree: false,
+        has_current_system: false,
+        unsupported_reason: None,
+    });
+    assert!(!manager.hidden_switch_configured());
+}

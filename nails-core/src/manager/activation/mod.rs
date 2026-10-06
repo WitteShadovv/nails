@@ -693,17 +693,8 @@ impl<F: Filesystem> NailsManager<F> {
         if layer_runs {
             step.emit("profile_switch", "Applying hidden configuration...");
         }
-        // Snapshot the service units around the hidden switch so the set it adds
-        // is known to emergency teardown: every unit the host knew beforehand
-        // (active or not), then the active units afterwards. Only a unit that is
-        // active after the switch and was unknown before counts as hidden-added,
-        // so a base service that merely restarts in the window is not recorded.
-        // Off NixOS (no switch) both snapshots are empty and nothing is recorded.
-        let units_before_switch = crate::manager::helpers::ServiceController::list_known_units();
         let hidden_config =
-            guard.run_post_overlay_nixos_switch(&fast_path_toplevel, &new_fingerprint, verbosity);
-        let units_after_switch = crate::manager::helpers::ServiceController::list_active_units();
-        guard.record_hidden_added_units(&hidden_config, &units_before_switch, &units_after_switch);
+            guard.switch_recording_hidden_units(&fast_path_toplevel, &new_fingerprint, verbosity);
         if let HiddenConfigOutcome::Failed { reason } = &hidden_config
             && guard.config().nixos_switch_required
         {
@@ -1166,6 +1157,42 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// Run the post-overlay hidden NixOS switch, recording the service units it
+    /// added so emergency teardown can stop exactly those.
+    ///
+    /// The units are snapshotted around the switch: every unit the host knew
+    /// beforehand (active or not), then the active units afterwards. Only a unit
+    /// that is active after the switch and was unknown before counts as
+    /// hidden-added, so a base service that merely restarts in the window is not
+    /// recorded. Only an applied switch records anything, so when no switch can run
+    /// at all (overlay-only, or no declarative layer or builder) the snapshots are
+    /// not taken: enumerating every unit costs real time on a slow unit tree and
+    /// could only ever be thrown away.
+    fn switch_recording_hidden_units(
+        &self,
+        fast_path_toplevel: &Option<String>,
+        new_fingerprint: &Option<String>,
+        verbosity: Verbosity,
+    ) -> HiddenConfigOutcome {
+        use crate::manager::helpers::ServiceController;
+
+        let snapshot_units = self.hidden_switch_configured();
+        let before = if snapshot_units {
+            ServiceController::list_known_units()
+        } else {
+            Vec::new()
+        };
+        let hidden_config =
+            self.run_post_overlay_nixos_switch(fast_path_toplevel, new_fingerprint, verbosity);
+        let after = if snapshot_units {
+            ServiceController::list_active_units()
+        } else {
+            Vec::new()
+        };
+        self.record_hidden_added_units(&hidden_config, &before, &after);
+        hidden_config
+    }
+
     /// Re-classify swap and hibernation and, if a device that can leak memory to
     /// persistent storage is active, log loudly and write a critical
     /// notification. `phase` names the point in the flow for the operator.
@@ -1223,9 +1250,15 @@ impl<F: Filesystem> NailsManager<F> {
     /// An overlay-only run (no builder / no layer) or a fast-path reuse writes no
     /// large store delta, so only the base space floor applies to it.
     pub(crate) fn rebuild_expected(&self, fast_path_toplevel: &Option<String>) -> bool {
-        fast_path_toplevel.is_none()
-            && self.nixos_builder.is_some()
-            && self.config_layer().is_some()
+        fast_path_toplevel.is_none() && self.hidden_switch_configured()
+    }
+
+    /// Whether this activation can run the hidden NixOS switch at all: the host
+    /// has a declarative config layer and a builder was wired. Mirrors the
+    /// preconditions of `switch_nixos_profile`, which reports `NotRequested`
+    /// without either (an overlay-only run has no builder).
+    pub(crate) fn hidden_switch_configured(&self) -> bool {
+        self.nixos_builder.is_some() && self.config_layer().is_some()
     }
 
     /// Re-check free space on the hidden volume against the rebuild floor.
