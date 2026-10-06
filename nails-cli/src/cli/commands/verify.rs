@@ -30,6 +30,7 @@ use std::path::Path;
 /// - [`ExitStatus::Failed`] when the verification itself could not run
 pub fn execute(
     settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
     args: &VerifyArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
@@ -76,7 +77,8 @@ pub fn execute(
         }
     };
 
-    let mut verifier = Verifier::with_config(filesystem, config, state, state_file_status);
+    let mut verifier =
+        Verifier::with_config(filesystem, config, state, state_file_status).with_runtime_env(env);
     if args.offline
         && let Some(ref root) = args.root
     {

@@ -16,13 +16,15 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// the activation-in-progress marker, the wall clock and a real sleep.
 struct LoginDispatch<'a> {
     hidden_volume_root: &'a Path,
+    env: &'a nails_core::RuntimeEnv,
     started: std::time::Instant,
 }
 
 impl<'a> LoginDispatch<'a> {
-    fn new(hidden_volume_root: &'a Path) -> Self {
+    fn new(hidden_volume_root: &'a Path, env: &'a nails_core::RuntimeEnv) -> Self {
         Self {
             hidden_volume_root,
+            env,
             started: std::time::Instant::now(),
         }
     }
@@ -30,7 +32,7 @@ impl<'a> LoginDispatch<'a> {
 
 impl nails_core::notification::deliver::DispatchEnv for LoginDispatch<'_> {
     fn dispatch(&mut self) -> nails_core::Result<usize> {
-        nails_core::notification::dispatch_all(self.hidden_volume_root)
+        nails_core::notification::dispatch_all(self.hidden_volume_root, self.env)
     }
 
     fn activation_in_progress(&mut self) -> bool {
@@ -61,17 +63,22 @@ impl nails_core::notification::deliver::DispatchEnv for LoginDispatch<'_> {
 /// # Arguments
 ///
 /// * `settings` - Output settings resolved once from the global flags
+/// * `env` - The environment snapshot `main` read once
 /// * `config_override` - Optional config file path override
-pub fn execute(settings: &OutputSettings, config_override: Option<&Path>) -> ExitStatus {
+pub fn execute(
+    settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
+    config_override: Option<&Path>,
+) -> ExitStatus {
     let json = settings.is_json();
     let config = match super::load_config_or_report(config_override, "notify-dispatch", json) {
         Ok(loaded) => loaded.into_config(),
         Err(status) => return status,
     };
 
-    let mut env = LoginDispatch::new(&config.hidden_volume_root);
+    let mut dispatch = LoginDispatch::new(&config.hidden_volume_root, env);
     match nails_core::notification::deliver::dispatch_until_settled(
-        &mut env,
+        &mut dispatch,
         nails_core::notification::deliver::DISPATCH_POLL_INTERVAL,
         nails_core::notification::deliver::DISPATCH_POLL_CAP,
     ) {
@@ -108,7 +115,6 @@ pub fn execute(settings: &OutputSettings, config_override: Option<&Path>) -> Exi
 mod tests {
     use super::execute;
     use crate::cli::output::{OutputMode, OutputSettings};
-    use nails_core::test_support::EnvGuard;
     use std::path::PathBuf;
 
     const SUBPROCESS_TEST_NAME: &str =
@@ -124,7 +130,6 @@ mod tests {
             command.env("NAILS_NOTIFY_DISPATCH_SUBPROCESS_CONFIG", path);
         }
 
-        let _env = EnvGuard::lock();
         command
             .output()
             .expect("failed to run notify-dispatch subprocess test")
@@ -134,6 +139,16 @@ mod tests {
     fn subprocess_notify_dispatch_entrypoint() {
         let Ok(case) = std::env::var("NAILS_NOTIFY_DISPATCH_SUBPROCESS_CASE") else {
             return;
+        };
+
+        // The child stands in for the CLI entry point: it reads the environment the
+        // parent prepared on the `Command` exactly once and installs it, as `main`
+        // does.
+        let env = nails_core::RuntimeEnv::from_process_env();
+        nails_core::runtime_env::install(env.clone());
+
+        let execute = |settings: &OutputSettings, config: Option<&std::path::Path>| {
+            execute(settings, &env, config)
         };
 
         let config_override =

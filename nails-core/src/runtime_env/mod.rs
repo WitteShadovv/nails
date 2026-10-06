@@ -13,23 +13,36 @@
 //! environment they all share — the order-dependent races this item removes.
 //!
 //! [`RuntimeEnv`] replaces that with one read: `nails-cli` `main` builds it once
-//! with [`RuntimeEnv::from_process_env`], before anything else runs, and passes
-//! it down. Every subsystem reads the value it needs off this struct instead of
-//! the live environment, so a value is read exactly once and is identical
-//! everywhere it is consulted. Tests construct a [`RuntimeEnv`] with the fields
-//! they want set and inject it, instead of mutating the shared process
-//! environment.
+//! with [`RuntimeEnv::from_process_env`], before anything else runs, passes it
+//! down to the command handlers, and installs it as the process-wide snapshot
+//! (see [`install`]) for the few leaf helpers that sit below every handler (the
+//! process runner, the runtime-safety switch). Every subsystem reads the value it
+//! needs off this struct instead of the live environment, so a value is read
+//! exactly once and is identical everywhere it is consulted. Tests construct a
+//! [`RuntimeEnv`] with the fields they want set and inject it, instead of
+//! mutating the shared process environment.
 //!
-//! Only the variables NAILS actually reads are captured. The names are the same
-//! literals the code used before; the detached-worker and child-process paths
-//! (`systemd-run`, `sudo -u`, `notify-send`) still receive exactly the values
-//! they did, now sourced from this snapshot.
+//! The names are the same literals the code used before; the detached-worker and
+//! child-process paths (`systemd-run`, `notify-send`, every spawned tool) still
+//! receive exactly the values they did, now sourced from this snapshot.
+
+mod installed;
+
+#[cfg(any(test, feature = "test-hooks"))]
+mod hooks;
+
+#[cfg(any(test, feature = "test-hooks"))]
+pub use hooks::{SHELL_CLEANUP_PROTECTED_PIDS_ENV, SYSTEMD_RUN_PATH_ENV, TestHooks};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use installed::ScopedRuntimeEnv;
+pub use installed::{current, install};
 
 use crate::constants::{
-    ENV_DISABLE_NOTIFICATIONS, ENV_DISPLAY_MANAGER, ENV_LOGIND_AVAILABLE, ENV_SESSION_ID,
-    ENV_SYSTEM_PROFILE_PATH, ENV_TARGET_UID, ENV_TARGET_USER,
+    ENV_DETACHED, ENV_DISABLE_NOTIFICATIONS, ENV_DISPLAY_MANAGER, ENV_FORCE_DETACH,
+    ENV_LOGIND_AVAILABLE, ENV_SESSION_ID, ENV_SKIP_DETACH, ENV_SYSTEM_PROFILE_PATH, ENV_TARGET_UID,
+    ENV_TARGET_USER,
 };
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
 /// Escalation variable names consulted for target-user resolution. These are the
@@ -40,6 +53,37 @@ const ENV_SUDO_UID: &str = "SUDO_UID";
 const ENV_PKEXEC_UID: &str = "PKEXEC_UID";
 const ENV_DOAS_UID: &str = "DOAS_UID";
 const ENV_DOAS_USER: &str = "DOAS_USER";
+
+/// Routes a detached worker's streams to the journal (debug escape hatch).
+pub const ENV_DETACH_DEBUG_JOURNAL: &str = "NAILS_DETACH_DEBUG_JOURNAL";
+
+/// The full environment captured at startup, as the variables a spawned child
+/// may inherit from.
+///
+/// The process runner forwards only an allowlisted subset of it (locale,
+/// terminal, and keys a command opts in to), exactly as it did when it read the
+/// live environment. Its `Debug` output names only the variable count so a
+/// snapshot never prints values into a log.
+#[derive(Clone, Default, PartialEq, Eq)]
+pub struct InheritedVars(Vec<(OsString, OsString)>);
+
+impl InheritedVars {
+    /// Wrap an explicit list of variables.
+    pub fn new(vars: Vec<(OsString, OsString)>) -> Self {
+        Self(vars)
+    }
+
+    /// Iterate the captured `(key, value)` pairs.
+    pub fn iter(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
+        self.0.iter().map(|(k, v)| (k.as_os_str(), v.as_os_str()))
+    }
+}
+
+impl std::fmt::Debug for InheritedVars {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "InheritedVars({} variables)", self.0.len())
+    }
+}
 
 /// Snapshot of the environment NAILS reads, captured once at startup.
 ///
@@ -87,6 +131,19 @@ pub struct RuntimeEnv {
     /// `SSH_CONNECTION` — present when the session arrived over SSH.
     pub ssh_connection: Option<String>,
 
+    /// `TERM` — terminal type, for output styling.
+    pub term: Option<String>,
+    /// `NO_COLOR` — disables colour output.
+    pub no_color: Option<String>,
+    /// `CLICOLOR_FORCE` — forces colour output.
+    pub clicolor_force: Option<String>,
+    /// `LC_ALL` — locale override.
+    pub lc_all: Option<String>,
+    /// `LC_CTYPE` — character-type locale.
+    pub lc_ctype: Option<String>,
+    /// `LANG` — default locale.
+    pub lang: Option<String>,
+
     /// `NAILS_LOGIND_AVAILABLE` — session-detection override.
     pub nails_logind_available: Option<String>,
     /// `NAILS_SESSION_ID` — session-detection override.
@@ -97,6 +154,23 @@ pub struct RuntimeEnv {
     pub nails_disable_notifications: Option<String>,
     /// `NAILS_SYSTEM_PROFILE_PATH` — overrides the NixOS system profile path.
     pub nails_system_profile_path: Option<OsString>,
+    /// `NAILS_DETACHED` — set inside the re-exec'd detached worker.
+    pub nails_detached: Option<OsString>,
+    /// `NAILS_FORCE_DETACH` — forces the detach handoff.
+    pub nails_force_detach: Option<OsString>,
+    /// `NAILS_SKIP_DETACH` — skips the detach handoff entirely.
+    pub nails_skip_detach: Option<OsString>,
+    /// `NAILS_DETACH_DEBUG_JOURNAL` — routes worker streams to the journal.
+    pub nails_detach_debug_journal: Option<OsString>,
+
+    /// The whole environment, for the allowlisted inheritance of spawned children.
+    pub inherited: InheritedVars,
+
+    /// The test-only override knobs (`NAILS_TEST_*`, fake tool paths). Present
+    /// only in builds that carry the `test-hooks` feature; a shipped binary
+    /// neither reads these variables nor carries their names.
+    #[cfg(any(test, feature = "test-hooks"))]
+    pub test_hooks: TestHooks,
 }
 
 impl RuntimeEnv {
@@ -125,11 +199,27 @@ impl RuntimeEnv {
             ssh_tty: str_var("SSH_TTY"),
             ssh_connection: str_var("SSH_CONNECTION"),
 
+            term: str_var("TERM"),
+            no_color: str_var("NO_COLOR"),
+            clicolor_force: str_var("CLICOLOR_FORCE"),
+            lc_all: str_var("LC_ALL"),
+            lc_ctype: str_var("LC_CTYPE"),
+            lang: str_var("LANG"),
+
             nails_logind_available: str_var(ENV_LOGIND_AVAILABLE),
             nails_session_id: str_var(ENV_SESSION_ID),
             nails_display_manager: str_var(ENV_DISPLAY_MANAGER),
             nails_disable_notifications: str_var(ENV_DISABLE_NOTIFICATIONS),
             nails_system_profile_path: std::env::var_os(ENV_SYSTEM_PROFILE_PATH),
+            nails_detached: std::env::var_os(ENV_DETACHED),
+            nails_force_detach: std::env::var_os(ENV_FORCE_DETACH),
+            nails_skip_detach: std::env::var_os(ENV_SKIP_DETACH),
+            nails_detach_debug_journal: std::env::var_os(ENV_DETACH_DEBUG_JOURNAL),
+
+            inherited: InheritedVars(std::env::vars_os().collect()),
+
+            #[cfg(any(test, feature = "test-hooks"))]
+            test_hooks: TestHooks::from_process_env(),
         }
     }
 
@@ -158,10 +248,26 @@ impl RuntimeEnv {
         value.as_deref()
     }
 
+    /// The NixOS system profile path, honouring `NAILS_SYSTEM_PROFILE_PATH`.
+    #[must_use]
+    pub fn system_profile_path(&self) -> PathBuf {
+        self.nails_system_profile_path
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles/system"))
+    }
+
     /// Set `HOME`.
     #[must_use]
     pub fn with_home(mut self, home: impl Into<PathBuf>) -> Self {
         self.home = Some(home.into());
+        self
+    }
+
+    /// Set `PATH`.
+    #[must_use]
+    pub fn with_path(mut self, path: impl Into<OsString>) -> Self {
+        self.path = Some(path.into());
         self
     }
 
@@ -220,6 +326,28 @@ impl RuntimeEnv {
         self.wayland_display = Some(display.into());
         self
     }
+
+    /// Set `NAILS_SYSTEM_PROFILE_PATH`.
+    #[must_use]
+    pub fn with_system_profile_path(mut self, path: impl Into<OsString>) -> Self {
+        self.nails_system_profile_path = Some(path.into());
+        self
+    }
+
+    /// Replace the variables spawned children inherit from.
+    #[must_use]
+    pub fn with_inherited(mut self, vars: Vec<(OsString, OsString)>) -> Self {
+        self.inherited = InheritedVars(vars);
+        self
+    }
+
+    /// Replace the test-only override knobs.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[must_use]
+    pub fn with_test_hooks(mut self, hooks: TestHooks) -> Self {
+        self.test_hooks = hooks;
+        self
+    }
 }
 
 /// Read a variable as a `String`, discarding non-UTF-8 values (NAILS treats the
@@ -239,6 +367,7 @@ mod tests {
         assert!(env.home.is_none());
         assert!(env.shell.is_none());
         assert!(env.display.is_none());
+        assert_eq!(env.inherited.iter().count(), 0);
     }
 
     #[test]
@@ -268,5 +397,27 @@ mod tests {
         assert_eq!(env.lookup("NAILS_TARGET_USER"), Some("alice"));
         assert_eq!(env.lookup("PKEXEC_UID"), None);
         assert_eq!(env.lookup("HOME"), None);
+    }
+
+    #[test]
+    fn system_profile_path_defaults_and_honours_the_override() {
+        assert_eq!(
+            RuntimeEnv::empty().system_profile_path(),
+            PathBuf::from("/nix/var/nix/profiles/system")
+        );
+        assert_eq!(
+            RuntimeEnv::empty()
+                .with_system_profile_path("/tmp/profiles/system")
+                .system_profile_path(),
+            PathBuf::from("/tmp/profiles/system")
+        );
+    }
+
+    #[test]
+    fn inherited_vars_debug_hides_values() {
+        let env = RuntimeEnv::empty().with_inherited(vec![("SECRET".into(), "value".into())]);
+        let rendered = format!("{:?}", env.inherited);
+        assert!(!rendered.contains("value"));
+        assert!(rendered.contains("1 variables"));
     }
 }

@@ -3,7 +3,7 @@
 
 use super::*;
 use nails_core::constants::{ENV_DETACHED, ENV_FORCE_DETACH, ENV_SKIP_DETACH};
-use nails_core::test_support::EnvGuard;
+use nails_core::runtime_env::ENV_DETACH_DEBUG_JOURNAL as DETACH_DEBUG_JOURNAL_ENV;
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -19,7 +19,6 @@ fn write_executable_script(path: &std::path::Path, body: &str) {
 }
 
 fn locate_shell_path() -> std::path::PathBuf {
-    let _env = EnvGuard::lock();
     std::env::var_os("PATH")
         .and_then(|paths| {
             std::env::split_paths(&paths)
@@ -31,19 +30,31 @@ fn locate_shell_path() -> std::path::PathBuf {
 
 /// Runs this test binary's `subprocess_detach_entrypoint` with `case`.
 ///
-/// The child inherits the environment at spawn time, so the spawn happens under
-/// the environment lock: a variable another test set for itself (for example
-/// `NAILS_UNSAFE_REAL_OPS`) must not leak into the child. Anything the caller
-/// does not set or remove on `command` is inherited unchanged.
+/// The child's environment is set on the `Command` itself (no test mutates the
+/// shared process environment), and the child reads it once into a
+/// [`RuntimeEnv`], as `main` does.
 fn run_entrypoint(case: &str, configure: impl FnOnce(&mut Command)) -> std::process::Output {
     let mut command = Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
         .env("NAILS_DETACH_SUBPROCESS_CASE", case);
     configure(&mut command);
-
-    let _env = EnvGuard::lock();
     command.output().expect("run subprocess")
+}
+
+/// A snapshot that skips the detach handoff, as the test harness always does.
+fn skip_detach_env() -> RuntimeEnv {
+    RuntimeEnv {
+        nails_skip_detach: Some("1".into()),
+        ..RuntimeEnv::empty()
+    }
+}
+
+fn args_of(command: &Command) -> Vec<String> {
+    command
+        .get_args()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect()
 }
 
 /// Assert the recorded `systemd-run` argv names no product unit and carries a
@@ -69,74 +80,68 @@ fn assert_neutral_unit_argv(logged_args: &str) {
 
 #[test]
 fn does_nothing_when_kill_session_false() {
-    let mut env = EnvGuard::lock();
-    env.set(ENV_SKIP_DETACH, "1").set("DISPLAY", ":0");
+    let env = skip_detach_env().with_display(":0");
 
-    let res = maybe_detach_for_session_kill(false, &[OsString::from("nails")], None, false);
+    let res = maybe_detach_for_session_kill(&env, false, &[OsString::from("nails")], None, false);
 
     assert!(res.is_ok());
 }
 
 #[test]
 fn does_nothing_without_graphical_env() {
-    let mut env = EnvGuard::lock();
-    env.set(ENV_SKIP_DETACH, "1")
-        .remove("DISPLAY")
-        .remove("WAYLAND_DISPLAY");
+    let env = skip_detach_env();
 
-    let res = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None, false);
+    let res = maybe_detach_for_session_kill(&env, true, &[OsString::from("nails")], None, false);
 
     assert!(res.is_ok());
 }
 
 #[test]
 fn skips_when_already_detached() {
-    let mut env = EnvGuard::lock();
-    env.set(ENV_SKIP_DETACH, "1")
-        .set("DISPLAY", ":1")
-        .set(ENV_DETACHED, "1");
+    let env = RuntimeEnv {
+        nails_detached: Some("1".into()),
+        ..skip_detach_env().with_display(":1")
+    };
 
-    let res = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None, false);
+    let res = maybe_detach_for_session_kill(&env, true, &[OsString::from("nails")], None, false);
 
     assert!(res.is_ok());
 }
 
 #[test]
 fn deactivation_detach_respects_skip_env() {
-    let mut env = EnvGuard::lock();
-    env.set(ENV_SKIP_DETACH, "1");
-
-    let res = maybe_detach_for_deactivation();
+    let res = maybe_detach_for_deactivation(&skip_detach_env());
 
     assert!(res.is_ok());
 }
 
 #[test]
 fn deactivation_detach_skips_when_already_detached() {
-    let mut env = EnvGuard::lock();
-    env.set(ENV_SKIP_DETACH, "1").set(ENV_DETACHED, "1");
+    let env = RuntimeEnv {
+        nails_detached: Some("1".into()),
+        ..skip_detach_env()
+    };
 
-    let res = maybe_detach_for_deactivation();
+    let res = maybe_detach_for_deactivation(&env);
 
     assert!(res.is_ok());
 }
 
 #[test]
 fn maybe_detach_for_session_kill_skips_when_kill_session_is_false_without_skip_env() {
-    let mut env = EnvGuard::lock();
-    env.remove(ENV_SKIP_DETACH);
-
-    let result = maybe_detach_for_session_kill(false, &[OsString::from("nails")], None, false);
+    let result = maybe_detach_for_session_kill(
+        &RuntimeEnv::empty(),
+        false,
+        &[OsString::from("nails")],
+        None,
+        false,
+    );
 
     assert!(result.is_ok());
 }
 
 #[test]
 fn maybe_detach_for_session_kill_skips_non_graphical_context_without_skip_env() {
-    let mut env = EnvGuard::lock();
-    env.remove(ENV_SKIP_DETACH)
-        .remove(ENV_DETACHED)
-        .remove(ENV_FORCE_DETACH);
     let ctx = SessionContext {
         kind: SessionKind::Tty,
         session_id: None,
@@ -146,15 +151,23 @@ fn maybe_detach_for_session_kill_skips_non_graphical_context_without_skip_env() 
         logind_available: false,
     };
 
-    let result = maybe_detach_for_session_kill(true, &[OsString::from("nails")], Some(&ctx), false);
+    let result = maybe_detach_for_session_kill(
+        &RuntimeEnv::empty(),
+        true,
+        &[OsString::from("nails")],
+        Some(&ctx),
+        false,
+    );
 
     assert!(result.is_ok());
 }
 
 #[test]
 fn maybe_detach_for_session_kill_skips_when_already_detached_without_skip_env() {
-    let mut env = EnvGuard::lock();
-    env.set(ENV_DETACHED, "1").remove(ENV_SKIP_DETACH);
+    let env = RuntimeEnv {
+        nails_detached: Some("1".into()),
+        ..RuntimeEnv::empty()
+    };
     let ctx = SessionContext {
         kind: SessionKind::GraphicalUser,
         session_id: Some("7".into()),
@@ -164,7 +177,8 @@ fn maybe_detach_for_session_kill_skips_when_already_detached_without_skip_env() 
         logind_available: true,
     };
 
-    let result = maybe_detach_for_session_kill(true, &[OsString::from("nails")], Some(&ctx), false);
+    let result =
+        maybe_detach_for_session_kill(&env, true, &[OsString::from("nails")], Some(&ctx), false);
 
     assert!(result.is_ok());
 }
@@ -188,66 +202,49 @@ fn current_test_user() -> TestUser {
     }
 }
 
-/// Remove every variable the target-user resolver consults, so a test starts
-/// from a known-empty escalation context.
-fn clear_identity_env(env: &mut EnvGuard) {
-    env.remove(ENV_TARGET_UID).remove(ENV_TARGET_USER);
-    for key in nails_core::target_user::PRIVILEGE_ENV_VARS {
-        env.remove(key);
-    }
-}
-
 #[test]
 fn set_target_identity_from_environment_forwards_resolved_operator() {
     let me = current_test_user();
-    let mut env = EnvGuard::lock();
     // Drive the shared resolver via NAILS_TARGET_UID pointing at a real passwd
     // entry so the forwarded identity is deterministic across hosts.
-    clear_identity_env(&mut env);
-    env.set(ENV_TARGET_UID, &me.uid);
+    let env = RuntimeEnv::empty().with_target_uid(me.uid.clone());
     let mut command = Command::new("true");
 
-    set_target_identity_from_environment(&mut command);
+    set_target_identity_from_environment(&mut command, &env);
 
-    let args: Vec<_> = command
-        .get_args()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
+    let args = args_of(&command);
     assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_UID, me.uid)));
     assert!(args.contains(&format!("--setenv={}={}", ENV_TARGET_USER, me.name)));
 }
 
 #[test]
 fn set_target_identity_from_environment_is_noop_without_an_operator() {
-    let mut env = EnvGuard::lock();
-    clear_identity_env(&mut env);
     let mut command = Command::new("true");
 
-    set_target_identity_from_environment(&mut command);
+    set_target_identity_from_environment(&mut command, &RuntimeEnv::empty());
 
-    let args: Vec<_> = command
-        .get_args()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
+    let args = args_of(&command);
     let uid_prefix = format!("--setenv={}=", ENV_TARGET_UID);
     let user_prefix = format!("--setenv={}=", ENV_TARGET_USER);
     assert!(!args.iter().any(|arg| arg.starts_with(&uid_prefix)));
     assert!(!args.iter().any(|arg| arg.starts_with(&user_prefix)));
 }
 
+/// A snapshot whose test hooks are set by `configure`.
+fn env_with_hooks(configure: impl FnOnce(&mut TestHooks)) -> RuntimeEnv {
+    let mut hooks = TestHooks::default();
+    configure(&mut hooks);
+    RuntimeEnv::empty().with_test_hooks(hooks)
+}
+
 #[test]
 fn propagate_shell_cleanup_protection_adds_env_when_present() {
-    let mut env = EnvGuard::lock();
-    env.set(SHELL_CLEANUP_PROTECTED_PIDS_ENV, "101,202");
+    let env = env_with_hooks(|hooks| hooks.shell_cleanup_protected_pids = Some("101,202".into()));
     let mut command = Command::new("true");
 
-    propagate_shell_cleanup_protection(&mut command);
+    propagate_shell_cleanup_protection(&mut command, &env);
 
-    let args: Vec<_> = command
-        .get_args()
-        .map(|arg| arg.to_string_lossy().into_owned())
-        .collect();
-    assert!(args.contains(&format!(
+    assert!(args_of(&command).contains(&format!(
         "--setenv={}={}",
         SHELL_CLEANUP_PROTECTED_PIDS_ENV, "101,202"
     )));
@@ -255,11 +252,9 @@ fn propagate_shell_cleanup_protection_adds_env_when_present() {
 
 #[test]
 fn systemd_run_program_allows_unsafe_real_ops_override() {
-    let mut env = EnvGuard::lock();
-    env.remove(SYSTEMD_RUN_OVERRIDE_ENV)
-        .set("NAILS_UNSAFE_REAL_OPS", "1");
+    let env = env_with_hooks(|hooks| hooks.unsafe_real_ops = Some("1".into()));
 
-    let result = systemd_run_program().expect("unsafe override should allow systemd-run");
+    let result = systemd_run_program(&env).expect("unsafe override should allow systemd-run");
 
     assert_eq!(result, OsString::from("systemd-run"));
 }
@@ -267,58 +262,46 @@ fn systemd_run_program_allows_unsafe_real_ops_override() {
 #[test]
 fn systemd_run_program_uses_override_even_in_test_runtime() {
     let override_path = std::env::temp_dir().join("fake-systemd-run-override");
-    let mut env = EnvGuard::lock();
-    env.set(SYSTEMD_RUN_OVERRIDE_ENV, &override_path)
-        .remove("NAILS_UNSAFE_REAL_OPS");
+    let env = env_with_hooks(|hooks| hooks.systemd_run_path = Some(override_path.clone().into()));
 
-    let result = systemd_run_program().expect("override should bypass runtime guard");
+    let result = systemd_run_program(&env).expect("override should bypass runtime guard");
 
     assert_eq!(result, override_path.into_os_string());
 }
 
 #[test]
 fn should_skip_detach_reflects_env_presence() {
-    let mut env = EnvGuard::lock();
-
-    env.set(ENV_SKIP_DETACH, "1");
-    assert!(should_skip_detach());
-
-    env.remove(ENV_SKIP_DETACH);
-    assert!(!should_skip_detach());
+    assert!(should_skip_detach(&skip_detach_env()));
+    assert!(!should_skip_detach(&RuntimeEnv::empty()));
 }
 
 #[test]
 fn is_already_detached_reflects_env_presence() {
-    let mut env = EnvGuard::lock();
-
-    env.set(ENV_DETACHED, "1");
-    assert!(is_already_detached());
-
-    env.remove(ENV_DETACHED);
-    assert!(!is_already_detached());
+    let detached = RuntimeEnv {
+        nails_detached: Some("1".into()),
+        ..RuntimeEnv::empty()
+    };
+    assert!(is_already_detached(&detached));
+    assert!(!is_already_detached(&RuntimeEnv::empty()));
 }
 
 #[test]
 fn propagate_shell_cleanup_protection_is_noop_when_env_absent() {
-    let mut env = EnvGuard::lock();
-    env.remove(SHELL_CLEANUP_PROTECTED_PIDS_ENV);
     let mut command = Command::new("true");
 
-    propagate_shell_cleanup_protection(&mut command);
+    propagate_shell_cleanup_protection(&mut command, &RuntimeEnv::empty());
 
     assert_eq!(command.get_args().count(), 0);
 }
 
 #[test]
 fn deactivation_detach_force_detach_fails_closed_in_test_runtime() {
-    let mut env = EnvGuard::lock();
-    env.set(ENV_FORCE_DETACH, "1")
-        .remove(ENV_SKIP_DETACH)
-        .remove(ENV_DETACHED)
-        .remove(SYSTEMD_RUN_OVERRIDE_ENV)
-        .remove("NAILS_UNSAFE_REAL_OPS");
+    let env = RuntimeEnv {
+        nails_force_detach: Some("1".into()),
+        ..RuntimeEnv::empty()
+    };
 
-    let err = maybe_detach_for_deactivation().expect_err("test runtime must fail closed");
+    let err = maybe_detach_for_deactivation(&env).expect_err("test runtime must fail closed");
 
     assert!(
         err.to_string()
@@ -331,44 +314,48 @@ fn subprocess_detach_entrypoint() {
     let Ok(case) = std::env::var("NAILS_DETACH_SUBPROCESS_CASE") else {
         return;
     };
-    // Only this test runs in the child, but the guard keeps the rule uniform.
-    let mut env = EnvGuard::lock();
+    // The child stands in for the CLI entry point: it reads the environment its
+    // parent prepared on the `Command` exactly once.
+    let mut env = RuntimeEnv::from_process_env();
+    nails_core::runtime_env::install(env.clone());
 
     match case.as_str() {
         "block-deactivate" => {
-            env.remove(ENV_SKIP_DETACH)
-                .remove(ENV_DETACHED)
-                .remove(ENV_FORCE_DETACH)
-                .remove(SYSTEMD_RUN_OVERRIDE_ENV)
-                .remove("NAILS_UNSAFE_REAL_OPS");
-            maybe_detach_for_deactivation().expect("deactivation should run in-process");
+            env.nails_skip_detach = None;
+            env.nails_detached = None;
+            env.nails_force_detach = None;
+            env.test_hooks.systemd_run_path = None;
+            env.test_hooks.unsafe_real_ops = None;
+            maybe_detach_for_deactivation(&env).expect("deactivation should run in-process");
         }
         "block-session" => {
-            env.remove(ENV_SKIP_DETACH)
-                .remove(ENV_DETACHED)
-                .remove(ENV_FORCE_DETACH)
-                .remove(SYSTEMD_RUN_OVERRIDE_ENV)
-                .remove("NAILS_UNSAFE_REAL_OPS")
-                .set("DISPLAY", ":0");
-            let err = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None, false)
-                .expect_err("must fail closed");
+            env.nails_skip_detach = None;
+            env.nails_detached = None;
+            env.nails_force_detach = None;
+            env.test_hooks.systemd_run_path = None;
+            env.test_hooks.unsafe_real_ops = None;
+            env.display = Some(":0".into());
+            let err =
+                maybe_detach_for_session_kill(&env, true, &[OsString::from("nails")], None, false)
+                    .expect_err("must fail closed");
             assert!(
                 err.to_string()
                     .contains("Refusing to start transient systemd units")
             );
         }
         "allow-override" => {
-            env.remove(ENV_SKIP_DETACH)
-                .remove(ENV_DETACHED)
-                .set(ENV_FORCE_DETACH, "1");
-            maybe_detach_for_deactivation().expect("override fake systemd-run should succeed");
+            env.nails_skip_detach = None;
+            env.nails_detached = None;
+            env.nails_force_detach = Some("1".into());
+            maybe_detach_for_deactivation(&env).expect("override fake systemd-run should succeed");
         }
         "detach-session-success" | "detach-session-success-json" => {
-            env.remove(ENV_SKIP_DETACH)
-                .remove(ENV_DETACHED)
-                .set(ENV_FORCE_DETACH, "1");
+            env.nails_skip_detach = None;
+            env.nails_detached = None;
+            env.nails_force_detach = Some("1".into());
             let json = case == "detach-session-success-json";
-            let _ = maybe_detach_for_session_kill(true, &[OsString::from("nails")], None, json);
+            let _ =
+                maybe_detach_for_session_kill(&env, true, &[OsString::from("nails")], None, json);
             // A successful handoff exits the process inside the call above, so
             // reaching here means the detach did not succeed.
             exit_process(7);
@@ -394,7 +381,7 @@ fn deactivation_detach_defaults_to_in_process_execution() {
             .env_remove(ENV_SKIP_DETACH)
             .env_remove(ENV_DETACHED)
             .env_remove(ENV_FORCE_DETACH)
-            .env_remove(SYSTEMD_RUN_OVERRIDE_ENV)
+            .env_remove(SYSTEMD_RUN_PATH_ENV)
             .env_remove("NAILS_UNSAFE_REAL_OPS");
     });
 
@@ -413,7 +400,7 @@ fn session_detach_refuses_transient_units_in_test_like_runtime() {
             .env_remove(ENV_SKIP_DETACH)
             .env_remove(ENV_DETACHED)
             .env_remove(ENV_FORCE_DETACH)
-            .env_remove(SYSTEMD_RUN_OVERRIDE_ENV)
+            .env_remove(SYSTEMD_RUN_PATH_ENV)
             .env_remove("NAILS_UNSAFE_REAL_OPS");
     });
 
@@ -437,7 +424,7 @@ fn session_detach_reports_follow_up_command_on_success() {
 
     let output = run_entrypoint("detach-session-success", |command| {
         command
-            .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(SYSTEMD_RUN_PATH_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
             .env_remove(ENV_SKIP_DETACH)
             .env_remove(ENV_DETACHED);
@@ -468,7 +455,7 @@ fn session_detach_emits_detached_envelope_under_json() {
 
     let output = run_entrypoint("detach-session-success-json", |command| {
         command
-            .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(SYSTEMD_RUN_PATH_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
             .env_remove(ENV_SKIP_DETACH)
             .env_remove(ENV_DETACHED);
@@ -512,7 +499,7 @@ fn deactivation_detach_uses_explicit_systemd_run_override() {
     let me = current_test_user();
     let output = run_entrypoint("allow-override", |command| {
         command
-            .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(SYSTEMD_RUN_PATH_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
             .env(ENV_TARGET_UID, &me.uid)
             .env_remove(DETACH_DEBUG_JOURNAL_ENV)
@@ -556,7 +543,7 @@ fn deactivation_detach_propagates_protected_shell_cleanup_pids() {
     let me = current_test_user();
     let output = run_entrypoint("allow-override", |command| {
         command
-            .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(SYSTEMD_RUN_PATH_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
             .env(ENV_TARGET_UID, &me.uid)
             .env(SHELL_CLEANUP_PROTECTED_PIDS_ENV, "101,202")
@@ -612,7 +599,7 @@ fn session_detach_pins_a_fixed_path_and_drops_nix_env() {
 
     let output = run_entrypoint("detach-session-success", |command| {
         command
-            .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(SYSTEMD_RUN_PATH_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
             .env("PATH", "/tmp/evil:/usr/bin")
             .env("NIX_PATH", "nixpkgs=/tmp/evil/nixpkgs")
@@ -661,7 +648,7 @@ fn session_detach_path_is_independent_of_caller_path() {
 
         let output = run_entrypoint("detach-session-success", |command| {
             command
-                .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+                .env(SYSTEMD_RUN_PATH_ENV, &fake_systemd_run)
                 .env(ENV_FORCE_DETACH, "1")
                 .env("PATH", caller_path)
                 .env_remove(ENV_SKIP_DETACH)
@@ -699,7 +686,7 @@ fn session_detach_uses_neutral_unit_and_discards_output() {
 
     let output = run_entrypoint("detach-session-success", |command| {
         command
-            .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(SYSTEMD_RUN_PATH_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
             .env_remove(DETACH_DEBUG_JOURNAL_ENV)
             .env_remove(ENV_SKIP_DETACH)
@@ -739,7 +726,7 @@ fn session_detach_debug_flag_routes_output_to_journal() {
 
     let output = run_entrypoint("detach-session-success", |command| {
         command
-            .env(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run)
+            .env(SYSTEMD_RUN_PATH_ENV, &fake_systemd_run)
             .env(ENV_FORCE_DETACH, "1")
             .env(DETACH_DEBUG_JOURNAL_ENV, "1")
             .env_remove(ENV_SKIP_DETACH)
@@ -795,7 +782,8 @@ fn panic_hook_keeps_paths_and_payload_off_stderr() {
 
 #[test]
 fn run_detached_close_command_rejects_empty_argv() {
-    let err = super::run_detached_close_command(&[]).expect_err("empty argv must be refused");
+    let err = super::run_detached_close_command(&RuntimeEnv::empty(), &[])
+        .expect_err("empty argv must be refused");
     assert!(err.to_string().contains("nothing to run"), "{err}");
 }
 
@@ -814,10 +802,10 @@ fn run_detached_close_command_discards_streams_and_hides_the_command_line() {
         ),
     );
 
-    let mut env = EnvGuard::lock();
-    env.set(SYSTEMD_RUN_OVERRIDE_ENV, &fake_systemd_run);
+    let env =
+        env_with_hooks(|hooks| hooks.systemd_run_path = Some(fake_systemd_run.clone().into()));
 
-    super::run_detached_close_command(&["veracrypt".to_string(), "-d".to_string()])
+    super::run_detached_close_command(&env, &["veracrypt".to_string(), "-d".to_string()])
         .expect("fake systemd-run should accept the close command");
 
     let recorded = fs::read_to_string(&log).expect("recorder wrote the argv");

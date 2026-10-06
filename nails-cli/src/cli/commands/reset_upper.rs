@@ -38,6 +38,7 @@ struct ResetUpperData {
 /// - [`ExitStatus::Failed`] when the operator declines, or on a lock or removal failure
 pub fn execute(
     settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
     args: &ResetUpperArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
@@ -57,7 +58,8 @@ pub fn execute(
     let lock_state_path = state_path.clone();
     let target = args.target.clone();
 
-    let manager = NailsManager::new(RealFilesystem, config, state_path);
+    let manager =
+        NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
 
     // Hold the exclusive state lock while we plan and delete, so a concurrent
     // activation cannot mount the target out from under the reset.

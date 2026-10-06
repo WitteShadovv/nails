@@ -1,18 +1,18 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use std::env;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use nails_core::constants::{
-    ENV_DETACHED, ENV_DISPLAY_MANAGER, ENV_FORCE_DETACH, ENV_LOGIND_AVAILABLE, ENV_SESSION_ID,
-    ENV_SKIP_DETACH, ENV_TARGET_UID, ENV_TARGET_USER,
+    ENV_DETACHED, ENV_DISPLAY_MANAGER, ENV_LOGIND_AVAILABLE, ENV_SESSION_ID, ENV_TARGET_UID,
+    ENV_TARGET_USER,
 };
 use nails_core::process::{ProcessCommand, ProcessRunner, RealProcessRunner, SYSTEM_TOOL_DIRS};
 use nails_core::{
-    NailsError, RealSessionCommandExecutor, SessionContext, SessionKind, detect_session_context,
+    NailsError, RealSessionCommandExecutor, RuntimeEnv, SessionContext, SessionKind,
+    detect_session_context,
 };
 
 /// The NixOS setuid-wrapper directory, prepended to the detached worker's search
@@ -31,22 +31,11 @@ const WRAPPERS_BIN: &str = "/run/wrappers/bin";
 /// product string at all.
 const NEUTRAL_UNIT_DESCRIPTION: &str = "System maintenance task";
 
-/// Opt-in debug escape hatch: send the detached worker's stdout/stderr to the
-/// journal instead of discarding it.
-///
-/// Off by default, the hidden-root file log is the worker's only sink, so
-/// nothing identifying reaches the decoy journal before `/var` is overlaid. An
-/// operator who needs to debug a failing handoff can set this to route the
-/// worker's streams back to the journal.
-const DETACH_DEBUG_JOURNAL_ENV: &str = "NAILS_DETACH_DEBUG_JOURNAL";
-
 // Test-only override hooks. Compiled in only under the `test-hooks` feature (and
 // this crate's own `cfg(test)` builds), so a shipped binary neither reads them
 // nor carries the strings.
 #[cfg(any(test, feature = "test-hooks"))]
-const SYSTEMD_RUN_OVERRIDE_ENV: &str = "NAILS_SYSTEMD_RUN_PATH";
-#[cfg(any(test, feature = "test-hooks"))]
-const SHELL_CLEANUP_PROTECTED_PIDS_ENV: &str = "NAILS_SHELL_CLEANUP_PROTECTED_PIDS";
+use nails_core::runtime_env::{SHELL_CLEANUP_PROTECTED_PIDS_ENV, SYSTEMD_RUN_PATH_ENV, TestHooks};
 
 /// The process-exit chokepoint.
 ///
@@ -85,9 +74,9 @@ pub fn install_panic_hook() {
 ///
 /// Defaults to discarding both so the hidden-root file log is the only sink and
 /// nothing identifying reaches the decoy journal; the journal is used only when
-/// the debug escape hatch is set.
-fn apply_worker_stdio(cmd: &mut Command) {
-    if env::var_os(DETACH_DEBUG_JOURNAL_ENV).is_some() {
+/// the operator set the `NAILS_DETACH_DEBUG_JOURNAL` debug escape hatch.
+fn apply_worker_stdio(cmd: &mut Command, env: &RuntimeEnv) {
+    if env.nails_detach_debug_journal.is_some() {
         cmd.arg("--property=StandardOutput=journal");
         cmd.arg("--property=StandardError=journal");
     } else {
@@ -143,8 +132,8 @@ fn report_session_detach(exe_path: &Path, json: bool) {
     }
 }
 
-fn should_skip_detach() -> bool {
-    env::var_os(ENV_SKIP_DETACH).is_some()
+fn should_skip_detach(env: &RuntimeEnv) -> bool {
+    env.nails_skip_detach.is_some()
 }
 
 /// The `journalctl --relinquish-var` command run before a detach handoff.
@@ -179,23 +168,25 @@ fn relinquish_journal_before_detach() {
 /// transient unit at all — so a bare `cargo test` can never spawn one even though
 /// the hooks are compiled in.
 #[cfg(any(test, feature = "test-hooks"))]
-fn systemd_run_program() -> Result<OsString, NailsError> {
-    if let Some(path) = env::var_os(SYSTEMD_RUN_OVERRIDE_ENV) {
-        return Ok(path);
+fn systemd_run_program(env: &RuntimeEnv) -> Result<OsString, NailsError> {
+    let hooks: &TestHooks = &env.test_hooks;
+    if let Some(path) = &hooks.systemd_run_path {
+        return Ok(path.clone());
     }
 
-    if env::var("NAILS_UNSAFE_REAL_OPS").unwrap_or_default() == "1" {
+    if hooks.unsafe_real_ops_enabled() {
         return Ok(OsString::from("systemd-run"));
     }
 
     Err(NailsError::InvalidState(format!(
         "Refusing to start transient systemd units from a test runtime; set {} to a fake systemd-run, set {}=1 to bypass detach, or set NAILS_UNSAFE_REAL_OPS=1 to allow real host operations",
-        SYSTEMD_RUN_OVERRIDE_ENV, ENV_SKIP_DETACH
+        SYSTEMD_RUN_PATH_ENV,
+        nails_core::constants::ENV_SKIP_DETACH
     )))
 }
 
 #[cfg(not(any(test, feature = "test-hooks")))]
-fn systemd_run_program() -> Result<OsString, NailsError> {
+fn systemd_run_program(_env: &RuntimeEnv) -> Result<OsString, NailsError> {
     Ok(OsString::from("systemd-run"))
 }
 
@@ -211,8 +202,8 @@ fn systemd_run_program() -> Result<OsString, NailsError> {
 /// transient-unit boundary. When no operator can be resolved (detach may run
 /// before any escalation context is established) nothing is forwarded and the
 /// worker resolves for itself.
-fn set_target_identity_from_environment(cmd: &mut Command) {
-    if let Ok(user) = nails_core::TargetUser::resolve() {
+fn set_target_identity_from_environment(cmd: &mut Command, env: &RuntimeEnv) {
+    if let Ok(user) = nails_core::TargetUser::resolve_with(env) {
         cmd.arg(format!("--setenv={}={}", ENV_TARGET_UID, user.uid));
         cmd.arg(format!("--setenv={}={}", ENV_TARGET_USER, user.name));
     }
@@ -224,8 +215,8 @@ fn set_target_identity_from_environment(cmd: &mut Command) {
 /// no-op in shipped builds; the tests use it to inject the PIDs that shell
 /// cleanup must spare.
 #[cfg(any(test, feature = "test-hooks"))]
-fn propagate_shell_cleanup_protection(cmd: &mut Command) {
-    if let Some(protected) = env::var_os(SHELL_CLEANUP_PROTECTED_PIDS_ENV) {
+fn propagate_shell_cleanup_protection(cmd: &mut Command, env: &RuntimeEnv) {
+    if let Some(protected) = &env.test_hooks.shell_cleanup_protected_pids {
         cmd.arg(format!(
             "--setenv={}={}",
             SHELL_CLEANUP_PROTECTED_PIDS_ENV,
@@ -235,10 +226,10 @@ fn propagate_shell_cleanup_protection(cmd: &mut Command) {
 }
 
 #[cfg(not(any(test, feature = "test-hooks")))]
-fn propagate_shell_cleanup_protection(_cmd: &mut Command) {}
+fn propagate_shell_cleanup_protection(_cmd: &mut Command, _env: &RuntimeEnv) {}
 
-fn is_already_detached() -> bool {
-    env::var_os(ENV_DETACHED).is_some()
+fn is_already_detached(env: &RuntimeEnv) -> bool {
+    env.nails_detached.is_some()
 }
 
 /// Build the fixed `PATH` for the detached worker unit.
@@ -256,7 +247,7 @@ fn detached_path_env() -> OsString {
     dirs.push(PathBuf::from(WRAPPERS_BIN));
     dirs.extend(SYSTEM_TOOL_DIRS.iter().map(PathBuf::from));
 
-    env::join_paths(&dirs).unwrap_or_else(|_| {
+    std::env::join_paths(&dirs).unwrap_or_else(|_| {
         // Every member is a static, colon- and NUL-free path, so `join_paths`
         // cannot fail in practice; joining the same dirs by hand keeps the result
         // total without re-spelling the search path as a literal.
@@ -273,13 +264,14 @@ fn detached_path_env() -> OsString {
 ///
 /// Creates a proper one-shot service that runs independently of any user session.
 pub fn maybe_detach_for_session_kill(
+    env: &RuntimeEnv,
     kill_session: bool,
     args: &[OsString],
     session_ctx: Option<&SessionContext>,
     json: bool,
 ) -> Result<(), NailsError> {
     // Testing override: allow tests to bypass actual detaching/spawn.
-    if should_skip_detach() {
+    if should_skip_detach(env) {
         return Ok(());
     }
 
@@ -289,12 +281,12 @@ pub fn maybe_detach_for_session_kill(
     }
 
     // Prevent recursion - if already detached, just continue.
-    if is_already_detached() {
+    if is_already_detached(env) {
         return Ok(());
     }
 
     // Allow integration tests or users to force detaching for safety.
-    let force_detach = env::var_os(ENV_FORCE_DETACH).is_some();
+    let force_detach = env.nails_force_detach.is_some();
 
     if !force_detach {
         // Prefer logind-aware detection to avoid detaching from TTY/SSH.
@@ -302,16 +294,13 @@ pub fn maybe_detach_for_session_kill(
             if ctx.kind != SessionKind::GraphicalUser {
                 return Ok(());
             }
-        } else if let Ok(ctx) = detect_session_context(
-            &RealSessionCommandExecutor,
-            &nails_core::RuntimeEnv::from_process_env(),
-        ) {
+        } else if let Ok(ctx) = detect_session_context(&RealSessionCommandExecutor, env) {
             if ctx.kind != SessionKind::GraphicalUser {
                 return Ok(());
             }
         } else {
             // If detection fails, fall back to env markers.
-            if env::var_os("DISPLAY").is_none() && env::var_os("WAYLAND_DISPLAY").is_none() {
+            if env.display.is_none() && env.wayland_display.is_none() {
                 return Ok(());
             }
         }
@@ -332,7 +321,7 @@ pub fn maybe_detach_for_session_kill(
     // No --scope flag creates a proper transient service, and no --unit lets
     // systemd auto-name it `run-u<NNN>.service` so the product name never reaches
     // the journal; the neutral --description hides the hidden-root command line.
-    let mut cmd = Command::new(systemd_run_program()?);
+    let mut cmd = Command::new(systemd_run_program(env)?);
     cmd.arg("--slice=system.slice")
         .arg("--same-dir") // Keep current working directory
         .arg("--collect") // Clean up unit after it finishes
@@ -381,11 +370,11 @@ pub fn maybe_detach_for_session_kill(
         ));
     }
 
-    set_target_identity_from_environment(&mut cmd);
+    set_target_identity_from_environment(&mut cmd, env);
 
     // Discard the worker's streams by default so nothing identifying reaches the
     // decoy journal; the hidden-root file log is the sink.
-    apply_worker_stdio(&mut cmd);
+    apply_worker_stdio(&mut cmd, env);
 
     // Add the command to execute
     cmd.arg("--");
@@ -397,14 +386,14 @@ pub fn maybe_detach_for_session_kill(
 }
 
 /// Detach deactivation to a transient service so shell cleanup cannot kill the caller.
-pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
-    if should_skip_detach() || is_already_detached() {
+pub fn maybe_detach_for_deactivation(env: &RuntimeEnv) -> Result<(), NailsError> {
+    if should_skip_detach(env) || is_already_detached(env) {
         return Ok(());
     }
 
     // Deactivation should run synchronously in the invoking context by default.
     // Detached transient services are opt-in only.
-    let force_detach = env::var_os(ENV_FORCE_DETACH).is_some();
+    let force_detach = env.nails_force_detach.is_some();
     if !force_detach {
         return Ok(());
     }
@@ -422,7 +411,7 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
     // No --unit (systemd auto-names `run-u<NNN>.service`) and a neutral
     // --description keep the product name and hidden-root command line out of the
     // journal.
-    let mut cmd = Command::new(systemd_run_program()?);
+    let mut cmd = Command::new(systemd_run_program(env)?);
     cmd.arg("--slice=system.slice")
         .arg("--collect")
         .arg("--quiet")
@@ -440,12 +429,12 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
 
     // Discard the worker's streams by default; the hidden-root file log is the
     // sink. Must precede the `--` separator below.
-    apply_worker_stdio(&mut cmd);
+    apply_worker_stdio(&mut cmd, env);
 
     cmd.arg("--").arg(&exe_path).args(argv.iter().skip(1));
 
-    set_target_identity_from_environment(&mut cmd);
-    propagate_shell_cleanup_protection(&mut cmd);
+    set_target_identity_from_environment(&mut cmd, env);
+    propagate_shell_cleanup_protection(&mut cmd, env);
 
     maybe_exit_after_detach(cmd, || {
         eprintln!("Detached to background via systemd transient service.");
@@ -469,14 +458,14 @@ pub fn maybe_detach_for_deactivation() -> Result<(), NailsError> {
 /// The debug escape hatch is deliberately not honoured here: the close command's
 /// argv can carry a backend path, so its streams are always discarded regardless
 /// of `NAILS_DETACH_DEBUG_JOURNAL`.
-pub fn run_detached_close_command(argv: &[String]) -> Result<(), NailsError> {
+pub fn run_detached_close_command(env: &RuntimeEnv, argv: &[String]) -> Result<(), NailsError> {
     if argv.is_empty() {
         return Err(NailsError::InvalidState(
             "close_command is empty; nothing to run".to_string(),
         ));
     }
 
-    let mut cmd = Command::new(systemd_run_program()?);
+    let mut cmd = Command::new(systemd_run_program(env)?);
     cmd.arg("--slice=system.slice")
         .arg("--collect")
         .arg("--quiet")

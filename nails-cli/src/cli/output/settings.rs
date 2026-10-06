@@ -76,19 +76,23 @@ pub struct Environment {
 }
 
 impl Environment {
-    /// Read the current process environment.
-    pub fn detect() -> Self {
-        let var = |name: &str| std::env::var(name).ok();
-        let locale = ["LC_ALL", "LC_CTYPE", "LANG"]
+    /// Build from the startup environment snapshot plus the live terminal state.
+    ///
+    /// Whether stdout and stderr are terminals is a property of the open file
+    /// descriptors, not of the environment, so it is probed here; every variable
+    /// comes from the [`RuntimeEnv`](nails_core::RuntimeEnv) `main` read once.
+    pub fn from_runtime_env(env: &nails_core::RuntimeEnv) -> Self {
+        let locale = [&env.lc_all, &env.lc_ctype, &env.lang]
             .into_iter()
-            .filter_map(var)
-            .find(|value| !value.is_empty());
+            .flatten()
+            .find(|value| !value.is_empty())
+            .cloned();
         Self {
             stdout_tty: std::io::stdout().is_terminal(),
             stderr_tty: std::io::stderr().is_terminal(),
-            term: var("TERM"),
-            no_color: var("NO_COLOR"),
-            clicolor_force: var("CLICOLOR_FORCE"),
+            term: env.term.clone(),
+            no_color: env.no_color.clone(),
+            clicolor_force: env.clicolor_force.clone(),
             locale,
         }
     }
@@ -177,9 +181,9 @@ impl OutputSettings {
         }
     }
 
-    /// Resolve against the real process environment.
-    pub fn detect(args: &GlobalArgs) -> Self {
-        Self::resolve(args, &Environment::detect())
+    /// Resolve against the startup environment snapshot.
+    pub fn detect(args: &GlobalArgs, env: &nails_core::RuntimeEnv) -> Self {
+        Self::resolve(args, &Environment::from_runtime_env(env))
     }
 
     /// Install the rendering decisions into `nails_core::output`, which the

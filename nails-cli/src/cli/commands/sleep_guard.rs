@@ -25,7 +25,11 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// Always exits [`ExitStatus::Ok`]: like the backend watcher, this is a
 /// best-effort safety net, so a missing copy or an unreachable bus is a logged
 /// no-op rather than an error dialog.
-pub fn execute(_settings: &OutputSettings, config_override: Option<&Path>) -> ExitStatus {
+pub fn execute(
+    _settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
+    config_override: Option<&Path>,
+) -> ExitStatus {
     let filesystem = RealFilesystem;
 
     // Prefer the configuration mirrored into the runtime copy; the real config
@@ -46,7 +50,8 @@ pub fn execute(_settings: &OutputSettings, config_override: Option<&Path>) -> Ex
     let emergency_config = config.clone();
     let on_prepare_for_sleep = move || {
         let state_path = emergency_config.state_file_path.clone();
-        let mut manager = NailsManager::new(RealFilesystem, emergency_config.clone(), state_path);
+        let mut manager = NailsManager::new(RealFilesystem, emergency_config.clone(), state_path)
+            .with_runtime_env(env.clone());
         if let Err(e) = manager.emergency_deactivate() {
             tracing::error!(error = %e, "Emergency teardown on suspend failed");
         }

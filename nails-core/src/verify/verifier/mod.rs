@@ -76,6 +76,10 @@ pub struct Verifier<F: Filesystem> {
     /// Reads the systemd journal for the deep-scan leak search. Defaults to the
     /// live `journalctl` reader; tests inject a deterministic fake.
     journal: Box<dyn super::journal::JournalReader>,
+    /// The invoking operator's login name (`SUDO_USER` from the startup
+    /// snapshot), whose real home a live scan also covers. `None` when the scan
+    /// was not given a snapshot or ran without `sudo`.
+    invoking_user: Option<String>,
 }
 
 impl<F: Filesystem> Verifier<F> {
@@ -89,6 +93,7 @@ impl<F: Filesystem> Verifier<F> {
             context: VerifyContext::Host,
             scope_to_decoy: false,
             journal: Box::new(super::journal::JournalctlReader),
+            invoking_user: None,
         }
     }
 
@@ -107,7 +112,16 @@ impl<F: Filesystem> Verifier<F> {
             context: VerifyContext::Host,
             scope_to_decoy: false,
             journal: Box::new(super::journal::JournalctlReader),
+            invoking_user: None,
         }
+    }
+
+    /// Take the invoking operator from the startup environment snapshot, so a
+    /// live scan also covers the real home of the user who ran `sudo`.
+    #[must_use]
+    pub fn with_runtime_env(mut self, env: &crate::RuntimeEnv) -> Self {
+        self.invoking_user = env.sudo_user.clone();
+        self
     }
 
     /// Replace the journal reader (tests inject a deterministic fake).

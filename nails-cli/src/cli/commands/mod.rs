@@ -218,11 +218,13 @@ pub(crate) fn build_nixos_manager(
     config: nails_core::Config,
     state_path: PathBuf,
     overlay_only: bool,
+    env: &nails_core::RuntimeEnv,
 ) -> nails_core::NailsManager<nails_core::RealFilesystem> {
     use nails_core::{HostTarget, NailsManager, NixOSBuilder, RealFilesystem};
 
     let nails_profile = PathBuf::from("/nix/var/nix/profiles/nails-system");
-    let mut manager = NailsManager::new(RealFilesystem, config, state_path);
+    let mut manager =
+        NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
     if let Err(e) = manager.initialize_platform() {
         tracing::debug!(error = %e, "platform detection failed; continuing without a host profile");
     }

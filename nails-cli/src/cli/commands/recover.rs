@@ -34,6 +34,7 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// - [`ExitStatus::Failed`] on any other failure
 pub fn execute(
     settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
     _args: &RecoverArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
@@ -54,7 +55,8 @@ pub fn execute(
     let lock_state_path = state_path.clone();
 
     let filesystem = RealFilesystem;
-    let mut manager = NailsManager::new(filesystem, config, state_path);
+    let mut manager =
+        NailsManager::new(filesystem, config, state_path).with_runtime_env(env.clone());
     manager.set_verbosity(verbosity);
 
     // Take the state lock when free, but never let a crashed holder block a

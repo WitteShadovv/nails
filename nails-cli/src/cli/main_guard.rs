@@ -79,17 +79,17 @@ fn effective_user_is_root() -> bool {
 /// Whether the root gate is enforced in this build.
 ///
 /// Shipped builds always enforce it. A `test-hooks` build enforces it only when
-/// `NAILS_TEST_ENFORCE_ROOT` is set, so the integration suite — which runs
+/// `NAILS_TEST_ENFORCE_ROOT` is set in the startup snapshot, so the integration suite — which runs
 /// unprivileged and must still exercise the real activate/deactivate/emergency
 /// paths — is unaffected unless a test opts in.
 #[cfg(any(test, feature = "test-hooks"))]
-fn gate_enforced() -> bool {
-    std::env::var_os("NAILS_TEST_ENFORCE_ROOT").is_some()
+fn gate_enforced(env: &nails_core::RuntimeEnv) -> bool {
+    env.test_hooks.enforce_root.is_some()
 }
 
 #[cfg(not(any(test, feature = "test-hooks")))]
 #[inline]
-fn gate_enforced() -> bool {
+fn gate_enforced(_env: &nails_core::RuntimeEnv) -> bool {
     true
 }
 
@@ -99,8 +99,12 @@ fn gate_enforced() -> bool {
 /// when a privileged command is run unprivileged, and `None` otherwise. `main`
 /// turns the returned status into the process exit code (5) without initialising
 /// logging or running the command handler.
-pub fn enforce_root(command: &Commands, settings: &OutputSettings) -> Option<ExitStatus> {
-    if !gate_enforced() || !requires_root(command) || effective_user_is_root() {
+pub fn enforce_root(
+    command: &Commands,
+    settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
+) -> Option<ExitStatus> {
+    if !gate_enforced(env) || !requires_root(command) || effective_user_is_root() {
         return None;
     }
 

@@ -59,18 +59,15 @@ fn build_runtime_environment(
 /// Environment overrides for the detached `notify-send` invocation.
 ///
 /// `XDG_RUNTIME_DIR` (and the derived bus address) are built from the uid of the
-/// operator resolved through [`crate::TargetUser`], so this agrees with every
-/// other subsystem on who the operator is instead of re-reading the escalation
-/// environment directly. The display variables are forwarded from the current
-/// environment so the notification reaches the right display server.
-#[cfg(not(test))]
-pub fn notification_runtime_environment() -> Vec<(&'static str, String)> {
-    let uid = crate::TargetUser::resolve().ok().map(|user| user.uid);
-    build_runtime_environment(
-        uid,
-        std::env::var("DISPLAY").ok(),
-        std::env::var("WAYLAND_DISPLAY").ok(),
-    )
+/// operator resolved through [`crate::TargetUser::resolve_with`], so this agrees
+/// with every other subsystem on who the operator is. The display variables are
+/// forwarded from the startup snapshot so the notification reaches the right
+/// display server.
+pub fn notification_runtime_environment(env: &crate::RuntimeEnv) -> Vec<(&'static str, String)> {
+    let uid = crate::TargetUser::resolve_with(env)
+        .ok()
+        .map(|user| user.uid);
+    build_runtime_environment(uid, env.display.clone(), env.wayland_display.clone())
 }
 
 /// A desktop notification payload stored as a JSON signal file.
@@ -260,7 +257,9 @@ fn prepare_notifications_dir(
         );
         None
     } else {
-        match crate::TargetUser::resolve() {
+        // The operator comes from the startup snapshot `main` installed: signal
+        // files are written from deep inside activation, below any handler state.
+        match crate::TargetUser::resolve_with(&crate::runtime_env::current()) {
             Ok(user) => Some(user),
             Err(e) => {
                 tracing::warn!(
@@ -505,14 +504,17 @@ pub fn clear_all(hidden_volume_root: &Path) -> Result<()> {
 /// # Test Safety
 ///
 /// This function is disabled during testing to prevent real desktop notifications:
-/// - Set `NAILS_DISABLE_NOTIFICATIONS=1` environment variable, OR
+/// - `NAILS_DISABLE_NOTIFICATIONS` set in the startup snapshot `env`, OR
 /// - Compile with `#[cfg(test)]` (notification dispatch is always skipped in test builds)
-pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
+///
+/// `notify-send` resolves from the snapshot's `PATH`, and its session variables
+/// come from the snapshot's display variables and resolved operator.
+pub fn dispatch_all(hidden_volume_root: &Path, env: &crate::RuntimeEnv) -> Result<usize> {
     // LAYER 1: Compile-time test guard - NEVER dispatch in test builds
     #[cfg(test)]
     {
         tracing::debug!("Notification dispatch disabled in test build");
-        let _ = hidden_volume_root; // suppress unused warning
+        let _ = (hidden_volume_root, env); // suppress unused warning
         Ok(0)
     }
 
@@ -526,7 +528,7 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
     // LAYER 3: Runtime environment guard - check NAILS_DISABLE_NOTIFICATIONS early
     // This is the FIRST explicit env-var check, before we even read pending notifications
     #[cfg(not(test))]
-    if is_notifications_disabled() {
+    if is_notifications_disabled(env) {
         tracing::debug!("Notification dispatch disabled via NAILS_DISABLE_NOTIFICATIONS");
         return Ok(0);
     }
@@ -540,7 +542,7 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
 
         // `notify-send` is resolved from the fixed system tool directories, never
         // the caller's PATH; if none of them holds it there is nothing to do.
-        if !notify_send_available() {
+        if !notify_send_available(env) {
             // Recorded once on the hidden volume, so `nails status` can explain
             // why results stay undelivered, without a warning at every login.
             match deliver::record_notify_send_missing(hidden_volume_root) {
@@ -558,7 +560,7 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
 
         let mut dispatched = 0;
         for (path, notification) in &pending {
-            match send_notification(notification) {
+            match send_notification(notification, env) {
                 Ok(()) => {
                     let _ = clear_notification(hidden_volume_root, path);
                     deliver::clear_notify_send_missing(hidden_volume_root);
@@ -578,13 +580,13 @@ pub fn dispatch_all(hidden_volume_root: &Path) -> Result<usize> {
     }
 }
 
-/// Check if notifications are disabled via environment variable.
+/// Check if `NAILS_DISABLE_NOTIFICATIONS` was set in the startup snapshot.
 ///
 /// This is the runtime check used to prevent real notifications in tests
 /// and other environments where desktop notifications are not desired.
 #[cfg(not(test))]
-fn is_notifications_disabled() -> bool {
-    std::env::var(crate::constants::ENV_DISABLE_NOTIFICATIONS).is_ok()
+fn is_notifications_disabled(env: &crate::RuntimeEnv) -> bool {
+    env.nails_disable_notifications.is_some()
 }
 
 /// Whether an executable `notify-send` exists on the caller's `PATH`.
@@ -595,9 +597,9 @@ fn is_notifications_disabled() -> bool {
 /// runs from the operator's own login session (an XDG autostart entry), so
 /// resolving `notify-send` from their `PATH` is correct and is not a root spawn.
 #[cfg(not(test))]
-fn notify_send_available() -> bool {
+fn notify_send_available(env: &crate::RuntimeEnv) -> bool {
     use crate::platform::host_commands::is_executable_file;
-    let Some(path) = std::env::var_os("PATH") else {
+    let Some(path) = env.path.as_ref() else {
         return false;
     };
     std::env::split_paths(&path)
@@ -615,11 +617,13 @@ fn notify_send_available() -> bool {
 /// [`set_env`](crate::process::ProcessCommand::set_env) so the notification
 /// reaches their bus rather than root's.
 #[cfg(not(test))]
-fn send_notification(notification: &Notification) -> Result<()> {
-    run_notify_send(&queued_notification_command(
-        notification,
-        &notification_runtime_environment(),
-    ))
+fn send_notification(notification: &Notification, env: &crate::RuntimeEnv) -> Result<()> {
+    let mut command =
+        queued_notification_command(notification, &notification_runtime_environment(env));
+    if let Some(path) = env.path.as_ref() {
+        command = command.search_path(path);
+    }
+    run_notify_send(&command)
 }
 
 /// Application name the login-time queue dispatches under.
@@ -638,16 +642,16 @@ const NEUTRAL_APP_NAME: &str = "System";
 /// that very root: this sends straight to the operator's session bus. Attributed
 /// to a neutral application name so the alert does not name the tool on screen.
 #[cfg(not(test))]
-pub fn send_immediate(notification: &Notification) -> Result<()> {
+pub fn send_immediate(notification: &Notification, env: &crate::RuntimeEnv) -> Result<()> {
     run_notify_send(&immediate_alert_command(
         notification,
-        &notification_runtime_environment(),
+        &notification_runtime_environment(env),
     ))
 }
 
 /// Test build: immediate alerts never reach a real session bus.
 #[cfg(test)]
-pub fn send_immediate(_notification: &Notification) -> Result<()> {
+pub fn send_immediate(_notification: &Notification, _env: &crate::RuntimeEnv) -> Result<()> {
     Ok(())
 }
 

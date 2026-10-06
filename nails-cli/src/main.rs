@@ -41,14 +41,23 @@ fn command_writes_logs(command: &Commands) -> bool {
 fn main() -> std::process::ExitCode {
     let cli = Cli::parse_checked();
 
+    // Read the environment exactly once. Every handler receives this snapshot,
+    // and it is installed for the leaf helpers (the process runner, the
+    // runtime-safety switch) that sit below every handler; nothing else reads
+    // the process environment.
+    let runtime_env = nails_core::RuntimeEnv::from_process_env();
+    nails_core::runtime_env::install(runtime_env.clone());
+
     // Resolve verbosity, colour and ASCII once, before anything prints.
-    let settings = OutputSettings::detect(&cli.global);
+    let settings = OutputSettings::detect(&cli.global, &runtime_env);
     settings.install();
 
     // Refuse privileged commands run without root before logging is initialised
     // or any handler runs, so an unprivileged invocation writes no log or state
     // file and the operator gets one clear `sudo` instruction.
-    if let Some(status) = nails::cli::main_guard::enforce_root(&cli.command, &settings) {
+    if let Some(status) =
+        nails::cli::main_guard::enforce_root(&cli.command, &settings, &runtime_env)
+    {
         return status.to_exit_code();
     }
 
@@ -65,7 +74,7 @@ fn main() -> std::process::ExitCode {
     // never lands in the decoy journal. Installed after the subscriber exists.
     nails::cli::install_panic_hook();
 
-    execute_command(cli, &settings).to_exit_code()
+    execute_command(cli, &settings, &runtime_env).to_exit_code()
 }
 
 #[cfg(test)]

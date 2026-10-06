@@ -37,6 +37,7 @@ const COMMAND: &str = "check";
 /// [`ExitStatus::Failed`] when the checks could not be assembled.
 pub fn execute(
     settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
     args: &CheckArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
@@ -59,7 +60,7 @@ pub fn execute(
     // Build the manager with the NixOS target activation would pick, then build
     // its pre-flight registry. The registry is read-only to run; staging of the
     // hidden NixOS layout only happens on the activation path, never here.
-    let manager = super::build_nixos_manager(config, state_path, overlay_only);
+    let manager = super::build_nixos_manager(config, state_path, overlay_only, env);
 
     let registry =
         match manager.preflight_registry(overlay_only, true, args.accept_persistent_decoy) {
@@ -105,13 +106,13 @@ pub fn execute(
         })
         .unwrap_or_default();
 
-    let session = session_summary();
+    let session = session_summary(env);
     let profile = profile_summary(
         manager
             .discover_host_target(overlay_only)
             .unwrap_or(nails_core::HostTarget::None),
     );
-    let inherited = inherited_summary(config, manager.filesystem());
+    let inherited = inherited_summary(config, manager.filesystem(), env);
 
     let report = CheckReport::finalize(
         checks,
@@ -140,11 +141,8 @@ pub fn execute(
 ///
 /// The check runs non-interactively and without privileges, so a session it
 /// cannot classify is reported as `unknown` rather than surfaced as an error.
-fn session_summary() -> SessionSummary {
-    match nails_core::detect_session_context(
-        &nails_core::RealSessionCommandExecutor,
-        &nails_core::RuntimeEnv::from_process_env(),
-    ) {
+fn session_summary(env: &nails_core::RuntimeEnv) -> SessionSummary {
+    match nails_core::detect_session_context(&nails_core::RealSessionCommandExecutor, env) {
         Ok(ctx) => {
             let kind = match ctx.kind {
                 SessionKind::Tty => "tty",
@@ -211,11 +209,15 @@ fn profile_summary(target: nails_core::HostTarget) -> ProfileSummary {
 /// target user cannot be resolved the inventory is reported as "not inspected"
 /// rather than surfaced as an error. In fresh-home mode only system-level
 /// inherited state is listed, matching what that mode actually carries over.
-fn inherited_summary<F: Filesystem>(config: &Config, fs: &F) -> InheritedSummary {
+fn inherited_summary<F: Filesystem>(
+    config: &Config,
+    fs: &F,
+    env: &nails_core::RuntimeEnv,
+) -> InheritedSummary {
     use nails_core::config::PersonaMode;
     use nails_core::{TargetUser, collect_inherited_persona};
 
-    let Ok(user) = TargetUser::resolve() else {
+    let Ok(user) = TargetUser::resolve_with(env) else {
         return InheritedSummary::not_inspected();
     };
 

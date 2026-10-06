@@ -57,6 +57,7 @@ fn write_activation_residue_baseline(
     // its own mount, on-volume files and backing device are deliberately attached,
     // not residue, and must not show up as findings in the decoy baseline.
     let verifier = Verifier::with_config(RealFilesystem, config, None, StateFileStatus::NotChecked)
+        .with_runtime_env(manager.runtime_env())
         .scoped_to_decoy();
     let result = match verifier.run(false) {
         Ok(result) => result,
@@ -127,6 +128,7 @@ fn write_activation_residue_baseline(
 )]
 pub fn execute(
     settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
     args: &ActivateArgs,
     config_override: Option<&std::path::Path>,
 ) -> ExitStatus {
@@ -185,7 +187,7 @@ pub fn execute(
             nixos_flake: nixos_flake.clone(),
             accept_persistent_decoy,
         };
-        return super::check::execute(settings, &check_args, config_override);
+        return super::check::execute(settings, env, &check_args, config_override);
     }
 
     // Activate no longer overrides clear_history; only deactivation clears it.
@@ -215,7 +217,7 @@ pub fn execute(
     // with no one watching. A detached worker re-runs this command inside a
     // transient service with no terminal; its parent already confirmed, so it
     // must neither prompt nor refuse.
-    let already_detached = std::env::var_os(nails_core::constants::ENV_DETACHED).is_some();
+    let already_detached = env.nails_detached.is_some();
     if !options.yes && !already_detached && !std::io::stdin().is_terminal() {
         return report_error(
             json,
@@ -239,7 +241,7 @@ pub fn execute(
     // Build the manager with the NixOS build target activation would pick,
     // through the one discovery cascade shared with `check`/`--dry-run` and the
     // `nixos-build-target` pre-flight check, so no path can drift.
-    let mut manager = super::build_nixos_manager(config, state_path, overlay_only);
+    let mut manager = super::build_nixos_manager(config, state_path, overlay_only, env);
 
     // Set verbosity level
     manager.set_verbosity(verbosity);
@@ -279,10 +281,8 @@ pub fn execute(
     let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
     let mut session_ctx = None;
     if options.kill_session
-        && let Ok(ctx) = nails_core::detect_session_context(
-            &nails_core::RealSessionCommandExecutor,
-            &nails_core::RuntimeEnv::from_process_env(),
-        )
+        && let Ok(ctx) =
+            nails_core::detect_session_context(&nails_core::RealSessionCommandExecutor, env)
         && ctx.kind == nails_core::SessionKind::GraphicalUser
     {
         session_ctx = Some(ctx);
@@ -432,7 +432,7 @@ pub fn execute(
     // worker survives it. The parent reports the handoff and exits inside this
     // call; a non-graphical or keep-session run returns and continues here.
     if let Err(e) =
-        maybe_detach_for_session_kill(options.kill_session, &argv, session_ctx.as_ref(), json)
+        maybe_detach_for_session_kill(env, options.kill_session, &argv, session_ctx.as_ref(), json)
     {
         return report_error(
             json,

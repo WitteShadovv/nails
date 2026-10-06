@@ -4,7 +4,6 @@
 use super::execute;
 use crate::cli::args::{ActivateArgs, SessionPolicy};
 use crate::cli::output::OutputSettings;
-use nails_core::test_support::EnvGuard;
 use std::path::PathBuf;
 
 const SUBPROCESS_TEST_NAME: &str = "cli::commands::activate::tests::subprocess_activate_entrypoint";
@@ -19,7 +18,6 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
         command.env("NAILS_ACTIVATE_SUBPROCESS_CONFIG", path);
     }
 
-    let _env = EnvGuard::lock();
     command
         .output()
         .expect("failed to run activate subprocess test")
@@ -30,6 +28,17 @@ fn subprocess_activate_entrypoint() {
     let Ok(case) = std::env::var("NAILS_ACTIVATE_SUBPROCESS_CASE") else {
         return;
     };
+
+    // The child stands in for the CLI entry point: it reads the environment the
+    // parent prepared on the `Command` exactly once and installs it, as `main`
+    // does.
+    let env = nails_core::RuntimeEnv::from_process_env();
+    nails_core::runtime_env::install(env.clone());
+
+    let execute =
+        |settings: &OutputSettings, args: &ActivateArgs, config: Option<&std::path::Path>| {
+            execute(settings, &env, args, config)
+        };
 
     let config_override = std::env::var_os("NAILS_ACTIVATE_SUBPROCESS_CONFIG").map(PathBuf::from);
 

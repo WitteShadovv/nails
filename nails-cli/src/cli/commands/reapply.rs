@@ -43,6 +43,7 @@ struct ReapplyResultEvent {
 /// and [`ExitStatus::Failed`] for any other error.
 pub fn execute(
     settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
     _args: &ReapplyArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
@@ -59,7 +60,7 @@ pub fn execute(
     // Build the manager with the same NixOS build target activation would pick, so
     // reapply rebuilds and switches to exactly the configuration a fresh
     // activation would.
-    let mut manager = super::build_nixos_manager(config, state_path, false);
+    let mut manager = super::build_nixos_manager(config, state_path, false, env);
     manager.set_verbosity(settings.verbosity);
     if let Err(e) = manager.initialize_platform() {
         tracing::debug!(error = %e, "platform detection failed; continuing without a host profile");

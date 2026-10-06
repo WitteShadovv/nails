@@ -99,7 +99,7 @@ fn summary_reports_an_explicit_flake_on_any_host() {
 
 #[test]
 fn session_summary_reports_a_known_kind() {
-    let summary = session_summary();
+    let summary = session_summary(&nails_core::RuntimeEnv::empty());
     assert!(
         matches!(
             summary.kind,

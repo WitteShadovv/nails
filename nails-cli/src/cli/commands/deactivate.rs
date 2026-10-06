@@ -28,6 +28,7 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 ///   deactivation failure
 pub fn execute(
     settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
     args: &DeactivateArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
@@ -47,7 +48,7 @@ pub fn execute(
     // Confirmation gate: deactivation restores the decoy and reboots, so without
     // -y it confirms on a terminal and refuses off one, before any teardown. A
     // detached worker was already confirmed by its parent.
-    let already_detached = std::env::var_os(nails_core::constants::ENV_DETACHED).is_some();
+    let already_detached = env.nails_detached.is_some();
     if !args.yes && !already_detached {
         if std::io::stdin().is_terminal() {
             if !prompt_deactivate_confirmation(settings) {
@@ -81,10 +82,11 @@ pub fn execute(
 
     // Create manager
     let filesystem = RealFilesystem;
-    let mut manager = NailsManager::new(filesystem, config, state_path);
+    let mut manager =
+        NailsManager::new(filesystem, config, state_path).with_runtime_env(env.clone());
     manager.set_verbosity(verbosity);
 
-    if let Err(e) = maybe_detach_for_deactivation() {
+    if let Err(e) = maybe_detach_for_deactivation(env) {
         return report_error(
             json,
             "deactivate",

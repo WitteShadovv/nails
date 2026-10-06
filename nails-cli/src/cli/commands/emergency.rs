@@ -39,6 +39,7 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// - [`ExitStatus::Failed`] on any other failure
 pub fn execute(
     settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
     args: &EmergencyArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
@@ -62,7 +63,8 @@ pub fn execute(
 
     // Create manager
     let filesystem = RealFilesystem;
-    let mut manager = NailsManager::new(filesystem, config, state_path);
+    let mut manager =
+        NailsManager::new(filesystem, config, state_path).with_runtime_env(env.clone());
     manager.set_verbosity(verbosity);
 
     // Try to take the state lock, but never let a crashed or unresponsive holder
@@ -222,7 +224,7 @@ fn perform_backend_lock<F: Filesystem>(
     let mut report = nails_core::backend_lock::lock_backend(manager.filesystem(), &hidden_root);
 
     if let Some(argv) = manager.config().emergency.close_command.clone() {
-        match crate::cli::detach::run_detached_close_command(&argv) {
+        match crate::cli::detach::run_detached_close_command(manager.runtime_env(), &argv) {
             Ok(()) => report.close_command_dispatched = true,
             Err(e) => report.errors.push(format!("close_command failed: {e}")),
         }
@@ -491,7 +493,6 @@ mod tests {
     use super::{EMERGENCY_RECOVERY_GUIDANCE, emergency_recovery_guidance, execute, run_countdown};
     use crate::cli::args::EmergencyArgs;
     use crate::cli::output::{OutputMode, OutputSettings};
-    use nails_core::test_support::EnvGuard;
     use std::path::PathBuf;
     use std::time::Instant;
 
@@ -512,7 +513,6 @@ mod tests {
             command.env("NAILS_EMERGENCY_SUBPROCESS_CONFIG", path);
         }
 
-        let _env = EnvGuard::lock();
         command
             .output()
             .expect("failed to run emergency subprocess test")
@@ -523,6 +523,17 @@ mod tests {
         let Ok(case) = std::env::var("NAILS_EMERGENCY_SUBPROCESS_CASE") else {
             return;
         };
+
+        // The child stands in for the CLI entry point: it reads the environment the
+        // parent prepared on the `Command` exactly once and installs it, as `main`
+        // does.
+        let env = nails_core::RuntimeEnv::from_process_env();
+        nails_core::runtime_env::install(env.clone());
+
+        let execute =
+            |settings: &OutputSettings, args: &EmergencyArgs, config: Option<&std::path::Path>| {
+                execute(settings, &env, args, config)
+            };
 
         let config_override =
             std::env::var_os("NAILS_EMERGENCY_SUBPROCESS_CONFIG").map(PathBuf::from);

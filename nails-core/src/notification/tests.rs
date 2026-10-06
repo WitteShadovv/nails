@@ -315,7 +315,7 @@ fn test_notification_default_urgency() {
 #[test]
 fn test_dispatch_all_with_no_pending_returns_zero() {
     let dir = TempDir::new().unwrap();
-    let count = dispatch_all(dir.path()).unwrap();
+    let count = dispatch_all(dir.path(), &crate::RuntimeEnv::empty()).unwrap();
     assert_eq!(count, 0);
 }
 
@@ -504,7 +504,7 @@ fn test_dispatch_all_returns_zero_in_test_build() {
     write_notification(dir.path(), &make_notification("Test", "body")).unwrap();
 
     // dispatch_all should return Ok(0) due to #[cfg(test)] guard
-    let result = dispatch_all(dir.path());
+    let result = dispatch_all(dir.path(), &crate::RuntimeEnv::empty());
     assert!(result.is_ok());
     assert_eq!(result.unwrap(), 0);
 
@@ -525,7 +525,7 @@ fn test_dispatch_all_with_pending_notifications() {
     .unwrap();
 
     // In test builds, dispatch_all always returns 0 due to #[cfg(test)] guard
-    let count = dispatch_all(dir.path()).unwrap();
+    let count = dispatch_all(dir.path(), &crate::RuntimeEnv::empty()).unwrap();
     assert_eq!(
         count, 0,
         "No notifications should be dispatched in test builds"

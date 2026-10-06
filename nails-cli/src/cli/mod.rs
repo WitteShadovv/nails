@@ -53,8 +53,14 @@ fn lower_oom_score() {
 ///
 /// `settings` are the output settings `main` resolved once from the global
 /// flags; every handler renders with them and returns an [`ExitStatus`] that
-/// `main` turns into the process exit code.
-pub fn execute_command(cli: Cli, settings: &OutputSettings) -> ExitStatus {
+/// `main` turns into the process exit code. `env` is the environment snapshot
+/// `main` read once; handlers that build a manager, resolve the operator, detect
+/// the session or detach take their values from it.
+pub fn execute_command(
+    cli: Cli,
+    settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
+) -> ExitStatus {
     let config = cli.global.config.as_deref();
 
     // Before dispatching a mutating command, install the signal handlers so an
@@ -67,21 +73,21 @@ pub fn execute_command(cli: Cli, settings: &OutputSettings) -> ExitStatus {
     }
 
     match cli.command {
-        Commands::Activate(args) => commands::activate::execute(settings, &args, config),
-        Commands::Deactivate(args) => commands::deactivate::execute(settings, &args, config),
-        Commands::Reapply(args) => commands::reapply::execute(settings, &args, config),
-        Commands::Emergency(args) => commands::emergency::execute(settings, &args, config),
-        Commands::Recover(args) => commands::recover::execute(settings, &args, config),
+        Commands::Activate(args) => commands::activate::execute(settings, env, &args, config),
+        Commands::Deactivate(args) => commands::deactivate::execute(settings, env, &args, config),
+        Commands::Reapply(args) => commands::reapply::execute(settings, env, &args, config),
+        Commands::Emergency(args) => commands::emergency::execute(settings, env, &args, config),
+        Commands::Recover(args) => commands::recover::execute(settings, env, &args, config),
         Commands::Status(args) => commands::status::execute(settings, &args, config),
-        Commands::Verify(args) => commands::verify::execute(settings, &args, config),
-        Commands::Check(args) => commands::check::execute(settings, &args, config),
+        Commands::Verify(args) => commands::verify::execute(settings, env, &args, config),
+        Commands::Check(args) => commands::check::execute(settings, env, &args, config),
         Commands::Init(args) => commands::init::execute(settings, &args, config),
-        Commands::ResetUpper(args) => commands::reset_upper::execute(settings, &args, config),
+        Commands::ResetUpper(args) => commands::reset_upper::execute(settings, env, &args, config),
         Commands::Config(command) => commands::config::execute(settings, config, &command),
         Commands::Completions(args) => commands::completions::execute(&args),
-        Commands::NotifyDispatch => commands::notify_dispatch::execute(settings, config),
-        Commands::Watch => commands::watch::execute(settings, config),
-        Commands::SleepGuard => commands::sleep_guard::execute(settings, config),
+        Commands::NotifyDispatch => commands::notify_dispatch::execute(settings, env, config),
+        Commands::Watch => commands::watch::execute(settings, env, config),
+        Commands::SleepGuard => commands::sleep_guard::execute(settings, env, config),
     }
 }
 

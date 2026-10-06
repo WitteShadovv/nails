@@ -27,7 +27,11 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// Always exits [`ExitStatus::Ok`]: the watcher is a best-effort safety net, so a
 /// missing manifest (no activation wrote one) or an unreadable copy is a quiet
 /// no-op rather than an error dialog.
-pub fn execute(_settings: &OutputSettings, config_override: Option<&Path>) -> ExitStatus {
+pub fn execute(
+    _settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
+    config_override: Option<&Path>,
+) -> ExitStatus {
     let filesystem = RealFilesystem;
 
     let manifest = match runtime_copy::read_manifest(&filesystem) {
@@ -67,7 +71,7 @@ pub fn execute(_settings: &OutputSettings, config_override: Option<&Path>) -> Ex
         &watch_config,
         || watcher::probe_backend(&filesystem, &manifest),
         || {
-            if let Err(e) = send_immediate(&backend_alert()) {
+            if let Err(e) = send_immediate(&backend_alert(), env) {
                 tracing::warn!(error = %e, "Could not deliver the backend-failure alert");
             }
         },
@@ -75,7 +79,8 @@ pub fn execute(_settings: &OutputSettings, config_override: Option<&Path>) -> Ex
             tracing::warn!("Backend failure outlasted the debounce; running emergency teardown");
             let state_path = emergency_config.state_file_path.clone();
             let mut manager =
-                NailsManager::new(RealFilesystem, emergency_config.clone(), state_path);
+                NailsManager::new(RealFilesystem, emergency_config.clone(), state_path)
+                    .with_runtime_env(env.clone());
             if let Err(e) = manager.emergency_deactivate() {
                 tracing::error!(error = %e, "Automatic emergency teardown failed");
             }

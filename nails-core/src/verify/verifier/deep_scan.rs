@@ -242,7 +242,7 @@ impl<F: Filesystem> Verifier<F> {
         // Prefer the invoking user's real home when running under sudo on the
         // live host; an offline scan has no meaningful live environment.
         if !self.is_offline()
-            && let Ok(sudo_user) = std::env::var("SUDO_USER")
+            && let Some(sudo_user) = self.invoking_user.as_deref()
             && !sudo_user.is_empty()
             && let Ok(content) = self.filesystem.read_file_content(Path::new(PASSWD_FILE))
         {

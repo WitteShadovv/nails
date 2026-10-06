@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use nails_core::test_support::EnvGuard;
-use nails_core::{Notification, notification};
+use nails_core::{Notification, RuntimeEnv, notification, runtime_env};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -95,27 +94,36 @@ fn subprocess_notification_runtime_entrypoint() {
     };
     let hidden_root = PathBuf::from(std::env::var("NAILS_NOTIFICATION_RUNTIME_ROOT").unwrap());
 
+    // This child process stands in for the CLI entry point: it reads the
+    // environment its parent prepared once and installs it, exactly as `main`
+    // does, so the leaf helpers see the same snapshot the handlers are given.
+    let mut env = RuntimeEnv::from_process_env();
+    if case == "sudo-user-fallback-write" {
+        env.nails_target_user = None;
+    }
+    runtime_env::install(env.clone());
+
     match case.as_str() {
         "explicit-test-runtime" => {
             notification::write_notification(&hidden_root, &make_notification("Queued", "Body"))
                 .unwrap();
-            assert_eq!(notification::dispatch_all(&hidden_root).unwrap(), 0);
+            assert_eq!(notification::dispatch_all(&hidden_root, &env).unwrap(), 0);
             assert_eq!(notification::read_pending(&hidden_root).unwrap().len(), 1);
         }
         "disabled-env" => {
             notification::write_notification(&hidden_root, &make_notification("Queued", "Body"))
                 .unwrap();
-            assert_eq!(notification::dispatch_all(&hidden_root).unwrap(), 0);
+            assert_eq!(notification::dispatch_all(&hidden_root, &env).unwrap(), 0);
             assert_eq!(notification::read_pending(&hidden_root).unwrap().len(), 1);
         }
         "missing-notify-send" => {
             notification::write_notification(&hidden_root, &make_notification("Queued", "Body"))
                 .unwrap();
-            assert_eq!(notification::dispatch_all(&hidden_root).unwrap(), 0);
+            assert_eq!(notification::dispatch_all(&hidden_root, &env).unwrap(), 0);
             assert_eq!(notification::read_pending(&hidden_root).unwrap().len(), 1);
         }
         "no-pending" => {
-            assert_eq!(notification::dispatch_all(&hidden_root).unwrap(), 0);
+            assert_eq!(notification::dispatch_all(&hidden_root, &env).unwrap(), 0);
             assert!(notification::read_pending(&hidden_root).unwrap().is_empty());
         }
         "write-dir-blocked" => {
@@ -149,8 +157,6 @@ fn subprocess_notification_runtime_entrypoint() {
             assert!(err.to_string().contains("Failed to read notifications dir"));
         }
         "sudo-user-fallback-write" => {
-            let mut env = EnvGuard::lock();
-            env.remove("NAILS_TARGET_USER");
             notification::write_notification(&hidden_root, &make_notification("Queued", "Body"))
                 .unwrap();
             assert_eq!(notification::read_pending(&hidden_root).unwrap().len(), 1);
@@ -158,7 +164,7 @@ fn subprocess_notification_runtime_entrypoint() {
         "notify-send-exec-error" => {
             notification::write_notification(&hidden_root, &make_notification("Queued", "Body"))
                 .unwrap();
-            assert_eq!(notification::dispatch_all(&hidden_root).unwrap(), 0);
+            assert_eq!(notification::dispatch_all(&hidden_root, &env).unwrap(), 0);
             assert_eq!(notification::read_pending(&hidden_root).unwrap().len(), 1);
         }
         "successful-dispatch" => {
@@ -167,29 +173,37 @@ fn subprocess_notification_runtime_entrypoint() {
                 &make_notification("Queued Title", "Body payload"),
             )
             .unwrap();
-            assert_eq!(notification::dispatch_all(&hidden_root).unwrap(), 1);
+            assert_eq!(notification::dispatch_all(&hidden_root, &env).unwrap(), 1);
             assert!(notification::read_pending(&hidden_root).unwrap().is_empty());
         }
         "env-propagation" => {
-            let env = notification::notification_runtime_environment();
+            let session_env = notification::notification_runtime_environment(&env);
             assert!(
-                env.iter()
+                session_env
+                    .iter()
                     .any(|(k, v)| *k == "XDG_RUNTIME_DIR" && v == "/run/user/1000")
             );
             assert!(
-                env.iter().any(|(k, v)| *k == "DBUS_SESSION_BUS_ADDRESS"
-                    && v == "unix:path=/run/user/1000/bus")
+                session_env
+                    .iter()
+                    .any(|(k, v)| *k == "DBUS_SESSION_BUS_ADDRESS"
+                        && v == "unix:path=/run/user/1000/bus")
             );
-            assert!(env.iter().any(|(k, v)| *k == "DISPLAY" && v == ":0"));
             assert!(
-                env.iter()
+                session_env
+                    .iter()
+                    .any(|(k, v)| *k == "DISPLAY" && v == ":0")
+            );
+            assert!(
+                session_env
+                    .iter()
                     .any(|(k, v)| *k == "WAYLAND_DISPLAY" && v == "wayland-1")
             );
         }
         "failed-dispatch" => {
             notification::write_notification(&hidden_root, &make_notification("Queued", "Body"))
                 .unwrap();
-            assert_eq!(notification::dispatch_all(&hidden_root).unwrap(), 0);
+            assert_eq!(notification::dispatch_all(&hidden_root, &env).unwrap(), 0);
             assert_eq!(notification::read_pending(&hidden_root).unwrap().len(), 1);
         }
         other => panic!("unknown notification runtime subprocess case: {other}"),

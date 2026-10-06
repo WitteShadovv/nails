@@ -162,7 +162,7 @@ fn dispatch_all_returns_zero_without_touching_pending_notifications_in_test_like
     let dir = tempfile::tempdir().unwrap();
     write_notification(dir.path(), &sample_notification()).unwrap();
 
-    let count = dispatch_all(dir.path()).unwrap();
+    let count = dispatch_all(dir.path(), &nails_core::RuntimeEnv::empty()).unwrap();
 
     assert_eq!(count, 0);
     assert!(dir.path().join("notifications").exists());
@@ -178,15 +178,20 @@ fn subprocess_notification_dispatch_entrypoint() {
         .map(std::path::PathBuf::from)
         .expect("missing hidden root for notification subprocess");
 
+    // Stand in for the CLI entry point: read the environment the parent
+    // prepared once and install it for the leaf helpers.
+    let env = nails_core::RuntimeEnv::from_process_env();
+    nails_core::runtime_env::install(env.clone());
+
     match case.as_str() {
         "dispatch-success" => {
-            assert_eq!(dispatch_all(&hidden_root).unwrap(), 2);
+            assert_eq!(dispatch_all(&hidden_root, &env).unwrap(), 2);
         }
         "dispatch-disabled" => {
-            assert_eq!(dispatch_all(&hidden_root).unwrap(), 0);
+            assert_eq!(dispatch_all(&hidden_root, &env).unwrap(), 0);
         }
         "dispatch-without-notify-send" => {
-            assert_eq!(dispatch_all(&hidden_root).unwrap(), 0);
+            assert_eq!(dispatch_all(&hidden_root, &env).unwrap(), 0);
         }
         "overlay-direct-success" => {
             let fs = MockFilesystem::new();

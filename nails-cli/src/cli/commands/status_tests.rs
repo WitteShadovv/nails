@@ -5,7 +5,6 @@ use super::{execute, hidden_root_critical, status_exit_code};
 use crate::cli::args::StatusArgs;
 use crate::cli::output::{ExitStatus, OutputMode, OutputSettings};
 use nails_core::status::Posture;
-use nails_core::test_support::EnvGuard;
 use std::path::PathBuf;
 
 #[test]
@@ -90,7 +89,6 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
         command.env("NAILS_STATUS_SUBPROCESS_CONFIG", path);
     }
 
-    let _env = EnvGuard::lock();
     command
         .output()
         .expect("failed to run status subprocess test")
@@ -101,6 +99,12 @@ fn subprocess_status_entrypoint() {
     let Ok(case) = std::env::var("NAILS_STATUS_SUBPROCESS_CASE") else {
         return;
     };
+
+    // The child stands in for the CLI entry point: it reads the environment the
+    // parent prepared on the `Command` exactly once and installs it, as `main`
+    // does.
+    let env = nails_core::RuntimeEnv::from_process_env();
+    nails_core::runtime_env::install(env);
 
     let config_override = std::env::var_os("NAILS_STATUS_SUBPROCESS_CONFIG").map(PathBuf::from);
 
