@@ -16,3 +16,4 @@ that supersedes the old one rather than editing history.
 | [0004](0004-detached-mount-apis.md) | Path containment with openat2, and how we mount |
 | [0005](0005-live-overlay-vs-boot-time-overlay.md) | Live overlay vs boot-time overlay mechanisms |
 | [0006](0006-real-kernel-test-tier.md) | A rootless real-kernel test tier, and limits on mocks |
+| [0007](0007-emergency-architecture.md) | Emergency teardown architecture (proposed) |

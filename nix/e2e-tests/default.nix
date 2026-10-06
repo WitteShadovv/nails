@@ -183,6 +183,11 @@ let
 
   namesWithTag = tag: lib.filter (name: lib.elem tag (metadata.${name}.tags or [ ])) testNames;
 
+  # Research specs back a design decision (an ADR) rather than guard shipped
+  # behaviour. They are built only by name or through the `research` group and
+  # stay out of `all`, so the nightly full suite never runs them.
+  researchNames = namesWithTag "research";
+
   ciNames = lib.filter (name: builtins.elem name testNames) [
     "basic-workflow"
     "verify"
@@ -213,8 +218,9 @@ let
     state = namesWithTag "state";
     contract = namesWithTag "contract";
     faults = namesWithTag "faults";
+    research = researchNames;
     ci = ciNames;
-    all = testNames;
+    all = lib.subtractLists researchNames testNames;
   };
 
   groups = lib.mapAttrs linkFarmForNames groupMembers;

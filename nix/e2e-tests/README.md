@@ -114,6 +114,7 @@ Use only:
 - `overlay`
 - `state`
 - `contract`
+- `research` (design-decision experiments: excluded from `all`, run by name or with the `research` group)
 
 ## Running tests
 
