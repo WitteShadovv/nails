@@ -119,6 +119,29 @@ pub(crate) fn select_decoy_restore_target<F: Filesystem>(
     select_system_profile(fs, env)
 }
 
+/// The decoy generation that may be *activated* for the running session (the
+/// failed-reboot fallback's `switch-to-configuration test`).
+///
+/// Only a generation that has already run on this machine qualifies: the one
+/// recorded at activation (what was running before the hidden switch), else
+/// the generation the machine booted (`/run/booted-system`). The newest system
+/// profile is deliberately not a candidate: it may be a generation that was
+/// built but never booted or switched to, and activating it would change the
+/// decoy into something it never was. `None` when neither is available.
+pub(crate) fn select_session_decoy_generation<F: Filesystem>(
+    fs: &F,
+    recorded_decoy_system: Option<&str>,
+) -> Option<PathBuf> {
+    if let Some(recorded) = recorded_decoy_system
+        && fs.path_exists(Path::new(recorded)).unwrap_or(false)
+    {
+        return Some(PathBuf::from(recorded));
+    }
+    fs.canonicalize(Path::new("/run/booted-system"))
+        .ok()
+        .filter(|booted| fs.path_exists(booted).unwrap_or(false))
+}
+
 /// Ensure /run/current-system exists as a symlink to the provided system profile.
 pub(crate) fn ensure_run_current_system_symlink<F: Filesystem>(
     fs: &F,

@@ -661,6 +661,9 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         let restore_decoy_profile = requires_decoy_restore(self)?;
+        // Read before the teardown rewrites the state: the failed-reboot fallback
+        // activates exactly this generation for the running session.
+        let recorded_decoy = recorded_decoy_system(self);
         let orchestrator = DeactivationOrchestrator::new(cleanup_config)
             .with_mode(kind.orchestrator_mode())
             .with_decoy_profile_restore(restore_decoy_profile)
@@ -748,7 +751,11 @@ impl<F: Filesystem> NailsManager<F> {
             // observe the request and a guard that refuses surfaces as an error
             // here instead of being silently swallowed.
             let host_effects = self.host_effects.clone();
-            let _outcome = host_effects.reboot_into_decoy(self.filesystem(), self.runtime_env())?;
+            let _outcome = host_effects.reboot_into_decoy(
+                self.filesystem(),
+                recorded_decoy.as_deref(),
+                self.runtime_env(),
+            )?;
         }
 
         Ok(report)

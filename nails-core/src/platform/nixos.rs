@@ -249,10 +249,13 @@ mod tests {
     const SWITCH_SCRIPT: &str = "/nix/var/nix/profiles/system/bin/switch-to-configuration";
 
     /// A mock host whose decoy system profile (and its switch script) exist.
+    /// A host whose decoy profile exists and was the generation it booted.
     fn host() -> MockFilesystem {
         let fs = MockFilesystem::new();
         fs.mock_set_path_type(PROFILE, PathKind::Dir);
         fs.mock_set_path_type(SWITCH_SCRIPT, PathKind::File);
+        crate::Filesystem::create_symlink(&fs, Path::new(PROFILE), Path::new("/run/booted-system"))
+            .unwrap();
         fs
     }
 

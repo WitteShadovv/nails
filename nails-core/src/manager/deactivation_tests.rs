@@ -408,3 +408,37 @@ fn untrusted_teardown_lifts_only_guards_it_can_see() {
         vec![std::path::PathBuf::from("/usr")]
     );
 }
+
+#[test]
+fn the_session_fallback_activates_the_recorded_or_booted_decoy_only() {
+    use crate::manager::helpers::select_session_decoy_generation;
+    use crate::{Filesystem, MockFilesystem};
+    use std::path::{Path, PathBuf};
+
+    let fs = MockFilesystem::new();
+    // A newer profile generation exists but was never booted.
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system-9-link", true);
+    assert_eq!(select_session_decoy_generation(&fs, None), None);
+
+    fs.mock_set_path_exists("/nix/store/booted", true);
+    fs.create_symlink(
+        Path::new("/nix/store/booted"),
+        Path::new("/run/booted-system"),
+    )
+    .unwrap();
+    assert_eq!(
+        select_session_decoy_generation(&fs, None),
+        Some(PathBuf::from("/nix/store/booted"))
+    );
+
+    fs.mock_set_path_exists("/nix/store/recorded", true);
+    assert_eq!(
+        select_session_decoy_generation(&fs, Some("/nix/store/recorded")),
+        Some(PathBuf::from("/nix/store/recorded"))
+    );
+    // A recorded generation that is gone falls back to the booted one.
+    assert_eq!(
+        select_session_decoy_generation(&fs, Some("/nix/store/gone")),
+        Some(PathBuf::from("/nix/store/booted"))
+    );
+}

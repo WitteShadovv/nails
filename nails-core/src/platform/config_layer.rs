@@ -362,9 +362,15 @@ pub(crate) fn restore_decoy_system<F: Filesystem>(
     dispatch_reboot: &dyn Fn() -> Result<()>,
     env: &crate::RuntimeEnv,
 ) -> Result<RestoreOutcome> {
-    let system_profile = select_system_profile(fs, env)?.ok_or_else(|| {
-        NailsError::NixOSError("No system profile available for decoy restore".into())
-    })?;
+    // Prefer the generation the machine booted (the decoy that ran before the
+    // session) over the newest profile, which may never have been booted.
+    let booted = crate::manager::helpers::select_session_decoy_generation(fs, None);
+    let system_profile = match booted.clone() {
+        Some(booted) => booted,
+        None => select_system_profile(fs, env)?.ok_or_else(|| {
+            NailsError::NixOSError("No system profile available for decoy restore".into())
+        })?,
+    };
 
     tracing::info!("Restoring /run/current-system to the decoy profile...");
     ensure_run_current_system_symlink(fs, &system_profile).map_err(|e| {
@@ -384,7 +390,15 @@ pub(crate) fn restore_decoy_system<F: Filesystem>(
                 error = %reboot_error,
                 "Reboot command failed; restoring the decoy for the running session with switch-to-configuration test"
             );
-            switch_to_decoy_for_session(fs, runner, &system_profile)?;
+            // Activate only a generation that has run here before: the booted one.
+            let Some(booted) = booted else {
+                return Err(NailsError::NixOSError(
+                    "No booted decoy generation to restore for this session; refusing to \
+                     activate a generation that may never have been booted"
+                        .into(),
+                ));
+            };
+            switch_to_decoy_for_session(fs, runner, &booted)?;
             Ok(RestoreOutcome::FellBackToSessionSwitch)
         }
     }
@@ -437,12 +451,37 @@ mod tests {
     const PROFILE: &str = "/nix/var/nix/profiles/system";
     const SWITCH_SCRIPT: &str = "/nix/var/nix/profiles/system/bin/switch-to-configuration";
 
-    /// A mock host whose decoy system profile (and its switch script) exist.
+    /// A mock host whose decoy system profile (and its switch script) exist and
+    /// which booted that generation.
     fn host() -> MockFilesystem {
         let fs = MockFilesystem::new();
         fs.mock_set_path_type(PROFILE, PathKind::Dir);
         fs.mock_set_path_type(SWITCH_SCRIPT, PathKind::File);
+        fs.create_symlink(Path::new(PROFILE), Path::new("/run/booted-system"))
+            .unwrap();
         fs
+    }
+
+    /// A newest profile that was never booted is never activated by the
+    /// failed-reboot fallback.
+    #[test]
+    fn a_never_booted_profile_is_not_activated_on_a_failed_reboot() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_type(PROFILE, PathKind::Dir);
+        fs.mock_set_path_type(SWITCH_SCRIPT, PathKind::File);
+        let runner = MockProcessRunner::new();
+
+        let result = ConfigLayer::<MockFilesystem>::restore(
+            &NixOsConfigLayer,
+            &fs,
+            &runner,
+            true,
+            &|| Err(NailsError::NixOSError("reboot unavailable".into())),
+            &crate::RuntimeEnv::empty(),
+        );
+
+        assert!(result.is_err(), "{result:?}");
+        assert!(runner.calls().is_empty(), "nothing may be activated");
     }
 
     /// The config layer's `restore` only re-points `/run/current-system` when no

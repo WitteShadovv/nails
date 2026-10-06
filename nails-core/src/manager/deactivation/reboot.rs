@@ -7,7 +7,7 @@
 //! command can be dispatched, the decoy generation is re-activated for the
 //! running session with a non-installing `switch-to-configuration test`.
 
-use crate::manager::select_system_profile;
+use crate::manager::helpers::select_session_decoy_generation;
 use crate::nixos::SwitchAction;
 use crate::process::{ProcessCommand, ProcessRunner, Program, RealProcessRunner};
 use crate::{Filesystem, NailsError, Result};
@@ -229,13 +229,16 @@ pub(super) fn reboot_then_restore_decoy_on_failure(
 /// This re-points the live system at the decoy without reinstalling the
 /// bootloader or writing the ESP / EFI NVRAM. The action is built from
 /// [`SwitchAction`], so it can only ever be `test`, never `switch`/`boot`.
+/// The generation is the recorded decoy system, else the booted one (see
+/// [`select_session_decoy_generation`]); never the newest system profile, which
+/// may never have been booted.
 pub(super) fn switch_to_decoy_for_session<F: Filesystem>(
     filesystem: &F,
-    env: &crate::RuntimeEnv,
+    recorded_decoy: Option<&str>,
 ) -> Result<()> {
-    let Some(system_profile) = select_system_profile(filesystem, env)? else {
+    let Some(system_profile) = select_session_decoy_generation(filesystem, recorded_decoy) else {
         return Err(NailsError::NixOSError(
-            "No system profile available for decoy restore".into(),
+            "No recorded or booted decoy generation available to restore for this session".into(),
         ));
     };
 
@@ -310,6 +313,7 @@ impl HostEffects {
     pub(crate) fn reboot_into_decoy<F: Filesystem>(
         &self,
         filesystem: &F,
+        recorded_decoy: Option<&str>,
         env: &crate::RuntimeEnv,
     ) -> Result<PostDeactivationReboot> {
         match self {
@@ -321,11 +325,14 @@ impl HostEffects {
 
                 reboot_then_restore_decoy_on_failure(
                     || request_reboot(env),
-                    || switch_to_decoy_for_session(filesystem, env),
+                    || switch_to_decoy_for_session(filesystem, recorded_decoy),
                 )
             }
             #[cfg(any(test, feature = "test-hooks"))]
-            Self::Simulated(simulated) => simulated.record_reboot_request(),
+            Self::Simulated(simulated) => {
+                let _ = recorded_decoy;
+                simulated.record_reboot_request()
+            }
         }
     }
 
