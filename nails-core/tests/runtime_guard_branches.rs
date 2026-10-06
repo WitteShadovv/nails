@@ -197,6 +197,7 @@ fn subprocess_notification_dispatch_entrypoint() {
 
             let result = mount_overlay_with_strategy(
                 &fs,
+                Path::new("/run/0123456789abcdef"),
                 &[Path::new("/srv")],
                 Path::new("/mnt/hidden/srv/.upper"),
                 Path::new("/mnt/hidden/srv/.work"),

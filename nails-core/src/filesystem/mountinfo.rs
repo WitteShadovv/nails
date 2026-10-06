@@ -22,8 +22,6 @@
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
 
-/// Runtime directory holding tmpfs-backed ephemeral overlay upper/work dirs.
-const RUNTIME_DIR: &str = "/run/nails";
 /// The read-only bind NAILS restores over an overlaid `/nix`.
 const NIX_STORE: &str = "/nix/store";
 /// The directory NAILS overlays when hiding the Nix store.
@@ -244,10 +242,14 @@ pub fn escape_overlay_path(path: &Path) -> Result<String> {
 pub struct NailsMounts {
     /// Overlays whose upper/work live under the hidden root.
     pub persistent_overlays: Vec<PathBuf>,
-    /// Overlays whose upper/work live under the runtime dir (`/run/nails`).
+    /// Overlays whose upper/work live under the per-activation runtime root.
     pub ephemeral_overlays: Vec<PathBuf>,
-    /// Mounts under the pivot staging base (`/run/nails-pivot`).
+    /// Mounts staged inside the per-activation runtime root (the pivot staging
+    /// overlays, the vfat snapshot tmpfs, and the read-only `/nix/store` bind).
     pub pivot_binds: Vec<PathBuf>,
+    /// The per-activation runtime scaffolding tmpfs itself, if one is present.
+    /// Unmounted and removed last, after everything staged inside it.
+    pub runtime_tmpfs: Option<PathBuf>,
     /// The `/nix/store` restore bind, if present.
     pub nix_store_bind: Option<PathBuf>,
     /// Whether an overlay is mounted on `/nix` (gates `/nix/store` ownership).
@@ -270,18 +272,64 @@ impl NailsMounts {
         Ok(Self::from_entries(&read_mountinfo()?, hidden_root))
     }
 
-    /// Classify an already-parsed mount table (the testable core of `discover`).
-    pub fn from_entries(entries: &[MountEntry], hidden_root: Option<&Path>) -> Self {
-        let pivot_base = Path::new(crate::overlay::PIVOT_STAGING_BASE);
-        let runtime_dir = Path::new(RUNTIME_DIR);
+    /// Structurally identify this activation's runtime scaffolding root from the
+    /// live mount table, without relying on the state file or a fixed name.
+    ///
+    /// The runtime root is a tmpfs mounted directly under `/run` (so its parent
+    /// is exactly `/run`) that *hosts NAILS scaffolding*: an overlay whose
+    /// upper/work dir is inside it, a staging overlay mounted inside it, or the
+    /// read-only `/nix/store` bind inside it. Requiring that correlation keeps an
+    /// unrelated `/run/*` tmpfs (a container runtime, snapd) from matching. An
+    /// umbrella tmpfs that happens to be empty (an overlay-only activation that
+    /// needed no staging or store bind) is deliberately not matched here: it holds
+    /// nothing and is volatile, and a trusted teardown removes it from the
+    /// recorded state path regardless.
+    fn discover_runtime_root(entries: &[MountEntry]) -> Option<PathBuf> {
+        let run = Path::new("/run");
         let under =
             |p: &Option<PathBuf>, base: &Path| p.as_deref().is_some_and(|x| x.starts_with(base));
 
-        let mut m = NailsMounts::default();
+        entries
+            .iter()
+            .filter(|e| e.fstype == "tmpfs" && e.mount_point.parent() == Some(run))
+            .map(|e| &e.mount_point)
+            .find(|root| {
+                entries.iter().any(|e| {
+                    // A staging overlay or the /nix/store bind mounted inside root.
+                    (e.mount_point != **root && e.mount_point.starts_with(root))
+                        && (e.fstype == "overlay" || e.source == Path::new(NIX_STORE))
+                }) || entries.iter().any(|e| {
+                    // An overlay anywhere whose upper/work backing lives inside root.
+                    e.fstype == "overlay" && {
+                        let opts = parse_overlay_opts(&e.super_opts);
+                        under(&opts.upperdir, root) || under(&opts.workdir, root)
+                    }
+                })
+            })
+            .cloned()
+    }
+
+    /// Classify an already-parsed mount table (the testable core of `discover`).
+    pub fn from_entries(entries: &[MountEntry], hidden_root: Option<&Path>) -> Self {
+        let runtime_root = Self::discover_runtime_root(entries);
+        let under =
+            |p: &Option<PathBuf>, base: &Path| p.as_deref().is_some_and(|x| x.starts_with(base));
+
+        let mut m = NailsMounts {
+            runtime_tmpfs: runtime_root.clone(),
+            ..Default::default()
+        };
+
         for e in entries {
             let mp = &e.mount_point;
 
-            if mp.starts_with(pivot_base) {
+            // Everything staged inside the runtime root — staging overlays, the
+            // snapshot tmpfs, the /nix/store bind — is torn down before the root
+            // itself. The root tmpfs is tracked separately in `runtime_tmpfs`.
+            if let Some(root) = &runtime_root
+                && mp != root
+                && mp.starts_with(root)
+            {
                 m.pivot_binds.push(mp.clone());
                 continue;
             }
@@ -295,7 +343,9 @@ impl NailsMounts {
                     && (under(&opts.upperdir, root) || under(&opts.workdir, root))
                 {
                     m.persistent_overlays.push(mp.clone());
-                } else if under(&opts.upperdir, runtime_dir) || under(&opts.workdir, runtime_dir) {
+                } else if let Some(root) = &runtime_root
+                    && (under(&opts.upperdir, root) || under(&opts.workdir, root))
+                {
                     m.ephemeral_overlays.push(mp.clone());
                 } else if hidden_root.is_none() {
                     m.persistent_overlays.push(mp.clone());
@@ -330,6 +380,11 @@ impl NailsMounts {
         {
             points.push(bind.clone());
         }
+        // The umbrella tmpfs comes last: it can only be unmounted once everything
+        // staged inside it (pivot binds above) is gone.
+        if let Some(root) = &self.runtime_tmpfs {
+            points.push(root.clone());
+        }
         points
     }
 
@@ -342,6 +397,7 @@ impl NailsMounts {
             || self.ephemeral_overlays.iter().any(|p| p == target)
             || self.pivot_binds.iter().any(|p| p == target)
             || self.persona_binds.iter().any(|p| p == target)
+            || self.runtime_tmpfs.as_deref() == Some(target)
         {
             return true;
         }
@@ -472,29 +528,42 @@ this is not a mountinfo line
     #[test]
     fn discover_classifies_persistent_ephemeral_pivot_and_nix_store() {
         let hidden = Path::new("/mnt/hidden");
+        // The runtime scaffolding root is a random-named tmpfs under /run. It is
+        // discovered structurally — not by a fixed name — because it hosts the
+        // /var ephemeral overlay's upper and the /etc staging overlay.
+        let root = "/run/0123456789abcdef";
+        let rt = format!("20 1 0:70 / {root} rw - tmpfs tmpfs rw,mode=700");
+        let var = overlay_line(
+            11,
+            "/var",
+            &format!("{root}/var-upper"),
+            &format!("{root}/var-work"),
+        );
+        let pivot = format!(
+            "13 1 0:60 / {root}/etc rw - overlay overlay rw,lowerdir=/etc,upperdir=/mnt/hidden/etc/upper,workdir=/mnt/hidden/etc/work"
+        );
         let content = format!(
-            "{home}\n{var}\n{nix}\n{pivot}\n{nixstore}\n{foreign}",
+            "{rt}\n{home}\n{var}\n{nix}\n{pivot}\n{nixstore}\n{foreign}",
             home = overlay_line(
                 10,
                 "/home",
                 "/mnt/hidden/home/upper",
                 "/mnt/hidden/home/work"
             ),
-            var = overlay_line(11, "/var", "/run/nails/var/upper", "/run/nails/var/work"),
             nix = overlay_line(12, "/nix", "/mnt/hidden/nix/upper", "/mnt/hidden/nix/work"),
-            pivot = "13 1 0:60 / /run/nails-pivot/etc rw - overlay overlay rw,lowerdir=/etc,upperdir=/mnt/hidden/etc/upper,workdir=/mnt/hidden/etc/work",
             nixstore = "14 1 8:1 /store /nix/store ro - ext4 /dev/sda1 ro",
             foreign = "15 1 8:2 / /home/other rw - ext4 /dev/sdc1 rw",
         );
         let entries = parse_mountinfo(&content);
         let m = NailsMounts::from_entries(&entries, Some(hidden));
 
+        assert_eq!(m.runtime_tmpfs, Some(PathBuf::from(root)));
         assert!(m.persistent_overlays.contains(&PathBuf::from("/home")));
         assert!(m.persistent_overlays.contains(&PathBuf::from("/nix")));
         assert!(m.ephemeral_overlays.contains(&PathBuf::from("/var")));
         assert!(
             m.pivot_binds
-                .contains(&PathBuf::from("/run/nails-pivot/etc"))
+                .contains(&PathBuf::from(format!("{root}/etc")))
         );
         assert_eq!(m.nix_store_bind, Some(PathBuf::from("/nix/store")));
         assert!(m.nix_overlay_present);
@@ -502,11 +571,34 @@ this is not a mountinfo line
         assert!(m.is_owned(Path::new("/home")));
         assert!(m.is_owned(Path::new("/var")));
         assert!(m.is_owned(Path::new("/nix")));
-        assert!(m.is_owned(Path::new("/run/nails-pivot/etc")));
+        assert!(m.is_owned(&PathBuf::from(format!("{root}/etc"))));
+        // The umbrella tmpfs itself is owned so teardown can remove it last.
+        assert!(m.is_owned(Path::new(root)));
         // /nix/store bind is owned because /nix is overlaid.
         assert!(m.is_owned(Path::new("/nix/store")));
         // A foreign ext4 mount is never owned.
         assert!(!m.is_owned(Path::new("/home/other")));
+    }
+
+    #[test]
+    fn foreign_run_tmpfs_without_nails_scaffolding_is_not_mistaken_for_the_runtime_root() {
+        // A /run tmpfs that hosts no NAILS overlay, staging mount or /nix/store
+        // bind (here a snap runtime with only a plain bind under it) must not be
+        // picked up as our scaffolding root, and an empty NAILS umbrella (no
+        // staging yet) is likewise not discovered structurally — a trusted
+        // teardown removes that one from the recorded state path instead.
+        let content = concat!(
+            "40 1 0:80 / /run/snapd rw - tmpfs tmpfs rw,mode=755\n",
+            "41 40 0:81 / /run/snapd/ns rw - nsfs nsfs rw\n",
+            "42 1 0:82 / /run/0123456789abcdef rw - tmpfs tmpfs rw,mode=700\n",
+        );
+        let entries = parse_mountinfo(content);
+        let m = NailsMounts::from_entries(&entries, Some(Path::new("/mnt/hidden")));
+        assert_eq!(
+            m.runtime_tmpfs, None,
+            "neither a foreign /run tmpfs nor an empty umbrella is our runtime root"
+        );
+        assert!(m.pivot_binds.is_empty());
     }
 
     #[test]

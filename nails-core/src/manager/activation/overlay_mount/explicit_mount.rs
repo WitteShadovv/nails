@@ -17,6 +17,7 @@ impl<F: Filesystem> NailsManager<F> {
     pub(in crate::manager::activation) fn mount_explicit_overlays(
         &self,
         tracker: &mut super::MountTracker<F>,
+        runtime_root: &std::path::Path,
         strategy_options: &crate::overlay::OverlayStrategyOptions,
         verbosity: Verbosity,
         outcome: &mut OverlayMountOutcome,
@@ -64,6 +65,7 @@ impl<F: Filesystem> NailsManager<F> {
         let overlays = self.config.overlays.clone();
         self.mount_overlay_targets(
             tracker,
+            runtime_root,
             &overlays,
             Vec::new(),
             MountFailureMode::FailFast,

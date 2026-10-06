@@ -242,6 +242,27 @@ impl MockFilesystem {
             });
         }
 
+        // Model tmpfs mounts too, so the runtime scaffolding root (a tmpfs under
+        // /run) can be discovered structurally the same way the real parser does.
+        for target in self
+            .tmpfs_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .iter()
+        {
+            entries.push(MountEntry {
+                mount_id: 0,
+                parent_id: 0,
+                dev: String::new(),
+                root: PathBuf::from("/"),
+                mount_point: target.clone(),
+                mount_opts: "rw,nosuid,nodev,relatime".to_string(),
+                fstype: "tmpfs".to_string(),
+                source: PathBuf::from("tmpfs"),
+                super_opts: "rw,mode=700".to_string(),
+            });
+        }
+
         Ok(NailsMounts::from_entries(&entries, hidden_root))
     }
 

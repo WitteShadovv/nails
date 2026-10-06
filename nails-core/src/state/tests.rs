@@ -190,6 +190,7 @@ fn test_state_file_serialization() {
             decoy_writers: Vec::new(),
         },
         platform: Some(PlatformState::nixos(Some("abc123def456".to_string()))),
+        runtime_root: None,
         overlay_status,
         failed_overlays: Vec::new(),
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
@@ -408,6 +409,7 @@ fn test_save_load_round_trip_with_inactive_state() {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Inactive,
         platform: None,
+        runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")
@@ -469,6 +471,7 @@ fn test_save_load_round_trip_with_active_state() {
             decoy_writers: Vec::new(),
         },
         platform: Some(PlatformState::nixos(Some("abc123def456".to_string()))),
+        runtime_root: None,
         overlay_status,
         failed_overlays: Vec::new(),
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:01Z")
@@ -586,6 +589,7 @@ fn test_save_load_multiple_overlays() {
             decoy_writers: Vec::new(),
         },
         platform: Some(PlatformState::nixos(Some("test123".to_string()))),
+        runtime_root: None,
         overlay_status,
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -782,6 +786,7 @@ fn test_actual_atomic_write_to_temp_hidden_volume() {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Inactive,
         platform: Some(PlatformState::nixos(Some("test-gen".to_string()))),
+        runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -870,6 +875,7 @@ fn test_persist_race_condition_handling() {
             decoy_writers: Vec::new(),
         },
         platform: None,
+        runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -918,6 +924,7 @@ fn create_test_manager_with_state(
         version: env!("CARGO_PKG_VERSION").to_string(),
         state,
         platform: None,
+        runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -1319,6 +1326,7 @@ fn test_integration_deactivate_panic_triggers_stateguard_rollback() {
             overlays: vec![PathBuf::from("/home")],
             decoy_writers: Vec::new(),
         },
+        runtime_root: None,
         overlay_status,
         ..StateFile::default()
     };
@@ -1474,6 +1482,7 @@ fn test_state_file_permissions_are_0600() {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Inactive,
         platform: None,
+        runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),
@@ -1514,6 +1523,7 @@ fn test_checksum_round_trip_save_load() {
         version: env!("CARGO_PKG_VERSION").to_string(),
         state: SystemState::Inactive,
         platform: Some(PlatformState::nixos(Some("gen123".to_string()))),
+        runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: DateTime::parse_from_rfc3339("2025-01-27T10:30:00Z")

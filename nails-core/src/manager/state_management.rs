@@ -397,6 +397,7 @@ impl<F: Filesystem> NailsManager<F> {
             state_file.submount_attachments.clear();
             state_file.hidden_added_units.clear();
             state_file.hidden_session = None;
+            state_file.runtime_root = None;
         }
         Ok(())
     }

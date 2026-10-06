@@ -3,17 +3,22 @@
 
 use super::*;
 use crate::filesystem::MockFilesystem;
+use std::path::PathBuf;
+
+/// A deterministic stand-in for the per-activation random runtime root. The
+/// staging/snapshot dirs land one level below it, exactly as in production.
+const TEST_RUNTIME_BASE: &str = "/run/0123456789abcdef";
 
 /// Helper: set up MockFilesystem so pivot_overlay_mount can succeed for a given target.
 /// - `lower_path`: the lower directory (must exist)
 /// - `upper_path`: the upper directory (must exist)
 /// - `work_path`: the work directory (must exist)
-///   The staging dir is auto-created under PIVOT_STAGING_BASE.
+///   The staging dir is auto-created under TEST_RUNTIME_BASE.
 fn setup_pivot_fs(fs: &MockFilesystem, lower: &str, upper: &str, work: &str) {
     fs.mock_set_path_exists(lower, true);
     fs.mock_set_path_exists(upper, true);
     fs.mock_set_path_exists(work, true);
-    // create_directory("/run/nails-pivot/{name}") needs grandparent /run to exist+be writable
+    // create_directory("/run/0123456789abcdef/{name}") needs grandparent /run to exist+be writable
     fs.mock_set_path_exists("/run", true);
 }
 
@@ -24,6 +29,7 @@ fn test_pivot_overlay_mount_success() {
 
     let result = pivot_overlay_mount(
         &fs,
+        Path::new(TEST_RUNTIME_BASE),
         &[Path::new("/var")],
         Path::new("/mnt/hidden/var-upper"),
         Path::new("/mnt/hidden/var-work"),
@@ -37,8 +43,8 @@ fn test_pivot_overlay_mount_success() {
     );
     let info = result.unwrap();
     assert_eq!(info.target, PathBuf::from("/var"));
-    assert!(info.staging.starts_with(PIVOT_STAGING_BASE));
-    assert_eq!(info.staging, PathBuf::from("/run/nails-pivot/var"));
+    assert!(info.staging.starts_with(TEST_RUNTIME_BASE));
+    assert_eq!(info.staging, PathBuf::from("/run/0123456789abcdef/var"));
     assert_eq!(info.upper, PathBuf::from("/mnt/hidden/var-upper"));
     assert_eq!(info.work, PathBuf::from("/mnt/hidden/var-work"));
     assert_eq!(info.lower, PathBuf::from("/var"));
@@ -58,6 +64,7 @@ fn test_pivot_overlay_mount_bind_fails_rolls_back_overlay() {
 
     let result = pivot_overlay_mount(
         &fs,
+        Path::new(TEST_RUNTIME_BASE),
         &[Path::new("/home")],
         Path::new("/mnt/hidden/home-upper"),
         Path::new("/mnt/hidden/home-work"),
@@ -65,7 +72,7 @@ fn test_pivot_overlay_mount_bind_fails_rolls_back_overlay() {
     );
 
     assert!(result.is_err(), "should fail when bind mount fails");
-    let staging = PathBuf::from("/run/nails-pivot/home");
+    let staging = PathBuf::from("/run/0123456789abcdef/home");
     assert!(
         !fs.is_mounted(&staging).unwrap_or(false),
         "staging overlay should be unmounted after rollback"
@@ -77,6 +84,7 @@ fn test_pivot_overlay_mount_root_target_fails() {
     let fs = MockFilesystem::new();
     let result = pivot_overlay_mount(
         &fs,
+        Path::new(TEST_RUNTIME_BASE),
         &[Path::new("/")],
         Path::new("/mnt/hidden/root-upper"),
         Path::new("/mnt/hidden/root-work"),
@@ -92,6 +100,7 @@ fn test_pivot_overlay_mount_roundtrip_with_unmount() {
 
     let info = pivot_overlay_mount(
         &fs,
+        Path::new(TEST_RUNTIME_BASE),
         &[Path::new("/etc")],
         Path::new("/mnt/hidden/etc-upper"),
         Path::new("/mnt/hidden/etc-work"),
@@ -118,8 +127,13 @@ fn test_unmount_pivot_overlay_ephemeral() {
         tmpfs_work_size: "256M".to_string(),
     };
 
-    let info = pivot_ephemeral_mount(&fs, &config, Path::new("/run"))
-        .expect("ephemeral mount should succeed");
+    let info = pivot_ephemeral_mount(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config,
+        Path::new("/run"),
+    )
+    .expect("ephemeral mount should succeed");
 
     assert!(info.is_ephemeral);
 
@@ -141,6 +155,7 @@ fn test_unmount_pivot_overlay_snapshot_lower() {
 
     let info = snapshot_pivot_overlay_mount(
         &fs,
+        Path::new(TEST_RUNTIME_BASE),
         &[Path::new("/boot")],
         Path::new("/mnt/hidden/boot-upper"),
         Path::new("/mnt/hidden/boot-work"),
@@ -172,7 +187,12 @@ fn test_pivot_ephemeral_mount_success() {
         tmpfs_work_size: "1G".to_string(),
     };
 
-    let result = pivot_ephemeral_mount(&fs, &config, Path::new("/tmp"));
+    let result = pivot_ephemeral_mount(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config,
+        Path::new("/tmp"),
+    );
     assert!(
         result.is_ok(),
         "ephemeral mount should succeed: {:?}",
@@ -196,7 +216,12 @@ fn test_pivot_ephemeral_mount_invalid_size_fails() {
         tmpfs_work_size: "1G".to_string(),
     };
 
-    let result = pivot_ephemeral_mount(&fs, &config, Path::new("/tmp"));
+    let result = pivot_ephemeral_mount(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config,
+        Path::new("/tmp"),
+    );
     assert!(result.is_err(), "invalid size should fail");
 }
 
@@ -208,7 +233,7 @@ fn test_pivot_ephemeral_mount_root_path_fails() {
         tmpfs_upper_size: "1G".to_string(),
         tmpfs_work_size: "512M".to_string(),
     };
-    let result = pivot_ephemeral_mount(&fs, &config, Path::new("/"));
+    let result = pivot_ephemeral_mount(&fs, Path::new(TEST_RUNTIME_BASE), &config, Path::new("/"));
     assert!(result.is_err());
 }
 
@@ -222,6 +247,7 @@ fn test_snapshot_pivot_success() {
 
     let result = snapshot_pivot_overlay_mount(
         &fs,
+        Path::new(TEST_RUNTIME_BASE),
         &[Path::new("/boot")],
         Path::new("/mnt/hidden/boot-upper"),
         Path::new("/mnt/hidden/boot-work"),
@@ -247,6 +273,7 @@ fn test_snapshot_pivot_copy_tree_failure_rolls_back() {
 
     let result = snapshot_pivot_overlay_mount(
         &fs,
+        Path::new(TEST_RUNTIME_BASE),
         &[Path::new("/boot")],
         Path::new("/mnt/hidden/boot-upper"),
         Path::new("/mnt/hidden/boot-work"),
@@ -261,6 +288,7 @@ fn test_snapshot_pivot_root_target_fails() {
     let fs = MockFilesystem::new();
     let result = snapshot_pivot_overlay_mount(
         &fs,
+        Path::new(TEST_RUNTIME_BASE),
         &[Path::new("/")],
         Path::new("/mnt/hidden/root-upper"),
         Path::new("/mnt/hidden/root-work"),
@@ -311,6 +339,7 @@ fn snapshot_pivot_sizes_tmpfs_from_measured_content_not_a_fixed_gigabyte() {
 
     snapshot_pivot_overlay_mount(
         &fs,
+        Path::new(TEST_RUNTIME_BASE),
         &[Path::new("/boot")],
         Path::new("/mnt/hidden/boot-upper"),
         Path::new("/mnt/hidden/boot-work"),
@@ -318,7 +347,7 @@ fn snapshot_pivot_sizes_tmpfs_from_measured_content_not_a_fixed_gigabyte() {
     )
     .expect("snapshot pivot should succeed");
 
-    let snapshot = PathBuf::from(PIVOT_STAGING_BASE).join("boot-snapshot");
+    let snapshot = PathBuf::from(TEST_RUNTIME_BASE).join("boot-snapshot");
     let recorded = fs
         .mock_ops()
         .into_iter()
@@ -339,7 +368,7 @@ fn snapshot_pivot_sizes_tmpfs_from_measured_content_not_a_fixed_gigabyte() {
 fn pivot_mount_info_round_trips_through_clone() {
     let info = PivotMountInfo {
         target: PathBuf::from("/var"),
-        staging: PathBuf::from("/run/nails-pivot/var"),
+        staging: PathBuf::from("/run/0123456789abcdef/var"),
         upper: PathBuf::from("/mnt/hidden/var-upper"),
         work: PathBuf::from("/mnt/hidden/var-work"),
         lower: PathBuf::from("/var"),
@@ -348,7 +377,7 @@ fn pivot_mount_info_round_trips_through_clone() {
 
     assert_eq!(info, info.clone());
     assert!(info.is_ephemeral);
-    assert_eq!(info.staging, PathBuf::from("/run/nails-pivot/var"));
+    assert_eq!(info.staging, PathBuf::from("/run/0123456789abcdef/var"));
 }
 
 #[test]
@@ -361,9 +390,14 @@ fn pivot_ephemeral_mount_rolls_back_tmpfs_when_overlay_fails() {
         tmpfs_work_size: "512M".to_string(),
     };
     // The staging overlay fails after the tmpfs is up, forcing the cleanup path.
-    fs.mock_set_mount_should_fail("/run/nails-pivot/run", true);
+    fs.mock_set_mount_should_fail("/run/0123456789abcdef/run", true);
 
-    let result = pivot_ephemeral_mount(&fs, &config, Path::new("/run"));
+    let result = pivot_ephemeral_mount(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config,
+        Path::new("/run"),
+    );
     assert!(result.is_err(), "overlay failure should propagate");
     assert!(
         !fs.is_mounted(Path::new("/run/nails/run-ephemeral"))
@@ -377,7 +411,7 @@ fn unmount_pivot_overlay_is_idempotent_without_mounts() {
     let fs = MockFilesystem::new();
     let info = PivotMountInfo {
         target: PathBuf::from("/var"),
-        staging: PathBuf::from("/run/nails-pivot/var"),
+        staging: PathBuf::from("/run/0123456789abcdef/var"),
         upper: PathBuf::from("/mnt/hidden/var-upper"),
         work: PathBuf::from("/mnt/hidden/var-work"),
         lower: PathBuf::from("/var"),

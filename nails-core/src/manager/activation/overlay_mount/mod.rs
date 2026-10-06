@@ -59,6 +59,27 @@ pub(in crate::manager::activation) struct OverlayMountOutcome {
     pub(in crate::manager::activation) mounts: Vec<MountInfo>,
 }
 
+/// Create this activation's runtime scaffolding root: one random-named tmpfs
+/// under `/run`, mounted `mode=0700,nosuid,nodev`, that will hold pivot staging,
+/// the vfat snapshot tmpfs and the pre-overlay `/nix/store` bind.
+///
+/// In a test or runtime-safety build no real mount is made — the path is still
+/// generated and returned so the flow records and threads it, but the mock
+/// filesystem is left untouched. The returned path is pushed onto the mount
+/// tracker by the caller so a mid-activation failure tears it down last.
+fn create_runtime_root<F: Filesystem>(fs: &F) -> Result<PathBuf> {
+    let root = crate::runtime_root::random_runtime_root();
+    if crate::runtime_safety::should_skip_host_interaction() {
+        return Ok(root);
+    }
+    fs.create_directory(&root)?;
+    fs.mount_tmpfs(&root, crate::runtime_root::UMBRELLA_TMPFS_SIZE)?;
+    // Private to the operator: the scaffolding never needs to be world- or
+    // group-readable, and 0700 keeps another local account from enumerating it.
+    fs.set_permissions(&root, 0o700)?;
+    Ok(root)
+}
+
 /// The per-overlay progress line shown at Normal verbosity, e.g.
 /// `mounting /home (3/12)`.
 ///
@@ -95,6 +116,15 @@ impl<F: Filesystem> NailsManager<F> {
         // committed, so a later activation failure can still unmount them.
         let mut tracker = MountTracker::new(&self.filesystem);
 
+        // Create the per-activation runtime scaffolding root first and push it onto
+        // the tracker before any overlay, so LIFO rollback tears it down last —
+        // after every staging mount and bind placed inside it.
+        let runtime_root = create_runtime_root(&self.filesystem)?;
+        tracker.push_mount(MountInfo::tmpfs(runtime_root.clone()));
+        // Record it in state immediately, so a trusted teardown removes exactly
+        // this tree even if activation crashes before the Active transition.
+        self.record_runtime_root(&runtime_root)?;
+
         // Build OverlayStrategyOptions from ActivateOptions. The risky-service
         // choice is resolved up front so a non-interactive run that keeps the
         // session fails fast (before anything is mounted) when no choice was made.
@@ -115,11 +145,18 @@ impl<F: Filesystem> NailsManager<F> {
         // Use dynamic target list based on overlay_mode
         match self.config.overlay_mode {
             crate::OverlayMode::Auto => {
-                self.mount_auto_overlays(&mut tracker, &strategy_options, verbosity, &mut outcome)?;
+                self.mount_auto_overlays(
+                    &mut tracker,
+                    &runtime_root,
+                    &strategy_options,
+                    verbosity,
+                    &mut outcome,
+                )?;
             }
             crate::OverlayMode::Explicit => {
                 self.mount_explicit_overlays(
                     &mut tracker,
+                    &runtime_root,
                     &strategy_options,
                     verbosity,
                     &mut outcome,
@@ -165,6 +202,7 @@ impl<F: Filesystem> NailsManager<F> {
     pub(super) fn mount_overlay_targets(
         &self,
         tracker: &mut MountTracker<F>,
+        runtime_root: &Path,
         overlays: &[OverlayConfig],
         initial_failures: Vec<(PathBuf, NailsError)>,
         failure_mode: MountFailureMode,
@@ -189,7 +227,7 @@ impl<F: Filesystem> NailsManager<F> {
         match nix_runtime {
             NixRuntime::Native => {
                 if !crate::runtime_safety::should_skip_host_interaction() {
-                    crate::manager::helpers::cache_nix_overlay_runtime_commands().map_err(
+                    crate::manager::helpers::cache_nix_overlay_runtime_commands(runtime_root).map_err(
                         |err| {
                             NailsError::NixOSError(format!(
                                 "Failed to cache /nix overlay runtime commands before /nix overlay: {err}"
@@ -214,6 +252,7 @@ impl<F: Filesystem> NailsManager<F> {
         let mut var_was_overlaid = false;
         let body_result = self.mount_overlay_targets_body(
             tracker,
+            runtime_root,
             overlays,
             initial_failures,
             failure_mode,
@@ -259,6 +298,7 @@ impl<F: Filesystem> NailsManager<F> {
     fn mount_overlay_targets_body(
         &self,
         tracker: &mut MountTracker<F>,
+        runtime_root: &Path,
         overlays: &[OverlayConfig],
         mut mount_failures: Vec<(PathBuf, NailsError)>,
         failure_mode: MountFailureMode,
@@ -384,6 +424,7 @@ impl<F: Filesystem> NailsManager<F> {
 
             match crate::overlay::mount_overlay_with_strategy(
                 &self.filesystem,
+                runtime_root,
                 &lower_refs,
                 &overlay.upper,
                 &overlay.work,
@@ -442,10 +483,16 @@ impl<F: Filesystem> NailsManager<F> {
         // Best-effort post-processing (only reachable in BestEffort mode, where
         // `mount_failures` may carry config-build and mount failures).
         if !mount_failures.is_empty() {
-            // If nothing mounted at all, abort with the first failure as the
-            // representative error; the caller rolls back (nothing to undo) and
-            // restarts services.
-            if tracker.mounted.is_empty() {
+            // If no overlay mounted at all, abort with the first failure as the
+            // representative error; the caller rolls back (only the runtime
+            // scaffolding tmpfs, if that was created) and restarts services. The
+            // runtime-root tmpfs record is scaffolding, not an overlay, so it does
+            // not count as a successful mount here.
+            if tracker
+                .mounted
+                .iter()
+                .all(|m| m.mount_type == MountType::Tmpfs)
+            {
                 tracing::error!(
                     failure_count = mount_failures.len(),
                     "All overlay mounts failed - activation aborted"
@@ -742,6 +789,25 @@ impl<F: Filesystem> NailsManager<F> {
 
     /// Persist the read-only guard set so deactivation and emergency teardown undo
     /// exactly those binds.
+    /// Persist the per-activation runtime scaffolding root into the cached state
+    /// and save it, so a trusted teardown (deactivate/recover) unmounts and
+    /// removes exactly this tree. Recorded right after the mount phase, before the
+    /// Active transition, so a crash between here and `Active` still leaves the
+    /// path on disk for the next teardown. A state-independent emergency teardown
+    /// does not depend on it — it rediscovers the tree from the live mount table.
+    pub(super) fn record_runtime_root(&self, root: &Path) -> Result<()> {
+        let mut cached = self.cached_state.borrow_mut();
+        if let Some(ref mut state_file) = *cached {
+            if state_file.runtime_root.as_deref() == Some(root) {
+                return Ok(());
+            }
+            state_file.runtime_root = Some(root.to_path_buf());
+            drop(cached);
+            self.save_cached_state()?;
+        }
+        Ok(())
+    }
+
     pub(super) fn record_read_only_guards(&self, guards: &[PathBuf]) -> Result<()> {
         let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {

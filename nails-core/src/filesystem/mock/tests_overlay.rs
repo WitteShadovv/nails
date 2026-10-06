@@ -6,7 +6,7 @@ use crate::{
     NailsError,
     filesystem::{Filesystem, verify_mount_preconditions},
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[test]
 fn test_mount_overlay_success_tracks_mount_info() {
@@ -521,10 +521,17 @@ fn discover_nails_mounts_reports_overlays_and_binds_owned_but_not_foreign() {
     )
     .unwrap();
 
-    // Pivot staging bind and the /nix/store restore bind.
+    // The per-activation runtime scaffolding root (a random-named tmpfs under
+    // /run), a pivot staging bind inside it, and the /nix/store restore bind over
+    // an overlaid /nix. The root is discovered structurally via the staging bind.
+    let runtime_root = "/run/0123456789abcdef";
+    fs.mount_tmpfs(Path::new(runtime_root), "16M").unwrap();
     fs.mock_set_path_exists("/nix/store", true);
-    fs.bind_mount(Path::new("/nix/store"), Path::new("/run/nails-pivot/etc"))
-        .unwrap();
+    fs.bind_mount(
+        Path::new("/nix/store"),
+        &PathBuf::from(format!("{runtime_root}/etc")),
+    )
+    .unwrap();
     fs.mock_set_path_exists("/nix-real/store", true);
     fs.bind_mount(Path::new("/nix-real/store"), Path::new("/nix/store"))
         .unwrap();
@@ -534,9 +541,11 @@ fn discover_nails_mounts_reports_overlays_and_binds_owned_but_not_foreign() {
 
     let mounts = fs.discover_nails_mounts(Some(hidden)).unwrap();
 
+    assert_eq!(mounts.runtime_tmpfs, Some(PathBuf::from(runtime_root)));
     assert!(mounts.is_owned(Path::new("/home")));
     assert!(mounts.is_owned(Path::new("/nix")));
-    assert!(mounts.is_owned(Path::new("/run/nails-pivot/etc")));
+    assert!(mounts.is_owned(&PathBuf::from(format!("{runtime_root}/etc"))));
+    assert!(mounts.is_owned(Path::new(runtime_root)));
     // /nix/store is ours because /nix is overlaid.
     assert!(mounts.nix_overlay_present);
     assert!(mounts.is_owned(Path::new("/nix/store")));

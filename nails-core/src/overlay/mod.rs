@@ -50,12 +50,14 @@
 //!     tmpfs_work_size: "512M".to_string(),
 //! };
 //!
-//! // Set up mock filesystem state
+//! // Set up mock filesystem state. Scaffolding lives under the per-activation
+//! // runtime root (a random-named tmpfs under /run); a fixed path stands in here.
+//! let runtime_base = Path::new("/run/0123456789abcdef");
 //! fs.mock_set_path_exists("/var", true);
-//! fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-//! fs.mock_set_directory_creatable("/run/nails/var-work", true);
+//! fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+//! fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
 //!
-//! let result = mount_ephemeral_overlay(&fs, &config, Path::new("/var"));
+//! let result = mount_ephemeral_overlay(&fs, runtime_base, &config, Path::new("/var"));
 //! assert!(result.is_ok());
 //! ```
 
@@ -91,7 +93,7 @@ pub use pivot::{
 pub use strategy::{mount_overlay_with_strategy, refuse_interactive_terminations};
 
 // Constants
-pub use pivot::{DEFAULT_MAX_SNAPSHOT_BYTES, PIVOT_STAGING_BASE};
+pub use pivot::DEFAULT_MAX_SNAPSHOT_BYTES;
 pub use strategy::OVERLAY_INCOMPATIBLE_FSTYPES;
 
 // Snapshot tmpfs sizing, shared with the overlay-compatibility and

@@ -74,7 +74,8 @@ pub(super) fn nixos_tool_path(name: &str) -> PathBuf {
 const NIX_STORE_PREFIX: &str = "/nix/store";
 
 /// Translate a path under `/nix/store` into the equivalent path under the
-/// pre-overlay read-only bind of the store (`/run/nails/original-nix-store`).
+/// pre-overlay read-only bind of the store, which lives inside the
+/// per-activation runtime root (`<runtime-root>/original-nix-store`).
 ///
 /// The bind exposes the same store contents at a path that does not change when
 /// `/nix` is overlaid, so a command built against it keeps running without

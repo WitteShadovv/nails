@@ -158,6 +158,7 @@ fn test_deactivation_preserves_generation_and_fingerprint() {
         decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
+        runtime_root: None,
         overlay_status: std::collections::HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: chrono::Utc::now(),

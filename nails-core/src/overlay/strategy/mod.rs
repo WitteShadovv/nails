@@ -106,6 +106,7 @@ fn restart_services_after_failure(services: &[String]) {
 ///
 /// let result = mount_overlay_with_strategy(
 ///     &fs,
+///     Path::new("/run/0123456789abcdef"),
 ///     &[Path::new("/home")],
 ///     Path::new("/mnt/hidden/home/.upper"),
 ///     Path::new("/mnt/hidden/home/.work"),
@@ -127,8 +128,10 @@ fn restart_services_after_failure(services: &[String]) {
 /// }
 /// # Ok::<(), nails_core::NailsError>(())
 /// ```
+#[allow(clippy::too_many_arguments)]
 pub fn mount_overlay_with_strategy<F: Filesystem>(
     fs: &F,
+    runtime_base: &Path,
     lower: &[&Path],
     upper: &Path,
     work: &Path,
@@ -164,7 +167,8 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
             fstype,
         );
 
-        let pivot_info = snapshot_pivot_overlay_mount(fs, lower, upper, work, target)?;
+        let pivot_info =
+            snapshot_pivot_overlay_mount(fs, runtime_base, lower, upper, work, target)?;
 
         tracing::info!(
             target = %target.display(),
@@ -321,7 +325,7 @@ pub fn mount_overlay_with_strategy<F: Filesystem>(
     );
 
     // Perform pivot mount
-    let pivot_info = match pivot_overlay_mount(fs, lower, upper, work, target) {
+    let pivot_info = match pivot_overlay_mount(fs, runtime_base, lower, upper, work, target) {
         Ok(info) => info,
         Err(e) => {
             restart_services_after_failure(&stopped_services);

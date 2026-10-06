@@ -1587,11 +1587,12 @@ fn test_mount_scan_flags_leftover_overlay_at_non_standard_target() {
     // /home overlay is covered by the standard overlay check and must not be
     // double-reported here.
     let mountinfo = concat!(
+        "9 1 0:49 / /run/0123456789abcdef rw - tmpfs tmpfs rw,mode=700\n",
         "10 1 0:50 / /home rw - overlay overlay ",
         "rw,lowerdir=/home,upperdir=/mnt/hidden/home/upper,workdir=/mnt/hidden/home/work\n",
         "11 1 0:51 / /var rw - overlay overlay ",
-        "rw,lowerdir=/var,upperdir=/run/nails/var/upper,workdir=/run/nails/var/work\n",
-        "12 1 0:52 / /run/nails-pivot/etc rw - overlay overlay ",
+        "rw,lowerdir=/var,upperdir=/run/0123456789abcdef/var/upper,workdir=/run/0123456789abcdef/var/work\n",
+        "12 1 0:52 / /run/0123456789abcdef/etc rw - overlay overlay ",
         "rw,lowerdir=/etc,upperdir=/mnt/hidden/etc/upper,workdir=/mnt/hidden/etc/work\n",
     );
     fs.mock_set_file_content("/proc/self/mountinfo", mountinfo);
@@ -1618,7 +1619,7 @@ fn test_mount_scan_flags_leftover_overlay_at_non_standard_target() {
     assert!(
         scaffolding
             .iter()
-            .any(|f| f.message.contains("/run/nails-pivot/etc"))
+            .any(|f| f.message.contains("/run/0123456789abcdef/etc"))
     );
     assert!(
         !scaffolding.iter().any(|f| f.message.contains("/home")),
@@ -1634,10 +1635,11 @@ fn test_mount_scan_without_config_ignores_foreign_overlays() {
     // cannot be attributed to NAILS and must not be flagged. A runtime-backed
     // ephemeral overlay still is, since its upper is unambiguously ours.
     let mountinfo = concat!(
+        "19 1 0:59 / /run/0123456789abcdef rw - tmpfs tmpfs rw,mode=700\n",
         "20 1 0:60 / /var/lib/docker/overlay2/x/merged rw - overlay overlay ",
         "rw,lowerdir=/foreign,upperdir=/foreign/upper,workdir=/foreign/work\n",
         "21 1 0:61 / /opt rw - overlay overlay ",
-        "rw,lowerdir=/opt,upperdir=/run/nails/opt/upper,workdir=/run/nails/opt/work\n",
+        "rw,lowerdir=/opt,upperdir=/run/0123456789abcdef/opt/upper,workdir=/run/0123456789abcdef/opt/work\n",
     );
     fs.mock_set_file_content("/proc/self/mountinfo", mountinfo);
 

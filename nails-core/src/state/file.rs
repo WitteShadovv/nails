@@ -199,6 +199,20 @@ pub struct StateFile {
     #[serde(default)]
     pub decoy_system: Option<String>,
 
+    /// Per-activation runtime scaffolding root.
+    ///
+    /// The random-named tmpfs under `/run` that holds this activation's pivot
+    /// staging mount points, the vfat snapshot tmpfs and the read-only
+    /// pre-overlay `/nix/store` bind (see [`crate::runtime_root`]). Recorded the
+    /// moment the tmpfs is mounted, so a trusted teardown unmounts and removes
+    /// exactly this tree and nothing else. `None` before the first activation,
+    /// after a rollback to Inactive, and on an activation that needed no
+    /// scaffolding. A state-independent emergency teardown does not rely on this
+    /// value: it rediscovers the tree from the live mount table. Cleared on
+    /// deactivation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_root: Option<PathBuf>,
+
     /// Currently mounted overlays with their configuration
     pub overlay_status: HashMap<PathBuf, OverlayInfo>,
 
@@ -306,6 +320,7 @@ impl Default for StateFile {
             platform: None,
             config_fingerprint: None,
             decoy_system: None,
+            runtime_root: None,
             overlay_status: HashMap::new(),
             failed_overlays: Vec::new(),
             nix_store_init_namespace_bound: false,

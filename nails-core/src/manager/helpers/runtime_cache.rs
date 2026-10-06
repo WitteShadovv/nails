@@ -2,18 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::command_cache::{build_cached_command, nixos_tool_path};
+use crate::runtime_root::store_bind_source;
 use std::path::{Path, PathBuf};
 
-fn original_nix_store_bind_source_path() -> PathBuf {
-    PathBuf::from("/run/nails/original-nix-store")
-}
-
-fn cache_original_nix_store_bind_source() -> std::io::Result<PathBuf> {
+fn cache_original_nix_store_bind_source(runtime_root: &Path) -> std::io::Result<PathBuf> {
     if crate::runtime_safety::should_skip_host_interaction() {
         return Ok(PathBuf::from("/nix/store"));
     }
 
-    let cache_path = original_nix_store_bind_source_path();
+    let cache_path = store_bind_source(runtime_root);
     std::fs::create_dir_all(&cache_path)?;
 
     match nix::mount::umount2(&cache_path, nix::mount::MntFlags::MNT_DETACH) {
@@ -94,10 +91,12 @@ fn resolve_current_system_profile() -> Option<PathBuf> {
     }
 }
 
-pub(crate) fn cache_nix_overlay_runtime_commands() -> std::io::Result<PathBuf> {
+pub(crate) fn cache_nix_overlay_runtime_commands(runtime_root: &Path) -> std::io::Result<PathBuf> {
     // Create the read-only bind of the pre-overlay /nix/store first: the runtime
-    // command is resolved against it, so no store bytes are copied.
-    let original_nix_store_bind_source = cache_original_nix_store_bind_source()?;
+    // command is resolved against it, so no store bytes are copied. The bind
+    // lives inside this activation's runtime root so teardown removes it with the
+    // rest of the scaffolding.
+    let original_nix_store_bind_source = cache_original_nix_store_bind_source(runtime_root)?;
     let systemctl = build_cached_command(
         &nixos_tool_path("systemctl"),
         &original_nix_store_bind_source,
@@ -130,10 +129,13 @@ mod tests {
     use serial_test::serial;
 
     #[test]
-    fn test_original_nix_store_bind_source_path_is_stable() {
+    fn test_store_bind_source_is_inside_the_runtime_root() {
+        // The pre-overlay /nix/store bind lives inside the per-activation runtime
+        // root, never at a fixed, recognizable path.
+        let root = PathBuf::from("/run/0123456789abcdef");
         assert_eq!(
-            original_nix_store_bind_source_path(),
-            PathBuf::from("/run/nails/original-nix-store")
+            store_bind_source(&root),
+            PathBuf::from("/run/0123456789abcdef/original-nix-store")
         );
     }
 

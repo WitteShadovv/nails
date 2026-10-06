@@ -48,13 +48,13 @@
       "description": "Staged hidden NixOS module source on the hidden root."
     },
     {
-      "id": "runtime-dir",
+      "id": "runtime-dir-legacy",
       "kind": "absolute-path",
       "scope": "runtime",
       "severity": "warn",
       "value": "/run/nails",
       "image_token": "nails",
-      "description": "Per-activation runtime directory on the decoy root; removed on deactivation."
+      "description": "Fixed runtime directory used by earlier builds. Current builds use a random per-activation tmpfs, so a leftover at this fixed path is a prior version's teardown failure."
     },
     {
       "id": "runtime-copy-dir",
@@ -66,13 +66,13 @@
       "description": "RAM-backed copy of the binary, config and mount manifest on the decoy /run; removed on deactivation and emergency."
     },
     {
-      "id": "pivot-staging",
+      "id": "pivot-staging-run-legacy",
       "kind": "absolute-path",
       "scope": "runtime",
       "severity": "warn",
       "value": "/run/nails-pivot",
       "image_token": "nails-pivot",
-      "description": "Overlay pivot staging base on the /run tmpfs; removed on deactivation."
+      "description": "Fixed overlay pivot staging base used by earlier builds. Current builds stage inside a random per-activation tmpfs, so a leftover here is a prior version's teardown failure."
     },
     {
       "id": "pivot-staging-legacy",

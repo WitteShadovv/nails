@@ -8,7 +8,7 @@
 
 use crate::config::EphemeralOverlayDir;
 use crate::{Filesystem, NailsError, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::mount_info::EphemeralMountInfo;
 
@@ -49,18 +49,19 @@ use super::mount_info::EphemeralMountInfo;
 /// };
 ///
 /// fs.mock_set_path_exists("/var", true);
-/// fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-/// fs.mock_set_directory_creatable("/run/nails/var-work", true);
+/// fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+/// fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
 ///
-/// let info = mount_ephemeral_overlay(&fs, &config, Path::new("/var")).unwrap();
+/// let info = mount_ephemeral_overlay(&fs, Path::new("/run/0123456789abcdef"), &config, Path::new("/var")).unwrap();
 /// assert_eq!(info.target, PathBuf::from("/var"));
 /// ```
 pub fn mount_ephemeral_overlay<F: Filesystem>(
     fs: &F,
+    runtime_base: &Path,
     config: &EphemeralOverlayDir,
     lower: &Path,
 ) -> Result<EphemeralMountInfo> {
-    let base = PathBuf::from("/run/nails");
+    let base = runtime_base.to_path_buf();
     let dir_name = config
         .path
         .file_name()
@@ -132,10 +133,10 @@ pub fn mount_ephemeral_overlay<F: Filesystem>(
 /// };
 ///
 /// fs.mock_set_path_exists("/var", true);
-/// fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-/// fs.mock_set_directory_creatable("/run/nails/var-work", true);
+/// fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+/// fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
 ///
-/// let info = mount_ephemeral_overlay(&fs, &config, Path::new("/var")).unwrap();
+/// let info = mount_ephemeral_overlay(&fs, Path::new("/run/0123456789abcdef"), &config, Path::new("/var")).unwrap();
 /// let result = unmount_ephemeral_overlay(&fs, &info);
 /// assert!(result.is_ok());
 /// ```

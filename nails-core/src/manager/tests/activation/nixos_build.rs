@@ -36,6 +36,7 @@ fn test_config_fingerprint_field_persistence() {
         decoy_system: None,
         hidden_added_units: Vec::new(),
         hidden_session: None,
+        runtime_root: None,
         overlay_status: HashMap::new(),
         failed_overlays: Vec::new(),
         last_modified: Utc::now(),

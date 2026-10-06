@@ -8,20 +8,23 @@ use crate::config::EphemeralOverlayDir;
 use crate::filesystem::{Filesystem, MockFilesystem};
 use std::path::{Path, PathBuf};
 
+/// Deterministic stand-in for the per-activation random runtime root.
+const TEST_RUNTIME_BASE: &str = "/run/0123456789abcdef";
+
 // ========== EphemeralMountInfo Tests ==========
 
 #[test]
 fn test_ephemeral_mount_info_creation() {
     let info = EphemeralMountInfo {
         target: PathBuf::from("/var"),
-        upper: PathBuf::from("/run/nails/var-upper"),
-        work: PathBuf::from("/run/nails/var-work"),
+        upper: PathBuf::from("/run/0123456789abcdef/var-upper"),
+        work: PathBuf::from("/run/0123456789abcdef/var-work"),
         lower: PathBuf::from("/var"),
     };
 
     assert_eq!(info.target, PathBuf::from("/var"));
-    assert_eq!(info.upper, PathBuf::from("/run/nails/var-upper"));
-    assert_eq!(info.work, PathBuf::from("/run/nails/var-work"));
+    assert_eq!(info.upper, PathBuf::from("/run/0123456789abcdef/var-upper"));
+    assert_eq!(info.work, PathBuf::from("/run/0123456789abcdef/var-work"));
     assert_eq!(info.lower, PathBuf::from("/var"));
 }
 
@@ -29,8 +32,8 @@ fn test_ephemeral_mount_info_creation() {
 fn test_ephemeral_mount_info_clone() {
     let info1 = EphemeralMountInfo {
         target: PathBuf::from("/var"),
-        upper: PathBuf::from("/run/nails/var-upper"),
-        work: PathBuf::from("/run/nails/var-work"),
+        upper: PathBuf::from("/run/0123456789abcdef/var-upper"),
+        work: PathBuf::from("/run/0123456789abcdef/var-work"),
         lower: PathBuf::from("/var"),
     };
 
@@ -52,21 +55,32 @@ fn test_mount_ephemeral_overlay_success() {
 
     // Set up mock filesystem
     fs.mock_set_path_exists("/var", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
 
-    let result = mount_ephemeral_overlay(&fs, &config, Path::new("/var"));
+    let result = mount_ephemeral_overlay(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config,
+        Path::new("/var"),
+    );
     assert!(result.is_ok());
 
     let info = result.unwrap();
     assert_eq!(info.target, PathBuf::from("/var"));
-    assert_eq!(info.upper, PathBuf::from("/run/nails/var-upper"));
-    assert_eq!(info.work, PathBuf::from("/run/nails/var-work"));
+    assert_eq!(info.upper, PathBuf::from("/run/0123456789abcdef/var-upper"));
+    assert_eq!(info.work, PathBuf::from("/run/0123456789abcdef/var-work"));
     assert_eq!(info.lower, PathBuf::from("/var"));
 
     // Verify tmpfs mounts created
-    assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    assert!(
+        fs.is_mounted(Path::new("/run/0123456789abcdef/var-upper"))
+            .unwrap()
+    );
+    assert!(
+        fs.is_mounted(Path::new("/run/0123456789abcdef/var-work"))
+            .unwrap()
+    );
 
     // Verify overlay mounted
     assert!(fs.is_mounted(Path::new("/var")).unwrap());
@@ -83,19 +97,36 @@ fn test_mount_ephemeral_overlay_creates_directories() {
     };
 
     fs.mock_set_path_exists("/var", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
 
     // Directories don't exist yet
-    assert!(!fs.path_exists(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(!fs.path_exists(Path::new("/run/nails/var-work")).unwrap());
+    assert!(
+        !fs.path_exists(Path::new("/run/0123456789abcdef/var-upper"))
+            .unwrap()
+    );
+    assert!(
+        !fs.path_exists(Path::new("/run/0123456789abcdef/var-work"))
+            .unwrap()
+    );
 
-    let result = mount_ephemeral_overlay(&fs, &config, Path::new("/var"));
+    let result = mount_ephemeral_overlay(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config,
+        Path::new("/var"),
+    );
     assert!(result.is_ok());
 
     // Directories were created
-    assert!(fs.path_exists(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(fs.path_exists(Path::new("/run/nails/var-work")).unwrap());
+    assert!(
+        fs.path_exists(Path::new("/run/0123456789abcdef/var-upper"))
+            .unwrap()
+    );
+    assert!(
+        fs.path_exists(Path::new("/run/0123456789abcdef/var-work"))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -109,10 +140,15 @@ fn test_mount_ephemeral_overlay_validates_sizes() {
     };
 
     fs.mock_set_path_exists("/var", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
 
-    let result = mount_ephemeral_overlay(&fs, &config, Path::new("/var"));
+    let result = mount_ephemeral_overlay(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config,
+        Path::new("/var"),
+    );
     assert!(result.is_err());
 }
 
@@ -125,7 +161,8 @@ fn test_mount_ephemeral_overlay_rejects_root_target_without_file_name() {
         tmpfs_work_size: "512M".to_string(),
     };
 
-    let result = mount_ephemeral_overlay(&fs, &config, Path::new("/"));
+    let result =
+        mount_ephemeral_overlay(&fs, Path::new(TEST_RUNTIME_BASE), &config, Path::new("/"));
 
     assert!(result.is_err());
     let error = result.unwrap_err().to_string();
@@ -152,17 +189,27 @@ fn test_mount_ephemeral_overlay_multiple_directories() {
     // Set up mock filesystem for both
     fs.mock_set_path_exists("/var", true);
     fs.mock_set_path_exists("/tmp", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
-    fs.mock_set_directory_creatable("/run/nails/tmp-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/tmp-work", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/tmp-upper", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/tmp-work", true);
 
     // Mount first ephemeral overlay
-    let result_var = mount_ephemeral_overlay(&fs, &config_var, Path::new("/var"));
+    let result_var = mount_ephemeral_overlay(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config_var,
+        Path::new("/var"),
+    );
     assert!(result_var.is_ok());
 
     // Mount second ephemeral overlay
-    let result_tmp = mount_ephemeral_overlay(&fs, &config_tmp, Path::new("/tmp"));
+    let result_tmp = mount_ephemeral_overlay(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config_tmp,
+        Path::new("/tmp"),
+    );
     assert!(result_tmp.is_ok());
 
     // Both should be mounted
@@ -183,15 +230,27 @@ fn test_unmount_ephemeral_overlay_success() {
     };
 
     fs.mock_set_path_exists("/var", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
 
-    let info = mount_ephemeral_overlay(&fs, &config, Path::new("/var")).unwrap();
+    let info = mount_ephemeral_overlay(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config,
+        Path::new("/var"),
+    )
+    .unwrap();
 
     // Verify mounted
     assert!(fs.is_mounted(Path::new("/var")).unwrap());
-    assert!(fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    assert!(
+        fs.is_mounted(Path::new("/run/0123456789abcdef/var-upper"))
+            .unwrap()
+    );
+    assert!(
+        fs.is_mounted(Path::new("/run/0123456789abcdef/var-work"))
+            .unwrap()
+    );
 
     // Unmount
     let result = unmount_ephemeral_overlay(&fs, &info);
@@ -199,8 +258,14 @@ fn test_unmount_ephemeral_overlay_success() {
 
     // Verify all unmounted
     assert!(!fs.is_mounted(Path::new("/var")).unwrap());
-    assert!(!fs.is_mounted(Path::new("/run/nails/var-upper")).unwrap());
-    assert!(!fs.is_mounted(Path::new("/run/nails/var-work")).unwrap());
+    assert!(
+        !fs.is_mounted(Path::new("/run/0123456789abcdef/var-upper"))
+            .unwrap()
+    );
+    assert!(
+        !fs.is_mounted(Path::new("/run/0123456789abcdef/var-work"))
+            .unwrap()
+    );
 }
 
 #[test]
@@ -209,8 +274,8 @@ fn test_unmount_ephemeral_overlay_best_effort() {
     let fs = MockFilesystem::new();
     let info = EphemeralMountInfo {
         target: PathBuf::from("/var"),
-        upper: PathBuf::from("/run/nails/var-upper"),
-        work: PathBuf::from("/run/nails/var-work"),
+        upper: PathBuf::from("/run/0123456789abcdef/var-upper"),
+        work: PathBuf::from("/run/0123456789abcdef/var-work"),
         lower: PathBuf::from("/var"),
     };
 
@@ -229,22 +294,28 @@ fn test_unmount_ephemeral_overlay_reports_all_failures_after_force_fallback() {
     };
 
     fs.mock_set_path_exists("/var", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
 
-    let info = mount_ephemeral_overlay(&fs, &config, Path::new("/var")).unwrap();
+    let info = mount_ephemeral_overlay(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config,
+        Path::new("/var"),
+    )
+    .unwrap();
 
     fs.mock_set_unmount_should_fail("/var", true);
-    fs.mock_set_unmount_should_fail("/run/nails/var-work", true);
-    fs.mock_set_unmount_should_fail("/run/nails/var-upper", true);
+    fs.mock_set_unmount_should_fail("/run/0123456789abcdef/var-work", true);
+    fs.mock_set_unmount_should_fail("/run/0123456789abcdef/var-upper", true);
 
     let result = unmount_ephemeral_overlay(&fs, &info);
 
     assert!(result.is_err());
     let error = result.unwrap_err().to_string();
     assert!(error.contains("overlay /var"));
-    assert!(error.contains("work tmpfs /run/nails/var-work"));
-    assert!(error.contains("upper tmpfs /run/nails/var-upper"));
+    assert!(error.contains("work tmpfs /run/0123456789abcdef/var-work"));
+    assert!(error.contains("upper tmpfs /run/0123456789abcdef/var-upper"));
 }
 
 #[test]
@@ -258,11 +329,17 @@ fn test_unmount_ephemeral_overlay_full_cycle() {
     };
 
     fs.mock_set_path_exists("/var", true);
-    fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-    fs.mock_set_directory_creatable("/run/nails/var-work", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+    fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
 
     // Mount
-    let info = mount_ephemeral_overlay(&fs, &config, Path::new("/var")).unwrap();
+    let info = mount_ephemeral_overlay(
+        &fs,
+        Path::new(TEST_RUNTIME_BASE),
+        &config,
+        Path::new("/var"),
+    )
+    .unwrap();
 
     // Simulate writes to /var (would go to tmpfs upper in real system)
     // In mock, just verify mount exists

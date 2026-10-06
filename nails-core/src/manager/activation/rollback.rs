@@ -64,7 +64,23 @@ pub(crate) fn rollback_mounts<F: Filesystem>(filesystem: &F, mounts: &[MountInfo
             MountType::Ephemeral => "ephemeral",
             MountType::Bind => "bind",
             MountType::NestedOverlay => "nested-overlay",
+            MountType::Tmpfs => "tmpfs",
         };
+
+        // The runtime scaffolding tmpfs is not a managed overlay: unmount it as a
+        // tmpfs (idempotent) and remove the now-empty umbrella directory. Pushed
+        // first, so LIFO reaches it last — after everything staged inside it.
+        if mount_info.mount_type == MountType::Tmpfs {
+            if let Err(e) = filesystem.unmount_tmpfs(path) {
+                tracing::warn!(path = %path.display(), error = %e, "Runtime tmpfs unmount failed");
+                remaining.push(path.clone());
+            } else {
+                let _ = filesystem.remove_directory(path);
+                #[cfg(test)]
+                test_events::record(test_events::ActivationEvent::Unmounted(path.clone()));
+            }
+            continue;
+        }
 
         tracing::info!(
             path = %path.display(),
@@ -363,11 +379,32 @@ mod tests {
     }
 
     #[test]
+    fn rollback_unmounts_and_removes_the_runtime_scaffolding_tmpfs() {
+        // The umbrella tmpfs is pushed first, so LIFO reaches it last. Rollback
+        // unmounts it as a tmpfs and removes the now-empty directory, rather than
+        // treating it as a managed overlay.
+        let fs = MockFilesystem::new();
+        let root = "/run/0123456789abcdef";
+        fs.mock_set_path_exists(root, true);
+        fs.mount_tmpfs(Path::new(root), "16M").unwrap();
+        let mounts = vec![MountInfo::tmpfs(PathBuf::from(root))];
+
+        let remaining = rollback_mounts(&fs, &mounts);
+
+        assert!(remaining.is_empty(), "runtime tmpfs should come down");
+        assert!(!fs.is_mounted(Path::new(root)).unwrap());
+        assert!(
+            !fs.path_exists(Path::new(root)).unwrap(),
+            "the umbrella directory should be removed after unmount"
+        );
+    }
+
+    #[test]
     fn rollback_mounts_cascades_ephemeral_tmpfs() {
         let fs = MockFilesystem::new();
         fs.mock_set_mounted(Path::new("/var"), true);
-        let upper = Path::new("/run/nails/var/upper");
-        let work = Path::new("/run/nails/var/work");
+        let upper = Path::new("/run/0123456789abcdef/var/upper");
+        let work = Path::new("/run/0123456789abcdef/var/work");
         fs.mock_set_path_exists(upper.to_str().unwrap(), true);
         fs.mock_set_path_exists(work.to_str().unwrap(), true);
         fs.mount_tmpfs(upper, "64M").unwrap();

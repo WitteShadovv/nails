@@ -378,28 +378,30 @@ fn cleanup_pivot_staging_detaches_and_removes_the_staging() {
     };
     use std::path::{Path, PathBuf};
 
-    // A VFAT /boot pivot leaves a staging overlay at /run/nails-pivot/boot and a
-    // snapshot tmpfs at /run/nails-pivot/boot-snapshot. Model both as mounts under
-    // the staging base (the classifier treats anything there as pivot staging) and
-    // give the base directory its two children.
+    // A VFAT /boot pivot stages its scaffolding inside the per-activation runtime
+    // root (a random-named tmpfs under /run): a staging overlay at <root>/boot and
+    // a snapshot tmpfs at <root>/boot-snapshot. Model the umbrella tmpfs, the
+    // staging overlay (which makes the root discoverable structurally) and the
+    // snapshot tmpfs stacked inside it.
+    let root = "/run/0123456789abcdef";
+    let staging = format!("{root}/boot");
+    let snapshot = format!("{root}/boot-snapshot");
     let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/snap-src", true);
-    fs.mock_set_path_exists("/run/nails-pivot/boot", true);
-    fs.mock_set_path_exists("/run/nails-pivot/boot-snapshot", true);
-    fs.bind_mount(Path::new("/snap-src"), Path::new("/run/nails-pivot/boot"))
-        .unwrap();
-    fs.bind_mount(
-        Path::new("/snap-src"),
-        Path::new("/run/nails-pivot/boot-snapshot"),
+    fs.mock_set_path_exists("/", true);
+    fs.mount_tmpfs(Path::new(root), "16M").unwrap();
+    fs.mock_set_path_exists("/boot", true);
+    fs.mock_set_path_exists(&snapshot, true);
+    fs.mount_tmpfs(Path::new(&snapshot), "128M").unwrap();
+    fs.mock_set_path_exists(&staging, true);
+    fs.mock_set_path_exists("/mnt/data/boot/.upper", true);
+    fs.mock_set_path_exists("/mnt/data/boot/.work", true);
+    fs.mount_overlay(
+        &[Path::new(&snapshot)],
+        Path::new("/mnt/data/boot/.upper"),
+        Path::new("/mnt/data/boot/.work"),
+        Path::new(&staging),
     )
     .unwrap();
-    fs.mock_set_directory_contents(
-        Path::new("/run/nails-pivot"),
-        vec![
-            PathBuf::from("/run/nails-pivot/boot"),
-            PathBuf::from("/run/nails-pivot/boot-snapshot"),
-        ],
-    );
 
     let temp_dir = tempfile::tempdir().unwrap();
     let config = Config {
@@ -413,17 +415,12 @@ fn cleanup_pivot_staging_detaches_and_removes_the_staging() {
     let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
     orchestrator.cleanup_pivot_staging(&manager);
 
-    // Both staging mounts are detached and their directories removed, so nothing
-    // under the pivot base points back at the hidden session.
+    // The staging overlay and snapshot tmpfs are detached, and the umbrella tmpfs
+    // is unmounted and its directory removed, so nothing under the runtime root
+    // points back at the hidden session.
     let fs = manager.filesystem();
-    assert!(!fs.is_mounted(Path::new("/run/nails-pivot/boot")).unwrap());
-    assert!(
-        !fs.is_mounted(Path::new("/run/nails-pivot/boot-snapshot"))
-            .unwrap()
-    );
-    assert!(!fs.path_exists(Path::new("/run/nails-pivot/boot")).unwrap());
-    assert!(
-        !fs.path_exists(Path::new("/run/nails-pivot/boot-snapshot"))
-            .unwrap()
-    );
+    assert!(!fs.is_mounted(Path::new(&staging)).unwrap());
+    assert!(!fs.is_mounted(Path::new(&snapshot)).unwrap());
+    assert!(!fs.is_mounted(Path::new(root)).unwrap());
+    assert!(!fs.path_exists(Path::new(root)).unwrap());
 }

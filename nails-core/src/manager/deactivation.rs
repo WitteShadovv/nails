@@ -2162,27 +2162,38 @@ impl DeactivationOrchestrator {
     /// remounts: every target is attempted (graceful, then forced) and the
     /// per-target failures are collected so the caller can decide whether the
     /// teardown is complete or must be recorded as degraded.
-    /// Detach and remove any pivot staging left under the staging base.
+    /// Detach everything staged inside the per-activation runtime scaffolding
+    /// root, then unmount and remove the root tmpfs itself.
     ///
-    /// An overlay-incompatible target (VFAT `/boot`) is overlaid through a
-    /// snapshot pivot: a tmpfs snapshot at `/run/nails-pivot/<name>-snapshot`, an
-    /// overlay at `/run/nails-pivot/<name>` using it as the lower layer, and a bind
-    /// of that overlay onto the target. The main unmount only takes the target
-    /// bind down; the staging overlay and the snapshot tmpfs, and the directories
-    /// holding them, stay behind and keep the hidden upper on the backend busy.
+    /// All of an activation's volatile scaffolding — pivot staging overlays, the
+    /// vfat snapshot tmpfs, and the read-only `/nix/store` bind — lives inside one
+    /// random-named umbrella tmpfs under `/run`. The main overlay unmount only
+    /// takes the *target* binds down; the scaffolding stacked inside the umbrella
+    /// stays behind and keeps the hidden upper on the backend busy.
     ///
-    /// Discover whatever is still mounted under the staging base and detach it —
-    /// the staging overlay before the `-snapshot` tmpfs it stacks on — then remove
-    /// the staging directories NAILS created, so no mount or path points back at
-    /// the hidden session. Best-effort and a no-op when nothing pivoted.
+    /// The root is found two ways and both are honoured: structural discovery from
+    /// the live mount table (so an untrusted / emergency teardown with no state
+    /// still finds it) and the path recorded in the state file (so a trusted
+    /// teardown removes even an *empty* umbrella that a mount-table scan does not
+    /// correlate). Scaffolding is detached snapshot-last — the staging overlay
+    /// stacks on the `-snapshot` tmpfs — then the umbrella tmpfs is unmounted and
+    /// its directory removed. Best-effort and a no-op when no scaffolding exists.
     fn cleanup_pivot_staging<F: Filesystem>(&self, manager: &NailsManager<F>) {
         let fs = manager.filesystem();
         let hidden_root = manager.config().hidden_volume_root.clone();
 
+        // The umbrella root recorded at activation (reliable even when empty).
+        let recorded_root = manager
+            .cached_state
+            .borrow()
+            .as_ref()
+            .and_then(|state| state.runtime_root.clone());
+
+        let mut discovered_root = None;
         if let Ok(mounts) = fs.discover_nails_mounts(Some(&hidden_root)) {
+            discovered_root = mounts.runtime_tmpfs.clone();
             let mut staging = mounts.pivot_binds.clone();
-            // The staging overlay stacks on the `-snapshot` tmpfs, so detach the
-            // overlay first and the snapshot last.
+            // Detach the staging overlay before the `-snapshot` tmpfs it stacks on.
             staging.sort_by_key(|p| {
                 p.file_name()
                     .map(|n| n.to_string_lossy().ends_with("-snapshot"))
@@ -2192,16 +2203,29 @@ impl DeactivationOrchestrator {
                 if fs.unmount(target, false).is_err() {
                     let _ = fs.unmount(target, true);
                 }
+                // The snapshot tmpfs staged inside the root is a tmpfs, not an
+                // overlay; unmount_tmpfs is idempotent and a no-op for the overlay
+                // and bind staging, so this cleans both without knowing the fstype.
+                let _ = fs.unmount_tmpfs(target);
             }
         }
 
-        // Remove the staging directories NAILS created. Best-effort: a non-empty
-        // or already-gone directory is skipped, and a missing base is a no-op.
-        let base = Path::new(crate::overlay::PIVOT_STAGING_BASE);
-        if let Ok(children) = fs.list_directory(base) {
-            for child in children {
-                let _ = fs.remove_directory(&child);
-            }
+        // Tear down the umbrella tmpfs last, from whichever source found it. The
+        // recorded path is tried too, deduplicated, so an empty umbrella the
+        // mount-table scan did not correlate is still removed.
+        for root in [discovered_root, recorded_root].into_iter().flatten().fold(
+            Vec::new(),
+            |mut acc: Vec<PathBuf>, root| {
+                if !acc.contains(&root) {
+                    acc.push(root);
+                }
+                acc
+            },
+        ) {
+            // Unmounting the tmpfs discards every staging directory it held, so
+            // only the umbrella itself needs removing afterwards.
+            let _ = fs.unmount_tmpfs(&root);
+            let _ = fs.remove_directory(&root);
         }
     }
 

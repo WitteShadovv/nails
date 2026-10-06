@@ -49,6 +49,16 @@ pub enum MountType {
     /// the Active state's top-level overlay list so teardown of the whole submount
     /// group (nested overlay, then its staging lower) stays in one ordered place.
     NestedOverlay,
+
+    /// The per-activation runtime scaffolding tmpfs (see [`crate::runtime_root`]).
+    ///
+    /// One umbrella tmpfs under `/run` that hosts this activation's pivot staging,
+    /// snapshot tmpfs and the pre-overlay `/nix/store` bind. Pushed onto the
+    /// tracker first, so LIFO rollback tears it down last — after every overlay
+    /// and bind staged inside it. Rolled back with an idempotent tmpfs unmount
+    /// followed by removal of the now-empty directory, never the managed-overlay
+    /// unmount.
+    Tmpfs,
 }
 
 /// Information about a tracked mount
@@ -103,6 +113,18 @@ impl MountInfo {
         Self {
             mount_type: MountType::NestedOverlay,
             target,
+            tmpfs_paths: Vec::new(),
+        }
+    }
+
+    /// Create a new mount info for the per-activation runtime scaffolding tmpfs.
+    ///
+    /// `root` is the umbrella tmpfs mount point under `/run`. Rollback unmounts it
+    /// and removes the directory.
+    pub fn tmpfs(root: PathBuf) -> Self {
+        Self {
+            mount_type: MountType::Tmpfs,
+            target: root,
             tmpfs_paths: Vec::new(),
         }
     }

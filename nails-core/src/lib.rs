@@ -127,6 +127,11 @@ pub mod persona;
 
 mod runtime_safety;
 
+// The per-activation runtime scaffolding root: one random-named, volatile tmpfs
+// under /run that holds pivot staging, the vfat snapshot tmpfs and the
+// pre-overlay /nix/store bind, recorded in state and torn down as a unit.
+pub(crate) mod runtime_root;
+
 // Test helpers shared across modules and with downstream test code (the
 // process-environment guard). Off in release builds.
 #[cfg(any(test, feature = "test-support"))]

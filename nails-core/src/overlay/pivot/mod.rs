@@ -8,26 +8,12 @@
 
 use crate::config::EphemeralOverlayDir;
 use crate::{Filesystem, NailsError, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::mount_info::PivotMountInfo;
 
 #[cfg(test)]
 mod tests;
-
-/// Staging directory base for pivot mounts.
-///
-/// This lives on `/run` (a tmpfs that is always overlay-excluded and can never
-/// be un-excluded, see `config::dynamic`), not on the decoy root. An earlier
-/// design staged under `/mnt/nails-pivot`; because `/mnt` is overlay-excluded it
-/// sat on the persistent decoy filesystem, so every activation created staging
-/// and snapshot directories there that survived teardown and a reboot — a
-/// standing forensic trace on the decoy disk. Staging on the `/run` tmpfs keeps
-/// the same overlay-exclusion property while making the scaffolding volatile:
-/// it is gone on power-off and never reaches the decoy disk image. The old decoy
-/// path stays in the artifact registry so `verify` still flags a leftover from a
-/// prior build.
-pub const PIVOT_STAGING_BASE: &str = "/run/nails-pivot";
 
 /// Upper bound on a snapshot tmpfs, so an overlay-incompatible target can never
 /// request an unbounded amount of RAM. Shared with the overlay-compatibility
@@ -64,7 +50,7 @@ fn cleanup_empty_directory<F: Filesystem>(fs: &F, path: &Path) {
 /// for a mount that cannot otherwise happen. It is the fallback used when a direct
 /// mount is rejected for another reason: the overlay is mounted on a staging path
 /// and bind-mounted over the target in two steps:
-/// 1. Mount overlay to staging location (`/run/nails-pivot/var`)
+/// 1. Mount overlay to staging location (`/run/0123456789abcdef/var`)
 /// 2. Bind mount staging to target (`/var`)
 ///
 /// # Process Impact (Split View)
@@ -108,10 +94,11 @@ fn cleanup_empty_directory<F: Filesystem>(fs: &F, path: &Path) {
 /// fs.mock_set_path_exists("/var", true);
 /// fs.mock_set_path_exists("/mnt/hidden/var-upper", true);
 /// fs.mock_set_path_exists("/mnt/hidden/var-work", true);
-/// fs.mock_set_directory_creatable("/run/nails-pivot/var", true);
+/// fs.mock_set_directory_creatable("/run/0123456789abcdef/var", true);
 ///
 /// let info = pivot_overlay_mount(
 ///     &fs,
+///     Path::new("/run/0123456789abcdef"),      // runtime base
 ///     &[Path::new("/var")],           // lower
 ///     Path::new("/mnt/hidden/var-upper"),  // upper
 ///     Path::new("/mnt/hidden/var-work"),   // work
@@ -119,10 +106,11 @@ fn cleanup_empty_directory<F: Filesystem>(fs: &F, path: &Path) {
 /// ).unwrap();
 ///
 /// assert_eq!(info.target, Path::new("/var"));
-/// assert!(info.staging.starts_with("/run/nails-pivot"));
+/// assert!(info.staging.starts_with("/run/0123456789abcdef"));
 /// ```
 pub fn pivot_overlay_mount<F: Filesystem>(
     fs: &F,
+    runtime_base: &Path,
     lower: &[&Path],
     upper: &Path,
     work: &Path,
@@ -135,7 +123,7 @@ pub fn pivot_overlay_mount<F: Filesystem>(
             NailsError::OverlayError(format!("Invalid target path: {}", target.display()))
         })?
         .to_string_lossy();
-    let staging = PathBuf::from(PIVOT_STAGING_BASE).join(dir_name.as_ref());
+    let staging = runtime_base.join(dir_name.as_ref());
 
     // Step 1: Create staging directory
     fs.create_directory(&staging)?;
@@ -200,19 +188,20 @@ pub fn pivot_overlay_mount<F: Filesystem>(
 /// };
 ///
 /// fs.mock_set_path_exists("/var", true);
-/// fs.mock_set_directory_creatable("/run/nails/var-upper", true);
-/// fs.mock_set_directory_creatable("/run/nails/var-work", true);
-/// fs.mock_set_directory_creatable("/run/nails-pivot/var", true);
+/// fs.mock_set_directory_creatable("/run/0123456789abcdef/var-upper", true);
+/// fs.mock_set_directory_creatable("/run/0123456789abcdef/var-work", true);
+/// fs.mock_set_directory_creatable("/run/0123456789abcdef/var", true);
 ///
-/// let info = pivot_ephemeral_mount(&fs, &config, Path::new("/var")).unwrap();
+/// let info = pivot_ephemeral_mount(&fs, Path::new("/run/0123456789abcdef"), &config, Path::new("/var")).unwrap();
 /// assert!(info.is_ephemeral);
 /// ```
 pub fn pivot_ephemeral_mount<F: Filesystem>(
     fs: &F,
+    runtime_base: &Path,
     config: &EphemeralOverlayDir,
     lower: &Path,
 ) -> Result<PivotMountInfo> {
-    let base = PathBuf::from("/run/nails");
+    let base = runtime_base.to_path_buf();
     let dir_name = config
         .path
         .file_name()
@@ -245,7 +234,7 @@ pub fn pivot_ephemeral_mount<F: Filesystem>(
     }
 
     // Step 3: Pivot mount overlay to target
-    match pivot_overlay_mount(fs, &[lower], &upper, &work, &config.path) {
+    match pivot_overlay_mount(fs, runtime_base, &[lower], &upper, &work, &config.path) {
         Ok(mut info) => {
             info.is_ephemeral = true;
             Ok(info)
@@ -289,6 +278,7 @@ pub fn pivot_ephemeral_mount<F: Filesystem>(
 /// On failure at any step, all previous steps are rolled back.
 pub fn snapshot_pivot_overlay_mount<F: Filesystem>(
     fs: &F,
+    runtime_base: &Path,
     _lower: &[&Path],
     upper: &Path,
     work: &Path,
@@ -307,7 +297,7 @@ pub fn snapshot_pivot_overlay_mount<F: Filesystem>(
     let snapshot_size = snapshot_tmpfs_bytes(measured).to_string();
 
     // Step 1: Create snapshot tmpfs directory
-    let snapshot_path = PathBuf::from(PIVOT_STAGING_BASE).join(format!("{}-snapshot", dir_name));
+    let snapshot_path = runtime_base.join(format!("{}-snapshot", dir_name));
     fs.create_directory(&snapshot_path)?;
 
     // Step 2: Mount tmpfs at snapshot location
@@ -324,7 +314,7 @@ pub fn snapshot_pivot_overlay_mount<F: Filesystem>(
     }
 
     // Step 4: Create staging directory
-    let staging = PathBuf::from(PIVOT_STAGING_BASE).join(dir_name.as_ref());
+    let staging = runtime_base.join(dir_name.as_ref());
     if let Err(e) = fs.create_directory(&staging) {
         let _ = fs.unmount_tmpfs(&snapshot_path);
         cleanup_empty_directory(fs, &snapshot_path);
@@ -398,13 +388,15 @@ pub fn unmount_pivot_overlay<F: Filesystem>(fs: &F, info: &PivotMountInfo) -> Re
     // Step 3: Remove staging directory (best effort)
     cleanup_empty_directory(fs, &info.staging);
 
-    // Step 3.5: If snapshot pivot, unmount and remove the snapshot tmpfs
-    // Snapshot pivots have their lower dir under PIVOT_STAGING_BASE ending with "-snapshot"
-    if info.lower.starts_with(PIVOT_STAGING_BASE)
-        && info
-            .lower
-            .file_name()
-            .is_some_and(|n| n.to_string_lossy().ends_with("-snapshot"))
+    // Step 3.5: If snapshot pivot, unmount and remove the snapshot tmpfs.
+    // A snapshot pivot records its lower dir as the sized snapshot tmpfs inside
+    // the runtime root, named "<target>-snapshot"; a plain or ephemeral pivot's
+    // lower is a decoy path that never ends in that suffix, so the suffix alone
+    // distinguishes them without keying on a fixed base.
+    if info
+        .lower
+        .file_name()
+        .is_some_and(|n| n.to_string_lossy().ends_with("-snapshot"))
     {
         if let Err(e) = fs.unmount_tmpfs(&info.lower) {
             errors.push(format!("snapshot tmpfs {}: {}", info.lower.display(), e));

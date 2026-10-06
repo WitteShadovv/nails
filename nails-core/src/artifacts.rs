@@ -33,10 +33,6 @@ pub const CONFIG_FILE_NAME: &str = "nails.toml";
 /// Activation state file name, on the hidden root. The single definition.
 pub const STATE_FILE_NAME: &str = "state.json";
 
-/// Per-activation runtime directory on the decoy root. Created during
-/// activation and removed on deactivation; a leftover is a teardown failure.
-pub const RUNTIME_DIR: &str = "/run/nails";
-
 /// The relative import that the staged `hardware-configuration.nix` wrapper adds
 /// to pull in the hidden NixOS module. The detector (base-config pre-flight) and
 /// the stager reference this one definition.
@@ -174,12 +170,12 @@ pub const ARTIFACTS: &[Artifact] = &[
         description: "Staged hidden NixOS module source on the hidden root.",
     },
     Artifact {
-        id: "runtime-dir",
+        id: "runtime-dir-legacy",
         kind: ArtifactKind::AbsolutePath,
         scope: ArtifactScope::Runtime,
         severity: ArtifactSeverity::Warn,
-        value: RUNTIME_DIR,
-        description: "Per-activation runtime directory on the decoy root; removed on deactivation.",
+        value: "/run/nails",
+        description: "Fixed runtime directory used by earlier builds. Current builds use a random per-activation tmpfs, so a leftover at this fixed path is a prior version's teardown failure.",
     },
     Artifact {
         id: "runtime-copy-dir",
@@ -190,12 +186,12 @@ pub const ARTIFACTS: &[Artifact] = &[
         description: "RAM-backed copy of the binary, config and mount manifest on the decoy /run; removed on deactivation and emergency.",
     },
     Artifact {
-        id: "pivot-staging",
+        id: "pivot-staging-run-legacy",
         kind: ArtifactKind::AbsolutePath,
         scope: ArtifactScope::Runtime,
         severity: ArtifactSeverity::Warn,
-        value: crate::overlay::PIVOT_STAGING_BASE,
-        description: "Overlay pivot staging base on the /run tmpfs; removed on deactivation.",
+        value: "/run/nails-pivot",
+        description: "Fixed overlay pivot staging base used by earlier builds. Current builds stage inside a random per-activation tmpfs, so a leftover here is a prior version's teardown failure.",
     },
     Artifact {
         id: "pivot-staging-legacy",
@@ -380,7 +376,10 @@ mod tests {
     fn image_token_is_the_basename_for_path_kinds() {
         assert_eq!(artifact("config-file").unwrap().image_token(), "nails.toml");
         assert_eq!(artifact("state-file").unwrap().image_token(), "state.json");
-        assert_eq!(artifact("runtime-dir").unwrap().image_token(), "nails");
+        assert_eq!(
+            artifact("runtime-dir-legacy").unwrap().image_token(),
+            "nails"
+        );
         assert_eq!(
             artifact("nixos-import-marker").unwrap().image_token(),
             NIXOS_IMPORT_MARKER
@@ -395,8 +394,8 @@ mod tests {
             Some(PathBuf::from("/mnt/data/config/nails.toml"))
         );
         assert_eq!(
-            artifact("runtime-dir").unwrap().resolve_path(root),
-            Some(PathBuf::from(RUNTIME_DIR))
+            artifact("runtime-dir-legacy").unwrap().resolve_path(root),
+            Some(PathBuf::from("/run/nails"))
         );
         assert_eq!(
             artifact("autostart-notify").unwrap().resolve_path(root),

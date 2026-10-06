@@ -21,7 +21,7 @@
 //! in-session watcher ([`crate::watcher`]) that runs from this copy is registered
 //! with systemd under the same neutral name. The whole directory is `0700` and is
 //! removed on both deactivation and emergency teardown; a leftover is a teardown
-//! failure, the same contract as [`crate::artifacts::RUNTIME_DIR`].
+//! failure, the same contract as the per-activation runtime scaffolding root.
 
 use std::path::{Path, PathBuf};
 
@@ -36,9 +36,11 @@ use crate::{NailsError, Result};
 /// The name reveals nothing about the tool: `/run` is full of short runtime
 /// state directories, and overlay-backed runtimes (containers, snaps) are
 /// commonplace, so this reads as ordinary system state rather than a tell. It is
-/// deliberately *not* [`crate::artifacts::RUNTIME_DIR`] (`/run/nails`): that path
-/// is product-named and holds the ephemeral overlay uppers, whereas this copy and
-/// the watcher must leave no product name anywhere under `/run`.
+/// deliberately *not* the per-activation runtime scaffolding root (see
+/// [`crate::runtime_root`]): that root holds the pivot staging and store bind and
+/// is torn down with the overlays, whereas this copy and the watcher outlive the
+/// unmount, so they live at their own neutral path and both leave no product name
+/// anywhere under `/run`.
 pub const RUNTIME_COPY_DIR: &str = "/run/overlay-runtime";
 
 /// File name of the mirrored executable inside [`RUNTIME_COPY_DIR`]. Neutral.
