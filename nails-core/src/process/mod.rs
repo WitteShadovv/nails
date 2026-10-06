@@ -45,6 +45,7 @@
 //! # Ok::<(), nails_core::NailsError>(())
 //! ```
 
+pub(crate) mod cgroup_unit;
 pub mod classification;
 pub mod detection;
 pub mod restart;

@@ -312,13 +312,13 @@ impl<F: Filesystem> NailsManager<F> {
         // after the overlays are gone and then write to the decoy. Enqueue a stop
         // job for every such unit first (never the unit this teardown runs in;
         // the graphical session's units were spared above), then signal.
-        let own_unit = process_teardown::own_service_unit();
+        let own_unit = crate::process::cgroup_unit::own_service_unit();
         let units: std::collections::BTreeSet<String> = pids
             .iter()
             .filter_map(|&pid| read_proc_cgroup(pid))
             .filter(|cgroup| !session_guard.covers(cgroup))
-            .filter_map(|cgroup| process_teardown::service_unit_from_cgroup(&cgroup))
-            .filter(|unit| own_unit.as_deref() != Some(unit.as_str()))
+            .filter_map(|cgroup| crate::process::cgroup_unit::service_unit_from_cgroup(&cgroup))
+            .filter(|unit| crate::process::cgroup_unit::may_stop_unit(own_unit.as_deref(), unit))
             .collect();
         process_teardown::enqueue_unit_stops(&units);
 

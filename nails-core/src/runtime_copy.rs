@@ -265,9 +265,21 @@ pub fn start_watch_unit() {
 pub fn stop_watch_unit() {
     use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
 
+    let own_unit = crate::process::cgroup_unit::own_service_unit();
+    if !crate::process::cgroup_unit::may_stop_unit(own_unit.as_deref(), WATCH_UNIT_NAME) {
+        // The teardown runs inside this very unit (the watcher's auto-emergency):
+        // stopping it would SIGTERM the teardown. The unit ends on its own when
+        // the process returns.
+        tracing::info!(
+            unit = WATCH_UNIT_NAME,
+            "Not stopping the unit this teardown runs in"
+        );
+        return;
+    }
     let command = ProcessCommand::tool("systemctl")
         .arg("stop")
-        .arg(WATCH_UNIT_NAME);
+        .arg(WATCH_UNIT_NAME)
+        .deadline(crate::process::run::UNIT_STOP_BUDGET);
     let _ = RealProcessRunner.run(&command);
 }
 

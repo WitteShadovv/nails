@@ -111,6 +111,9 @@ pub const LOGINCTL_BUDGET: Duration = Duration::from_secs(10);
 pub const LDD_BUDGET: Duration = Duration::from_secs(10);
 /// `cp` of an overlay snapshot, which can be large.
 pub const COPY_BUDGET: Duration = Duration::from_secs(300);
+/// Stopping one of NAILS' own helper units during a teardown, so a wedged stop
+/// never holds the teardown up.
+pub const UNIT_STOP_BUDGET: Duration = Duration::from_secs(5);
 /// Dispatching a reboot (`systemctl reboot`, `reboot`).
 pub const REBOOT_DISPATCH_BUDGET: Duration = Duration::from_secs(10);
 
