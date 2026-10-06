@@ -60,6 +60,14 @@ pub fn execute(
         tracing::info!("Emergency teardown using the {}", config_source.describe());
     }
 
+    // Leave the inherited working directory for `/` before anything else, as
+    // activation does: a cwd inside an overlay pins it, so the teardown's own
+    // process would force the unmount into a lazy detach. Done after the config
+    // load so a relative `--config` path still resolves.
+    if let Err(e) = std::env::set_current_dir("/") {
+        tracing::warn!(error = %e, "could not move to / before the emergency teardown");
+    }
+
     let state_path = config.state_file_path.clone();
     // Retained for the state lock, since `config` and the clone above are moved
     // into the manager below.
@@ -711,6 +719,11 @@ mod tests {
             ),
             other => panic!("unknown emergency subprocess case: {other}"),
         };
+        // Report where the teardown left this process, for the cwd test.
+        println!(
+            "CWD-AFTER-EMERGENCY={}",
+            std::env::current_dir().unwrap().display()
+        );
         crate::cli::detach::exit_process(status.code());
     }
 
@@ -735,6 +748,24 @@ mod tests {
         // greeter.
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!stdout.to_lowercase().contains("greeter"), "{stdout}");
+    }
+
+    #[test]
+    fn execute_emergency_leaves_its_working_directory_for_the_root() {
+        // A cwd inside an overlay would pin it and force a lazy detach; emergency
+        // moves to / first, like activation.
+        let temp_dir = tempfile::tempdir().unwrap();
+        let missing = temp_dir.path().join("missing.toml");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
+            .current_dir(temp_dir.path())
+            .env("NAILS_TEST_RUNTIME", "1")
+            .env("NAILS_EMERGENCY_SUBPROCESS_CASE", "invalid-config")
+            .env("NAILS_EMERGENCY_SUBPROCESS_CONFIG", &missing);
+        let output = command.output().unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("CWD-AFTER-EMERGENCY=/\n"), "{stdout}");
     }
 
     #[test]
