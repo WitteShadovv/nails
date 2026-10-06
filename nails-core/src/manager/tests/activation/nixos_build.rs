@@ -137,7 +137,9 @@ const CACHED_TOPLEVEL: &str = "/nix/store/0000000000000000000000000000000a-nixos
 fn matching_fingerprint(fs: &MockFilesystem, hidden_root: &Path, config_dir: &Path) -> String {
     use crate::nixos::{collect_config_tree, compute_config_fingerprint};
     let flake_ref = config_dir.to_string_lossy();
-    let entries = collect_config_tree(fs, hidden_root, Some(&flake_ref), None);
+    // A legacy `NixOSBuilder::new` has no flake source, so the fingerprint walks
+    // the staged hidden config trees (flake_source = None), matching `plan`.
+    let entries = collect_config_tree(fs, hidden_root, Some(&flake_ref), None, None);
     compute_config_fingerprint(&entries)
 }
 

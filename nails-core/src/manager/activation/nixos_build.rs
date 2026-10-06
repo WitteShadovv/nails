@@ -56,6 +56,10 @@ impl<F: Filesystem> NailsManager<F> {
         };
 
         let (flake_ref, config_name) = builder.fingerprint_inputs();
+        // For a flake build the flake source directory is the build input the
+        // fingerprint must track; a legacy build has none and falls back to the
+        // staged hidden config trees.
+        let flake_source = builder.flake_dir();
 
         let plan = layer.plan(
             &self.filesystem,
@@ -64,6 +68,7 @@ impl<F: Filesystem> NailsManager<F> {
             stored_toplevel.as_deref(),
             flake_ref.as_deref(),
             config_name.as_deref(),
+            flake_source,
             verbosity,
         )?;
 

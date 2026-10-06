@@ -86,6 +86,7 @@ pub trait ConfigLayer<F: Filesystem>: std::fmt::Debug + Send + Sync {
         stored_toplevel: Option<&str>,
         flake_ref: Option<&str>,
         config_name: Option<&str>,
+        flake_source: Option<&Path>,
         verbosity: Verbosity,
     ) -> Result<ConfigPlan>;
 
@@ -147,6 +148,7 @@ impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
         stored_toplevel: Option<&str>,
         flake_ref: Option<&str>,
         config_name: Option<&str>,
+        flake_source: Option<&Path>,
         verbosity: Verbosity,
     ) -> Result<ConfigPlan> {
         if verbosity >= Verbosity::Normal {
@@ -155,11 +157,12 @@ impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
             );
         }
 
-        // Fingerprint the whole hidden config tree (flake.nix, flake.lock, the
-        // hardware wrapper and its base, configuration.nix and every imported
-        // module) plus the flake reference and configuration name, so any change a
-        // build depends on invalidates the fast path.
-        let entries = collect_config_tree(fs, hidden_volume_root, flake_ref, config_name);
+        // Fingerprint the inputs the build actually reads (the flake source for a
+        // flake build, the staged hidden config trees for a legacy build) plus the
+        // flake reference and configuration name, so any change a build depends on
+        // invalidates the fast path while incidental `/etc` overlay churn does not.
+        let entries =
+            collect_config_tree(fs, hidden_volume_root, flake_ref, config_name, flake_source);
         let current_fp = compute_config_fingerprint(&entries);
 
         if verbosity >= Verbosity::Normal {
@@ -475,6 +478,7 @@ mod plan_tests {
     use crate::nixos::{collect_config_tree, compute_config_fingerprint};
 
     const FLAKE_REF: &str = "/etc/nixos#host";
+    const FLAKE_SOURCE: &str = "/etc/nixos";
     const TOPLEVEL: &str = "/nix/store/0000000000000000000000000000000a-nixos-system-host";
 
     fn current_fp(fs: &MockFilesystem, root: &Path) -> String {
@@ -483,6 +487,7 @@ mod plan_tests {
             root,
             Some(FLAKE_REF),
             Some("host"),
+            Some(Path::new(FLAKE_SOURCE)),
         ))
     }
 
@@ -500,6 +505,7 @@ mod plan_tests {
             stored_toplevel,
             Some(FLAKE_REF),
             Some("host"),
+            Some(Path::new(FLAKE_SOURCE)),
             Verbosity::Quiet,
         )
         .unwrap()

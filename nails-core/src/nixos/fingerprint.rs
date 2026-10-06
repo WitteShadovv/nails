@@ -45,26 +45,50 @@ const MAX_WALK_DEPTH: usize = 32;
 /// Collect the `(key, content)` entries that feed [`compute_config_fingerprint`]
 /// from the hidden configuration.
 ///
-/// Walks the hidden `etc/nixos` and `config/nixos` trees and records every real
-/// file (`flake.nix`, `flake.lock`, the hardware wrapper and its base,
-/// `configuration.nix`, imported modules) keyed by its path relative to the
-/// hidden volume root. A symlink is recorded by the content it resolves to when
-/// that is a readable file (so the staged configuration symlink still counts) but
-/// is never recursed into, so the walk cannot follow a `result` symlink or a
-/// staged store link down into `/nix/store`. The flake reference and the selected
-/// configuration name are appended as synthetic entries so a different flake ref
-/// or attribute name also changes the fingerprint.
+/// The set of files walked depends on which build the activation will run:
+///
+/// * **Flake build** (`flake_source` is `Some`): the build reads the flake
+///   source directory and nothing else, so that directory's files are the
+///   fingerprint inputs. The hidden `etc/nixos` tree is deliberately *not*
+///   walked here: it doubles as the live `/etc` overlay upper layer, which the
+///   hidden session's own `switch-to-configuration` rewrites (on hosts that
+///   manage `/etc/nixos` through `environment.etc` the regenerated store
+///   symlinks land in that upper), so folding it into the fingerprint made every
+///   post-session re-activation look changed and killed the fast path even when
+///   the operator changed nothing. Covering the real build input instead means
+///   an edit to the flake forces a rebuild while incidental `/etc` churn does
+///   not.
+/// * **Legacy build** (`flake_source` is `None`): `nixos-rebuild` reads the
+///   overlaid `/etc/nixos`, so the hidden `etc/nixos` and `config/nixos` trees
+///   are the inputs and are walked as before.
+///
+/// Every real file (`flake.nix`, `flake.lock`, imported modules, the hardware
+/// wrapper and its base, `configuration.nix`) is recorded keyed by its path
+/// relative to the directory walked. A symlink is recorded by the content it
+/// resolves to when that is a readable file (so the staged configuration symlink
+/// still counts) but is never recursed into, so the walk cannot follow a
+/// `result` symlink or a staged store link down into `/nix/store`. The flake
+/// reference and the selected configuration name are appended as synthetic
+/// entries so a different flake ref or attribute name also changes the
+/// fingerprint.
 pub(crate) fn collect_config_tree<F: Filesystem>(
     fs: &F,
     hidden_volume_root: &Path,
     flake_ref: Option<&str>,
     config_name: Option<&str>,
+    flake_source: Option<&Path>,
 ) -> Vec<(String, String)> {
     let mut entries: Vec<(String, String)> = Vec::new();
 
-    for sub in ["etc/nixos", "config/nixos"] {
-        let dir = hidden_volume_root.join(sub);
-        walk_dir(fs, hidden_volume_root, &dir, &mut entries, 0);
+    if let Some(flake_source) = flake_source {
+        // Flake build: the flake source directory is the build input.
+        walk_dir(fs, flake_source, flake_source, &mut entries, 0);
+    } else {
+        // Legacy build: the staged hidden config trees are the build input.
+        for sub in ["etc/nixos", "config/nixos"] {
+            let dir = hidden_volume_root.join(sub);
+            walk_dir(fs, hidden_volume_root, &dir, &mut entries, 0);
+        }
     }
 
     if let Some(flake_ref) = flake_ref {
@@ -98,6 +122,15 @@ fn walk_dir<F: Filesystem>(
         Err(_) => return,
     };
     for path in items {
+        // Skip VCS metadata: a flake source directory under version control
+        // carries a `.git` whose contents (HEAD, index, refs, logs) churn with
+        // every commit and checkout without changing what the build evaluates, so
+        // folding it in would reintroduce the volatile-input problem this walk
+        // exists to avoid.
+        if path.file_name().is_some_and(|name| name == ".git") {
+            continue;
+        }
+
         let rel_key = path
             .strip_prefix(root)
             .unwrap_or(&path)
@@ -300,5 +333,152 @@ mod tests {
         let fp = compute_config_fingerprint(&tree(&[("f", "c")]));
         assert_eq!(fp.len(), 16);
         assert!(fp.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // ---- collect_config_tree: flake-source vs hidden-tree walking ----
+
+    use crate::filesystem::MockFilesystem;
+
+    /// Register a plain file in the mock: its content plus a directory listing
+    /// entry under its parent (rebuilt from the files passed per directory).
+    fn mock_dir(fs: &MockFilesystem, dir: &str, files: &[(&str, &str)]) {
+        let entries: Vec<std::path::PathBuf> = files
+            .iter()
+            .map(|(name, _)| std::path::PathBuf::from(format!("{dir}/{name}")))
+            .collect();
+        fs.mock_set_directory_contents(Path::new(dir), entries);
+        for (name, content) in files {
+            let path = format!("{dir}/{name}");
+            fs.mock_set_path_exists(&path, true);
+            fs.mock_set_file_content(&path, content);
+        }
+    }
+
+    const HIDDEN_ROOT: &str = "/mnt/hidden";
+    const FLAKE_SOURCE: &str = "/mnt/hidden/nixos";
+
+    fn fp_flake(fs: &MockFilesystem) -> String {
+        compute_config_fingerprint(&collect_config_tree(
+            fs,
+            Path::new(HIDDEN_ROOT),
+            Some("/mnt/hidden/nixos#host"),
+            Some("host"),
+            Some(Path::new(FLAKE_SOURCE)),
+        ))
+    }
+
+    #[test]
+    fn flake_build_hashes_the_flake_source() {
+        let fs = MockFilesystem::new();
+        mock_dir(
+            &fs,
+            FLAKE_SOURCE,
+            &[("flake.nix", "A"), ("flake.lock", "L")],
+        );
+        let before = fp_flake(&fs);
+
+        // Editing the flake source changes the fingerprint.
+        mock_dir(
+            &fs,
+            FLAKE_SOURCE,
+            &[("flake.nix", "B"), ("flake.lock", "L")],
+        );
+        assert_ne!(
+            before,
+            fp_flake(&fs),
+            "editing the flake source must change the fingerprint"
+        );
+    }
+
+    #[test]
+    fn flake_build_ignores_hidden_etc_nixos_churn() {
+        let fs = MockFilesystem::new();
+        mock_dir(
+            &fs,
+            FLAKE_SOURCE,
+            &[("flake.nix", "A"), ("flake.lock", "L")],
+        );
+        // The hidden /etc/nixos tree is also the live /etc overlay upper, so the
+        // session rewrites it. In flake mode it must not feed the fingerprint.
+        mock_dir(
+            &fs,
+            "/mnt/hidden/etc/nixos",
+            &[("hardware-configuration.nix", "wrapper-v1")],
+        );
+        let before = fp_flake(&fs);
+
+        mock_dir(
+            &fs,
+            "/mnt/hidden/etc/nixos",
+            &[
+                ("hardware-configuration.nix", "wrapper-v2"),
+                ("flake.nix", "regenerated-store-symlink"),
+            ],
+        );
+        assert_eq!(
+            before,
+            fp_flake(&fs),
+            "churn in the hidden /etc/nixos overlay upper must not change a flake-build fingerprint"
+        );
+    }
+
+    #[test]
+    fn legacy_build_hashes_hidden_trees() {
+        let fs = MockFilesystem::new();
+        mock_dir(
+            &fs,
+            "/mnt/hidden/etc/nixos",
+            &[("configuration.nix", "cfg-v1")],
+        );
+        let legacy = |fs: &MockFilesystem| {
+            compute_config_fingerprint(&collect_config_tree(
+                fs,
+                Path::new(HIDDEN_ROOT),
+                Some("/mnt/hidden/config/nixos"),
+                None,
+                None,
+            ))
+        };
+        let before = legacy(&fs);
+        mock_dir(
+            &fs,
+            "/mnt/hidden/etc/nixos",
+            &[("configuration.nix", "cfg-v2")],
+        );
+        assert_ne!(
+            before,
+            legacy(&fs),
+            "a legacy build must still track the hidden config trees"
+        );
+    }
+
+    #[test]
+    fn git_metadata_is_excluded() {
+        let fs = MockFilesystem::new();
+        // A `.git` directory present in the listing must be skipped entirely,
+        // without being recursed into or read.
+        let entries = vec![
+            std::path::PathBuf::from(format!("{FLAKE_SOURCE}/flake.nix")),
+            std::path::PathBuf::from(format!("{FLAKE_SOURCE}/.git")),
+        ];
+        fs.mock_set_directory_contents(Path::new(FLAKE_SOURCE), entries);
+        fs.mock_set_path_exists(&format!("{FLAKE_SOURCE}/flake.nix"), true);
+        fs.mock_set_file_content(&format!("{FLAKE_SOURCE}/flake.nix"), "A");
+        // Mark `.git` as a directory with contents that would otherwise be walked.
+        let git = format!("{FLAKE_SOURCE}/.git");
+        fs.mock_set_path_type(&git, crate::filesystem::mock::PathKind::Dir);
+        mock_dir(&fs, &git, &[("HEAD", "ref: refs/heads/main")]);
+
+        let entries = collect_config_tree(
+            &fs,
+            Path::new(HIDDEN_ROOT),
+            Some("/mnt/hidden/nixos#host"),
+            Some("host"),
+            Some(Path::new(FLAKE_SOURCE)),
+        );
+        assert!(
+            entries.iter().all(|(key, _)| !key.contains(".git")),
+            "the .git directory must be excluded from the fingerprint: {entries:?}"
+        );
     }
 }
