@@ -27,6 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 mod reboot;
+mod session_guard;
 
 pub use reboot::{HostEffects, PostTeardownPower};
 #[cfg(any(test, feature = "test-hooks"))]
@@ -146,6 +147,14 @@ fn read_parent_pid(pid: u32) -> Option<u32> {
         let rest = line.strip_prefix("PPid:\t")?;
         rest.split_whitespace().next()?.parse::<u32>().ok()
     })
+}
+
+/// The raw `/proc/<pid>/cgroup` contents, for matching against the graphical
+/// session guard's cgroup fragments. `None` when the process has gone or the file
+/// cannot be read. Returned verbatim so the match works for both cgroup v2 (a
+/// single `0::/…` line) and v1 (one line per controller).
+fn read_proc_cgroup(pid: u32) -> Option<String> {
+    std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("cgroup")).ok()
 }
 
 /// The session id and process-group id of `pid`, read from `/proc/<pid>/stat`.
@@ -648,6 +657,15 @@ impl<F: Filesystem> NailsManager<F> {
     /// anonymous `st_dev`); an unverifiable writer (foreign mount namespace or
     /// chroot, where the device cannot be trusted) is kept fail-safe, as is every
     /// candidate when no overlay device could be read at all.
+    ///
+    /// On a graphical host the whole desktop is overlay-rooted (the session logs
+    /// back in under the overlays), so the display manager, X server, logind
+    /// session leader/wrapper, window/session manager and user systemd manager
+    /// would all match. Killing any of them logs the operator out, which emergency
+    /// forbids, so [`session_guard::GraphicalSessionGuard`] spares every process in
+    /// the operator's graphical session (see that module for the policy and for the
+    /// residual exposure a spared process can leak after the lazy detach). Processes
+    /// outside the graphical session are still killed.
     fn kill_overlay_rooted_processes(&self, targets: &[PathBuf]) {
         if targets.is_empty() || crate::runtime_safety::should_skip_host_interaction() {
             return;
@@ -665,6 +683,14 @@ impl<F: Filesystem> NailsManager<F> {
         // onto one of these is genuinely inside the overlay; one on the decoy
         // device only collided on the path string.
         let overlay_devices = overlay_mount_devices(targets);
+
+        // The processes that keep the operator's graphical session alive. Emergency
+        // detaches the overlays from under a running desktop without logging the
+        // operator out, so these are spared even though they are overlay-rooted.
+        let session_guard = session_guard::GraphicalSessionGuard::detect(
+            &crate::process::session::RealSessionCommandExecutor,
+        );
+        let mut spared_session_pids = std::collections::BTreeSet::new();
 
         // Never signal a process that belongs to this teardown's own invocation:
         // its ancestry, session or process group. A piped emergency
@@ -690,6 +716,14 @@ impl<F: Filesystem> NailsManager<F> {
                     );
                     continue;
                 }
+                if read_proc_cgroup(info.pid).is_some_and(|cgroup| session_guard.covers(&cgroup)) {
+                    spared_session_pids.insert(info.pid);
+                    tracing::debug!(
+                        pid = info.pid,
+                        "Sparing a process that keeps the operator's graphical session alive"
+                    );
+                    continue;
+                }
                 let on_overlay_device = !overlay_devices.is_empty()
                     && process_references_overlay_device(info.pid, &overlay_devices);
                 if !candidate_is_overlay_rooted(
@@ -705,6 +739,19 @@ impl<F: Filesystem> NailsManager<F> {
                 }
                 pids.insert(info.pid);
             }
+        }
+
+        if !spared_session_pids.is_empty() {
+            // These processes keep the operator's graphical session alive and were
+            // left running by design. After the lazy overlay detach a spared process
+            // that reopens an absolute path onto the now-exposed decoy could still
+            // write to it; emergency accepts that rather than log the operator out,
+            // and the honest "hidden root still mounted" report tells them to finish
+            // with a reboot/power-off.
+            tracing::info!(
+                spared = spared_session_pids.len(),
+                "Spared processes belonging to the operator's graphical session (display manager, X server, session leader/clients, user service manager) from the overlay-rooted kill"
+            );
         }
 
         if pids.is_empty() {

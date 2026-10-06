@@ -129,11 +129,11 @@ from inside the process — none relies on a reboot to do the unmounting.
 |--------|-------------------------|-------------|-----------|
 | Overlay list taken from | recorded state (verified Active) | live mount table when state is untrusted, else recorded state | always the live mount table |
 | Kill shells before unmount | Yes | Yes | Yes (reconcile) |
-| Stop hidden-added units / end hidden graphical session | Yes | Yes | Yes |
+| Stop hidden-added service units | Yes | Yes | Yes |
 | Unmount overlays explicitly | Yes | Yes | Yes |
 | Restore `/run/current-system` to the decoy (symlink swap) | Yes | Yes | Yes |
 | Restart nix-daemon / journald after unmount (if overlaid) | Yes | Yes | Yes |
-| Restart display-manager (decoy greeter) | — | Yes | — |
+| Touch the display manager / X server / graphical session | No | No | No |
 | Scrub the volatile runtime journal | Yes | Yes | Yes |
 | Reboot into the decoy | **Yes** | No (recommended; `--reboot`/`--poweroff`) | No |
 | Close the encrypted backend | cleared by the reboot | Opt-in (`[emergency] lock_backend`, `--lock-backend`) | No |
@@ -168,6 +168,19 @@ configuration:
   memory until you close it or power off. `nails status` and `nails verify`
   report this loudly as **Critical — hidden root still mounted**.
 - Processes the hidden session started that do not hold an overlay keep running.
+- **The desktop is left running.** Emergency never stops or restarts the display
+  manager or X server and never logs the operator out, so nothing on screen hints
+  at the teardown. Before the overlays come down, emergency signals processes that
+  can still write to the decoy *through an overlay* (a cwd/root, writable or
+  directory fd, or shared-writable mapping inside an overlay), but it **spares
+  every process in your graphical session** — the display manager, the X server,
+  the session leader and its clients (window/session manager, terminals), and your
+  `systemd --user` manager — identified by cgroup membership, not by name. The
+  trade-off: a spared process can hold an overlay busy, so that overlay is detached
+  **lazily** (it leaves the mount table but stays alive for the process that holds
+  it), and a spared process that later opens an *absolute* path onto the exposed
+  decoy could write to it. This is why emergency recommends a reboot or
+  `--poweroff` and reports the backend as still mounted until you finish.
 
 To let NAILS close the backend, set `[emergency] lock_backend = true` in
 `nails.toml` or pass `nails emergency --lock-backend`: after the overlays are
