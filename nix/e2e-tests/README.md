@@ -124,6 +124,8 @@ Use only:
 - Runner, all tests: `./scripts/run-e2e-tests.sh all`
 - Resolve only: `python3 -m ci.e2e resolve ci`, or `python3 -m ci.e2e resolve --affected origin/main`
 - Interactive driver: `nix run .#e2e.basic-workflow.driverInteractive`, or `./scripts/run-e2e-tests.sh -i basic-workflow`
+- Local full or group run with bounded memory and parallel VMs: `just e2e-local [target] [jobs]` (see [docs/e2e-performance.md](../../docs/e2e-performance.md))
+- Where a run's time went: `scripts/e2e-log-profile.py LOG...` (`nix build -L` logs or `nix log` output)
 
 The tests, one link farm per group, and the metadata live under `legacyPackages.x86_64-linux` (`e2e.<name>` and `e2e-metadata`), not under `checks`, so `nix flake check` stays a fast lint gate. The short `.#e2e.<name>` form resolves on x86_64-linux hosts; elsewhere use `.#legacyPackages.x86_64-linux.e2e.<name>` with an x86_64-linux builder.
 
@@ -132,6 +134,8 @@ The tests, one link farm per group, and the metadata live under `legacyPackages.
 - `--shard i/N` runs one of N weighted shards (see [Timeouts and shard weights](#timeouts-and-shard-weights)); `python3 -m ci.e2e plan` prints the split.
 - `--retries 1` runs failed tests once more and reports a pass on that retry as FLAKY.
 - `--execute` runs each test's driver directly instead of building the test, so a cached result does not count.
+- `--jobs N` bounds the VM tests built at once (nix `--max-jobs`); `--jobs auto` sizes it from the host's RAM and cores (3 on a 15 GiB, 12-core host).
+- `--eval-batch N` evaluates N tests per `nix eval` process before building them by derivation path, so evaluation memory stays bounded however many tests are selected. Without it every test is evaluated in its own process.
 - `--durations-out FILE` writes one JSON line per test (`test`, `result`, `seconds`); `--log-dir DIR` keeps the log of every failed test.
 
 Every VM gets 2 cores and 2 GB of memory, graphical nodes 4 GB (`lib/vm-config.nix`, `lib/graphical-vm-config.nix`). The size is fixed rather than derived from the host, so a test evaluates to the same derivation everywhere: the runner builds without `--impure`, the evaluation cache works, and a test that passed once can be fetched from a binary cache instead of being run again.
@@ -170,10 +174,30 @@ and its first `subtest:` line. Read these from the GitHub-hosted-runner job logs
 (the smoke E2E on every PR, or a full nightly run), take the median across the
 single-machine tests, and record it here.
 
-Measured boot-to-first-subtest on GitHub-hosted runners: _to be filled from a
-hosted run_ (it cannot be measured in a sandbox without Nix or KVM). Revisit
-consolidating tests only if this fixed cost still dominates the suite after shard
-parallelism and Nix caching.
+Measured boot-to-`multi-user.target` on GitHub-hosted runners: _to be filled
+from a hosted run_. On the local KVM workstation it was a median of 21.8 s (p90
+27.7 s) per boot before dhcpcd stopped gating the boot, about 6 s less after,
+and booting was 38% of all test-script time in a full run (190 boots for 106
+tests). The breakdown, and the case for consolidating single-boot tests, is in
+[docs/e2e-performance.md](../../docs/e2e-performance.md).
+
+## Synchronisation rules
+
+`ci/e2e_sync_lint.py` (run by CI's `lint-misc` job and `just e2e-sync-lint`)
+enforces what the suite's past races taught:
+
+- wait on the real completion signal (a result file under `/run`, the unit's
+  state, a mountpoint, `nails status`), never a fixed sleep;
+- never wait on a console regex: the emergency teardown restarts journald and
+  can drop lines;
+- capture command output under `/run`, never `/tmp` (activation overlays it and
+  the forensic tests image the disk under it);
+- every wait has a bounded timeout and a power-off wait goes through the QEMU
+  process with a deadline (`canonical_deactivate`), not a bare
+  `wait_for_shutdown()`.
+
+A justified exception carries `sync-lint: allow <rule> -- <reason>` on the line
+or the line above.
 
 ## Forensic invariants
 
