@@ -58,8 +58,10 @@ in
     print("✓ Status --details returns concrete inactive diagnostics")
 
     print("\n=== Test 4: Verify detects planted artifacts ===")
+    # A standard scan leaves /tmp to --deep (it reports the area as not
+    # checked), so the planted temp-dir artifact needs the deep scan.
     machine.succeed("touch /tmp/nails.log")
-    verify_rc, verify_json = run_verify()
+    verify_rc, verify_json = run_verify("--deep")
     assert verify_rc != 0 or verify_json.get("status") in ("warning", "critical"), \
         f"Expected verify to detect artifact, got: {verify_json}"
     print("✓ Verify detects planted artifacts")
