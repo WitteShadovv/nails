@@ -213,17 +213,19 @@ in
         if args:
             command += f" {args}"
 
+        # Capture under /run (tmpfs), not /tmp: /tmp is on the decoy disk, and
+        # the forensic image scans would find verify's own output there.
         machine.succeed(
             "bash -lc "
             + shlex.quote(
                 "set +e; "
                 + command
-                + " > /tmp/verify.stdout 2>/tmp/verify.stderr; "
-                + "printf \"%s\" \"$?\" > /tmp/verify.rc"
+                + " > /run/verify.stdout 2>/run/verify.stderr; "
+                + "printf \"%s\" \"$?\" > /run/verify.rc"
             )
         )
-        status = int(machine.succeed("cat /tmp/verify.rc"))
-        output = machine.succeed("cat /tmp/verify.stdout")
+        status = int(machine.succeed("cat /run/verify.rc"))
+        output = machine.succeed("cat /run/verify.stdout")
         payload = json.loads(output)
         # verify --json is an envelope: callers work against its typed `data`.
         return status, payload.get("data", payload)
