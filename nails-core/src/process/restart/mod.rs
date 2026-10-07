@@ -245,3 +245,6 @@ fn process_exists(pid: u32) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) mod kernel_tests;

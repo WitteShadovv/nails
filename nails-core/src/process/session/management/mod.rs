@@ -402,3 +402,6 @@ pub fn restart_user_manager(uid: u32, executor: &dyn SessionCommandExecutor) -> 
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod kernel_tests;
