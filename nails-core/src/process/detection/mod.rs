@@ -457,26 +457,9 @@ fn collect_ancestor_pids() -> std::collections::HashSet<u32> {
     pids
 }
 
-/// Read the parent PID from `/proc/{pid}/stat`.
-///
-/// The stat file format has PPID as the 4th field. We parse carefully
-/// because the process name (field 2) can contain spaces and parentheses.
+/// Read the parent PID from `/proc/{pid}/stat` (the shared parser).
 fn read_ppid(pid: u32) -> Option<u32> {
-    let stat_path = format!("/proc/{}/stat", pid);
-    let content = fs::read_to_string(stat_path).ok()?;
-
-    // Field 2 (comm) is enclosed in parentheses and may contain spaces/parens.
-    // Find the last ')' to skip past it, then parse field 4 (PPID).
-    let after_comm = content.rfind(')')? + 1;
-    let remainder = &content[after_comm..];
-    let fields: Vec<&str> = remainder.split_whitespace().collect();
-
-    // fields[0] = state, fields[1] = ppid
-    if fields.len() >= 2 {
-        fields[1].parse().ok()
-    } else {
-        None
-    }
+    crate::process::identity::parent_pid(pid)
 }
 
 /// Read a `/proc` symlink and strip any `" (deleted)"` suffix, returning `None`

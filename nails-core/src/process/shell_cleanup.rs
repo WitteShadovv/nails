@@ -215,17 +215,7 @@ fn pid_is_protected(pid: u32, protected: &[u32]) -> bool {
 
 #[cfg(not(test))]
 fn read_uid_from_status(pid: u32) -> Option<u32> {
-    let status_path = Path::new("/proc").join(pid.to_string()).join("status");
-    let content = fs::read_to_string(status_path).ok()?;
-
-    for line in content.lines() {
-        if let Some(rest) = line.strip_prefix("Uid:\t") {
-            let first = rest.split_whitespace().next()?;
-            return first.parse::<u32>().ok();
-        }
-    }
-
-    None
+    nails_teardown::proc::uid(pid)
 }
 
 /// Kills all user shell processes (bash, zsh, fish, etc.) using SIGKILL.
@@ -384,14 +374,10 @@ fn ancestry_of(pid: u32) -> Vec<u32> {
     lineage
 }
 
-/// The session id of `pid`, from `/proc/<pid>/stat` (scanning past `comm`).
+/// The session id of `pid`, from `/proc/<pid>/stat` (the shared parser).
 #[cfg(not(test))]
 fn read_sid(pid: u32) -> Option<u32> {
-    let content =
-        std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("stat")).ok()?;
-    let after_comm = content.get(content.rfind(')')? + 1..)?;
-    // Fields after `comm`: state, ppid, pgrp, session, ...
-    after_comm.split_whitespace().nth(3)?.parse().ok()
+    nails_teardown::proc::stat(pid).map(|s| s.sid)
 }
 
 fn kill_shells(

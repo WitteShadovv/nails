@@ -137,20 +137,10 @@ pub(super) fn read_proc_cgroup(pid: u32) -> Option<String> {
     std::fs::read_to_string(Path::new("/proc").join(pid.to_string()).join("cgroup")).ok()
 }
 
-/// The session id and process-group id of `pid`, read from `/proc/<pid>/stat`.
-///
-/// `/proc/<pid>/stat` lists these right after the `comm` field, which may itself
-/// contain spaces or parentheses, so the scan starts past the final `)`. Returns
-/// `None` when the process has gone or the file cannot be parsed.
+/// The session id and process-group id of `pid`, read from `/proc/<pid>/stat`
+/// by the shared parser; `None` when the process has gone.
 pub(super) fn read_session_and_pgid(pid: u32) -> Option<(u32, u32)> {
-    let stat_path = Path::new("/proc").join(pid.to_string()).join("stat");
-    let content = std::fs::read_to_string(stat_path).ok()?;
-    let after_comm = content.get(content.rfind(')')? + 1..)?;
-    // Fields after `comm`: state, ppid, pgrp, session, ...
-    let fields: Vec<&str> = after_comm.split_whitespace().collect();
-    let pgid = fields.get(2)?.parse::<u32>().ok()?;
-    let sid = fields.get(3)?.parse::<u32>().ok()?;
-    Some((sid, pgid))
+    nails_teardown::proc::stat(pid).map(|s| (s.sid, s.pgid))
 }
 
 /// Whether a process must be spared from the emergency overlay-rooted kill and

@@ -155,15 +155,5 @@ fn collect_ancestor_pids() -> HashSet<u32> {
 }
 
 fn read_ppid(pid: u32) -> Option<u32> {
-    let stat_path = format!("/proc/{pid}/stat");
-    let content = std::fs::read_to_string(stat_path).ok()?;
-    let after_comm = content.rfind(')')? + 1;
-    let remainder = &content[after_comm..];
-    let fields: Vec<&str> = remainder.split_whitespace().collect();
-
-    if fields.len() >= 2 {
-        fields[1].parse().ok()
-    } else {
-        None
-    }
+    crate::process::identity::parent_pid(pid)
 }

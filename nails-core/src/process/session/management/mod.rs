@@ -342,17 +342,7 @@ fn kill_user_processes<E: SessionCommandExecutor>(uid: u32, executor: &E) -> Res
 }
 
 fn read_uid_from_status(pid: u32) -> Option<u32> {
-    let status_path = format!("/proc/{}/status", pid);
-    let content = fs::read_to_string(status_path).ok()?;
-
-    for line in content.lines() {
-        if let Some(rest) = line.strip_prefix("Uid:\t") {
-            let first = rest.split_whitespace().next()?;
-            return first.parse::<u32>().ok();
-        }
-    }
-
-    None
+    nails_teardown::proc::uid(pid)
 }
 
 fn process_exists(pid: u32) -> bool {

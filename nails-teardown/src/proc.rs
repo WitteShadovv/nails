@@ -8,9 +8,12 @@
 
 use std::path::Path;
 
-/// The fields of `/proc/<pid>/stat` the teardown needs.
+/// The fields of `/proc/<pid>/stat` NAILS reads. This is the one parser of
+/// that file: the teardown and `nails-core` both go through [`stat`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stat {
+    /// The scheduler state (`R`, `S`, `D`, `Z`, ...).
+    pub state: char,
     /// Parent pid.
     pub ppid: u32,
     /// Process group id.
@@ -41,6 +44,7 @@ pub fn parse_stat(content: &str) -> Option<Stat> {
     // After comm: state(0) ppid(1) pgrp(2) session(3) tty(4) tpgid(5) flags(6)
     // ... starttime(19).
     Some(Stat {
+        state: fields.first()?.chars().next()?,
         ppid: fields.get(1)?.parse().ok()?,
         pgid: fields.get(2)?.parse().ok()?,
         sid: fields.get(3)?.parse().ok()?,
@@ -89,18 +93,21 @@ pub fn cgroup(pid: u32) -> Option<String> {
     std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()
 }
 
-/// The real uid of `pid`.
+/// The real uid in a `/proc/<pid>/status` body: the first of the four ids
+/// on its `Uid:` line.
+pub fn parse_status_uid(content: &str) -> Option<u32> {
+    content.lines().find_map(|line| {
+        line.strip_prefix("Uid:")?
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    })
+}
+
+/// The real uid of `pid`; `None` when it is gone.
 pub fn uid(pid: u32) -> Option<u32> {
-    std::fs::read_to_string(format!("/proc/{pid}/status"))
-        .ok()?
-        .lines()
-        .find_map(|line| {
-            line.strip_prefix("Uid:")?
-                .split_whitespace()
-                .next()?
-                .parse()
-                .ok()
-        })
+    parse_status_uid(&std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?)
 }
 
 /// Whether `fd` of `pid` is a terminal.
@@ -228,13 +235,8 @@ impl ProcessHandle {
     /// Whether the process still runs (not exited, pid not reused).
     pub fn is_alive(&self) -> bool {
         // A zombie has exited: it holds no mount any more.
-        let state = std::fs::read_to_string(format!("/proc/{}/stat", self.pid))
-            .ok()
-            .and_then(|s| {
-                let after = s.get(s.rfind(')')? + 1..)?.trim_start().chars().next()?;
-                Some((after, parse_stat(&s)?.start_time))
-            });
-        matches!(state, Some((st, start)) if start == self.start_time && st != 'Z' && st != 'X')
+        stat(self.pid)
+            .is_some_and(|s| s.start_time == self.start_time && s.state != 'Z' && s.state != 'X')
     }
 
     /// Send `signal`; `false` when the process has gone.
@@ -290,6 +292,86 @@ mod tests {
         assert_eq!(stat.flags, 4_194_560);
         assert_eq!(stat.start_time, 98_765);
         assert!(!stat.is_kernel_thread());
+    }
+
+    /// A `setsid` child whose comm holds `) (` and spaces, captured by
+    /// `capture-kernel-fixtures.sh userns` (nails-core's fixture README).
+    #[test]
+    fn the_captured_odd_comm_child_parses() {
+        let stat_line = include_str!(
+            "../../nails-core/tests/fixtures/kernel/userns/proc-stat-setsid-odd-comm.txt"
+        );
+        let status = include_str!(
+            "../../nails-core/tests/fixtures/kernel/userns/proc-status-setsid-odd-comm.txt"
+        );
+        let pid: u32 = stat_line.split(' ').next().unwrap().parse().unwrap();
+        let stat = parse_stat(stat_line).expect("the kernel's own line parses");
+        assert_eq!(stat.state, 'S');
+        assert_eq!(
+            (stat.sid, stat.pgid),
+            (pid, pid),
+            "its own session and group"
+        );
+        assert_ne!(stat.ppid, pid);
+        assert!(!stat.is_kernel_thread());
+        assert!(stat.start_time > 0);
+        // The capture ran as root of a user namespace.
+        assert_eq!(parse_status_uid(status), Some(0));
+    }
+
+    /// journald's stat and status as captured as root in a NixOS VM, when that
+    /// capture exists (nails-core's fixture README).
+    #[test]
+    fn the_captured_journald_parses_when_the_vm_capture_exists() {
+        let vm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../nails-core/tests/fixtures/kernel/vm");
+        let (Ok(stat_line), Ok(status)) = (
+            std::fs::read_to_string(vm.join("proc-stat-journald.txt")),
+            std::fs::read_to_string(vm.join("proc-status-journald.txt")),
+        ) else {
+            eprintln!("the VM capture is not taken yet (nails-core fixture README)");
+            return;
+        };
+        let stat = parse_stat(&stat_line).expect("the kernel's own line parses");
+        assert_eq!(stat.ppid, 1, "journald is a child of PID 1");
+        assert_eq!(parse_status_uid(&status), Some(0), "journald runs as root");
+    }
+
+    /// A live child in its own session and process group whose comm holds
+    /// `) (` and spaces: the shell renames itself, then waits on `sleep`.
+    #[test]
+    fn a_live_setsid_child_with_an_odd_comm_reads_back() {
+        let child = std::process::Command::new("setsid")
+            .args([
+                "sh",
+                "-c",
+                "printf 'x) (y z' >/proc/self/comm; sleep 30; exit 0",
+            ])
+            .spawn()
+            .expect("spawn setsid");
+        let pid = child.id();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while comm(pid).as_deref() != Some("x) (y z") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the child never renamed itself"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let stat = stat(pid).expect("a live child");
+        let child_uid = uid(pid);
+        let group = rustix::process::Pid::from_raw(pid as i32).unwrap();
+        let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
+        let mut child = child;
+        let _ = child.wait();
+
+        assert_eq!((stat.sid, stat.pgid), (pid, pid), "setsid made it a leader");
+        assert_eq!(stat.ppid, std::process::id());
+        assert!(matches!(stat.state, 'S' | 'R'), "{stat:?}");
+        assert!(stat.start_time > 0);
+        assert!(stat.start_time >= super::stat(std::process::id()).unwrap().start_time);
+        assert_eq!(child_uid, Some(rustix::process::getuid().as_raw()));
     }
 
     #[test]

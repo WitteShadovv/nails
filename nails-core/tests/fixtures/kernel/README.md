@@ -47,6 +47,7 @@ the way the kernel pads it.
 | `fdinfo-append-overlay.txt` | journald fd classifier test (the fd re-homed onto the overlay) |
 | `fdinfo-readonly-overlay.txt` | journald fd classifier test (a read-only fd, which is never a leak) |
 | `mountinfo-hidden-root.txt` | `nixos::config` backing-device tests, `verify` overlay-line tests, the `backend_detect` escaped-root test |
+| `proc-stat-setsid-odd-comm.txt`, `proc-status-setsid-odd-comm.txt` | the `/proc/<pid>/stat` and `status` parser tests in `nails-teardown/src/proc.rs` |
 | `proc-swaps.txt` | `preflight::checks::swap` fixture tests |
 
 ## `vm/` and `vm-graphical/`: captured as root inside NixOS test VMs
@@ -82,6 +83,7 @@ and return (`nails_core::kernel_fixtures::vm`):
 | `vm/systemctl-list-units-*.txt` | `parse_active_units` fixture tests (`service_controller`) |
 | `vm/proc-swaps.txt` | `classify_swap` fixture test |
 | `vm/systemctl-show-journald-mainpid.txt`, `vm/proc-stat-journald.txt`, `vm/mountinfo-journald.txt`, `vm/journald-fds.txt`, `vm/fdinfo-journald-*.txt` | the journald re-home fixture test (`journald_fd` kernel tests) |
+| `vm/proc-stat-journald.txt`, `vm/proc-status-journald.txt` | the `/proc/<pid>/stat` and `status` parser tests in `nails-teardown/src/proc.rs` |
 | `vm-graphical/logind-sessions/`, `vm-graphical/proc-cgroup-*.txt` | `nails-teardown` session spare-set test |
 
 Review a capture before committing it: the VM is synthetic, but check it anyway
