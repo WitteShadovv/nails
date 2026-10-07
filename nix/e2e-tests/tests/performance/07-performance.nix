@@ -111,7 +111,9 @@ in
         )
         return "PATH=/tmp/nails-perf-wrapper/bin:$PATH"
 
-    # T-139: time every systemctl call nails makes during one activation. A
+    # T-139: time every systemctl call nails makes during one activation.
+    # nails resolves systemctl from /run/current-system/sw/bin first, a
+    # symlink into the store, so the wrapper covers the store file itself. A
     # wrapper bind-mounted over the systemctl binary (for the duration of the
     # call only) logs each invocation's wall time to /run, then runs the real
     # binary under its own name, so `reboot` and friends keep working.
@@ -147,7 +149,10 @@ in
         for ms, args in sorted(calls, reverse=True):
             print(f"systemctl {args}: {ms} ms")
         print(f"systemctl: {len(calls)} calls, {total_ms} ms in all")
-        assert calls, "activation made no systemctl call through the wrapper"
+        if not calls:
+            # nails logs every command it runs with the executable it resolved.
+            ran = machine.succeed("grep -o 'Running systemctl[^\"]*' /mnt/data/logs/nails.log | tail -5 || true")
+            raise AssertionError(f"activation made no systemctl call through the wrapper; nails ran: {ran!r}")
         slow = [(ms, args) for ms, args in calls if ms > per_call_s * 1000]
         assert not slow, f"FAIL: systemctl calls over {per_call_s:.1f}s each: {slow}"
         assert total_ms < total_s * 1000, (
@@ -186,17 +191,10 @@ in
         for cycle in range(2):
             if cycle > 0:
                 reopen_hidden_volume()
-                activation_ms.append(timed_activation_ms("--overlay-only"))
-            else:
-                start_timing_systemctl()
-                activation_ms.append(timed_activation_ms("--overlay-only"))
-                systemctl_calls = stop_timing_systemctl()
+            activation_ms.append(timed_activation_ms("--overlay-only"))
             emergency_ms.append(timed_emergency_ms())
         assert_within_budget("Overlay-only activation", activation_ms, activation_threshold)
         assert_within_budget("Emergency", emergency_ms, emergency_threshold)
-        assert_systemctl_within_budget(
-            systemctl_calls, systemctl_call_threshold, systemctl_total_threshold
-        )
 
     with subtest("default activation"):
         reopen_hidden_volume()
@@ -207,9 +205,20 @@ in
     EOF""")
         rebuild_log = "/tmp/nixos-rebuild-perf.log"
         wrapper_env = install_nixos_rebuild_stub(rebuild_log)
+        # The unit snapshots around the hidden switch are where activation
+        # talks to systemd (an overlay-only run without /var makes no
+        # systemctl call), so the systemctl budget is taken here.
+        start_timing_systemctl()
         default_ms = timed_activation_ms(env_prefix=wrapper_env)
+        systemctl_calls = stop_timing_systemctl()
         rebuild_calls = machine.succeed(f"cat {rebuild_log}")
         assert "test" in rebuild_calls, f"Expected the NixOS switch step to run, got: {rebuild_calls!r}"
         assert_within_budget("Default activation", [default_ms], activation_threshold)
+        assert any(args.startswith("list-units") for _, args in systemctl_calls), (
+            f"the unit snapshots ran no systemctl list-units: {systemctl_calls}"
+        )
+        assert_systemctl_within_budget(
+            systemctl_calls, systemctl_call_threshold, systemctl_total_threshold
+        )
   '';
 }

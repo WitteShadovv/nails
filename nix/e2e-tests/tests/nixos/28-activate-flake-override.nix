@@ -76,12 +76,14 @@ in
 
     def find_canary_in_decoy(store_dir, canary):
         # Returns the matching locations on the lower (decoy) layer. Greps only the
-        # store paths created since STORE_SCAN_MARKER (any leaked `-source` copy,
-        # which also covers the DB-registered path content) plus root's fetcher
-        # cache.
+        # `-source` store paths created since STORE_SCAN_MARKER (a flake copied
+        # into the store is always named `source`, which also covers the
+        # DB-registered path content) plus root's fetcher cache. The guest store
+        # shares the host's, where a parallel run keeps adding large paths; a
+        # scan of every new path read those over 9p until the global timeout.
         hits = machine.succeed(
             "/bin/sh -lc '"
-            f"find {store_dir} -maxdepth 1 -newer {STORE_SCAN_MARKER} -print0 2>/dev/null "
+            f"find {store_dir} -maxdepth 1 -name \"*-source\" -newer {STORE_SCAN_MARKER} -print0 2>/dev/null "
             f"| xargs -0 -r grep -rl {canary} 2>/dev/null; "
             f"grep -rl {canary} /root/.cache/nix 2>/dev/null; "
             "true'"
