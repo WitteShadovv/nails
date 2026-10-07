@@ -518,9 +518,12 @@ written to the decoy. The token stays on the hidden volume
 
 `scan` reads every mounted decoy block device (and active swap) raw and
 read-only, without mounting anything, and searches allocated and unallocated
-space for the token in ASCII and UTF-16LE. It refuses to run in the boot the
-canary was planted in, and a soft-reboot keeps the boot, so power off between
-`plant` and `scan` (`--allow-same-boot` overrides this, but proves little).
+space for the token in ASCII and UTF-16LE. It refuses to run in the session the
+canary was planted in. A soft-reboot keeps the boot ID, so the session is told
+apart by the boot ID together with systemd's soft-reboot count: after
+`nails deactivate` the scan runs on the decoy. On a systemd that does not
+report the count, power off between `plant` and `scan` (`--allow-same-boot`
+overrides the check, but a scan in the planting session proves little).
 Exit `0` means the token was not found, `11` that it was (with the device and
 byte offset of each hit), `9` that a device could not be scanned completely.
 `nails rehearse` alone shows where you are and the next step.
