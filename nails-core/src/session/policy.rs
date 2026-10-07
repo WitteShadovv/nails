@@ -15,15 +15,23 @@
 //! | --- | --- |
 //! | `/` | the root overlay itself |
 //! | swap | masked: never activated |
-//! | RAM and kernel filesystems, VM host shares | left to the hidden systemd (nothing reaches a disk) |
+//! | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 //! | the hidden volume, or a path inside it | left alone: it is bound at its own path |
+//! | a VM host share (9p, virtiofs) or an overlay entry mounted in the decoy | an overlay with its upper on the hidden volume |
+//! | a VM host share not mounted now | left to the hidden systemd |
 //! | `/boot`, `/boot/efi`, `/efi` (the ESP and boot partitions) | read-only bind of the decoy mount |
 //! | a local filesystem mounted read-only in the decoy | read-only bind |
 //! | any other local filesystem mounted in the decoy | an overlay with its upper on the hidden volume |
 //! | a local filesystem not mounted now, mounted at boot | masked (and its automount) |
 //! | `noauto` without an automount | left alone: never mounted |
 //! | a network filesystem | masked: the hidden session would write to the server |
-//! | an overlay entry whose upper is on a disk | masked |
+//! | an overlay entry not mounted now, its upper in RAM | left to the hidden systemd |
+//! | an overlay entry not mounted now, its upper on a disk | masked |
+//!
+//! A mounted host share or overlay is overlaid rather than left to the hidden
+//! systemd because the next root must already hold its contents when PID 1
+//! checks the init: NixOS test VMs mount `/nix/store` as an overlay of a 9p
+//! share and a tmpfs, and the next root would otherwise have an empty store.
 //!
 //! Nothing is refused outright today: every entry has a safe decision. The
 //! `Refuse` decision exists for entries whose target cannot be mounted inside
@@ -151,16 +159,26 @@ pub fn decide(entry: &FstabEntry, mounts: &[MountEntry], hidden_root: &Path) -> 
             reason: "the root overlay",
         };
     }
-    if entry.is_virtual() || entry.is_host_share() {
+    if entry.is_virtual() {
         return Decision::Leave {
             target,
-            reason: "RAM, kernel or host-share filesystem",
+            reason: "RAM or kernel filesystem",
         };
     }
     if target.starts_with(hidden_root) {
         return Decision::Leave {
             target,
             reason: "the hidden volume is bound at its own path",
+        };
+    }
+    let mounted = mounted_at(mounts, &target).is_some();
+    if (entry.is_host_share() || entry.vfstype == "overlay") && mounted {
+        return Decision::Overlay { target };
+    }
+    if entry.is_host_share() {
+        return Decision::Leave {
+            target,
+            reason: "a host share, not mounted now",
         };
     }
     let mask = |reason: &'static str| {
@@ -250,7 +268,8 @@ mod tests {
              5 1 0:5 / /tmp rw - tmpfs tmpfs rw\n\
              6 1 0:6 / /nix/.rw-store rw - tmpfs tmpfs rw\n\
              7 1 0:7 / /nix/store rw - overlay overlay rw,lowerdir=/nix/.ro-store,upperdir=/nix/.rw-store/store,workdir=/nix/.rw-store/work\n\
-             8 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n",
+             8 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+             9 1 0:9 / /nix/.ro-store rw - 9p store rw,trans=virtio\n",
         )
     }
 
@@ -310,15 +329,35 @@ mod tests {
         for line in [
             "/dev/vda2 / ext4 defaults 0 1",
             "tmpfs /tmp tmpfs defaults 0 0",
-            "store /nix/.ro-store 9p trans=virtio 0 0",
+            "share /mnt/share virtiofs defaults 0 0",
             "/dev/sdb1 /mnt/usb vfat noauto 0 0",
             "/dev/mapper/data /mnt/data ext4 noauto 0 0",
-            "overlay /nix/store overlay lowerdir=/nix/.ro-store,upperdir=/nix/.rw-store/store,workdir=/nix/.rw-store/work 0 0",
+            "overlay /var/cache overlay lowerdir=/usr,upperdir=/tmp/up,workdir=/tmp/w 0 0",
         ] {
             assert!(
                 matches!(decide_line(line), Decision::Leave { .. }),
                 "{line}: {:?}",
                 decide_line(line)
+            );
+        }
+    }
+
+    #[test]
+    fn a_mounted_host_share_or_overlay_is_overlaid_into_the_next_root() {
+        // A NixOS test VM: the store is an overlay of a 9p share and a tmpfs.
+        for (line, target) in [
+            ("store /nix/.ro-store 9p trans=virtio 0 0", "/nix/.ro-store"),
+            (
+                "overlay /nix/store overlay lowerdir=/nix/.ro-store,upperdir=/nix/.rw-store/store,workdir=/nix/.rw-store/work 0 0",
+                "/nix/store",
+            ),
+        ] {
+            assert_eq!(
+                decide_line(line),
+                Decision::Overlay {
+                    target: target.into()
+                },
+                "{line}"
             );
         }
     }
