@@ -378,3 +378,332 @@ mod kernel_tests {
         });
     }
 }
+
+mod entry_kernel_tests {
+    //! The whole entry, `nails_core::session::entry::prepare`, against real
+    //! mounts: a decoy root with a separate `/home` and an ESP, the fstab
+    //! policy, the drop-in, and the transition that consumes it.
+
+    use nails_core::session::entry::{self, EntryHost, EntryInputs};
+    use nails_core::session::layout::Paths;
+    use nails_core::test_path;
+    use nails_core::test_support::{Rerun, ScratchTmpfs};
+    use nails_core::{NailsError, nixos::NixOSBuilder};
+    use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
+    use nails_teardown::whole_root::plan::{
+        DecoyRoot, Direction, Plan, PolicyMountKind, SNAPSHOT_NAME, unix_now,
+    };
+    use nails_teardown::whole_root::transition::{self, DROPIN_DIR, DROPIN_NAME, Env, Outcome};
+    use std::cell::Cell;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    #[derive(Default)]
+    struct FakeHost {
+        reloads: Cell<u32>,
+    }
+
+    impl EntryHost for FakeHost {
+        fn daemon_reload(&self) -> nails_core::Result<()> {
+            self.reloads.set(self.reloads.get() + 1);
+            Ok(())
+        }
+        fn build_hidden_system(
+            &self,
+            _: &NixOSBuilder,
+            _: &Path,
+            _: &Path,
+        ) -> nails_core::Result<PathBuf> {
+            Err(NailsError::NixOSError("not in this test".into()))
+        }
+        fn activate_hidden_system(&self, _: &Path, _: &Path) -> nails_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct World {
+        decoy: ScratchTmpfs,
+        _esp: ScratchTmpfs,
+        _home: ScratchTmpfs,
+        hidden: ScratchTmpfs,
+        run: ScratchTmpfs,
+    }
+
+    impl World {
+        /// A decoy root with its ESP at /boot and a separate /home, both
+        /// listed in its fstab with a swap partition and an unmounted disk.
+        fn new() -> Self {
+            let decoy = ScratchTmpfs::new("");
+            for dir in ["etc", "usr/lib/systemd", "boot", "home", "run", "srv/data"] {
+                decoy.mkdir(dir);
+            }
+            std::fs::write(decoy.path().join("etc/os-release"), "ID=debian\n").unwrap();
+            std::fs::write(
+                decoy.path().join("etc/fstab"),
+                "/dev/vda2 / ext4 defaults 0 1\n\
+                 /dev/vda1 /boot vfat umask=0077 0 2\n\
+                 /dev/vda3 /home ext4 defaults 0 2\n\
+                 /dev/vda4 none swap sw 0 0\n\
+                 /dev/vdc1 /srv/data ext4 defaults 0 2\n",
+            )
+            .unwrap();
+            let init = decoy.path().join("usr/lib/systemd/systemd");
+            std::fs::write(&init, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(&init, std::fs::Permissions::from_mode(0o755)).unwrap();
+            let esp = ScratchTmpfs::new("");
+            nix::mount::mount(
+                Some(esp.path()),
+                &decoy.path().join("boot"),
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND,
+                None::<&str>,
+            )
+            .unwrap();
+            let home = ScratchTmpfs::new("");
+            std::fs::write(home.path().join("decoy-file"), "decoy").unwrap();
+            nix::mount::mount(
+                Some(home.path()),
+                &decoy.path().join("home"),
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND,
+                None::<&str>,
+            )
+            .unwrap();
+            let run = ScratchTmpfs::new("");
+            run.mkdir("mount");
+            std::fs::write(run.path().join("mount/utab"), "ID=1 decoy\n").unwrap();
+            Self {
+                decoy,
+                _esp: esp,
+                _home: home,
+                hidden: ScratchTmpfs::new(""),
+                run,
+            }
+        }
+        fn paths(&self) -> Paths {
+            Paths {
+                root: self.decoy.path().to_path_buf(),
+                run: self.run.path().to_path_buf(),
+            }
+        }
+        fn inputs(&self) -> EntryInputs<'_> {
+            EntryInputs {
+                hidden_root: self.hidden.path(),
+                decoy_root: DecoyRoot {
+                    source: PathBuf::from("/dev/vda2"),
+                    fstype: "ext4".into(),
+                    data: None,
+                },
+                nixos: false,
+                builder: None,
+                binary: Path::new("/proc/self/exe"),
+                config_toml: Some("hidden_volume_root = \"/x\"\n".into()),
+                session_units: Vec::new(),
+                backend: vec!["data".into()],
+            }
+        }
+    }
+
+    fn fstype_at(path: &Path) -> Option<String> {
+        let entries = read_mountinfo().unwrap();
+        top_mount_at(&entries, path).map(|e| e.fstype.clone())
+    }
+
+    #[test]
+    fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
+        let _ = Rerun::new(test_path!(
+            the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            let paths = world.paths();
+            let host = FakeHost::default();
+            let entry = entry::prepare(&paths, &world.inputs(), &host).expect("the entry");
+            let nextroot = paths.nextroot();
+
+            assert_eq!(fstype_at(&nextroot).as_deref(), Some("overlay"));
+            // The ESP is read-only, /home is an overlay with its own upper.
+            let boot = std::fs::write(nextroot.join("boot/x"), "");
+            assert_eq!(boot.unwrap_err().raw_os_error(), Some(nix::libc::EROFS));
+            assert_eq!(
+                fstype_at(&nextroot.join("home")).as_deref(),
+                Some("overlay")
+            );
+            std::fs::write(nextroot.join("home/hidden-file"), "hidden").unwrap();
+            assert!(!world.decoy.path().join("home/hidden-file").exists());
+            assert!(
+                world
+                    .hidden
+                    .path()
+                    .join("root/mounts/home/upper/hidden-file")
+                    .exists()
+            );
+            assert_eq!(
+                std::fs::read_to_string(nextroot.join("home/decoy-file")).unwrap(),
+                "decoy"
+            );
+            // The hidden volume is reachable at its own path, /run is bound.
+            assert!(
+                paths
+                    .in_nextroot(world.hidden.path())
+                    .join("root/upper")
+                    .is_dir()
+            );
+            assert!(nextroot.join("run/mount/utab").exists());
+
+            // Swap and the unmounted disk are masked at entry, not now.
+            assert!(entry.plan.masks.contains(&"dev-vda4.swap".to_string()));
+            assert!(entry.plan.masks.contains(&"srv-data.mount".to_string()));
+            assert!(
+                !world
+                    .run
+                    .path()
+                    .join("systemd/system/dev-vda4.swap")
+                    .exists()
+            );
+            let kinds: Vec<_> = entry.plan.policy_mounts.iter().map(|m| m.kind).collect();
+            assert!(kinds.contains(&PolicyMountKind::ReadOnlyBind));
+            assert!(kinds.contains(&PolicyMountKind::Overlay));
+            assert!(kinds.contains(&PolicyMountKind::HiddenVolume));
+
+            // The runtime directory, the drop-in and the armed plan.
+            assert!(paths.runtime().join(SNAPSHOT_NAME).exists());
+            assert!(paths.binary_copy().is_file());
+            assert!(world.run.path().join(DROPIN_DIR).join(DROPIN_NAME).exists());
+            assert_eq!(host.reloads.get(), 1);
+            let plan = Plan::load(&paths.plan()).unwrap();
+            assert!(plan.armed_for(Direction::Enter, unix_now()));
+            assert_eq!(plan.hidden.init, Path::new("/usr/lib/systemd/systemd"));
+
+            // The transition consumes it: masks in place, entry recorded.
+            let env = Env {
+                run: paths.run.clone(),
+                nextroot: nextroot.clone(),
+                runtime_dir: paths.runtime(),
+                kmsg: paths.run.join("no-kmsg"),
+                now: unix_now(),
+                mounts: read_mountinfo().unwrap(),
+            };
+            assert_eq!(transition::run(&env), Outcome::Entered);
+            assert!(
+                world
+                    .run
+                    .path()
+                    .join("systemd/system/dev-vda4.swap")
+                    .exists()
+            );
+            assert!(Plan::load(&paths.plan()).unwrap().entered_at.is_some());
+            entry::rollback(&paths);
+        });
+    }
+
+    #[test]
+    fn a_failed_entry_leaves_no_next_root_and_no_runtime_pieces() {
+        let _ = Rerun::new(test_path!(
+            a_failed_entry_leaves_no_next_root_and_no_runtime_pieces
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            // No init: PID 1 would freeze in this root, so the entry fails.
+            std::fs::remove_file(world.decoy.path().join("usr/lib/systemd/systemd")).unwrap();
+            let paths = world.paths();
+            let host = FakeHost::default();
+            let error = entry::prepare(&paths, &world.inputs(), &host).unwrap_err();
+            assert!(error.to_string().contains("does not resolve"), "{error}");
+            let entries = read_mountinfo().unwrap();
+            assert!(
+                !entries
+                    .iter()
+                    .any(|e| e.mount_point.starts_with(paths.nextroot())),
+                "the next root is detached"
+            );
+            assert!(!paths.runtime().exists());
+            assert!(!world.run.path().join(DROPIN_DIR).exists());
+            assert_eq!(host.reloads.get(), 0);
+        });
+    }
+}
+
+mod nixos_kernel_tests {
+    //! The chrooted activation of a hidden toplevel (ADR 0008, §3, variant B):
+    //! it runs inside the next root, sees `/proc`, `/dev` and `/sys`, writes
+    //! into the root, and gets a fresh `/run`, never the real one.
+
+    use nails_core::session::nixos::activate_in;
+    use nails_core::test_path;
+    use nails_core::test_support::{Rerun, ScratchTmpfs, skip};
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    /// A shell that lives in the host's `/nix/store`, usable inside a root
+    /// that binds the store.
+    fn store_shell() -> Option<PathBuf> {
+        let sh = std::fs::canonicalize("/bin/sh").ok()?;
+        sh.starts_with("/nix/store").then_some(sh)
+    }
+
+    #[test]
+    fn the_activation_runs_chrooted_with_a_private_run() {
+        let _ = Rerun::new(test_path!(the_activation_runs_chrooted_with_a_private_run))
+            .in_user_mount_ns()
+            .run(|| {
+                let Some(shell) = store_shell() else {
+                    skip("no /nix/store shell on this host");
+                };
+                let root = ScratchTmpfs::new("");
+                for dir in ["nix/store", "dev", "proc", "sys", "run", "etc", "system"] {
+                    root.mkdir(dir);
+                }
+                nix::mount::mount(
+                    Some("/nix/store"),
+                    &root.path().join("nix/store"),
+                    None::<&str>,
+                    nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
+                    None::<&str>,
+                )
+                .unwrap();
+                // A marker in the real /run that the activation must not see.
+                let real_run = ScratchTmpfs::new("");
+                std::fs::write(real_run.path().join("marker"), "").unwrap();
+                nix::mount::mount(
+                    Some(real_run.path()),
+                    &root.path().join("run"),
+                    None::<&str>,
+                    nix::mount::MsFlags::MS_BIND,
+                    None::<&str>,
+                )
+                .unwrap();
+                let activate = root.path().join("system/activate");
+                std::fs::write(
+                    &activate,
+                    format!(
+                        "#!{}\nset -e\n\
+                         test -r /proc/self/mountinfo\n\
+                         test -e /dev/null\n\
+                         n=0; for f in /run/*; do [ -e \"$f\" ] && n=$((n+1)); done\n\
+                         echo \"run-entries=$n\" > /etc/activated\n",
+                        shell.display()
+                    ),
+                )
+                .unwrap();
+                std::fs::set_permissions(&activate, std::fs::Permissions::from_mode(0o755))
+                    .unwrap();
+
+                activate_in(root.path(), Path::new("/system")).unwrap();
+
+                assert_eq!(
+                    std::fs::read_to_string(root.path().join("etc/activated")).unwrap(),
+                    "run-entries=0\n"
+                );
+                // Nothing the child mounted is visible here.
+                let entries = nails_teardown::mountinfo::read_mountinfo().unwrap();
+                assert!(
+                    !entries
+                        .iter()
+                        .any(|e| e.mount_point == root.path().join("proc"))
+                );
+            });
+    }
+}

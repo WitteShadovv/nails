@@ -119,6 +119,9 @@ pub mod runtime_copy;
 
 pub mod sleep_guard;
 
+// The whole-root session (ADR 0008): entry, way back, fstab policy, probes.
+pub mod session;
+
 pub mod watcher;
 
 // Shared string constants (environment-variable names).

@@ -209,6 +209,14 @@ impl NixOSBuilder {
         }
     }
 
+    /// The `configuration.nix` of a legacy (channel) build, `None` for a flake.
+    pub fn legacy_config(&self) -> Option<&Path> {
+        match &self.build_mode {
+            NixOSBuildMode::Legacy { config_path } => Some(config_path),
+            NixOSBuildMode::Flake => None,
+        }
+    }
+
     pub fn is_flake(&self) -> bool {
         matches!(self.build_mode, NixOSBuildMode::Flake)
     }

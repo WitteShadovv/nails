@@ -217,6 +217,30 @@ fn open_in_root(root: &Path, path: &Path) -> io::Result<std::os::fd::OwnedFd> {
     .map_err(to_io)
 }
 
+/// Read the file at `path` as if `root` were `/` (absolute symlinks resolve
+/// inside `root`): the next root's `/etc/fstab`, which on NixOS is a link
+/// into the hidden store.
+pub fn read_in_root(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
+    let dir = rustix::fs::open(
+        root,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .map_err(to_io)?;
+    let relative = path.strip_prefix("/").unwrap_or(path);
+    let fd = rustix::fs::openat2(
+        &dir,
+        relative.as_os_str().as_bytes(),
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+        ResolveFlags::IN_ROOT,
+    )
+    .map_err(to_io)?;
+    let mut bytes = Vec::new();
+    std::io::Read::read_to_end(&mut std::fs::File::from(fd), &mut bytes)?;
+    Ok(bytes)
+}
+
 /// Why a root failed the pre-switch check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PrecheckError {
@@ -334,6 +358,19 @@ mod tests {
             Path::new("/run/up/systemd/lib/systemd/systemd"),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn files_are_read_through_symlinks_resolved_inside_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("etc/static")).unwrap();
+        std::fs::write(root.path().join("etc/static/fstab"), "inside\n").unwrap();
+        symlink("/etc/static/fstab", root.path().join("etc/fstab")).unwrap();
+        assert_eq!(
+            read_in_root(root.path(), Path::new("/etc/fstab")).unwrap(),
+            b"inside\n"
+        );
+        assert!(read_in_root(root.path(), Path::new("/etc/absent")).is_err());
     }
 
     #[test]

@@ -58,7 +58,7 @@ impl NixOSBuilder {
     }
 
     /// The `nix build` installable for the hidden system toplevel.
-    fn toplevel_installable(&self) -> Result<String> {
+    pub(crate) fn toplevel_installable(&self) -> Result<String> {
         if !self.is_flake() {
             return Err(NailsError::NixOSError(
                 "an explicit toplevel build is only supported for flake configurations".into(),
