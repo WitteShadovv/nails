@@ -170,6 +170,7 @@ in
         out = machine.succeed(f"nails --config {CONFIG} recover")
         assert "Removed" in out, out
         assert leftovers() == {"nextroot": False, "plan": False, "dropin": False}, leftovers()
+        session.assert_decoy_root(machine)
         machine.succeed(f"nails --config {CONFIG} status")
 
     with subtest("Ctrl+C during the build rolls the entry back"):
@@ -179,6 +180,7 @@ in
         machine.wait_until_fails("pgrep -x nails", timeout=60)
         machine.execute("pkill -9 -f 'sleep [6]000'")
         assert leftovers() == {"nextroot": False, "plan": False, "dropin": False}, leftovers()
+        session.assert_decoy_root(machine)
 
     with subtest("emergency during an entry detaches it"):
         start_activation("emergency-during")

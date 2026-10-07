@@ -234,15 +234,34 @@ def assert_hidden_root(machine: Machine, upper: str = DEFAULT_UPPER) -> None:
     assert f"upperdir={upper}" in options, f"/ is not the hidden root: {options}"
 
 
+def leftover_overlays(findmnt_lines: str) -> list[str]:
+    """The overlays in ``findmnt -ln -t overlay -o TARGET,OPTIONS`` output that
+    are not the VM's own Nix store. The store is an overlay with its upper in
+    ``/nix/.rw-store``; the VM's initrd mounts it twice, so it may be stacked."""
+    leftover = []
+    for line in findmnt_lines.splitlines():
+        target, _, options = line.strip().partition(" ")
+        options = options.strip()
+        if target == "/nix/store" and "upperdir=/nix/.rw-store/" in options:
+            continue
+        if line.strip():
+            leftover.append(line.strip())
+    return leftover
+
+
 def assert_decoy_root(machine: Machine) -> None:
-    """``/`` is the plain decoy root, with no next root and no overlay left."""
+    """``/`` is the plain decoy root, with no next root, no overlay but the
+    VM's store and no mount that reaches into a hidden layer."""
     fstype = root_fstype(machine)
     assert fstype != "overlay", "/ is still an overlay"
     machine.succeed("! grep -q ' /run/nextroot' /proc/self/mountinfo")
-    overlays = machine.succeed("findmnt -n -t overlay -o TARGET || true").split()
-    # A VM's Nix store may be its own (RAM-upper) overlay; nothing else may be.
-    leftover = [target for target in overlays if target != "/nix/store"]
+    overlays = machine.succeed("findmnt -ln -t overlay -o TARGET,OPTIONS || true")
+    leftover = leftover_overlays(overlays)
     assert not leftover, f"overlay mounts left on the decoy: {leftover}"
+    machine.succeed(
+        "! grep -qE '/root/(upper|work|mounts|decoy)|/overlay-runtime/' "
+        "/proc/self/mountinfo"
+    )
 
 
 def run_entries(machine: Machine) -> set[str]:
