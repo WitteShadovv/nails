@@ -794,10 +794,14 @@ def run_content_hashes(
 # across a reboot: runtime state under /var, /run and /tmp, the per-boot
 # machine id, resolver config and SSH host keys, NixOS's /etc activation stamps
 # and the Nix store's own bookkeeping. A test may pass a wider pattern.
+#: ``bin/sh`` and ``usr/bin/env`` are links the NixOS activation replaces (a new
+#: inode each time) whenever the decoy's userspace starts, at a boot and at
+#: the soft-reboot back from a hidden session alike: the way back starts the
+#: decoy once more, the same as a reboot would.
 DEFAULT_IMAGE_VOLATILE = re.compile(
     r"(^|/)("
     r"var/|run/|tmp/|etc/machine-id|etc/resolv\.conf|etc/ssh/ssh_host_|"
-    r"etc/\.(updated|clean)|nix/var/|nix/store/\.links"
+    r"etc/\.(updated|clean)|nix/var/|nix/store/\.links|bin/sh$|usr/bin/env$"
     r")"
 )
 
