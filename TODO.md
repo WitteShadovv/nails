@@ -3012,6 +3012,8 @@ Research topics and larger redesigns that are tracked but not scheduled.
 
 - [ ] **T-131: TODO: architecture-alternatives ADR and decision matrix (kexec, boot-from-removable, live-overlay)** (medium · effort L)
 
+  _Status (2026-10): partial. ADR 0008 §8 holds the decision matrix (live overlays, soft-reboot, kexec, a hidden boot entry, removable media) and ADR 0005 the boot-time overlays; kexec and boot-from-removable are not yet written up as time-boxed spikes. The chosen directions are tracked as T-133 and T-134._
+
   **Problem:** No comparison of hidden-environment mechanisms exists in the repo, so the multi-distro decision risks defaulting to bolting a Platform trait onto the live path, the lowest-ceiling option for portability and leak reduction. Alternatives include boot-time overlay classes (`systemd.volatile=overlay`, dracut `rd.overlay`), kexec into a hidden kernel/initrd/UKI, and boot-from-removable. The live path's fragile subsystems (process detection, session kill, journald race, `/nix` rebind, pivot) are exactly what a boot-time design removes.
 
   **Fix:** TODO only. Write one ADR with a decision matrix ranking mechanisms against the requirements, leak classes, portability, decoy traces, UX and effort, noting: `systemd.volatile=overlay` is tmpfs-upper only (cannot root on the hidden upper); Secure Boot lockdown refuses unsigned kexec images on stock Fedora/Ubuntu/Debian; kexec is reboot-equivalent (session/GPU loss, decoy uptime and journal gap); removable-media boot still changes firmware NVRAM `Boot####`/`BootOrder`. Record the invariant "no hidden-boot enabler may persist on the decoy (boot entries, initramfs hooks, EFI vars)" in `docs/USER-SECURITY-GUIDE.md`. Convert kexec and boot-from-removable into time-boxed spikes with go/no-go questions. Note the one concrete code risk owned by the deactivation group: the `switch-to-configuration "switch"/"boot"` calls at `nails-core/src/deactivation/orchestrator/mod.rs:347-355` and `nails-core/src/nixos/builder/switch.rs` can rewrite bootloader/EFI state.
@@ -3020,8 +3022,224 @@ Research topics and larger redesigns that are tracked but not scheduled.
 
 - [ ] **T-132: TODO: whole-root / soft-reboot design to eliminate live-overlay process heuristics** (high · effort XL)
 
+  _Status (2026-10): the design is recorded in ADR 0008 (whole-root soft-reboot, spike passing) and ADR 0009 (dual root with a non-disruptive emergency). Implementation is tracked as T-134 and T-133; the namespaced-writer E2E test and the minimal-target option are not yet written up as separate steps._
+
   **Problem:** Live overlaying of a running system depends on fragile process detection/classification/restart (`nails-core/src/process/restart/mod.rs:217-251`, TERM then 100ms then KILL), a journald restart after `/var` (`nails-core/src/manager/activation/overlay_mount/mod.rs:176-183`), nix-daemon special-casing, and setns-into-PID1 restore (`nails-core/src/manager/activation/overlay_mount/restore.rs:83-142`). Services started in their own mount namespaces (PrivateTmp, StateDirectory, ProtectSystem) keep bind mounts onto the decoy underlying fs, and a periodic writer holding no open fd at scan time is never detected, so a missed writer is a silent leak. Per-distro heuristics will never be complete.
 
   **Fix:** TODO only. Prototype a whole-root mode where the hidden environment is entered as a fresh userspace on an overlay root (systemd soft-reboot into `/run/nextroot` on v254+, or an initrd hook) so every service starts inside the hidden view, removing process classification/restart. Before adopting, evaluate the decoy-side artifacts it creates (soft-reboot journal lines written before the switch, fstab re-mounts). Near-term, independently schedulable steps: (a) add an E2E test that pre-starts a unit with PrivateTmp/StateDirectory/ProtectSystem=strict writing periodically and asserts nothing changes on the decoy lower; (b) optionally list processes whose `/proc/PID/ns/mnt` differs from PID1 before mounting and restart those units or refuse activation, or isolate to a minimal target then start `graphical.target` so services start fresh inside the overlaid view.
 
   **Done when:** An ADR captures the whole-root/soft-reboot design, its decoy-side artifacts and go/no-go criteria, and the near-term namespaced-writer E2E test and the minimal-target option are written up as separately schedulable implementable steps.
+
+## Wave R: Research follow-ups (2026-10)
+
+Work that came out of the research spikes and ADRs 0006-0009, and out of the E2E performance and testing-strategy studies. Each item says whether its design is VM-proven or still needs a spike or real hardware first. T-131 and T-132 are the research items these follow from.
+
+### WR-C1: Session modes
+
+Owns: `nails-core/src/session_mode/` (new), `nails-core/src/platform/`, `nix/e2e-tests/tests/research/`
+
+- [ ] **T-133: Dual-root session mode: the hidden session on its own VT in a whole-root overlay, emergency by VT switch and cgroup.kill** (high · effort XL)
+
+  _Status: VM-proven core, blocked on real hardware. The spike (`research/dual-root-vt-emergency.nix`) returns to the decoy by a VT switch in 62 ms plus `cgroup.kill`; the decoy session is active again after about 156 ms and the decoy disk sees 0 sectors written. The `/run` polkit rule (R2-B) is VM-proven; the pinned mount namespace (R5b) and the idle inhibitor are probed in `research/dual-root-risks.nix`. Needs the hardware matrix and the Ubuntu noble fallbacks before implementation._
+
+  **Problem:** Live overlays need process heuristics, leave a silent missed-writer leak class (T-132) and, on emergency, leave the hidden desktop on screen with the backend still open (`security/80`). Whole-root soft-reboot (T-134) removes the heuristics but logs the user out on emergency. ADR 0009 option D keeps the decoy desktop logged in on its own VT and runs every hidden process in a separate tree rooted in a whole-root overlay, which meets all five emergency rules.
+
+  **Fix:** Implement option D with the risk-assessment changes from `docs/adr/0009-dual-root-emergency.md`:
+  - a runtime polkit rule in `/run/polkit-1/rules.d` denying the hidden uid the shared-daemon writes (NetworkManager keyfiles, AccountsService, linger), plus a D-Bus uid deny for bluez/fwupd and blocked CUPS;
+  - the overlay built inside a mount namespace pinned on a file in `/run`, hidden units started with `nsenter --mount=<pin> systemd-run --root-directory=` (R5), so no decoy service started later holds a copy;
+  - a hidden user from a `/run/userdb` record with a uid in 60706-61183, a shell outside `/etc/shells`, a locked password, no root and no `wheel`, `NoNewPrivileges=` on every hidden unit, `LimitCORE=1`; the hidden `user@<uid>.service` moved into the hidden root by a runtime drop-in with PAM off;
+  - an idle, sleep and `handle-lid-switch` inhibitor held by a host unit for the session;
+  - a RAM scrub at teardown: runtime journal entries naming the hidden user, the `/run/utmp` records left by SIGKILL, `/run/user/<uid>`, the userdb record and the drop-ins;
+  - a logind-managed hidden compositor started from the hidden session on its own VT (the spike uses a rootful X server on a separate VT);
+  - the bounded emergency sequence from risk 1 (VT switch, `cgroup.kill` on the hidden slices, strict unmount, backend close), executed by the teardown interpreter (T-135);
+  - `status` and `activate` print the mode's emergency semantics in one line (ADR 0009 option G).
+
+  Blockers: the real-hardware matrix in ADR 0009 (NVIDIA proprietary and open, Intel/AMD; GNOME and KDE decoys; idle 1 h and 8 h before emergency; Bluetooth pairing and Wi-Fi from the hidden session, then a decoy diff) and Ubuntu noble fallbacks (polkit 124 reads no `/run` rules: a tmpfs over `/etc/polkit-1/rules.d` plus SIGHUP; systemd 255 has no `--root-directory` fd path: an `nsenter --root` wrapper; `libnss-systemd` for the userdb user; no snaps in the hidden root).
+
+  **Done when:**
+  - ADR 0009 go/no-go criteria 1-6 hold, with the hardware results recorded in the ADR.
+  - A regular VM test (not `research`) enters the mode, writes canaries, triggers emergency and asserts: the decoy X server, display manager and logind session are the same objects; no hidden process remains; strict unmount and backend close; no hidden token on the raw decoy disk; the decoy diff after a Wi-Fi and Bluetooth attempt is empty.
+  - The Debian trixie and Ubuntu noble variants pass on the nix-vm-test tier.
+  - The operator guide documents the mode, its residual channels and the lock screen on return.
+
+- [ ] **T-134: Whole-root soft-reboot mode: an opt-in maximum-isolation session entered by soft-reboot into an overlay root** (medium · effort XL)
+
+  _Status: VM-proven, needs a spike for NixOS entry and real hardware. The spike (`research/soft-reboot-whole-root.nix`) passes two full cycles plus a UEFI reboot: about 3 s back to a shell, no hidden token on the raw disk, the `/run` scrub as an allowlist, the kmsg cursor and the utab restore. Recommended as an opt-in mode next to T-133 (ADR 0009 recommendation 4)._
+
+  **Problem:** For operators who want the strongest userspace isolation, every hidden process, including the desktop, should start inside the overlay. `docs/adr/0008-whole-root-soft-reboot.md` shows this works with `systemctl soft-reboot` into `/run/nextroot` and adds no enabler to the decoy, but its emergency cannot keep the desktop (ADR 0008 §6).
+
+  **Fix:** Implement the ADR 0008 setup as a session mode: the read-only bind of `/` as lower, the upper on the hidden volume, the `/run` and hidden-volume binds, a read-only ESP (and `/boot/grub/grubenv`), an overlay inside `/run/nextroot` for every other decoy fstab filesystem, swap masked, `precheck_nextroot()` before the trigger, `/run/nextroot` kept empty outside NAILS transitions, and on the way back the `/run` scrub allowlist, the kmsg cursor and the utab restore as the last step. Emergency runs E2 or E4 through the teardown plan (`SoftReboot{root}` op, T-135). Open items:
+  - entering a hidden NixOS toplevel without touching the bootloader (ADR 0008 §3 variant B or C);
+  - Debian trixie and Ubuntu noble, including a decoy with a separate `/home`;
+  - real hardware: GPU and Wi-Fi come back without intervention, trigger to usable greeter in at most 15 s both ways;
+  - emergency semantics: it ends at a greeter or with the machine off. The operator must accept this for the mode, and `status`/`activate` say so in one line.
+
+  **Done when:** ADR 0008 go/no-go criteria 2-5 hold; a regular VM test covers entry, the hidden toplevel, deactivation and both emergency variants with the raw-disk token scan and the `/run` residue check; the mode is opt-in and its emergency semantics are printed by `activate` and `status`.
+
+- [ ] **T-135: Emergency teardown crate with a RAM teardown plan, cgroup.kill and early dispatch** (high · effort L)
+
+  _Status: design decided (ADR 0007 option F), kill path VM-proven (`research/01-emergency-cgroup-kill.nix`). Pidfd signalling and stop jobs for `Restart=` services have landed on the current path. The key-wipe-first option needs a spike._
+
+  **Problem:** Emergency still builds the CLI stack and walks `/proc` with device-matching heuristics before the first unmount; about 11k lines are reachable from the hot path, which is slow, hard to review and depends on a responsive hidden backend (`docs/adr/0007-emergency-architecture.md`).
+
+  **Fix:** Follow the ADR 0007 migration stages:
+  1. a `nails-teardown` crate (`rustix`/`libc` only, no dependency on `nails-core` config, state, manager or tracing) with the plan types, the interpreter, the mountinfo reconcile pass and the cgroup and pidfd helpers, with userns tests;
+  2. activation writes the plan to the runtime tmpfs atomically after every step, with unit cgroups and session-guard fragments;
+  3. early dispatch: `main` recognises `emergency` and the watcher trigger before clap, config, platform detection and tracing, and calls the interpreter;
+  4. `cgroup.kill` (with a `cgroup.procs` plus pidfd fallback below 5.14), bounded `AwaitEmpty`, then detach; the `/proc` kill stays only in the no-plan fallback;
+  5. the research VM test becomes a regular `faults` test.
+
+  Evaluate a key-wipe-first option as a spike: `FIFREEZE` the hidden filesystem, suspend the dm mapping and wipe its key before the slower teardown, so a seized machine holds no usable key even if the teardown stalls. Questions: interaction with D-state tasks and frozen writers, whether the unmount can still complete afterwards, and what a suspended mapping looks like to an observer.
+
+  **Done when:** emergency reaches the first unmount without initialising clap, config or tracing (asserted by a test); the hot path is in `nails-teardown` and Cargo enforces the dependency boundary; a missing or corrupt plan derives the same op list from mountinfo; the fault VM tests pass with a dead backend; the key-wipe spike ends with a go/no-go recorded in ADR 0007.
+
+- [ ] **T-136: Activation as do/undo steps that share one plan with rollback, deactivate and emergency** (medium · effort L)
+
+  _Status: design only (ADR 0007 option C); no spike needed. Depends on T-135._
+
+  **Problem:** Rollback, deactivation, recover and emergency each derive what to undo in their own way (mount tracker, state file, mountinfo discovery), so a new activation step needs teardown code in several places and they can drift.
+
+  **Fix:** Model activation as a list of steps, each with a `do` and a fixed `undo` (mount → unmount, bind → unmount, unit restarted → stop/start, link repointed → repoint back). The steps append to the T-135 plan as they complete; rollback runs the undo of the completed prefix, deactivate and emergency run the whole plan, with mountinfo reconcile as the fallback.
+
+  **Done when:** rollback, deactivate and emergency read the same plan; adding a step needs no teardown code elsewhere (one test per step proves its undo on the real-kernel tier); the per-path rebuild loops are gone.
+
+- [ ] **T-137: Hidden /nix/store on the hidden volume instead of an overlay over the decoy store** (medium · effort M)
+
+  _Status: falls out of T-133/T-134; no separate spike._
+
+  **Problem:** Today the hidden store is a `/nix` overlay over the decoy store. A copied-up `db.sqlite` shadows store paths the decoy builds or garbage-collects between sessions (ADR 0008 §2, T-128), so a decoy GC can break the hidden system.
+
+  **Fix:** Once a whole-root mode exists, keep the hidden closure in a store that lives entirely on the hidden volume (its own `/nix` in the hidden root, not layered on the decoy store), so decoy updates and GC cannot affect it.
+
+  **Done when:** a VM test garbage-collects and rebuilds the decoy between two hidden sessions and the hidden toplevel still starts; the decoy store is unchanged by the hidden session.
+
+### WR-C2: Code structure and test architecture
+
+Owns: `Cargo.toml`, `nails-*/Cargo.toml`, `docs/testing-strategy.md`, `docs/e2e-performance.md`, `nix/e2e-tests/`
+
+- [ ] **T-138: Split nails-core into platform, overlay engine, forensics and teardown crates** (low · effort L)
+
+  _Status: design only; no spike needed. The teardown crate comes first through T-135._
+
+  **Problem:** `nails-core` holds platform detection, the overlay engine, verify and artifacts, and teardown in one crate, so nothing stops one area from reaching into another, and ADR 0001's boundary only separates the CLI.
+
+  **Fix:** Split along the seams that already exist: `nails-platform` (detection, backends, host commands, config layer), `nails-overlay` (mount engine, runtime root, pivot), `nails-forensics` (verify, artifact registry, scanners), `nails-teardown` (T-135). `nails-core` keeps orchestration. Update ADR 0001 with a superseding record.
+
+  **Done when:** the four crates build with only the dependencies their area needs, the workspace tests and clippy pass, and the dependency direction is recorded in an ADR.
+
+- [ ] **T-139: Mock migration per the testing strategy: the eight-step list and effect-based assertions** (medium · effort L)
+
+  _Status: tier (a) harness, kernel fixtures and the first migrations landed with ADR 0006; the eight remaining steps need no spike._
+
+  **Problem:** Test doubles encode beliefs about the kernel and tools that nothing checks; five bugs passed every unit test and failed only in the VM suite (`docs/testing-strategy.md`, `docs/adr/0006-real-kernel-test-tier.md`).
+
+  **Fix:** Work through the "Next, in this order" list in `docs/testing-strategy.md`: (1) the mount contract against `RealFilesystem` in a user and mount namespace; (2) the rootless `privileged_mounts` tests through `Rerun`; (3) captured VM fixtures for the service, session, swap, mountinfo and backend-detect parsers; (4) `reconcile_mounts_override` against a real mount table; (5) one `/proc/<pid>/stat` parser tested on real children; (6) signal and process-tree tests in a PID namespace; (7) the tier (c) "kernel-semantics" VM test; (8) effect assertions (state file or mount table) for tests that only check the recorded `MockOp` list.
+
+  **Done when:** each step is ticked in `docs/testing-strategy.md`, the mock-only contract section is gone, and no activation or rollback test asserts only on recorded operations.
+
+- [ ] **T-140: VM suite roadmap: merge single-boot tests, cache the store image, virtiofs, move tests to the real-kernel tier** (medium · effort M)
+
+  _Status: measured. A full run takes 75 min with the bounded-parallel runner, down from 3 h 45 min serial. The remaining items are ranked in `docs/e2e-performance.md`; none needs a spike._
+
+  **Problem:** Booting is 38% of test-script time (190 boots for 106 tests) and 49 tests boot once and spend most of their time booting; the forensic tests rebuild the store image on every start.
+
+  **Fix:** In roadmap order: refresh `shard-durations.json` from the measured run; merge independent single-boot tests per group (preflight, config/contract/init, notification, smoke) with a cleanup helper and a leftover-state assertion at the start of each scenario, folding in the T-114 duplicates; cache the erofs store image across starts of one forensic test; take virtiofs with the next nixpkgs bump and re-check `--jobs auto` against host RAM; move config and contract tests to the real-kernel tier, keeping one VM path each. Record the hosted-runner boot cost in `nix/e2e-tests/README.md`.
+
+  **Done when:** the single-boot groups run in about 10 boots, the forensic tests reuse one store image, and the measured full-suite time is recorded in `docs/e2e-performance.md` after each step.
+
+### WR-C3: Forensic self-checks
+
+Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nails-cli/src/cli/commands/`, `nix/e2e-tests/lib/disk_forensics.py`
+
+- [ ] **T-141: nails rehearse: a canary self-test with a raw-device scan** (medium · effort M)
+
+  _Status: new; needs a design note (where the canary lives, how the scan stays read-only), then a VM test._
+
+  **Problem:** The disk-image checks prove the leak claims only in CI. An operator has no way to check their own machine, decoy profile and backend before relying on them.
+
+  **Fix:** A two-phase `nails rehearse`: phase one runs a normal session that writes random canary tokens into the hidden session's usual places (home, `/etc`, `/var`, `/tmp`, journal) and keeps the tokens on the hidden volume; phase two, after the standard deactivation and reboot, scans the raw decoy block device read-only for the tokens (the sparse-aware scan from `disk_forensics.py`) and reports hits by offset. No write to the decoy in either phase.
+
+  **Done when:** a VM test plants a deliberate leak and `rehearse` reports it, and a clean run reports none; the command is documented in the operator guide.
+
+- [ ] **T-142: Timeline-differential forensic oracle: extend the forensic/06 MAC-time and hash diff, optional Plaso lane** (medium · effort M)
+
+  _Status: forensic/06 already diffs a sleuthkit bodyfile and per-file SHA-256 against a control run; extending it needs no spike._
+
+  **Problem:** Only forensic/06 compares inode MAC times and contents; the other disk-image tests compare names or grep tokens, so a decoy file modified in place passes them.
+
+  **Fix:** Factor the bodyfile, hash and control-run filter in `disk_forensics.py` into a helper and use it in forensic/05, 08 and 10, the persona tests and the distro smoke test. Add an optional nightly lane that builds a Plaso super-timeline of both images and diffs it against the control run.
+
+  **Done when:** at least five disk-image tests assert the MAC-time and hash diff, and the Plaso lane runs on demand with its diff in the test output.
+
+- [ ] **T-143: Unguarded writable mounts: optional read-only remount for the session, watcher alerts on new rw mounts** (medium · effort M)
+
+  _Status: the stray-mounts preflight warning is done; the rest needs no spike._
+
+  **Problem:** A second disk, a Windows partition or an automounted USB drive stays read-write on a real disk for the whole session. Preflight warns about the ones present at activation, but nothing acts on them and a drive mounted during the session goes unnoticed.
+
+  **Fix:** An opt-in config key and flag that remounts the warned mounts read-only for the session and restores them at teardown; the watcher alerts on any new read-write block-backed mount that is not under an overlay target or the hidden root.
+
+  **Done when:** a VM test with a second disk shows writes fail under the opt-in and the mount is read-write again after deactivation; another VM test mounts a disk during the session and the watcher alert fires.
+
+- [ ] **T-144: One residue catalog driving preflight, verify, docs and E2E** (medium · effort M)
+
+  _Status: the artifact registry (T-074) covers verify, preflight and the E2E indicators; extending it needs no spike._
+
+  **Problem:** Residue classes are described in the artifact registry, the decoy requirements, the threat model's residual channels and the E2E indicators separately, so a new class can be documented without a detector or detected without a test.
+
+  **Fix:** Make the registry the single catalog: each entry names the class, where it lands, the preflight check that prevents it, the verify check that detects it, and the E2E test that asserts it. Generate the residual-channels table in the docs from it.
+
+  **Done when:** a test fails when an entry has no detector or no E2E assertion, and the generated docs table is kept in sync by a test.
+
+- [ ] **T-145: Examiner's-view audit in verify --offline: setup traces, report only** (medium · effort M)
+
+  _Status: new; needs no spike. Builds on `verify --offline --root`._
+
+  **Problem:** `verify` looks for session residue. An examiner also looks for traces of the setup itself: backend tooling and its history, mapper names in logs, sudo records, downloaded binaries, VeraCrypt favourites and history, LUKS2 tokens.
+
+  **Fix:** An `--examiner` section in `verify --offline` that lists setup traces from the catalog (T-144) on a mounted decoy image, grouped by what an examiner would conclude. It reports only and changes nothing.
+
+  **Done when:** a VM test seeds each setup trace on a decoy image and the audit reports it; a clean image reports none.
+
+### WR-C4: Alternatives and personas
+
+Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
+
+- [ ] **T-146: Contained-session (systemd-nspawn) mode for headless hidden sessions** (low · effort L)
+
+  _Status: compared in ADR 0009 (option E); needs a spike. Not the main path while the hidden desktop is GNOME/KDE._
+
+  **Problem:** For a headless or wlroots hidden session, a container with its own PID 1, journal, system bus and PID namespace gives the strongest live isolation, but logind inside nspawn has no graphical seat (systemd #35114, #36673).
+
+  **Fix:** Spike `systemd-nspawn --boot` on the whole-root overlay for a headless hidden system: own journal in the upper, Wi-Fi moved with its `phy`, emergency by killing the machine scope. Compare decoy-side traces (machined registration, journal lines) with T-133.
+
+  **Done when:** the spike result and a go/no-go are recorded in ADR 0009, and a VM test covers the mode if it goes ahead.
+
+- [ ] **T-147: idmapped binds for the fresh-home persona, or a separate hidden account** (low · effort L)
+
+  _Status: needs a spike (kernel support for idmapped layers under overlayfs on the supported LTS kernels)._
+
+  **Problem:** The fresh-home persona (T-046) still runs as the decoy's uid, so per-uid state (`/run/user/<uid>`, user manager, keyring, dconf) is shared with the decoy. ADR 0009 rules out the same uid for a dual-root session.
+
+  **Fix:** Either present the hidden home through an idmapped bind owned by a separate hidden uid, or create a separate hidden account from a `/run/userdb` record as in T-133. Pick one after the spike; add the persona tests from T-130.
+
+  **Done when:** the hidden session runs under a uid the decoy does not have, nothing about that uid reaches the decoy disk (VM test), and the persona docs describe the model.
+
+- [ ] **T-148: Threat model: resolve the coercion tension** (high · effort S)
+
+  _Status: docs only; no spike._
+
+  **Problem:** `docs/threat-model.md` lists coercion as out of scope, but its outer-encryption assumption ("the operator can unlock for the adversary without revealing the hidden volume") is a compelled-disclosure scenario, so the document contradicts itself.
+
+  **Fix:** Bring compelled unlock of the decoy into scope explicitly: the adversary obtains the decoy credentials and examines the decoy offline. Keep sustained or repeated coercion, and coercion aimed at the hidden volume, out of scope, and say what NAILS can and cannot offer there.
+
+  **Done when:** `docs/threat-model.md` names the compelled-unlock scenario as in scope with its limits, the out-of-scope list no longer contradicts it, and the operator guide matches.
+
+### Not adopted
+
+- Shufflecake as a backend: an out-of-tree kernel module whose presence is itself a decoy-side trace; it stays detected and named by `backend-detect` only.
+- fscrypt or dm-integrity for the upper: the upper already sits inside the encrypted backend, and both add identifiable on-disk metadata for no gain against an offline examiner.
+- TPM or FIDO2 unlock of the hidden volume: an enrolled token or sealed key points at the hidden volume and binds it to the machine (see `docs/backends.md`).
+- A TUI: a large new surface and dependency set for no safety gain; the CLI and `status --json` cover it, and the panic path must stay minimal.
+- Overlay `uuid=off` on current LTS kernels: its meaning differs between the supported kernels, and the origin data it would drop sits inside the encrypted backend anyway.
+- CRIU for the decoy session: it cannot checkpoint DRM masters or a compositor's client graph, and the image would need storage on the decoy or the hidden volume (ADR 0009); dual root (T-133) gets the result without stopping the decoy.
