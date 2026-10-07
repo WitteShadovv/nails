@@ -399,7 +399,11 @@ distroVm.buildVmTest {
             + f"{nails_cmd} deactivate -y 2>&1",
             check_return=False,
         )
-        if teardown_rc != 0:
+        # The deactivation reboots the guest right away, which can cut the
+        # backdoor shell before systemd-run returns (rc -1); the unit line shows
+        # the teardown was started all the same.
+        started = teardown_rc == 0 or "Running as unit: smoke-teardown" in teardown_out
+        if not started:
             pid1_health("systemd-run refused the teardown unit")
             raise AssertionError(
                 f"systemd-run could not start the teardown unit (rc={teardown_rc}): "
