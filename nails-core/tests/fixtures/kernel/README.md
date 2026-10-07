@@ -26,8 +26,8 @@ back as `\134\054`; that form is pinned in
 `parse_overlay_opts_decodes_the_doubly_escaped_kernel_form`.
 
 It then builds a second scene, `mountinfo-hidden-root.txt`: a tmpfs whose
-source is `/dev/mapper/vault`, mounted at `/fixture/mnt/hidden root` (the kernel
-prints the space as `\040`), a `/fixture/home` overlay whose upper and work
+source is `/dev/mapper/vault`, mounted at a directory named `hidden root` under
+`/fixture/mnt` (the kernel prints the space as `\040`), a `/fixture/home` overlay whose upper and work
 directories live on it, and a `/fixture/nix/store` overlay shadowed by a later
 `/fixture/nix` overlay. It records the stat and status of a child in its own
 session and process group whose comm is `x) (y z`, and `/proc/swaps`, which is
