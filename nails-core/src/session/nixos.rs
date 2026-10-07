@@ -108,11 +108,7 @@ pub fn build_into(
     if !ok {
         return Err(NailsError::NixOSError(format!(
             "building the hidden NixOS system failed: {}",
-            stderr
-                .lines()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("no output")
+            build_error(&stderr)
         )));
     }
     stdout
@@ -121,6 +117,26 @@ pub fn build_into(
         .rfind(|l| l.starts_with("/nix/store/"))
         .map(PathBuf::from)
         .ok_or_else(|| NailsError::NixOSError("the build printed no store path".to_string()))
+}
+
+/// Why a build failed, from its output: nix's last `error:` and what
+/// follows it up to the `nix log` hint (the build log tail included), else the
+/// last line.
+fn build_error(stderr: &str) -> String {
+    let lines: Vec<&str> = stderr
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    match lines.iter().rposition(|l| l.starts_with("error:")) {
+        Some(start) => lines[start..]
+            .iter()
+            .take_while(|l| !l.starts_with("For full logs"))
+            .copied()
+            .collect::<Vec<_>>()
+            .join(" / "),
+        None => lines.last().copied().unwrap_or("no output").to_string(),
+    }
 }
 
 fn c_path(path: &Path) -> Result<CString> {
@@ -202,6 +218,18 @@ pub fn activate_in(root: &Path, system: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_build_reports_nix_error_line_not_the_log_hint() {
+        let stderr = "error: Cannot build '/nix/store/x.drv'.\n       Reason: builder failed with exit code 127.\n       > bash: sleep: command not found\n       For full logs, run:\n         nix log /nix/store/x.drv\n";
+        assert_eq!(
+            build_error(stderr),
+            "error: Cannot build '/nix/store/x.drv'. / Reason: builder failed with exit code \
+             127. / > bash: sleep: command not found"
+        );
+        assert_eq!(build_error("warning: a\nlast\n\n"), "last");
+        assert_eq!(build_error(""), "no output");
+    }
 
     #[test]
     fn the_decoy_system_is_the_resolved_current_system_link_in_the_store_only() {
