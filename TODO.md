@@ -2622,7 +2622,7 @@ Owns: `nails-core/src/cleanup/manager.rs`, `nails-core/src/deactivation/orchestr
 
 Owns: `nix/e2e-tests/lib/base-node.nix`, `nix/e2e-tests/tests/persona/`, `nix/e2e-tests/lib/persona-helpers.nix`
 
-- [ ] **T-114: Shared base node, duplicate-test removal and fewer avoidable reboots in E2E (one derivation per test)** (medium · effort M)
+- [x] **T-114: Shared base node, duplicate-test removal and fewer avoidable reboots in E2E (one derivation per test)** (medium · effort M)
 
   _Status: partial (wave F1). Done: a shared `base-node.nix` injected by `default.nix` for single-machine specs; the redundant `nodes` block dropped from 48 vm-config+nails specs and 3 set to `baseNode = { python3 = true; }` (distinct node blocks 104→53, remaining ~10 are genuinely bespoke); the trailing no-assertion cleanup reboot removed from `contract/58`; the README skeleton rewritten to the no-nodes convention with an "Adding a test" step and a per-test fixed-cost subsection; stale self-check headers already gone; the named duplicate tamper files no longer exist. Remaining: the `config/24`→`overlay/69` merge (different config sources, adds reboots — deferred to avoid a silent break without nix eval), filling the measured boot-to-first-subtest number from a hosted run, and the hosted-runner full-suite evaluation of the swept flake — see nix_pending._
 
@@ -2640,7 +2640,7 @@ Owns: `nix/e2e-tests/lib/base-node.nix`, `nix/e2e-tests/tests/persona/`, `nix/e2
 
   _Status: shared base node done (`lib/base-node.nix`, applied by `default.nix` to specs without `nodes`) and Self-check headers are gone; remaining: the serialized sweep dropping `nodes` from the standard specs, duplicate removal (config/24 into overlay/69, tamper only in state/52), trailing `canonical_deactivate` removal and the hosted-runner fixed-cost measurement in the README (needs Nix evaluation and hosted runs)._
 
-  _Status (2026-10): still open, two done-when bullets. (1) The tamper scenario is still in two places: preflight/20 keeps its "tampered checksum blocks the next activation" subtest next to state/52 (config/24 and overlay/69 now cover different configs and assertions and stay separate). (2) The README records the local per-boot cost (median 21.8 s, see `docs/e2e-performance.md`) but the hosted-runner figure is still a placeholder. The suite itself is green (113 tests). Merging single-boot tests is tracked in T-140._
+  _Status (2026-10):_ done. The tamper scenario lives only in state/52 (preflight/20's tamper subtest is gone; config/24 and overlay/69 cover different configs and assertions and stay separate). `nix/e2e-tests/README.md` records the measured local per-boot cost and states why no hosted-runner figure exists yet, with the dispatched job that measures it. Single-boot merging landed with T-140. The suite is green at 5751ec92 (102 tests).
 
 - [x] **T-115: Persona-separation E2E tests (remote-state pull-back, fresh-home mode, graphical emergency, stale writers) and documentation of the sync limitation** (critical · effort L)
 
@@ -3076,9 +3076,11 @@ Owns: `nails-core/src/session_mode/` (new), `nails-core/src/platform/`, `nix/e2e
 
   **Done when:** ADR 0008 go/no-go criteria 2-5 hold; a regular VM test covers entry, the hidden toplevel, deactivation and both emergency variants with the raw-disk token scan and the `/run` residue check; the mode is opt-in and its emergency semantics are printed by `activate` and `status`.
 
-- [ ] **T-135: Emergency teardown crate with a RAM teardown plan, cgroup.kill and early dispatch** (high · effort L)
+- [x] **T-135: Emergency teardown crate with a RAM teardown plan, cgroup.kill and early dispatch** (high · effort L)
 
   _Status: design decided (ADR 0007 option F), kill path VM-proven (`research/01-emergency-cgroup-kill.nix`). Pidfd signalling and stop jobs for `Restart=` services have landed on the current path. The key-wipe-first option needs a spike._
+
+  _Status (2026-10):_ done. `nails-teardown` (rustix, libc, serde only; `nails-cli`'s `teardown_boundary` test fails on a new dependency) holds the plan, the executor, the mountinfo derive pass and the cgroup and pidfd helpers; activation rewrites the plan in the runtime tmpfs after every step; `main` dispatches `emergency` and the watcher trigger before clap, config and tracing (`nails-cli/tests/early_dispatch.rs`); `cgroup.kill` with the `cgroup.procs`/pidfd fallback replaces the `/proc` kill outside the no-plan fallback; `manager::teardown_plan` kernel tests run it in user, mount, cgroup and PID namespaces; faults/97 passes on a dead untrusted backend. The key-wipe-first spike is a documented no-go in ADR 0007 (a frozen filesystem blocks the power action and the kill). `research/01-emergency-cgroup-kill.nix` stays a research test: the regular faults and emergency tests now exercise the same `cgroup.kill` path. Verified by the green VM suite (102 tests) and the Debian 12/13 and Ubuntu 24.04 smoke tests at 5751ec92.
 
   **Problem:** Emergency still builds the CLI stack and walks `/proc` with device-matching heuristics before the first unmount; about 11k lines are reachable from the hot path, which is slow, hard to review and depends on a responsive hidden backend (`docs/adr/0007-emergency-architecture.md`).
 
@@ -3093,9 +3095,11 @@ Owns: `nails-core/src/session_mode/` (new), `nails-core/src/platform/`, `nix/e2e
 
   **Done when:** emergency reaches the first unmount without initialising clap, config or tracing (asserted by a test); the hot path is in `nails-teardown` and Cargo enforces the dependency boundary; a missing or corrupt plan derives the same op list from mountinfo; the fault VM tests pass with a dead backend; the key-wipe spike ends with a go/no-go recorded in ADR 0007.
 
-- [ ] **T-136: Activation as do/undo steps that share one plan with rollback, deactivate and emergency** (medium · effort L)
+- [x] **T-136: Activation as do/undo steps that share one plan with rollback, deactivate and emergency** (medium · effort L)
 
   _Status: design only (ADR 0007 option C); no spike needed. Depends on T-135._
+
+  _Status (2026-10):_ done. Activation records each completed step with its fixed undo in the T-135 plan (tracked mounts, `/nix/store` self-binds, read-only guards, the post-switch overlay re-mount, added units); rollback, deactivate, recover and emergency undo that one plan through the `nails-teardown` executor, reconciled against mountinfo, and rebuild it from the state file or the mount table when it is missing. The per-path loops are gone; `teardown_plan_kernel_tests.rs` proves every recorded step kind's undo on real mounts. Verified at 5751ec92.
 
   **Problem:** Rollback, deactivation, recover and emergency each derive what to undo in their own way (mount tracker, state file, mountinfo discovery), so a new activation step needs teardown code in several places and they can drift.
 
@@ -3137,9 +3141,11 @@ Owns: `Cargo.toml`, `nails-*/Cargo.toml`, `docs/testing-strategy.md`, `docs/e2e-
 
   **Done when:** each step is ticked in `docs/testing-strategy.md`, the mock-only contract section is gone, and no activation or rollback test asserts only on recorded operations.
 
-- [ ] **T-140: VM suite roadmap: merge single-boot tests, cache the store image, virtiofs, move tests to the real-kernel tier** (medium · effort M)
+- [x] **T-140: VM suite roadmap: merge single-boot tests, cache the store image, virtiofs, move tests to the real-kernel tier** (medium · effort M)
 
   _Status: measured. A full run takes 75 min with the bounded-parallel runner, down from 3 h 45 min serial. The remaining items are ranked in `docs/e2e-performance.md`; none needs a spike._
+
+  _Status (2026-10):_ done. 19 single-boot tests run as scenarios of 7 batches (`lib/batch.nix`, `py/nails_e2e/batch.py`) with a clean-guest check per scenario; the erofs store image is reused across restarts of one machine (17 restarts per full run); virtiofs is gated on bumping the flake's nixpkgs (the analysis and the `msize` removal are in `docs/e2e-performance.md`); `help-version-no-leak` and four config checks moved to cargo tests. The suite is green at 5751ec92 (102 tests); the post-Wave-R wall time is to be added to `docs/e2e-performance.md#re-measuring` from the next timed full run.
 
   **Problem:** Booting is 38% of test-script time (190 boots for 106 tests) and 49 tests boot once and spend most of their time booting; the forensic tests rebuild the store image on every start.
 
@@ -3151,9 +3157,11 @@ Owns: `Cargo.toml`, `nails-*/Cargo.toml`, `docs/testing-strategy.md`, `docs/e2e-
 
 Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nails-cli/src/cli/commands/`, `nix/e2e-tests/lib/disk_forensics.py`
 
-- [ ] **T-141: nails rehearse: a canary self-test with a raw-device scan** (medium · effort M)
+- [x] **T-141: nails rehearse: a canary self-test with a raw-device scan** (medium · effort M)
 
   _Status: new; needs a design note (where the canary lives, how the scan stays read-only), then a VM test._
+
+  _Status (2026-10):_ done. `nails rehearse` runs the guided three-step canary self-test: a canary planted in the session's usual places, kept on the hidden volume, and a read-only sparse-aware scan of the raw decoy device after deactivation (`nails-cli/tests/rehearse_cli.rs`, VM test `forensic/12-rehearse-canary.nix` with a deliberate leak and a clean run); documented in `docs/operator-guide.md` and `docs/cli.md`. Verified at 5751ec92.
 
   **Problem:** The disk-image checks prove the leak claims only in CI. An operator has no way to check their own machine, decoy profile and backend before relying on them.
 
@@ -3161,9 +3169,11 @@ Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nails-cli/src/cl
 
   **Done when:** a VM test plants a deliberate leak and `rehearse` reports it, and a clean run reports none; the command is documented in the operator guide.
 
-- [ ] **T-142: Timeline-differential forensic oracle: extend the forensic/06 MAC-time and hash diff, optional Plaso lane** (medium · effort M)
+- [x] **T-142: Timeline-differential forensic oracle: extend the forensic/06 MAC-time and hash diff, optional Plaso lane** (medium · effort M)
 
   _Status: forensic/06 already diffs a sleuthkit bodyfile and per-file SHA-256 against a control run; extending it needs no spike._
+
+  _Status (2026-10):_ done for the oracle. The bodyfile, hash and control-run filter are factored into `disk_forensics.mac_diff`, and forensic/04, 05, 08 and the tcrypt hidden-volume test assert it next to forensic/06 (five tests). No Plaso lane: Plaso is not packaged in nixpkgs; the bodyfiles kept in the test output feed `mactime` directly (`nix/e2e-tests/README.md`). Verified at 5751ec92.
 
   **Problem:** Only forensic/06 compares inode MAC times and contents; the other disk-image tests compare names or grep tokens, so a decoy file modified in place passes them.
 
@@ -3181,9 +3191,11 @@ Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nails-cli/src/cl
 
   **Done when:** a VM test with a second disk shows writes fail under the opt-in and the mount is read-write again after deactivation; another VM test mounts a disk during the session and the watcher alert fires.
 
-- [ ] **T-144: One residue catalog driving preflight, verify, docs and E2E** (medium · effort M)
+- [x] **T-144: One residue catalog driving preflight, verify, docs and E2E** (medium · effort M)
 
   _Status: the artifact registry (T-074) covers verify, preflight and the E2E indicators; extending it needs no spike._
+
+  _Status (2026-10):_ done. `nails-core/src/residue_catalog/` is the single catalog: each row names the class, where it lands, its preflight probe, its verify probe and its VM test; the tests fail on a row with no detector (unless it is a declared residual channel), a VM test that does not exist, an unregistered probe, or a generated docs table out of sync (`generated_doc_tables_match_the_catalog`). Verified at 5751ec92.
 
   **Problem:** Residue classes are described in the artifact registry, the decoy requirements, the threat model's residual channels and the E2E indicators separately, so a new class can be documented without a detector or detected without a test.
 
@@ -3191,9 +3203,11 @@ Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nails-cli/src/cl
 
   **Done when:** a test fails when an entry has no detector or no E2E assertion, and the generated docs table is kept in sync by a test.
 
-- [ ] **T-145: Examiner's-view audit in verify --offline: setup traces, report only** (medium · effort M)
+- [x] **T-145: Examiner's-view audit in verify --offline: setup traces, report only** (medium · effort M)
 
   _Status: new; needs no spike. Builds on `verify --offline --root`._
+
+  _Status (2026-10):_ done. `verify --offline --examiner` lists the catalog's setup traces on a mounted decoy image grouped by the examiner's conclusion, report only; VM test `forensic/11-examiner-audit.nix` seeds each trace and checks a clean image reports none. Verified at 5751ec92.
 
   **Problem:** `verify` looks for session residue. An examiner also looks for traces of the setup itself: backend tooling and its history, mapper names in logs, sudo records, downloaded binaries, VeraCrypt favourites and history, LUKS2 tokens.
 
@@ -3225,9 +3239,11 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
 
   **Done when:** the hidden session runs under a uid the decoy does not have, nothing about that uid reaches the decoy disk (VM test), and the persona docs describe the model.
 
-- [ ] **T-148: Threat model: resolve the coercion tension** (high · effort S)
+- [x] **T-148: Threat model: resolve the coercion tension** (high · effort S)
 
   _Status: docs only; no spike._
+
+  _Status (2026-10):_ done. `docs/threat-model.md` brings compelled disclosure of the decoy into scope with its limits (section "Compelled disclosure of the decoy"), keeps sustained coercion and coercion aimed at the hidden volume out of scope without contradiction, and `docs/operator-guide.md` ("Compelled disclosure") matches.
 
   **Problem:** `docs/threat-model.md` lists coercion as out of scope, but its outer-encryption assumption ("the operator can unlock for the adversary without revealing the hidden volume") is a compelled-disclosure scenario, so the document contradicts itself.
 
