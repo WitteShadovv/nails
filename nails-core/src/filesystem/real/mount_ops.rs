@@ -116,7 +116,9 @@ pub(super) fn unmount(fs: &RealFilesystem, target: &Path, force: bool) -> Result
     }
 
     let canonical = canonical_target(target);
-    if !NailsMounts::discover(None)?.is_owned(&canonical) {
+    if !NailsMounts::from_entries(&crate::filesystem::mountinfo::read_mountinfo()?, None)
+        .is_owned(&canonical)
+    {
         return Err(NailsError::RefusedUnmanagedUnmount {
             path: target.to_path_buf(),
         });

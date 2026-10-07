@@ -1,0 +1,30 @@
+[package]
+name = "nails-teardown"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Emergency teardown interpreter and RAM teardown plan for the nails overlay environment manager"
+homepage.workspace = true
+repository.workspace = true
+readme = "../README.md"
+# Never publish to a registry; see nails-core/Cargo.toml.
+publish = false
+
+[lints]
+workspace = true
+
+# The dependency boundary of the emergency hot path (ADR 0007). This crate must
+# never depend on nails-core (its config, state, manager, process runner) or on
+# tracing: everything the panic path runs is in this crate and these four
+# dependencies. `cargo tree -p nails-teardown` is the whole review surface, and
+# nails-cli's `teardown_boundary` test fails if a dependency is added here.
+[dependencies]
+rustix = { workspace = true, features = ["fs", "mount", "process"] }
+libc = "0.2"
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

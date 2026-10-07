@@ -1105,6 +1105,7 @@ dependencies = [
  "criterion",
  "hex",
  "nails-core",
+ "nails-teardown",
  "nix",
  "predicates",
  "proptest",
@@ -1120,6 +1121,17 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "zbus",
+]
+
+[[package]]
+name = "nails-teardown"
+version = "0.2.0"
+dependencies = [
+ "libc",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

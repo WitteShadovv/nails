@@ -108,7 +108,10 @@ impl Filesystem for RealFilesystem {
         &self,
         hidden_root: Option<&Path>,
     ) -> Result<crate::filesystem::NailsMounts> {
-        crate::filesystem::NailsMounts::discover(hidden_root)
+        Ok(crate::filesystem::NailsMounts::from_entries(
+            &crate::filesystem::mountinfo::read_mountinfo()?,
+            hidden_root,
+        ))
     }
 
     fn path_exists(&self, path: &Path) -> Result<bool> {

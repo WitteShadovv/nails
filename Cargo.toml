@@ -1,5 +1,5 @@
 [workspace]
-members = ["nails-cli", "nails-core"]
+members = ["nails-cli", "nails-core", "nails-teardown"]
 resolver = "3"
 
 [workspace.package]

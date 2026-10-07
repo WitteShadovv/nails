@@ -56,14 +56,7 @@ pub fn persona_home_source(hidden_volume_root: &Path) -> PathBuf {
 /// volume is mounted, so matching that tail identifies the bind without the
 /// classifier needing the configured hidden root.
 pub fn is_persona_home_root(mount_root: &Path) -> bool {
-    let mut components = mount_root.components().rev();
-    let last = components.next();
-    let penultimate = components.next();
-    matches!(
-        (penultimate, last),
-        (Some(p), Some(l))
-            if p.as_os_str() == PERSONA_DIR && l.as_os_str() == PERSONA_HOME_DIR
-    )
+    nails_teardown::mountinfo::is_persona_home_root(mount_root)
 }
 
 /// How the hidden session relates to the decoy account.

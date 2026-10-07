@@ -54,6 +54,9 @@ tempfile = { workspace = true }
 colored = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
+# The emergency teardown crate: the plan format activation writes, the
+# mountinfo parser and classifier, and the teardown interpreter.
+nails-teardown = { path = "../nails-teardown" }
 zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 
 [dev-dependencies]
