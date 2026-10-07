@@ -124,6 +124,13 @@ impl DecoyPersistenceCheck {
         }
         if Self::unit_active(fs, root, "rsyslog.service") {
             out.push("rsyslog is active and writes logs to the decoy disk".to_string());
+        } else if Self::unit_active(fs, root, "syslog.service") {
+            // NixOS runs rsyslogd as syslog.service; elsewhere the name is the
+            // conventional alias of whichever syslog daemon is installed.
+            out.push(
+                "a syslog daemon (syslog.service) is active and writes logs to the decoy disk"
+                    .to_string(),
+            );
         }
         if Self::unit_active(fs, root, "syslog-ng.service") {
             out.push("syslog-ng is active and writes logs to the decoy disk".to_string());

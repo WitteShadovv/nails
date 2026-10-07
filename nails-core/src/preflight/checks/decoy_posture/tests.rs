@@ -114,6 +114,26 @@ fn active_rsyslog_fails_closed() {
 }
 
 #[test]
+fn a_syslog_service_named_syslog_fails_closed() {
+    // NixOS's services.rsyslogd runs the daemon as syslog.service.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    set_unit_active(&fs, "syslog.service");
+
+    let check = DecoyPersistenceCheck::new(false, true);
+    let result = check.run(&fs).unwrap();
+    assert!(
+        result.is_fail(),
+        "an active syslog.service must fail: {result:?}"
+    );
+    assert!(result.message().contains("syslog.service"));
+}
+
+#[test]
 fn active_syslog_ng_fails_closed() {
     let fs = MockFilesystem::new();
     fs.mock_add_file(

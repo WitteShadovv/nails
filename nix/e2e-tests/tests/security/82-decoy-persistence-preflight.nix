@@ -7,6 +7,10 @@
 # standard decoy models an amnesic one), so the decoy-persistence check has
 # something to refuse.
 #
+# The node also runs rsyslogd (as syslog.service, the NixOS unit name) and
+# auditd, so the refusal must name each persistent log sink, not only the
+# journal: the residue catalog points its classic-syslog and auditd rows here.
+#
 # Subtests: a plain activation is refused with remediation text that names the
 # override, and the same activation with --accept-persistent-decoy proceeds.
 
@@ -34,6 +38,9 @@ in
       # journal so this decoy keeps records of the hidden session on disk and the
       # decoy-persistence check must fail closed.
       services.journald.storage = lib.mkForce "persistent";
+      # Two more persistent log sinks the check must refuse.
+      services.rsyslogd.enable = true;
+      security.auditd.enable = true;
     };
 
   testScript = _: ''
@@ -56,6 +63,8 @@ in
     # Confirm the decoy really presents a persistent journal, so a pass below
     # would be a genuine override rather than an amnesic decoy slipping through.
     machine.succeed("grep -qi '^Storage=persistent' /etc/systemd/journald.conf")
+    machine.wait_for_unit("syslog.service")
+    machine.wait_for_unit("auditd.service")
 
     with subtest("a persistent-journal decoy is refused with remediation guidance"):
         result = run_command_capture(
@@ -65,7 +74,13 @@ in
         assert_command_failed(result)
         assert_result_contains(
             result,
-            ["persistent", "Storage=volatile", "--accept-persistent-decoy"],
+            [
+                "persistent",
+                "Storage=volatile",
+                "syslog.service",
+                "auditd",
+                "--accept-persistent-decoy",
+            ],
             stream="stderr",
         )
         assert_status_state("inactive", config_path=config_path)
