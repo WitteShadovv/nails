@@ -1,5 +1,6 @@
 # Test 07: Performance Validation
-# Holds status, activation and emergency to their time budgets. Every sample
+# Holds status, activation, emergency and the systemctl calls of one
+# activation to their time budgets. Every sample
 # is timed inside the guest, by nails' own duration_ms where it reports one,
 # and the slowest of a few samples must stay under the budget. Wall-clock
 # budgets on shared runners cannot gate a merge, so only the nightly E2E run
@@ -110,6 +111,49 @@ in
         )
         return "PATH=/tmp/nails-perf-wrapper/bin:$PATH"
 
+    # T-139: time every systemctl call nails makes during one activation. A
+    # wrapper bind-mounted over the systemctl binary (for the duration of the
+    # call only) logs each invocation's wall time to /run, then runs the real
+    # binary under its own name, so `reboot` and friends keep working.
+    def start_timing_systemctl():
+        machine.succeed(
+            """real=$(readlink -f /run/current-system/sw/bin/systemctl)
+    cp "$real" /run/systemctl.real
+    rm -f /run/systemctl-calls.log
+    cat > /run/systemctl-timed <<'EOF'
+    #!/bin/sh
+    start=$(date +%s%N)
+    (exec -a "$0" /run/systemctl.real "$@")
+    rc=$?
+    end=$(date +%s%N)
+    echo "$(( (end - start) / 1000000 )) $*" >> /run/systemctl-calls.log
+    exit $rc
+    EOF
+    chmod 755 /run/systemctl-timed
+    mount --bind /run/systemctl-timed "$real"
+    echo "$real" > /run/systemctl-timed.target"""
+        )
+
+    def stop_timing_systemctl():
+        machine.succeed('umount "$(cat /run/systemctl-timed.target)"')
+        calls = []
+        for line in machine.succeed("cat /run/systemctl-calls.log || true").splitlines():
+            ms, _, args = line.partition(" ")
+            calls.append((int(ms), args))
+        return calls
+
+    def assert_systemctl_within_budget(calls, per_call_s, total_s):
+        total_ms = sum(ms for ms, _ in calls)
+        for ms, args in sorted(calls, reverse=True):
+            print(f"systemctl {args}: {ms} ms")
+        print(f"systemctl: {len(calls)} calls, {total_ms} ms in all")
+        assert calls, "activation made no systemctl call through the wrapper"
+        slow = [(ms, args) for ms, args in calls if ms > per_call_s * 1000]
+        assert not slow, f"FAIL: systemctl calls over {per_call_s:.1f}s each: {slow}"
+        assert total_ms < total_s * 1000, (
+            f"FAIL: systemctl took {total_ms} ms in one activation, over {total_s:.1f}s"
+        )
+
     def assert_within_budget(label, samples_ms, budget_s):
         slowest = max(samples_ms) / 1000.0
         print(f"{label}: samples {samples_ms} ms, slowest {slowest:.3f}s, budget {budget_s:.1f}s")
@@ -126,6 +170,10 @@ in
     status_threshold = 0.5 * threshold_multiplier
     activation_threshold = 5.0 * threshold_multiplier
     emergency_threshold = 3.0 * threshold_multiplier
+    # A unit restart (journald, nix-daemon) is the slowest call activation
+    # makes; one probe that stalls PID 1 for tens of seconds must fail here.
+    systemctl_call_threshold = 3.0 * threshold_multiplier
+    systemctl_total_threshold = 4.0 * threshold_multiplier
     print(f"TCG mode: {is_tcg}, threshold multiplier: {threshold_multiplier:.1f}x")
 
     with subtest("status"):
@@ -138,10 +186,17 @@ in
         for cycle in range(2):
             if cycle > 0:
                 reopen_hidden_volume()
-            activation_ms.append(timed_activation_ms("--overlay-only"))
+                activation_ms.append(timed_activation_ms("--overlay-only"))
+            else:
+                start_timing_systemctl()
+                activation_ms.append(timed_activation_ms("--overlay-only"))
+                systemctl_calls = stop_timing_systemctl()
             emergency_ms.append(timed_emergency_ms())
         assert_within_budget("Overlay-only activation", activation_ms, activation_threshold)
         assert_within_budget("Emergency", emergency_ms, emergency_threshold)
+        assert_systemctl_within_budget(
+            systemctl_calls, systemctl_call_threshold, systemctl_total_threshold
+        )
 
     with subtest("default activation"):
         reopen_hidden_volume()

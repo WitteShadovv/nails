@@ -69,6 +69,15 @@ in
             f"nails --config {headless_config} activate --overlay-only --session keep --accept-persistent-decoy -y"
         )
         machine.succeed("mount | grep 'overlay on /var'")
+        # T-139: the re-home check ran against the real journald and confirmed
+        # its writable journal fds on the /var overlay. An indeterminate result
+        # is tolerated by activation with a warning, so the activation's own log
+        # on the hidden volume (every level) must carry the positive verdict.
+        nails_log = machine.succeed("cat /mnt/data/logs/nails.log")
+        assert "journald journal fds resolve into the /var overlay upper" in nails_log, (
+            "activation did not confirm journald's fds on the /var overlay"
+        )
+        assert "could not confirm journald journal fds" not in nails_log
         # Logged while /var is overlaid: journald --flush must land this in the
         # overlay upper (on the hidden volume), never on the decoy's /var.
         machine.succeed(f"logger -t session {hidden_jrnl_token}")
