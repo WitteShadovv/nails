@@ -459,3 +459,25 @@ fn decoy_is_persistent_tracks_blockers_and_writes_nothing() {
     set_unit_active(&auditd, "auditd.service");
     assert!(DecoyPersistenceCheck::decoy_is_persistent(&auditd));
 }
+
+#[test]
+fn a_unit_with_a_populated_cgroup_counts_as_active_without_a_marker() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(
+        "/sys/fs/cgroup/system.slice/auditd.service/cgroup.events",
+        "populated 1\nfrozen 0\n",
+    );
+    fs.mock_add_file(
+        "/sys/fs/cgroup/system.slice/syslog.service/cgroup.events",
+        "populated 0\nfrozen 0\n",
+    );
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(result.message().contains("auditd"));
+    assert!(!result.message().contains("syslog.service"));
+}

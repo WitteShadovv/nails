@@ -104,9 +104,21 @@ impl DecoyPersistenceCheck {
     /// Whether a systemd unit is active, inferred from its runtime invocation
     /// marker. A stopped-but-installed unit has no marker, so this does not fire
     /// on a package that ships a disabled service.
+    ///
+    /// Recent systemd no longer writes that marker for every unit, so a unit
+    /// whose cgroup reports a live process (`populated 1` in its
+    /// `cgroup.events` under `system.slice`) counts as active too.
     fn unit_active<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
         let marker = root.join(INVOCATION_DIR).join(format!("invocation:{unit}"));
-        fs.path_exists(&marker).unwrap_or(false)
+        if fs.path_exists(&marker).unwrap_or(false) {
+            return true;
+        }
+        let events = root
+            .join("sys/fs/cgroup/system.slice")
+            .join(unit)
+            .join("cgroup.events");
+        fs.read_file_content(&events)
+            .is_ok_and(|content| content.lines().any(|line| line == "populated 1"))
     }
 
     /// Collect the fail-closed findings (persistent log sinks on the decoy).
