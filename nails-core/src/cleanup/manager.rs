@@ -13,7 +13,7 @@ use super::logs::LogCleaner;
 use super::temp_files::TempFilesCleaner;
 use super::types::{CleanupConfig, CleanupMode, CleanupReport};
 use crate::{Filesystem, Result, output};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 pub struct CleanupManager<F: Filesystem> {
@@ -307,7 +307,7 @@ impl<F: Filesystem> CleanupManager<F> {
         }
     }
 
-    /// Remove the volatile runtime journal under `/run/log/journal`.
+    /// Remove the volatile runtime journal files under `/run/log/journal`.
     ///
     /// journald's volatile store (`Storage=volatile`, or `auto` with no
     /// persistent `/var/log/journal` — the recommended decoy posture) keeps every
@@ -316,25 +316,38 @@ impl<F: Filesystem> CleanupManager<F> {
     /// not reboot, and anyone at the machine can then read the hidden session's
     /// service lifecycle, sudo invocations and user-unit stderr with `journalctl`.
     ///
-    /// Run at teardown after journald has been restarted onto the decoy `/var` and
-    /// the active runtime files rotated, this removes the per-machine journal
-    /// directories so the hidden-session runtime records are gone. All runtime
-    /// files are removed rather than only those newer than activation: the store
-    /// is entirely volatile and journald recreates it, so clearing it wholesale is
-    /// both simpler and leaves no hidden-session residue, at the cost of also
+    /// Run at teardown after the active runtime files were rotated, this removes
+    /// every journal file (`*.journal`, and the `*.journal~` files journald leaves
+    /// after an unclean shutdown) from `/run/log/journal` and from each
+    /// per-machine (and per-namespace) directory in it. All runtime files go, not
+    /// only those newer than activation: the store is entirely volatile, so
+    /// clearing it wholesale leaves no hidden-session residue, at the cost of also
     /// dropping pre-activation decoy runtime entries — acceptable for an
     /// anti-forensic teardown.
+    ///
+    /// The directories themselves are kept. journald creates
+    /// `/run/log/journal/<machine-id>` once, when it opens its first runtime
+    /// file, and afterwards only creates files in it: a rotation (by size, by
+    /// `journalctl --rotate` or by SIGUSR2) opens the next file in the existing
+    /// directory. Removing the directory made that fail with "Failed to create
+    /// new runtime journal: No such file or directory", leaving journald without
+    /// a journal while PID 1 kept logging to it. Anything that is not a journal
+    /// file, and any symlink, is left alone.
     ///
     /// This is a decoy-side scrub of the host's own volatile store and is
     /// deliberately *not* bound by the hidden-volume guard that governs
     /// [`LogCleaner`](super::logs::LogCleaner); that guard protects paths under
     /// the hidden volume, which `/run/log/journal` is not. Operates on the
-    /// injected [`Filesystem`], so tests exercise it against a mock. Best-effort:
-    /// a missing store is a no-op and every removal outcome is recorded on the
-    /// report.
+    /// injected [`Filesystem`], so tests exercise it against a mock and against a
+    /// real directory tree. Best-effort: a missing store is a no-op and every
+    /// removal outcome is recorded on the report.
     pub fn scrub_runtime_journal(&self, report: &mut CleanupReport) {
-        let journal_root = Path::new("/run/log/journal");
+        self.scrub_runtime_journal_at(Path::new(RUNTIME_JOURNAL_ROOT), report);
+    }
 
+    /// [`scrub_runtime_journal`](Self::scrub_runtime_journal) against an
+    /// arbitrary store root, so a test can point it at a temporary directory.
+    pub(crate) fn scrub_runtime_journal_at(&self, journal_root: &Path, report: &mut CleanupReport) {
         match self.filesystem.path_exists(journal_root) {
             Ok(true) => {}
             Ok(false) => return,
@@ -350,38 +363,68 @@ impl<F: Filesystem> CleanupManager<F> {
             }
         }
 
-        if !matches!(self.filesystem.is_directory(journal_root), Ok(true)) {
+        if !self.is_real_directory(journal_root) {
             return;
         }
 
-        let entries = match self.filesystem.list_directory(journal_root) {
-            Ok(entries) => entries,
+        let Some(entries) = self.list_runtime_journal_dir(journal_root, report) else {
+            return;
+        };
+        for entry in entries {
+            if self.is_real_directory(&entry) {
+                if let Some(files) = self.list_runtime_journal_dir(&entry, report) {
+                    for file in files {
+                        self.remove_runtime_journal_file(&file, report);
+                    }
+                }
+            } else {
+                self.remove_runtime_journal_file(&entry, report);
+            }
+        }
+    }
+
+    /// A directory that is not a symlink to one.
+    fn is_real_directory(&self, path: &Path) -> bool {
+        !matches!(self.filesystem.is_symlink(path), Ok(true))
+            && matches!(self.filesystem.is_directory(path), Ok(true))
+    }
+
+    fn list_runtime_journal_dir(
+        &self,
+        dir: &Path,
+        report: &mut CleanupReport,
+    ) -> Option<Vec<PathBuf>> {
+        match self.filesystem.list_directory(dir) {
+            Ok(entries) => Some(entries),
             Err(e) => {
                 let msg = format!(
                     "Could not list the runtime journal {}: {}",
-                    journal_root.display(),
+                    dir.display(),
                     e
                 );
                 output::warn(&msg);
                 report.add_error(msg);
-                return;
+                None
             }
-        };
+        }
+    }
 
-        for entry in entries {
-            match self.filesystem.remove_dir_all(&entry) {
-                Ok(()) => {
-                    report.add_cleaned(format!("runtime journal removed: {}", entry.display()));
-                }
-                Err(e) => {
-                    let msg = format!(
-                        "Could not remove runtime journal {}: {}",
-                        entry.display(),
-                        e
-                    );
-                    output::warn(&msg);
-                    report.add_error(msg);
-                }
+    /// Remove `path` when it is a journal file; anything else is left alone.
+    fn remove_runtime_journal_file(&self, path: &Path, report: &mut CleanupReport) {
+        if !is_journal_file(path)
+            || matches!(self.filesystem.is_symlink(path), Ok(true))
+            || matches!(self.filesystem.is_directory(path), Ok(true))
+        {
+            return;
+        }
+        match self.filesystem.remove_file(path) {
+            Ok(()) => {
+                report.add_cleaned(format!("runtime journal removed: {}", path.display()));
+            }
+            Err(e) => {
+                let msg = format!("Could not remove runtime journal {}: {}", path.display(), e);
+                output::warn(&msg);
+                report.add_error(msg);
             }
         }
     }
@@ -393,4 +436,15 @@ impl<F: Filesystem> CleanupManager<F> {
     pub fn mode(&self) -> CleanupMode {
         self.mode
     }
+}
+
+/// journald's volatile store.
+const RUNTIME_JOURNAL_ROOT: &str = "/run/log/journal";
+
+/// Whether `path` names a journal file: an active or archived `*.journal`, or
+/// a `*.journal~` journald set aside after finding it corrupt or unclean.
+fn is_journal_file(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".journal") || name.ends_with(".journal~"))
 }

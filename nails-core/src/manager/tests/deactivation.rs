@@ -1355,8 +1355,9 @@ fn test_normal_deactivate_on_untrusted_state_still_refuses() {
 // ========== journal handling at teardown (T-113) ==========
 
 /// A /var-overlaid emergency teardown relinquishes the persistent journal before
-/// the unmount, restarts journald onto the decoy /var, then rotates and scrubs the
-/// volatile runtime journal under /run/log/journal — in that order.
+/// the unmount, restarts journald onto the decoy /var, then rotates, scrubs the
+/// journal files of the volatile runtime journal under /run/log/journal (keeping
+/// the directory journald rotates into) and rotates again — in that order.
 #[test]
 fn emergency_teardown_handles_journal_in_order_and_scrubs_runtime_store() {
     let temp_dir = tempfile::tempdir().expect("Should create temp dir");
@@ -1381,6 +1382,9 @@ fn emergency_teardown_handles_journal_in_order_and_scrubs_runtime_store() {
     let machine_journal = PathBuf::from("/run/log/journal/abcd1234");
     fs.mock_set_path_type(machine_journal.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_directory_contents(Path::new("/run/log/journal"), vec![machine_journal.clone()]);
+    let journal_file = machine_journal.join("system.journal");
+    fs.mock_set_path_type(journal_file.to_str().unwrap(), PathKind::File);
+    fs.mock_set_directory_contents(&machine_journal, vec![journal_file.clone()]);
 
     let config = Config {
         hidden_volume_root: mock_hidden_vol.to_path_buf(),
@@ -1452,6 +1456,11 @@ fn emergency_teardown_handles_journal_in_order_and_scrubs_runtime_store() {
     let relinquish = idx("journalctl:relinquish-var");
     let restart_start = idx("start:systemd-journald");
     let rotate = idx("journalctl:rotate");
+    let rotations = actions.iter().filter(|a| *a == "journalctl:rotate").count();
+    assert_eq!(
+        rotations, 2,
+        "rotate before the scrub and again after it: {actions:?}"
+    );
 
     assert!(
         relinquish < restart_start,
@@ -1476,8 +1485,12 @@ fn emergency_teardown_handles_journal_in_order_and_scrubs_runtime_store() {
         report.cleanup_report.cleaned_items
     );
     assert!(
-        !fs_clone.path_exists(&machine_journal).unwrap(),
-        "the runtime journal directory must be gone after the scrub"
+        !fs_clone.path_exists(&journal_file).unwrap(),
+        "the runtime journal file must be gone after the scrub"
+    );
+    assert!(
+        fs_clone.path_exists(&machine_journal).unwrap(),
+        "the machine directory journald rotates into must survive the scrub"
     );
     assert!(
         report.reboot_recommended,

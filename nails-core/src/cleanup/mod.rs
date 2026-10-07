@@ -46,6 +46,9 @@ mod types;
 mod tests;
 
 #[cfg(test)]
+mod runtime_journal_tests;
+
+#[cfg(test)]
 pub mod test_utils;
 
 // Public re-exports

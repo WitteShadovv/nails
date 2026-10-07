@@ -687,6 +687,7 @@ fn test_emergency_scrubs_the_runtime_journal_even_without_a_var_overlay() {
     let fixture = setup_active_manager();
     let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
     let machine_dir = PathBuf::from("/run/log/journal/0a1b2c3d");
+    let journal_file = machine_dir.join("system.journal");
     {
         let guard = fixture.lock().unwrap();
         let fs = guard.filesystem();
@@ -695,6 +696,8 @@ fn test_emergency_scrubs_the_runtime_journal_even_without_a_var_overlay() {
         fs.mock_set_path_type("/run/log/journal", PathKind::Dir);
         fs.mock_set_path_type(machine_dir.to_str().unwrap(), PathKind::Dir);
         fs.mock_set_directory_contents(Path::new("/run/log/journal"), vec![machine_dir.clone()]);
+        fs.mock_set_path_type(journal_file.to_str().unwrap(), PathKind::File);
+        fs.mock_set_directory_contents(&machine_dir, vec![journal_file.clone()]);
     }
 
     let report = fixture.lock().unwrap().emergency_deactivate().unwrap();
@@ -705,8 +708,12 @@ fn test_emergency_scrubs_the_runtime_journal_even_without_a_var_overlay() {
     );
     let guard = fixture.lock().unwrap();
     assert!(
-        !guard.filesystem().path_exists(&machine_dir).unwrap(),
-        "the hidden session's runtime journal directory must be removed"
+        !guard.filesystem().path_exists(&journal_file).unwrap(),
+        "the hidden session's runtime journal file must be removed"
+    );
+    assert!(
+        guard.filesystem().path_exists(&machine_dir).unwrap(),
+        "the machine directory journald rotates into must be kept"
     );
 }
 
@@ -1015,6 +1022,7 @@ fn test_incomplete_emergency_still_scrubs_ram_backed_state() {
     let fixture = setup_active_manager();
     let hidden_root = fixture.lock().unwrap().config().hidden_volume_root.clone();
     let machine_dir = PathBuf::from("/run/log/journal/0a1b2c3d");
+    let journal_file = machine_dir.join("system.journal");
     {
         let guard = fixture.lock().unwrap();
         let fs = guard.filesystem();
@@ -1025,6 +1033,8 @@ fn test_incomplete_emergency_still_scrubs_ram_backed_state() {
         fs.mock_set_path_type("/run/log/journal", PathKind::Dir);
         fs.mock_set_path_type(machine_dir.to_str().unwrap(), PathKind::Dir);
         fs.mock_set_directory_contents(Path::new("/run/log/journal"), vec![machine_dir.clone()]);
+        fs.mock_set_path_type(journal_file.to_str().unwrap(), PathKind::File);
+        fs.mock_set_directory_contents(&machine_dir, vec![journal_file.clone()]);
     }
 
     let result = fixture.lock().unwrap().emergency_deactivate();
@@ -1036,8 +1046,12 @@ fn test_incomplete_emergency_still_scrubs_ram_backed_state() {
     let guard = fixture.lock().unwrap();
     let fs = guard.filesystem();
     assert!(
-        !fs.path_exists(&machine_dir).unwrap(),
+        !fs.path_exists(&journal_file).unwrap(),
         "runtime journal must be scrubbed"
+    );
+    assert!(
+        fs.path_exists(&machine_dir).unwrap(),
+        "the machine directory journald rotates into must be kept"
     );
     assert!(
         fs.mock_ops()

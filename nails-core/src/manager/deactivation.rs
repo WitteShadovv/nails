@@ -794,10 +794,12 @@ impl<F: Filesystem> NailsManager<F> {
     /// emergency teardown (which does not reboot). Runs on every teardown — a
     /// volatile-journal decoy keeps its records here whether or not `/var` was
     /// overlaid, and the scrub only ever touches `/run/log/journal`, never the
-    /// decoy's persistent journal: rotate first so journald closes the active
-    /// runtime files, then remove them. A teardown that does not reboot on its own
-    /// (emergency, recovery) also raises an honest warning that only a full
-    /// power-off clears kernel and RAM residue.
+    /// decoy's persistent journal: rotate first so journald archives the active
+    /// runtime files, remove the journal files (never the directories journald
+    /// rotates into), then rotate again so journald lets go of any file that was
+    /// still open and continues in a fresh one. A teardown that does not reboot on
+    /// its own (emergency, recovery) also raises an honest warning that only a
+    /// full power-off clears kernel and RAM residue.
     fn scrub_runtime_journal_and_warn(
         &self,
         _overlay_context: &OverlayContext,
@@ -819,6 +821,13 @@ impl<F: Filesystem> NailsManager<F> {
             CleanupMode::default(),
         );
         scrubber.scrub_runtime_journal(&mut report.cleanup_report);
+        // A file journald still had open (the rotation above failed, or a record
+        // arrived in between) is now unlinked but alive. Rotating again archives
+        // it, freeing its memory once journald closes it, and opens the next file
+        // in the directory the scrub kept.
+        if let Err(e) = crate::manager::helpers::ServiceController::rotate_journal() {
+            tracing::warn!(error = %e, "journalctl --rotate after runtime journal scrub failed");
+        }
         report.runtime_journal_scrubbed = true;
 
         if !kind.reboots_on_success() {
