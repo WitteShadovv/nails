@@ -126,7 +126,7 @@ fn service_unit_file_names(dirs: &[&std::path::Path]) -> Vec<String> {
 /// host), so no pre-overlay cache is needed. Bounded by a short deadline so a
 /// hung flush cannot freeze activation.
 fn run_journalctl(args: &[&str]) -> std::result::Result<std::process::Output, std::io::Error> {
-    let path = super::command_cache::nixos_tool_path("journalctl");
+    let path = super::command_cache::host_tool_path("journalctl");
     run_command(
         &ProcessCommand::exact(path)
             .args(args)
@@ -139,7 +139,7 @@ fn nix_command(args: &[&str]) -> ProcessCommand {
     let path = super::NIX_COMMAND_PATH
         .get()
         .cloned()
-        .unwrap_or_else(|| super::command_cache::nixos_tool_path("nix"));
+        .unwrap_or_else(|| super::command_cache::host_tool_path("nix"));
     ProcessCommand::exact(path).args(args)
 }
 
@@ -149,7 +149,7 @@ fn run_nix_daemon(args: &[&str]) -> std::result::Result<std::process::Output, st
     let path = super::NIX_DAEMON_PATH
         .get()
         .cloned()
-        .unwrap_or_else(|| super::command_cache::nixos_tool_path("nix-daemon"));
+        .unwrap_or_else(|| super::command_cache::host_tool_path("nix-daemon"));
     run_command(&ProcessCommand::exact(path).args(args))
 }
 

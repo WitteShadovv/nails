@@ -82,7 +82,7 @@ pub use unsupported::UnsupportedPlatform;
 /// NixOS host-command search list built from it. Re-exported so the process
 /// runner and the manager's runtime-command cache reference them instead of
 /// re-spelling the store path.
-pub(crate) use nixos::{NIXOS_COMMAND_DIRS, NIXOS_SYSTEM_PROFILE_BIN};
+pub(crate) use nixos::NIXOS_SYSTEM_PROFILE_BIN;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use fake::FakePlatform;

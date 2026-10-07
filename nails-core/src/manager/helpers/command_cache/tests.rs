@@ -262,3 +262,30 @@ fn read_elf_interpreter_parses_the_running_test_binary() {
         assert!(loader.is_absolute(), "{}", loader.display());
     }
 }
+
+#[test]
+fn host_tool_dirs_search_the_nixos_profile_first_and_then_the_fhs_locations() {
+    // Searching only the NixOS directories made systemctl and journalctl
+    // unresolvable on Debian and Ubuntu; the FHS directories must follow the
+    // NixOS ones so a NixOS host still prefers its system profile.
+    let position = |dir: &str| HOST_TOOL_DIRS.iter().position(|d| *d == dir);
+    for nixos in [
+        crate::platform::NIXOS_SYSTEM_PROFILE_BIN,
+        "/run/wrappers/bin",
+    ] {
+        let nixos_at = position(nixos).unwrap_or_else(|| panic!("{nixos} missing"));
+        for fhs in ["/usr/sbin", "/usr/bin", "/sbin", "/bin"] {
+            let fhs_at = position(fhs).unwrap_or_else(|| panic!("{fhs} missing"));
+            assert!(nixos_at < fhs_at, "{nixos} must come before {fhs}");
+        }
+    }
+}
+
+#[test]
+fn host_tool_path_resolves_a_tool_from_an_fhs_directory() {
+    // `sh` lives in /bin on every FHS host and in the system profile on NixOS;
+    // either way it must resolve to an existing file, never to the fallback
+    // spelling of a profile path that does not exist.
+    let sh = host_tool_path("sh");
+    assert!(sh.is_file(), "sh resolved to {}", sh.display());
+}

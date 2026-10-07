@@ -53,20 +53,36 @@ pub(super) fn systemctl_command() -> CachedCommand {
     super::SYSTEMCTL_COMMAND
         .get()
         .cloned()
-        .unwrap_or_else(|| CachedCommand::Direct(nixos_tool_path("systemctl")))
+        .unwrap_or_else(|| CachedCommand::Direct(host_tool_path("systemctl")))
 }
 
-/// Resolve a NixOS host tool by name from the NixOS command directories.
+/// Where [`host_tool_path`] looks for a host tool, in order: the NixOS
+/// command directories first (so a NixOS host keeps resolving its system
+/// profile), then the FHS locations every other supported distribution keeps
+/// `systemctl` and `journalctl` in.
+pub(super) const HOST_TOOL_DIRS: &[&str] = &[
+    crate::platform::NIXOS_SYSTEM_PROFILE_BIN,
+    "/run/wrappers/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
+];
+
+/// Resolve a host tool (`systemctl`, `journalctl`, `nix`, ...) by name.
 ///
 /// The `/nix` runtime-command cache resolves `systemctl`, `nix` and `nix-daemon`
 /// through this before the overlay is applied, so the paths it records point at
 /// the real, pre-overlay system profile. Resolution runs through
 /// [`HostCommands`](crate::platform::HostCommands) — root-owned, trust-checked
-/// when nails runs as root — and falls back to the system-profile binary
-/// directory only when nothing resolves, so no caller spells the store path
-/// itself.
-pub(super) fn nixos_tool_path(name: &str) -> PathBuf {
-    crate::platform::HostCommands::new(crate::platform::NIXOS_COMMAND_DIRS.iter().copied())
+/// when nails runs as root — over [`HOST_TOOL_DIRS`], and falls back to the
+/// system-profile binary directory only when nothing resolves, so no caller
+/// spells the store path itself. Searching the NixOS directories alone made
+/// every `systemctl` and `journalctl` call fail on Debian and Ubuntu: journald
+/// was never restarted around the `/var` overlay, and the runtime journal was
+/// never rotated before the teardown scrubbed it.
+pub(super) fn host_tool_path(name: &str) -> PathBuf {
+    crate::platform::HostCommands::new(HOST_TOOL_DIRS.iter().copied())
         .resolve(name)
         .unwrap_or_else(|_| PathBuf::from(crate::platform::NIXOS_SYSTEM_PROFILE_BIN).join(name))
 }

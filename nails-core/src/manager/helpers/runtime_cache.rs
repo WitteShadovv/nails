@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::command_cache::{build_cached_command, nixos_tool_path};
+use super::command_cache::{build_cached_command, host_tool_path};
 use crate::runtime_root::store_bind_source;
 use std::path::{Path, PathBuf};
 
@@ -98,12 +98,12 @@ pub(crate) fn cache_nix_overlay_runtime_commands(runtime_root: &Path) -> std::io
     // rest of the scaffolding.
     let original_nix_store_bind_source = cache_original_nix_store_bind_source(runtime_root)?;
     let systemctl = build_cached_command(
-        &nixos_tool_path("systemctl"),
+        &host_tool_path("systemctl"),
         &original_nix_store_bind_source,
     )?;
-    let nix_daemon_path = nixos_tool_path("nix-daemon");
+    let nix_daemon_path = host_tool_path("nix-daemon");
     let nix_daemon = std::fs::canonicalize(&nix_daemon_path).unwrap_or(nix_daemon_path);
-    let nix_path = nixos_tool_path("nix");
+    let nix_path = host_tool_path("nix");
     let nix = std::fs::canonicalize(&nix_path).unwrap_or(nix_path);
 
     let display_path = systemctl.display_path().to_path_buf();
