@@ -634,6 +634,7 @@ impl<F: Filesystem> NailsManager<F> {
         // decoy's /run, rewritten after each step, so rollback, deactivation and
         // emergency all undo exactly what was done (ADR 0007, T-136).
         let plan = guard.begin_teardown_plan(restart_plan.target_uid);
+        let _discard_if_empty = crate::manager::teardown_plan::DiscardIfEmpty(plan.clone());
 
         // Step 7: Mount persistent and ephemeral overlays.
         step.emit("overlay_mount", "Mounting overlays...");
@@ -664,9 +665,6 @@ impl<F: Filesystem> NailsManager<F> {
             residue.clone(),
             rollback_outcome.clone(),
         );
-        // The mount phase cached `systemctl` against the pre-overlay store when
-        // it overlaid /nix; the plan's emergency stop jobs run that copy.
-        guard.refresh_plan_tools();
 
         // The posture depends on surviving writers that still leak to the decoy,
         // not on whether any overlay used the pivot method.

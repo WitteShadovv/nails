@@ -254,6 +254,9 @@ impl<F: Filesystem> NailsManager<F> {
         // Move the mounts out of the tracker (emptying it, so its drop is inert)
         // and hand them to the caller, which owns rollback from here on.
         outcome.mounts = tracker.take_mounts();
+        // The mount phase cached `systemctl` against the pre-overlay store when
+        // it overlaid /nix; the plan's emergency stop jobs run that copy.
+        self.refresh_plan_tools();
 
         Ok(outcome)
     }

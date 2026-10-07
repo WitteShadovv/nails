@@ -167,7 +167,7 @@ pub fn teardown_order(mounts: &NailsMounts, with_runtime_root: bool) -> Vec<(Pat
         p.file_name()
             .is_some_and(|n| n.to_string_lossy().ends_with("-snapshot"))
     });
-    order.extend(staging.into_iter().rev().map(|p| (p, MountKind::Overlay)));
+    order.extend(staging.into_iter().map(|p| (p, MountKind::Overlay)));
     order.extend(
         mounts
             .persona_binds

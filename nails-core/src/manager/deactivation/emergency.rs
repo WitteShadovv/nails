@@ -112,7 +112,19 @@ impl<F: Filesystem> NailsManager<F> {
                 !outcome.is_unknown() && matches!(state, SystemState::Active { .. })
             });
         let (plan, source) = self.plan_for_teardown(trusted);
-        let mut host = (!crate::runtime_safety::should_skip_host_interaction())
+        // A system that is already the decoy (nothing recorded, no NAILS mount
+        // live, a readable Inactive state) is left undisturbed: no kill runs.
+        let idle = plan.steps.is_empty()
+            && self
+                .filesystem
+                .discover_nails_mounts(Some(&plan.hidden_root))
+                .is_ok_and(|m| m.owned_mount_points().is_empty())
+            && self
+                .current_state_with_outcome()
+                .is_ok_and(|(state, outcome)| {
+                    !outcome.is_unknown() && state == SystemState::Inactive
+                });
+        let mut host = (!idle && !crate::runtime_safety::should_skip_host_interaction())
             .then(|| self.teardown_host(&plan));
         // Hand the journal back to /run before /var comes down. In this process
         // the service controller does it (and the unit tests observe it there),

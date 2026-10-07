@@ -177,9 +177,14 @@ pub fn dispatch() -> bool {
     if !may_run() {
         return false;
     }
+    // Only a plan with steps: an empty one (an activation that stopped before
+    // its first mount) leaves the no-op decision to the emergency command.
     let Ok(plan) = nails_teardown::Plan::load(&nails_teardown::plan::default_plan_path()) else {
         return false;
     };
+    if plan.steps.is_empty() {
+        return false;
+    }
     // A cwd inside an overlay would pin it and force a lazy detach.
     let _ = std::env::set_current_dir("/");
     if let Some(secs) = args.countdown {

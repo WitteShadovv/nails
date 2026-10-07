@@ -169,6 +169,30 @@ impl PlanRecorder {
     }
 }
 
+/// Removes the plan file (and the runtime directory when nothing else is in
+/// it) on drop when the plan records nothing to undo: an activation that
+/// stopped before its first mount, or one whose rollback undid everything,
+/// leaves no plan behind on the decoy's `/run`. Dropped after the rollback
+/// guard, so it sees what the rollback left.
+pub(crate) struct DiscardIfEmpty(pub(crate) PlanRecorder);
+
+impl Drop for DiscardIfEmpty {
+    fn drop(&mut self) {
+        let plan = self.0.snapshot();
+        if plan
+            .steps
+            .iter()
+            .any(|step| !matches!(step.undo, Undo::StopUnit { .. }))
+        {
+            return;
+        }
+        self.0.remove_file();
+        if let Some(dir) = self.0.path().as_deref().and_then(Path::parent) {
+            let _ = std::fs::remove_dir(dir);
+        }
+    }
+}
+
 /// The undo steps of one tracked mount, in the order they were mounted. An
 /// ephemeral overlay's tmpfs layers were mounted before the overlay, so they
 /// are recorded first and taken down after it.
@@ -574,6 +598,24 @@ mod tests {
                 (PathBuf::from("/var"), MountKind::Overlay),
             ]
         );
+    }
+
+    #[test]
+    fn an_activation_that_recorded_nothing_leaves_no_plan_or_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let runtime = dir.path().join("runtime");
+        let recorder = PlanRecorder::new(PathBuf::from("/mnt/h"), Some(runtime.join("plan.json")));
+        assert!(runtime.join("plan.json").exists());
+        drop(DiscardIfEmpty(recorder.clone()));
+        assert!(!runtime.exists());
+
+        // A plan with a step to undo is kept.
+        let kept = PlanRecorder::new(PathBuf::from("/mnt/h"), Some(runtime.join("plan.json")));
+        kept.record(Undo::RemoveReadOnlyGuard {
+            tree: PathBuf::from("/usr"),
+        });
+        drop(DiscardIfEmpty(kept));
+        assert!(runtime.join("plan.json").exists());
     }
 
     #[test]
