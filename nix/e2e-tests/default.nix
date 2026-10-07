@@ -109,7 +109,14 @@ let
   # (so `start()`, `start_all()` and any lazy auto-start all trip it) and the
   # assert runs last even for scripts that end in `crash()` or `shutdown()`,
   # because it only reads a Python global.
+  #
+  # The same loop makes every machine reuse its erofs Nix store image across
+  # restarts (nails_e2e.store_image): a useNixStoreImage VM otherwise packs its
+  # whole closure again on every start, which cost the forensic tests about 80 s
+  # per power cycle. Machines without a store image are left unchanged.
   vmStartedPrelude = ''
+    from nails_e2e.store_image import cache_store_image as _nails_cache_store_image
+
     _nails_vm_started = False
 
 
@@ -126,6 +133,7 @@ let
 
     for _nails_machine in machines:
         _nails_track_start(_nails_machine)
+        _nails_cache_store_image(_nails_machine)
   '';
 
   vmStartedAssert = ''
