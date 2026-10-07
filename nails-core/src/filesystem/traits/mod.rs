@@ -200,6 +200,13 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
         Ok(self.discover_nails_mounts(None)?.is_owned(target))
     }
 
+    /// Detach the top mount at `target` lazily (`MNT_DETACH`), whatever holds
+    /// it. Only for a mount the caller has already proved NAILS's own (the
+    /// teardown plan's presence check); by default the gated forced unmount.
+    fn detach_lazily(&self, target: &Path) -> Result<()> {
+        self.unmount(target, true)
+    }
+
     /// The kernel's mount id of the top mount at exactly `target`, when the
     /// backend can read one. The teardown plan records it at activation and
     /// compares it at teardown, so a step only ever undoes its own mount.

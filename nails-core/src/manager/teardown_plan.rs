@@ -232,6 +232,7 @@ pub(crate) fn teardown_tools() -> Tools {
 pub struct FsMountOps<'a, F: Filesystem> {
     fs: &'a F,
     hidden_root: PathBuf,
+    runtime_root: Option<PathBuf>,
     compare_ids: bool,
 }
 
@@ -244,13 +245,49 @@ impl<'a, F: Filesystem> FsMountOps<'a, F> {
         Self {
             fs,
             hidden_root: hidden_root.to_path_buf(),
+            runtime_root: None,
             compare_ids,
         }
     }
 
     /// Operations for `plan`.
     pub fn for_plan(fs: &'a F, plan: &Plan) -> Self {
-        Self::new(fs, &plan.hidden_root, plan.mount_namespace)
+        Self {
+            runtime_root: plan.runtime_root.clone(),
+            ..Self::new(fs, &plan.hidden_root, plan.mount_namespace)
+        }
+    }
+
+    /// Whether a plain mount at `target` of `kind` is the step's own, judged
+    /// from where it sits: a submount staging bind lives under the hidden root
+    /// and a re-attach on a live NAILS overlay above it; an ephemeral layer
+    /// inside the runtime root; the runtime root directly under `/run`. The
+    /// decoy's own submount at the same point, once the overlay above it is
+    /// gone, matches none of these.
+    fn structurally_owned(&self, target: &Path, kind: MountKind) -> io::Result<bool> {
+        Ok(match kind {
+            MountKind::Attachment => {
+                target.starts_with(&self.hidden_root) || {
+                    let mounts = self
+                        .fs
+                        .discover_nails_mounts(Some(&self.hidden_root))
+                        .map_err(io_error)?;
+                    mounts
+                        .persistent_overlays
+                        .iter()
+                        .chain(&mounts.ephemeral_overlays)
+                        .any(|overlay| overlay != target && target.starts_with(overlay))
+                }
+            }
+            MountKind::Tmpfs => match &self.runtime_root {
+                Some(root) => target.starts_with(root) && target != root,
+                None => target.starts_with("/run/") && target.components().count() > 3,
+            },
+            MountKind::RuntimeRoot => target.parent() == Some(Path::new("/run")),
+            MountKind::Overlay | MountKind::NestedOverlay | MountKind::StoreBind => {
+                self.fs.is_nails_owned(target).map_err(io_error)?
+            }
+        })
     }
 }
 
@@ -277,18 +314,11 @@ impl<F: Filesystem> MountOps for FsMountOps<'_, F> {
                 Presence::Foreign
             });
         }
-        match kind {
-            MountKind::Tmpfs | MountKind::RuntimeRoot | MountKind::Attachment => {
-                Ok(Presence::Owned)
-            }
-            MountKind::Overlay | MountKind::NestedOverlay | MountKind::StoreBind => {
-                Ok(if self.fs.is_nails_owned(target).map_err(io_error)? {
-                    Presence::Owned
-                } else {
-                    Presence::Foreign
-                })
-            }
-        }
+        Ok(if self.structurally_owned(target, kind)? {
+            Presence::Owned
+        } else {
+            Presence::Foreign
+        })
     }
 
     fn nails_mounts(&self) -> io::Result<crate::filesystem::NailsMounts> {
@@ -314,6 +344,12 @@ impl<F: Filesystem> MountOps for FsMountOps<'_, F> {
 
     fn unmount(&self, target: &Path, kind: MountKind, lazy: bool) -> io::Result<()> {
         match kind {
+            // The presence check already proved these the step's own; a busy
+            // one (an ephemeral upper pinned by a lazily detached overlay) is
+            // detached lazily like any other.
+            MountKind::Attachment | MountKind::Tmpfs | MountKind::RuntimeRoot if lazy => {
+                self.fs.detach_lazily(target)
+            }
             MountKind::Attachment => self.fs.unmount_bind(target),
             MountKind::Tmpfs | MountKind::RuntimeRoot => self.fs.unmount_tmpfs(target),
             MountKind::Overlay | MountKind::NestedOverlay | MountKind::StoreBind => {
@@ -425,6 +461,12 @@ impl<F: Filesystem> crate::NailsManager<F> {
             self.plan_path.clone(),
         );
         recorder.update(|plan| {
+            plan.owner = nails_teardown::proc::stat(std::process::id()).map(|s| {
+                nails_teardown::plan::Owner {
+                    pid: std::process::id(),
+                    start_time: s.start_time,
+                }
+            });
             plan.tools = teardown_tools();
             plan.session.operator_uid = operator_uid;
             plan.session.spare_fragments =
@@ -597,6 +639,37 @@ mod tests {
                 (PathBuf::from("/run/r/var/work"), MountKind::Tmpfs),
                 (PathBuf::from("/var"), MountKind::Overlay),
             ]
+        );
+    }
+
+    #[test]
+    fn an_attachment_step_never_claims_the_decoy_submount_left_at_its_point() {
+        use crate::filesystem::MockFilesystem;
+        let fs = MockFilesystem::new();
+        let mut plan = Plan::new(PathBuf::from("/mnt/hidden"));
+        plan.push(Undo::Unmount {
+            target: PathBuf::from("/home/data"),
+            kind: MountKind::Attachment,
+            mount_id: None,
+        });
+        // The parent overlay is gone; the decoy's own /home/data is mounted.
+        fs.mock_set_mount_unmanaged(Path::new("/home/data"));
+        let ops = FsMountOps::for_plan(&fs, &plan);
+        assert_eq!(
+            ops.presence(Path::new("/home/data"), MountKind::Attachment, None)
+                .unwrap(),
+            Presence::Foreign
+        );
+        // A staging bind under the hidden root is the step's own.
+        fs.mock_set_mount_unmanaged(Path::new("/mnt/hidden/.nails-submounts/staging/x"));
+        assert_eq!(
+            ops.presence(
+                Path::new("/mnt/hidden/.nails-submounts/staging/x"),
+                MountKind::Attachment,
+                None
+            )
+            .unwrap(),
+            Presence::Owned
         );
     }
 

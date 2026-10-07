@@ -381,8 +381,12 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         // Stop the in-session backend watcher and remove the RAM-backed runtime
-        // copy (and the plan with it) on every teardown path.
-        self.teardown_backend_runtime_copy();
+        // copy (and the plan with it) on every teardown path, except one that
+        // failed before any unmount and left the session Active: that session
+        // still needs its plan and its watcher.
+        if !(result.is_err() && matches!(self.current_state(), Ok(SystemState::Active { .. }))) {
+            self.teardown_backend_runtime_copy();
+        }
 
         let mut report = match result {
             Ok(report) => report,

@@ -167,7 +167,17 @@ pub fn teardown_order(mounts: &NailsMounts, with_runtime_root: bool) -> Vec<(Pat
         p.file_name()
             .is_some_and(|n| n.to_string_lossy().ends_with("-snapshot"))
     });
-    order.extend(staging.into_iter().map(|p| (p, MountKind::Overlay)));
+    order.extend(staging.into_iter().map(|p| {
+        let snapshot = p
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().ends_with("-snapshot"));
+        let kind = if snapshot {
+            MountKind::Tmpfs
+        } else {
+            MountKind::Overlay
+        };
+        (p, kind)
+    }));
     order.extend(
         mounts
             .persona_binds
@@ -208,6 +218,11 @@ pub fn sweep<M: MountOps>(m: &M, rounds: usize) -> UndoReport {
         }
         let mut progressed = false;
         for (target, kind) in order {
+            // Classified per mount point; only take the top mount down when it
+            // is the NAILS one, never a later mount stacked above it.
+            if !matches!(m.presence(&target, kind, None), Ok(Presence::Owned)) {
+                continue;
+            }
             let outcome = take_down(m, &target, kind);
             progressed |= matches!(outcome, Outcome::Detached { .. });
             report.actions.push(Action {
@@ -238,7 +253,9 @@ pub fn run_plan<M: MountOps>(m: &M, plan: &Plan, phases: &[Phase], reconcile: bo
     {
         let named: Vec<&Path> = plan.steps.iter().filter_map(|s| s.undo.target()).collect();
         for (target, kind) in teardown_order(&mounts, false) {
-            if named.contains(&target.as_path()) {
+            if named.contains(&target.as_path())
+                || !matches!(m.presence(&target, kind, None), Ok(Presence::Owned))
+            {
                 continue;
             }
             let outcome = take_down(m, &target, kind);

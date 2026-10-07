@@ -126,6 +126,11 @@ impl<F: Filesystem> NailsManager<F> {
                 });
         let mut host = (!idle && !crate::runtime_safety::should_skip_host_interaction())
             .then(|| self.teardown_host(&plan));
+        // A plan rebuilt without the activation records no owner; the state
+        // file names it (when the hidden volume can still be read).
+        if host.is_some() && plan.owner.is_none() {
+            self.signal_owner_pid_before_teardown(super::ManagerDeactivationKind::Emergency);
+        }
         // Hand the journal back to /run before /var comes down. In this process
         // the service controller does it (and the unit tests observe it there),
         // so the hot path is not asked to do it again.
@@ -325,11 +330,14 @@ impl<F: Filesystem> NailsManager<F> {
             if !super::decoy::requires_decoy_restore(self).unwrap_or(false) {
                 return Ok(None);
             }
-            return restore_decoy_current_system(
+            // A failed lookup is reported like a failed swap: the rest of the
+            // bookkeeping (state, service restarts, scrub) runs either way.
+            return Ok(restore_decoy_current_system(
                 self.filesystem(),
                 recorded_decoy.as_deref(),
                 self.runtime_env(),
-            );
+            )
+            .unwrap_or_else(Some));
         }
         if let Some(failure) = restore_hidden_current_system(
             self.filesystem(),

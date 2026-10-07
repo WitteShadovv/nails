@@ -114,6 +114,17 @@ impl Filesystem for RealFilesystem {
         ))
     }
 
+    fn detach_lazily(&self, target: &Path) -> Result<()> {
+        nix::mount::umount2(
+            target,
+            nix::mount::MntFlags::MNT_DETACH | nix::mount::MntFlags::UMOUNT_NOFOLLOW,
+        )
+        .map_err(|errno| crate::NailsError::UnmountError {
+            path: target.to_path_buf(),
+            reason: format!("{errno}"),
+        })
+    }
+
     fn top_mount_id(&self, target: &Path) -> Option<i32> {
         let entries = crate::filesystem::mountinfo::read_mountinfo().ok()?;
         crate::filesystem::mountinfo::top_mount_at(&entries, target).map(|e| e.mount_id)

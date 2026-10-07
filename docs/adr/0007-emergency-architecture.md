@@ -453,6 +453,10 @@ above:
   `cgroup.kill` of the unit's cgroup (never one holding the teardown itself);
   any other victim, and every interactive shell outside the invocation, a
   pidfd SIGKILL (no SIGTERM first: exit handlers must not flush hidden data).
+- **The activation owner.** The plan records the activation process (pid and
+  start time). If it is still running when emergency starts, the hot path
+  SIGTERMs it and waits at most a second, so it cannot keep mounting or
+  recording behind the teardown.
 - **Deviation: the graphical session.** The display manager and the operator's
   `user@<uid>.service` are recorded at activation. The session scope cannot
   be: activation restarts the display manager and the operator logs back into a

@@ -227,14 +227,34 @@ fn find_victims(plan: &Plan, host: &Host, invocation: &Invocation, spare: &Spare
             victims.spared += 1;
             continue;
         }
+        // journald is handed back to /run before the kill and restarted on
+        // the decoy afterwards; a stop job on it would cost the teardown's log.
+        if unit
+            .as_ref()
+            .is_some_and(|(name, _)| name == "systemd-journald.service")
+        {
+            continue;
+        }
         match unit {
-            Some((name, path)) if !cgroup::contains(&path, &own_cgroup) => {
+            Some((name, path))
+                if !own_cgroup.is_empty()
+                    && !cgroup::contains(&path, &own_cgroup)
+                    && !holds_invocation(&host.cgroup_root, &path, invocation) =>
+            {
                 victims.services.insert(name, path);
             }
             _ => victims.lone.push(pid),
         }
     }
     victims
+}
+
+/// Whether the cgroup at `path` holds a process of the teardown's invocation
+/// (its shell, sudo, a pipe reader): killing that cgroup would kill them too.
+fn holds_invocation(root: &Path, path: &str, invocation: &Invocation) -> bool {
+    cgroup::procs(&cgroup::dir(root, path))
+        .into_iter()
+        .any(|pid| invocation.contains(pid, proc::stat(pid).as_ref()))
 }
 
 /// The units the plan says the hidden configuration added, with a type suffix,
@@ -275,10 +295,17 @@ fn kill_phase(plan: &Plan, host: &Host, report: &mut HotReport) {
         report.stop_enqueued = Some(units::stop_units(systemctl, &report.units_stopped));
     }
 
+    // Without our own cgroup the self-kill guard cannot be checked: kill
+    // nothing by cgroup then (the lone pidfd kills below still run).
     let mut dirs: Vec<PathBuf> = Vec::new();
-    for unit in &hidden {
+    for unit in hidden.iter().filter(|_| !own_cgroup.is_empty()) {
+        if host.spared_units.contains(unit) {
+            continue;
+        }
         let path = format!("/system.slice/{unit}");
-        if !cgroup::contains(&path, &own_cgroup) {
+        if !cgroup::contains(&path, &own_cgroup)
+            && !holds_invocation(&host.cgroup_root, &path, &invocation)
+        {
             let dir = cgroup::dir(&host.cgroup_root, &path);
             if dir.is_dir() {
                 dirs.push(dir);
@@ -291,8 +318,12 @@ fn kill_phase(plan: &Plan, host: &Host, report: &mut HotReport) {
             dirs.push(dir);
         }
     }
+    let spare_pids: Vec<u32> = proc::pids()
+        .into_iter()
+        .filter(|&pid| invocation.contains(pid, proc::stat(pid).as_ref()))
+        .collect();
     for dir in &dirs {
-        if cgroup::kill(dir).is_ok() {
+        if cgroup::kill(dir, &spare_pids).is_ok() {
             report.cgroups_killed.push(dir.clone());
         }
     }
@@ -314,6 +345,37 @@ fn kill_phase(plan: &Plan, host: &Host, report: &mut HotReport) {
     report.processes_still_alive = proc::await_exit(&handles, deadline);
 }
 
+/// How long a signalled activation owner gets to exit before the teardown goes
+/// on without it.
+pub const OWNER_EXIT_WAIT: Duration = Duration::from_secs(1);
+
+/// SIGTERM the activation that recorded the plan if it is still running (the
+/// same process: pid and start time), outside this invocation and outside the
+/// graphical session, and give it a moment to exit, so it cannot keep mounting
+/// or recording while the teardown runs. Never blocks longer than
+/// [`OWNER_EXIT_WAIT`].
+fn signal_owner(plan: &Plan, host: &Host) {
+    let Some(owner) = &plan.owner else {
+        return;
+    };
+    let invocation = Invocation::current();
+    let stat = proc::stat(owner.pid);
+    if stat.is_none_or(|s| s.start_time != owner.start_time)
+        || invocation.contains(owner.pid, stat.as_ref())
+    {
+        return;
+    }
+    let spare = SpareSet::at_panic(&plan.session.spare_fragments, &host.sessions_dir);
+    if proc::cgroup(owner.pid).is_some_and(|c| spare.covers(&c)) {
+        return;
+    }
+    if let Some(handle) = ProcessHandle::open(owner.pid)
+        && handle.signal(rustix::process::Signal::TERM)
+    {
+        proc::await_exit(&[handle], Instant::now() + OWNER_EXIT_WAIT);
+    }
+}
+
 /// Run the hot path: kill (when `host` allows it), then undo `plan` through `m`.
 pub fn run<M: MountOps>(m: &M, plan: Plan, source: PlanSource, host: Option<&Host>) -> HotReport {
     let start = Instant::now();
@@ -328,12 +390,15 @@ pub fn run<M: MountOps>(m: &M, plan: Plan, source: PlanSource, host: Option<&Hos
             .any(|p| p == Path::new("/var"));
 
     if let Some(host) = host {
-        kill_phase(&plan, host, &mut report);
+        signal_owner(&plan, host);
+        // Hand the journal back to /run first, so journald holds nothing in
+        // the /var overlay when the kill looks for writers.
         if report.var_overlaid
             && let Some(journalctl) = &host.journalctl
         {
             report.journal_relinquished = Some(units::relinquish_journal(journalctl));
         }
+        kill_phase(&plan, host, &mut report);
     }
 
     report.undo = run_plan(

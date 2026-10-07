@@ -88,14 +88,17 @@ pub enum KillMethod {
     PerProcess,
 }
 
-/// SIGKILL every process in the cgroup at `dir`.
-pub fn kill(dir: &Path) -> std::io::Result<KillMethod> {
+/// SIGKILL every process in the cgroup at `dir`. The per-process fallback
+/// skips `spare` (the caller has already refused a cgroup holding one of them
+/// for the atomic kill).
+pub fn kill(dir: &Path, spare: &[u32]) -> std::io::Result<KillMethod> {
     match std::fs::write(dir.join("cgroup.kill"), "1") {
         Ok(()) => Ok(KillMethod::Atomic),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && dir.is_dir() => {
             for _ in 0..3 {
                 let handles: Vec<ProcessHandle> = procs(dir)
                     .into_iter()
+                    .filter(|pid| !spare.contains(pid))
                     .filter_map(ProcessHandle::open)
                     .collect();
                 if handles.is_empty() {

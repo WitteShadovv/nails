@@ -128,6 +128,10 @@ pub struct Invocation {
     pub sid: u32,
     /// This process's process group id (`0` when unknown).
     pub pgid: u32,
+    /// The process groups of the ancestors. `sudo nails emergency | less`
+    /// under `use_pty` makes nails a session leader of its own, but the pipe
+    /// reader stays in the pipeline's process group, which is sudo's.
+    pub ancestor_pgids: Vec<u32>,
     /// Further pids to spare, handed in by the caller.
     pub extra: Vec<u32>,
 }
@@ -146,10 +150,22 @@ impl Invocation {
             next = stat(pid).map(|s| s.ppid);
         }
         let own_stat = stat(own);
+        // Not the groups of the shell that typed the command, nor of PID 1 or
+        // the session manager above it: only the process groups led by a
+        // process of the command chain itself (sudo's pipeline group).
+        let ancestor_pgids = ancestry
+            .iter()
+            .skip(1)
+            .filter_map(|&pid| stat(pid).map(|s| (pid, s.pgid)))
+            .filter(|&(pid, pgid)| pgid == pid && pid != 1)
+            .map(|(_, pgid)| pgid)
+            .filter(|pgid| !is_interactive_shell_group(*pgid))
+            .collect();
         Self {
             ancestry,
             sid: own_stat.map_or(0, |s| s.sid),
             pgid: own_stat.map_or(0, |s| s.pgid),
+            ancestor_pgids,
             extra: Vec::new(),
         }
     }
@@ -159,9 +175,17 @@ impl Invocation {
         self.ancestry.contains(&pid)
             || self.extra.contains(&pid)
             || stat.is_some_and(|s| {
-                (self.sid != 0 && s.sid == self.sid) || (self.pgid != 0 && s.pgid == self.pgid)
+                (self.sid != 0 && s.sid == self.sid)
+                    || (self.pgid != 0 && s.pgid == self.pgid)
+                    || self.ancestor_pgids.contains(&s.pgid)
             })
     }
+}
+
+/// Whether the process group `pgid` is led by an interactive shell: the
+/// terminal session's own group, whose other jobs are not part of the command.
+fn is_interactive_shell_group(pgid: u32) -> bool {
+    crate::shells::is_interactive_shell(pgid)
 }
 
 /// A handle that signals one process and only it.

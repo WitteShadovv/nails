@@ -196,6 +196,16 @@ pub struct Tools {
     pub journalctl: Option<Tool>,
 }
 
+/// The activation process that wrote the plan, so a teardown can tell whether
+/// it is still running (the pid with its start time names one process).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Owner {
+    /// The pid.
+    pub pid: u32,
+    /// Its start time, in clock ticks since boot.
+    pub start_time: u64,
+}
+
 /// What activation decided about the operator's graphical session, so the panic
 /// path never asks logind (see [`crate::session`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,6 +233,9 @@ pub struct Plan {
     /// are only compared in that namespace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mount_namespace: Option<u64>,
+    /// The activation process that recorded the plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<Owner>,
     /// The tools the teardown runs.
     #[serde(default)]
     pub tools: Tools,
@@ -278,6 +291,7 @@ impl Plan {
             hidden_root,
             runtime_root: None,
             mount_namespace: None,
+            owner: None,
             tools: Tools::default(),
             session: SessionRecord::default(),
             steps: Vec::new(),

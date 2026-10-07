@@ -370,7 +370,7 @@ fn cgroup_kill_empties_a_busy_cgroup_and_frees_its_overlay() {
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(nix::mount::umount2(&target, nix::mount::MntFlags::empty()).is_err());
 
-        let method = nails_teardown::cgroup::kill(&cgroup).unwrap();
+        let method = nails_teardown::cgroup::kill(&cgroup, &[]).unwrap();
         assert_eq!(method, nails_teardown::cgroup::KillMethod::Atomic);
         let full = nails_teardown::cgroup::await_empty(
             std::slice::from_ref(&cgroup),

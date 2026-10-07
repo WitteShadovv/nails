@@ -321,6 +321,18 @@ mod tests {
         let mut tracker = MountTracker::with_plan(manager.filesystem(), plan.clone());
         let mut attachments = Vec::new();
         let staged = manager.stage_submounts(Path::new("/snap"), &mut tracker, &mut attachments);
+        // The parent overlay the capture is re-attached over, as the mount loop
+        // makes it between staging and re-attach.
+        for dir in ["/snap", "/mnt/hidden/snap/upper", "/mnt/hidden/snap/work"] {
+            fs.mock_set_path_exists(dir, true);
+        }
+        fs.mount_overlay(
+            &[Path::new("/snap")],
+            Path::new("/mnt/hidden/snap/upper"),
+            Path::new("/mnt/hidden/snap/work"),
+            Path::new("/snap"),
+        )
+        .unwrap();
         manager.reattach_staged_submounts(&staged, &mut tracker, &mut attachments);
         tracker.commit();
 

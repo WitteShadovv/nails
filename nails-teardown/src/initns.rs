@@ -40,6 +40,21 @@ pub fn unmount_in_init_namespace(target: &Path) -> io::Result<bool> {
     if !init_namespace_differs()? {
         return Ok(false);
     }
+    // Only the self-bind activation made: a read-only mount on top of the
+    // `/nix` overlay at `target` in PID 1's table. Anything else there (the
+    // boot-time store bind, once the overlay is gone) is the decoy's.
+    let entries = crate::mountinfo::read_mountinfo_at(Path::new("/proc/1/mountinfo"))?;
+    let ours = crate::mountinfo::top_mount_at(&entries, target).is_some_and(|top| {
+        top.read_only()
+            && entries.iter().any(|parent| {
+                parent.mount_id == top.parent_id
+                    && parent.fstype == "overlay"
+                    && Some(parent.mount_point.as_path()) == target.parent()
+            })
+    });
+    if !ours {
+        return Ok(false);
+    }
     let namespace = std::fs::File::open("/proc/1/ns/mnt")?;
     let ns_fd = namespace.as_raw_fd();
     let target = CString::new(target.as_os_str().as_bytes())

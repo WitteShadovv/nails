@@ -235,3 +235,16 @@ fn phases_run_only_their_own_steps() {
     // The overlays are still up for the main phase.
     assert!(table.points().contains(&"30 /home".to_string()));
 }
+
+#[test]
+fn the_sweep_never_takes_down_a_foreign_mount_stacked_on_a_nails_overlay() {
+    // A mount made after activation sits on top of the /home overlay: the
+    // classifier lists /home, but the top mount there is not NAILS's.
+    let table = Table::new(&format!(
+        "{SESSION}60 30 0:99 / /home rw - tmpfs tmpfs rw\n"
+    ));
+    sweep(&table, 4);
+    assert!(table.points().contains(&"60 /home".to_string()));
+    let plan = derive_plan(&table.entries.borrow(), Path::new("/mnt/hidden"));
+    assert!(remaining(&table, &plan).contains(&PathBuf::from("/home")));
+}
