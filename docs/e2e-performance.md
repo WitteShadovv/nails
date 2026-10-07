@@ -36,6 +36,12 @@ says "estimate".
 - **Biggest remaining lever:** booting fewer VMs, by merging tests, and moving
   the remaining forensic host work off the critical path. See
   [Roadmap](#roadmap).
+- **Wave R (T-140):** 19 single-boot tests now run as scenarios of 7 batched
+  tests, one boot each, and one more moved to the cargo tests; forensic VMs
+  reuse their erofs store image across restarts. Expected: 13 fewer VM boots
+  and about 17 fewer store-image packs per full run, roughly 15-30 min of
+  serial time. Details, the mapping and the re-measure commands are under
+  [Wave R: fewer boots, one store image](#wave-r-fewer-boots-one-store-image).
 
 ## Method
 
@@ -114,8 +120,10 @@ three to five times.
 
 - **Boot to `multi-user.target`:** median 21.8 s and p90 27.7 s over 154 boots
   with the 9p host store, against 17.8 s and 19.6 s for the 17 boots of
-  `useNixStoreImage` VMs. That is faster, even though those VMs build their
-  erofs image inside the measured window.
+  `useNixStoreImage` VMs. Their erofs image is packed before that window
+  opens, inside `machine.start()` (see
+  [Host-side forensic work](#host-side-forensic-work)), so the store image
+  boots faster but its start does not.
 - **Load sensitivity:** boots on a loaded host reached 54-88 s, with the kernel
   phase at 5-7 s instead of 1.5 s, in preflight-hidden-volume and
   state-transitions-observability. Parallel runs have to leave CPU headroom.
@@ -140,10 +148,19 @@ three to five times.
   the data extents and took 4.3 s on the same file with 23 tokens.
 - **`qemu-img convert` and `fls -r -p`** on an empty 20 GiB ext4 image take
   0.1 s and 2.2 s, so they do not explain the remaining time.
-- **The likely rest is `machine.start()`:** for a `useNixStoreImage` VM the
-  start script rebuilds the erofs store image from the whole closure on every
-  start, outside any driver log block. Forensic tests start the VM three times.
-  `snapshot()` now times the restart, so the next run attributes this.
+- **The rest is `machine.start()`, confirmed:** for a `useNixStoreImage` VM the
+  start script packs the whole closure into an erofs image on every start,
+  outside any driver log block, and `machine.start()` blocks until QEMU runs.
+  The timing line `snapshot()` prints settles it: in the last full run's
+  standard-deactivation-forensic log, `disk_forensics: machine.start took
+  79.29 seconds` sits between `Creating Nix store image...` and `Created Nix
+  store image.`, and is 79 of the 91 s of the "capture the decoy baseline
+  image" subtest; the guest then booted in 10 s. That log packs the image
+  three times (the profiler's `store_image_builds`), once per start, so about
+  240 s of the test went there under a three-VM load. The other starts are
+  not timed (the first one, and the one inside `canonical_deactivate`), but
+  they run the same script. The rest of the 400-460 s that earlier runs left
+  unattributed was the `strings -a` scans, fixed by the native scan below.
 
 ### Group wall time against script time
 
@@ -256,6 +273,134 @@ peak memory of the nix process, which shows the evaluation bound.
 | After: plus native scans (-40 to -60 min) | about 2.0-2.2 h | about 2.5 h serial |
 | After: plus `just e2e-local` (3 VMs, batched evaluation) | same | **about 1 h** (long pole tcrypt about 8 min; eval about 10 min) |
 
+## Wave R: fewer boots, one store image
+
+Wave R (T-140, plus T-114's leftovers) changes nothing in the product. Each
+item is its own commit on `chunk/r-vmspeed`.
+
+### Batched single-boot tests
+
+Tests with an identical node now run as scenarios of one test
+(`lib/batch.nix`, `nix/e2e-tests/py/nails_e2e/batch.py`; how it works is in
+[nix/e2e-tests/README.md](../nix/e2e-tests/README.md#batched-scenarios)).
+Every scenario starts with a check that the guest is as clean as it booted and
+the guest is reset between scenarios, by a power cycle when a NAILS session was
+left behind; the activating scenarios run last, so no batch needs one in a
+passing run. The old names stay aliases of their batch.
+
+Node identity was checked by evaluating the node's VM derivation of the batch
+and of the tests it replaces in one evaluation: equal for every batch.
+`preflight-mount-namespace` listed `util-linux` a second time (vm-config
+installs it); its deduplicated package set equals `preflight-hidden-volume`'s.
+Each scenario's statements were compared with the old test's as Python ASTs of
+the rendered scripts: identical apart from the dropped `machine.start()`.
+
+| Batch | Former tests | Their script time (s) | Of which first boots (s) |
+| --- | --- | ---: | ---: |
+| `preflight-checks` | preflight-nixos-config, -nixos-build-target, -upper-fs-capability, -state-check | 145 | 93 |
+| `preflight-vfat-targets` | preflight-overlay-compat, -symlink-support | 43 | 35 |
+| `preflight-hidden-root` | preflight-hidden-volume, -mount-namespace | 105 | 87 |
+| `init-config` | init-bootstrap, -idempotency, -refuse-overwrite, config-unknown-key | 152 | 123 |
+| `contract-json-schema` | verify-json-schema, contract-active-session | 52 | 41 |
+| `notify-dispatch` | notify-malformed-signal, -no-notify-send, -dispatch-signal-flow | 114 | 89 |
+| `smoke-verify-config` | verify, config-handling | 65 | 48 |
+| **19 tests in 7 batches** | | **675** | **514** |
+
+Times are from the four full runs profiled above (before the dhcpcd change).
+`help-version-no-leak` (31 s, 29 s of it boot) moved to the cargo tests.
+
+### Store image reuse
+
+`default.nix` now gives every machine a copy of its start script in which the
+erofs pack is skipped when an image from an earlier start of the same machine
+is still there and unchanged (size and nanosecond mtime match a stamp written
+after `mkfs.erofs` succeeded; anything else rebuilds as before). Machines
+without a store image keep the stock script. The tests that power-cycle a
+store-image VM restart it 17 times per full run: forensic-clean,
+standard-deactivation-forensic, snapshot-diff, post-emergency-image and
+tcrypt-veracrypt-hidden twice each, var-lib-nixos-drift three times,
+activate-full-rebuild twice, nix-store-placement and decoy-journal-leak once.
+
+### Expected savings
+
+Estimates for a full local run; the merged tests are cheap, so most of the
+merge's saving is serial time spread over the three parallel slots, while the
+store image saving sits on the forensic tests, the long poles.
+
+| Change | Serial | Wall at 3 VMs | Basis |
+| --- | ---: | ---: | --- |
+| 13 fewer boots (19 tests in 7 batches, 1 test moved to cargo) | 4-5 min | 1.5-2 min | 13 x 17-24 s per boot (median first boot 23.7 s, about 6 s less since the dhcpcd change), minus about 2 s per reset |
+| 13 fewer test derivations | 2-5 min | about 1 min | 10-25 s each for evaluation, driver build (type check and lint) and VM start; the group overhead above is 25 s per test |
+| Store image reuse | 11-23 min | 3-5 min | 17 restarts x 40-80 s (79 s measured once under a three-VM load) |
+| **Total** | **about 17-33 min** | **about 6-8 min** | from the 75 min measured on `integrate` |
+
+The per-group runs shrink more. Test derivations per group, before and after:
+`all` 113 to 100, `preflight` 15 to 10, `smoke` 19 to 12, `contract` 6 to 4,
+`notification` 5 to 3, `init` 4 to 2, `ci` 10 to 9; `config` stays at 3.
+
+### Re-measuring
+
+Measure at the commit before Wave R and at the branch head. The derivations
+differ between the two revisions, so nothing is served from the store. On the
+KVM workstation:
+
+```sh
+base=29c632d7533de4d29265dcf9deae2d09da8e63a4   # overhaul before Wave R
+head=$(git rev-parse chunk/r-vmspeed)
+git worktree add --detach .worktrees/measure-base "$base"
+git worktree add --detach .worktrees/measure-head "$head"
+
+# Run a selection on one side with one VM at a time (so script time and boots
+# compare directly), then fetch every test's driver log with `nix log`: the
+# runner keeps only the logs of failed tests. Evaluation stays bounded.
+measure() {  # measure SIDE NAME TARGET...
+  local side=$1 name=$2; shift 2
+  ( cd ".worktrees/measure-$side" &&
+    /usr/bin/time -v ./scripts/run-e2e-tests.sh run --jobs 1 --eval-batch 4 \
+      --durations-out "../measure-$side-$name.jsonl" "$@" \
+      2> "../measure-$side-$name.time"
+    mkdir -p "../measure-$side-$name"
+    for test in $(python3 -m ci.e2e resolve "$@"); do
+      nix log ".#legacyPackages.x86_64-linux.e2e.$test" \
+        > "../measure-$side-$name/$test.log" 2>&1
+    done )
+}
+
+# 1. The merged groups (about 40 tests at the base, 30-40 min per side):
+for side in base head; do
+  measure "$side" merged preflight config contract init notification smoke
+done
+scripts/e2e-log-profile.py --top 40 .worktrees/measure-base-merged/*.log
+scripts/e2e-log-profile.py --top 40 .worktrees/measure-head-merged/*.log
+
+# 2. The store image, on two forensic tests (15-25 min per side):
+for side in base head; do
+  measure "$side" forensic standard-deactivation-forensic forensic-clean
+  scripts/e2e-log-profile.py --json .worktrees/measure-$side-forensic/*.log |
+    python3 -c 'import json,sys
+for r in map(json.loads, sys.stdin):
+    print(r["test"], r["total"], "packs", r["store_image_builds"], "reuses", r["store_image_reuses"])'
+done
+grep -h "machine.start took" .worktrees/measure-*-forensic/*.log
+
+# 3. The full suite with the runner, as T-140's 75 min was measured:
+( cd .worktrees/measure-head && /usr/bin/time -v just e2e-local all ) 2> e2e-wave-r.time
+```
+
+What to look for:
+
+- in each batch's log, one `starting vm`, every `<name>: starts from a clean
+  guest` subtest passing, one `batch: <name> passed in N s` line per scenario
+  and no `power-cycled the VM` reset line;
+- in each forensic log on the head side, `store image cache: machine:
+  enabled`, one `Creating Nix store image...` and `Reusing Nix store image.`
+  on every later start; `disk_forensics: machine.start took` should drop from
+  tens of seconds to about a second;
+- the sum of a batch's scenario times against the old tests' totals in the
+  table above, and each batch's `seconds` in `e2e-logs/durations.jsonl`, which
+  replace the estimated weights in `shard-durations.json` (`python3 -m ci.e2e
+  regen-weights e2e-logs/durations.jsonl`).
+
 ## Robustness
 
 A faster suite only helps if it does not flake, so the failure history in
@@ -350,16 +495,16 @@ showed up across revisions rather than as same-run flakes.
 | **VM memory/CPU sizing** | Yes | Keep 2 GiB and 2 cores. Size parallelism by host RAM (`--jobs auto`), not by shrinking guests. Free-page reporting needs `virtualisation.qemu.options` (`-device virtio-balloon-pci,free-page-reporting=on`). It returns freed guest pages but not page cache. |
 | **Evaluation memory** | — | Done: evaluate in batches of N in short-lived processes, then build by `.drv`. `nix-eval-jobs` (≥ 2.35.3 caps `workers × max-memory-size` for the whole run) is the next step if batch evaluation becomes the long pole. Setting `node.pkgs` to share one pkgs instance across nodes cuts per-test evaluation cost (`nixos/lib/testing/nodes.nix`). |
 | **9p msize** | Yes (`virtualisation.msize`, `qemu-vm.nix:414`) | Done (256 KiB). The virtio transport caps msize at `PAGE_SIZE*(VIRTQUEUE_NUM-3)`, about 500 KiB. |
-| **virtiofs** | No (9p only, `-virtfs` at `qemu-vm.nix:320`) | nixpkgs PR #552774 switched the test VMs to virtiofs on 2026-09-08 (staging-nixos, so 26.11), measuring 1.08-1.44x per test. It arrives with the next nixpkgs bump, with no code here. Watch for its shared-memory requirement (PR #563324) against the RAM budget. |
-| **`useNixStoreImage` (erofs)** | Yes (`qemu-vm.nix:825`) | Boots about 4 s faster than 9p here. It removes slow store metadata access: PR #181746 measured gitlab at 1,000 s on 9p against 249 s. But the image is rebuilt on every start and is never cached, it needs `writableStore = true` for tests that add to the store, and in-guest rebuilds see only the closure. Switch one plain group and measure before switching all. |
+| **virtiofs** | No: the flake's `nixpkgs` (`4bd9165a`, 26.05) has 9p only (`-virtfs`, no `virtiofs` anywhere in `qemu-vm.nix`) | nixpkgs PR #552774 (merged 2026-09-08) switched the test VMs to virtiofs, measuring 1.08-1.44x per test. The lock already holds a revision with it: `nix-vm-test`'s own `nixpkgs` input (`151fa4e8`, 2026-10-06), whose `qemu-vm.nix` sets `useVirtiofs = isLinux` with no opt-out, starts one `virtiofsd` per share, turns on `virtualisation.qemu.enableSharedMemory` by default and removes `virtualisation.msize` and `nixStore9pCache` (`mkRemovedOptionModule`, an evaluation error). So the switch is gated on bumping the flake's `nixpkgs` to that revision or later, in the same change that drops the `msize` line from `lib/vm-config.nix`; then re-check `--jobs auto` against the shared guest memory (PR #563324). The store image cache keeps working there: the start script still prints the same two markers. |
+| **`useNixStoreImage` (erofs)** | Yes (`qemu-vm.nix:825`) | Boots about 4 s faster than 9p here. It removes slow store metadata access: PR #181746 measured gitlab at 1,000 s on 9p against 249 s. The image is rebuilt by every start; within one test it is now reused (Wave R), but every test still packs it once, it needs `writableStore = true` for tests that add to the store, and in-guest rebuilds see only the closure. A prebuilt image as a derivation would be shared by every test with the same closure and by the binary cache, at the price of a store path of about the closure's size per distinct node. Switch one plain group and measure before switching all. |
 | **`mountHostNixStore`** | Yes; it is the 9p default | Nothing to gain on its own. |
 | **Lighter guest** | — | Done: dhcpcd background and no sshd. systemd initrd is already the default in 26.05. Documentation off is deferred (see above). X only runs on the graphical profile already. |
 | **Avoiding reboots** | — | No safe case today: each reboot is `nails deactivate`'s own power-off or a reboot test. A soft-reboot (`systemctl soft-reboot`) mode for deactivation would cut about 25 s per reboot, if a whole-root mode makes that safe. |
-| **Test merging** | — | 49 tests boot once and spend 1,208 of their 1,655 s booting. In the preflight, shell, security, overlay, session, notification, config, contract, init and smoke groups, boot plus power-off is 70-90% of the time. Merging independent scenarios per boot, with a cleanup between them, is the largest structural saving. |
+| **Test merging** | — | 49 tests boot once and spend 1,208 of their 1,655 s booting. In the preflight, shell, security, overlay, session, notification, config, contract, init and smoke groups, boot plus power-off is 70-90% of the time. Done in Wave R for the tests with an identical node in the preflight, config, contract, init, notification and smoke groups (7 batches, `lib/batch.nix`). The overlay, faults, security and shell groups have more candidates on the shared base node. |
 | **nspawn containers** | Yes (`containers` in `nixos/lib/testing/nodes.nix:185`, PR #478109). Needs `auto-allocate-uids` and `uid-range`. | About 25-30% faster than VMs in the PR's benchmark. The host kernel is shared: no kernel modules, no X11, no setuid binaries, no `reboot()`/`crash()`, `/proc` and `/sys` forwarded from the sandbox, and no loop devices, dm-crypt/LUKS or block devices. Overlayfs inside the unprivileged build sandbox is unverified. This only fits config/contract/CLI tests that need no hidden volume, and those are better served by tiering. |
 | **QEMU savevm/loadvm** | No driver support; HMP/QMP is exposed | Blocked: QEMU's 9pfs adds a migration blocker once the share is mounted, and a 9p-store VM always mounts it. Possible only with a store-image VM and no 9p shares (xchg/shared are 9p too). High effort for a saving smaller than merging. |
 | **Faster polling and fixed sleeps** | — | Polling costs 102 s and fixed sleeps 23 s of guest time. Driver polling is 1 s. Not worth more than the lint, which keeps new sleeps out. The 60 s of persona absence windows are assertions, not waits. |
-| **Tiering to real-kernel tests** | — | See `docs/testing-strategy.md` on the `chunk/research-realtests` branch (rootless user+mount namespace harness). Candidates there: config parsing and validation (config-unknown-key, config-exclusions), status/verify JSON contract tests (contract-*), and overlay semantics that need no `trusted.*` xattrs. Whiteouts and opaque directories, LUKS, journald, reboot and session tests stay in VMs. |
+| **Tiering to real-kernel tests** | — | The rootless user+mount namespace harness (`nails_core::test_support`, `docs/testing-strategy.md`) is on this branch. Done in Wave R: the help/version sweep and four config parsing checks moved to the cargo tests, since none of them needs a kernel feature, root or a boot. Next: the `nails init` scenarios (a tmpfs hidden root in the namespace, `/etc/nixos` bind-mounted), status/verify JSON for states that need no real activation. Whiteouts and opaque directories, LUKS, journald, reboot, session and activation tests stay in VMs. |
 
 ## Roadmap
 
@@ -368,10 +513,10 @@ Ranked by saving per unit of effort.
 | # | Option | Saving (full run) | Effort | Risk |
 | ---: | --- | --- | --- | --- |
 | 1 | **Measure this branch** (commands above), then refresh `shard-durations.json` | Confirms about 1 h wall | 1 run | None |
-| 2 | **Merge independent single-boot tests**, starting with the preflight (13), config/contract/init (9), notification (5) and smoke (5) tests: one boot per group of scenarios, with a cleanup helper (deactivate if active, wipe `/mnt/data`, reset failed units) between them | 49 single-boot tests spend 1,208 s booting. Folding them into about 10 boots saves about 15 min serial, or 5 min wall at 3 jobs | Medium | Medium: a scenario's leftovers can mask or cause another's failure. Each merged scenario must start with an assertion that the previous one left no state, and must keep its own `subtest` |
-| 3 | **Cache the erofs store image across starts of one forensic test**, or make the forensic VM boot from a prebuilt store disk (`useBootLoader`) | Up to about 400 s per forensic test (to be confirmed by the new `machine.start` timing) | Low-medium | Low: the image contents do not change between starts |
-| 4 | **nixpkgs bump to virtiofs** (PR #552774) | 8-44% of guest IO time per test | Low (flake update) | Medium: shared memory raises host RAM per VM; re-check `--jobs auto` |
-| 5 | **Tier config/contract tests to real-kernel tests**, coordinated with `chunk/research-realtests` | About 5 min serial, plus faster CI feedback | Medium | Low if the VM test remains for one end-to-end path |
+| 2 | **Done in Wave R** for 19 tests (7 batches). **Merge independent single-boot tests**, starting with the preflight (13), config/contract/init (9), notification (5) and smoke (5) tests: one boot per group of scenarios, with a cleanup helper (deactivate if active, wipe `/mnt/data`, reset failed units) between them | 49 single-boot tests spend 1,208 s booting. Folding them into about 10 boots saves about 15 min serial, or 5 min wall at 3 jobs | Medium | Medium: a scenario's leftovers can mask or cause another's failure. Each merged scenario must start with an assertion that the previous one left no state, and must keep its own `subtest` |
+| 3 | **Done in Wave R.** **Cache the erofs store image across starts of one forensic test**, or make the forensic VM boot from a prebuilt store disk (`useBootLoader`) | About 79 s per restart measured under load, 17 restarts per full run: 11-23 min serial | Low-medium | Low: the image contents do not change between starts |
+| 4 | **Gated on the nixpkgs bump** (checked in Wave R). **nixpkgs bump to virtiofs** (PR #552774); drop `virtualisation.msize` in the same change | 8-44% of guest IO time per test | Low (flake update) | Medium: shared memory raises host RAM per VM; re-check `--jobs auto` |
+| 5 | **Started in Wave R** (help/version and config parsing). **Tier config/contract tests to real-kernel tests**; the `nails init` scenarios are next | About 5 min serial, plus faster CI feedback | Medium | Low if the VM test remains for one end-to-end path |
 | 6 | **Soft-reboot or no-reboot deactivation mode** for tests that are not about the reboot (needs a product decision, and the whole-root mode) | About 25 s for each of 84 reboots, so up to 35 min serial | High | High: the power-off is the anti-forensic contract; a test-only mode must not weaken what the tests prove |
 | 7 | **`useNixStoreImage` for the plain profile** | About 4 s per boot (190 boots, about 13 min) plus faster store scans | Low to try | Medium: in-guest rebuilds see only the closure; needs `writableStore = true`; image rebuilt per start |
 | 8 | **nspawn containers** for tests without block devices | 25-30% per container test | High | High: no LUKS, loop or reboot, uncertain overlay behaviour in the build sandbox; tiering (5) covers the same tests better |

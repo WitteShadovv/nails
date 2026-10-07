@@ -3,8 +3,13 @@
 ## Layout
 
 - `lib/`: shared Nix/Python helper snippets and VM profiles
+- `py/`: the `nails_e2e` package every driver imports (command capture, the
+  scenario batch runner, the store image cache), with host-side unit tests
 - `fixtures/`: reusable config files and captured forensic tool output
 - `tests/**`: auto-discovered NixOS tests
+- `scenarios/**`: bodies of former single-boot tests that now run as scenarios
+  of one batched test (see [Batched scenarios](#batched-scenarios)); not
+  discovered on their own
 
 ## Canonical skeleton
 
@@ -95,6 +100,13 @@ the subset the test is about.
 - `vm-config.nix`: base forensic-safe profile
 - `graphical-vm-config.nix`: LightDM + autologin + shell/notification tooling
 - `vfat-boot-vm-config.nix`: base profile plus VFAT `/boot`
+- `forensic-vm-config.nix` and `impermanent-decoy.nix`: an on-disk Nix store
+  image (`useNixStoreImage`). The VM start script packs the whole closure into
+  an erofs image on every start; `default.nix` gives every machine a copy of
+  its start script that reuses the image of an earlier start of the same
+  machine while it is unchanged (`py/nails_e2e/store_image.py`), so only the
+  first start of a test pays for it. The driver log says `Reusing Nix store
+  image.` on each later start.
 
 ## Tag taxonomy
 
@@ -119,6 +131,7 @@ Use only:
 ## Running tests
 
 - One test directly: `nix build .#e2e.basic-workflow --no-link -L`
+- A former test that now runs as a scenario, by its old name: `nix build .#e2e.verify --no-link -L` builds its batch (`smoke-verify-config`); the runner and `python3 -m ci.e2e resolve` accept old names too, and `python3 -m ci.e2e list` shows each alias with its batch
 - One group directly: `nix build .#e2e.smoke --no-link -L`
 - Runner, the `ci` group: `./scripts/run-e2e-tests.sh`
 - Runner, one test or group: `./scripts/run-e2e-tests.sh basic-workflow`, `./scripts/run-e2e-tests.sh smoke`
@@ -163,24 +176,52 @@ python3 -m ci.e2e regen-weights e2e-durations-*/*.jsonl
 ### Per-test fixed cost
 
 Every test that boots pays a fixed cost before its first `with subtest(...)` can
-run: the VM boot plus `wait_for_unit("multi-user.target")`. That cost sets the
-floor on the whole suite, so it is worth tracking and keeping the per-test node
-minimal (hence the shared base node, which lets the driver reuse one build across
-the many single-machine tests).
+run: building and starting its driver, the VM boot and
+`wait_for_unit("multi-user.target")`. That cost sets the floor on the whole
+suite, which is why single-boot tests with the same node run as scenarios of
+one batched test (see [Batched scenarios](#batched-scenarios)) and why the
+per-test node stays minimal.
 
-Measure it from the driver logs of a hosted run, not locally: the number depends
-on the runner. The driver prints a timestamp for each line, so the boot-to-first-
-subtest cost of a test is the gap between its `start()` / `wait_for_unit` lines
-and its first `subtest:` line. Read these from the GitHub-hosted-runner job logs
-(the smoke E2E on every PR, or a full nightly run), take the median across the
-single-machine tests, and record it here.
+On the local KVM workstation a boot to `multi-user.target` took a median of
+21.8 s (p90 27.7 s) before dhcpcd stopped gating the boot, about 6 s less
+after, and booting was 38% of all test-script time in a full run (190 boots
+for 106 tests); see [docs/e2e-performance.md](../../docs/e2e-performance.md).
 
-Measured boot-to-`multi-user.target` on GitHub-hosted runners: _to be filled
-from a hosted run_. On the local KVM workstation it was a median of 21.8 s (p90
-27.7 s) per boot before dhcpcd stopped gating the boot, about 6 s less after,
-and booting was 38% of all test-script time in a full run (190 boots for 106
-tests). The breakdown, and the case for consolidating single-boot tests, is in
-[docs/e2e-performance.md](../../docs/e2e-performance.md).
+**GitHub-hosted runners: not measured yet.** No number is recorded here
+because none has been measured, and the CI lanes cannot provide one as they
+stand: `ci.e2e run` reads `nix build` output as `internal-json` and keeps the
+driver log only of a failed test, so a green job log holds no driver lines. A
+measurement needs one dispatched run that keeps the driver output, for
+example a temporary job on `ubuntu-24.04` (after the usual checkout and Nix
+setup steps of `e2e.yml`) that builds a handful of tests with one VM at a
+time and uploads the log:
+
+```yaml
+      - run: |
+          nix build --no-link -L --max-jobs 1 \
+            .#legacyPackages.x86_64-linux.e2e.{preflight-checks,init-config,notify-dispatch,state-corruption,basic-workflow} \
+            2>&1 | tee e2e-hosted.log
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with: { name: e2e-hosted-log, path: e2e-hosted.log }
+```
+
+Then, locally:
+
+```sh
+scripts/e2e-log-profile.py --json e2e-hosted.log > hosted.jsonl
+python3 - <<'PY'
+import json, statistics
+rows = [json.loads(line) for line in open("hosted.jsonl")]
+per_boot = [row["boot"] / row["boots"] for row in rows if row["boots"]]
+print(f"{len(per_boot)} tests, median boot {statistics.median(per_boot):.1f} s")
+PY
+```
+
+`boot` is the driver's own `(finished: waiting for unit multi-user.target, in
+N seconds)` time, so it needs no wall-clock timestamps. The rest of the fixed
+cost (evaluation, driver build, VM start) is the gap between a test's
+`seconds` in the uploaded `e2e-durations-shard-*` artifact and its script
+`total` in the profile. Record both medians here with the run's URL.
 
 ## Synchronisation rules
 
@@ -233,12 +274,83 @@ search still passes on drift that happens to carry no keyword. Prove cleanliness
 with a full before/after diff of the file lists and checksums against an explicit
 allowlist of volatile paths instead (see `tests/forensic/06-snapshot-diff.nix`).
 
+## Batched scenarios
+
+A test that boots once and spends most of its time booting can run as a
+scenario of a batched test instead, together with other tests that use an
+identical node. Each batch lives in `tests/<group>/NN-<name>.nix` and is built
+by `lib/batch.nix` (`mkBatch`); its scenarios live in
+`scenarios/<group>/NN-<old-name>.nix`. The harness behind it is
+`py/nails_e2e/batch.py`:
+
+- the batch boots once and records what the fresh guest looks like;
+- every scenario starts with a `<name>: starts from a clean guest` subtest
+  that compares the guest with that baseline: no mount, device-mapper node,
+  loop device or swap area that was not there at boot, no NAILS runtime entry
+  (`/run/<16 hex digits>`, `/run/nails*`) or harness capture in `/run`, no
+  NAILS state file, no new entry in `/tmp`, `/var/tmp`, `/mnt`, `/root` or
+  `/home/testuser`, an unchanged `/etc/nixos`, a blank hidden-volume disk and
+  no `nails` process or unit;
+- between scenarios (`<name>: reset the guest`) the guest is brought back to
+  that baseline. A scenario that left a NAILS session behind (an overlay, the
+  runtime root, a live `nails` process) is reset by power-cycling the VM, so the
+  harness never runs the teardown code under test; everything else is
+  unmounted, closed, wiped and deleted in place. A guest that cannot be reset
+  stops the batch and names the scenarios that did not run;
+- a failing scenario is reported, the guest is reset and the batch goes on;
+  the test fails at the end naming every failed scenario. The log has one
+  `batch: <name> passed in N s` line per scenario, which
+  `scripts/e2e-log-profile.py --json` reports under `scenarios`.
+
+A scenario file evaluates to `{ name; tags; helpers; script; }`: `name` and
+`tags` are the old test's, `helpers` the helper snippets its script used, and
+`script` the old `testScript` as the body of
+`def scenario_<name>() -> None:`, one level deeper, without `machine.start()`.
+`mkBatch` deduplicates the helpers, asserts that the batch's tags cover every
+scenario's tags (so no group loses a test) and lists the scenario names in
+`replaces`, which keeps each old name an alias of the batch: `e2e.<old>`
+builds the batch, the runner resolves it, and the `ci` group follows it.
+
+Rules for adding a scenario to a batch:
+
+1. Its node must be identical to the batch's. Compare the node derivations in
+   one evaluation, for example
+   `nix eval --json .#legacyPackages.x86_64-linux.e2e --apply 'e: map (t: e.${t}.config.nodes.machine.system.build.vm.drvPath) [ "<batch>" "<test>" ]'`.
+   A test that adds packages, a profile or a second machine stays on its own.
+2. Move the file with `git mv` to `scenarios/`, keep its subtests and
+   assertions verbatim, and add it to the batch's `scenarios` list. Put a
+   scenario that activates (and so may need a power cycle to reset) or that
+   reboots last.
+3. A helper that two scenarios need in different versions (several helper
+   files define `run_command_capture`) must be renamed in one of them; the
+   driver's type check rejects a second definition.
+4. Move the old test's shard weight to the batch (`shard-durations.json`).
+
+| Batch | Former tests (aliases) | Node |
+| --- | --- | --- |
+| `preflight-checks` | preflight-nixos-config, preflight-nixos-build-target, preflight-upper-fs-capability, preflight-state-check | base node |
+| `preflight-vfat-targets` | preflight-overlay-compat, preflight-symlink-support | vm-config, nails, dosfstools |
+| `preflight-hidden-root` | preflight-hidden-volume, preflight-mount-namespace | vm-config, nails, e2fsprogs |
+| `init-config` | init-bootstrap, init-idempotency, init-refuse-overwrite, config-unknown-key | base node |
+| `contract-json-schema` | verify-json-schema, contract-active-session | vm-config, nails, Python with jsonschema |
+| `notify-dispatch` | notify-malformed-signal, notify-no-notify-send, notify-dispatch-signal-flow | base node |
+| `smoke-verify-config` | verify, config-handling | base node |
+
+Checks that need no VM move to the cargo tests instead of a batch:
+`help-version-no-leak` is now four tests in `nails-cli/tests/cli_contract.rs`
+(`root_help_lists_public_commands_and_no_internal_one`,
+`version_prints_only_the_name_and_semver`,
+`every_public_command_long_help_renders_examples`,
+`hidden_commands_still_run_they_are_only_absent_from_help`), and the parsing
+checks of config-unknown-key and config-handling run in
+`nails-cli/tests/config_command.rs`.
+
 ## Adding a test
 
 1. Place it under the correct `tests/<category>/` subfolder.
 2. Preserve numeric filename form: `NN-name.nix`.
 3. Set `name` (it must differ from every group and tag name) and `meta.tags`, and add an estimated weight to `shard-durations.json` (refresh it from the next full run).
-4. Declare no `nodes` for the common single-machine case; the shared base node is injected. Add `baseNode = { python3 = true; };` only for a guest that needs Python, and a full `nodes` block only for bespoke hardware, a second machine or a non-default profile.
+4. Declare no `nodes` for the common single-machine case; the shared base node is injected. A short test on a node another batch already uses belongs in that batch as a scenario (see [Batched scenarios](#batched-scenarios)). Add `baseNode = { python3 = true; };` only for a guest that needs Python, and a full `nodes` block only for bespoke hardware, a second machine or a non-default profile.
 5. Import shared helpers instead of duplicating Python.
 6. Use `with subtest(...)` for each logical phase.
 7. Assert against the booted guest with hard `assert ...` or `machine.fail(...)`; never a `print("Note: ...")` escape hatch (the `e2e-soft-assertions` lint rejects it).
