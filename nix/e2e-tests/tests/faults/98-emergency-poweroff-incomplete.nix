@@ -42,7 +42,9 @@ in
             "mount -t overlay overlay -o lowerdir=/home,upperdir=/mnt/data/extra/upper,"
             "workdir=/mnt/data/extra/work /home"
         )
-        assert_overlay_mounted("/home")
+        # Two overlays now share /home, so findmnt lists both.
+        fstypes = machine.succeed("findmnt -n -o FSTYPE /home").split()
+        assert fstypes == ["overlay", "overlay"], f"expected two stacked overlays: {fstypes}"
 
     with subtest("an incomplete emergency still powers the machine off"):
         machine.succeed(

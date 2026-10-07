@@ -176,6 +176,8 @@ in
         assert_status_state("inactive", config_path=refuse_config)
 
     with subtest("activation proceeds once no non-service writer remains"):
+        # The deactivation above rebooted, which closed the hidden backend.
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         write_headless_config(headless_config)
         machine.succeed(
             f"nails --config {headless_config} activate --overlay-only --session keep -y"

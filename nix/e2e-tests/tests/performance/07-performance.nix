@@ -37,7 +37,10 @@ in
           unit
           // {
             serviceConfig = unit.serviceConfig // {
-              StandardOutput = "truncate:/run/nails-emergency-test.out";
+              # append, not truncate: ExecStopPost runs with the same output and
+              # truncate would empty the file the emergency just wrote; the test
+              # removes the file before each start.
+              StandardOutput = "append:/run/nails-emergency-test.out";
               StandardError = "inherit";
             };
           };

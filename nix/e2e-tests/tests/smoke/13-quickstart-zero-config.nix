@@ -44,10 +44,11 @@ in
     def hidden_status():
         # Read `status --json` through the hidden-root binary with no --config, so
         # the state is resolved purely from the binary location.
+        # The redirection is the root driver shell's: testuser cannot create
+        # files in /run.
         machine.succeed(
-            "su - testuser -c "
-            + "'sudo /mnt/data/nails status --json "
-            + "> /run/nails-status.json 2>/run/nails-status.err'"
+            "su - testuser -c 'sudo /mnt/data/nails status --json' "
+            + "> /run/nails-status.json 2>/run/nails-status.err"
         )
         payload = json.loads(machine.succeed("cat /run/nails-status.json"))
         return payload.get("data", payload)
