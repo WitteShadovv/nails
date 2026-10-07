@@ -24,6 +24,11 @@ mod submount;
 mod system_ops;
 
 pub use submount::Submount;
+
+/// Read-only, access-time-preserving opens and listings, shared with the
+/// forensic readers ([`crate::forensic`]) so every read of the decoy goes
+/// through the same `O_NOATIME` path.
+pub(crate) use noatime::{EntryType, OpenKind, open_noatime, read_dir_noatime};
 pub(crate) use submount::classify_submounts;
 
 #[cfg(test)]

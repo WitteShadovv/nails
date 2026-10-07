@@ -1105,6 +1105,7 @@ dependencies = [
  "colored",
  "criterion",
  "hex",
+ "memchr",
  "nails-core",
  "nails-teardown",
  "nix",

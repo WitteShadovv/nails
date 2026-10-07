@@ -43,6 +43,9 @@ pub mod residue_catalog;
 // Filesystem operations module
 pub mod filesystem;
 
+// Read-only raw-device, layout and tree readers for the forensic self-checks
+pub mod forensic;
+
 // State management module
 pub mod state;
 

@@ -19,7 +19,7 @@ use std::path::Path;
 
 /// How [`open_noatime`] treats the final path component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum OpenKind {
+pub(crate) enum OpenKind {
     /// A directory (`O_DIRECTORY`), following a symlink to it.
     Directory,
     /// A file, following a symlink to it (the plain `open(2)` behaviour).
@@ -30,7 +30,7 @@ pub(super) enum OpenKind {
 }
 
 /// Open `path` read-only with `O_NOATIME`, retrying without it on `EPERM`.
-pub(super) fn open_noatime(path: &Path, kind: OpenKind) -> io::Result<OwnedFd> {
+pub(crate) fn open_noatime(path: &Path, kind: OpenKind) -> io::Result<OwnedFd> {
     use rustix::fs::{Mode, OFlags, open};
 
     let mut base = OFlags::RDONLY | OFlags::CLOEXEC;
@@ -58,7 +58,7 @@ pub(super) fn read_to_string_noatime(path: &Path) -> io::Result<String> {
 
 /// One directory entry from [`read_dir_noatime`].
 #[derive(Debug, Clone)]
-pub(super) struct NoatimeEntry {
+pub(crate) struct NoatimeEntry {
     /// The entry's name within the directory.
     pub name: OsString,
     /// The entry type from `d_type`; `None` when the filesystem does not report
@@ -68,7 +68,7 @@ pub(super) struct NoatimeEntry {
 
 /// The `d_type` of a directory entry, reduced to what callers branch on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum EntryType {
+pub(crate) enum EntryType {
     /// A directory.
     Directory,
     /// A regular file.
@@ -80,7 +80,7 @@ pub(super) enum EntryType {
 }
 
 /// List `dir` without updating its access time, skipping `.` and `..`.
-pub(super) fn read_dir_noatime(dir: &Path) -> io::Result<Vec<NoatimeEntry>> {
+pub(crate) fn read_dir_noatime(dir: &Path) -> io::Result<Vec<NoatimeEntry>> {
     use rustix::fs::FileType;
 
     let fd = open_noatime(dir, OpenKind::Directory)?;
@@ -110,7 +110,7 @@ pub(super) fn read_dir_noatime(dir: &Path) -> io::Result<Vec<NoatimeEntry>> {
 impl NoatimeEntry {
     /// The entry type, from `d_type` or, when the filesystem left it unknown,
     /// from an `lstat` of `parent/name` (which never touches the atime).
-    pub(super) fn resolved_type(&self, parent: &Path) -> io::Result<EntryType> {
+    pub(crate) fn resolved_type(&self, parent: &Path) -> io::Result<EntryType> {
         if let Some(file_type) = self.file_type {
             return Ok(file_type);
         }
