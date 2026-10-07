@@ -9,9 +9,36 @@
 //! "did you mean" hint picked by edit distance from the keys serde lists, so
 //! the hint is always drawn from the table the bad key actually sits in.
 
+/// Keys of the retired live-overlay mode. The hidden session now overlays the
+/// whole root, so these have no meaning; naming them says what to do instead
+/// of suggesting a near-miss key.
+const RETIRED_KEYS: &[&str] = &[
+    "overlays",
+    "overlay_mode",
+    "overlay_exclusions",
+    "overlay_exclusions_remove",
+    "allow_leaky_exclusions",
+    "ephemeral",
+    "risky_services",
+    "nixos_switch_required",
+    "clear_history",
+    "color_scheme",
+    "prompt_label",
+    "emergency",
+];
+
 /// Rewrite a serde/toml error message into a one-line, actionable form.
 pub(super) fn describe(message: &str) -> String {
     let message = message.split_whitespace().collect::<Vec<_>>().join(" ");
+
+    if let Some(rest) = message.strip_prefix("unknown field `")
+        && let Some((name, _)) = rest.split_once('`')
+        && RETIRED_KEYS.contains(&name)
+    {
+        return format!(
+            "key `{name}` was removed: the hidden session overlays the whole root, so delete it"
+        );
+    }
 
     for (prefix, noun) in [
         ("unknown field `", "unknown key"),
@@ -78,6 +105,15 @@ fn levenshtein(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn describe_names_a_retired_key() {
+        let message = "unknown field `overlays`, expected one of `hidden_volume_root`, `log_path`";
+        assert_eq!(
+            describe(message),
+            "key `overlays` was removed: the hidden session overlays the whole root, so delete it"
+        );
+    }
 
     #[test]
     fn levenshtein_counts_single_edits() {

@@ -12,44 +12,6 @@ use crate::filesystem::ProcessMatch;
 use std::collections::HashSet;
 use std::path::Path;
 
-pub(super) fn nails_process_running() -> Result<bool> {
-    let proc_path = Path::new("/proc");
-    let excluded_pids = collect_ancestor_pids();
-
-    if !proc_path.exists() {
-        return Ok(false);
-    }
-
-    if let Ok(entries) = std::fs::read_dir(proc_path) {
-        for entry in entries.flatten() {
-            let entry_path = entry.path();
-            let pid_dir = entry_path.file_name().and_then(|n| n.to_str());
-
-            if pid_dir.is_some_and(|p| p.chars().all(|c| c.is_ascii_digit())) {
-                let pid = match pid_dir.and_then(|p| p.parse::<u32>().ok()) {
-                    Some(pid) => pid,
-                    None => continue,
-                };
-
-                if excluded_pids.contains(&pid) {
-                    continue;
-                }
-
-                let cmdline_path = entry_path.join("cmdline");
-
-                if let Ok(cmdline_bytes) = std::fs::read(&cmdline_path) {
-                    let cmdline = String::from_utf8_lossy(&cmdline_bytes).replace('\0', " ");
-                    if cmdline.to_lowercase().contains("nails") {
-                        return Ok(true);
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(false)
-}
-
 pub(super) fn nails_process_matches() -> Result<Vec<ProcessMatch>> {
     let proc_path = Path::new("/proc");
     let excluded_pids = collect_ancestor_pids();
@@ -155,5 +117,5 @@ fn collect_ancestor_pids() -> HashSet<u32> {
 }
 
 fn read_ppid(pid: u32) -> Option<u32> {
-    crate::process::identity::parent_pid(pid)
+    nails_teardown::proc::stat(pid).map(|s| s.ppid)
 }

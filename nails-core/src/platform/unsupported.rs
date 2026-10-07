@@ -4,15 +4,12 @@
 //! The refusal backend.
 //!
 //! Chosen for ostree / image-based hosts and for hosts whose PID 1 is not
-//! systemd. Its operations decline with a typed
-//! [`NailsError::UnsupportedPlatform`](crate::NailsError::UnsupportedPlatform)
-//! carrying the detector's actionable reason. The refusal is the deliverable for
-//! these hosts, not an error path to work around.
+//! systemd. It offers no host tools, no config layer and no build target; the
+//! detector's reason reaches the operator through
+//! [`HostProfile::require_supported`](super::HostProfile::require_supported).
 
-use super::{OverlayPolicy, Platform, PlatformKind, RestoreOutcome};
+use super::{Platform, PlatformKind};
 use crate::filesystem::Filesystem;
-use crate::process::ProcessRunner;
-use crate::{NailsError, Result};
 
 /// Backend for hosts NAILS refuses.
 #[derive(Debug, Clone)]
@@ -28,10 +25,9 @@ impl UnsupportedPlatform {
         }
     }
 
-    fn refuse<T>(&self) -> Result<T> {
-        Err(NailsError::UnsupportedPlatform {
-            reason: self.reason.clone(),
-        })
+    /// Why this host is refused.
+    pub fn reason(&self) -> &str {
+        &self.reason
     }
 }
 
@@ -40,61 +36,7 @@ impl<F: Filesystem> Platform<F> for UnsupportedPlatform {
         PlatformKind::Unsupported
     }
 
-    fn overlay_policy(&self) -> OverlayPolicy {
-        OverlayPolicy::none()
-    }
-
     fn host_command_dirs(&self) -> &'static [&'static str] {
         &[]
-    }
-
-    fn restore_base_system(
-        &self,
-        _fs: &F,
-        _runner: &dyn ProcessRunner,
-        _reboot_follows: bool,
-        _dispatch_reboot: &dyn Fn() -> Result<()>,
-        _env: &crate::RuntimeEnv,
-    ) -> Result<RestoreOutcome> {
-        self.refuse()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::filesystem::MockFilesystem;
-    use crate::process::run::MockProcessRunner;
-
-    #[test]
-    fn restore_refuses_with_typed_error() {
-        let fs = MockFilesystem::new();
-        let runner = MockProcessRunner::new();
-        let platform = UnsupportedPlatform::new("this host is ostree / image-based");
-
-        let result = Platform::restore_base_system(
-            &platform,
-            &fs,
-            &runner,
-            true,
-            &|| Ok(()),
-            &crate::RuntimeEnv::empty(),
-        );
-        match result {
-            Err(NailsError::UnsupportedPlatform { reason }) => {
-                assert!(reason.contains("ostree"));
-            }
-            other => panic!("expected an UnsupportedPlatform refusal, got {other:?}"),
-        }
-        assert!(runner.calls().is_empty());
-    }
-
-    #[test]
-    fn reports_no_overlay_policy() {
-        let platform = UnsupportedPlatform::new("nope");
-        let policy = <UnsupportedPlatform as Platform<MockFilesystem>>::overlay_policy(&platform);
-        assert_eq!(policy.mount_hooks, crate::platform::MountHooks::None);
-        assert!(policy.read_only.is_empty());
-        assert!(policy.default_exclusions.is_empty());
     }
 }

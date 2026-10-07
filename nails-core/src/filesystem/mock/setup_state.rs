@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::super::{MountInfo, MountSource, ProcessMatch};
+use super::super::{MountSource, ProcessMatch};
 use super::MockFilesystem;
 use chrono::{DateTime, Utc};
 use std::path::{Path, PathBuf};
@@ -25,109 +25,22 @@ pub enum PathKind {
 }
 
 impl MockFilesystem {
-    /// Set whether a path is mounted.
-    ///
-    /// A mount set this way is treated as NAILS-owned, so it can be torn down by
-    /// `unmount`. Use [`mock_set_mount_unmanaged`](Self::mock_set_mount_unmanaged)
-    /// to simulate a foreign mount that `unmount` must refuse.
-    pub fn mock_set_mounted(&self, path: &Path, mounted: bool) {
-        let mut mounts = self.mounted.lock().expect("MockFilesystem mutex poisoned");
-        let mut owned = self
-            .nails_owned_mounts
-            .lock()
-            .expect("MockFilesystem mutex poisoned");
-        if mounted {
-            mounts.insert(path.to_path_buf());
-            owned.insert(path.to_path_buf());
-        } else {
-            mounts.remove(path);
-            owned.remove(path);
-            self.mounted_overlays
-                .lock()
-                .expect("MockFilesystem mutex poisoned")
-                .remove(path);
-        }
-    }
-
-    /// Mark `path` as mounted but **not** NAILS-owned.
-    ///
-    /// Simulates a host filesystem (e.g. a real ext4 `/home`) that stale state
-    /// might wrongly point NAILS at: `unmount` must refuse it with
-    /// [`NailsError::RefusedUnmanagedUnmount`](crate::NailsError::RefusedUnmanagedUnmount).
-    pub fn mock_set_mount_unmanaged(&self, path: &Path) {
-        self.mounted
+    /// Mark the mount at `path` read-only, as the kernel does after an I/O
+    /// error on the device behind it.
+    pub fn mock_set_mount_read_only(&self, path: &Path) {
+        self.read_only_mounts
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .insert(path.to_path_buf());
-        self.nails_owned_mounts
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .remove(path);
     }
 
-    /// Set whether a path is mounted as an overlay filesystem.
-    pub fn mock_set_overlay_mounted(&self, path: &Path, mounted: bool) {
-        self.mock_set_mounted(path, mounted);
-
-        let mut overlays = self
-            .mounted_overlays
-            .lock()
-            .expect("MockFilesystem mutex poisoned");
+    /// Set whether a path is mounted.
+    pub fn mock_set_mounted(&self, path: &Path, mounted: bool) {
+        let mut mounts = self.mounted.lock().expect("MockFilesystem mutex poisoned");
         if mounted {
-            overlays.insert(
-                path.to_path_buf(),
-                MountInfo {
-                    lowers: vec![path.to_path_buf()],
-                    upper: PathBuf::from(format!("/mock-upper{}", path.display())),
-                    work: PathBuf::from(format!("/mock-work{}", path.display())),
-                    target: path.to_path_buf(),
-                    mounted_at: Utc::now(),
-                },
-            );
+            mounts.insert(path.to_path_buf());
         } else {
-            overlays.remove(path);
-        }
-    }
-
-    /// Mount a NAILS overlay at `target` with explicit `upper`/`work` directories.
-    ///
-    /// Unlike [`mock_set_overlay_mounted`](Self::mock_set_overlay_mounted), which
-    /// invents an upperdir outside any hidden root, this records the real upper
-    /// and work paths so [`discover_nails_mounts`](crate::Filesystem::discover_nails_mounts)
-    /// classifies the overlay as persistent (upper under the hidden root) exactly
-    /// as the kernel parser would. Used by status/reconcile tests to stand up a
-    /// genuinely NAILS-owned overlay.
-    pub fn mock_mount_nails_overlay(&self, target: &Path, upper: &Path, work: &Path) {
-        self.mounted
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .insert(target.to_path_buf());
-        self.nails_owned_mounts
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .insert(target.to_path_buf());
-        self.mounted_overlays
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .insert(
-                target.to_path_buf(),
-                MountInfo {
-                    lowers: vec![target.to_path_buf()],
-                    upper: upper.to_path_buf(),
-                    work: work.to_path_buf(),
-                    target: target.to_path_buf(),
-                    mounted_at: Utc::now(),
-                },
-            );
-    }
-
-    /// Set whether a path is busy (has open files)
-    pub fn mock_set_busy(&self, path: &Path, busy: bool) {
-        let mut busy_set = self.busy.lock().expect("MockFilesystem mutex poisoned");
-        if busy {
-            busy_set.insert(path.to_path_buf());
-        } else {
-            busy_set.remove(path);
+            mounts.remove(path);
         }
     }
 
@@ -274,32 +187,6 @@ impl MockFilesystem {
             .insert(src.to_path_buf());
     }
 
-    /// Set the reported size for a directory
-    pub fn mock_set_directory_size(&self, path: &Path, size: u64) {
-        self.directory_sizes
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .insert(path.to_path_buf(), size);
-    }
-
-    /// Set mock submount sources for a target directory
-    pub fn mock_set_submount_sources(&self, target: &Path, sources: Vec<(PathBuf, PathBuf)>) {
-        self.submount_sources
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .insert(target.to_path_buf(), sources);
-    }
-
-    /// Set the classified submounts returned by
-    /// [`Filesystem::find_submounts`](crate::Filesystem::find_submounts) for a
-    /// target, so a test can drive the parent-overlay re-attach plan.
-    pub fn mock_set_submounts(&self, target: &Path, submounts: Vec<crate::filesystem::Submount>) {
-        self.submounts
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .insert(target.to_path_buf(), submounts);
-    }
-
     /// Set free space for a path
     pub fn mock_set_free_space(&self, path: &Path, bytes: u64) {
         let mut paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
@@ -340,174 +227,6 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .insert(path.to_path_buf(), message.to_string());
-    }
-
-    /// Set whether a mount operation should fail for a specific path
-    ///
-    /// This is useful for testing rollback scenarios where mount operations fail.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Target mount path that should fail
-    /// * `should_fail` - If true, mount operations to this path will fail
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
-    /// use std::path::Path;
-    ///
-    /// let fs = MockFilesystem::new();
-    /// fs.mock_set_mount_should_fail("/home", true);
-    ///
-    /// // This will now fail
-    /// let result = fs.mount_overlay(
-    ///     &[Path::new("/")],
-    ///     Path::new("/mnt/hidden/upper"),
-    ///     Path::new("/mnt/hidden/work"),
-    ///     Path::new("/home")
-    /// );
-    /// assert!(result.is_err());
-    /// ```
-    pub fn mock_set_mount_should_fail(&self, path: &str, should_fail: bool) {
-        let mut fail_map = self
-            .mount_should_fail
-            .lock()
-            .expect("MockFilesystem mutex poisoned");
-        if should_fail {
-            // EIO is a generic, fatal mount failure: it is *not* one of the
-            // EINVAL/EBUSY/EOPNOTSUPP errnos the overlay strategy retries with a
-            // pivot fallback, so a plain `mount_should_fail` keeps the historical
-            // "mount fails outright" behaviour. Tests that need the pivot-fallback
-            // branch pick the errno explicitly via `mock_set_mount_fail_errno`.
-            fail_map.insert(PathBuf::from(path), nix::errno::Errno::EIO);
-        } else {
-            fail_map.remove(&PathBuf::from(path));
-        }
-    }
-
-    /// Configure a mount operation to fail with a specific errno.
-    ///
-    /// Like [`MockFilesystem::mock_set_mount_should_fail`], but lets tests choose
-    /// the errno so strategy code that branches on `EINVAL`/`EBUSY`/`EOPNOTSUPP`
-    /// versus a fatal errno can be exercised directly.
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use nails_core::filesystem::MockFilesystem;
-    ///
-    /// let fs = MockFilesystem::new();
-    /// fs.mock_set_mount_fail_errno("/data", nix::errno::Errno::ENOSPC);
-    /// ```
-    pub fn mock_set_mount_fail_errno(&self, path: &str, errno: nix::errno::Errno) {
-        self.mount_should_fail
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .insert(PathBuf::from(path), errno);
-    }
-
-    /// Set whether an unmount operation should fail for a specific path
-    ///
-    /// This is useful for testing deactivation rollback scenarios where unmount operations fail.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Target mount path that should fail to unmount
-    /// * `should_fail` - If true, unmount operations for this path will fail
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
-    /// use std::path::Path;
-    ///
-    /// let fs = MockFilesystem::new();
-    ///
-    /// // Set up a mounted overlay
-    /// fs.mock_set_mounted(Path::new("/home"), true);
-    ///
-    /// // Configure unmount to fail
-    /// fs.mock_set_unmount_should_fail("/home", true);
-    ///
-    /// // This will now fail
-    /// let result = fs.unmount(Path::new("/home"), false);
-    /// assert!(result.is_err());
-    /// ```
-    pub fn mock_set_unmount_should_fail(&self, path: &str, should_fail: bool) {
-        let mut fail_set = self
-            .unmount_should_fail
-            .lock()
-            .expect("MockFilesystem mutex poisoned");
-        if should_fail {
-            fail_set.insert(PathBuf::from(path));
-        } else {
-            fail_set.remove(&PathBuf::from(path));
-        }
-    }
-
-    /// Configure graceful unmount to fail for specific paths (force unmount will succeed)
-    ///
-    /// This is useful for testing the graceful-fail-then-force-succeed path in rollback.
-    ///
-    /// # Arguments
-    ///
-    /// * `path` - Path that should fail graceful unmount
-    /// * `should_fail` - If true, graceful unmount will fail (force will succeed)
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
-    /// use std::path::Path;
-    ///
-    /// let fs = MockFilesystem::new();
-    /// fs.mock_set_mounted(Path::new("/home"), true);
-    ///
-    /// // Configure graceful to fail, force to succeed
-    /// fs.mock_set_unmount_graceful_fails("/home", true);
-    ///
-    /// // Graceful unmount fails
-    /// let graceful_result = fs.unmount(Path::new("/home"), false);
-    /// assert!(graceful_result.is_err());
-    ///
-    /// // Force unmount succeeds
-    /// let force_result = fs.unmount(Path::new("/home"), true);
-    /// assert!(force_result.is_ok());
-    /// ```
-    pub fn mock_set_unmount_graceful_fails(&self, path: &str, should_fail: bool) {
-        let mut fail_set = self
-            .unmount_graceful_fails
-            .lock()
-            .expect("MockFilesystem mutex poisoned");
-        if should_fail {
-            fail_set.insert(PathBuf::from(path));
-        } else {
-            fail_set.remove(&PathBuf::from(path));
-        }
-    }
-
-    /// Set whether nails processes are running
-    ///
-    /// # Arguments
-    ///
-    /// * `running` - If true, nails_process_running() will return true
-    ///
-    /// # Example
-    ///
-    /// ```rust
-    /// use nails_core::filesystem::{Filesystem, MockFilesystem};
-    ///
-    /// let fs = MockFilesystem::new();
-    /// fs.mock_set_nails_process_running(true);
-    /// assert!(fs.nails_process_running().unwrap());
-    /// ```
-    pub fn mock_set_nails_process_running(&self, running: bool) {
-        let mut is_running = self
-            .nails_process_running
-            .lock()
-            .expect("MockFilesystem mutex poisoned");
-        *is_running = running;
     }
 
     /// Set the classified process matches returned by

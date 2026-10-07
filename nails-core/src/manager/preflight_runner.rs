@@ -75,9 +75,8 @@ pub struct RegistryInputs {
 ///
 /// # Errors
 ///
-/// Propagates any error from [`build_overlay_targets`] when the configuration
-/// uses [`OverlayMode::Auto`](crate::config::OverlayMode::Auto); the target list
-/// cannot be enumerated without it.
+/// None today; the `Result` keeps the signature stable for checks that need
+/// fallible setup.
 pub fn build_registry<F: Filesystem>(
     fs: &F,
     config: &Config,
@@ -262,37 +261,6 @@ pub fn build_registry<F: Filesystem>(
 }
 
 impl<F: Filesystem> NailsManager<F> {
-    /// Run read-only NixOS preflight checks that are safe before detach/session kill.
-    pub fn run_read_only_nixos_preflight(&self, overlay_only: bool) -> Result<()> {
-        if overlay_only {
-            return Ok(());
-        }
-
-        if let Some(builder) = self.nixos_builder.as_ref()
-            && builder.is_flake()
-        {
-            let summary = builder
-                .preflight_flake_reference_fast()
-                .map_err(|err| match err {
-                    NailsError::NixOSPreflightError { message, .. } => {
-                        NailsError::PreFlightCheckFailed(vec![(
-                            "nixos-build-target".to_string(),
-                            message,
-                            None,
-                        )])
-                    }
-                    other => other,
-                })?;
-            tracing::info!(
-                metadata_checked = summary.metadata_checked,
-                attr_checked = summary.attr_checked,
-                "Read-only flake preflight completed"
-            );
-        }
-
-        Ok(())
-    }
-
     /// Build the pre-flight registry for this manager's current inputs.
     ///
     /// Assembles the [`RegistryInputs`] from the manager's configuration, builder
@@ -309,10 +277,9 @@ impl<F: Filesystem> NailsManager<F> {
         read_only: bool,
         accept_persistent_decoy: bool,
     ) -> Result<PreFlightRegistry<F>> {
-        let flake_target_already_validated = self
-            .nixos_builder
-            .as_ref()
-            .is_some_and(|builder| builder.is_flake());
+        // The build-target check only reads the flake layout; nothing validates
+        // a flake out of band any more.
+        let flake_target_already_validated = false;
         let selected_flake_dir = self
             .nixos_builder
             .as_ref()
@@ -341,44 +308,9 @@ impl<F: Filesystem> NailsManager<F> {
         build_registry(&self.filesystem, &self.config, &inputs, layer.as_deref())
     }
 
-    /// Run all pre-flight checks before activation
-    ///
-    /// Creates a PreFlightRegistry, registers all validation checks, and executes them.
-    /// Returns comprehensive error information if any checks fail.
-    ///
-    /// # Pre-flight Checks Executed (Stories 3.1-3.7, 4.12, 15.2)
-    ///
-    /// 1. **HiddenVolumeCheck** - Validates hidden volume is mounted
-    /// 2. **OverlayTargetsCheck** - Validates no target hides the hidden volume
-    ///    and no exclusion leaks to the decoy disk
-    /// 3. **StorageReadinessCheck** - Validates directory structure + overlay accessibility
-    /// 4. **NixOSConfigCheck** - Validates NixOS config overlay structure
-    /// 5. **SwapCheck** - Validates swap is disabled
-    /// 6. **SpaceCheck** - Validates sufficient disk space
-    /// 7. **StateCheck** - Validates current state allows activation
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(())` - All checks passed (or only warnings)
-    /// * `Err(NailsError::PreFlightCheckFailed)` - One or more checks failed
-    ///
-    /// # Example
-    ///
-    /// This is a private method called automatically during activation.
-    /// To run preflight checks, use `activate()`:
-    ///
-    /// ```rust,no_run
-    /// use nails_core::{NailsManager, MockFilesystem, Config};
-    /// use std::path::PathBuf;
-    ///
-    /// let fs = MockFilesystem::new();
-    /// let config = Config::default();
-    /// let state_path = PathBuf::from("/mnt/hidden-volume/state.json");
-    /// let mut manager = NailsManager::new(fs, config, state_path);
-    ///
-    /// // Activate with preflight checks (no_preflight = false)
-    /// let result = manager.activate(false);
-    /// ```
+    /// Run every pre-flight check of the activation registry, logging each
+    /// result, and refuse with [`NailsError::PreFlightCheckFailed`] when any
+    /// fails. Creates an empty state file when all pass.
     pub fn run_preflight_checks(
         &self,
         overlay_only: bool,

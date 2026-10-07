@@ -222,6 +222,18 @@ mod tests {
     use crate::MockFilesystem;
     use std::path::{Path, PathBuf};
 
+    #[test]
+    fn the_state_gate_refuses_a_directory_on_the_root_filesystem() {
+        let _gate = super::state_attach_probe::enforce();
+        let fs = crate::MockFilesystem::new();
+        fs.mock_set_path_exists("/", true);
+        fs.mock_set_path_exists("/mnt/data", true);
+        fs.mock_set_path_type("/mnt/data", crate::filesystem::PathKind::Dir);
+        fs.mock_set_device_id(std::path::Path::new("/"), 1);
+        fs.mock_set_device_id(std::path::Path::new("/mnt/data"), 1);
+        assert!(super::ensure_state_dir_attached(&fs, std::path::Path::new("/mnt/data")).is_err());
+    }
+
     const ROOT_DEVICE: u64 = 1;
     const VOLUME_DEVICE: u64 = 42;
 

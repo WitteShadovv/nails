@@ -8,34 +8,13 @@ use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
 
 impl MockFilesystem {
-    pub(super) fn nails_process_running_impl(&self) -> Result<bool> {
-        Ok(*self
-            .nails_process_running
-            .lock()
-            .expect("MockFilesystem mutex poisoned"))
-    }
-
     pub(super) fn nails_process_matches_impl(&self) -> Result<Vec<ProcessMatch>> {
-        if let Some(matches) = self
+        Ok(self
             .nails_process_matches
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clone()
-        {
-            return Ok(matches);
-        }
-        // Fall back to the boolean: a configured "process running" means the real
-        // binary is live (a strong match), so tests that set only the boolean
-        // still see a critical process finding.
-        if self.nails_process_running_impl()? {
-            Ok(vec![ProcessMatch {
-                pid: 1,
-                strong: true,
-                detail: "mock: a NAILS process is running".to_string(),
-            }])
-        } else {
-            Ok(Vec::new())
-        }
+            .unwrap_or_default())
     }
 
     pub(super) fn scan_files_with_pattern_impl(
@@ -141,60 +120,6 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .push(MockOp::WriteFile {
                 path: path.to_path_buf(),
-            });
-
-        Ok(())
-    }
-
-    pub(super) fn write_kernel_tunable_impl(&self, path: &Path, value: &str) -> Result<()> {
-        if self
-            .write_should_fail
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .contains(path)
-        {
-            return Err(NailsError::io(
-                path,
-                std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    format!("Mock kernel-tunable write failure for {}", path.display()),
-                ),
-            ));
-        }
-
-        // A kernel tunable must already exist: there is no create path, mirroring
-        // the real `open` without `O_CREAT`. A path explicitly tracked as absent
-        // (or never set up) fails with NotFound.
-        let exists = self
-            .paths
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .get(path)
-            .map(|info| info.exists)
-            .unwrap_or(false);
-        if !exists {
-            return Err(NailsError::io(
-                path,
-                std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Kernel tunable not found: {}", path.display()),
-                ),
-            ));
-        }
-
-        let mut contents = self
-            .file_contents
-            .lock()
-            .expect("MockFilesystem mutex poisoned");
-        contents.insert(path.to_path_buf(), value.to_string());
-        drop(contents);
-
-        self.op_log
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .push(MockOp::WriteKernelTunable {
-                path: path.to_path_buf(),
-                value: value.to_string(),
             });
 
         Ok(())
@@ -423,34 +348,5 @@ impl MockFilesystem {
                 ),
             ),
         ))
-    }
-
-    pub(super) fn enumerate_root_directories_impl(&self) -> Result<Vec<PathBuf>> {
-        let dirs = self
-            .root_directories
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .clone();
-        let symlinks = self
-            .root_symlinks
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .clone();
-
-        let mut result: Vec<PathBuf> = dirs
-            .into_iter()
-            .filter(|d| !symlinks.contains(d))
-            .filter(|d| {
-                if d.starts_with("/run/nails") {
-                    tracing::debug!("Skipping NAILS runtime directory: {}", d.display());
-                    false
-                } else {
-                    true
-                }
-            })
-            .collect();
-
-        result.sort();
-        Ok(result)
     }
 }

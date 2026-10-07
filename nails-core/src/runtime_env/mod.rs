@@ -32,18 +32,12 @@ mod installed;
 mod hooks;
 
 #[cfg(any(test, feature = "test-hooks"))]
-pub(crate) use hooks::wait_at_gate;
-#[cfg(any(test, feature = "test-hooks"))]
-pub use hooks::{SHELL_CLEANUP_PROTECTED_PIDS_ENV, SYSTEMD_RUN_PATH_ENV, TestHooks};
+pub use hooks::TestHooks;
 #[cfg(any(test, feature = "test-hooks"))]
 pub use installed::ScopedRuntimeEnv;
 pub use installed::{current, install};
 
-use crate::constants::{
-    ENV_DETACHED, ENV_DISABLE_NOTIFICATIONS, ENV_DISPLAY_MANAGER, ENV_FORCE_DETACH,
-    ENV_LOGIND_AVAILABLE, ENV_SESSION_ID, ENV_SKIP_DETACH, ENV_SYSTEM_PROFILE_PATH, ENV_TARGET_UID,
-    ENV_TARGET_USER,
-};
+use crate::constants::{ENV_TARGET_UID, ENV_TARGET_USER};
 use std::ffi::{OsStr, OsString};
 use std::path::PathBuf;
 
@@ -55,9 +49,6 @@ const ENV_SUDO_UID: &str = "SUDO_UID";
 const ENV_PKEXEC_UID: &str = "PKEXEC_UID";
 const ENV_DOAS_UID: &str = "DOAS_UID";
 const ENV_DOAS_USER: &str = "DOAS_USER";
-
-/// Routes a detached worker's streams to the journal (debug escape hatch).
-pub const ENV_DETACH_DEBUG_JOURNAL: &str = "NAILS_DETACH_DEBUG_JOURNAL";
 
 /// The full environment captured at startup, as the variables a spawned child
 /// may inherit from.
@@ -146,25 +137,6 @@ pub struct RuntimeEnv {
     /// `LANG` — default locale.
     pub lang: Option<String>,
 
-    /// `NAILS_LOGIND_AVAILABLE` — session-detection override.
-    pub nails_logind_available: Option<String>,
-    /// `NAILS_SESSION_ID` — session-detection override.
-    pub nails_session_id: Option<String>,
-    /// `NAILS_DISPLAY_MANAGER` — session-detection override.
-    pub nails_display_manager: Option<String>,
-    /// `NAILS_DISABLE_NOTIFICATIONS` — suppress desktop notifications when set.
-    pub nails_disable_notifications: Option<String>,
-    /// `NAILS_SYSTEM_PROFILE_PATH` — overrides the NixOS system profile path.
-    pub nails_system_profile_path: Option<OsString>,
-    /// `NAILS_DETACHED` — set inside the re-exec'd detached worker.
-    pub nails_detached: Option<OsString>,
-    /// `NAILS_FORCE_DETACH` — forces the detach handoff.
-    pub nails_force_detach: Option<OsString>,
-    /// `NAILS_SKIP_DETACH` — skips the detach handoff entirely.
-    pub nails_skip_detach: Option<OsString>,
-    /// `NAILS_DETACH_DEBUG_JOURNAL` — routes worker streams to the journal.
-    pub nails_detach_debug_journal: Option<OsString>,
-
     /// The whole environment, for the allowlisted inheritance of spawned children.
     pub inherited: InheritedVars,
 
@@ -208,16 +180,6 @@ impl RuntimeEnv {
             lc_ctype: str_var("LC_CTYPE"),
             lang: str_var("LANG"),
 
-            nails_logind_available: str_var(ENV_LOGIND_AVAILABLE),
-            nails_session_id: str_var(ENV_SESSION_ID),
-            nails_display_manager: str_var(ENV_DISPLAY_MANAGER),
-            nails_disable_notifications: str_var(ENV_DISABLE_NOTIFICATIONS),
-            nails_system_profile_path: std::env::var_os(ENV_SYSTEM_PROFILE_PATH),
-            nails_detached: std::env::var_os(ENV_DETACHED),
-            nails_force_detach: std::env::var_os(ENV_FORCE_DETACH),
-            nails_skip_detach: std::env::var_os(ENV_SKIP_DETACH),
-            nails_detach_debug_journal: std::env::var_os(ENV_DETACH_DEBUG_JOURNAL),
-
             inherited: InheritedVars(std::env::vars_os().collect()),
 
             #[cfg(any(test, feature = "test-hooks"))]
@@ -248,15 +210,6 @@ impl RuntimeEnv {
             _ => &None,
         };
         value.as_deref()
-    }
-
-    /// The NixOS system profile path, honouring `NAILS_SYSTEM_PROFILE_PATH`.
-    #[must_use]
-    pub fn system_profile_path(&self) -> PathBuf {
-        self.nails_system_profile_path
-            .as_ref()
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from("/nix/var/nix/profiles/system"))
     }
 
     /// Set `HOME`.
@@ -329,13 +282,6 @@ impl RuntimeEnv {
         self
     }
 
-    /// Set `NAILS_SYSTEM_PROFILE_PATH`.
-    #[must_use]
-    pub fn with_system_profile_path(mut self, path: impl Into<OsString>) -> Self {
-        self.nails_system_profile_path = Some(path.into());
-        self
-    }
-
     /// Replace the variables spawned children inherit from.
     #[must_use]
     pub fn with_inherited(mut self, vars: Vec<(OsString, OsString)>) -> Self {
@@ -399,20 +345,6 @@ mod tests {
         assert_eq!(env.lookup("NAILS_TARGET_USER"), Some("alice"));
         assert_eq!(env.lookup("PKEXEC_UID"), None);
         assert_eq!(env.lookup("HOME"), None);
-    }
-
-    #[test]
-    fn system_profile_path_defaults_and_honours_the_override() {
-        assert_eq!(
-            RuntimeEnv::empty().system_profile_path(),
-            PathBuf::from("/nix/var/nix/profiles/system")
-        );
-        assert_eq!(
-            RuntimeEnv::empty()
-                .with_system_profile_path("/tmp/profiles/system")
-                .system_profile_path(),
-            PathBuf::from("/tmp/profiles/system")
-        );
     }
 
     #[test]

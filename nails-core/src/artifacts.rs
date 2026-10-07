@@ -230,7 +230,7 @@ pub const ARTIFACTS: &[Artifact] = &[
         kind: ArtifactKind::Basename,
         scope: ArtifactScope::Decoy,
         severity: ArtifactSeverity::Warn,
-        value: crate::shell::NOTIFY_AUTOSTART_FILE,
+        value: LEGACY_NOTIFY_AUTOSTART_FILE,
         description: "XDG autostart entry written into the overlaid home.",
     },
     Artifact {
@@ -238,10 +238,17 @@ pub const ARTIFACTS: &[Artifact] = &[
         kind: ArtifactKind::ContentMarker,
         scope: ArtifactScope::Decoy,
         severity: ArtifactSeverity::Warn,
-        value: crate::shell::rc_integration::RC_BEGIN,
+        value: LEGACY_RC_BEGIN,
         description: "Managed shell-integration block marker appended to a login shell rc file.",
     },
 ];
+
+/// The autostart entry name earlier, live-overlay releases wrote; still
+/// scanned for, because a decoy may carry one from such a release.
+pub(crate) const LEGACY_NOTIFY_AUTOSTART_FILE: &str = "nails-notify.desktop";
+
+/// The shell-integration block marker earlier releases wrote; still scanned for.
+const LEGACY_RC_BEGIN: &str = "# >>> managed shell integration (auto-removed on deactivation) >>>";
 
 /// The full registry.
 pub fn artifacts() -> &'static [Artifact] {

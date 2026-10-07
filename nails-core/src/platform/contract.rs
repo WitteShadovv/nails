@@ -4,78 +4,23 @@
 //! One contract every [`Platform`] backend must satisfy.
 //!
 //! Each backend runs the same assertions so a new backend cannot quietly skip an
-//! invariant: kind and overlay policy stay coherent, only a refused host has no
-//! host-command directories, and restoring the base system after a *dispatched*
-//! reboot never shells out (so the ESP, bootloader and EFI NVRAM stay untouched).
+//! invariant: only a refused host has no host-command directories, only NixOS
+//! has a config layer, and discovery agrees with the layer.
 
 use super::{
-    FakePlatform, FhsPlatform, HostTarget, MountHooks, NixOsPlatform, NixRuntime, Platform,
-    PlatformKind, UnsupportedPlatform, discover_with_platform,
+    FakePlatform, FhsPlatform, HostTarget, NixOsPlatform, Platform, PlatformKind,
+    UnsupportedPlatform, discover_with_platform,
 };
 use crate::filesystem::{Filesystem, MockFilesystem, PathKind};
-use crate::process::run::MockProcessRunner;
 
 /// Assert the invariants that hold for every backend.
 fn assert_contract<F: Filesystem + 'static, P: Platform<F>>(platform: &P, fs: &F) {
     let kind = platform.kind();
 
-    // Kind and the policy's mount hooks agree.
-    let policy = platform.overlay_policy();
-    let expected_hooks = match kind {
-        PlatformKind::NixOs => MountHooks::NixOs,
-        PlatformKind::Fhs => MountHooks::Fhs,
-        PlatformKind::Unsupported => MountHooks::None,
-    };
-    assert_eq!(policy.mount_hooks, expected_hooks);
-
-    // The /nix runtime is resolved from the host, not the target name: nothing
-    // to do when /nix is not a target; Native only on NixOS; Foreign (daemon
-    // stop/start only, no store bind or current-system restore) everywhere else
-    // /nix is overlaid, including a refused/undetected host.
-    assert_eq!(platform.nix_runtime(false), NixRuntime::None);
-    let expected_runtime = match kind {
-        PlatformKind::NixOs => NixRuntime::Native,
-        PlatformKind::Fhs | PlatformKind::Unsupported => NixRuntime::Foreign,
-    };
-    assert_eq!(platform.nix_runtime(true), expected_runtime);
-
-    // A refused host guards and overlays nothing; a supported one never lists a
-    // read-only tree it does not also keep out of overlay enumeration.
-    if kind == PlatformKind::Unsupported {
-        assert!(policy.read_only.is_empty());
-        assert!(policy.default_exclusions.is_empty());
-    } else {
-        for tree in &policy.read_only {
-            // The whole decoy root is kept read-only but is not a top-level
-            // overlay-enumeration entry, so it is exempt from the subset rule.
-            if tree == std::path::Path::new("/") {
-                continue;
-            }
-            assert!(
-                policy.default_exclusions.contains(tree),
-                "read-only tree {} must also be excluded from overlay",
-                tree.display()
-            );
-        }
-    }
-
     // Only a refused host offers no host-command directories.
     assert_eq!(
         platform.host_command_dirs().is_empty(),
         kind == PlatformKind::Unsupported,
-    );
-
-    // Every backend names a non-empty display-manager fallback list with no empty
-    // entries, so the session layer always has something to probe after the
-    // generic `display-manager.service` alias.
-    let display_managers = platform.display_manager_units();
-    assert!(
-        !display_managers.is_empty(),
-        "a backend must list at least one display-manager unit",
-    );
-    assert!(
-        display_managers.iter().all(|unit| !unit.is_empty()),
-        "display-manager unit names must be non-empty",
     );
 
     // Only NixOS carries a declarative config layer; FHS and refused hosts have
@@ -102,23 +47,6 @@ fn assert_contract<F: Filesystem + 'static, P: Platform<F>>(platform: &P, fs: &F
     assert_eq!(
         discover_with_platform(platform, fs, hidden_root, Some("gh:me/cfg"), true).unwrap(),
         HostTarget::OverlayOnly,
-    );
-
-    // Restoring the base system after a dispatched reboot shells out to nothing.
-    let runner = MockProcessRunner::new();
-    let result =
-        platform.restore_base_system(fs, &runner, true, &|| Ok(()), &crate::RuntimeEnv::empty());
-    match kind {
-        PlatformKind::Unsupported => {
-            assert!(result.is_err(), "a refused host must decline restore");
-        }
-        _ => {
-            result.expect("supported backends restore without error");
-        }
-    }
-    assert!(
-        runner.calls().is_empty(),
-        "a dispatched reboot must not invoke switch-to-configuration",
     );
 }
 

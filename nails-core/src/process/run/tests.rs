@@ -674,20 +674,6 @@ fn command_display_joins_the_program_and_its_arguments() {
 }
 
 #[test]
-fn shared_host_commands_resolve_from_system_dirs_and_stay_guarded() {
-    assert_eq!(
-        systemctl_command(&["is-active", "gdm.service"]),
-        ProcessCommand::new(Program::Tool("systemctl")).args(["is-active", "gdm.service"])
-    );
-    assert_eq!(
-        signal_command(4242, "TERM"),
-        ProcessCommand::tool("kill").args(["-TERM", "4242"])
-    );
-    assert!(!systemctl_command(&[]).allowed_in_test_runtime);
-    assert!(!signal_command(1, "KILL").allowed_in_test_runtime);
-}
-
-#[test]
 fn mock_runner_records_calls_and_replays_scripted_results() {
     let runner = MockProcessRunner::new()
         .with_response(Ok(exited(1, "first", "")))

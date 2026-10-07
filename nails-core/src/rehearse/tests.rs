@@ -192,8 +192,6 @@ fn planting_writes_only_into_the_overlay_upper() {
     ))
     .in_user_mount_ns()
     .run(|| {
-        use crate::filesystem::{Filesystem, RealFilesystem};
-
         // The decoy: a home tree and an un-overlaid /srv-like tree.
         let decoy = ScratchTmpfs::new("");
         let lower = decoy.mkdir("home");
@@ -209,9 +207,22 @@ fn planting_writes_only_into_the_overlay_upper() {
         let upper = hidden.mkdir("home");
         let work = hidden.mkdir(".work");
         let target = decoy.mkdir("merged");
-        RealFilesystem
-            .mount_overlay(&[lower.as_path()], &upper, &work, &target)
-            .expect("mount the overlay");
+        nix::mount::mount(
+            Some("overlay"),
+            &target,
+            Some("overlay"),
+            nix::mount::MsFlags::empty(),
+            Some(
+                format!(
+                    "lowerdir={},upperdir={},workdir={}",
+                    lower.display(),
+                    upper.display(),
+                    work.display()
+                )
+                .as_str(),
+            ),
+        )
+        .expect("mount the overlay");
 
         let table = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
         let mounts = parse_mountinfo(&table);

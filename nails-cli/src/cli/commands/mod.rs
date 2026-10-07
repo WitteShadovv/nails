@@ -221,7 +221,6 @@ pub(crate) fn build_nixos_manager(
 ) -> nails_core::NailsManager<nails_core::RealFilesystem> {
     use nails_core::{HostTarget, NailsManager, NixOSBuilder, RealFilesystem};
 
-    let nails_profile = PathBuf::from("/nix/var/nix/profiles/nails-system");
     let mut manager =
         NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
     if let Err(e) = manager.initialize_platform() {
@@ -233,11 +232,9 @@ pub(crate) fn build_nixos_manager(
         .unwrap_or(HostTarget::None)
     {
         HostTarget::OverlayOnly | HostTarget::None => None,
-        HostTarget::ExplicitFlake(flake_ref) => {
-            Some(NixOSBuilder::new_with_flake_ref(flake_ref, nails_profile))
-        }
-        HostTarget::Flake(dir) => Some(NixOSBuilder::new(dir, nails_profile)),
-        HostTarget::Legacy(path) => Some(NixOSBuilder::new_legacy(path, nails_profile)),
+        HostTarget::ExplicitFlake(flake_ref) => Some(NixOSBuilder::new_with_flake_ref(flake_ref)),
+        HostTarget::Flake(dir) => Some(NixOSBuilder::new(dir)),
+        HostTarget::Legacy(path) => Some(NixOSBuilder::new_legacy(path)),
     };
     if let Some(builder) = builder {
         manager.set_nixos_builder(builder);

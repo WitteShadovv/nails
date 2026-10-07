@@ -118,7 +118,7 @@ fn config_validate_accepts_good_and_rejects_bad_files() {
         .success()
         .stdout(format!("{good_path}: valid\n"));
 
-    let bad = write_config("[color_scheme]\nenable = false\n");
+    let bad = write_config("[backend_watch]\nenable = false\n");
     nails()
         .args(["config", "validate", bad.path().to_str().unwrap()])
         .assert()
@@ -156,7 +156,7 @@ fn config_validate_uses_the_resolved_file_by_default() {
 
 #[test]
 fn activate_exits_3_on_unknown_key_before_any_operation() {
-    let bad = write_config("hidden_volume_root = \"/mnt/hv\"\nprompt_lable = \"x\"\n");
+    let bad = write_config("hidden_volume_root = \"/mnt/hv\"\nnixos_flak = \"x\"\n");
 
     nails()
         .args([
@@ -169,7 +169,7 @@ fn activate_exits_3_on_unknown_key_before_any_operation() {
         .code(3)
         .stdout("")
         .stderr(predicate::str::contains(
-            "unknown key `prompt_lable` (did you mean `prompt_label`?)",
+            "unknown key `nixos_flak` (did you mean `nixos_flake`?)",
         ))
         .stderr(predicate::str::contains("TEST SAFETY GUARD").not());
 }

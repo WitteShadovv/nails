@@ -6,11 +6,7 @@ expression: redact_volume_line(&stdout)
   NAILS Status Report
 =======================================
 
-State:              Inactive
-Security Posture:   [DECOY] Decoy system in use - no hidden environment mounted
-Persona mode:       shared-home
-  [WARN] shared-home: the hidden session uses the decoy home; its accounts and secrets are live
-
-Run 'nails activate' to mount hidden environment
-
+Security Posture:   [DECOY] Decoy system in use - no hidden session
+State:              Inactive (recorded)
 Hidden volume: [SIZE]
+[WARN] The decoy keeps a persistent journal or syslog: the soft-reboots are recorded on its disk

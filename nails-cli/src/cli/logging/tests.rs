@@ -347,7 +347,7 @@ fn init_subscriber_json_mode_with_file_layer_emits_stdout_and_writes_log() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
         hidden_root.display(),
         log_dir.display(),
     )
@@ -474,7 +474,7 @@ fn init_file_layer_gracefully_returns_none_for_missing_hidden_volume() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
         hidden_root.display(),
         hidden_root.join("logs").display(),
     )
@@ -499,7 +499,7 @@ fn init_subscriber_with_file_layer_writes_json_log_and_stderr() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
         hidden_root.display(),
         log_dir.display(),
     )
@@ -540,7 +540,7 @@ fn init_subscriber_falls_back_when_log_path_is_invalid() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
         hidden_root.display(),
         blocker.join("logs").display(),
     )
@@ -609,7 +609,7 @@ fn init_subscriber_warns_when_log_file_target_is_a_directory() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
         hidden_root.display(),
         log_dir.display(),
     )
@@ -643,7 +643,7 @@ fn init_subscriber_quiet_mode_suppresses_log_file_open_warning() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
         hidden_root.display(),
         log_dir.display(),
     )

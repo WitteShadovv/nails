@@ -145,7 +145,7 @@ fn isolated_config() -> (tempfile::TempDir, PathBuf) {
     let mut file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         file,
-        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"",
         hidden_root.display(),
         hidden_root.join("state.json").display(),
     )

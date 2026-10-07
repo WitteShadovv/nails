@@ -6,18 +6,15 @@
 //! `StateFile` struct and its save/load/integrity logic for persisting
 //! system state to the hidden volume.
 
+use super::SystemState;
 #[cfg(not(test))]
 use super::is_on_hidden_volume;
 #[cfg(test)]
 use super::is_on_hidden_volume_internal;
-use super::{FailedOverlayInfo, SubmountAttachment, SystemState};
 use crate::{NailsError, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-
-use super::OverlayInfo;
+use std::path::Path;
 
 /// Path to the kernel's per-boot identifier.
 ///
@@ -128,26 +125,6 @@ impl PlatformState {
 ///
 /// Writing state to the decoy system would leak evidence of hidden
 /// environment usage, defeating NAILS' plausible deniability.
-/// The graphical session a hidden environment ran under.
-///
-/// Captured at activation from the session-kill restart plan as a record of the
-/// session activation took over. No teardown acts on it: emergency never ends a
-/// logind session and never touches the display manager or X server.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct HiddenSession {
-    /// The operator uid whose logind session the hidden environment took over.
-    pub target_uid: u32,
-
-    /// The logind session id, when activation resolved one.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_id: Option<String>,
-
-    /// The display-manager unit activation restarted. `None` when none was
-    /// recorded.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub display_manager: Option<String>,
-}
-
 /// How long the most recent successful activation took, and when it finished.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastActivation {
@@ -208,86 +185,6 @@ pub struct StateFile {
     #[serde(default)]
     pub decoy_system: Option<String>,
 
-    /// Per-activation runtime scaffolding root.
-    ///
-    /// The random-named tmpfs under `/run` that holds this activation's pivot
-    /// staging mount points, the vfat snapshot tmpfs and the read-only
-    /// pre-overlay `/nix/store` bind (see [`crate::runtime_root`]). Recorded the
-    /// moment the tmpfs is mounted, so a trusted teardown unmounts and removes
-    /// exactly this tree and nothing else. `None` before the first activation,
-    /// after a rollback to Inactive, and on an activation that needed no
-    /// scaffolding. A state-independent emergency teardown does not rely on this
-    /// value: it rediscovers the tree from the live mount table. Cleared on
-    /// deactivation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub runtime_root: Option<PathBuf>,
-
-    /// Currently mounted overlays with their configuration
-    pub overlay_status: HashMap<PathBuf, OverlayInfo>,
-
-    /// Overlays that failed to mount during last activation
-    ///
-    /// Used for status reporting and debugging. Cleared on successful deactivation.
-    #[serde(default)]
-    pub failed_overlays: Vec<FailedOverlayInfo>,
-
-    /// Whether a read-only `/nix/store` self-bind was created in PID 1's mount
-    /// namespace during activation.
-    ///
-    /// This only happens when the manager and init mount namespaces differ (an
-    /// invocation preflight normally refuses). When set, that extra bind lives in
-    /// the init namespace, so the manager-namespace `/nix/store` unmount does not
-    /// reach it and teardown must undo it separately. Recording the fact here lets
-    /// deactivation remove exactly the bind it created — never the system's own
-    /// boot-time `/nix/store` bind. Cleared on deactivation.
-    #[serde(default)]
-    pub nix_store_init_namespace_bound: bool,
-
-    /// Decoy OS trees bind-remounted read-only for the session.
-    ///
-    /// On an FHS host the activation keeps the decoy root (`/`) and `/usr` (plus
-    /// any non-usr-merged core binary roots) read-only while hidden is active, so
-    /// hidden-session writes cannot reach the decoy disk. Each entry is a
-    /// read-only self-bind that deactivation and emergency teardown must undo to
-    /// return write access to the host. Empty on platforms whose protection comes
-    /// from overlays alone (NixOS). Cleared on deactivation.
-    #[serde(default)]
-    pub read_only_guards: Vec<PathBuf>,
-
-    /// Mounts created to keep submounts visible under overlaid targets, in
-    /// creation order.
-    ///
-    /// When a parent overlay would hide a filesystem the host mounted beneath it
-    /// (a snap squashfs, a separate `/var/log` partition, a tmpfs), activation
-    /// stages and re-attaches or nests it. Each resulting mount is recorded here
-    /// so deactivation and emergency teardown undo exactly those mounts, in
-    /// reverse, before the parent overlays come down. Empty when no target had a
-    /// hidden submount. Cleared on deactivation.
-    #[serde(default)]
-    pub submount_attachments: Vec<SubmountAttachment>,
-
-    /// Service units the hidden configuration brought up during activation.
-    ///
-    /// Recorded as the set difference between the active service units seen just
-    /// before and just after the hidden NixOS switch, so it holds only the units
-    /// the hidden generation added, not the decoy's own. Emergency teardown stops
-    /// exactly this set before unmounting, which ends the hidden services without
-    /// the cost (and decoy footprint) of a full switch back to the decoy
-    /// configuration. Empty when no switch ran or no unit was added. Cleared on
-    /// deactivation.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub hidden_added_units: Vec<String>,
-
-    /// The graphical session the hidden environment ran under, when activation
-    /// terminated one to take over the display.
-    ///
-    /// Recorded from the session-kill restart plan; no teardown acts on it (the
-    /// operator's graphical session is never ended or logged out by a teardown).
-    /// `None` for a TTY/headless activation that never touched a graphical
-    /// session. Cleared on deactivation.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hidden_session: Option<HiddenSession>,
-
     /// Timing of the most recent successful activation.
     ///
     /// Written as activation commits to Active and kept across deactivation, so
@@ -347,14 +244,6 @@ impl Default for StateFile {
             platform: None,
             config_fingerprint: None,
             decoy_system: None,
-            runtime_root: None,
-            overlay_status: HashMap::new(),
-            failed_overlays: Vec::new(),
-            nix_store_init_namespace_bound: false,
-            read_only_guards: Vec::new(),
-            submount_attachments: Vec::new(),
-            hidden_added_units: Vec::new(),
-            hidden_session: None,
             last_activation: None,
             last_modified: Utc::now(),
             boot_id: None,
@@ -529,12 +418,6 @@ impl StateFile {
     /// (unique `O_EXCL` temp under the parent dir fd, `fsync`, `renameat`, parent
     /// `fsync`) that the previous `tempfile`-based path did, with containment added.
     fn save_internal(&self, path: &Path, hidden_volume_root: &str) -> Result<()> {
-        // Test-only: let a regression test force this save to fail at a precise
-        // target state, standing in for an ENOSPC/EROFS write failure without a
-        // read-only filesystem. Compiled out of the production path entirely.
-        #[cfg(test)]
-        save_probe::check(&self.state)?;
-
         // 1. Stamp write-time provenance onto a working copy.
         let mut final_state = self.clone();
         final_state.boot_id = read_boot_id();
@@ -863,83 +746,5 @@ pub(crate) mod sync_probe {
 
     pub(crate) fn dir_syncs() -> usize {
         DIR_SYNCS.load(Ordering::SeqCst)
-    }
-}
-
-/// Test-only seam to force a state save to fail at a chosen target state.
-///
-/// Mirrors [`sync_probe`]: compiled only under `cfg(test)`, so the production
-/// save path never consults it. It lets the deactivation regression tests make
-/// [`StateFile::save_internal`] fail at a precise `?` site — the save of a given
-/// target state — reproducing an ENOSPC/EROFS write failure without needing a
-/// real read-only filesystem, and so without perturbing the earlier saves that
-/// must succeed to reach that site.
-///
-/// The arming flag is thread-local: a test arms it on the same worker thread
-/// that runs the deactivation (and therefore the save), so concurrent `serial`
-/// tests and the harness's own saves on other threads are never affected.
-#[cfg(test)]
-pub(crate) mod save_probe {
-    use crate::{NailsError, Result, SystemState};
-    use std::cell::Cell;
-
-    /// A target state whose save should fail on the current thread. Several may be
-    /// armed at once so a single run can fail an early write *and* the rollback
-    /// write that `StateGuard::drop` then attempts — the exact shape of the
-    /// original self-deadlock.
-    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-    pub(crate) enum FailOn {
-        /// Fail the `ACTIVE -> DEACTIVATING` write (the first guarded `?` site).
-        Deactivating,
-        /// Fail the `DEACTIVATING -> INACTIVE` write (after unmount).
-        Inactive,
-        /// Fail the rollback write back to `ACTIVE` performed by `StateGuard::drop`.
-        Active,
-    }
-
-    const BIT_DEACTIVATING: u8 = 1 << 0;
-    const BIT_INACTIVE: u8 = 1 << 1;
-    const BIT_ACTIVE: u8 = 1 << 2;
-
-    thread_local! {
-        static FAIL_BITS: Cell<u8> = const { Cell::new(0) };
-    }
-
-    fn bit(target: FailOn) -> u8 {
-        match target {
-            FailOn::Deactivating => BIT_DEACTIVATING,
-            FailOn::Inactive => BIT_INACTIVE,
-            FailOn::Active => BIT_ACTIVE,
-        }
-    }
-
-    /// Arm the seam so every save whose state matches one of `targets` returns
-    /// `Err`. Replaces any previously armed set on this thread.
-    pub(crate) fn arm(targets: &[FailOn]) {
-        let bits = targets.iter().fold(0u8, |acc, &t| acc | bit(t));
-        FAIL_BITS.with(|cell| cell.set(bits));
-    }
-
-    /// Disarm the seam on the current thread.
-    pub(crate) fn disarm() {
-        FAIL_BITS.with(|cell| cell.set(0));
-    }
-
-    /// Return `Err` when the state being written matches an armed target.
-    pub(crate) fn check(state: &SystemState) -> Result<()> {
-        let bits = FAIL_BITS.with(|cell| cell.get());
-        let hit = match state {
-            SystemState::Deactivating { .. } => bits & BIT_DEACTIVATING != 0,
-            SystemState::Inactive => bits & BIT_INACTIVE != 0,
-            SystemState::Active { .. } => bits & BIT_ACTIVE != 0,
-            _ => false,
-        };
-        if hit {
-            return Err(NailsError::io(
-                "state.json",
-                std::io::Error::other("injected state-save failure (test seam)"),
-            ));
-        }
-        Ok(())
     }
 }

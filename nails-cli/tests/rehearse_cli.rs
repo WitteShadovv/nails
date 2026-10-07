@@ -26,7 +26,7 @@ impl Harness {
             &config,
             format!(
                 "hidden_volume_root = {root:?}\nstate_file_path = {state:?}\n\
-                 show_opsec_reminders = false\noverlays = []\n",
+                 show_opsec_reminders = false\n",
                 root = hidden.display().to_string(),
                 state = hidden.join("state.json").display().to_string(),
             ),

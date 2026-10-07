@@ -8,8 +8,8 @@ use super::*;
 impl<F: Filesystem> Verifier<F> {
     /// Check config-specific paths for residual artifacts
     ///
-    /// Checks overlay mount points from config, log directory, hidden volume path,
-    /// and state file location for any residual NAILS artifacts.
+    /// Checks the log directory, hidden volume path and state file location for
+    /// any residual NAILS artifacts.
     pub(super) fn check_config_paths(&self, config: &Config) -> Result<(Vec<Finding>, usize)> {
         let mut findings = Vec::new();
         let mut paths_checked: usize = 0;
@@ -28,25 +28,6 @@ impl<F: Filesystem> Verifier<F> {
         // attached, so — exactly as for the Inactive host context — its path being
         // accessible and its state file existing are expected, not residue.
         let suppress_hidden_volume = host_context_inactive || self.scope_to_decoy;
-
-        // 1. Check config overlay mount points for residual mounts
-        for overlay in &config.overlays {
-            let mount_path = &overlay.target;
-            paths_checked += 1;
-            if self.filesystem.is_overlay_mounted(mount_path)? {
-                findings.push(
-                    Finding::new(
-                        Severity::Critical,
-                        "config",
-                        format!(
-                            "Config overlay mount point still mounted: {}",
-                            mount_path.display()
-                        ),
-                    )
-                    .with_fix_guidance("Run 'nails deactivate' to unmount overlays"),
-                );
-            }
-        }
 
         // 2. Check hidden volume path for accessibility.
         //
@@ -166,73 +147,34 @@ impl<F: Filesystem> Verifier<F> {
     pub(super) fn check_state(&self, state: &StateFile) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
-        // Check if state indicates system is still active or in transition
+        // The live facts (the session-leftovers check) say where the machine
+        // is; the record only adds that a session ended without `deactivate`.
         match &state.state {
-            crate::SystemState::Active { overlays, .. } => {
+            crate::SystemState::Active { .. } => {
                 findings.push(
                     Finding::new(
-                        Severity::Critical,
+                        Severity::Warn,
                         "state",
-                        format!(
-                            "State file indicates system is ACTIVE with {} overlays",
-                            overlays.len()
-                        ),
-                    )
-                    .with_fix_guidance("Run 'nails deactivate' to properly shut down"),
-                );
-            }
-            crate::SystemState::Activating { .. } => {
-                findings.push(
-                    Finding::new(
-                        Severity::Critical,
-                        "state",
-                        "State file indicates system is stuck in ACTIVATING state",
-                    )
-                    .with_fix_guidance("Run 'nails recover' to clean up the partial activation"),
-                );
-            }
-            crate::SystemState::Deactivating { .. } => {
-                findings.push(
-                    Finding::new(
-                        Severity::Critical,
-                        "state",
-                        "State file indicates system is stuck in DEACTIVATING state",
-                    )
-                    .with_fix_guidance("Run 'nails recover' to complete the teardown"),
-                );
-            }
-            crate::SystemState::Degraded {
-                remaining_mounts, ..
-            } => {
-                findings.push(
-                    Finding::new(
-                        Severity::Critical,
-                        "state",
-                        format!(
-                            "State file indicates DEGRADED state — {} mount(s) may still be live",
-                            remaining_mounts.len()
-                        ),
+                        "The state file records an active session: a session ended without \
+                         `nails deactivate` (a hard reset, a power-off or an emergency that could \
+                         not record it)",
                     )
                     .with_fix_guidance(
-                        "Run 'nails recover' to finish teardown, then 'nails verify --deep'",
+                        "The next activation records a new session; check `nails status` first",
                     ),
                 );
             }
-            crate::SystemState::Inactive => {
-                // Good — system is inactive, no state-level concerns
+            crate::SystemState::Degraded { reason, .. } => {
+                findings.push(
+                    Finding::new(
+                        Severity::Warn,
+                        "state",
+                        format!("The state file records a degraded session: {reason}"),
+                    )
+                    .with_fix_guidance("Run 'nails recover', then 'nails verify --deep'"),
+                );
             }
-        }
-
-        // Check for failed overlays from previous activation
-        if !state.failed_overlays.is_empty() {
-            findings.push(Finding::new(
-                Severity::Info,
-                "state",
-                format!(
-                    "State records {} failed overlay(s) from previous activation",
-                    state.failed_overlays.len()
-                ),
-            ));
+            crate::SystemState::Inactive => {}
         }
 
         Ok(findings)

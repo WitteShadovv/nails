@@ -328,7 +328,7 @@ fn plant_notification(token: &str, env: Option<&RuntimeEnv>) -> ChannelRecord {
     let Some(env) = env else {
         return skipped(kind, "desktop", "no session environment");
     };
-    let notification = crate::Notification {
+    let notification = crate::notification::Notification {
         title: "Reminder".to_string(),
         body: format!("{FILE_PREFIX}{token}"),
         urgency: "low".to_string(),

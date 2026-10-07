@@ -46,7 +46,6 @@ pub fn execute(
         Err(status) => return status,
     };
     loaded.apply_cli_overrides(&CliOverrides {
-        clear_history: None,
         nixos_flake: args.nixos_flake.clone(),
     });
 

@@ -3,15 +3,9 @@
 
 //! Filesystem trait definition and helper functions
 
-mod helpers;
-
-pub use helpers::verify_mount_preconditions;
-
 use crate::Result;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
-
-use super::MountInfo;
 
 /// Total and available space for a filesystem, taken from a single `statvfs`
 /// call so the status path never has to walk directories to report usage.
@@ -106,50 +100,16 @@ pub struct ProcessMatch {
 /// - **'static:** Implementations own their state (no borrowed filesystems), so
 ///   platform backends, config layers and progress reporters can be handed out
 ///   as trait objects that outlive a borrow of the manager
-///
-/// # Implementation Notes
-///
-/// Operations should be **idempotent** where possible:
-/// - `unmount()` succeeds even if not mounted (no-op)
 pub trait Filesystem: Send + Sync + Clone + 'static {
     // ------------------------------------------------------------------------
-    // Overlay Mount Operations (Core Functionality)
+    // Mount Queries
     // ------------------------------------------------------------------------
-
-    /// Mount an overlay filesystem combining lower, upper, and work directories.
-    ///
-    /// * `lower` - Read-only base layers (first element is primary, rest are extra
-    ///   lower layers; overlayfs stacks them left-to-right)
-    /// * `upper` - Writeable upper layer (typically in hidden volume)
-    /// * `work` - Work directory for overlay metadata
-    /// * `target` - Mount point where overlay appears
-    fn mount_overlay(
-        &self,
-        lower: &[&Path],
-        upper: &Path,
-        work: &Path,
-        target: &Path,
-    ) -> Result<()>;
-
-    /// Unmount an overlay filesystem (idempotent).
-    ///
-    /// * `target` - Mount point to unmount
-    /// * `force` - If true, use MNT_FORCE | MNT_DETACH
-    ///
-    /// Unmounting a path NAILS did not mount is refused with
-    /// [`NailsError::RefusedUnmanagedUnmount`](crate::NailsError::RefusedUnmanagedUnmount)
-    /// before any syscall, so the force escalation can never detach a host
-    /// filesystem that stale state wrongly points at.
-    fn unmount(&self, target: &Path, force: bool) -> Result<()>;
 
     /// Check if a path is currently mounted.
     fn is_mounted(&self, target: &Path) -> Result<bool>;
 
     /// Get the filesystem type at a mount point. Returns `None` if not a mount point.
     fn get_filesystem_type(&self, target: &Path) -> Result<Option<String>>;
-
-    /// Check if a path has an overlayfs mount (not other mount types).
-    fn is_overlay_mounted(&self, target: &Path) -> Result<bool>;
 
     /// Whether the mount visible at `target` is mounted read-only.
     ///
@@ -164,11 +124,6 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
         Ok(false)
     }
 
-    /// Get mount info for a currently mounted overlay.
-    ///
-    /// Retrieves mount metadata (lower, upper, work, target paths) for rollback support.
-    fn get_mount_info(&self, target: &Path) -> Option<MountInfo>;
-
     /// Identify the device, device-mapper name and filesystem label backing the
     /// mount at `mount_point`.
     ///
@@ -177,119 +132,6 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// missing optional attribute (no dm layer, no label) is left `None` rather
     /// than reported as an error.
     fn mount_source(&self, mount_point: &Path) -> Result<Option<MountSource>>;
-
-    /// Classify the NAILS-created mounts currently live, from the mount table
-    /// rather than any state file.
-    ///
-    /// This is the enumeration an emergency (or future recover) teardown falls
-    /// back to when the state file is corrupt or unreadable: it must tear down
-    /// the overlays NAILS actually mounted even though it can no longer trust the
-    /// recorded list. `hidden_root` distinguishes persistent overlays from
-    /// foreign ones exactly as in
-    /// [`NailsMounts::discover`](crate::filesystem::NailsMounts::discover).
-    fn discover_nails_mounts(
-        &self,
-        hidden_root: Option<&Path>,
-    ) -> Result<crate::filesystem::NailsMounts>;
-
-    /// Whether the mount at `target` is one NAILS created and so may unmount:
-    /// the same gate [`unmount`](Self::unmount) applies before it touches a
-    /// mount. The teardown plan's executor asks first, so a step whose mount is
-    /// gone never takes down the decoy mount that lay beneath it.
-    fn is_nails_owned(&self, target: &Path) -> Result<bool> {
-        Ok(self.discover_nails_mounts(None)?.is_owned(target))
-    }
-
-    /// The live mount table, when the backend reads a real one. The teardown
-    /// plan's presence check then judges a step exactly as the emergency hot
-    /// path does (the mount a lookup reaches, its mount id, where it sits);
-    /// without one it falls back to the backend's ownership answer.
-    fn mount_entries(&self) -> Option<Vec<crate::filesystem::MountEntry>> {
-        None
-    }
-
-    /// Detach the top mount at `target` lazily (`MNT_DETACH`), whatever holds
-    /// it. Only for a mount the caller has already proved NAILS's own (the
-    /// teardown plan's presence check); by default the gated forced unmount.
-    fn detach_lazily(&self, target: &Path) -> Result<()> {
-        self.unmount(target, true)
-    }
-
-    /// The kernel's mount id of the top mount at exactly `target`, when the
-    /// backend can read one. The teardown plan records it at activation and
-    /// compares it at teardown, so a step only ever undoes its own mount.
-    fn top_mount_id(&self, _target: &Path) -> Option<i32> {
-        None
-    }
-
-    // ------------------------------------------------------------------------
-    // Bind Mount Operations (Pivot Mount Strategy)
-    // ------------------------------------------------------------------------
-
-    /// Bind mount a source path to a target path.
-    ///
-    /// Creates a VFS entry making content at `source` appear at `target`.
-    /// Used in pivot mount strategy for overlaying active directories like `/var`.
-    fn bind_mount(&self, source: &Path, target: &Path) -> Result<()>;
-
-    /// Unmount a bind mount from target (idempotent).
-    fn unmount_bind(&self, target: &Path) -> Result<()>;
-
-    /// Re-attach a staged submount over its parent overlay.
-    ///
-    /// Recursively binds `source` — the staging capture of the submount's live
-    /// content, taken before the parent overlay hid it — onto `mount_point`, which
-    /// now sits over that overlay, so the submount's path resolves again (a snap
-    /// squashfs, an ESP, a tmpfs). When `read_only` the fresh bind is immediately
-    /// remounted read-only, so it cannot be written through the re-attach. A single
-    /// bind is left at `mount_point`, undone with [`unmount_bind`](Self::unmount_bind).
-    fn reattach_submount(&self, source: &Path, mount_point: &Path, read_only: bool) -> Result<()>;
-
-    /// Keep `target` read-only for the session (the read-only guard).
-    ///
-    /// For any tree but the root this performs `mount(target, target, MS_BIND)`
-    /// followed by `mount(target, target, MS_BIND|MS_REMOUNT|MS_RDONLY)`, leaving
-    /// one read-only self-bind stacked at `target`. The root is instead guarded in
-    /// place, by setting the per-mount read-only flag on its own mount: a mount
-    /// stacked on `/` is invisible to every running process and cannot be
-    /// unmounted again. The read-only guard uses this to keep a writable OS tree
-    /// (the root, `/usr` and the real-dir core binary roots on an FHS host)
-    /// read-only for the duration of a hidden session, so hidden writes never
-    /// reach the decoy disk. Undone with [`remove_read_only_guard`]. A busy
-    /// target surfaces as [`NailsError::MountBusy`] so the guard can fail closed.
-    ///
-    /// [`remove_read_only_guard`]: Self::remove_read_only_guard
-    fn remount_read_only(&self, target: &Path) -> Result<()>;
-
-    /// Undo the guard [`remount_read_only`](Self::remount_read_only) put on
-    /// `target` (idempotent). Defaults to [`unmount_bind`](Self::unmount_bind),
-    /// the undo of a self-bind; the real filesystem also clears the root's
-    /// in-place flag and detaches a busy self-bind lazily.
-    fn remove_read_only_guard(&self, target: &Path) -> Result<()> {
-        self.unmount_bind(target)
-    }
-
-    /// Whether a read-only guard (the read-only self-bind
-    /// [`remount_read_only`](Self::remount_read_only) stacks, or the root's
-    /// in-place read-only flag) sits on `target`.
-    ///
-    /// An untrusted teardown cannot read the recorded guard list, so it removes
-    /// only guards it can see here, never a decoy mount that merely sits at a
-    /// policy path (a separate `/usr` partition, the root filesystem itself).
-    fn is_read_only_guard(&self, target: &Path) -> Result<bool>;
-
-    // ------------------------------------------------------------------------
-    // Tmpfs Operations (Extended Overlay Strategy)
-    // ------------------------------------------------------------------------
-
-    /// Mount a tmpfs filesystem at target with specified size.
-    ///
-    /// Creates a RAM-backed temporary filesystem for ephemeral overlay layers.
-    /// Mounted with MS_NOSUID | MS_NODEV flags.
-    fn mount_tmpfs(&self, target: &Path, size: &str) -> Result<()>;
-
-    /// Unmount a tmpfs filesystem (idempotent). Destroys all data.
-    fn unmount_tmpfs(&self, target: &Path) -> Result<()>;
 
     // ------------------------------------------------------------------------
     // File System Operations
@@ -390,32 +232,11 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     // Process and File Reading Operations (for verify command)
     // ------------------------------------------------------------------------
 
-    /// Check if any NAILS-related processes are currently running.
-    fn nails_process_running(&self) -> Result<bool>;
-
     /// Enumerate the running processes whose command line references NAILS,
     /// classified by match strength (see [`ProcessMatch`]).
     ///
-    /// This is the honest replacement for the bare
-    /// [`nails_process_running`](Self::nails_process_running) boolean: it lets
-    /// `verify` distinguish the real NAILS binary still running (a critical leak)
-    /// from an unrelated process that merely mentions "nails" on its command line
-    /// (information only). The caller's own process and its ancestors are excluded.
-    ///
-    /// The default implementation preserves the old behaviour by reporting a
-    /// single weak match when [`nails_process_running`](Self::nails_process_running)
-    /// is true, so a filesystem that does not override it never over-reports.
-    fn nails_process_matches(&self) -> Result<Vec<ProcessMatch>> {
-        if self.nails_process_running()? {
-            Ok(vec![ProcessMatch {
-                pid: 0,
-                strong: false,
-                detail: "a process command line references NAILS".to_string(),
-            }])
-        } else {
-            Ok(Vec::new())
-        }
-    }
+    /// The caller's own process and its ancestors are excluded.
+    fn nails_process_matches(&self) -> Result<Vec<ProcessMatch>>;
 
     /// Read the contents of a text file.
     fn read_file_content(&self, path: &Path) -> Result<String>;
@@ -441,16 +262,6 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
 
     /// Write content to a file atomically (write to temp, then rename).
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()>;
-
-    /// Write a value to a kernel tunable (a `procfs`/`sysfs` knob) in place.
-    ///
-    /// Unlike [`write_file_content`](Self::write_file_content) this opens the
-    /// existing node directly for writing and never stages a sibling temp file to
-    /// rename into place: `procfs` and `sysfs` nodes cannot be created or renamed,
-    /// so the atomic-rename write always fails on them (which is why writing
-    /// `/proc/sys/vm/drop_caches` never worked before). The node must already
-    /// exist; the value is written as-is with no trailing newline added.
-    fn write_kernel_tunable(&self, path: &Path, value: &str) -> Result<()>;
 
     /// Write a file on behalf of an unprivileged user with symlink-safe opens
     /// and correct numeric ownership.
@@ -510,12 +321,6 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// List files and directories in a directory (non-recursive).
     fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>>;
 
-    /// Enumerate all top-level real directories under `/` (sorted alphabetically).
-    ///
-    /// Returns only real directories (not symlinks, not files). Used for dynamic
-    /// overlay enumeration when `overlay_mode: auto` is configured.
-    fn enumerate_root_directories(&self) -> Result<Vec<PathBuf>>;
-
     // ------------------------------------------------------------------------
     // File Size and Rename Operations (Log Rotation)
     // ------------------------------------------------------------------------
@@ -560,7 +365,7 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime>;
 
     // ------------------------------------------------------------------------
-    // Directory Copy and Size Operations (Snapshot Pivot Strategy)
+    // Copy Operations
     // ------------------------------------------------------------------------
 
     /// Recursively copy a directory tree preserving all attributes.
@@ -574,28 +379,4 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// [`set_permissions`](Self::set_permissions); the copy itself makes no
     /// promise about the destination mode.
     fn copy_file(&self, src: &Path, dst: &Path) -> Result<()>;
-
-    /// Get the total size of a directory's contents in bytes.
-    fn get_directory_size(&self, path: &Path) -> Result<u64>;
-
-    // ------------------------------------------------------------------------
-    // Submount Source Detection (Multi-Lower-Layer Overlayfs)
-    // ------------------------------------------------------------------------
-
-    /// Find bind mount sources for submounts within a target directory.
-    ///
-    /// Returns `(mount_point, source_path)` pairs for bind mounts nested within
-    /// `target`. Used to compute extra lower layers for overlayfs.
-    fn find_submount_sources(&self, target: &Path) -> Result<Vec<(PathBuf, PathBuf)>>;
-
-    /// Classify every submount nested under `target` into a re-attach, nested
-    /// overlay or extra-lower plan.
-    ///
-    /// This is the superset of [`find_submount_sources`](Self::find_submount_sources):
-    /// the extra-lower binds it returns are the same, but it also reports the
-    /// read-only mounts that must be re-attached over the parent overlay (snap
-    /// squashfs, an ESP, tmpfs) and the writable decoy-backed partitions that need
-    /// their own nested overlay. The parent-overlay mount loop and preflight both
-    /// consume it; see [`Submount`](crate::filesystem::Submount).
-    fn find_submounts(&self, target: &Path) -> Result<Vec<crate::filesystem::Submount>>;
 }

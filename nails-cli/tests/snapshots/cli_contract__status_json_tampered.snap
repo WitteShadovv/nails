@@ -6,23 +6,19 @@ expression: redact_status(value)
   "command": "status",
   "data": {
     "decoy_persistent": "[decoy_persistent]",
-    "decoy_writers": [],
-    "hidden_root_available_bytes": "[bytes]",
+    "hidden_root": "[hidden_root]",
     "hidden_root_mounted": false,
-    "hidden_root_total_bytes": "[bytes]",
-    "hidden_root_used_bytes": "[bytes]",
+    "masked_units": [],
+    "nextroot_mounted": false,
     "opsec_reminders": [],
-    "overlay_verification": {
-      "kind": "skipped"
-    },
-    "overlays": [],
     "persona_mode": "shared-home",
+    "policy_mounts": [],
     "posture": "unknown",
-    "remaining_mounts": [],
-    "remediation": "Run `nails emergency` and recover the hidden volume before activating again",
+    "remediation": "Run `nails verify` and check the hidden volume before activating again",
+    "session": "decoy",
     "state": {
       "kind": "unknown",
-      "reason": "state file is corrupt or has no integrity digest; the real state is unknown"
+      "reason": "state file is corrupt or has no integrity digest"
     },
     "state_source": "corrupt"
   },

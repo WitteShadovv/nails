@@ -1,12 +1,11 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The mountinfo parsers: [`parse_mountinfo`], the submount classifier built on
-//! it, and the mount-namespace check's own tokenizer.
+//! The mountinfo parsers: [`parse_mountinfo`] and the mount-namespace check's
+//! own tokenizer.
 
 use super::{abs_path, octal_escape};
 use crate::filesystem::mountinfo::parse_mountinfo;
-use crate::filesystem::real::classify_submounts;
 use crate::preflight::checks::mount_namespace::root_has_shared_propagation;
 use proptest::prelude::*;
 use std::path::{Path, PathBuf};
@@ -138,28 +137,10 @@ proptest! {
         prop_assert!(!expected || parsed_has_root);
     }
 
-    /// The submount classifier only ever plans mounts strictly below the target
-    /// that the shared parser also reports, each mount point once.
-    #[test]
-    fn fuzz_submounts_agree_with_the_parser(mounts in table(), target in abs_path()) {
-        let text: String = mounts.iter().map(|m| m.render() + "\n").collect();
-        let target = PathBuf::from(target);
-        let entries = parse_mountinfo(&text);
-        let plans = classify_submounts(&text, &target);
-        let mut seen = std::collections::HashSet::new();
-        for plan in &plans {
-            let point = plan.mount_point();
-            prop_assert!(point.starts_with(&target) && point != target.as_path());
-            prop_assert!(entries.iter().any(|e| e.mount_point == point));
-            prop_assert!(seen.insert(point.to_path_buf()), "duplicate plan for {:?}", point);
-        }
-    }
-
-    /// Arbitrary text never panics any of the three parsers.
+    /// Arbitrary text never panics either parser.
     #[test]
     fn fuzz_mountinfo_parsers_never_panic(text in "\\PC{0,400}") {
         let _ = parse_mountinfo(&text);
         let _ = root_has_shared_propagation(&text);
-        let _ = classify_submounts(&text, Path::new("/home"));
     }
 }

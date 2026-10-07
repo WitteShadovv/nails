@@ -47,11 +47,7 @@ fn preflight_check_names() -> BTreeSet<&'static str> {
     use crate::{Config, MockFilesystem, SystemState};
 
     let fs = MockFilesystem::new();
-    let config = Config {
-        overlay_mode: crate::config::OverlayMode::Explicit,
-        overlays: vec![],
-        ..Config::test_default()
-    };
+    let config = Config::test_default();
     let inputs = RegistryInputs {
         overlay_only: false,
         read_only: true,

@@ -361,7 +361,7 @@ mod tests {
         root_lists(&fs);
         mounted(&fs, "/home", true);
         mounted(&fs, "/etc", true);
-        fs.remount_read_only(Path::new("/mnt/data")).unwrap();
+        fs.mock_set_mount_read_only(Path::new("/mnt/data"));
 
         assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
     }

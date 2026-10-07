@@ -727,34 +727,6 @@ fn kill_group(child: &mut std::process::Child) {
     let _ = child.wait();
 }
 
-/// `systemctl <args>`, shared by the restart and session executors.
-pub(crate) fn systemctl_command(args: &[&str]) -> ProcessCommand {
-    ProcessCommand::tool("systemctl").args(args)
-}
-
-/// `kill -<signal> <pid>`, shared by the restart and session executors.
-pub(crate) fn signal_command(pid: u32, signal: &str) -> ProcessCommand {
-    ProcessCommand::tool("kill")
-        .arg(format!("-{}", signal))
-        .arg(pid.to_string())
-}
-
-/// The deadline a `systemctl` invocation should carry, chosen by its verb.
-///
-/// Read-only probes get the shorter [`SYSTEMCTL_PROBE_BUDGET`]; anything that
-/// changes unit state (start/stop/restart/daemon-reload/…) gets the longer
-/// [`SYSTEMCTL_ACTION_BUDGET`]. Shared by the session executor and the service
-/// controller so both bound a hung `systemctl` the same way.
-pub(crate) fn systemctl_budget(args: &[&str]) -> Duration {
-    match args.first().copied() {
-        Some(
-            "is-active" | "is-enabled" | "is-failed" | "status" | "show" | "cat" | "list-units"
-            | "list-unit-files" | "list-sockets" | "get-default",
-        ) => SYSTEMCTL_PROBE_BUDGET,
-        _ => SYSTEMCTL_ACTION_BUDGET,
-    }
-}
-
 /// Resolves `program` to the absolute path that is executed. A
 /// [`Program::CallerPath`] is looked up in `search_path` when it is given and
 /// on the caller's `PATH` otherwise.
@@ -822,9 +794,7 @@ fn not_found(program: &str, message: String) -> NailsError {
 #[cfg(test)]
 mod mock;
 #[cfg(test)]
-pub(crate) use mock::{
-    MockProcessRunner, UNKNOWN_UNIT, UNUSED_PID, assert_refused_in_test_runtime, exited,
-};
+pub(crate) use mock::{MockProcessRunner, assert_refused_in_test_runtime, exited};
 
 #[cfg(test)]
 mod tests;

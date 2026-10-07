@@ -39,7 +39,6 @@
 
 use crate::Result;
 use crate::filesystem::Filesystem;
-use crate::process::ProcessRunner;
 
 mod config_layer;
 mod debian;
@@ -47,35 +46,26 @@ mod detect;
 mod discover;
 mod fhs;
 pub mod host_commands;
-pub(crate) mod nix_foreign;
 mod nixos;
-mod process_classes;
-pub mod ro_guard;
 mod scanners;
-pub mod service_manager;
 mod unsupported;
 
 #[cfg(any(test, feature = "test-support"))]
 mod fake;
-#[cfg(any(test, feature = "test-support"))]
-mod fake_layer;
 
 #[cfg(test)]
 mod contract;
 
-pub use config_layer::{ConfigLayer, ConfigPlan, NixOsConfigLayer};
+pub use config_layer::{ConfigLayer, NixOsConfigLayer};
 pub use detect::detect;
 pub use discover::{HostTarget, discover_host_target, discover_with_platform};
 pub use fhs::FhsPlatform;
 pub use host_commands::HostCommands;
 pub use nixos::NixOsPlatform;
-pub(crate) use process_classes::host_process_classes;
-pub use ro_guard::{MountHooks, OverlayPolicy, guard_read_only_trees};
 pub use scanners::{
     ArtifactScan, ArtifactScanner, DebianPackageDriftScanner, NixOsStateNoteScanner,
     PACKAGE_BASELINE_DIR,
 };
-pub use service_manager::{ServiceManager, SessionManager, SystemdControl};
 pub use unsupported::UnsupportedPlatform;
 
 /// The single literal for the NixOS system-profile binary directory, and the
@@ -86,16 +76,6 @@ pub(crate) use nixos::NIXOS_SYSTEM_PROFILE_BIN;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use fake::FakePlatform;
-#[cfg(any(test, feature = "test-support"))]
-pub use fake_layer::{
-    FAKE_BASE_REFERENCE_CHECK, FAKE_CONFIG_CHECK, FakeConfigLayer, FakeVerdict, LayerCall,
-};
-
-/// The display-manager service units probed by default, in order, after the
-/// generic `display-manager.service` alias. A backend overrides
-/// [`Platform::display_manager_units`] to adjust this (Debian adds `gdm3`).
-pub(crate) const DEFAULT_DISPLAY_MANAGER_UNITS: &[&str] =
-    &["gdm", "sddm", "lightdm", "greetd", "ly"];
 
 /// Which family of host NAILS resolved, and therefore which backend runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -107,47 +87,6 @@ pub enum PlatformKind {
     Fhs,
     /// A host NAILS refuses: ostree / image-based, or non-systemd PID 1.
     Unsupported,
-}
-
-/// How the `/nix` runtime must be handled while `/nix` is overlaid, resolved from
-/// the host rather than from the target name.
-///
-/// Overlaying `/nix` requires nix-daemon to be stopped first (so it does not keep
-/// the pre-overlay store busy or serve from it) and restarted afterwards. *How
-/// much more* than that is needed depends on the host:
-///
-/// - On a real NixOS host the overlay hides the boot-time read-only `/nix/store`
-///   bind and the `/run/current-system` generation, so both must be restored —
-///   the full security-model restoration.
-/// - On a non-NixOS host that merely has Nix installed (Nix on Debian/Ubuntu),
-///   none of that applies: there is no `/run/current-system` to re-point and no
-///   boot-time store bind to recreate, so only the daemon is cycled.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NixRuntime {
-    /// A real NixOS host: cycle the daemon *and* restore the `/nix/store` bind and
-    /// `/run/current-system` symlink after the overlay.
-    Native,
-    /// Nix installed on a non-NixOS host: only stop and start nix-daemon.
-    Foreign,
-    /// `/nix` is not a target, or the host runs no nix machinery: nothing to do.
-    None,
-}
-
-/// What [`Platform::restore_base_system`] did to return the host to the decoy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestoreOutcome {
-    /// The platform has no base-system restore step (FHS / overlay-only).
-    NotRequired,
-    /// The live `/run/current-system` symlink was re-pointed at the decoy
-    /// generation and nothing else was run, because a reboot follows and will
-    /// finalise the decoy from the bootloader default. No
-    /// `switch-to-configuration` was invoked, so the ESP, bootloader and EFI
-    /// NVRAM are untouched.
-    SymlinkRestored,
-    /// A reboot was requested but failed, so the decoy generation was activated
-    /// for the running session with `switch-to-configuration test` as a
-    /// fallback. `test` never reinstalls the bootloader or writes the ESP/NVRAM.
-    FellBackToSessionSwitch,
 }
 
 /// Facts about the running host, gathered once and shared.
@@ -225,46 +164,8 @@ pub trait Platform<F: Filesystem>: std::fmt::Debug + Send + Sync {
     /// Which family this backend serves.
     fn kind(&self) -> PlatformKind;
 
-    /// The overlay policy for this host: which trees are overlaid, never
-    /// overlaid, or kept read-only, and which distro-specific mount hooks run.
-    fn overlay_policy(&self) -> OverlayPolicy;
-
-    /// How the `/nix` runtime must be handled while a hidden session is active,
-    /// given whether `/nix` is among the overlay targets.
-    ///
-    /// Resolved from the host's mount hooks, not from the target name: a NixOS
-    /// host does the full security-model restoration, a non-NixOS host that
-    /// happens to have `/nix` overlaid only cycles nix-daemon, and when `/nix` is
-    /// not a target there is nothing to do. The default covers every backend from
-    /// its [`overlay_policy`](Self::overlay_policy), so a backend only overrides it
-    /// to special-case a degraded host.
-    fn nix_runtime(&self, nix_is_target: bool) -> NixRuntime {
-        if !nix_is_target {
-            return NixRuntime::None;
-        }
-        match self.overlay_policy().mount_hooks {
-            MountHooks::NixOs => NixRuntime::Native,
-            // A non-NixOS host with /nix overlaid (Nix on Debian/Ubuntu), and the
-            // refused/undetected case: in both, only the daemon is cycled — the
-            // NixOS-only store bind and current-system restore must never run.
-            MountHooks::Fhs | MountHooks::None => NixRuntime::Foreign,
-        }
-    }
-
     /// Directories searched, in order, for host tools on this platform.
     fn host_command_dirs(&self) -> &'static [&'static str];
-
-    /// Display-manager service units probed, in order, when the generic
-    /// `display-manager.service` alias is not active.
-    ///
-    /// The alias is always tried first by the session layer; this list is the
-    /// fallback for hosts that do not ship it. Keeping it platform data lets a
-    /// backend name the units its distribution actually uses — Debian/Ubuntu
-    /// ships GDM as `gdm3`, not `gdm` — instead of a single hard-coded array in
-    /// the session code. The default covers the common systemd display managers.
-    fn display_manager_units(&self) -> &'static [&'static str] {
-        DEFAULT_DISPLAY_MANAGER_UNITS
-    }
 
     /// The declarative hidden-config layer for this host, if it has one.
     ///
@@ -313,25 +214,6 @@ pub trait Platform<F: Filesystem>: std::fmt::Debug + Send + Sync {
         F: 'static,
     {
         Vec::new()
-    }
-
-    /// Restore the base (decoy) system during deactivation.
-    ///
-    /// `reboot_follows` says whether the caller will reboot after this returns;
-    /// `dispatch_reboot` performs that reboot (passed in so the decision is
-    /// testable without dispatching a real one). A backend that has no base
-    /// system to restore returns [`RestoreOutcome::NotRequired`] without
-    /// touching `runner` or `dispatch_reboot`.
-    fn restore_base_system(
-        &self,
-        fs: &F,
-        runner: &dyn ProcessRunner,
-        reboot_follows: bool,
-        dispatch_reboot: &dyn Fn() -> Result<()>,
-        env: &crate::RuntimeEnv,
-    ) -> Result<RestoreOutcome> {
-        let _ = (fs, runner, reboot_follows, dispatch_reboot, env);
-        Ok(RestoreOutcome::NotRequired)
     }
 }
 

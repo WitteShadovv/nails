@@ -150,11 +150,7 @@ impl<F: Filesystem> NailsManager<F> {
                 });
             }
         }
-        self.force_state(SystemState::Active {
-            activated_at: now,
-            overlays: vec![PathBuf::from("/")],
-            decoy_writers: Vec::new(),
-        })
+        self.force_state(SystemState::Active { activated_at: now })
     }
 
     /// Enqueue the soft-reboot into the prepared root. On failure the entry is

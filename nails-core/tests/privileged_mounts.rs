@@ -3,9 +3,9 @@
 
 //! Real overlay and teardown behaviour against the kernel.
 //!
-//! These tests drive [`RealFilesystem`] against a real overlayfs instead of a
-//! mock. All but one run in the normal test run, each as root of its own
-//! unprivileged user + mount namespace (`rootless`, built on
+//! These tests drive the overlay, bind and tmpfs mounts the session builds
+//! against a real overlayfs. All but one run in the normal test run, each as
+//! root of its own unprivileged user + mount namespace (`rootless`, built on
 //! `nails_core::test_support::Rerun`), so every mount is private to the child
 //! and vanishes with it, even after a panic. Each test still builds its own
 //! tmpfs-backed root and tears it down in reverse order, so the teardown path
@@ -21,10 +21,11 @@
 //! sudo unshare --mount --propagation private <test-bin> --ignored --test-threads=1
 //! ```
 
-use nails_core::NailsError;
-use nails_core::filesystem::{Filesystem, RealFilesystem, parse_overlay_opts, read_mountinfo};
+use nails_core::filesystem::{escape_overlay_path, parse_overlay_opts, read_mountinfo};
 use nails_core::test_path;
 use nails_core::test_support::Rerun;
+use nix::errno::Errno;
+use nix::mount::{MntFlags, MsFlags};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
@@ -36,6 +37,83 @@ use tempfile::TempDir;
 /// without user namespaces skips unless `NAILS_REQUIRE_USERNS=1`.
 fn rootless(test: &str, body: impl FnOnce()) {
     let _ = Rerun::new(test).in_user_mount_ns().run(body);
+}
+
+/// The mount operations the tests drive, straight on the kernel.
+struct Mounts;
+
+impl Mounts {
+    fn mount_tmpfs(&self, target: &Path, size: &str) -> nix::Result<()> {
+        std::fs::create_dir_all(target).expect("create tmpfs mount point");
+        nix::mount::mount(
+            Some("tmpfs"),
+            target,
+            Some("tmpfs"),
+            MsFlags::empty(),
+            Some(format!("size={size}").as_str()),
+        )
+    }
+
+    fn mount_overlay(
+        &self,
+        lowers: &[&Path],
+        upper: &Path,
+        work: &Path,
+        target: &Path,
+    ) -> nix::Result<()> {
+        let esc = |p: &Path| escape_overlay_path(p).expect("escapable path");
+        let lowerdir: Vec<String> = lowers.iter().map(|l| esc(l)).collect();
+        let options = format!(
+            "lowerdir={},upperdir={},workdir={}",
+            lowerdir.join(":"),
+            esc(upper),
+            esc(work)
+        );
+        nix::mount::mount(
+            Some("overlay"),
+            target,
+            Some("overlay"),
+            MsFlags::empty(),
+            Some(options.as_str()),
+        )
+    }
+
+    fn bind_mount(&self, source: &Path, target: &Path) -> nix::Result<()> {
+        nix::mount::mount(
+            Some(source),
+            target,
+            None::<&str>,
+            MsFlags::MS_BIND,
+            None::<&str>,
+        )
+    }
+
+    fn unmount(&self, target: &Path, force: bool) -> nix::Result<()> {
+        let flags = if force {
+            MntFlags::MNT_FORCE | MntFlags::MNT_DETACH
+        } else {
+            MntFlags::empty()
+        };
+        nix::mount::umount2(target, flags)
+    }
+
+    fn mount_at(&self, target: &Path) -> Option<String> {
+        let canonical = target.canonicalize().ok()?;
+        read_mountinfo()
+            .expect("read mountinfo")
+            .into_iter()
+            .rev()
+            .find(|e| e.mount_point == canonical)
+            .map(|e| e.fstype)
+    }
+
+    fn is_mounted(&self, target: &Path) -> bool {
+        self.mount_at(target).is_some()
+    }
+
+    fn is_overlay_mounted(&self, target: &Path) -> bool {
+        self.mount_at(target).as_deref() == Some("overlay")
+    }
 }
 
 /// A tmpfs-backed root for one test.
@@ -52,8 +130,8 @@ impl TmpfsRoot {
     fn new() -> Self {
         let temp = tempfile::tempdir().expect("create temp dir");
         let root = temp.path().join("root");
-        let fs = RealFilesystem;
-        fs.mount_tmpfs(&root, "256M")
+        Mounts
+            .mount_tmpfs(&root, "256M")
             .expect("mount tmpfs root (needs CAP_SYS_ADMIN)");
         Self { _temp: temp, root }
     }
@@ -64,8 +142,8 @@ impl TmpfsRoot {
 
     /// Unmount the backing tmpfs. Called once a test's submounts are gone.
     fn teardown(&self) {
-        RealFilesystem
-            .unmount_tmpfs(&self.root)
+        Mounts
+            .unmount(&self.root, false)
             .expect("unmount tmpfs root");
     }
 }
@@ -132,7 +210,7 @@ fn overlay_stack_mounts_and_tears_down_in_reverse_order() {
     rootless(
         test_path!(overlay_stack_mounts_and_tears_down_in_reverse_order),
         || {
-            let fs = RealFilesystem;
+            let fs = Mounts;
             let root = TmpfsRoot::new();
 
             let lower1 = root.path("lower1");
@@ -158,7 +236,7 @@ fn overlay_stack_mounts_and_tears_down_in_reverse_order() {
                 &target,
             )
             .expect("mount overlay with three lowers");
-            assert!(fs.is_overlay_mounted(&target).unwrap());
+            assert!(fs.is_overlay_mounted(&target));
 
             assert_eq!(read(&target.join("a.txt")), "one", "leftmost lower wins");
             assert_eq!(read(&target.join("b.txt")), "two");
@@ -172,29 +250,29 @@ fn overlay_stack_mounts_and_tears_down_in_reverse_order() {
             mkdir(&bind_target);
             fs.bind_mount(&bind_src, &bind_target)
                 .expect("bind mount into overlay");
-            assert!(fs.is_mounted(&bind_target).unwrap());
+            assert!(fs.is_mounted(&bind_target));
             assert_eq!(read(&bind_target.join("bound.txt")), "bound content");
 
             // Mount a tmpfs at another path inside the overlay.
             let tmpfs_target = target.join("scratch");
             fs.mount_tmpfs(&tmpfs_target, "16M")
                 .expect("tmpfs submount into overlay");
-            assert!(fs.is_mounted(&tmpfs_target).unwrap());
+            assert!(fs.is_mounted(&tmpfs_target));
             write(&tmpfs_target.join("ram.txt"), "ephemeral");
             assert_eq!(read(&tmpfs_target.join("ram.txt")), "ephemeral");
 
             // Tear down in reverse order and assert each layer is gone.
-            fs.unmount_tmpfs(&tmpfs_target)
+            fs.unmount(&tmpfs_target, false)
                 .expect("unmount tmpfs submount");
-            assert!(!fs.is_mounted(&tmpfs_target).unwrap());
+            assert!(!fs.is_mounted(&tmpfs_target));
 
-            fs.unmount_bind(&bind_target)
+            fs.unmount(&bind_target, false)
                 .expect("unmount bind submount");
-            assert!(!fs.is_mounted(&bind_target).unwrap());
+            assert!(!fs.is_mounted(&bind_target));
 
             fs.unmount(&target, false).expect("unmount overlay");
-            assert!(!fs.is_overlay_mounted(&target).unwrap());
-            assert!(!fs.is_mounted(&target).unwrap());
+            assert!(!fs.is_overlay_mounted(&target));
+            assert!(!fs.is_mounted(&target));
 
             root.teardown();
         },
@@ -208,7 +286,7 @@ fn overlay_stack_mounts_and_tears_down_in_reverse_order() {
 #[test]
 fn real_overlay_mount_creates_merged_view() {
     rootless(test_path!(real_overlay_mount_creates_merged_view), || {
-        let fs = RealFilesystem;
+        let fs = Mounts;
         let root = TmpfsRoot::new();
 
         let lower = root.path("lower");
@@ -249,7 +327,7 @@ fn hidden_session_writes_never_touch_the_lower_tree() {
     rootless(
         test_path!(hidden_session_writes_never_touch_the_lower_tree),
         || {
-            let fs = RealFilesystem;
+            let fs = Mounts;
             let root = TmpfsRoot::new();
 
             let lower = root.path("lower");
@@ -342,7 +420,7 @@ fn mountinfo_decodes_overlay_target_with_space_tab_and_backslash() {
     rootless(
         test_path!(mountinfo_decodes_overlay_target_with_space_tab_and_backslash),
         || {
-            let fs = RealFilesystem;
+            let fs = Mounts;
             let root = TmpfsRoot::new();
 
             let lower = root.path("lower");
@@ -390,7 +468,7 @@ fn force_unmount_detaches_overlay_with_an_open_fd() {
     rootless(
         test_path!(force_unmount_detaches_overlay_with_an_open_fd),
         || {
-            let fs = RealFilesystem;
+            let fs = Mounts;
             let root = TmpfsRoot::new();
 
             let lower = root.path("lower");
@@ -411,14 +489,14 @@ fn force_unmount_detaches_overlay_with_an_open_fd() {
             let mut held = std::fs::File::open(&busy).expect("open fd under mount");
 
             match fs.unmount(&target, false) {
-                Err(NailsError::MountBusy { .. }) => {}
-                other => panic!("expected MountBusy with an open fd, got {other:?}"),
+                Err(Errno::EBUSY) => {}
+                other => panic!("expected EBUSY with an open fd, got {other:?}"),
             }
 
             // The force path (MNT_FORCE | MNT_DETACH) lazily detaches despite the fd.
             fs.unmount(&target, true).expect("force unmount");
             assert!(
-                !fs.is_overlay_mounted(&target).unwrap(),
+                !fs.is_overlay_mounted(&target),
                 "overlay detached from the namespace after MNT_DETACH"
             );
 
@@ -440,7 +518,7 @@ fn force_unmount_detaches_overlay_with_an_open_fd() {
 #[test]
 #[ignore = "root only: directory whiteouts need trusted.* xattrs"]
 fn whiteout_and_opaque_hide_lower_entries_without_deleting_them() {
-    let fs = RealFilesystem;
+    let fs = Mounts;
     let root = TmpfsRoot::new();
 
     let lower = root.path("lower");

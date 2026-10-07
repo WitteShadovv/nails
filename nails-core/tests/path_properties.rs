@@ -7,8 +7,8 @@
 //! examples:
 //!
 //! - Containment: a configuration either keeps everything nails writes for
-//!   the hidden environment (state file and its lock, logs, overlay upper and
-//!   work directories, notifications) inside the hidden volume root, or it is
+//!   the hidden environment (state file and its lock, logs) inside the hidden
+//!   volume root, or it is
 //!   rejected. Roots and paths are built from `.`, `..` and symlinks that
 //!   stay inside, escape, or loop, all created in a tempdir.
 //! - Round trip: any path, once escaped the way the kernel writes it into
@@ -17,11 +17,10 @@
 //!
 //! Case counts are bounded so the suites run in the normal `cargo test` gate.
 
-use nails_core::config::{ConfigBuilder, OverlayConfig, OverlayMode};
+use nails_core::config::ConfigBuilder;
 use nails_core::filesystem::{
     NailsMounts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,
 };
-use nails_core::notification::notifications_dir;
 use nails_core::{NailsError, StateLock};
 use proptest::prelude::*;
 use std::path::{Path, PathBuf};
@@ -46,9 +45,6 @@ proptest! {
         root_parts in components(3),
         state_parts in prop::option::of(components(3)),
         log_parts in prop::option::of(components(3)),
-        upper_parts in components(3),
-        work_parts in components(3),
-        upper_outside in any::<bool>(),
     ) {
         let fx = fixture();
         let root = if relative_root {
@@ -56,22 +52,8 @@ proptest! {
         } else {
             join(&fx.base.join("vol").to_string_lossy(), &root_parts, "")
         };
-        let upper = if upper_outside {
-            fx.outside.join("upper").to_string_lossy().into_owned()
-        } else {
-            join(&root, &upper_parts, "upper")
-        };
-
         let mut builder = ConfigBuilder::new()
-            .hidden_volume_root(PathBuf::from(&root))
-            .overlay_mode(OverlayMode::Explicit)
-            .overlays(vec![OverlayConfig {
-                name: "home".to_string(),
-                lower: PathBuf::from("/home"),
-                upper: PathBuf::from(upper),
-                work: PathBuf::from(join(&root, &work_parts, "work")),
-                target: PathBuf::from("/home"),
-            }]);
+            .hidden_volume_root(PathBuf::from(&root));
         if let Some(parts) = &state_parts {
             builder = builder.state_file_path(PathBuf::from(join(&root, parts, "state.json")));
         }
@@ -84,8 +66,7 @@ proptest! {
             Err(NailsError::UnsafeConfigPath { .. }) => {
                 // Rejection is only allowed when something could escape.
                 let clean = !relative_root
-                    && !upper_outside
-                    && [&root_parts, &upper_parts, &work_parts].into_iter().all(|p| is_plain(p))
+                    && is_plain(&root_parts)
                     && state_parts.as_deref().is_none_or(is_plain)
                     && log_parts.as_deref().is_none_or(is_plain);
                 prop_assert!(!clean, "a plain configuration was rejected: root {root}");
@@ -104,9 +85,6 @@ proptest! {
             config.state_file_path.clone(),
             StateLock::lock_path(state_dir),
             config.log_path.clone(),
-            config.overlays[0].upper.clone(),
-            config.overlays[0].work.clone(),
-            notifications_dir(root),
         ];
         for path in &derived {
             prop_assert!(

@@ -14,33 +14,15 @@ use std::path::Path;
 ///
 /// The posture is the kernel-truth verdict, so it always drives the exit code —
 /// there is no opt-in flag. The safe postures (decoy, active) exit 0; the
-/// dangerous ones (degraded, inconsistent) exit [`ExitStatus::DegradedReboot`] so
+/// dangerous one (degraded) exit [`ExitStatus::DegradedReboot`] so
 /// a script fails closed and is pointed at recovery; an unknown state exits
 /// [`ExitStatus::InvalidState`].
 fn status_exit_code(posture: Posture) -> ExitStatus {
     match posture {
         Posture::Decoy | Posture::Active | Posture::Transitioning => ExitStatus::Ok,
-        Posture::Degraded | Posture::Inconsistent => ExitStatus::DegradedReboot,
+        Posture::Degraded => ExitStatus::DegradedReboot,
         Posture::Unknown => ExitStatus::InvalidState,
     }
-}
-
-/// Whether the still-mounted hidden root must be reported as Critical.
-///
-/// A hidden root still mounted while the state is Inactive is, on its own, the
-/// *normal* pre-activation state: the operator unlocks and mounts the hidden
-/// volume before `status`/`activate` can read the config and state on it. So the
-/// mount alone is not an alarm.
-///
-/// It becomes Critical only with positive evidence that a prior hidden session
-/// was not torn down cleanly — the signature of an emergency teardown that left
-/// the encrypted backend open with its key in RAM. The runtime copy under `/run`
-/// is written at activation and removed by a clean deactivation, so a leftover
-/// runtime copy ([`StatusReport::hidden_runtime_residue`]) is exactly that
-/// evidence. Without it, a mounted hidden root in the Decoy posture is routine
-/// and exits 0.
-fn hidden_root_critical(report: &nails_core::StatusReport) -> bool {
-    report.hidden_root_mounted && report.posture == Posture::Decoy && report.hidden_runtime_residue
 }
 
 /// Execute the status command.
@@ -119,12 +101,6 @@ pub fn execute(
                 output::print_status_header(style);
                 println!("State:              UNKNOWN");
                 println!("Security Posture:   {}", Posture::Unknown.render(style));
-                if let Some(remediation) = Posture::Unknown.remediation() {
-                    println!(
-                        "  {}",
-                        style.marked(nails_core::output::Mark::Arrow, remediation)
-                    );
-                }
                 println!();
                 println!("Error: {}", error_msg);
                 println!();
@@ -149,29 +125,7 @@ pub fn execute(
         );
     }
 
-    let hidden_root_critical = hidden_root_critical(&report);
-    if hidden_root_critical && !json {
-        println!();
-        println!(
-            "{}",
-            style.marked(
-                nails_core::output::Mark::Fail,
-                format!(
-                    "Critical: hidden root still mounted at {}",
-                    hidden_volume_root.display()
-                )
-            )
-        );
-        println!("  The hidden filesystem is still readable; close the encrypted backend.");
-    }
-
-    // The posture always drives the exit code: safe postures exit 0, dangerous or
-    // unknown ones fail closed. A still-mounted hidden root overrides an otherwise
-    // safe posture and fails closed too.
     let _ = std::io::stdout().flush();
-    if hidden_root_critical {
-        return ExitStatus::DegradedReboot;
-    }
     status_exit_code(report.posture)
 }
 

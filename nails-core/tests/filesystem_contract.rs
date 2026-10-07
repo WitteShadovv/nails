@@ -13,18 +13,17 @@
 //!
 //! The file contract covers what both implementations do without root: file
 //! read/write, size, existence, type and permission queries, disk usage,
-//! directory creation, symlinks, rename, removal and secure deletion. The mount
-//! contract (overlay mount and description, layer validation, unmount
-//! idempotence, busy and lazy detach, the ownership gate, tmpfs, binds and the
-//! read-only guard) runs the real filesystem as root of an unprivileged user and
-//! mount namespace (`nails_core::test_support::Rerun`), so it needs no root
-//! either. The mock's own helpers are tested in `filesystem/mock/tests_*.rs`.
+//! directory creation, symlinks, rename, removal and secure deletion. The
+//! mount-query contract (mount point, filesystem type, read-only flag and
+//! source, the queries the session code reads) runs the real filesystem as
+//! root of an unprivileged user and mount namespace
+//! (`nails_core::test_support::Rerun`), so it needs no root either. The mock's own helpers are tested in `filesystem/mock/tests_*.rs`.
 
-use nails_core::NailsError;
-use nails_core::filesystem::{Filesystem, MockFilesystem, PathKind, RealFilesystem};
+use nails_core::filesystem::{Filesystem, MockFilesystem, MountSource, PathKind, RealFilesystem};
+use nix::mount::MsFlags;
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 // ============================================================================
 // Shared contract exercised by both implementations
@@ -280,292 +279,105 @@ fn real_filesystem_satisfies_contract() {
 }
 
 // ============================================================================
-// Shared mount contract: the mock against the kernel in a user namespace
+// Shared mount-query contract: the mock against the kernel in a user namespace
 // ============================================================================
 
-/// Keep the mount at a path busy until the returned guard drops. The one lever
-/// the trait cannot pull by itself: the kernel needs an open file under the
-/// mount, the mock a flag.
-type HoldBusy<'a> = &'a dyn Fn(&Path) -> Box<dyn std::any::Any>;
+/// Put a tmpfs at `target` (an existing directory), read-only or not, the way
+/// the backend can: the kernel mounts one, the mock records one.
+type MountTmpfs<'a> = &'a dyn Fn(&Path, bool);
 
-/// Exercise the mount half of the contract against `fs`, inside `root`, a
-/// writable directory on a filesystem that accepts an overlay upper layer.
-fn mount_contract<F: Filesystem>(fs: &F, root: &Path, hold_busy: HoldBusy<'_>) {
-    overlay_mount_is_visible_and_described(fs, root);
-    every_lower_layer_is_kept(fs, root);
-    second_overlay_on_a_target_is_refused(fs, root);
-    missing_layers_are_refused(fs, root);
-    unmount_is_idempotent(fs, root);
-    busy_overlay_needs_force(fs, root, hold_busy);
-    generic_mounts_are_not_overlays(fs, root);
-    read_only_guard_round_trip(fs, root);
-}
+/// The source both backends give the tmpfs they put in place.
+const TMPFS_SOURCE: &str = "contract-tmpfs";
 
-/// The lower, upper, work and target directories of one overlay.
-struct Layers {
-    lowers: Vec<PathBuf>,
-    upper: PathBuf,
-    work: PathBuf,
-    target: PathBuf,
-}
-
-impl Layers {
-    fn create<F: Filesystem>(fs: &F, root: &Path, name: &str, lowers: usize) -> Self {
-        let base = root.join(name);
-        let dir = |rel: &str| {
-            let path = base.join(rel);
-            fs.create_directory(&path)
-                .expect("create a layer directory");
-            path
-        };
-        Self {
-            lowers: (0..lowers).map(|i| dir(&format!("lower{i}"))).collect(),
-            upper: dir("upper"),
-            work: dir("work"),
-            target: dir("merged"),
-        }
-    }
-
-    fn mount<F: Filesystem>(&self, fs: &F) -> nails_core::Result<()> {
-        let lowers: Vec<&Path> = self.lowers.iter().map(PathBuf::as_path).collect();
-        fs.mount_overlay(&lowers, &self.upper, &self.work, &self.target)
-    }
-}
-
-fn overlay_mount_is_visible_and_described<F: Filesystem>(fs: &F, root: &Path) {
-    let layers = Layers::create(fs, root, "visible", 1);
-    layers
-        .mount(fs)
-        .expect("mount an overlay over existing layers");
-
-    assert!(fs.is_mounted(&layers.target).unwrap());
-    assert!(fs.is_overlay_mounted(&layers.target).unwrap());
-    assert_eq!(
-        fs.get_filesystem_type(&layers.target).unwrap().as_deref(),
-        Some("overlay")
-    );
-    let info = fs
-        .get_mount_info(&layers.target)
-        .expect("a mounted overlay is described");
-    assert_eq!(info.lowers, layers.lowers);
-    assert_eq!(info.upper, layers.upper);
-    assert_eq!(info.work, layers.work);
-    assert_eq!(info.target, layers.target);
-
-    fs.unmount(&layers.target, false)
-        .expect("unmount an idle overlay");
-    assert!(!fs.is_mounted(&layers.target).unwrap());
-    assert!(!fs.is_overlay_mounted(&layers.target).unwrap());
-    assert_eq!(fs.get_filesystem_type(&layers.target).unwrap(), None);
-    assert!(fs.get_mount_info(&layers.target).is_none());
-}
-
-fn every_lower_layer_is_kept<F: Filesystem>(fs: &F, root: &Path) {
-    let layers = Layers::create(fs, root, "stacked", 3);
-    layers
-        .mount(fs)
-        .expect("mount an overlay over three lowers");
-
-    let info = fs.get_mount_info(&layers.target).unwrap();
-    assert_eq!(
-        info.lowers, layers.lowers,
-        "every lower layer must be retained, in order, not just the primary"
-    );
-    assert_eq!(info.primary_lower(), Some(layers.lowers[0].as_path()));
-    fs.unmount(&layers.target, false).unwrap();
-}
-
-fn second_overlay_on_a_target_is_refused<F: Filesystem>(fs: &F, root: &Path) {
-    let layers = Layers::create(fs, root, "twice", 1);
-    layers.mount(fs).unwrap();
-
-    let again = layers.mount(fs).unwrap_err();
+/// Exercise the mount queries the session code reads (`is_mounted`, the
+/// filesystem type, the read-only flag and the mount source) against `fs`,
+/// inside `root`, a writable directory.
+fn mount_query_contract<F: Filesystem>(fs: &F, root: &Path, mount_tmpfs: MountTmpfs<'_>) {
+    let plain = root.join("plain");
+    fs.create_directory(&plain).unwrap();
+    assert!(!fs.is_mounted(&plain).unwrap(), "a directory is no mount");
+    assert_eq!(fs.get_filesystem_type(&plain).unwrap(), None);
     assert!(
-        matches!(again, NailsError::AlreadyMounted { .. }),
-        "a second overlay on the same target is refused: {again:?}"
+        !fs.is_mount_read_only(&plain).unwrap(),
+        "no mount point reads as writable"
     );
-    fs.unmount(&layers.target, false).unwrap();
-    assert!(
-        !fs.is_mounted(&layers.target).unwrap(),
-        "one unmount clears it"
-    );
-}
+    assert!(fs.mount_source(&plain).unwrap().is_none());
 
-fn missing_layers_are_refused<F: Filesystem>(fs: &F, root: &Path) {
-    let layers = Layers::create(fs, root, "missing", 1);
-    let lower = layers.lowers[0].as_path();
-    let gone = root.join("missing/nowhere/at-all");
-    let refuse = |lower: &Path, upper: &Path, work: &Path, word: &str| {
-        let err = fs
-            .mount_overlay(&[lower], upper, work, &layers.target)
-            .expect_err("a missing layer is refused");
-        let text = err.to_string().to_lowercase();
-        assert!(
-            text.contains(word),
-            "the error names the {word} layer: {text}"
+    for (name, read_only) in [("writable", false), ("read-only", true)] {
+        let target = root.join(name);
+        fs.create_directory(&target).unwrap();
+        mount_tmpfs(&target, read_only);
+        assert!(fs.is_mounted(&target).unwrap(), "{name} is mounted");
+        assert_eq!(
+            fs.get_filesystem_type(&target).unwrap().as_deref(),
+            Some("tmpfs"),
+            "{name}"
         );
-        assert!(!fs.is_mounted(&layers.target).unwrap());
-    };
-    refuse(&gone, &layers.upper, &layers.work, "lower");
-    refuse(lower, &gone, &layers.work, "upper");
-    refuse(lower, &layers.upper, &gone, "work");
-
-    // An upper whose parent exists passes the precondition ("can be created"),
-    // but nothing creates it: the mount itself fails and nothing is mounted.
-    let absent_upper = root.join("missing/absent-upper");
-    assert!(
-        fs.mount_overlay(&[lower], &absent_upper, &layers.work, &layers.target)
-            .is_err(),
-        "an overlay needs its upper directory to exist"
-    );
-    assert!(!fs.is_mounted(&layers.target).unwrap());
-}
-
-fn unmount_is_idempotent<F: Filesystem>(fs: &F, root: &Path) {
-    let layers = Layers::create(fs, root, "idempotent", 1);
-    fs.unmount(&layers.target, false)
-        .expect("unmounting a directory that is no mount point is a no-op");
-    layers.mount(fs).unwrap();
-    fs.unmount(&layers.target, false).unwrap();
-    fs.unmount(&layers.target, false)
-        .expect("a second unmount is a no-op");
-    fs.unmount(&layers.target, true)
-        .expect("a forced unmount of nothing is a no-op");
-}
-
-fn busy_overlay_needs_force<F: Filesystem>(fs: &F, root: &Path, hold_busy: HoldBusy<'_>) {
-    let layers = Layers::create(fs, root, "busy", 1);
-    layers.mount(fs).unwrap();
-    let guard = hold_busy(&layers.target);
-
-    let err = fs.unmount(&layers.target, false).unwrap_err();
-    assert!(
-        matches!(err, NailsError::MountBusy { .. }),
-        "a held overlay is busy, not some other failure: {err:?}"
-    );
-    assert!(
-        fs.is_overlay_mounted(&layers.target).unwrap(),
-        "still mounted"
-    );
-
-    // The forced unmount (MNT_FORCE | MNT_DETACH) takes it off the tree at
-    // once; the holder keeps a private reference.
-    fs.unmount(&layers.target, true)
-        .expect("a busy overlay comes off with force");
-    assert!(!fs.is_mounted(&layers.target).unwrap());
-
-    // The teardown plan's escalation, the lazy detach, does the same.
-    layers.mount(fs).unwrap();
-    let second_guard = hold_busy(&layers.target);
-    fs.detach_lazily(&layers.target)
-        .expect("a busy overlay detaches lazily");
-    assert!(!fs.is_mounted(&layers.target).unwrap());
-    drop(second_guard);
-    drop(guard);
-}
-
-fn generic_mounts_are_not_overlays<F: Filesystem>(fs: &F, root: &Path) {
-    let tmpfs = root.join("generic/tmpfs");
-    fs.mount_tmpfs(&tmpfs, "1M").expect("mount a tmpfs");
-    assert!(fs.is_mounted(&tmpfs).unwrap());
-    assert!(
-        !fs.is_overlay_mounted(&tmpfs).unwrap(),
-        "a tmpfs is no overlay"
-    );
-    assert!(fs.get_mount_info(&tmpfs).is_none());
-    // Plain unmount is gated on NAILS ownership: a tmpfs outside the runtime
-    // root is not NAILS's, so it is refused and left mounted.
-    assert!(matches!(
-        fs.unmount(&tmpfs, false).unwrap_err(),
-        NailsError::RefusedUnmanagedUnmount { .. }
-    ));
-    assert!(fs.is_mounted(&tmpfs).unwrap());
-    fs.unmount_tmpfs(&tmpfs).expect("unmount the tmpfs");
-    assert!(!fs.is_mounted(&tmpfs).unwrap());
-    fs.unmount_tmpfs(&tmpfs)
-        .expect("a second tmpfs unmount is a no-op");
-    for size in ["512M", "1024"] {
-        let sized = root.join(format!("generic/tmpfs-{size}"));
-        fs.mount_tmpfs(&sized, size).expect("a valid tmpfs size");
-        assert!(fs.is_mounted(&sized).unwrap());
-        fs.unmount_tmpfs(&sized).unwrap();
+        assert_eq!(
+            fs.is_mount_read_only(&target).unwrap(),
+            read_only,
+            "{name}"
+        );
+        let source = fs
+            .mount_source(&target)
+            .unwrap()
+            .expect("a mount point has a source");
+        assert_eq!(source.device.as_deref(), Some(TMPFS_SOURCE), "{name}");
+        assert_eq!(source.dm_name, None, "a tmpfs is no device-mapper device");
     }
-    let bad = root.join("generic/tmpfs-bad");
-    let err = fs.mount_tmpfs(&bad, "invalid").unwrap_err().to_string();
-    assert!(err.contains("Invalid tmpfs size"), "{err}");
-    assert!(!fs.is_mounted(&bad).unwrap(), "nothing is mounted");
-
-    let source = root.join("generic/bind-source");
-    let target = root.join("generic/bind-target");
-    fs.create_directory(&source).unwrap();
-    fs.create_directory(&target).unwrap();
-    fs.bind_mount(&source, &target).expect("bind a directory");
-    assert!(fs.is_mounted(&target).unwrap());
-    assert!(
-        !fs.is_overlay_mounted(&target).unwrap(),
-        "a bind is no overlay"
-    );
-    assert!(matches!(
-        fs.unmount(&target, false).unwrap_err(),
-        NailsError::RefusedUnmanagedUnmount { .. }
-    ));
-    fs.unmount_bind(&target).expect("unmount the bind");
-    assert!(!fs.is_mounted(&target).unwrap());
-    fs.unmount_bind(&target)
-        .expect("a second bind unmount is a no-op");
-    assert!(
-        fs.bind_mount(&root.join("generic/no-source"), &target)
-            .is_err(),
-        "a bind needs its source"
-    );
-}
-
-fn read_only_guard_round_trip<F: Filesystem>(fs: &F, root: &Path) {
-    let tree = root.join("guarded");
-    fs.create_directory(&tree).unwrap();
-    assert!(!fs.is_read_only_guard(&tree).unwrap());
-
-    fs.remount_read_only(&tree).expect("guard a tree read-only");
-    assert!(fs.is_read_only_guard(&tree).unwrap());
-    assert!(fs.is_mount_read_only(&tree).unwrap());
-    assert!(fs.is_mounted(&tree).unwrap(), "the guard is a self-bind");
-
-    fs.remove_read_only_guard(&tree).expect("lift the guard");
-    assert!(!fs.is_read_only_guard(&tree).unwrap());
-    assert!(!fs.is_mount_read_only(&tree).unwrap());
-    assert!(!fs.is_mounted(&tree).unwrap());
-    fs.remove_read_only_guard(&tree)
-        .expect("lifting a lifted guard is a no-op");
 }
 
 #[test]
-fn mock_filesystem_satisfies_mount_contract() {
+fn mock_filesystem_satisfies_mount_query_contract() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_type("/contract-root", PathKind::Dir);
     fs.mock_set_writable("/contract-root", true);
-    let busy_fs = fs.clone();
-    let hold_busy = move |target: &Path| -> Box<dyn std::any::Any> {
-        busy_fs.mock_set_busy(target, true);
-        Box::new(())
+    let seed = fs.clone();
+    let mount_tmpfs = move |target: &Path, read_only: bool| {
+        seed.mock_set_mounted(target, true);
+        seed.mock_set_filesystem_type(target, "tmpfs");
+        seed.mock_set_mount_source(
+            target,
+            MountSource {
+                device: Some(TMPFS_SOURCE.to_string()),
+                dm_name: None,
+                label: None,
+            },
+        );
+        if read_only {
+            seed.mock_set_mount_read_only(target);
+        }
     };
 
-    mount_contract(&fs, Path::new("/contract-root"), &hold_busy);
+    mount_query_contract(&fs, Path::new("/contract-root"), &mount_tmpfs);
 }
 
 #[test]
-fn real_filesystem_satisfies_mount_contract_in_a_user_namespace() {
+fn real_filesystem_satisfies_mount_query_contract_in_a_user_namespace() {
     let _ = Rerun::new(test_path!(
-        real_filesystem_satisfies_mount_contract_in_a_user_namespace
+        real_filesystem_satisfies_mount_query_contract_in_a_user_namespace
     ))
     .in_user_mount_ns()
     .run(|| {
         let scratch = ScratchTmpfs::new("");
         let root = scratch.path().canonicalize().unwrap();
-        let hold_busy = |target: &Path| -> Box<dyn std::any::Any> {
-            Box::new(std::fs::File::create(target.join("held")).expect("open a file inside"))
+        let mount_tmpfs = |target: &Path, read_only: bool| {
+            let flags = if read_only {
+                MsFlags::MS_RDONLY
+            } else {
+                MsFlags::empty()
+            };
+            nix::mount::mount(
+                Some(TMPFS_SOURCE),
+                target,
+                Some("tmpfs"),
+                flags,
+                Some("size=1M"),
+            )
+            .expect("mount a tmpfs in the namespace");
         };
 
-        mount_contract(&RealFilesystem, &root, &hold_busy);
+        mount_query_contract(&RealFilesystem, &root, &mount_tmpfs);
     });
 }
 

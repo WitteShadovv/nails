@@ -68,15 +68,6 @@ pub(crate) fn exited(code: i32, stdout: &str, stderr: &str) -> Output {
     }
 }
 
-/// A PID above the kernel's `PID_MAX_LIMIT` (2^22), so no process can hold it.
-///
-/// Tests that drive a real executor into the runtime guard use it so that a
-/// regressed guard still cannot signal a host process.
-pub(crate) const UNUSED_PID: u32 = 4_194_305;
-
-/// A systemd unit no host defines, for the same reason as [`UNUSED_PID`].
-pub(crate) const UNKNOWN_UNIT: &str = "nails-test-no-such-unit.service";
-
 /// Asserts that `result` is the real runner's test-runtime refusal of `program`.
 pub(crate) fn assert_refused_in_test_runtime<T: std::fmt::Debug>(result: Result<T>, program: &str) {
     match result {

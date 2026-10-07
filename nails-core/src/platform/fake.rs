@@ -3,29 +3,22 @@
 
 //! A configurable [`Platform`] for core tests.
 //!
-//! Lets a test pin a platform's kind, overlay policy and restore outcome without
-//! standing up os-release fixtures or a real backend, so manager, overlay and
-//! state tests can run against a platform directly. Its build target is pinned
+//! Lets a test pin a platform's kind without standing up os-release fixtures or
+//! a real backend. Its build target is pinned
 //! too ([`FakePlatform::with_build_target`]), so callers of discovery need no
 //! `/etc/nixos` fixtures.
 
 use std::path::Path;
 
-use super::{
-    ConfigLayer, FakeConfigLayer, HostProfile, HostTarget, NixOsConfigLayer, OverlayPolicy,
-    Platform, PlatformKind, RestoreOutcome,
-};
+use super::{ConfigLayer, HostProfile, HostTarget, NixOsConfigLayer, Platform, PlatformKind};
 use crate::Result;
 use crate::filesystem::Filesystem;
-use crate::process::ProcessRunner;
 
 /// A platform whose answers are fixed by the test.
 #[derive(Debug, Clone)]
 pub struct FakePlatform {
     kind: PlatformKind,
-    restore_outcome: RestoreOutcome,
     has_config_layer: bool,
-    fake_layer: Option<FakeConfigLayer>,
     build_target: HostTarget,
 }
 
@@ -33,9 +26,7 @@ impl Default for FakePlatform {
     fn default() -> Self {
         Self {
             kind: PlatformKind::Fhs,
-            restore_outcome: RestoreOutcome::NotRequired,
             has_config_layer: false,
-            fake_layer: None,
             build_target: HostTarget::None,
         }
     }
@@ -46,10 +37,8 @@ impl FakePlatform {
     pub fn new(kind: PlatformKind) -> Self {
         Self {
             kind,
-            restore_outcome: RestoreOutcome::NotRequired,
             // Only NixOS carries a declarative config layer by default.
             has_config_layer: kind == PlatformKind::NixOs,
-            fake_layer: None,
             build_target: HostTarget::None,
         }
     }
@@ -64,25 +53,9 @@ impl FakePlatform {
         Self::new(PlatformKind::Fhs)
     }
 
-    /// Override the restore outcome returned by
-    /// [`Platform::restore_base_system`].
-    pub fn with_restore_outcome(mut self, outcome: RestoreOutcome) -> Self {
-        self.restore_outcome = outcome;
-        self
-    }
-
     /// Override whether the fake reports a declarative config layer.
     pub fn with_config_layer(mut self, has_config_layer: bool) -> Self {
         self.has_config_layer = has_config_layer;
-        self
-    }
-
-    /// Serve this recording [`FakeConfigLayer`] as the config layer instead of
-    /// the real NixOS one, and report a layer. Keep a clone to inspect the calls
-    /// and script the steps.
-    pub fn with_fake_config_layer(mut self, layer: FakeConfigLayer) -> Self {
-        self.has_config_layer = true;
-        self.fake_layer = Some(layer);
         self
     }
 
@@ -122,14 +95,6 @@ impl<F: Filesystem> Platform<F> for FakePlatform {
         self.kind
     }
 
-    fn overlay_policy(&self) -> OverlayPolicy {
-        match self.kind {
-            PlatformKind::NixOs => OverlayPolicy::nixos(),
-            PlatformKind::Fhs => OverlayPolicy::fhs(),
-            PlatformKind::Unsupported => OverlayPolicy::none(),
-        }
-    }
-
     fn host_command_dirs(&self) -> &'static [&'static str] {
         &["/usr/bin", "/bin"]
     }
@@ -141,10 +106,7 @@ impl<F: Filesystem> Platform<F> for FakePlatform {
         if !self.has_config_layer {
             return None;
         }
-        Some(match &self.fake_layer {
-            Some(layer) => Box::new(layer.clone()) as Box<dyn ConfigLayer<F>>,
-            None => Box::new(NixOsConfigLayer),
-        })
+        Some(Box::new(NixOsConfigLayer))
     }
 
     fn discover_build_target(&self, _fs: &F, _hidden_volume_root: &Path) -> Result<HostTarget> {
@@ -153,16 +115,5 @@ impl<F: Filesystem> Platform<F> for FakePlatform {
         } else {
             HostTarget::None
         })
-    }
-
-    fn restore_base_system(
-        &self,
-        _fs: &F,
-        _runner: &dyn ProcessRunner,
-        _reboot_follows: bool,
-        _dispatch_reboot: &dyn Fn() -> Result<()>,
-        _env: &crate::RuntimeEnv,
-    ) -> Result<RestoreOutcome> {
-        Ok(self.restore_outcome)
     }
 }

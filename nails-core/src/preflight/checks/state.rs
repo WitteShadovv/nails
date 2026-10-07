@@ -85,19 +85,17 @@ impl<F: Filesystem> PreFlightCheck<F> for StateCheck {
             SystemState::Inactive => Ok(CheckResult::Pass(
                 "System is inactive - ready for activation".into(),
             )),
-            SystemState::Active { .. } => Ok(CheckResult::fail(
-                "System is already active. Run 'nails deactivate' first or use 'nails status' to check state.".to_string(),
-            )),
-            SystemState::Activating { .. } => Ok(CheckResult::fail(
-                "System is currently activating. Wait for it to finish, or run 'nails emergency' if no activation is in progress.".to_string(),
-            )),
-            SystemState::Deactivating { .. } => Ok(CheckResult::fail(
-                "System is currently deactivating. Wait for it to finish, or run 'nails emergency' if no deactivation is in progress.".to_string(),
-            )),
-            SystemState::Degraded { .. } => Ok(CheckResult::fail(
-                "System is degraded after a partial teardown. Run 'nails recover' before activating."
+            // The live facts are authoritative (the `session-state` check
+            // refuses a hidden root or an interrupted entry): a record that
+            // still says active after a hard reset is only stale.
+            SystemState::Active { .. } => Ok(CheckResult::Warn(
+                "The state file still records an active session, but the machine is not in one \
+                 (a hard reset or a power-off ended it); activation records a new one."
                     .to_string(),
             )),
+            SystemState::Degraded { reason, .. } => Ok(CheckResult::Warn(format!(
+                "The state file records a degraded session ({reason}); activation records a new one."
+            ))),
         }
     }
 }
@@ -105,181 +103,37 @@ impl<F: Filesystem> PreFlightCheck<F> for StateCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::preflight::PreFlightRegistry;
-    use crate::{NailsError, filesystem::MockFilesystem};
+    use crate::filesystem::MockFilesystem;
     use chrono::Utc;
 
     #[test]
-    fn test_state_check_new_constructor() {
-        // StateCheck::new() constructor accepting current state
-        let _check = StateCheck::new(SystemState::Inactive);
-    }
-
-    #[test]
-    fn test_state_check_trait_metadata() {
-        // StateCheck implements PreFlightCheck trait with correct name and description
+    fn the_check_is_named_state() {
         let check = StateCheck::new(SystemState::Inactive);
-
         assert_eq!(
             <StateCheck as PreFlightCheck<MockFilesystem>>::name(&check),
             "state"
         );
-        assert_eq!(
-            <StateCheck as PreFlightCheck<MockFilesystem>>::description(&check),
-            "Validates system state allows activation"
-        );
     }
 
     #[test]
-    fn test_state_check_inactive_state_pass() {
-        // Given current state is Inactive, When StateCheck runs, Then returns Pass
+    fn an_inactive_record_passes_and_a_stale_one_only_warns() {
         let fs = MockFilesystem::new();
-        let check = StateCheck::new(SystemState::Inactive);
-
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_pass());
-        assert_eq!(
-            result.message(),
-            "System is inactive - ready for activation"
-        );
-    }
-
-    #[test]
-    fn test_state_check_active_state_fail() {
-        // Given current state is Active, When StateCheck runs, Then returns Fail with deactivate guidance
-        let fs = MockFilesystem::new();
-        let check = StateCheck::new(SystemState::Active {
-            activated_at: Utc::now(),
-            overlays: vec![],
-            decoy_writers: Vec::new(),
-        });
-
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_fail());
-        assert_eq!(
-            result.message(),
-            "System is already active. Run 'nails deactivate' first or use 'nails status' to check state."
-        );
-    }
-
-    #[test]
-    fn test_state_check_activating_state_fail() {
-        // Given current state is Activating, When StateCheck runs, Then returns Fail with wait/reboot guidance
-        let fs = MockFilesystem::new();
-        let check = StateCheck::new(SystemState::Activating {
-            started_at: Utc::now(),
-        });
-
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_fail());
-        assert_eq!(
-            result.message(),
-            "System is currently activating. Wait for it to finish, or run 'nails emergency' if no activation is in progress."
-        );
-    }
-
-    #[test]
-    fn test_state_check_deactivating_state_fail() {
-        // Deactivating state should also fail
-        let fs = MockFilesystem::new();
-        let check = StateCheck::new(SystemState::Deactivating {
-            started_at: Utc::now(),
-        });
-
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_fail());
-        assert!(result.message().contains("deactivating"));
-        assert!(result.message().contains("nails emergency"));
         assert!(
-            !result.message().to_lowercase().contains("reboot"),
-            "transitional-state guidance must not mention rebooting: {}",
-            result.message()
+            StateCheck::new(SystemState::Inactive)
+                .run(&fs)
+                .unwrap()
+                .is_pass()
         );
-    }
-
-    #[test]
-    fn test_state_check_degraded_state_fail() {
-        // Given current state is Degraded, StateCheck returns Fail with recovery guidance.
-        let fs = MockFilesystem::new();
-        let check = StateCheck::new(SystemState::Degraded {
-            since: Utc::now(),
-            reason: "unmount failed".into(),
-            remaining_mounts: vec![],
-        });
-
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_fail());
-        assert_eq!(
-            result.message(),
-            "System is degraded after a partial teardown. Run 'nails recover' before activating."
-        );
-    }
-
-    #[test]
-    fn test_state_check_all_states_coverage() {
-        // Covers all 5 state variants
-        let fs = MockFilesystem::new();
-
-        // Inactive -> Pass
-        let check_inactive = StateCheck::new(SystemState::Inactive);
-        assert!(check_inactive.run(&fs).unwrap().is_pass());
-
-        // Active -> Fail
-        let check_active = StateCheck::new(SystemState::Active {
+        let active = StateCheck::new(SystemState::Active {
             activated_at: Utc::now(),
-            overlays: vec![],
-            decoy_writers: Vec::new(),
         });
-        assert!(check_active.run(&fs).unwrap().is_fail());
-
-        // Activating -> Fail
-        let check_activating = StateCheck::new(SystemState::Activating {
-            started_at: Utc::now(),
-        });
-        assert!(check_activating.run(&fs).unwrap().is_fail());
-
-        // Deactivating -> Fail
-        let check_deactivating = StateCheck::new(SystemState::Deactivating {
-            started_at: Utc::now(),
-        });
-        assert!(check_deactivating.run(&fs).unwrap().is_fail());
-
-        // Degraded -> Fail
-        let check_degraded = StateCheck::new(SystemState::Degraded {
+        assert!(active.run(&fs).unwrap().is_warn());
+        let degraded = StateCheck::new(SystemState::Degraded {
             since: Utc::now(),
-            reason: "unmount failed".into(),
-            remaining_mounts: vec![],
+            reason: "the way back failed".into(),
         });
-        assert!(check_degraded.run(&fs).unwrap().is_fail());
-    }
-
-    #[test]
-    fn test_state_check_integration_with_registry() {
-        // Integration test: StateCheck works correctly with PreFlightRegistry
-        let fs = MockFilesystem::new();
-        let mut registry: PreFlightRegistry<MockFilesystem> = PreFlightRegistry::new();
-
-        // Test with Inactive state (should pass)
-        registry.add_check(Box::new(StateCheck::new(SystemState::Inactive)));
-        let result = registry.run_all(&fs);
-        assert!(result.is_ok());
-        let results = result.unwrap();
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "state");
-        assert!(results[0].1.is_pass());
-
-        // Test with Active state (should fail)
-        let mut registry_fail: PreFlightRegistry<MockFilesystem> = PreFlightRegistry::new();
-        registry_fail.add_check(Box::new(StateCheck::new(SystemState::Active {
-            activated_at: Utc::now(),
-            overlays: vec![],
-            decoy_writers: Vec::new(),
-        })));
-        let result_fail = registry_fail.run_all(&fs);
-        assert!(result_fail.is_err());
-        assert!(matches!(
-            result_fail.unwrap_err(),
-            NailsError::PreFlightCheckFailed(_)
-        ));
+        let result = degraded.run(&fs).unwrap();
+        assert!(result.is_warn());
+        assert!(result.message().contains("the way back failed"));
     }
 }

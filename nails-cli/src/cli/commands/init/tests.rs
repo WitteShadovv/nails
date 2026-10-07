@@ -74,10 +74,6 @@ fn mark_host_debian(fs: &MockFilesystem) {
 }
 
 #[test]
-#[expect(
-    clippy::cognitive_complexity,
-    reason = "every assert! counts as a branch; the test is a flat list of checks"
-)]
 fn test_init_creates_directory_structure() {
     let tmp = TempDir::new().unwrap();
     let base_hardware_config = write_test_base_hardware_config(&tmp);
@@ -120,10 +116,8 @@ fn test_init_creates_directory_structure() {
             .any(|line| line.starts_with("hidden_volume_root")),
         "the root must stay commented out so it is derived from the binary"
     );
-    assert!(contents.contains("# clear_history = true"));
     assert!(contents.contains("# minimum_space_mb = 500"));
     assert!(contents.contains("# nixos_flake = "));
-    assert!(contents.contains("# [[overlays]]"));
     assert_eq!(contents, Config::init_template(tmp.path()));
 
     let loaded = Config::load(&config_file).unwrap();
@@ -131,7 +125,6 @@ fn test_init_creates_directory_structure() {
         loaded.hidden_volume_root,
         nails_core::config::derive_hidden_volume_root()
     );
-    assert_eq!(loaded.overlay_mode, nails_core::OverlayMode::Auto);
 
     let hidden_config = tmp.path().join("config/nixos/configuration.nix");
     assert!(hidden_config.is_file());

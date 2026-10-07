@@ -19,13 +19,12 @@
 //! `verify` (whose header paints regardless of ASCII) and through the assertion
 //! that `--json` never carries ANSI. True PTY colour stays in the VM tier.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use chrono::{DateTime, TimeZone, Utc};
 use insta_cmd::assert_cmd_snapshot;
-use nails_core::{OverlayInfo, StateFile, SystemState};
+use nails_core::{StateFile, SystemState};
 use serde_json::Value;
 
 /// A fixed overlay target used by the active/degraded fixtures. It is an
@@ -106,8 +105,7 @@ impl Harness {
                 "hidden_volume_root = {root:?}\n\
                  state_file_path = {state:?}\n\
                  log_path = {log:?}\n\
-                 show_opsec_reminders = false\n\
-                 overlays = []\n",
+                 show_opsec_reminders = false\n",
                 root = hidden_root.display().to_string(),
                 state = state_path.display().to_string(),
                 log = log_path.display().to_string(),
@@ -144,34 +142,19 @@ impl Harness {
     }
 }
 
-/// An active state with one overlay that is never actually mounted (so overlay
-/// verification reports a mismatch — a Warning posture).
+/// An active state record. The live view on the test host is the plain decoy,
+/// so status reports the record next to a decoy posture.
 fn active_state() -> SystemState {
     SystemState::Active {
         activated_at: fixed_instant(),
-        overlays: vec![PathBuf::from(CONTRACT_TARGET)],
-        decoy_writers: Vec::new(),
     }
 }
 
-/// Build the matching `overlay_status` entry for [`active_state`] and persist it.
+/// Persist [`active_state`].
 fn write_active_harness() -> Harness {
     let harness = Harness::new();
-    let mut overlay_status = HashMap::new();
-    overlay_status.insert(
-        PathBuf::from(CONTRACT_TARGET),
-        OverlayInfo {
-            mount_method: Default::default(),
-            mount_path: PathBuf::from(CONTRACT_TARGET),
-            lower_dir: PathBuf::from(CONTRACT_TARGET),
-            upper_dir: harness.hidden_root.join("upper/home"),
-            work_dir: harness.hidden_root.join("work/home"),
-            mounted_at: fixed_instant(),
-        },
-    );
     let file = StateFile {
         state: active_state(),
-        overlay_status,
         ..StateFile::default()
     };
     file.save(&harness.state_path, harness.hidden_root.to_str().unwrap())
@@ -428,16 +411,9 @@ fn redact_status(mut value: Value) -> Value {
         if data.contains_key("uptime_formatted") {
             data["uptime_formatted"] = Value::String("[uptime]".to_string());
         }
-        // An overlay's upperdir lives under the harness's temp hidden root, so
-        // replace it with a fixed placeholder to keep the snapshot deterministic.
-        if let Some(overlays) = data.get_mut("overlays").and_then(Value::as_array_mut) {
-            for overlay in overlays {
-                if let Some(entry) = overlay.as_object_mut()
-                    && entry.contains_key("upperdir")
-                {
-                    entry["upperdir"] = Value::String("[upperdir]".to_string());
-                }
-            }
+        // The hidden root is the harness's temp directory.
+        if data.contains_key("hidden_root") {
+            data["hidden_root"] = Value::String("[hidden_root]".to_string());
         }
     }
     value
@@ -468,14 +444,13 @@ fn status_json_inactive_matches_schema_and_snapshot() {
 fn status_json_active_matches_schema_and_snapshot() {
     let harness = write_active_harness();
     let (code, value) = run_json(&harness.config, &["status"]);
-    // An active state whose overlay is not a live NAILS overlay is degraded, and
-    // a dangerous posture fails closed with the degraded/reboot exit code.
-    assert_eq!(code, 7);
+    // The live view on the test host is the plain decoy: an active record is
+    // reported next to the decoy posture, and no uptime is claimed for it.
+    assert_eq!(code, 0);
     assert_matches_schema(&load_schema("status"), &value);
     assert_eq!(value["data"]["state"]["kind"], "active");
-    assert_eq!(value["data"]["posture"], "degraded");
-    assert_eq!(value["data"]["overlays"][0]["status"], "not_mounted");
-    assert_eq!(value["data"]["overlays"][0]["owned"], false);
+    assert_eq!(value["data"]["posture"], "decoy");
+    assert!(value["data"].get("uptime_seconds").is_none());
     insta::assert_json_snapshot!("status_json_active", redact_status(value));
 }
 
@@ -497,93 +472,16 @@ fn status_json_degraded_matches_schema_and_snapshot() {
     let harness = Harness::new();
     harness.write_state(SystemState::Degraded {
         since: fixed_instant(),
-        reason: "teardown left overlays mounted".to_string(),
-        remaining_mounts: vec![PathBuf::from(CONTRACT_TARGET)],
+        reason: "in the hidden root without a way back".to_string(),
     });
     let (code, value) = run_json(&harness.config, &["status"]);
-    // A persisted Degraded teardown reconciles to an inconsistent posture.
-    assert_eq!(code, 7);
-    assert_matches_schema(&load_schema("status"), &value);
-    assert_eq!(value["data"]["state"]["kind"], "degraded");
-    assert_eq!(value["data"]["posture"], "inconsistent");
-    insta::assert_json_snapshot!("status_json_degraded", redact_status(value));
-}
-
-#[test]
-fn status_reports_an_activation_in_flight_with_its_phase_and_elapsed_time() {
-    let harness = Harness::new();
-    let started_at = Utc::now() - chrono::Duration::seconds(130);
-    harness.write_state(SystemState::Activating { started_at });
-    nails_core::progress::write_progress(
-        &nails_core::RealFilesystem,
-        &harness.hidden_root,
-        &nails_core::progress::ActivationProgress {
-            phase: "overlay_mount".to_string(),
-            label: "Mounting overlays".to_string(),
-            step: 4,
-            total_steps: 7,
-            started_at,
-            phase_started_at: started_at,
-            detail: Some("mounting /home (3/12)".to_string()),
-        },
-    )
-    .expect("write progress record");
-
-    let (_code, value) = run_json(&harness.config, &["status"]);
-    assert_matches_schema(&load_schema("status"), &value);
-    let flight = &value["data"]["activation_in_flight"];
-    assert_eq!(flight["phase"], "overlay_mount", "{value}");
-    assert_eq!(flight["phase_label"], "Mounting overlays");
-    assert_eq!(flight["step"], 4);
-    assert_eq!(flight["total_steps"], 7);
-    assert_eq!(flight["detail"], "mounting /home (3/12)");
-    assert!(flight["elapsed_seconds"].as_u64().unwrap() >= 130);
-
-    let stdout = String::from_utf8(run(&harness.config, &[], &["status"]).stdout).unwrap();
-    assert!(
-        stdout.contains("Activation:         in progress: Mounting overlays (4/7), 2m"),
-        "{stdout}"
-    );
-    assert!(stdout.contains("mounting /home (3/12)"), "{stdout}");
-}
-
-#[test]
-fn status_lists_undelivered_results_and_a_missing_notify_send() {
-    let harness = Harness::new();
-    harness.write_state(SystemState::Inactive);
-    for title in ["NAILS Overlay Active", "NixOS Rebuild Failed"] {
-        nails_core::notification::write_notification(
-            &harness.hidden_root,
-            &nails_core::Notification {
-                title: title.to_string(),
-                body: "body".to_string(),
-                urgency: "critical".to_string(),
-                icon: None,
-                created_at: "2026-01-01T00:00:00Z".to_string(),
-            },
-        )
-        .expect("queue notification");
-        std::thread::sleep(std::time::Duration::from_millis(2));
-    }
-    nails_core::notification::deliver::record_notify_send_missing(&harness.hidden_root)
-        .expect("record missing notify-send");
-
-    let (code, value) = run_json(&harness.config, &["status"]);
+    // The posture comes from the live view (the plain decoy here); the
+    // degraded record is reported next to it.
     assert_eq!(code, 0);
     assert_matches_schema(&load_schema("status"), &value);
-    let titles: Vec<&str> = value["data"]["undelivered_notifications"]
-        .as_array()
-        .expect("undelivered list")
-        .iter()
-        .map(|n| n["title"].as_str().unwrap())
-        .collect();
-    assert_eq!(titles, vec!["NAILS Overlay Active", "NixOS Rebuild Failed"]);
-    assert_eq!(value["data"]["notify_send_missing"], true);
-
-    let stdout = String::from_utf8(run(&harness.config, &[], &["status"]).stdout).unwrap();
-    assert!(stdout.contains("Undelivered notifications: 2"), "{stdout}");
-    assert!(stdout.contains("NixOS Rebuild Failed"), "{stdout}");
-    assert!(stdout.contains("notify-send was not found"), "{stdout}");
+    assert_eq!(value["data"]["state"]["kind"], "degraded");
+    assert_eq!(value["data"]["posture"], "decoy");
+    insta::assert_json_snapshot!("status_json_degraded", redact_status(value));
 }
 
 #[test]
@@ -974,8 +872,9 @@ fn exit_code_5_needs_root_on_privileged_commands_run_unprivileged() {
 }
 
 #[test]
-fn exit_code_6_invalid_state_on_reset_upper_while_active() {
-    // reset-upper refuses when the system is not Inactive, before touching data.
+fn reset_upper_follows_the_live_view_not_an_active_record() {
+    // reset-upper is refused only inside the hidden root. On the decoy an
+    // active record left behind does not block it.
     let harness = write_active_harness();
     // The temp hidden root shares `/`'s device; declare it attached so the state
     // lock (which refuses an unmounted hidden root) lets the state check run.
@@ -988,22 +887,9 @@ fn exit_code_6_invalid_state_on_reset_upper_while_active() {
     let value: Value = serde_json::from_str(stdout.trim().lines().next_back().unwrap_or(""))
         .unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}): {stdout}"));
     let code = output.status.code().unwrap_or(-1);
-    assert_eq!(code, 6);
+    assert_eq!(code, 0, "{stdout}");
     assert_eq!(value["command"], "reset-upper");
-    assert_eq!(value["ok"], false);
-}
-
-#[test]
-fn exit_code_7_degraded_reboot_on_status() {
-    let harness = Harness::new();
-    harness.write_state(SystemState::Degraded {
-        since: fixed_instant(),
-        reason: "teardown left overlays mounted".to_string(),
-        remaining_mounts: vec![PathBuf::from(CONTRACT_TARGET)],
-    });
-    // The posture drives the exit code with no opt-in flag.
-    let code = run(&harness.config, &[], &["status"]).status.code();
-    assert_eq!(code, Some(7));
+    assert_eq!(value["ok"], true);
 }
 
 #[test]

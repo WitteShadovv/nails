@@ -1,14 +1,11 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Mount, unmount, and mount-query operations for RealFilesystem.
+//! Mount-query operations for RealFilesystem.
 
-use super::RealFilesystem;
-use crate::filesystem::mountinfo::{
-    NailsMounts, escape_overlay_path, parse_overlay_opts, read_mountinfo,
-};
-use crate::filesystem::{Filesystem, MountInfo, MountSource, verify_mount_preconditions};
-use crate::{IoResultExt, NailsError, Result};
+use crate::Result;
+use crate::filesystem::MountSource;
+use crate::filesystem::mountinfo::read_mountinfo;
 use std::path::{Path, PathBuf};
 
 /// Where udev records a symlink per filesystem label, named by the label.
@@ -28,125 +25,6 @@ fn canonical_target(target: &Path) -> PathBuf {
         .unwrap_or_else(|_| target.to_path_buf())
 }
 
-/// Build the overlay mount option string.
-///
-/// `index=off,metacopy=off,redirect_dir=nofollow` is always appended. NAILS
-/// depends on plain, predictable copy-up semantics: `metacopy` and `redirect_dir`
-/// change where file data and rename state live across the layers (and can leave
-/// traces or complicate teardown), and `index` affects hardlink/nlink
-/// bookkeeping, so all three are disabled explicitly rather than left to the
-/// kernel default, which varies by kernel build and mount-time auto-detection.
-///
-/// `redirect_dir=nofollow` rather than `off`: `off` means "follow existing
-/// redirects" on a kernel built with `CONFIG_OVERLAY_FS_REDIRECT_ALWAYS_FOLLOW`
-/// (the upstream default) and "nofollow" otherwise, so it is itself
-/// build-dependent. `nofollow` never creates a redirect and never follows one a
-/// foreign lower layer carries, on every kernel. It is also the only mode an
-/// unprivileged user-namespace mount accepts, which lets the rootless kernel
-/// tests mount overlays with exactly these options. The segments are already
-/// escaped by [`escape_overlay_path`].
-fn overlay_mount_options(lowerdir: &str, upper: &str, work: &str) -> String {
-    format!(
-        "lowerdir={lowerdir},upperdir={upper},workdir={work},index=off,metacopy=off,redirect_dir=nofollow"
-    )
-}
-
-/// Perform an overlay mount.
-pub(super) fn mount_overlay(
-    fs: &RealFilesystem,
-    lower: &[&Path],
-    upper: &Path,
-    work: &Path,
-    target: &Path,
-) -> Result<()> {
-    if lower.is_empty() {
-        return Err(NailsError::OverlayError(
-            "mount_overlay requires at least one lower layer".to_string(),
-        ));
-    }
-    verify_mount_preconditions(fs, lower[0], upper, work, target)?;
-
-    // Escape `,`/`:`/`\` in every path segment and reject newlines so a path
-    // with those characters cannot break or inject overlay options.
-    let lowerdir = lower
-        .iter()
-        .map(|p| escape_overlay_path(p))
-        .collect::<Result<Vec<_>>>()?
-        .join(":");
-
-    let options = overlay_mount_options(
-        &lowerdir,
-        &escape_overlay_path(upper)?,
-        &escape_overlay_path(work)?,
-    );
-
-    nix::mount::mount(
-        Some("overlay"),
-        target,
-        Some("overlay"),
-        nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NODEV,
-        Some(options.as_str()),
-    )
-    .map_err(|e| {
-        if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
-            NailsError::PermissionDenied("Mount requires root privileges".to_string())
-        } else {
-            // Preserve the raw errno so the overlay strategy can decide whether
-            // to fall back to a pivot mount without parsing the error text.
-            NailsError::Mount {
-                target: target.to_path_buf(),
-                errno: e,
-            }
-        }
-    })?;
-
-    Ok(())
-}
-
-/// Unmount a filesystem (idempotent).
-///
-/// Before touching `umount2`, the mount at `target` is confirmed to be one NAILS
-/// created (an overlay, a pivot/staging bind, or the `/nix/store` restore bind).
-/// If it is not — for example a real ext4 `/home` that stale state wrongly points
-/// at — the call is refused so the `MNT_FORCE | MNT_DETACH` escalation can never
-/// lazily detach a host filesystem.
-pub(super) fn unmount(fs: &RealFilesystem, target: &Path, force: bool) -> Result<()> {
-    if !fs.is_mounted(target)? {
-        return Ok(());
-    }
-
-    let canonical = canonical_target(target);
-    if !NailsMounts::from_entries(&crate::filesystem::mountinfo::read_mountinfo()?, None)
-        .is_owned(&canonical)
-    {
-        return Err(NailsError::RefusedUnmanagedUnmount {
-            path: target.to_path_buf(),
-        });
-    }
-
-    let flags = if force {
-        nix::mount::MntFlags::MNT_FORCE | nix::mount::MntFlags::MNT_DETACH
-    } else {
-        nix::mount::MntFlags::empty()
-    };
-
-    nix::mount::umount2(target, flags).map_err(|e| {
-        if e == nix::errno::Errno::EBUSY {
-            NailsError::MountBusy {
-                path: target.to_path_buf(),
-                suggestion: "Use force=true or close open files".to_string(),
-            }
-        } else {
-            NailsError::UnmountError {
-                path: target.to_path_buf(),
-                reason: format!("{}", e),
-            }
-        }
-    })?;
-
-    Ok(())
-}
-
 /// Check if a path is currently mounted.
 pub(super) fn is_mounted(target: &Path) -> Result<bool> {
     let canonical = canonical_target(target);
@@ -160,29 +38,6 @@ pub(super) fn get_filesystem_type(target: &Path) -> Result<Option<String>> {
         .into_iter()
         .find(|e| e.mount_point == canonical)
         .map(|e| e.fstype))
-}
-
-/// Check if a path has an overlayfs mount *visible at that path*.
-///
-/// Only the mount actually reachable at `target` counts. When a later mount on a
-/// parent path shadows an overlay still listed at this path — NAILS overlays
-/// `/nix`, which hides the `/nix/store` overlay underneath it — `mountinfo` keeps
-/// the shadowed entry, but the path now resolves onto the covering mount's
-/// device. Matching the entry's device against the device the kernel reports at
-/// the path drops the shadowed entry, so a fresh nested overlay is not wrongly
-/// refused as a double-mount. A genuine, visible overlay still matches (its
-/// device is what `stat` returns), so real double-mount detection is unchanged.
-/// When the path cannot be stat'd, fall back to the path+fstype match (fail-safe:
-/// treat a present entry as mounted).
-pub(super) fn is_overlay_mounted(target: &Path) -> Result<bool> {
-    use std::os::unix::fs::MetadataExt;
-    let canonical = canonical_target(target);
-    let visible_dev = std::fs::metadata(&canonical).ok().map(|meta| meta.dev());
-    Ok(read_mountinfo()?.iter().any(|e| {
-        e.mount_point == canonical
-            && e.fstype == "overlay"
-            && visible_dev.is_none_or(|dev| mountinfo_dev_matches(&e.dev, dev))
-    }))
 }
 
 /// Whether the mount visible at `target` is mounted read-only.
@@ -207,45 +62,6 @@ pub(super) fn is_mount_read_only(target: &Path) -> Result<bool> {
 /// (a bare `ro` token), as a kernel emergency remount-ro does.
 fn super_opts_read_only(super_opts: &str) -> bool {
     super_opts.split(',').any(|opt| opt == "ro")
-}
-
-/// Whether a mountinfo `major:minor` device string denotes the same device as a
-/// `stat` `st_dev`. A malformed device string never matches.
-fn mountinfo_dev_matches(dev_text: &str, st_dev: u64) -> bool {
-    let mut parts = dev_text.split(':');
-    let (Some(major), Some(minor), None) = (parts.next(), parts.next(), parts.next()) else {
-        return false;
-    };
-    let (Ok(major), Ok(minor)) = (major.parse::<u64>(), minor.parse::<u64>()) else {
-        return false;
-    };
-    nix::sys::stat::makedev(major, minor) == st_dev
-}
-
-/// Get mount info for a currently mounted overlay.
-///
-/// Returns `None` when the target is not a mounted overlay. A malformed or dead
-/// mount-table line no longer aborts the lookup — the parser skips it — so an
-/// overlay recorded after such a line is still found.
-pub(super) fn get_mount_info(target: &Path) -> Option<MountInfo> {
-    let canonical = canonical_target(target);
-    for entry in read_mountinfo().ok()? {
-        if entry.mount_point == canonical && entry.fstype == "overlay" {
-            let opts = parse_overlay_opts(&entry.super_opts);
-            if let (false, Some(upper), Some(work)) =
-                (opts.lowerdir.is_empty(), opts.upperdir, opts.workdir)
-            {
-                return Some(MountInfo {
-                    lowers: opts.lowerdir,
-                    upper,
-                    work,
-                    target: canonical,
-                    mounted_at: chrono::Utc::now(),
-                });
-            }
-        }
-    }
-    None
 }
 
 /// Identify the device, device-mapper name and filesystem label behind the
@@ -311,219 +127,9 @@ fn label_for(source: &Path) -> Option<String> {
     None
 }
 
-/// Mount a tmpfs filesystem.
-pub(super) fn mount_tmpfs(target: &Path, size: &str) -> Result<()> {
-    let temp_dir = crate::config::EphemeralOverlayDir {
-        path: target.to_path_buf(),
-        tmpfs_upper_size: size.to_string(),
-        tmpfs_work_size: "1M".to_string(),
-    };
-    temp_dir
-        .parse_upper_size()
-        .map_err(|e| NailsError::ConfigError(format!("Invalid tmpfs size '{}': {}", size, e)))?;
-
-    std::fs::create_dir_all(target).at_path(target)?;
-
-    let options = format!("size={}", size);
-
-    nix::mount::mount(
-        Some("tmpfs"),
-        target,
-        Some("tmpfs"),
-        nix::mount::MsFlags::MS_NOSUID | nix::mount::MsFlags::MS_NODEV,
-        Some(options.as_str()),
-    )
-    .map_err(|e| {
-        if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
-            NailsError::PermissionDenied("Tmpfs mount requires root privileges".to_string())
-        } else {
-            NailsError::OverlayError(format!(
-                "Failed to mount tmpfs at {}: {}",
-                target.display(),
-                e
-            ))
-        }
-    })?;
-
-    Ok(())
-}
-
-/// Unmount a tmpfs filesystem (idempotent).
-pub(super) fn unmount_tmpfs(fs: &RealFilesystem, target: &Path) -> Result<()> {
-    if !fs.is_mounted(target)? {
-        return Ok(());
-    }
-
-    nix::mount::umount(target).map_err(|e| NailsError::UnmountError {
-        path: target.to_path_buf(),
-        reason: format!("{}", e),
-    })?;
-
-    Ok(())
-}
-
-/// Perform a bind mount.
-pub(super) fn bind_mount(source: &Path, target: &Path) -> Result<()> {
-    if !source.exists() {
-        return Err(NailsError::OverlayError(format!(
-            "Bind mount source not found: {}",
-            source.display()
-        )));
-    }
-
-    nix::mount::mount(
-        Some(source),
-        target,
-        None::<&str>,
-        nix::mount::MsFlags::MS_BIND,
-        None::<&str>,
-    )
-    .map_err(|e| {
-        if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
-            NailsError::PermissionDenied("Bind mount requires root privileges".to_string())
-        } else if e == nix::errno::Errno::EBUSY {
-            NailsError::MountBusy {
-                path: target.to_path_buf(),
-                suggestion: "Target directory has active references".to_string(),
-            }
-        } else {
-            NailsError::OverlayError(format!(
-                "Failed to bind mount {} to {}: {}",
-                source.display(),
-                target.display(),
-                e
-            ))
-        }
-    })?;
-
-    Ok(())
-}
-
-/// Re-attach a staged submount over its parent overlay.
-///
-/// `source` is the staging capture (a recursive bind of the submount's live
-/// content, taken before the parent overlay shadowed it). It is recursively bound
-/// onto `mount_point` — now sitting over the overlay — so the path resolves again,
-/// and remounted read-only when asked so a snap squashfs or an ESP cannot be
-/// written through the re-attach. The recursive flag carries across any mounts the
-/// submount nested inside itself.
-pub(super) fn reattach_submount(source: &Path, mount_point: &Path, read_only: bool) -> Result<()> {
-    let map_err = |e: nix::errno::Errno, stage: &str| -> NailsError {
-        if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
-            NailsError::PermissionDenied("Submount re-attach requires root privileges".to_string())
-        } else if e == nix::errno::Errno::EBUSY {
-            NailsError::MountBusy {
-                path: mount_point.to_path_buf(),
-                suggestion: "Submount re-attach target has active references".to_string(),
-            }
-        } else {
-            NailsError::OverlayError(format!(
-                "Failed to {stage} submount {} -> {}: {e}",
-                source.display(),
-                mount_point.display(),
-            ))
-        }
-    };
-
-    nix::mount::mount(
-        Some(source),
-        mount_point,
-        None::<&str>,
-        nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
-        None::<&str>,
-    )
-    .map_err(|e| map_err(e, "bind"))?;
-
-    if read_only {
-        nix::mount::mount(
-            Some(mount_point),
-            mount_point,
-            None::<&str>,
-            nix::mount::MsFlags::MS_BIND
-                | nix::mount::MsFlags::MS_REMOUNT
-                | nix::mount::MsFlags::MS_RDONLY,
-            None::<&str>,
-        )
-        .map_err(|e| {
-            // The bind landed but the read-only remount did not; drop the bind so
-            // the submount is not left writable through the re-attach.
-            let _ = nix::mount::umount(mount_point);
-            map_err(e, "remount read-only")
-        })?;
-    }
-
-    Ok(())
-}
-
-/// Bind-remount a path on itself read-only.
-///
-/// A plain `MS_REMOUNT|MS_RDONLY` on a mount the kernel considers writable can be
-/// refused, so the tree is first self-bound (`MS_BIND`) and the fresh bind is
-/// then remounted read-only. The stacked bind is what [`unmount_bind`] later
-/// removes to restore write access.
-pub(super) fn remount_read_only(target: &Path) -> Result<()> {
-    let map_err = |e: nix::errno::Errno, stage: &str| -> NailsError {
-        if e == nix::errno::Errno::EACCES || e == nix::errno::Errno::EPERM {
-            NailsError::PermissionDenied("Read-only remount requires root privileges".to_string())
-        } else if e == nix::errno::Errno::EBUSY {
-            NailsError::MountBusy {
-                path: target.to_path_buf(),
-                suggestion: "Tree has active references and cannot be remounted read-only"
-                    .to_string(),
-            }
-        } else {
-            NailsError::OverlayError(format!(
-                "Failed to {stage} {} read-only: {e}",
-                target.display()
-            ))
-        }
-    };
-
-    nix::mount::mount(
-        Some(target),
-        target,
-        None::<&str>,
-        nix::mount::MsFlags::MS_BIND,
-        None::<&str>,
-    )
-    .map_err(|e| map_err(e, "self-bind"))?;
-
-    nix::mount::mount(
-        Some(target),
-        target,
-        None::<&str>,
-        nix::mount::MsFlags::MS_BIND
-            | nix::mount::MsFlags::MS_REMOUNT
-            | nix::mount::MsFlags::MS_RDONLY,
-        None::<&str>,
-    )
-    .map_err(|e| {
-        // The self-bind landed but the read-only remount did not; drop the bind so
-        // the guard does not leave a redundant writable bind stacked on the tree.
-        let _ = nix::mount::umount(target);
-        map_err(e, "remount")
-    })?;
-
-    Ok(())
-}
-
-/// Unmount a bind mount (idempotent).
-pub(super) fn unmount_bind(fs: &RealFilesystem, target: &Path) -> Result<()> {
-    if !fs.is_mounted(target)? {
-        return Ok(());
-    }
-
-    nix::mount::umount(target).map_err(|e| NailsError::UnmountError {
-        path: target.to_path_buf(),
-        reason: format!("{}", e),
-    })?;
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{dm_name_for, mountinfo_dev_matches, overlay_mount_options, super_opts_read_only};
+    use super::{dm_name_for, super_opts_read_only};
     use std::path::Path;
 
     #[test]
@@ -535,23 +141,6 @@ mod tests {
         assert!(!super_opts_read_only("rw,errors=remount-ro"));
         assert!(!super_opts_read_only("rw,relatime"));
         assert!(!super_opts_read_only(""));
-    }
-
-    #[test]
-    fn overlay_options_disable_index_metacopy_and_redirect_dir() {
-        let opts = overlay_mount_options("/l", "/u", "/w");
-        assert!(opts.contains("index=off"));
-        assert!(opts.contains("metacopy=off"));
-        assert!(opts.contains("redirect_dir=nofollow"));
-    }
-
-    #[test]
-    fn overlay_options_keep_lower_upper_and_work_dirs() {
-        let opts = overlay_mount_options("/a:/b", "/up", "/work");
-        assert_eq!(
-            opts,
-            "lowerdir=/a:/b,upperdir=/up,workdir=/work,index=off,metacopy=off,redirect_dir=nofollow"
-        );
     }
 
     #[test]
@@ -567,24 +156,5 @@ mod tests {
     fn dm_name_is_none_for_a_plain_partition() {
         // A real block device is not a device-mapper device.
         assert_eq!(dm_name_for(Path::new("/dev/sdb1")), None);
-    }
-
-    #[test]
-    fn mountinfo_dev_matches_the_same_device() {
-        let dev = nix::sys::stat::makedev(0, 85);
-        assert!(mountinfo_dev_matches("0:85", dev));
-        // A shadowed overlay sitting at the same path but on a different device
-        // (the covering parent mount) must not match the visible device.
-        assert!(!mountinfo_dev_matches("0:41", dev));
-        assert!(!mountinfo_dev_matches("253:0", dev));
-    }
-
-    #[test]
-    fn mountinfo_dev_matches_rejects_malformed_device_strings() {
-        let dev = nix::sys::stat::makedev(0, 85);
-        assert!(!mountinfo_dev_matches("", dev));
-        assert!(!mountinfo_dev_matches("0", dev));
-        assert!(!mountinfo_dev_matches("0:85:1", dev));
-        assert!(!mountinfo_dev_matches("x:y", dev));
     }
 }

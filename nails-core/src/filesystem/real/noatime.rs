@@ -213,7 +213,6 @@ mod tests {
                 .matches,
             vec![file.clone()]
         );
-        assert!(fs.get_directory_size(&tree).unwrap() > 0);
 
         assert_eq!(atime(&file), file_before, "file atime must not change");
         assert_eq!(atime(&tree), tree_before, "directory atime must not change");

@@ -24,19 +24,8 @@
 //!
 //! // Testing: No root required
 //! let fs = MockFilesystem::new();
-//!
-//! // Set up paths to exist
-//! fs.mock_set_path_exists("/", true);
-//! fs.mock_set_path_exists("/mnt/hidden/upper", true);
-//! fs.mock_set_path_exists("/mnt/hidden/work", true);
-//!
-//! let result = fs.mount_overlay(
-//!     &[Path::new("/")],
-//!     Path::new("/mnt/hidden/upper"),
-//!     Path::new("/mnt/hidden/work"),
-//!     Path::new("/home")
-//! );
-//! assert!(result.is_ok());
+//! fs.mock_set_mounted(Path::new("/mnt/hidden"), true);
+//! assert!(fs.is_mounted(Path::new("/mnt/hidden")).unwrap());
 //! ```
 
 // Submodules
@@ -60,6 +49,6 @@ pub use mountinfo::{
     MountEntry, NailsMounts, OverlayOpts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,
     read_mountinfo,
 };
-pub use real::{RealFilesystem, Submount};
+pub use real::RealFilesystem;
 pub use safe_path::SafeRoot;
 pub use traits::*;

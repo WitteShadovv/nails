@@ -270,7 +270,9 @@ fn collect_autostart<F: Filesystem>(
 
     for path in list_dir(fs, dir) {
         let file_name = file_name_of(&path);
-        if !file_name.ends_with(".desktop") || file_name == crate::shell::NOTIFY_AUTOSTART_FILE {
+        if !file_name.ends_with(".desktop")
+            || file_name == crate::artifacts::LEGACY_NOTIFY_AUTOSTART_FILE
+        {
             continue;
         }
 

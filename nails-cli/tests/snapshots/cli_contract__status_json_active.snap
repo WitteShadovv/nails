@@ -5,38 +5,20 @@ expression: redact_status(value)
 {
   "command": "status",
   "data": {
-    "activated_at": "2023-11-14T22:13:20+00:00",
     "decoy_persistent": "[decoy_persistent]",
-    "decoy_writers": [],
-    "hidden_root_available_bytes": "[bytes]",
+    "hidden_root": "[hidden_root]",
     "hidden_root_mounted": false,
-    "hidden_root_total_bytes": "[bytes]",
-    "hidden_root_used_bytes": "[bytes]",
+    "masked_units": [],
+    "nextroot_mounted": false,
     "opsec_reminders": [],
-    "overlay_verification": {
-      "errors": [
-        "/opt/nails-contract-home is not mounted as a NAILS overlay"
-      ],
-      "kind": "mismatch"
-    },
-    "overlays": [
-      {
-        "mount_point": "/opt/nails-contract-home",
-        "owned": false,
-        "status": "not_mounted",
-        "upperdir": "[upperdir]"
-      }
-    ],
     "persona_mode": "shared-home",
-    "posture": "degraded",
-    "remaining_mounts": [],
-    "remediation": "Run `nails emergency` to tear down the remaining NAILS mounts",
+    "policy_mounts": [],
+    "posture": "decoy",
+    "session": "decoy",
     "state": {
       "kind": "active"
     },
-    "state_source": "loaded",
-    "uptime_formatted": "[uptime]",
-    "uptime_seconds": "[uptime_s]"
+    "state_source": "loaded"
   },
   "ok": true,
   "schema_version": 1

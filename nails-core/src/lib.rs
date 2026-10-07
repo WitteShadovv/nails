@@ -3,7 +3,9 @@
 
 //! # NAILS Core Library
 //!
-//! Core library for the nails overlay environment manager.
+//! Core library for the nails overlay environment manager: a hidden session
+//! on a decoy system, entered and left with `systemctl soft-reboot` into a
+//! whole-root overlay (ADR 0008).
 //!
 //! This crate contains all core functionality including:
 //! - State management and transitions
@@ -76,32 +78,14 @@ pub mod timing;
 // Verbosity configuration
 pub mod verbosity;
 
-// Overlay operations module (Extended Overlay Strategy)
-pub mod overlay;
-
-// Process detection and classification module (Process Detection)
+// Running external programs, and process hardening.
 pub mod process;
 
-// Activation options module (User Prompts and CLI Flags)
-pub mod activate_options;
-
-// User prompts module (User Prompts and CLI Flags)
-pub mod prompts;
-
-// Cleanup management module (CleanupManager with Thorough and Fast Modes)
-pub mod cleanup;
-
-// Deactivation orchestrator module (DeactivationOrchestrator with Cleanup + Unmount + Rollback)
-pub mod deactivation;
-
-// Status command module (State Query with Overlay Verification)
+// Status command module (live session view)
 pub mod status;
 
-// Backend close/lock after an emergency teardown.
+// Backend chain resolution (the hidden volume's device-mapper stack).
 pub mod backend_lock;
-
-// Shell instrumentation module (Shell Prompt Instrumentation Scripts)
-pub mod shell;
 
 // Logging infrastructure module (Logging with Hidden Volume Validation)
 pub mod logging;
@@ -109,10 +93,7 @@ pub mod logging;
 // Shared marks and per-stream styles for CLI output
 pub mod output;
 
-// Activation progress record on the hidden volume (read by `status`)
-pub mod progress;
-
-// Desktop notification signal files (post-activation user feedback)
+// Immediate desktop alerts for the backend watcher
 pub mod notification;
 
 pub mod runtime_copy;
@@ -154,11 +135,6 @@ pub mod test_support;
 #[cfg(any(test, feature = "test-support"))]
 pub mod kernel_fixtures;
 
-// The per-activation runtime scaffolding root: one random-named, volatile tmpfs
-// under /run that holds pivot staging, the vfat snapshot tmpfs and the
-// pre-overlay /nix/store bind, recorded in state and torn down as a unit.
-pub(crate) mod runtime_root;
-
 // Property-based parser tests (`just fuzz` runs them with many more cases).
 #[cfg(test)]
 mod fuzz;
@@ -169,28 +145,20 @@ pub use artifacts::{
 };
 #[cfg(any(test, feature = "test-support"))]
 pub use config::TestWorld;
-pub use config::{
-    CliOverrides, ColorProfile, ColorSchemeConfig, Config, ConfigBuilder, DecoyProfile,
-    EphemeralOverlayDir, LoadedConfig, OverlayConfig, OverlayMode, ValueSource,
-};
+pub use config::{CliOverrides, Config, ConfigBuilder, LoadedConfig, ValueSource};
 pub use error::{IoResultExt, NailsError, Result};
 pub use filesystem::{Filesystem, RealFilesystem};
 #[cfg(any(test, feature = "test-support"))]
 pub use filesystem::{MockFilesystem, PathKind};
 pub use hidden_root::{AttachState, HiddenRoot, ensure_state_dir_attached};
-pub use manager::deactivation::{DeactivationMode, DeactivationOrchestrator};
 pub use manager::{
-    ActivationOutcome, HiddenConfigOutcome, HostEffects, MountInfo, MountTracker, MountType,
-    NailsManager, PostTeardownPower, RecoverOutcome, RegistryInputs, ResetUpperPlan,
-    RollbackOutcome, apply_exclusion_filter, build_overlay_targets, build_registry,
+    EnterOptions, EnterOutcome, NailsManager, RegistryInputs, ResetUpperPlan, SessionRecovery,
+    build_registry,
 };
-#[cfg(any(test, feature = "test-hooks"))]
-pub use manager::{SimulatedHostEffects, SimulatedReboot};
 // Platform seam exports
 pub use platform::{
-    ConfigLayer, ConfigPlan, HostProfile, HostTarget, MountHooks, NixOsConfigLayer, OverlayPolicy,
-    Platform, PlatformKind, RestoreOutcome, detect, detect_platform, discover_host_target,
-    discover_with_platform, guard_read_only_trees, platform_for,
+    ConfigLayer, HostProfile, HostTarget, NixOsConfigLayer, Platform, PlatformKind, detect,
+    detect_platform, discover_host_target, discover_with_platform, platform_for,
 };
 pub use runtime_env::RuntimeEnv;
 pub use target_user::TargetUser;
@@ -200,16 +168,14 @@ pub use persona::{InheritedSource, PersonaEntry, PersonaInventory, collect_inher
 
 // State management exports
 pub use state::{
-    DecoyWriter, EMERGENCY_LOCK_TIMEOUT, FailedOverlayInfo, HiddenSession, LastActivation,
-    LoadOutcome, LoadResult, OverlayInfo, PlatformState, StateFile, StateLock, SubmountAttachment,
-    SystemState, WriterKind, decoy_writers_headline, summarize_decoy_writers,
+    EMERGENCY_LOCK_TIMEOUT, LastActivation, LoadOutcome, LoadResult, PlatformState, StateFile,
+    StateLock, SystemState,
 };
 
 // Pre-flight validation exports
 pub use preflight::{
-    CheckResult, HiddenVolumeCheck, NixOSConfigCheck, OverlayDirs, PreFlightCheck,
-    PreFlightRegistry, SpaceCheck, StateCheck, StorageReadinessCheck,
-    SuspiciousNailsReferenceCheck, SwapCheck,
+    CheckResult, HiddenVolumeCheck, NixOSConfigCheck, PreFlightCheck, PreFlightRegistry,
+    SpaceCheck, StateCheck, StorageReadinessCheck, SuspiciousNailsReferenceCheck, SwapCheck,
 };
 pub use reporter::{Diagnostic, remediation_steps};
 
@@ -222,12 +188,11 @@ pub use verify::{
 
 // NixOS profile builder exports
 pub use nixos::{
-    NixOSBuilder, NixOSConfigInfo, NixParser, RealNixParser, compute_config_fingerprint,
-    ensure_hidden_configuration_module, ensure_hidden_hardware_configuration, inject_import_block,
-    parse_check_composed_config, prepare_nixos_config_overlay, stage_hidden_config_symlink,
-    stage_hidden_nixos_config, verify_base_config_clean,
+    NixOSBuilder, NixOSConfigInfo, NixParser, RealNixParser, ensure_hidden_configuration_module,
+    ensure_hidden_hardware_configuration, inject_import_block, parse_check_composed_config,
+    prepare_nixos_config_overlay, stage_hidden_config_symlink, stage_hidden_nixos_config,
+    verify_base_config_clean,
 };
-pub(crate) use nixos::{classify_nixos_failure_category, format_classified_nixos_failure};
 
 // Timing utilities exports
 pub use timing::Stopwatch;
@@ -235,69 +200,8 @@ pub use timing::Stopwatch;
 // Verbosity configuration exports
 pub use verbosity::Verbosity;
 
-// Overlay operations exports (Extended Overlay Strategy)
-pub use overlay::{
-    EphemeralMountInfo, MountMethod, MountResult, OverlayStrategyOptions, SurvivingWriter,
-    mount_ephemeral_overlay, unmount_ephemeral_overlay,
-};
-
-// Process detection and classification exports (Process Detection)
-pub use process::{
-    // Session Detection and Shutdown Support
-    ProcessInfo,
-    RealSessionCommandExecutor,
-    RestartMethod,
-    RestartStrategy,
-    RestartedProcess,
-    RiskyServicePolicy,
-    SessionCommandExecutor,
-    SessionContext,
-    SessionKillResult,
-    SessionKind,
-    SessionRestartPlan,
-    classify_process,
-    detect_processes_using,
-    detect_session_context,
-    kill_graphical_session,
-    prompt_session_kill_confirmation,
-    restart_display_manager,
-    restart_processes,
-    restart_user_manager,
-};
-
-// Activation options exports (User Prompts and CLI Flags)
-pub use activate_options::ActivateOptions;
-
-// User prompts exports (User Prompts and CLI Flags)
-pub use prompts::{
-    display_abort_message, prompt_pivot_mount_acceptance, prompt_risky_process_restart,
-    prompt_yes_no,
-};
-
-// Cleanup management exports (CleanupManager with Thorough and Fast Modes)
-pub use cleanup::{
-    CleanupConfig,
-    CleanupManager,
-    CleanupMode,
-    CleanupReport,
-    history::{HistoryCleaner, ShellType}, // nested to access private imports
-    logs::LogCleaner,                     // nested to access private imports
-    temp_files::TempFilesCleaner,         // nested to access private imports
-};
-
-// Deactivation report exports (the deactivation sequence lives in `manager::deactivation`)
-pub use deactivation::{
-    DeactivationOutcome, DeactivationReport, LastDeactivationReport, read_last_deactivation_report,
-    write_last_deactivation_report,
-};
-
-// Status command exports (State Query with Overlay Verification)
-pub use status::{
-    OpSecReminder, Posture, ReminderSeverity, StatusCommand, StatusReport, VerificationStatus,
-};
-
-// Shell instrumentation exports (Shell Prompt Instrumentation Scripts)
-pub use shell::{ShellCleanupResult, ShellInstrumentation, ShellSetupResult};
+// Status command exports
+pub use status::{OpSecReminder, Posture, ReminderSeverity, StatusCommand, StatusReport};
 
 // Logging infrastructure exports (Logging with Hidden Volume Validation)
 pub use logging::{LoggingConfig, LoggingManager};
@@ -306,61 +210,6 @@ pub use logging::{LoggingConfig, LoggingManager};
 pub use output::{
     Mark, Stream, Style, Tone, error, format_error, format_info, format_warn, info, warn,
 };
-
-// Desktop notification exports
-pub use notification::{Notification, dispatch_all as dispatch_notifications};
-
-/// RAII guard for automatic state rollback on failure
-///
-/// # ⚠️ EXPERIMENTAL API
-///
-/// **This API is experimental and may change in future versions.**
-///
-/// `StateGuard` is primarily intended for **internal use** by `NailsManager`
-/// methods (`activate()`, `deactivate()`) to provide automatic rollback on
-/// failure or panic.
-///
-/// ## External Usage Considerations
-///
-/// While this type is public to allow advanced use cases and testing, most
-/// consumers of this library should **NOT** need to create `StateGuard`
-/// instances directly. Instead:
-///
-/// - **Use high-level methods**: Call `NailsManager::activate()` and
-///   `NailsManager::deactivate()` which handle StateGuard internally
-/// - **Let RAII work for you**: These methods automatically create guards
-///   and handle commit/rollback
-///
-/// ## When You Might Use This Directly
-///
-/// 1. **Testing**: Verifying rollback behavior in custom test scenarios
-/// 2. **Advanced operations**: Building new manager methods that need rollback
-/// 3. **Manual recovery**: Emergency state restoration tools
-///
-/// ## API Stability
-///
-/// Until this warning is removed:
-/// - Method signatures may change
-/// - Fields may be reorganized
-/// - Behavior may be refined
-///
-/// We will maintain semantic versioning - breaking changes will bump the
-/// major version.
-///
-/// ## Example (Internal Pattern)
-///
-/// ```text
-/// // Internal pattern used by NailsManager methods
-/// let mut guard = StateGuard::new(&mut manager, previous_state);
-/// // ... perform operations through `&mut *guard` ...
-/// if success {
-///     guard.commit();  // Prevent rollback
-/// }
-/// // If operations fail, guard drops and rolls back automatically
-/// ```
-///
-/// For the complete API documentation, see [`StateGuard`].
-pub use state::StateGuard;
 
 #[cfg(test)]
 mod tests {

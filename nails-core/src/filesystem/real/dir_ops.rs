@@ -4,8 +4,8 @@
 //! Directory listing, enumeration, copy, size, and submount operations.
 
 use super::noatime::{OpenKind, open_noatime, read_dir_noatime};
-use crate::{IoResultExt, NailsError, Result};
-use std::collections::{HashMap, HashSet};
+use crate::{NailsError, Result};
+use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::io;
 use std::os::unix::ffi::OsStrExt;
@@ -24,75 +24,6 @@ pub(super) fn list_directory(dir: &Path) -> Result<Vec<PathBuf>> {
     })?;
 
     Ok(entries.into_iter().map(|e| dir.join(e.name)).collect())
-}
-
-pub(super) fn enumerate_root_directories() -> Result<Vec<PathBuf>> {
-    let root = Path::new("/");
-
-    let entries = read_dir_noatime(root).map_err(|e| {
-        NailsError::io(
-            root,
-            std::io::Error::new(e.kind(), format!("Failed to read /: {}", e)),
-        )
-    })?;
-
-    let mut directories = Vec::new();
-
-    for entry in entries {
-        let path = root.join(&entry.name);
-
-        let metadata = std::fs::symlink_metadata(&path).map_err(|e| {
-            NailsError::io(
-                &path,
-                std::io::Error::new(
-                    e.kind(),
-                    format!("Failed to get metadata for {}: {}", path.display(), e),
-                ),
-            )
-        })?;
-
-        // Skip symlinks (even if they point to directories)
-        if metadata.is_symlink() {
-            tracing::debug!(
-                "Skipping symlink: {} -> {:?}",
-                path.display(),
-                std::fs::read_link(&path)
-            );
-            continue;
-        }
-
-        if !metadata.is_dir() {
-            continue;
-        }
-
-        // Skip /run/nails directory
-        if path.starts_with("/run/nails") {
-            tracing::debug!("Skipping NAILS runtime directory: {}", path.display());
-            continue;
-        }
-
-        directories.push(path);
-    }
-
-    // Sort alphabetically for consistent mount order
-    directories.sort();
-
-    Ok(directories)
-}
-
-/// The paths of `path`'s entries, listed without updating its access time.
-pub(super) fn read_directory(path: &Path) -> Result<Vec<PathBuf>> {
-    let entries = read_dir_noatime(path).map_err(|e| {
-        NailsError::io(
-            path,
-            std::io::Error::new(
-                e.kind(),
-                format!("Failed to read directory {}: {}", path.display(), e),
-            ),
-        )
-    })?;
-
-    Ok(entries.into_iter().map(|e| path.join(e.name)).collect())
 }
 
 pub(super) fn modified_time(path: &Path) -> Result<chrono::DateTime<chrono::Utc>> {
@@ -319,65 +250,6 @@ fn copy_xattrs(src: &Path, dst: &Path) {
     }
 }
 
-/// Apparent size in bytes of `path` and everything below it, like `du -sb`.
-///
-/// Sizes come from `lstat`, so a symlink counts as the link itself and is
-/// never followed, and a file reached through several hard links counts once.
-/// Mount points below `path` are descended, as `cp -a` does: the result sizes
-/// a `cp -a` snapshot of the same tree.
-pub(super) fn get_directory_size(path: &Path) -> Result<u64> {
-    let mut counted_links = HashSet::new();
-    let mut pending = vec![path.to_path_buf()];
-    let mut total: u64 = 0;
-
-    while let Some(current) = pending.pop() {
-        let metadata = std::fs::symlink_metadata(&current).map_err(|e| {
-            NailsError::io(
-                &current,
-                std::io::Error::new(
-                    e.kind(),
-                    format!("Failed to get metadata for {}: {}", current.display(), e),
-                ),
-            )
-        })?;
-
-        if !metadata.is_dir()
-            && metadata.nlink() > 1
-            && !counted_links.insert((metadata.dev(), metadata.ino()))
-        {
-            continue;
-        }
-        total = total.saturating_add(metadata.len());
-
-        if metadata.is_dir() {
-            pending.extend(read_directory(&current)?);
-        }
-    }
-
-    Ok(total)
-}
-
-pub(super) fn find_submount_sources(target: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
-    let mountinfo =
-        std::fs::read_to_string("/proc/self/mountinfo").at_path("/proc/self/mountinfo")?;
-    let canonical_target = target
-        .canonicalize()
-        .unwrap_or_else(|_| target.to_path_buf());
-    Ok(super::submount::parse_submount_sources(
-        &mountinfo,
-        &canonical_target,
-    ))
-}
-
-pub(super) fn find_submounts(target: &Path) -> Result<Vec<crate::filesystem::Submount>> {
-    let mountinfo =
-        std::fs::read_to_string("/proc/self/mountinfo").at_path("/proc/self/mountinfo")?;
-    let canonical_target = target
-        .canonicalize()
-        .unwrap_or_else(|_| target.to_path_buf());
-    Ok(super::classify_submounts(&mountinfo, &canonical_target))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,17 +257,6 @@ mod tests {
     use std::fs;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::{PermissionsExt, symlink};
-
-    fn lstat_len(path: &Path) -> u64 {
-        fs::symlink_metadata(path).unwrap().len()
-    }
-
-    fn io_error(err: NailsError) -> std::io::Error {
-        match err {
-            NailsError::IoError { source, .. } => source,
-            other => panic!("expected IoError, got {other:?}"),
-        }
-    }
 
     #[test]
     fn copy_tree_errors_when_the_source_is_missing() {
@@ -547,60 +408,5 @@ mod tests {
         copy_tree(&src, &dst).unwrap();
 
         assert_eq!(fs::read_to_string(dst.join("a.txt")).unwrap(), "a");
-    }
-
-    #[test]
-    fn directory_size_sums_the_apparent_size_of_every_entry() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let root = temp_dir.path();
-        let nested = root.join("nested");
-        fs::create_dir_all(&nested).unwrap();
-        fs::write(root.join("a.txt"), vec![0u8; 1234]).unwrap();
-        fs::write(nested.join("b.txt"), vec![0u8; 4321]).unwrap();
-
-        let expected = lstat_len(root)
-            + lstat_len(&nested)
-            + lstat_len(&root.join("a.txt"))
-            + lstat_len(&nested.join("b.txt"));
-
-        assert_eq!(get_directory_size(root).unwrap(), expected);
-    }
-
-    #[test]
-    fn directory_size_counts_symlinks_as_links_without_following_them() {
-        let outside = tempfile::tempdir().unwrap();
-        let big = outside.path().join("big");
-        fs::write(&big, vec![0u8; 1 << 20]).unwrap();
-        let temp_dir = tempfile::tempdir().unwrap();
-        let root = temp_dir.path();
-        symlink(&big, root.join("file-link")).unwrap();
-        symlink(outside.path(), root.join("dir-link")).unwrap();
-
-        let expected = lstat_len(root)
-            + lstat_len(&root.join("file-link"))
-            + lstat_len(&root.join("dir-link"));
-
-        assert_eq!(get_directory_size(root).unwrap(), expected);
-    }
-
-    #[test]
-    fn directory_size_counts_hard_linked_files_once() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let root = temp_dir.path();
-        fs::write(root.join("a"), vec![0u8; 5000]).unwrap();
-        fs::hard_link(root.join("a"), root.join("b")).unwrap();
-
-        assert_eq!(get_directory_size(root).unwrap(), lstat_len(root) + 5000);
-    }
-
-    #[test]
-    fn directory_size_of_a_missing_path_names_it() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let missing = temp_dir.path().join("missing");
-
-        let err = io_error(get_directory_size(&missing).unwrap_err());
-
-        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
-        assert!(err.to_string().contains(&missing.display().to_string()));
     }
 }

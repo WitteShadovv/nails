@@ -11,9 +11,7 @@ use std::path::PathBuf;
 
 use tempfile::TempDir;
 
-use super::colors::ColorSchemeConfig;
-use super::defaults::{default_clear_history, default_show_opsec_reminders};
-use super::overlay::{OverlayConfig, OverlayMode};
+use super::defaults::default_show_opsec_reminders;
 use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT};
 use crate::filesystem::{MockFilesystem, PathKind};
 use crate::manager::NailsManager;
@@ -31,57 +29,16 @@ impl Config {
         Self {
             hidden_volume_root: hidden_root.clone(),
             state_file_path: hidden_root.join("state.json"),
-            overlays: vec![
-                OverlayConfig {
-                    name: "boot".to_string(),
-                    lower: PathBuf::from("/boot"),
-                    upper: hidden_root.join("boot"),
-                    work: hidden_root.join(".work/boot"),
-                    target: PathBuf::from("/boot"),
-                },
-                OverlayConfig {
-                    name: "home".to_string(),
-                    lower: PathBuf::from("/home"),
-                    upper: hidden_root.join("home"),
-                    work: hidden_root.join(".work/home"),
-                    target: PathBuf::from("/home"),
-                },
-                OverlayConfig {
-                    name: "etc".to_string(),
-                    lower: PathBuf::from("/etc"),
-                    upper: hidden_root.join("etc"),
-                    work: hidden_root.join(".work/etc"),
-                    target: PathBuf::from("/etc"),
-                },
-                OverlayConfig {
-                    name: "var".to_string(),
-                    lower: PathBuf::from("/var"),
-                    upper: hidden_root.join("var"),
-                    work: hidden_root.join(".work/var"),
-                    target: PathBuf::from("/var"),
-                },
-            ],
             minimum_space_mb: 500,
             rebuild_space_mb: 4096,
-            // Use Auto mode by default (test actual default behavior)
-            overlay_mode: OverlayMode::Auto,
-            overlay_exclusions: vec![],
-            overlay_exclusions_remove: vec![],
-            allow_leaky_exclusions: vec![],
-            clear_history: default_clear_history(),
             show_opsec_reminders: default_show_opsec_reminders(),
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             loaded_config_path: None,
-            color_scheme: ColorSchemeConfig::default(),
             persona: super::persona::PersonaConfig::default(),
             backend_watch: super::backend_watch::BackendWatchConfig::default(),
-            prompt_label: String::new(),
             nixos_flake: None,
-            nixos_switch_required: true,
-            risky_services: None,
             accept_persistent_decoy: false,
             sleep_policy: super::types::SleepPolicyConfig::default(),
-            emergency: super::types::EmergencyConfig::default(),
         }
     }
 }
@@ -222,7 +179,6 @@ impl TestWorld {
                 hidden_volume_root: hidden_root.clone(),
                 state_file_path: hidden_root.join("state.json"),
                 log_path: hidden_root.join("logs"),
-                overlays: Vec::new(),
                 ..Config::test_default()
             }
         });
@@ -303,10 +259,7 @@ mod tests {
 
     #[test]
     fn with_nixos_attaches_a_builder() {
-        let builder = NixOSBuilder::new(
-            PathBuf::from("/mnt/hidden/config"),
-            PathBuf::from("/mnt/hidden/nails-system"),
-        );
+        let builder = NixOSBuilder::new(PathBuf::from("/mnt/hidden/config"));
         let (manager, _tmp) = TestWorld::new().with_nixos(builder).manager();
         // The Debug output names the builder field only when one is attached.
         assert!(format!("{manager:?}").contains("nixos_builder"));

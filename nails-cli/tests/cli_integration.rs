@@ -276,7 +276,7 @@ fn test_status_command_details_inactive_reports_paths_and_load_outcome() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\nlog_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\nlog_path = \"{}\"",
         hidden_root.display(),
         state_path.display(),
         log_path.display(),
@@ -304,7 +304,7 @@ fn test_status_command_details_inactive_reports_paths_and_load_outcome() {
 }
 
 #[test]
-fn test_status_command_details_active_shows_overlay_details() {
+fn test_status_command_details_active_record_on_the_decoy() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -314,35 +314,14 @@ fn test_status_command_details_active_shows_overlay_details() {
     let config_path = temp_dir.path().join("nails.toml");
     std::fs::create_dir_all(&log_dir).unwrap();
 
-    let activated_at = "2026-01-02T03:04:05Z";
-    let mounted_at = "2026-01-02T03:04:30Z";
-    let state_json = format!(
-        r#"{{
+    let state_json = r#"{
   "version": "0.2.0",
-  "state": {{
-    "Active": {{
-      "activated_at": "{activated_at}",
-      "overlays": ["/home"]
-    }}
-  }},
-  "platform": {{ "platform": "nix_os", "generation": "nails-gen-99" }},
-  "config_fingerprint": null,
-  "overlay_status": {{
-    "/home": {{
-      "mount_path": "/home",
-      "lower_dir": "/home",
-      "upper_dir": "{hidden}/overlays/home/upper",
-      "work_dir": "{hidden}/overlays/home/work",
-      "mounted_at": "{mounted_at}"
-    }}
-  }},
-  "failed_overlays": [],
+  "state": { "Active": { "activated_at": "2026-01-02T03:04:05Z" } },
+  "platform": { "platform": "nix_os", "generation": "/nix/store/nails-gen-99" },
   "last_modified": "2026-01-02T03:05:00Z"
-}}"#,
-        hidden = hidden_root.display(),
-    );
+}"#;
     // Seal through the durable save path so the file carries a valid digest.
-    let state: nails_core::StateFile = serde_json::from_str(&state_json).unwrap();
+    let state: nails_core::StateFile = serde_json::from_str(state_json).unwrap();
     state
         .save_with_custom_root(&state_path, &hidden_root)
         .unwrap();
@@ -350,12 +329,10 @@ fn test_status_command_details_active_shows_overlay_details() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\nlog_path = \"{}\"\n[[overlays]]\nname = \"home\"\nlower = \"/home\"\nupper = \"{}/overlays/home/upper\"\nwork = \"{}/overlays/home/work\"\ntarget = \"/home\"",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\nlog_path = \"{}\"",
         hidden_root.display(),
         state_path.display(),
         log_dir.display(),
-        hidden_root.display(),
-        hidden_root.display(),
     )
     .unwrap();
 
@@ -370,20 +347,18 @@ fn test_status_command_details_active_shows_overlay_details() {
         .expect("failed to run verbose active status");
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // The recorded overlay is not a live NAILS overlay here, so the posture is
-    // degraded (exit 7); the overlay details are still shown.
-    assert_eq!(output.status.code(), Some(7), "stdout={stdout}");
-    assert!(stdout.contains("Hidden system:      nails-gen-99"));
-    assert!(stdout.contains("Overlay Mount Details:"));
-    assert!(stdout.contains("Mount:     /home"));
-    assert!(stdout.contains(&format!(
-        "Upper:     {}/overlays/home/upper",
-        hidden_root.display()
-    )));
-    assert!(stdout.contains(&format!(
-        "Work:      {}/overlays/home/work",
-        hidden_root.display()
-    )));
+    // The live view here is the plain decoy: the active record is reported
+    // next to it, with the hidden system it names.
+    assert_eq!(output.status.code(), Some(0), "stdout={stdout}");
+    assert!(stdout.contains("DECOY"), "{stdout}");
+    assert!(
+        stdout.contains("State:              Active (recorded)"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Hidden system:      /nix/store/nails-gen-99"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -400,7 +375,7 @@ fn test_status_command_details_reports_corrupt_state_load() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"",
         hidden_root.display(),
         state_path.display(),
     )
@@ -450,7 +425,7 @@ fn test_status_command_details_reports_loaded_state() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"",
         hidden_root.display(),
         state_path.display(),
     )
@@ -583,14 +558,10 @@ fn test_verify_command_human_output_reports_config_paths_and_missing_state_file(
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\nlog_path = \"{}\"\n[[overlays]]\nname = \"home\"\nlower = \"/home\"\nupper = \"{}/home\"\nwork = \"{}/.work/home\"\ntarget = \"/home\"\n[[overlays]]\nname = \"etc\"\nlower = \"/etc\"\nupper = \"{}/etc\"\nwork = \"{}/.work/etc\"\ntarget = \"/etc\"",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\nlog_path = \"{}\"",
         hidden_root.display(),
         state_path.display(),
         log_path.display(),
-        hidden_root.display(),
-        hidden_root.display(),
-        hidden_root.display(),
-        hidden_root.display(),
     )
     .unwrap();
 
@@ -609,7 +580,7 @@ fn test_verify_command_human_output_reports_config_paths_and_missing_state_file(
         stdout,
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(stdout.contains("checked 5 paths from config"));
+    assert!(stdout.contains("checked 3 paths from config"), "{stdout}");
     assert!(stdout.contains(&format!(
         "State file status: missing at {}",
         state_path.display()
@@ -641,7 +612,7 @@ fn test_verify_command_json_output_reports_present_state_file_status() {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"",
         hidden_root.display(),
         state_path.display(),
     )
@@ -727,7 +698,7 @@ fn test_activate_overlay_only_refuses_unmounted_hidden_root_without_writing() {
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"",
         hidden_root.display()
     )
     .unwrap();
@@ -1338,7 +1309,7 @@ fn isolated_status_config() -> (tempfile::TempDir, std::path::PathBuf) {
     let mut config_file = std::fs::File::create(&config_path).unwrap();
     writeln!(
         config_file,
-        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"\noverlays = []",
+        "hidden_volume_root = \"{}\"\nstate_file_path = \"{}\"",
         hidden_root.display(),
         hidden_root.join("state.json").display(),
     )

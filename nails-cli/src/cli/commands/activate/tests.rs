@@ -136,13 +136,13 @@ fn execute_exits_3_for_unknown_nested_key() {
     use std::io::Write;
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "[color_scheme.decoy]\nrest = true").unwrap();
+    writeln!(config, "[sleep_policy]\nmod = \"warn\"").unwrap();
 
     let output = run_subprocess("invalid-config", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
-    assert!(stderr.contains("did you mean `reset`?"), "{stderr}");
+    assert!(stderr.contains("did you mean `mode`?"), "{stderr}");
 }
 
 #[test]

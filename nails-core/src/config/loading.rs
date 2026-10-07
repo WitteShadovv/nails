@@ -218,8 +218,6 @@ fn render_template(root: &Path, title: &str) -> String {
     let state_value = quote(root.join("state.json"));
     let log_value = quote(root.join("logs"));
     let flake_value = quote(root.join("nixos#my-host"));
-    let upper_value = quote(root.join("home"));
-    let work_value = quote(root.join(".work/home"));
 
     format!(
         r##"{title}
@@ -238,9 +236,6 @@ fn render_template(root: &Path, title: &str) -> String {
 # state_file_path = {state_value}
 # log_path = {log_value}
 
-# Clear shell history on deactivation.
-# clear_history = true
-
 # Show OpSec reminders based on session uptime.
 # show_opsec_reminders = true
 
@@ -248,28 +243,11 @@ fn render_template(root: &Path, title: &str) -> String {
 # check fails below this floor (no warn band).
 # minimum_space_mb = 500
 
-# Free space required when a hidden NixOS build is expected (no cached toplevel
-# or the configuration changed), in MB. Re-checked after the overlays mount and
-# before the build; activation rolls back if the hidden volume is below it.
+# Free space required when a hidden NixOS system is built (NixOS), in MB.
 # rebuild_space_mb = 4096
-
-# Shell prompt indicator while the hidden environment is active. Empty shows
-# nothing; any text is visible on screen and in screenshots.
-# prompt_label = ""
 
 # NixOS flake reference for the hidden environment. Unset: auto-detected.
 # nixos_flake = {flake_value}
-
-# Fail activation (rolling the overlays back and restoring the decoy session)
-# when the hidden NixOS build or switch fails, instead of only warning. The
-# switch runs before the session restart, so the default fails closed.
-# nixos_switch_required = true
-
-# What to do with risky services (NetworkManager, dbus, the audio server) that
-# still reference a target at activation: "restart" them or "skip" (leave them
-# running as reported survivors). Unset: restart when the session is killed,
-# prompt on a terminal otherwise. Overridden by --risky-services.
-# risky_services = "restart"
 
 # Accept a persistent decoy posture instead of refusing activation. Activation
 # fails closed when the decoy keeps forensic traces: a persistent journald
@@ -278,36 +256,12 @@ fn render_template(root: &Path, title: &str) -> String {
 # docs/decoy-requirements.md.
 # accept_persistent_decoy = false
 
-# Overlay target selection. "auto" overlays every top-level directory except
-# the exclusions; "explicit" overlays only the [[overlays]] tables below.
-# overlay_mode = "auto"
-
-# Auto mode: extra exclusions, and default exclusions to overlay anyway. The
-# default list and the reason for each entry are in docs/configuration.md.
-# Writes under an excluded directory reach the decoy disk.
-# overlay_exclusions = ["/media"]
-# overlay_exclusions_remove = ["/mnt"]
-
-# Auto mode: directories the session writes to (/home, /root, /etc, /var,
-# /nix, /srv, /opt, and /tmp unless it is a tmpfs) are refused in
-# overlay_exclusions unless they are listed here to accept the leak.
-# allow_leaky_exclusions = []
-
-# Explicit mode: one table per overlay. upper and work must lie inside
-# hidden_volume_root, and no target may contain it.
-# [[overlays]]
-# name = "home"
-# lower = "/home"
-# upper = {upper_value}
-# work = {work_value}
-# target = "/home"
-
 # How the hidden session relates to the decoy account.
-#   "shared-home" (default): run in the decoy home, merged read-write through the
-#     /home overlay. The decoy's accounts, keys and app profiles are live in the
-#     hidden session; activation warns while this mode is in effect.
-#   "fresh-home": bind-mount a clean, empty home from the hidden volume over the
-#     operator's home, so the decoy home contents are not visible.
+#   "shared-home" (default): the hidden session starts from the decoy home (the
+#     root overlay's lower). The decoy's accounts, keys and app profiles are live
+#     in the hidden session; activation warns while this mode is in effect.
+#   "fresh-home": the operator's home starts empty in the hidden session (an
+#     opaque directory in the root upper), so the decoy home is not visible.
 # (A separate fixed-UID hidden account, "separate-user", is planned for a later
 #  release and is not an accepted value yet.)
 # [persona]
@@ -320,7 +274,7 @@ fn render_template(root: &Path, title: &str) -> String {
 #   moment it fails. It is ALERT-ONLY by default: a transient stall never tears the
 #   session down on its own.
 # [backend_watch]
-# enabled = true           # start the watcher at activation
+# enabled = true           # run the watcher in the hidden session
 # auto_emergency = false   # opt-in: tear the session down automatically on a
 #                          # failure that outlasts the debounce window
 # poll_interval_secs = 5   # seconds between probes
@@ -334,37 +288,12 @@ fn render_template(root: &Path, title: &str) -> String {
 #   "block": hold a sleep/idle inhibitor for the whole session so the host cannot
 #     suspend while active; released at deactivation. A blocked suspend with the
 #     lid shut can overheat a laptop.
-#   "teardown": hold a sleep *delay* inhibitor and run the bounded emergency
-#     teardown when the host is about to sleep, within logind's InhibitDelayMaxSec.
+#   "teardown": hold a sleep *delay* inhibitor and power off when the host is
+#     about to sleep, within logind's InhibitDelayMaxSec.
 # Also set the logind lid switch to "ignore" or "lock" on the decoy; see
 # docs/decoy-requirements.md.
 # [sleep_policy]
 # mode = "warn"
-
-# What the emergency panic button does after it tears down the overlays. The
-# overlays always come down; closing the encrypted backend is a separate, opt-in
-# step. Without it the hidden filesystem stays mounted and readable after an
-# emergency until you close it by hand (the emergency output prints the exact
-# sequence). The --lock-backend flag forces it for a single run.
-#   lock_backend (default false): lazy-unmount the hidden root and mark its
-#     device-mapper stack for deferred removal, so the master key is wiped from
-#     kernel memory when the last reference drops.
-#   close_command: an explicit close command (argv, no shell) for a backend that
-#     is not device-mapper based, run through the journal-free detached path.
-# [emergency]
-# lock_backend = false
-# close_command = ["veracrypt", "-d"]
-
-# Terminal colors while the hidden environment is active.
-# [color_scheme]
-# enabled = true
-#
-# [color_scheme.hidden]
-# background = "#1a1a2e"
-# foreground = "#e0e0e0"
-#
-# [color_scheme.decoy]
-# reset = true
 "##
     )
 }

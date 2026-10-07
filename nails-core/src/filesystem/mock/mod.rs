@@ -18,8 +18,6 @@ mod state;
 
 #[cfg(test)]
 mod tests_basic;
-#[cfg(test)]
-mod tests_overlay;
 
 pub use setup_state::PathKind;
 pub use state::{MockFilesystem, MockOp};

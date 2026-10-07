@@ -1,13 +1,11 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Property tests for the containment-critical helpers that decide what counts
-//! as "on the hidden volume" and which directories survive the exclusion filter.
+//! Property tests for the containment-critical helper that decides what counts
+//! as "on the hidden volume".
 //!
 //! `is_on_hidden_volume` guards every path nails writes for the hidden
-//! environment, and `apply_exclusion_filter` decides which base-OS trees are
-//! overlaid. Both had only example tests. These suites drive them over generated
-//! inputs, reusing the adversarial component alphabet in `tests/common` (plain
+//! environment. These suites drive it over generated inputs, reusing the adversarial component alphabet in `tests/common` (plain
 //! names, `.`, `..` and in-tree symlinks that point at themselves, their parent,
 //! outside the volume, or in a loop) so they exercise the same traversal and
 //! planted-symlink inputs as the configured-path and `SafeRoot` suites.
@@ -24,7 +22,6 @@
 //!
 //! Case counts are bounded so the suites run inside the normal `cargo test` gate.
 
-use nails_core::apply_exclusion_filter;
 use nails_core::state::is_on_hidden_volume;
 use proptest::prelude::*;
 use std::path::{Path, PathBuf};
@@ -130,49 +127,5 @@ proptest! {
             !is_on_hidden_volume(Path::new(&path), &root),
             "path under an escaping symlink accepted: {}", path
         );
-    }
-}
-
-proptest! {
-    #![proptest_config(ProptestConfig::with_cases(CASES))]
-
-    /// `apply_exclusion_filter` removes exactly the directories equal to an
-    /// exclusion, keeps every other input, never invents a path, and returns a
-    /// sorted list. (It matches whole paths, not prefixes, by design.)
-    #[test]
-    fn exclusion_filter_removes_exactly_the_excluded(
-        dirs in prop::collection::vec(
-            prop::sample::select(&["/etc", "/home", "/var", "/proc", "/sys", "/nix"][..]),
-            0..8,
-        ),
-        exclude in prop::collection::vec(
-            prop::sample::select(&["/proc", "/sys", "/var", "/missing"][..]),
-            0..4,
-        ),
-    ) {
-        let directories: Vec<PathBuf> = dirs.iter().map(PathBuf::from).collect();
-        let exclusions: Vec<PathBuf> = exclude.iter().map(PathBuf::from).collect();
-
-        let filtered = apply_exclusion_filter(directories.clone(), &exclusions);
-
-        // No excluded directory survives.
-        for ex in &exclusions {
-            prop_assert!(!filtered.contains(ex), "excluded {} survived", ex.display());
-        }
-        // Every surviving entry was an input and was not excluded.
-        for kept in &filtered {
-            prop_assert!(directories.contains(kept), "{} was invented", kept.display());
-            prop_assert!(!exclusions.contains(kept), "{} should be excluded", kept.display());
-        }
-        // Every non-excluded input survives.
-        for dir in &directories {
-            if !exclusions.contains(dir) {
-                prop_assert!(filtered.contains(dir), "{} was dropped", dir.display());
-            }
-        }
-        // The result is sorted.
-        let mut sorted = filtered.clone();
-        sorted.sort();
-        prop_assert_eq!(filtered, sorted);
     }
 }

@@ -8,22 +8,13 @@ use super::types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, 
 use crate::MockFilesystem;
 use crate::filesystem::PathKind;
 
-/// A `/proc/self/mountinfo` line for an overlay at `mount_point` whose upper
-/// layer lives on the hidden volume `/mnt/hidden`, i.e. one NAILS mounted: the
-/// kernel's own line for the captured `/fixture/home` overlay (fixture README),
-/// moved to these paths, so the fields and options are the ones it prints.
+/// A `/proc/self/mountinfo` line for a populated `/run/nextroot`: the next
+/// root an interrupted entry left behind.
 #[cfg(test)]
-fn hidden_overlay_line(mount_point: &str) -> String {
-    let scene = crate::kernel_fixtures::userns("mountinfo-hidden-root.txt");
-    let line = scene
-        .lines()
-        .find(|l| l.contains(" /fixture/home ") && l.contains(" - overlay "))
-        .expect("the captured /home overlay");
-    format!(
-        "{}\n",
-        line.replace("/fixture/mnt/hidden\\040root", "/mnt/hidden")
-            .replace("/fixture/home", mount_point)
-    )
+fn nextroot_line() -> String {
+    "30 1 0:50 / /run/nextroot rw,relatime - overlay overlay \
+     rw,lowerdir=/,upperdir=/mnt/hidden/root/upper,workdir=/mnt/hidden/root/work\n"
+        .to_string()
 }
 
 /// A config-aware verifier (hidden root `/mnt/hidden`, no active state) over a
@@ -38,39 +29,6 @@ fn overlay_verifier(mountinfo: &str) -> (MockFilesystem, Verifier<MockFilesystem
     };
     let verifier = Verifier::with_config(fs.clone(), config, None, StateFileStatus::NotChecked);
     (fs, verifier)
-}
-
-/// The whole captured hidden-root scene, unedited: every overlay whose upper
-/// lies on the hidden root is a leftover, including the `/nix/store` one a
-/// later `/nix` overlay shadows.
-#[test]
-fn captured_hidden_root_overlays_are_all_reported() {
-    let fs = MockFilesystem::new();
-    fs.mock_add_file(
-        "/proc/self/mountinfo",
-        &crate::kernel_fixtures::userns("mountinfo-hidden-root.txt"),
-    );
-    let config = crate::config::Config {
-        hidden_volume_root: std::path::PathBuf::from("/fixture/mnt/hidden root"),
-        ..crate::config::Config::default()
-    };
-    let result = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked)
-        .run(false)
-        .unwrap();
-
-    let mounts: Vec<&str> = result
-        .findings
-        .iter()
-        .filter(|f| f.category == "mount" && f.severity == Severity::Critical)
-        .map(|f| f.message.as_str())
-        .collect();
-    for target in ["/fixture/home ", "/fixture/nix/store ", "/fixture/nix "] {
-        assert!(
-            mounts.iter().any(|m| m.contains(target.trim_end())),
-            "{target} is reported: {mounts:?}"
-        );
-    }
-    assert_eq!(mounts.len(), 3, "one finding per overlay: {mounts:?}");
 }
 
 /// The captured scene's hidden root (`/fixture/mnt/hidden root`, printed with
@@ -201,7 +159,7 @@ fn test_scan_depth_variants() {
 
 #[test]
 fn test_comprehensive_scan_with_all_check_types() {
-    let (fs, verifier) = overlay_verifier(&hidden_overlay_line("/home"));
+    let (fs, verifier) = overlay_verifier(&nextroot_line());
 
     // Set up findings from all check types
     fs.mock_set_path_exists("/run/nails", true); // file (runtime artifact)
@@ -218,7 +176,7 @@ fn test_comprehensive_scan_with_all_check_types() {
         .iter()
         .map(|f| f.category.as_str())
         .collect();
-    assert!(categories.contains("mount"));
+    assert!(categories.contains("session"));
     assert!(categories.contains("file"));
     assert!(categories.contains("memory"));
 }
@@ -295,42 +253,6 @@ fn test_finding_without_fix_guidance_omits_field() {
 // ========================================================================
 
 #[test]
-fn test_overlay_mount_detection() {
-    // An overlay at /home whose upper layer is on the hidden volume is flagged
-    // from the mount table, by upperdir, not from a fixed list of mount points.
-    let (_fs, verifier) = overlay_verifier(&hidden_overlay_line("/home"));
-
-    let result = verifier.run(false).unwrap();
-    assert_eq!(result.status, VerifyStatus::Critical);
-
-    let mount_finding = result
-        .findings
-        .iter()
-        .find(|f| f.category == "mount")
-        .unwrap();
-    assert_eq!(mount_finding.severity, Severity::Critical);
-    assert!(mount_finding.message.contains("/home"));
-    assert!(mount_finding.fix_guidance.is_some());
-}
-
-#[test]
-fn test_overlay_leftover_at_var_is_detected() {
-    // The old three-path loop (/home, /etc, /root) would miss a leftover /var
-    // overlay; the upperdir scan catches it wherever it is mounted.
-    let (_fs, verifier) = overlay_verifier(&hidden_overlay_line("/var"));
-
-    let result = verifier.run(false).unwrap();
-    let mount_findings: Vec<_> = result
-        .findings
-        .iter()
-        .filter(|f| f.category == "mount")
-        .collect();
-    assert_eq!(mount_findings.len(), 1, "{:?}", result.findings);
-    assert_eq!(mount_findings[0].severity, Severity::Critical);
-    assert!(mount_findings[0].message.contains("/var"));
-}
-
-#[test]
 fn test_overlay_with_foreign_upperdir_is_not_flagged() {
     // An overlay whose upper layer is not on the hidden volume is somebody
     // else's overlay and must not be attributed to NAILS.
@@ -360,7 +282,7 @@ fn test_offline_scan_finds_planted_indicator_and_skips_live_checks() {
         strong: true,
         detail: "live worker".to_string(),
     }]);
-    fs.mock_add_file("/proc/self/mountinfo", &hidden_overlay_line("/home"));
+    fs.mock_add_file("/proc/self/mountinfo", &nextroot_line());
 
     let config = crate::config::Config {
         hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
@@ -507,13 +429,9 @@ fn test_deep_scan_finds_history_files() {
 
 #[test]
 fn test_multiple_critical_findings() {
-    // Two hidden-volume overlays at different mount points.
-    let mountinfo = format!(
-        "{}{}",
-        hidden_overlay_line("/home"),
-        hidden_overlay_line("/etc")
-    );
-    let (_fs, verifier) = overlay_verifier(&mountinfo);
+    // A populated next root and a leftover session plan.
+    let (fs, verifier) = overlay_verifier(&nextroot_line());
+    fs.mock_set_path_exists("/run/overlay-runtime/plan.json", true);
 
     let result = verifier.run(false).unwrap();
     assert_eq!(result.status, VerifyStatus::Critical);
@@ -529,7 +447,7 @@ fn test_multiple_critical_findings() {
 #[test]
 fn test_status_determination_priority() {
     // Set up both critical (overlay) and warning (runtime artifact) findings.
-    let (fs, verifier) = overlay_verifier(&hidden_overlay_line("/home"));
+    let (fs, verifier) = overlay_verifier(&nextroot_line());
     fs.mock_set_path_exists("/run/nails", true); // Warning (runtime artifact)
 
     let result = verifier.run(false).unwrap();
@@ -563,7 +481,7 @@ fn test_ac9_overlay_mounted_critical_exit_1() {
     // AC: Given verify runs and finds artifacts
     // When overlay mounts exist
     // Then output "CRITICAL" with list, exit code 1
-    let (_fs, verifier) = overlay_verifier(&hidden_overlay_line("/home"));
+    let (_fs, verifier) = overlay_verifier(&nextroot_line());
 
     let result = verifier.run(false).unwrap();
 
@@ -669,13 +587,9 @@ fn test_ac9_json_output_valid() {
 #[test]
 fn test_ac9_multiple_findings_all_reported() {
     // AC: Test multiple findings all reported
-    // Set up multiple findings: two hidden-volume overlays plus two artifacts.
-    let mountinfo = format!(
-        "{}{}",
-        hidden_overlay_line("/home"),
-        hidden_overlay_line("/etc")
-    );
-    let (fs, verifier) = overlay_verifier(&mountinfo);
+    // Set up multiple findings: two session leftovers plus two artifacts.
+    let (fs, verifier) = overlay_verifier(&nextroot_line());
+    fs.mock_set_path_exists("/run/overlay-runtime/plan.json", true);
     fs.mock_set_path_exists("/run/nails", true);
     fs.mock_set_path_exists("/mnt/nails-pivot", true);
 
@@ -713,7 +627,11 @@ fn test_process_check_detects_running_nails() {
     assert_eq!(process_findings.len(), 0);
 
     // Nails process is running
-    fs.mock_set_nails_process_running(true);
+    fs.mock_set_nails_process_matches(vec![crate::filesystem::ProcessMatch {
+        pid: 1,
+        strong: true,
+        detail: "the binary is running".to_string(),
+    }]);
     let result = verifier.run(false).unwrap();
     let process_findings: Vec<_> = result
         .findings
@@ -827,7 +745,11 @@ fn test_deep_scan_combines_all_checks() {
     let verifier = Verifier::new(fs.clone());
 
     // Set up all types of findings
-    fs.mock_set_nails_process_running(true); // Process
+    fs.mock_set_nails_process_matches(vec![crate::filesystem::ProcessMatch {
+        pid: 1,
+        strong: true,
+        detail: "the binary is running".to_string(),
+    }]); // Process
     fs.mock_set_path_exists("/root/.bash_history", true);
     fs.mock_set_file_content("/root/.bash_history", "nails activate\n"); // History
     fs.mock_set_path_exists("/tmp", true);
@@ -969,41 +891,6 @@ fn test_deep_scan_all_temp_directories() {
         .filter(|f| f.message.contains("NAILS-related file found"))
         .collect();
     assert_eq!(nails_file_findings.len(), 3);
-}
-
-#[test]
-fn test_check_all_overlay_mount_points() {
-    // Overlays at three mount points, all with upper layers on the hidden volume.
-    let mountinfo = format!(
-        "{}{}{}",
-        hidden_overlay_line("/home"),
-        hidden_overlay_line("/etc"),
-        hidden_overlay_line("/root"),
-    );
-    let (_fs, verifier) = overlay_verifier(&mountinfo);
-
-    let result = verifier.run(false).unwrap();
-
-    // Should find all three mount findings
-    let mount_findings: Vec<_> = result
-        .findings
-        .iter()
-        .filter(|f| f.category == "mount")
-        .collect();
-    assert_eq!(mount_findings.len(), 3);
-
-    // All should be critical with fix guidance
-    for finding in mount_findings {
-        assert_eq!(finding.severity, Severity::Critical);
-        assert!(finding.fix_guidance.is_some());
-        assert!(
-            finding
-                .fix_guidance
-                .as_ref()
-                .unwrap()
-                .contains("nails deactivate")
-        );
-    }
 }
 
 #[test]
@@ -1289,178 +1176,6 @@ fn test_verify_detects_state_file_exists() {
 }
 
 #[test]
-fn test_verify_detects_config_overlay_mounts_and_log_files() {
-    use crate::config::{Config, OverlayConfig};
-    use std::path::PathBuf;
-
-    let fs = MockFilesystem::new();
-    let config = Config {
-        hidden_volume_root: PathBuf::from("/mnt/hidden"),
-        log_path: PathBuf::from("/var/custom-log"),
-        overlays: vec![OverlayConfig {
-            name: "srv".to_string(),
-            lower: PathBuf::from("/srv"),
-            upper: PathBuf::from("/mnt/hidden/overlays/srv/upper"),
-            work: PathBuf::from("/mnt/hidden/overlays/srv/work"),
-            target: PathBuf::from("/srv"),
-        }],
-        ..Config::default()
-    };
-
-    fs.mock_set_overlay_mounted(std::path::Path::new("/srv"), true);
-    fs.mock_set_path_exists("/var/custom-log", true);
-    fs.mock_set_path_type("/var/custom-log", PathKind::Dir);
-    fs.mock_set_files_with_pattern(
-        "/var/custom-log",
-        "nails",
-        &[std::path::Path::new("/var/custom-log/nails-debug.log")],
-    );
-
-    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
-    let result = verifier.run(false).unwrap();
-
-    let overlay_findings: Vec<_> = result
-        .findings
-        .iter()
-        .filter(|f| f.category == "config" && f.message.contains("still mounted: /srv"))
-        .collect();
-    assert_eq!(overlay_findings.len(), 1);
-    assert_eq!(overlay_findings[0].severity, Severity::Critical);
-
-    let log_findings: Vec<_> = result
-        .findings
-        .iter()
-        .filter(|f| {
-            f.category == "config"
-                && f.message.contains("Log file found in config log directory")
-                && f.message.contains("nails-debug.log")
-        })
-        .collect();
-    assert_eq!(log_findings.len(), 1);
-    assert_eq!(log_findings[0].severity, Severity::Warn);
-}
-
-#[test]
-fn test_verify_does_not_flag_logs_inside_the_hidden_volume() {
-    use crate::config::Config;
-    use std::path::PathBuf;
-
-    // The log directory sits on the hidden volume (its intended, on-volume
-    // location). Running `verify` from the hidden environment must not report
-    // those logs as residue: they belong there and are only reachable while the
-    // volume is mounted, which the hidden-volume-path finding already covers.
-    let fs = MockFilesystem::new();
-    let config = Config {
-        hidden_volume_root: PathBuf::from("/mnt/data"),
-        log_path: PathBuf::from("/mnt/data/logs"),
-        overlays: vec![],
-        ..Config::default()
-    };
-
-    fs.mock_set_path_exists("/mnt/data/logs", true);
-    fs.mock_set_path_type("/mnt/data/logs", PathKind::Dir);
-    fs.mock_set_files_with_pattern(
-        "/mnt/data/logs",
-        "nails",
-        &[std::path::Path::new("/mnt/data/logs/nails.log")],
-    );
-
-    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
-    let result = verifier.run(false).unwrap();
-
-    let log_findings: Vec<_> = result
-        .findings
-        .iter()
-        .filter(|f| {
-            f.category == "config" && f.message.contains("Log file found in config log directory")
-        })
-        .collect();
-    assert!(
-        log_findings.is_empty(),
-        "on-volume logs must not be flagged as residue: {log_findings:?}"
-    );
-}
-
-#[test]
-fn test_verify_state_active_is_critical() {
-    use crate::SystemState;
-    use crate::state::StateFile;
-    use chrono::Utc;
-
-    let fs = MockFilesystem::new();
-    let state = StateFile {
-        state: SystemState::Active {
-            activated_at: Utc::now(),
-            overlays: vec![],
-            decoy_writers: Vec::new(),
-        },
-        ..StateFile::default()
-    };
-
-    let config = crate::config::Config::default();
-    let verifier = Verifier::with_config(fs, config, Some(state), StateFileStatus::NotChecked);
-    let result = verifier.run(false).unwrap();
-
-    let state_findings: Vec<_> = result
-        .findings
-        .iter()
-        .filter(|f| f.category == "state" && f.severity == Severity::Critical)
-        .collect();
-    assert!(!state_findings.is_empty());
-    assert!(state_findings[0].message.contains("ACTIVE"));
-}
-
-#[test]
-fn test_verify_state_transition_states_are_critical() {
-    use crate::SystemState;
-    use crate::state::StateFile;
-    use chrono::Utc;
-
-    let fs = MockFilesystem::new();
-    let config = crate::config::Config::default();
-
-    let activating = StateFile {
-        state: SystemState::Activating {
-            started_at: Utc::now(),
-        },
-        ..StateFile::default()
-    };
-    let activating_result = Verifier::with_config(
-        fs.clone(),
-        config.clone(),
-        Some(activating),
-        StateFileStatus::NotChecked,
-    )
-    .run(false)
-    .unwrap();
-    let activating_findings: Vec<_> = activating_result
-        .findings
-        .iter()
-        .filter(|f| f.category == "state" && f.message.contains("ACTIVATING"))
-        .collect();
-    assert_eq!(activating_findings.len(), 1);
-    assert_eq!(activating_findings[0].severity, Severity::Critical);
-
-    let deactivating = StateFile {
-        state: SystemState::Deactivating {
-            started_at: Utc::now(),
-        },
-        ..StateFile::default()
-    };
-    let deactivating_result =
-        Verifier::with_config(fs, config, Some(deactivating), StateFileStatus::NotChecked)
-            .run(false)
-            .unwrap();
-    let deactivating_findings: Vec<_> = deactivating_result
-        .findings
-        .iter()
-        .filter(|f| f.category == "state" && f.message.contains("DEACTIVATING"))
-        .collect();
-    assert_eq!(deactivating_findings.len(), 1);
-    assert_eq!(deactivating_findings[0].severity, Severity::Critical);
-}
-
-#[test]
 fn test_verify_state_inactive_no_state_findings() {
     use crate::state::StateFile;
 
@@ -1479,135 +1194,12 @@ fn test_verify_state_inactive_no_state_findings() {
     assert!(state_findings.is_empty());
 }
 
-#[test]
-fn test_verify_state_degraded_is_critical() {
-    use crate::SystemState;
-    use crate::state::StateFile;
-    use chrono::Utc;
-    use std::path::PathBuf;
-
-    let fs = MockFilesystem::new();
-    let state = StateFile {
-        state: SystemState::Degraded {
-            since: Utc::now(),
-            reason: "unmount of /home failed".into(),
-            remaining_mounts: vec![PathBuf::from("/home")],
-        },
-        ..StateFile::default()
-    };
-
-    let config = crate::config::Config::default();
-    let verifier = Verifier::with_config(fs, config, Some(state), StateFileStatus::NotChecked);
-    let result = verifier.run(false).unwrap();
-
-    let degraded_findings: Vec<_> = result
-        .findings
-        .iter()
-        .filter(|f| f.category == "state" && f.message.contains("DEGRADED"))
-        .collect();
-    assert_eq!(degraded_findings.len(), 1);
-    assert_eq!(degraded_findings[0].severity, Severity::Critical);
-}
-
-#[test]
-fn test_verify_state_with_failed_overlays_info() {
-    use crate::state::{FailedOverlayInfo, StateFile};
-    use chrono::Utc;
-    use std::path::PathBuf;
-
-    let fs = MockFilesystem::new();
-    let state = StateFile {
-        failed_overlays: vec![FailedOverlayInfo {
-            target: PathBuf::from("/var"),
-            error_message: "Mount failed".to_string(),
-            failed_at: Utc::now(),
-        }],
-        ..StateFile::default()
-    };
-
-    let config = crate::config::Config::default();
-    let verifier = Verifier::with_config(fs, config, Some(state), StateFileStatus::NotChecked);
-    let result = verifier.run(false).unwrap();
-
-    let info_findings: Vec<_> = result
-        .findings
-        .iter()
-        .filter(|f| f.category == "state" && f.message.contains("failed overlay"))
-        .collect();
-    assert_eq!(info_findings.len(), 1);
-    assert_eq!(info_findings[0].severity, Severity::Info);
-}
-
-/// Build an active-state verifier over a crafted `/proc/self/mountinfo`.
-#[cfg(test)]
-fn active_verifier_with_mountinfo(mountinfo: &str) -> Verifier<MockFilesystem> {
-    use crate::SystemState;
-    use crate::state::StateFile;
-    use chrono::Utc;
-
-    let fs = MockFilesystem::new();
-    fs.mock_add_file("/proc/self/mountinfo", mountinfo);
-    let state = StateFile {
-        state: SystemState::Active {
-            decoy_writers: Vec::new(),
-            activated_at: Utc::now(),
-            overlays: vec![],
-        },
-        ..StateFile::default()
-    };
-    let config = crate::config::Config {
-        hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
-        ..crate::config::Config::default()
-    };
-    Verifier::with_config(fs, config, Some(state), StateFileStatus::NotChecked)
-}
-
 fn writable_mount_findings(result: &crate::verify::VerifyResult) -> Vec<&Finding> {
     result
         .findings
         .iter()
         .filter(|f| f.category == "mount" && f.message.contains("Writable non-overlay decoy mount"))
         .collect()
-}
-
-#[test]
-fn test_verify_flags_writable_non_overlaid_decoy_root() {
-    let verifier =
-        active_verifier_with_mountinfo("23 1 8:1 / / rw,relatime shared:1 - ext4 /dev/sda1 rw\n");
-    let result = verifier.run(false).unwrap();
-    let findings = writable_mount_findings(&result);
-    assert_eq!(findings.len(), 1, "{:?}", result.findings);
-    assert_eq!(findings[0].severity, Severity::Critical);
-    assert!(findings[0].message.contains('/'));
-}
-
-#[test]
-fn test_verify_accepts_read_only_decoy_root_and_usr() {
-    let verifier = active_verifier_with_mountinfo(
-        "23 1 8:1 / / ro,relatime - ext4 /dev/sda1 ro\n\
-         36 23 8:1 /usr /usr ro,relatime - ext4 /dev/sda1 ro\n",
-    );
-    let result = verifier.run(false).unwrap();
-    assert!(
-        writable_mount_findings(&result).is_empty(),
-        "a read-only decoy root must not be flagged: {:?}",
-        result.findings
-    );
-}
-
-#[test]
-fn test_verify_ignores_writable_non_os_tree() {
-    // An ext4 /home that is not an overlay is not reported by this OS-tree check.
-    let verifier = active_verifier_with_mountinfo(
-        "23 1 8:1 / / ro,relatime - ext4 /dev/sda1 ro\n\
-         40 23 8:2 /home /home rw,relatime - ext4 /dev/sdb1 rw\n",
-    );
-    let result = verifier.run(false).unwrap();
-    assert!(
-        writable_mount_findings(&result).is_empty(),
-        "/home is out of scope for the OS-tree check: {:?}",
-        result.findings
-    );
 }
 
 #[test]
@@ -1625,114 +1217,9 @@ fn test_verify_writable_decoy_check_is_inactive_only() {
     assert!(writable_mount_findings(&result).is_empty());
 }
 
-#[test]
-fn test_verify_overlaid_decoy_tree_is_not_flagged() {
-    // /usr presented as an overlay mount is protection, not a leak.
-    let verifier = active_verifier_with_mountinfo(
-        "23 1 8:1 / / ro,relatime - ext4 /dev/sda1 ro\n\
-         36 23 0:40 / /usr rw,relatime - overlay overlay rw,lowerdir=/usr\n",
-    );
-    let result = verifier.run(false).unwrap();
-    assert!(
-        writable_mount_findings(&result).is_empty(),
-        "an overlaid /usr is protection: {:?}",
-        result.findings
-    );
-}
-
 // ========================================================================
 // Mount-Table Scan for Leftover NAILS Scaffolding
 // ========================================================================
-
-#[test]
-fn test_mount_scan_flags_leftover_overlay_at_non_standard_target() {
-    use crate::config::Config;
-    use std::path::PathBuf;
-
-    let fs = MockFilesystem::new();
-    let config = Config {
-        hidden_volume_root: PathBuf::from("/mnt/hidden"),
-        ..Config::default()
-    };
-
-    // A leftover ephemeral /var overlay (upper under the runtime dir), a pivot
-    // staging bind, and an expected /home overlay (upper under the hidden root).
-    // Only the first two are at non-standard targets and must be flagged; the
-    // /home overlay is covered by the standard overlay check and must not be
-    // double-reported here.
-    let mountinfo = concat!(
-        "9 1 0:49 / /run/0123456789abcdef rw - tmpfs tmpfs rw,mode=700\n",
-        "10 1 0:50 / /home rw - overlay overlay ",
-        "rw,lowerdir=/home,upperdir=/mnt/hidden/home/upper,workdir=/mnt/hidden/home/work\n",
-        "11 1 0:51 / /var rw - overlay overlay ",
-        "rw,lowerdir=/var,upperdir=/run/0123456789abcdef/var/upper,workdir=/run/0123456789abcdef/var/work\n",
-        "12 1 0:52 / /run/0123456789abcdef/etc rw - overlay overlay ",
-        "rw,lowerdir=/etc,upperdir=/mnt/hidden/etc/upper,workdir=/mnt/hidden/etc/work\n",
-    );
-    fs.mock_set_file_content("/proc/self/mountinfo", mountinfo);
-
-    let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
-    let result = verifier.run(false).unwrap();
-
-    let scaffolding: Vec<_> = result
-        .findings
-        .iter()
-        .filter(|f| f.category == "mount" && f.message.contains("non-standard target"))
-        .collect();
-    assert_eq!(
-        scaffolding.len(),
-        2,
-        "the /var ephemeral overlay and the pivot staging bind must be flagged, not /home: {:?}",
-        result.findings
-    );
-    for finding in &scaffolding {
-        assert_eq!(finding.severity, Severity::Critical);
-        assert!(finding.fix_guidance.is_some());
-    }
-    assert!(scaffolding.iter().any(|f| f.message.contains("/var")));
-    assert!(
-        scaffolding
-            .iter()
-            .any(|f| f.message.contains("/run/0123456789abcdef/etc"))
-    );
-    assert!(
-        !scaffolding.iter().any(|f| f.message.contains("/home")),
-        "the expected /home overlay must not be reported as leftover scaffolding"
-    );
-}
-
-#[test]
-fn test_mount_scan_without_config_ignores_foreign_overlays() {
-    let fs = MockFilesystem::new();
-
-    // Without a configured hidden root, a generic overlay (e.g. a container's)
-    // cannot be attributed to NAILS and must not be flagged. A runtime-backed
-    // ephemeral overlay still is, since its upper is unambiguously ours.
-    let mountinfo = concat!(
-        "19 1 0:59 / /run/0123456789abcdef rw - tmpfs tmpfs rw,mode=700\n",
-        "20 1 0:60 / /var/lib/docker/overlay2/x/merged rw - overlay overlay ",
-        "rw,lowerdir=/foreign,upperdir=/foreign/upper,workdir=/foreign/work\n",
-        "21 1 0:61 / /opt rw - overlay overlay ",
-        "rw,lowerdir=/opt,upperdir=/run/0123456789abcdef/opt/upper,workdir=/run/0123456789abcdef/opt/work\n",
-    );
-    fs.mock_set_file_content("/proc/self/mountinfo", mountinfo);
-
-    let verifier = Verifier::new(fs);
-    let result = verifier.run(false).unwrap();
-
-    let scaffolding: Vec<_> = result
-        .findings
-        .iter()
-        .filter(|f| f.category == "mount" && f.message.contains("non-standard target"))
-        .collect();
-    assert_eq!(
-        scaffolding.len(),
-        1,
-        "only the runtime-backed /opt overlay is attributable to NAILS: {:?}",
-        result.findings
-    );
-    assert!(scaffolding[0].message.contains("/opt"));
-}
 
 // ========================================================================
 // Decoy-Scoped Pre-Activation Baseline Tests
@@ -1779,23 +1266,13 @@ fn attached_hidden_volume_fs() -> (MockFilesystem, crate::config::Config) {
 }
 
 #[test]
-fn test_plain_host_scan_reports_hidden_volume_as_self_inflicted() {
+fn test_plain_host_scan_reports_hidden_volume_path_as_self_inflicted() {
     // A plain host scan of an attached hidden volume (state unknown) reports the
     // hidden volume itself — the defect the decoy baseline must not reproduce.
     let (fs, config) = attached_hidden_volume_fs();
     let verifier = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked);
     let result = verifier.run(false).unwrap();
 
-    assert_eq!(result.status, VerifyStatus::Critical);
-    assert!(
-        result
-            .findings
-            .iter()
-            .any(|f| f.severity == Severity::Critical
-                && f.message.contains("hidden root still mounted")),
-        "plain scan is expected to self-report the mounted hidden root: {:?}",
-        result.findings
-    );
     assert!(
         result
             .findings
@@ -2037,4 +1514,60 @@ fn offline_scan_never_searches_the_journal() {
     let result = verifier.run(true).unwrap();
 
     assert!(result.findings.iter().all(|f| f.category != "journal"));
+}
+
+#[test]
+fn session_leftovers_are_critical_on_the_decoy() {
+    let (fs, verifier) = overlay_verifier(&nextroot_line());
+    fs.mock_set_path_exists("/run/overlay-runtime/plan.json", true);
+    fs.mock_set_path_exists(
+        "/run/systemd/system/systemd-soft-reboot.service.d/50-overlay-runtime.conf",
+        true,
+    );
+    fs.mock_set_path_exists("/run/systemd/system", true);
+    fs.mock_set_path_type("/run/systemd/system", PathKind::Dir);
+    fs.mock_set_directory_contents(
+        std::path::Path::new("/run/systemd/system"),
+        vec![std::path::PathBuf::from(
+            "/run/systemd/system/overlay-runtime-monitor.service",
+        )],
+    );
+    let result = verifier.run(false).unwrap();
+    let session: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "session")
+        .collect();
+    assert_eq!(session.len(), 4, "{session:?}");
+    assert!(session.iter().all(|f| f.severity == Severity::Critical));
+    assert!(session.iter().all(|f| f.fix_guidance.is_some()));
+    assert_eq!(result.status, VerifyStatus::Critical);
+}
+
+#[test]
+fn a_runtime_mask_left_on_the_decoy_only_warns() {
+    let (fs, verifier) = overlay_verifier("");
+    fs.mock_set_path_exists("/run/systemd/system", true);
+    fs.mock_set_path_type("/run/systemd/system", PathKind::Dir);
+    let mask = std::path::Path::new("/run/systemd/system/swap.target");
+    fs.mock_set_directory_contents(
+        std::path::Path::new("/run/systemd/system"),
+        vec![mask.to_path_buf()],
+    );
+    crate::Filesystem::create_symlink(&fs, std::path::Path::new("/dev/null"), mask).unwrap();
+    fs.mock_set_is_symlink(mask.to_str().unwrap(), true);
+    let findings = verifier.check_session_leftovers().unwrap();
+    assert_eq!(findings.len(), 1, "{findings:?}");
+    assert_eq!(findings[0].severity, Severity::Warn);
+}
+
+#[test]
+fn inside_the_hidden_root_the_runtime_files_are_expected() {
+    let (fs, verifier) = overlay_verifier(
+        "1 0 0:40 / / rw - overlay overlay rw,lowerdir=/x,upperdir=/mnt/hidden/root/upper,workdir=/mnt/hidden/root/work\n",
+    );
+    fs.mock_set_path_exists("/run/overlay-runtime/plan.json", true);
+    let findings = verifier.check_session_leftovers().unwrap();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].severity, Severity::Info);
 }

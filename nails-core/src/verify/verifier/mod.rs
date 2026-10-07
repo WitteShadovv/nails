@@ -30,10 +30,6 @@ const PASSWD_FILE: &str = "/etc/passwd";
 /// deep scan should cover.
 const FIRST_LOGIN_UID: u32 = 1000;
 
-/// Base-OS trees whose writable, non-overlay presence on the decoy block device
-/// leaks a hidden session's package and `/usr` writes. `/` is checked separately.
-const OS_TREE_MOUNTS: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib64"];
-
 /// Per-home relative paths whose contents are searched for a reference to the
 /// configured hidden volume root.
 const DESKTOP_RECENT_FILES: &[&str] = &[
@@ -44,12 +40,6 @@ const DESKTOP_RECENT_FILES: &[&str] = &[
 
 /// Shell history files, relative to a home, searched for NAILS commands.
 const HISTORY_FILES: &[&str] = &[".bash_history", ".zsh_history"];
-
-/// Overlay targets an active hidden session is expected to present. Leftover
-/// NAILS overlays or staging binds anywhere else mean teardown left scaffolding
-/// behind; [`check_overlay_mounts`](Verifier::check_overlay_mounts) already
-/// reports these expected targets, so the mount-table scan skips them.
-const STANDARD_OVERLAY_TARGETS: &[&str] = &["/home", "/etc", "/root"];
 
 /// Where a verification run is pointed: the live host, or an offline image.
 #[derive(Debug, Clone)]
@@ -232,24 +222,9 @@ impl<F: Filesystem> Verifier<F> {
 
         // Live-only checks: these describe the running machine, not an image.
         if !offline {
-            // 1. Leftover overlays whose upper layer sits under the hidden root.
-            findings.extend(self.check_overlay_upperdirs()?);
-            ran.insert("overlay-upperdirs");
-
-            // 1b. While active, flag a writable non-overlay decoy OS tree.
-            findings.extend(self.check_writable_decoy_mounts()?);
-            ran.insert("writable-decoy-mounts");
-
-            // 1c. Flag leftover NAILS overlays and staging binds at non-standard
-            // targets, classified from the live mount table.
-            findings.extend(self.check_nails_owned_mounts()?);
-            ran.insert("nails-owned-mounts");
-
-            // 1d. Flag a hidden root still mounted while no hidden session is
-            // active — the signature of an emergency teardown that did not close
-            // the backend.
-            findings.extend(self.check_hidden_root_mounted()?);
-            ran.insert("hidden-root-mounted");
+            // 1. What an entry or a hidden session leaves in /run on the decoy.
+            findings.extend(self.check_session_leftovers()?);
+            ran.insert("session-leftovers");
         }
 
         // 2. Check for artifact files from the shared registry.
@@ -443,5 +418,5 @@ mod catalog;
 pub use catalog::VERIFY_CHECK_IDS;
 mod config_state;
 mod deep_scan;
-mod mounts;
+mod session;
 mod system;

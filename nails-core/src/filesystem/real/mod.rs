@@ -19,27 +19,19 @@ mod dir_ops;
 mod file_ops;
 mod mount_ops;
 mod noatime;
-mod ro_guard_ops;
-mod submount;
 mod system_ops;
-
-pub use submount::Submount;
 
 /// Read-only, access-time-preserving opens and listings, shared with the
 /// forensic readers ([`crate::forensic`]) so every read of the decoy goes
 /// through the same `O_NOATIME` path.
 pub(crate) use noatime::{EntryType, OpenKind, open_noatime, read_dir_noatime};
-pub(crate) use submount::classify_submounts;
-
-#[cfg(test)]
-pub(crate) use submount::parse_submount_sources;
 
 /// Shared with [`crate::filesystem::safe_path`] so the hidden-root atomic write
 /// reuses the same unpredictable, `O_EXCL`-guarded temp-name scheme as the
 /// user-home write path.
 pub(crate) use file_ops::unique_temp_name;
 
-use super::{Filesystem, MountInfo, MountSource};
+use super::{Filesystem, MountSource};
 use crate::Result;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
@@ -71,20 +63,6 @@ impl Default for RealFilesystem {
 }
 
 impl Filesystem for RealFilesystem {
-    fn mount_overlay(
-        &self,
-        lower: &[&Path],
-        upper: &Path,
-        work: &Path,
-        target: &Path,
-    ) -> Result<()> {
-        mount_ops::mount_overlay(self, lower, upper, work, target)
-    }
-
-    fn unmount(&self, target: &Path, force: bool) -> Result<()> {
-        mount_ops::unmount(self, target, force)
-    }
-
     fn is_mounted(&self, target: &Path) -> Result<bool> {
         mount_ops::is_mounted(target)
     }
@@ -93,50 +71,12 @@ impl Filesystem for RealFilesystem {
         mount_ops::get_filesystem_type(target)
     }
 
-    fn is_overlay_mounted(&self, target: &Path) -> Result<bool> {
-        mount_ops::is_overlay_mounted(target)
-    }
-
     fn is_mount_read_only(&self, target: &Path) -> Result<bool> {
         mount_ops::is_mount_read_only(target)
     }
 
-    fn get_mount_info(&self, target: &Path) -> Option<MountInfo> {
-        mount_ops::get_mount_info(target)
-    }
-
     fn mount_source(&self, mount_point: &Path) -> Result<Option<MountSource>> {
         mount_ops::mount_source(mount_point)
-    }
-
-    fn discover_nails_mounts(
-        &self,
-        hidden_root: Option<&Path>,
-    ) -> Result<crate::filesystem::NailsMounts> {
-        Ok(crate::filesystem::NailsMounts::from_entries(
-            &crate::filesystem::mountinfo::read_mountinfo()?,
-            hidden_root,
-        ))
-    }
-
-    fn mount_entries(&self) -> Option<Vec<crate::filesystem::MountEntry>> {
-        crate::filesystem::mountinfo::read_mountinfo().ok()
-    }
-
-    fn detach_lazily(&self, target: &Path) -> Result<()> {
-        nix::mount::umount2(
-            target,
-            nix::mount::MntFlags::MNT_DETACH | nix::mount::MntFlags::UMOUNT_NOFOLLOW,
-        )
-        .map_err(|errno| crate::NailsError::UnmountError {
-            path: target.to_path_buf(),
-            reason: format!("{errno}"),
-        })
-    }
-
-    fn top_mount_id(&self, target: &Path) -> Option<i32> {
-        let entries = crate::filesystem::mountinfo::read_mountinfo().ok()?;
-        crate::filesystem::mountinfo::top_mount_at(&entries, target).map(|e| e.mount_id)
     }
 
     fn path_exists(&self, path: &Path) -> Result<bool> {
@@ -214,10 +154,6 @@ impl Filesystem for RealFilesystem {
         file_ops::is_writable(path)
     }
 
-    fn nails_process_running(&self) -> Result<bool> {
-        system_ops::nails_process_running()
-    }
-
     fn nails_process_matches(&self) -> Result<Vec<crate::filesystem::ProcessMatch>> {
         system_ops::nails_process_matches()
     }
@@ -228,10 +164,6 @@ impl Filesystem for RealFilesystem {
 
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
         file_ops::write_file_content(path, content)
-    }
-
-    fn write_kernel_tunable(&self, path: &Path, value: &str) -> Result<()> {
-        file_ops::write_kernel_tunable(path, value)
     }
 
     fn write_user_file(
@@ -258,34 +190,6 @@ impl Filesystem for RealFilesystem {
         pattern: &str,
     ) -> Result<crate::filesystem::PatternScan> {
         file_ops::scan_files_with_pattern(dir, pattern)
-    }
-
-    fn mount_tmpfs(&self, target: &Path, size: &str) -> Result<()> {
-        mount_ops::mount_tmpfs(target, size)
-    }
-
-    fn unmount_tmpfs(&self, target: &Path) -> Result<()> {
-        mount_ops::unmount_tmpfs(self, target)
-    }
-
-    fn bind_mount(&self, source: &Path, target: &Path) -> Result<()> {
-        mount_ops::bind_mount(source, target)
-    }
-
-    fn unmount_bind(&self, target: &Path) -> Result<()> {
-        mount_ops::unmount_bind(self, target)
-    }
-
-    fn remount_read_only(&self, target: &Path) -> Result<()> {
-        ro_guard_ops::guard_read_only(target)
-    }
-
-    fn remove_read_only_guard(&self, target: &Path) -> Result<()> {
-        ro_guard_ops::remove_guard(self, target)
-    }
-
-    fn is_read_only_guard(&self, target: &Path) -> Result<bool> {
-        ro_guard_ops::is_guarded(target)
     }
 
     fn file_size(&self, path: &Path) -> Result<u64> {
@@ -320,10 +224,6 @@ impl Filesystem for RealFilesystem {
         dir_ops::list_directory(dir)
     }
 
-    fn enumerate_root_directories(&self) -> Result<Vec<PathBuf>> {
-        dir_ops::enumerate_root_directories()
-    }
-
     fn modified_time(&self, path: &Path) -> Result<std::time::SystemTime> {
         // `dir_ops::modified_time` (owned by another chunk) still yields a
         // `chrono` timestamp; convert at this boundary so the trait never
@@ -346,22 +246,6 @@ impl Filesystem for RealFilesystem {
             )
         })?;
         Ok(())
-    }
-
-    fn get_directory_size(&self, path: &Path) -> Result<u64> {
-        dir_ops::get_directory_size(path)
-    }
-
-    fn find_submount_sources(&self, target: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
-        dir_ops::find_submount_sources(target)
-    }
-
-    fn find_submounts(&self, target: &Path) -> Result<Vec<Submount>> {
-        dir_ops::find_submounts(target)
-    }
-
-    fn reattach_submount(&self, source: &Path, mount_point: &Path, read_only: bool) -> Result<()> {
-        mount_ops::reattach_submount(source, mount_point, read_only)
     }
 }
 

@@ -3,8 +3,7 @@
 
 //! Keeps docs/configuration.md in step with the configuration structs.
 //!
-//! The Key and Default columns of the key table, and the Path column of the
-//! default exclusion table, are generated from the code. The other columns are
+//! The Key and Default columns of the key table are generated from the code. The other columns are
 //! written by hand and kept across regenerations. After adding, removing or
 //! changing a key, regenerate the generated columns with
 //!
@@ -16,9 +15,7 @@
 
 use std::path::PathBuf;
 
-use nails_core::config::{
-    CONFIG_KEYS, Config, DEFAULT_OVERLAY_EXCLUSIONS, LoadedConfig, OverlayConfig, ValueSource,
-};
+use nails_core::config::{CONFIG_KEYS, Config, LoadedConfig, ValueSource};
 use serde_json::Value;
 
 const DOC_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/configuration.md");
@@ -40,7 +37,7 @@ struct Table {
 fn config_reference_matches_the_code() {
     let doc =
         std::fs::read_to_string(DOC_PATH).unwrap_or_else(|e| panic!("cannot read {DOC_PATH}: {e}"));
-    let tables = [key_table(), exclusion_table()];
+    let tables = [key_table()];
 
     let mut synced = doc.clone();
     let mut problems = Vec::new();
@@ -90,13 +87,11 @@ fn config_reference_covers_every_top_level_key() {
 #[test]
 fn config_reference_defaults_hold_without_a_file() {
     // The reference documents one default per key, so running with no file
-    // at all must behave like an empty file. The built-in defaults also carry
-    // example overlay tables; only explicit mode mounts those, and explicit
-    // mode can only be selected in a file.
+    // at all must behave like an empty file.
     let without_file = serde_json::to_value(Config::default()).expect("Config serializes");
     let empty_file = serde_json::to_value(file_defaults().config).expect("Config serializes");
 
-    for key in CONFIG_KEYS.iter().filter(|key| **key != "overlays") {
+    for key in CONFIG_KEYS {
         assert_eq!(without_file[*key], empty_file[*key], "default of {key}");
     }
 }
@@ -126,19 +121,6 @@ fn key_table() -> Table {
     }
 }
 
-/// Rows of the exclusion table: `| Path | Why it is excluded |`.
-fn exclusion_table() -> Table {
-    Table {
-        region: "default-exclusions",
-        header: &["Path", "Why it is excluded"],
-        generated: &[0],
-        rows: DEFAULT_OVERLAY_EXCLUSIONS
-            .iter()
-            .map(|path| vec![format!("`{path}`"), String::new()])
-            .collect(),
-    }
-}
-
 /// The configuration an empty `nails.toml` yields: the value each key takes
 /// when the file leaves it out.
 fn file_defaults() -> LoadedConfig {
@@ -147,14 +129,9 @@ fn file_defaults() -> LoadedConfig {
 }
 
 /// Every key the configuration accepts, including those a default leaves out
-/// of the output: JSON keeps `None` as `null`, and one overlay table exposes
-/// the keys inside `[[overlays]]`.
+/// of the output: JSON keeps `None` as `null`.
 fn complete_tree(config: &Config) -> Value {
-    let sample = Config {
-        overlays: vec![OverlayConfig::default()],
-        ..config.clone()
-    };
-    serde_json::to_value(&sample).expect("Config serializes")
+    serde_json::to_value(config).expect("Config serializes")
 }
 
 fn push_rows(
@@ -174,17 +151,6 @@ fn push_rows(
                 push_rows(rows, &nested, &fields[name], &default[name], false, root);
             }
         }
-        Value::Array(items) if items.first().is_some_and(Value::is_object) => {
-            rows.push(row(key, render_value(default)));
-            let mut names: Vec<&String> = items[0].as_object().unwrap().keys().collect();
-            names.sort();
-            for name in names {
-                rows.push(row(
-                    &format!("{key}[].{name}"),
-                    array_item_default(key, name),
-                ));
-            }
-        }
         _ if derived => rows.push(row(key, render_derived(key, default, root))),
         _ => rows.push(row(key, render_value(default))),
     }
@@ -192,31 +158,6 @@ fn push_rows(
 
 fn row(key: &str, default: String) -> Vec<String> {
     vec![format!("`{key}`"), String::new(), default, String::new()]
-}
-
-/// Default of `field` inside each table of the array `key`: "required" when
-/// a table without it is rejected.
-fn array_item_default(key: &str, field: &str) -> String {
-    let sample = Config {
-        overlays: vec![OverlayConfig::default()],
-        ..file_defaults().config
-    };
-    let full = toml::Table::try_from(&sample).expect("Config serializes to TOML");
-    let mut item = full[key].as_array().unwrap()[0].as_table().unwrap().clone();
-    item.remove(field);
-
-    let mut doc = toml::Table::new();
-    doc.insert(
-        key.to_string(),
-        toml::Value::Array(vec![toml::Value::Table(item)]),
-    );
-    match toml::from_str::<Config>(&doc.to_string()) {
-        Err(_) => "required".to_string(),
-        Ok(config) => {
-            let value = serde_json::to_value(&config).expect("Config serializes");
-            render_value(&value[key][0][field])
-        }
-    }
 }
 
 fn render_value(value: &Value) -> String {

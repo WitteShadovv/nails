@@ -5,8 +5,6 @@
 
 use std::path::PathBuf;
 
-use super::colors::ColorSchemeConfig;
-use super::overlay::{OverlayConfig, OverlayMode};
 use super::persona::PersonaConfig;
 use super::types::{Config, DEFAULT_HIDDEN_VOLUME_ROOT, get_default_hidden_volume_root};
 
@@ -127,15 +125,7 @@ pub(super) fn default_rebuild_space_mb() -> u64 {
     4096
 }
 
-pub(super) fn default_clear_history() -> bool {
-    true
-}
-
 pub(super) fn default_show_opsec_reminders() -> bool {
-    true
-}
-
-pub(super) fn default_nixos_switch_required() -> bool {
     true
 }
 
@@ -152,7 +142,6 @@ impl Default for Config {
     /// Create default configuration with sensible test defaults
     ///
     /// Uses binary-derived hidden volume root for zero-config operation.
-    /// Includes default overlays for /home, /etc, and /var for VM testing.
     fn default() -> Self {
         // Derive the hidden volume root from the binary location
         let hidden_root = derive_hidden_volume_root();
@@ -160,56 +149,16 @@ impl Default for Config {
         Self {
             hidden_volume_root: hidden_root.clone(),
             state_file_path: hidden_root.join("state.json"),
-            overlays: vec![
-                OverlayConfig {
-                    name: "boot".to_string(),
-                    lower: PathBuf::from("/boot"),
-                    upper: hidden_root.join("boot"),
-                    work: hidden_root.join(".work/boot"),
-                    target: PathBuf::from("/boot"),
-                },
-                OverlayConfig {
-                    name: "home".to_string(),
-                    lower: PathBuf::from("/home"),
-                    upper: hidden_root.join("home"),
-                    work: hidden_root.join(".work/home"),
-                    target: PathBuf::from("/home"),
-                },
-                OverlayConfig {
-                    name: "etc".to_string(),
-                    lower: PathBuf::from("/etc"),
-                    upper: hidden_root.join("etc"),
-                    work: hidden_root.join(".work/etc"),
-                    target: PathBuf::from("/etc"),
-                },
-                OverlayConfig {
-                    name: "var".to_string(),
-                    lower: PathBuf::from("/var"),
-                    upper: hidden_root.join("var"),
-                    work: hidden_root.join(".work/var"),
-                    target: PathBuf::from("/var"),
-                },
-            ],
             minimum_space_mb: default_minimum_space_mb(),
             rebuild_space_mb: default_rebuild_space_mb(),
-            overlay_mode: OverlayMode::Auto,
-            overlay_exclusions: vec![],
-            overlay_exclusions_remove: vec![],
-            allow_leaky_exclusions: vec![],
-            clear_history: default_clear_history(),
             show_opsec_reminders: default_show_opsec_reminders(),
             log_path: hidden_root.join("logs"), // Derived from hidden_volume_root
             loaded_config_path: None,
-            color_scheme: ColorSchemeConfig::default(),
             persona: PersonaConfig::default(),
             backend_watch: super::backend_watch::BackendWatchConfig::default(),
-            prompt_label: String::new(),
             nixos_flake: None,
-            nixos_switch_required: true,
-            risky_services: None,
             accept_persistent_decoy: false,
             sleep_policy: super::types::SleepPolicyConfig::default(),
-            emergency: super::types::EmergencyConfig::default(),
         }
     }
 }

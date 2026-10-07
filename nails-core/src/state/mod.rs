@@ -1,75 +1,30 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! # System State Management
+//! # System State
 //!
-//! Core state machine for NAILS with type-safe transitions.
+//! The state file on the hidden volume records whether a hidden session was
+//! entered, when, with which hidden system, and how long the entry took.
 //!
-//! ## Overview
-//!
-//! The `SystemState` enum represents all possible states of the NAILS system,
-//! ensuring compile-time guarantees that invalid states are impossible.
-//!
-//! ## Valid State Transitions
-//!
-//! ```text
-//! Inactive → Activating → Active → Deactivating → Inactive
-//! Active/Deactivating → Degraded (partial teardown) → Inactive (recover)
-//! ```
-//!
-//! ## Example
-//!
-//! ```
-//! use nails_core::SystemState;
-//!
-//! // Start from inactive state
-//! let state = SystemState::Inactive;
-//!
-//! // Begin activation (valid transition)
-//! let activating = state.begin_activation().expect("Should transition to Activating");
-//! assert!(matches!(activating, SystemState::Activating { .. }));
-//!
-//! // Complete activation
-//! let active = activating
-//!     .complete_activation(vec![], vec![])
-//!     .expect("Should transition to Active");
-//! assert!(active.is_active());
-//! ```
+//! A soft-reboot keeps the boot ID and kills the activating process, so the
+//! state file is not where NAILS learns where the machine is: the live facts
+//! ([`crate::session::probe`]) are authoritative, and the state file is the
+//! record next to them.
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-// Re-export imports needed by tests (via `use super::*`)
-#[cfg(test)]
-pub(crate) use crate::NailsError;
-
 mod file;
-mod guard;
 mod lock;
-mod reconcile;
 #[cfg(test)]
 mod tests;
-mod transitions;
 
-// Re-export all public items.
-pub use file::{HiddenSession, LastActivation, LoadOutcome, LoadResult, PlatformState, StateFile};
-pub use guard::StateGuard;
+pub use file::{LastActivation, LoadOutcome, LoadResult, PlatformState, StateFile};
 pub use lock::{EMERGENCY_LOCK_TIMEOUT, StateLock};
-pub use reconcile::{DegradedKind, EffectiveState, InterruptedPhase, reconcile};
 
-// Kernel boot id reader, shared with state reconciliation in the manager.
+// Kernel boot id reader.
 pub(crate) use file::read_boot_id;
-
-// Test-only save-failure seam, reachable crate-wide for the deactivation
-// regression tests even though `file` is a private module.
-#[cfg(test)]
-pub(crate) use file::save_probe;
-
-// Test-only boot-id override, so the manager's reconcile tests can drive the
-// stale-from-previous-boot path without a real reboot.
-#[cfg(test)]
-pub(crate) use file::test_boot_id;
 
 /// Check if a path is within the hidden volume
 ///
@@ -201,260 +156,49 @@ fn clean_path_components(path: &Path) -> PathBuf {
     cleaned
 }
 
-/// System state enum with type-safe transitions
-///
-/// Each variant represents a distinct system state with associated metadata.
-/// Invalid states are impossible at compile time due to Rust's type system.
-///
-/// # Requirements
-///
-/// - Track current state
-/// - Track timestamp for each state transition
-/// - Serialize state to JSON
-/// - Impossible invalid states via enum pattern matching
+/// The recorded state of the hidden session.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum SystemState {
-    /// System is inactive (decoy state)
+    /// No hidden session (the decoy).
     Inactive,
 
-    /// Activation in progress
-    Activating {
-        /// When activation started
-        started_at: DateTime<Utc>,
-    },
-
-    /// System is active (hidden environment mounted)
+    /// A hidden session was entered.
     Active {
-        /// When activation completed
+        /// When the entry was committed, right before the soft-reboot.
         activated_at: DateTime<Utc>,
-        /// List of mounted overlay paths
-        overlays: Vec<PathBuf>,
-        /// Writers that still referenced the decoy lower tree once the overlays
-        /// were up (empty when activation left none behind).
-        ///
-        /// Captured at activation time: these processes were deliberately not
-        /// restarted, so they keep writing to the decoy for as long as they run.
-        /// Recording them here lets `status`, which runs as a separate process,
-        /// report the leak without re-scanning `/proc`.
-        #[serde(default)]
-        decoy_writers: Vec<DecoyWriter>,
     },
 
-    /// Deactivation in progress
-    Deactivating {
-        /// When deactivation started
-        started_at: DateTime<Utc>,
-    },
-
-    /// Teardown or rollback left the system partly dismantled.
-    ///
-    /// Reached when a deactivation, rollback, or emergency teardown could not
-    /// unmount every overlay. The system is neither cleanly active nor cleanly
-    /// inactive: some overlays listed in `remaining_mounts` may still be live,
-    /// so the operator must recover (retry teardown) before activating again.
+    /// Something went wrong that needs the operator's attention.
     Degraded {
-        /// When the system entered the degraded state.
+        /// Since when.
         since: DateTime<Utc>,
-        /// Why teardown could not complete, for operator diagnosis.
+        /// Why, for the operator.
         reason: String,
-        /// Mount points that may still be live and need manual attention.
-        remaining_mounts: Vec<PathBuf>,
     },
 }
 
-/// Information about a mounted overlay filesystem
-///
-/// # Requirements
-///
-/// - Track overlay status with mount paths and directories
-/// - State file contains overlay status
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct OverlayInfo {
-    /// Target mount point (e.g., /home, /etc)
-    pub mount_path: PathBuf,
+impl SystemState {
+    /// A hidden session was entered.
+    pub fn is_active(&self) -> bool {
+        matches!(self, SystemState::Active { .. })
+    }
 
-    /// Lower (read-only) directory from base system
-    pub lower_dir: PathBuf,
+    /// No hidden session.
+    pub fn is_inactive(&self) -> bool {
+        matches!(self, SystemState::Inactive)
+    }
 
-    /// Upper (writable) directory on hidden volume
-    pub upper_dir: PathBuf,
+    /// Degraded.
+    pub fn is_degraded(&self) -> bool {
+        matches!(self, SystemState::Degraded { .. })
+    }
 
-    /// Work directory for overlay metadata
-    pub work_dir: PathBuf,
-
-    /// Timestamp when this overlay was mounted
-    pub mounted_at: DateTime<Utc>,
-
-    /// How this overlay was mounted (direct mount, or pivot fallback).
-    ///
-    /// Recorded per target so `status` can report the method without
-    /// re-deriving it from the live mount table. A state file written before
-    /// this field existed deserializes to [`MountMethod::Direct`].
-    #[serde(default)]
-    pub mount_method: crate::overlay::MountMethod,
-}
-
-/// Information about a failed overlay mount attempt
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct FailedOverlayInfo {
-    /// Target mount point that failed (e.g., /var, /tmp)
-    pub target: PathBuf,
-
-    /// Error message explaining why mount failed
-    pub error_message: String,
-
-    /// Timestamp when the mount attempt failed
-    pub failed_at: DateTime<Utc>,
-}
-
-/// A mount activation created to keep a submount visible under an overlaid
-/// target, recorded so teardown can undo exactly what it made, in the right
-/// order.
-///
-/// A submount hidden beneath a parent overlay is first staged (a recursive bind
-/// to a path under the hidden root), then either re-attached over the overlay
-/// (another bind) or given its own nested overlay. Each resulting mount is
-/// recorded here in creation order; deactivation and rollback undo the list in
-/// reverse, so a nested overlay always comes off before the staging bind that
-/// backs its lower layer.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum SubmountAttachment {
-    /// A bind mount (a staging bind under the hidden root, or a read-only
-    /// re-attach over the overlay). Undone with an idempotent bind unmount.
-    Bind { path: PathBuf },
-    /// A nested overlay mounted over the parent overlay, with its upper/work under
-    /// the hidden root. Undone with an overlay unmount.
-    Overlay { path: PathBuf },
-}
-
-impl SubmountAttachment {
-    /// The mount point this attachment lives at.
-    pub fn path(&self) -> &std::path::Path {
+    /// A short label: `inactive`, `active` or `degraded`.
+    pub fn label(&self) -> &'static str {
         match self {
-            SubmountAttachment::Bind { path } | SubmountAttachment::Overlay { path } => path,
+            SystemState::Inactive => "inactive",
+            SystemState::Active { .. } => "active",
+            SystemState::Degraded { .. } => "degraded",
         }
-    }
-}
-
-/// How a decoy writer came to be recorded.
-///
-/// Lets the operator tell a process deliberately left running before the mount
-/// from one the post-mount rescan caught still holding a decoy-lower reference
-/// after the overlay went up, and from one whose access cannot be verified
-/// against the host at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum WriterKind {
-    /// Classified before the mount as a writer that was not restarted, so it
-    /// keeps writing to the decoy for as long as it runs. The historical default,
-    /// so a state file written before this field existed reads back as `Surviving`.
-    #[default]
-    Surviving,
-    /// Found by the post-mount rescan to still reference the decoy lower tree
-    /// after the overlay went up: its `cwd`, root, a writable/directory fd or a
-    /// shared-writable mapping did not migrate onto the overlay.
-    StaleLower,
-    /// Cannot be verified against the host mount namespace (chrooted, or in a
-    /// different mount namespace than PID 1), so whether it writes to the decoy is
-    /// unknowable from the host view. Reported rather than silently trusted.
-    Unverifiable,
-}
-
-impl WriterKind {
-    /// A short parenthetical note for the non-default kinds, appended after the
-    /// writer's targets in human output. `Surviving` has none, so a writer left
-    /// running prints exactly as it always has.
-    pub fn note(self) -> Option<&'static str> {
-        match self {
-            WriterKind::Surviving => None,
-            WriterKind::StaleLower => Some("still on the decoy after the mount"),
-            WriterKind::Unverifiable => Some("unverifiable: outside the host namespace"),
-        }
-    }
-}
-
-/// A process that still referenced the decoy lower tree after activation.
-///
-/// A process that opened an overlay target before the mount keeps resolving the
-/// original inodes, so whatever it writes lands on the decoy rather than the
-/// hidden volume. Activation restarts the writers it can; the ones it cannot (or
-/// was told to leave running) are recorded with their identity so the activation
-/// outcome, the login notification and `status` can name them. The post-mount
-/// rescan adds any process still holding a decoy reference once the overlays are
-/// up, tagged with its [`WriterKind`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DecoyWriter {
-    /// Process ID at activation time.
-    pub pid: u32,
-    /// Process name (from `/proc/{pid}/comm`).
-    pub name: String,
-    /// Systemd service backing the process, without the `.service` suffix.
-    #[serde(default)]
-    pub service: Option<String>,
-    /// Overlay targets the process still references through the decoy.
-    pub targets: Vec<PathBuf>,
-    /// How this writer was classified. Defaults to [`WriterKind::Surviving`] so a
-    /// state file written before this field existed still deserializes.
-    #[serde(default)]
-    pub kind: WriterKind,
-}
-
-impl DecoyWriter {
-    /// Who the writer is: `tail (PID 812)` or
-    /// `NetworkManager (NetworkManager.service, PID 600)`.
-    pub fn label(&self) -> String {
-        match &self.service {
-            Some(service) => format!("{} ({}.service, PID {})", self.name, service, self.pid),
-            None => format!("{} (PID {})", self.name, self.pid),
-        }
-    }
-}
-
-impl std::fmt::Display for DecoyWriter {
-    /// The label followed by the targets it still writes to:
-    /// `tail (PID 812) on /var`. A non-default [`WriterKind`] adds a trailing
-    /// note, e.g. `… on /var (unverifiable: outside the host namespace)`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let targets = self
-            .targets
-            .iter()
-            .map(|target| target.display().to_string())
-            .collect::<Vec<_>>()
-            .join(", ");
-        write!(f, "{} on {}", self.label(), targets)?;
-        if let Some(note) = self.kind.note() {
-            write!(f, " ({note})")?;
-        }
-        Ok(())
-    }
-}
-
-/// The headline for a set of decoy writers: `1 writer still on the decoy` or
-/// `3 writers still on the decoy`.
-///
-/// Shared by the activation outcome, the login notification and `status` so all
-/// three name the leak the same way.
-pub fn decoy_writers_headline(count: usize) -> String {
-    let noun = if count == 1 { "writer" } else { "writers" };
-    format!("{count} {noun} still on the decoy")
-}
-
-/// A one-line summary naming at most `limit` writers, then how many more there
-/// are: `tail (PID 812) on /var, bash (PID 77) on /srv and 2 more`.
-///
-/// Used where space is short (the desktop notification); full listings print
-/// every writer.
-pub fn summarize_decoy_writers(writers: &[DecoyWriter], limit: usize) -> String {
-    let shown = writers
-        .iter()
-        .take(limit)
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(", ");
-    let hidden = writers.len().saturating_sub(limit);
-    if hidden == 0 {
-        shown
-    } else {
-        format!("{shown} and {hidden} more")
     }
 }

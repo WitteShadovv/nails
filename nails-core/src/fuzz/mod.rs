@@ -11,7 +11,6 @@
 //! `PROPTEST_CASES` for a long run.
 
 mod conf;
-mod fdinfo;
 mod mountinfo;
 mod overlay_opts;
 mod swaps;

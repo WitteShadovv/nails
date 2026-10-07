@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/status.schema.json",
   "title": "NAILS status --json",
-  "description": "Machine-readable status envelope: one document with schema_version, command, ok, and either data (success) or error (pre-dispatch failure).",
+  "description": "Machine-readable status envelope: one document with schema_version, command, ok, and either data (success) or error (failure). The posture comes from live facts (the mount table and the session plan in /run); state is the record on the hidden volume, reported next to it.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],
@@ -13,19 +13,19 @@
     "data": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "state",
-        "state_source",
-        "posture",
-        "decoy_persistent",
-        "decoy_writers",
-        "overlays",
-        "remaining_mounts",
-        "overlay_verification",
-        "hidden_root_mounted",
-        "opsec_reminders"
-      ],
       "properties": {
+        "posture": {
+          "description": "The verdict: decoy, active (in the hidden root), transitioning (an entry is under way), degraded (an interrupted entry, or a hidden root without a way back) or unknown (the state record cannot be trusted).",
+          "type": "string",
+          "enum": ["decoy", "active", "transitioning", "degraded", "unknown"]
+        },
+        "session": {
+          "description": "The live view the posture comes from.",
+          "type": "string",
+          "enum": ["decoy", "hidden", "entering", "interrupted", "hidden_without_plan"]
+        },
+        "reason": { "type": "string", "minLength": 1 },
+        "remediation": { "type": "string", "minLength": 1 },
         "state": {
           "type": "object",
           "additionalProperties": false,
@@ -33,131 +33,47 @@
           "properties": {
             "kind": {
               "type": "string",
-              "enum": [
-                "inactive",
-                "activating",
-                "active",
-                "deactivating",
-                "degraded",
-                "unknown"
-              ]
+              "enum": ["inactive", "active", "degraded", "unknown"]
             },
-            "reason": { "type": "string", "minLength": 1 },
-            "remaining_mounts": {
-              "type": "array",
-              "items": { "type": "string" }
-            }
+            "reason": { "type": "string", "minLength": 1 }
           }
         },
         "state_source": {
           "type": "string",
           "enum": ["loaded", "missing", "unreadable", "corrupt"]
         },
-        "posture": {
-          "type": "string",
-          "enum": ["decoy", "active", "transitioning", "degraded", "inconsistent", "unknown"]
-        },
-        "decoy_persistent": {
-          "description": "Whether the decoy keeps a persistent log/audit store (a persistent journald journal, or active rsyslog/syslog-ng/auditd) that a hidden session's metadata lands on. When true, an active posture is not fully secure.",
-          "type": "boolean"
-        },
-        "remediation": { "type": "string", "minLength": 1 },
-        "remaining_mounts": {
-          "type": "array",
-          "items": { "type": "string", "pattern": "^/" }
-        },
-        "decoy_writers": {
-          "description": "Processes that kept writing to the decoy after activation, recorded at activation time. Empty unless the hidden environment is active.",
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["pid", "name", "targets", "kind"],
-            "properties": {
-              "pid": { "type": "integer", "minimum": 0 },
-              "name": { "type": "string", "minLength": 1 },
-              "service": { "type": "string", "minLength": 1 },
-              "targets": {
-                "type": "array",
-                "items": { "type": "string", "pattern": "^/" }
-              },
-              "kind": {
-                "type": "string",
-                "enum": ["surviving", "stale_lower", "unverifiable"]
-              }
-            }
-          }
-        },
-        "persona_mode": {
-          "type": "string",
-          "enum": ["shared-home", "fresh-home"]
-        },
-        "activated_at": { "type": "string", "format": "date-time" },
+        "entered_at": { "type": "string", "format": "date-time" },
         "uptime_seconds": { "type": "integer", "minimum": 0 },
         "uptime_formatted": { "type": "string", "minLength": 1 },
-        "overlays": {
+        "hidden_system": { "type": "string", "pattern": "^/" },
+        "decoy_system": { "type": "string", "pattern": "^/" },
+        "hidden_root": { "type": "string", "pattern": "^/" },
+        "hidden_root_mounted": { "type": "boolean" },
+        "policy_mounts": {
+          "description": "The decoy filesystems the fstab policy placed in the hidden root.",
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["mount_point", "status", "owned"],
+            "required": ["target", "kind"],
             "properties": {
-              "mount_point": { "type": "string", "pattern": "^/" },
-              "status": {
-                "type": "string",
-                "enum": ["mounted", "not_mounted"]
-              },
-              "owned": { "type": "boolean" },
-              "upperdir": { "type": "string", "pattern": "^/" }
+              "target": { "type": "string", "pattern": "^/" },
+              "kind": { "type": "string", "enum": ["read-only", "overlay", "hidden-volume"] }
             }
           }
         },
-        "overlay_verification": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind"],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "enum": ["verified", "mismatch", "skipped", "not_applicable"]
-            },
-            "errors": {
-              "type": "array",
-              "items": { "type": "string" }
-            }
-          }
+        "masked_units": {
+          "description": "The decoy units masked in the hidden root.",
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
         },
-        "hidden_toplevel": {
-          "description": "Store path of the hidden NixOS system toplevel switched to on the last activation.",
-          "type": "string",
-          "minLength": 1
+        "nextroot_mounted": { "type": "boolean" },
+        "decoy_persistent": {
+          "description": "Whether the decoy keeps a persistent log/audit store (a persistent journald journal, or active rsyslog/syslog-ng/auditd).",
+          "type": "boolean"
         },
-        "hidden_config_warning": {
-          "description": "Why the hidden NixOS configuration was not applied on the last activation; omitted when it is in force or none was requested.",
-          "type": "string",
-          "minLength": 1
-        },
-        "hidden_root_total_bytes": { "type": "integer", "minimum": 0 },
-        "hidden_root_used_bytes": { "type": "integer", "minimum": 0 },
-        "hidden_root_available_bytes": { "type": "integer", "minimum": 0 },
-        "hidden_root_mounted": { "type": "boolean" },
-        "activation_in_flight": {
-          "description": "Present only while the state is activating: how long the activation has been running and, when the activation keeps a progress record on the hidden volume, the phase it is in.",
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["started_at", "elapsed_seconds"],
-          "properties": {
-            "started_at": { "type": "string", "format": "date-time" },
-            "elapsed_seconds": { "type": "integer", "minimum": 0 },
-            "phase": { "type": "string", "minLength": 1 },
-            "phase_label": { "type": "string", "minLength": 1 },
-            "step": { "type": "integer", "minimum": 0 },
-            "total_steps": { "type": "integer", "minimum": 1 },
-            "detail": { "type": "string", "minLength": 1 }
-          }
-        },
+        "persona_mode": { "type": "string", "enum": ["shared-home", "fresh-home"] },
         "last_activation": {
-          "description": "Timing of the most recent successful activation, kept across deactivation.",
           "type": "object",
           "additionalProperties": false,
           "required": ["duration_ms", "finished_at"],
@@ -166,23 +82,6 @@
             "finished_at": { "type": "string", "format": "date-time" }
           }
         },
-        "undelivered_notifications": {
-          "description": "Result notifications still queued on the hidden volume: neither pushed into the operator's session nor dispatched at login. Omitted when empty.",
-          "type": "array",
-          "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["title", "created_at"],
-            "properties": {
-              "title": { "type": "string", "minLength": 1 },
-              "created_at": { "type": "string", "minLength": 1 }
-            }
-          }
-        },
-        "notify_send_missing": {
-          "description": "Present (true) when notify-send was missing in the operator's session when notifications were due.",
-          "const": true
-        },
         "opsec_reminders": {
           "type": "array",
           "items": {
@@ -190,80 +89,8 @@
             "additionalProperties": false,
             "required": ["severity", "message"],
             "properties": {
-              "severity": {
-                "type": "string",
-                "enum": ["info", "warning", "critical"]
-              },
+              "severity": { "type": "string", "enum": ["info", "warning", "critical"] },
               "message": { "type": "string", "minLength": 1 }
-            }
-          }
-        },
-        "last_deactivation": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "schema_version",
-            "generated_at",
-            "status",
-            "duration_ms",
-            "outcome",
-            "unmounted_overlays",
-            "failed_overlays",
-            "remaining_mounts",
-            "findings"
-          ],
-          "properties": {
-            "schema_version": { "type": "integer", "minimum": 1 },
-            "generated_at": { "type": "string", "minLength": 1 },
-            "status": {
-              "type": "string",
-              "enum": ["Secure", "Warning", "Critical"]
-            },
-            "duration_ms": { "type": "integer", "minimum": 0 },
-            "outcome": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": [
-                "final_state",
-                "successful",
-                "was_already_inactive",
-                "reboot_recommended"
-              ],
-              "properties": {
-                "final_state": { "type": "string", "minLength": 1 },
-                "successful": { "type": "boolean" },
-                "was_already_inactive": { "type": "boolean" },
-                "reboot_recommended": { "type": "boolean" }
-              }
-            },
-            "unmounted_overlays": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "failed_overlays": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "remaining_mounts": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "findings": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["severity", "category", "message"],
-                "properties": {
-                  "severity": {
-                    "type": "string",
-                    "enum": ["Info", "Warn", "Critical"]
-                  },
-                  "category": { "type": "string", "minLength": 1 },
-                  "message": { "type": "string", "minLength": 1 },
-                  "fix_guidance": { "type": "string", "minLength": 1 }
-                }
-              }
             }
           }
         }

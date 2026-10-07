@@ -3,7 +3,7 @@
 
 //! Tests for strict TOML parsing, error messages and value sources
 
-use crate::config::{CliOverrides, Config, LoadedConfig, OverlayMode, ValueSource};
+use crate::config::{CliOverrides, Config, LoadedConfig, ValueSource};
 use crate::error::NailsError;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -51,19 +51,16 @@ fn misspelt_root_key_is_rejected_instead_of_falling_back() {
 
 #[test]
 fn unknown_key_without_close_match_lists_valid_keys() {
-    let message = load_error("[color_scheme]\nzzz = true\n");
+    let message = load_error("[backend_watch]\nzzz = true\n");
 
     assert!(message.contains("line 2"), "{message}");
     assert!(message.contains("unknown key `zzz`"), "{message}");
-    assert!(
-        message.contains("expected one of: enabled, hidden, decoy"),
-        "{message}"
-    );
+    assert!(message.contains("expected one of: enabled"), "{message}");
 }
 
 #[test]
-fn unknown_nested_key_in_color_scheme_is_rejected() {
-    let message = load_error("[color_scheme]\nenable = false\n");
+fn unknown_nested_key_in_backend_watch_is_rejected() {
+    let message = load_error("[backend_watch]\nenable = false\n");
 
     assert!(
         message.contains("unknown key `enable` (did you mean `enabled`?)"),
@@ -72,26 +69,17 @@ fn unknown_nested_key_in_color_scheme_is_rejected() {
 }
 
 #[test]
-fn unknown_nested_key_in_color_profile_is_rejected() {
-    let message = load_error("[color_scheme.hidden]\nbackgroud = \"#000000\"\n");
+fn unknown_nested_key_in_sleep_policy_is_rejected() {
+    let message = load_error("[sleep_policy]\nmod = \"warn\"\n");
 
-    assert!(message.contains("did you mean `background`?"), "{message}");
+    assert!(message.contains("did you mean `mode`?"), "{message}");
 }
 
 #[test]
-fn unknown_key_in_overlay_table_is_rejected() {
-    let message = load_error(
-        r#"
-[[overlays]]
-name = "home"
-lower = "/home"
-upper = "/mnt/hv/home"
-work = "/mnt/hv/.work/home"
-targt = "/home"
-"#,
-    );
+fn a_retired_key_says_it_was_removed() {
+    let message = load_error("[[overlays]]\nname = \"home\"\n");
 
-    assert!(message.contains("did you mean `target`?"), "{message}");
+    assert!(message.contains("key `overlays` was removed"), "{message}");
 }
 
 #[test]
@@ -114,18 +102,18 @@ fn keys_without_an_effect_are_rejected() {
 }
 
 #[test]
-fn unknown_overlay_mode_value_is_rejected_with_hint() {
-    let message = load_error("overlay_mode = \"explict\"\n");
+fn unknown_sleep_policy_value_is_rejected_with_hint() {
+    let message = load_error("[sleep_policy]\nmode = \"blok\"\n");
 
     assert!(
-        message.contains("unknown value `explict` (did you mean `explicit`?)"),
+        message.contains("unknown value `blok` (did you mean `block`?)"),
         "{message}"
     );
 }
 
 #[test]
 fn wrong_type_is_rejected_with_location() {
-    let message = load_error("clear_history = true\nminimum_space_mb = \"500\"\n");
+    let message = load_error("show_opsec_reminders = true\nminimum_space_mb = \"500\"\n");
 
     assert!(message.contains("line 2"), "{message}");
     assert!(message.contains("invalid type"), "{message}");
@@ -169,10 +157,10 @@ fn error_names_the_file() {
 
 #[test]
 fn line_and_column_count_characters_not_bytes() {
-    let message = load_error("prompt_label = \"é\"\nzzz = 1\n");
+    let message = load_error("nixos_flake = \"é\"\nzzz = 1\n");
     assert!(message.contains("line 2, column 1"), "{message}");
 
-    let message = load_error("prompt_label = \"é\" zzz\n");
+    let message = load_error("nixos_flake = \"é\" zzz\n");
     assert!(message.contains("line 1"), "{message}");
 }
 
@@ -197,54 +185,11 @@ fn uncomment_assignments(template: &str) -> String {
 }
 
 #[test]
-fn example_config_is_valid_as_is_and_fully_uncommented() {
-    let example = Config::example_config();
-    let as_is = write_config(&example);
-    Config::load(as_is.path()).expect("commented example parses");
-
-    let uncommented = uncomment_assignments(&example);
-    let file = write_config(&uncommented);
-    let config = Config::load(file.path()).expect("every example key is a real key");
-
-    assert_eq!(config.overlay_mode, OverlayMode::Auto);
-    assert_eq!(config.overlays.len(), 1);
-    assert_eq!(
-        config.nixos_flake.as_deref(),
-        Some("/mnt/data/nixos#my-host")
-    );
-}
-
-#[test]
 fn example_config_mentions_every_key() {
     let example = Config::example_config();
     for key in crate::config::CONFIG_KEYS {
         assert!(example.contains(key), "example misses {key}");
     }
-}
-
-#[test]
-fn init_template_derives_root_and_uses_given_paths() {
-    let template = Config::init_template(Path::new("/media/hv"));
-
-    assert!(template.contains("# hidden_volume_root = \"/media/hv\""));
-    assert!(
-        !template
-            .lines()
-            .any(|line| line.starts_with("hidden_volume_root")),
-        "root must stay commented out so it is derived from the binary"
-    );
-
-    let as_is = write_config(&template);
-    let config = Config::load(as_is.path()).unwrap();
-    assert_eq!(
-        config.hidden_volume_root,
-        crate::config::derive_hidden_volume_root()
-    );
-
-    let uncommented = write_config(&uncomment_assignments(&template));
-    let config = Config::load(uncommented.path()).unwrap();
-    assert_eq!(config.hidden_volume_root, PathBuf::from("/media/hv"));
-    assert_eq!(config.overlays[0].upper, PathBuf::from("/media/hv/home"));
 }
 
 #[test]
@@ -254,30 +199,6 @@ fn init_template_escapes_unusual_paths() {
 
     let config = Config::load(file.path()).unwrap();
     assert_eq!(config.hidden_volume_root, PathBuf::from("/media/my \"hv\""));
-}
-
-#[test]
-fn sources_distinguish_file_default_derived_and_cli() {
-    let file = write_config("minimum_space_mb = 750\nnixos_flake = \"/a#b\"\n");
-    let mut loaded = LoadedConfig::load(file.path()).unwrap();
-
-    assert!(loaded.file_found);
-    assert_eq!(loaded.source("minimum_space_mb"), ValueSource::File);
-    assert_eq!(loaded.source("nixos_flake"), ValueSource::File);
-    assert_eq!(loaded.source("hidden_volume_root"), ValueSource::Derived);
-    assert_eq!(loaded.source("state_file_path"), ValueSource::Derived);
-    assert_eq!(loaded.source("clear_history"), ValueSource::Default);
-
-    loaded.apply_cli_overrides(&CliOverrides {
-        nixos_flake: Some("/c#d".to_string()),
-        clear_history: Some(false),
-    });
-
-    assert_eq!(loaded.source("nixos_flake"), ValueSource::Cli);
-    assert_eq!(loaded.source("clear_history"), ValueSource::Cli);
-    assert_eq!(loaded.source("minimum_space_mb"), ValueSource::File);
-    assert_eq!(loaded.config.nixos_flake.as_deref(), Some("/c#d"));
-    assert!(!loaded.config.clear_history);
 }
 
 #[test]
@@ -310,62 +231,6 @@ fn strict_load_reports_missing_file() {
 }
 
 #[test]
-fn annotated_toml_marks_sources_and_parses_back() {
-    let file = write_config(
-        r#"
-hidden_volume_root = "/mnt/hv"
-overlay_mode = "explicit"
-nixos_flake = "/mnt/hv/nixos#host"
-
-[[overlays]]
-name = "home"
-lower = "/home"
-upper = "/mnt/hv/home"
-work = "/mnt/hv/.work/home"
-target = "/home"
-"#,
-    );
-    let mut loaded = LoadedConfig::load(file.path()).unwrap();
-    loaded.apply_cli_overrides(&CliOverrides {
-        clear_history: Some(false),
-        ..Default::default()
-    });
-
-    let rendered = loaded.to_annotated_toml().unwrap();
-
-    assert!(
-        rendered.contains("hidden_volume_root = \"/mnt/hv\"  # file"),
-        "{rendered}"
-    );
-    assert!(
-        rendered.contains("state_file_path = \"/mnt/hv/state.json\"  # derived"),
-        "{rendered}"
-    );
-    assert!(
-        rendered.contains("clear_history = false  # cli"),
-        "{rendered}"
-    );
-    assert!(
-        rendered.contains("minimum_space_mb = 500  # default"),
-        "{rendered}"
-    );
-    assert!(
-        rendered.contains("# overlays: file\n[[overlays]]"),
-        "{rendered}"
-    );
-    assert!(
-        rendered.contains("# color_scheme: default\n[color_scheme]"),
-        "{rendered}"
-    );
-
-    let reparsed = write_config(&rendered);
-    let config = Config::load(reparsed.path()).expect("annotated output is valid config");
-    let mut expected = loaded.config.clone();
-    expected.loaded_config_path = config.loaded_config_path.clone();
-    assert_eq!(config, expected);
-}
-
-#[test]
 fn annotated_toml_notes_unset_optional_keys_and_missing_file() {
     let loaded = LoadedConfig::defaults(Path::new("/nonexistent/nails.toml"));
 
@@ -391,6 +256,92 @@ fn json_rendering_carries_path_existence_config_and_sources() {
     assert_eq!(json["config"]["minimum_space_mb"], 750);
     assert_eq!(json["sources"]["minimum_space_mb"], "file");
     assert_eq!(json["sources"]["hidden_volume_root"], "derived");
-    assert_eq!(json["sources"]["clear_history"], "default");
+    assert_eq!(json["sources"]["show_opsec_reminders"], "default");
     assert!(json["config"].get("loaded_config_path").is_none());
+}
+
+#[test]
+fn example_config_is_valid_as_is_and_fully_uncommented() {
+    let example = Config::example_config();
+    let as_is = write_config(&example);
+    Config::load(as_is.path()).expect("commented example parses");
+
+    let uncommented = uncomment_assignments(&example);
+    let file = write_config(&uncommented);
+    let config = Config::load(file.path()).expect("every example key is a real key");
+    assert_eq!(
+        config.nixos_flake.as_deref(),
+        Some("/mnt/data/nixos#my-host")
+    );
+}
+
+#[test]
+fn init_template_derives_root_and_uses_given_paths() {
+    let template = Config::init_template(Path::new("/media/hv"));
+    assert!(template.contains("# hidden_volume_root = \"/media/hv\""));
+    assert!(
+        !template
+            .lines()
+            .any(|line| line.starts_with("hidden_volume_root")),
+        "root must stay commented out so it is derived from the binary"
+    );
+    let as_is = write_config(&template);
+    let config = Config::load(as_is.path()).unwrap();
+    assert_eq!(
+        config.hidden_volume_root,
+        crate::config::derive_hidden_volume_root()
+    );
+    let uncommented = write_config(&uncomment_assignments(&template));
+    let config = Config::load(uncommented.path()).unwrap();
+    assert_eq!(config.hidden_volume_root, PathBuf::from("/media/hv"));
+}
+
+#[test]
+fn sources_distinguish_file_default_derived_and_cli() {
+    let file = write_config("minimum_space_mb = 750\nnixos_flake = \"/a#b\"\n");
+    let mut loaded = LoadedConfig::load(file.path()).unwrap();
+    assert!(loaded.file_found);
+    assert_eq!(loaded.source("minimum_space_mb"), ValueSource::File);
+    assert_eq!(loaded.source("hidden_volume_root"), ValueSource::Derived);
+    assert_eq!(loaded.source("state_file_path"), ValueSource::Derived);
+    assert_eq!(loaded.source("show_opsec_reminders"), ValueSource::Default);
+
+    loaded.apply_cli_overrides(&CliOverrides {
+        nixos_flake: Some("/c#d".to_string()),
+    });
+    assert_eq!(loaded.source("nixos_flake"), ValueSource::Cli);
+    assert_eq!(loaded.source("minimum_space_mb"), ValueSource::File);
+    assert_eq!(loaded.config.nixos_flake.as_deref(), Some("/c#d"));
+}
+
+#[test]
+fn annotated_toml_marks_sources_and_parses_back() {
+    let file =
+        write_config("hidden_volume_root = \"/mnt/hv\"\nnixos_flake = \"/mnt/hv/nixos#host\"\n");
+    let mut loaded = LoadedConfig::load(file.path()).unwrap();
+    loaded.apply_cli_overrides(&CliOverrides {
+        nixos_flake: Some("/mnt/hv/nixos#other".to_string()),
+    });
+    let rendered = loaded.to_annotated_toml().unwrap();
+    assert!(
+        rendered.contains("hidden_volume_root = \"/mnt/hv\"  # file"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("state_file_path = \"/mnt/hv/state.json\"  # derived"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("nixos_flake = \"/mnt/hv/nixos#other\"  # cli"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("minimum_space_mb = 500  # default"),
+        "{rendered}"
+    );
+    let reparsed = write_config(&rendered);
+    let config = Config::load(reparsed.path()).expect("annotated output is valid config");
+    let mut expected = loaded.config.clone();
+    expected.loaded_config_path = config.loaded_config_path.clone();
+    assert_eq!(config, expected);
 }

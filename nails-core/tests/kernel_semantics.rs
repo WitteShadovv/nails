@@ -49,7 +49,7 @@ fn live_overlay_mountinfo_round_trips_awkward_layer_paths() {
         std::fs::write(lower.join("seed"), "from the lower").unwrap();
 
         let fs = RealFilesystem;
-        fs.mount_overlay(&[lower.as_path()], &upper, &work, &target)
+        nails_teardown::whole_root::nextroot::mount_overlay(&lower, &upper, &work, &target)
             .expect("mount the overlay");
 
         let entry = read_mountinfo()
@@ -62,52 +62,18 @@ fn live_overlay_mountinfo_round_trips_awkward_layer_paths() {
         assert_eq!(opts.lowerdir, vec![lower.clone()], "{}", entry.super_opts);
         assert_eq!(opts.upperdir.as_deref(), Some(upper.as_path()));
         assert_eq!(opts.workdir.as_deref(), Some(work.as_path()));
-        assert!(fs.is_overlay_mounted(&target).unwrap());
+        assert_eq!(
+            fs.get_filesystem_type(&target).unwrap().as_deref(),
+            Some("overlay")
+        );
 
         // An fd opened through the overlay carries exactly this mount id.
         let file = std::fs::File::open(target.join("seed")).unwrap();
         assert_eq!(fd_mount_id(&file), entry.mount_id);
         drop(file);
 
-        fs.unmount(&target, false).expect("unmount the overlay");
-        assert!(!fs.is_overlay_mounted(&target).unwrap());
+        nix::mount::umount(&target).expect("unmount the overlay");
         assert!(!fs.is_mounted(&target).unwrap());
-    });
-}
-
-#[test]
-fn overlay_shadowed_by_a_parent_overlay_is_not_reported_mounted() {
-    let _ = Rerun::new(test_path!(
-        overlay_shadowed_by_a_parent_overlay_is_not_reported_mounted
-    ))
-    .in_user_mount_ns()
-    .run(|| {
-        // The /nix-over-/nix/store shape: an overlay on `nix/store`, then
-        // one on `nix` that hides it. mountinfo still lists the hidden one.
-        let scratch = ScratchTmpfs::new("");
-        let nix = scratch.mkdir("nix");
-        let store = scratch.mkdir("nix/store");
-        let fs = RealFilesystem;
-        let layer = |name: &str| scratch.mkdir(name);
-        let (sl, su, sw) = (layer("s/l"), layer("s/u"), layer("s/w"));
-        fs.mount_overlay(&[sl.as_path()], &su, &sw, &store).unwrap();
-        assert!(fs.is_overlay_mounted(&store).unwrap());
-
-        let (nl, nu, nw) = (layer("n/l"), layer("n/u"), layer("n/w"));
-        std::fs::create_dir(nl.join("store")).unwrap();
-        fs.mount_overlay(&[nl.as_path()], &nu, &nw, &nix).unwrap();
-
-        let listed = read_mountinfo()
-            .unwrap()
-            .iter()
-            .filter(|e| e.mount_point == store && e.fstype == "overlay")
-            .count();
-        assert_eq!(listed, 1, "mountinfo keeps the shadowed overlay");
-        assert!(
-            !fs.is_overlay_mounted(&store).unwrap(),
-            "the shadowed overlay is not the one visible at the path"
-        );
-        assert!(fs.is_overlay_mounted(&nix).unwrap());
     });
 }
 

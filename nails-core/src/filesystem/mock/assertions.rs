@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::super::MountInfo;
 use super::{MockFilesystem, MockOp};
 use std::path::{Path, PathBuf};
 
@@ -53,17 +52,6 @@ impl MockFilesystem {
             .collect()
     }
 
-    /// Get mount info for a specific overlay
-    ///
-    /// Returns None if the target is not currently mounted as an overlay.
-    pub fn mock_get_mount_info(&self, target: &Path) -> Option<MountInfo> {
-        self.mounted_overlays
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .get(target)
-            .cloned()
-    }
-
     /// Get the permissions that were set on a path via `set_permissions`
     ///
     /// Returns `None` if no permissions were explicitly set on this path.
@@ -97,28 +85,5 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .get(path)
             .copied()
-    }
-
-    /// Get the bind-mount source recorded for `target`, if a bind mount is active
-    /// there. Lets tests assert what was bind-mounted where.
-    pub fn mock_bind_source(&self, target: &Path) -> Option<PathBuf> {
-        self.bind_mounts
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .get(target)
-            .cloned()
-    }
-
-    /// Whether a read-only self-bind guard is currently applied to `target`.
-    ///
-    /// Set by [`Filesystem::remount_read_only`](crate::Filesystem::remount_read_only)
-    /// and cleared by [`Filesystem::unmount_bind`](crate::Filesystem::unmount_bind),
-    /// so tests can assert both that the guard went on and that a rollback took it
-    /// back off.
-    pub fn mock_is_read_only_guarded(&self, target: &Path) -> bool {
-        self.read_only_guards
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .contains(target)
     }
 }

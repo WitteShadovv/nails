@@ -80,7 +80,6 @@ fn run(config_override: Option<&Path>, command: &ConfigCommand, json: bool) -> O
         ConfigCommand::Show { example: true, .. } => Outcome::ok(Config::example_config()),
         ConfigCommand::Show { nixos_flake, .. } => {
             let overrides = CliOverrides {
-                clear_history: None,
                 nixos_flake: nixos_flake.clone(),
             };
             show(config_override, json, &overrides)
@@ -221,7 +220,11 @@ mod tests {
 
         assert_eq!(outcome.code, 0, "{outcome:?}");
         assert!(outcome.stdout.contains("minimum_space_mb = 750  # file"));
-        assert!(outcome.stdout.contains("clear_history = true  # default"));
+        assert!(
+            outcome
+                .stdout
+                .contains("show_opsec_reminders = true  # default")
+        );
         assert!(outcome.stdout.contains("hidden_volume_root = "));
         assert!(outcome.stdout.contains("# derived"));
     }
@@ -262,7 +265,7 @@ mod tests {
 
     #[test]
     fn show_rejects_invalid_config() {
-        let file = write_config("[color_scheme]\nenable = true\n");
+        let file = write_config("[backend_watch]\nenable = true\n");
         let outcome = run(Some(file.path()), &show_command(), false);
 
         assert_eq!(outcome.code, EXIT_CONFIG_ERROR);

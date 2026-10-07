@@ -1,27 +1,13 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::super::{Filesystem, MountInfo, MountSource};
+use super::super::{Filesystem, MountSource};
 use super::MockFilesystem;
 use crate::Result;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
 
 impl Filesystem for MockFilesystem {
-    fn mount_overlay(
-        &self,
-        lower: &[&Path],
-        upper: &Path,
-        work: &Path,
-        target: &Path,
-    ) -> Result<()> {
-        self.mount_overlay_impl(lower, upper, work, target)
-    }
-
-    fn unmount(&self, target: &Path, force: bool) -> Result<()> {
-        self.unmount_impl(target, force)
-    }
-
     fn is_mounted(&self, target: &Path) -> Result<bool> {
         self.is_mounted_impl(target)
     }
@@ -30,60 +16,12 @@ impl Filesystem for MockFilesystem {
         self.get_filesystem_type_impl(target)
     }
 
-    fn is_overlay_mounted(&self, target: &Path) -> Result<bool> {
-        self.is_overlay_mounted_impl(target)
-    }
-
     fn is_mount_read_only(&self, target: &Path) -> Result<bool> {
-        Ok(self.mock_is_read_only_guarded(target))
-    }
-
-    fn get_mount_info(&self, target: &Path) -> Option<MountInfo> {
-        self.get_mount_info_impl(target)
+        Ok(self.is_mount_read_only_impl(target))
     }
 
     fn mount_source(&self, mount_point: &Path) -> Result<Option<MountSource>> {
         self.mount_source_impl(mount_point)
-    }
-
-    fn discover_nails_mounts(
-        &self,
-        hidden_root: Option<&Path>,
-    ) -> Result<crate::filesystem::NailsMounts> {
-        self.discover_nails_mounts_impl(hidden_root)
-    }
-
-    fn is_nails_owned(&self, target: &Path) -> Result<bool> {
-        Ok(self
-            .nails_owned_mounts
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .contains(target)
-            || self.discover_nails_mounts_impl(None)?.is_owned(target))
-    }
-
-    fn bind_mount(&self, source: &Path, target: &Path) -> Result<()> {
-        self.bind_mount_impl(source, target)
-    }
-
-    fn unmount_bind(&self, target: &Path) -> Result<()> {
-        self.unmount_bind_impl(target)
-    }
-
-    fn remount_read_only(&self, target: &Path) -> Result<()> {
-        self.remount_read_only_impl(target)
-    }
-
-    fn is_read_only_guard(&self, target: &Path) -> Result<bool> {
-        Ok(self.mock_is_read_only_guarded(target))
-    }
-
-    fn mount_tmpfs(&self, target: &Path, size: &str) -> Result<()> {
-        self.mount_tmpfs_impl(target, size)
-    }
-
-    fn unmount_tmpfs(&self, target: &Path) -> Result<()> {
-        self.unmount_tmpfs_impl(target)
     }
 
     fn path_exists(&self, path: &Path) -> Result<bool> {
@@ -134,10 +72,6 @@ impl Filesystem for MockFilesystem {
         self.is_writable_impl(path)
     }
 
-    fn nails_process_running(&self) -> Result<bool> {
-        self.nails_process_running_impl()
-    }
-
     fn nails_process_matches(&self) -> Result<Vec<super::super::ProcessMatch>> {
         self.nails_process_matches_impl()
     }
@@ -156,10 +90,6 @@ impl Filesystem for MockFilesystem {
         pattern: &str,
     ) -> Result<super::super::PatternScan> {
         self.scan_files_with_pattern_impl(dir, pattern)
-    }
-
-    fn write_kernel_tunable(&self, path: &Path, value: &str) -> Result<()> {
-        self.write_kernel_tunable_impl(path, value)
     }
 
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
@@ -182,10 +112,6 @@ impl Filesystem for MockFilesystem {
 
     fn list_directory(&self, dir: &Path) -> Result<Vec<PathBuf>> {
         self.list_directory_impl(dir)
-    }
-
-    fn enumerate_root_directories(&self) -> Result<Vec<PathBuf>> {
-        self.enumerate_root_directories_impl()
     }
 
     fn file_size(&self, path: &Path) -> Result<u64> {
@@ -230,21 +156,5 @@ impl Filesystem for MockFilesystem {
 
     fn copy_tree(&self, src: &Path, dst: &Path) -> Result<()> {
         self.copy_tree_impl(src, dst)
-    }
-
-    fn get_directory_size(&self, path: &Path) -> Result<u64> {
-        self.get_directory_size_impl(path)
-    }
-
-    fn find_submount_sources(&self, target: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
-        self.find_submount_sources_impl(target)
-    }
-
-    fn find_submounts(&self, target: &Path) -> Result<Vec<crate::filesystem::Submount>> {
-        self.find_submounts_impl(target)
-    }
-
-    fn reattach_submount(&self, source: &Path, mount_point: &Path, read_only: bool) -> Result<()> {
-        self.reattach_submount_impl(source, mount_point, read_only)
     }
 }

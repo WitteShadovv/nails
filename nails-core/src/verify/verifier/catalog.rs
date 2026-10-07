@@ -11,10 +11,7 @@ use std::time::SystemTime;
 /// Every check id a verify run can execute. Catalog rows name these in
 /// [`Probe::Check`]; a unit test keeps the two in step.
 pub const VERIFY_CHECK_IDS: &[&str] = &[
-    "overlay-upperdirs",
-    "writable-decoy-mounts",
-    "nails-owned-mounts",
-    "hidden-root-mounted",
+    "session-leftovers",
     "artifact-files",
     "processes",
     "memory-swap",
@@ -153,10 +150,7 @@ impl<F: Filesystem> Verifier<F> {
         }
         let live_only = matches!(
             id,
-            "overlay-upperdirs"
-                | "writable-decoy-mounts"
-                | "nails-owned-mounts"
-                | "hidden-root-mounted"
+            "session-leftovers"
                 | "processes"
                 | "memory-swap"
                 | "block-devices"

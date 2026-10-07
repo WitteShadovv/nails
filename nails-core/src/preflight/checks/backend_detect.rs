@@ -238,25 +238,6 @@ fn assess_with_dev_dir<F: Filesystem>(fs: &F, root: &Path, dev_dir: &Path) -> Ch
     }
 }
 
-/// The files behind any loop device in the stack under the hidden root mounted
-/// at `root` (a file container's path), empty when the root is not a mount point
-/// or not file-backed. `entries` is the parsed mount table.
-pub(crate) fn hidden_root_backing_files<F: Filesystem>(
-    fs: &F,
-    entries: &[MountEntry],
-    root: &Path,
-) -> Vec<PathBuf> {
-    let Some(mount) = mount_containing(entries, root).filter(|m| m.mount_point == root) else {
-        return Vec::new();
-    };
-    device_dir_for_mount(fs, mount)
-        .map(|top| device_stack(fs, top))
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|layer| layer.backing_file)
-        .collect()
-}
-
 // ============================================================================
 // Device-stack discovery (Filesystem reads only)
 // ============================================================================

@@ -3,7 +3,7 @@
 
 use super::{MockFilesystem, MockOp};
 use crate::{NailsError, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 impl MockFilesystem {
     pub(super) fn file_size_impl(&self, path: &Path) -> Result<u64> {
@@ -310,35 +310,5 @@ impl MockFilesystem {
             });
 
         Ok(())
-    }
-
-    pub(super) fn get_directory_size_impl(&self, path: &Path) -> Result<u64> {
-        let sizes = self
-            .directory_sizes
-            .lock()
-            .expect("MockFilesystem mutex poisoned");
-        Ok(sizes.get(path).copied().unwrap_or(0))
-    }
-
-    pub(super) fn find_submount_sources_impl(
-        &self,
-        target: &Path,
-    ) -> Result<Vec<(PathBuf, PathBuf)>> {
-        let sources = self
-            .submount_sources
-            .lock()
-            .expect("MockFilesystem mutex poisoned");
-        Ok(sources.get(target).cloned().unwrap_or_default())
-    }
-
-    pub(super) fn find_submounts_impl(
-        &self,
-        target: &Path,
-    ) -> Result<Vec<crate::filesystem::Submount>> {
-        let submounts = self
-            .submounts
-            .lock()
-            .expect("MockFilesystem mutex poisoned");
-        Ok(submounts.get(target).cloned().unwrap_or_default())
     }
 }

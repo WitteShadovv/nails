@@ -7,7 +7,6 @@
 //! line budget; compiled only under `#[cfg(test)]`.
 
 use super::{RegistryInputs, build_registry};
-use crate::config::OverlayMode;
 use crate::manager::NailsManager;
 use crate::platform::NixOsConfigLayer;
 use crate::preflight::CheckResult;
@@ -18,12 +17,7 @@ fn check_names(results: &[(String, CheckResult)]) -> Vec<String> {
 }
 
 fn explicit_config() -> Config {
-    Config {
-        // Explicit mode keeps the check set independent of the host's layout.
-        overlay_mode: OverlayMode::Explicit,
-        overlays: vec![],
-        ..Config::test_default()
-    }
+    Config::test_default()
 }
 
 #[test]
@@ -208,9 +202,6 @@ fn failing_check_is_reported_through_tracing() {
     let config = Config {
         hidden_volume_root: hidden_root.to_path_buf(),
         state_file_path: state_path.clone(),
-        overlays: vec![],
-        // Explicit mode keeps the check set independent of the host's layout.
-        overlay_mode: OverlayMode::Explicit,
         ..Config::test_default()
     };
 
