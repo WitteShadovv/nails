@@ -32,6 +32,7 @@ pub mod session;
 pub mod shells;
 pub mod undo;
 pub mod units;
+pub mod whole_root;
 
 pub use emergency::{Host, HotReport, PlanSource};
 pub use mounts::{KernelMountOps, MountOps, Presence};

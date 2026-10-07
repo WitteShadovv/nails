@@ -1,0 +1,240 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! The transition step against real directory trees: a `/run`, a next root and
+//! a kernel log, all in a temporary directory. Only the mount table is given
+//! (a `/run/nextroot` entry), so nothing here needs privileges; the mounts
+//! themselves are exercised by the kernel tests in `nails-core`.
+
+use super::*;
+use crate::mountinfo::parse_mountinfo;
+use crate::whole_root::plan::{Arm, sample};
+use crate::whole_root::runtime_units::RuntimeUnit;
+use std::fs;
+use std::os::unix::fs::{PermissionsExt, symlink};
+
+struct World {
+    dir: tempfile::TempDir,
+}
+
+impl World {
+    fn new() -> Self {
+        let world = Self {
+            dir: tempfile::tempdir().unwrap(),
+        };
+        fs::create_dir_all(world.run().join("udev/data")).unwrap();
+        fs::create_dir_all(world.run().join("systemd/journal")).unwrap();
+        fs::create_dir_all(world.run().join("mount")).unwrap();
+        fs::write(world.run().join("mount/utab"), "ID=1 decoy\n").unwrap();
+        fs::write(world.run().join("decoy-state"), "keep").unwrap();
+        symlink(
+            "/nix/store/aaa-nixos-system",
+            world.run().join("current-system"),
+        )
+        .unwrap();
+        fs::create_dir_all(world.runtime()).unwrap();
+        fs::create_dir_all(world.nextroot().join("etc")).unwrap();
+        fs::write(world.nextroot().join("etc/os-release"), "ID=nixos\n").unwrap();
+        world
+    }
+    fn run(&self) -> PathBuf {
+        self.dir.path().join("run")
+    }
+    fn runtime(&self) -> PathBuf {
+        self.run().join("overlay-runtime")
+    }
+    fn nextroot(&self) -> PathBuf {
+        self.dir.path().join("nextroot")
+    }
+    fn kmsg(&self) -> PathBuf {
+        self.dir.path().join("kmsg")
+    }
+    fn init_in_nextroot(&self, init: &Path) {
+        let path = self.nextroot().join(init.strip_prefix("/").unwrap());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    fn env(&self, mounted: bool, now: u64) -> Env {
+        let table = if mounted {
+            format!(
+                "40 1 0:40 / {} rw - overlay overlay rw\n",
+                self.nextroot().display()
+            )
+        } else {
+            String::new()
+        };
+        Env {
+            run: self.run(),
+            nextroot: self.nextroot(),
+            runtime_dir: self.runtime(),
+            kmsg: self.kmsg(),
+            now,
+            mounts: parse_mountinfo(&table),
+        }
+    }
+    fn write_plan(&self, plan: &Plan) {
+        plan.write_atomic(&self.runtime().join(PLAN_NAME)).unwrap();
+    }
+    fn plan(&self) -> Plan {
+        Plan::load(&self.runtime().join(PLAN_NAME)).unwrap()
+    }
+    fn current_system(&self) -> PathBuf {
+        fs::read_link(self.run().join("current-system")).unwrap()
+    }
+}
+
+fn armed(direction: Direction) -> Plan {
+    let mut plan = sample();
+    plan.armed = Some(Arm {
+        direction,
+        at: 1_000,
+    });
+    plan.session_units = vec![RuntimeUnit {
+        name: "overlay-runtime-monitor.service".to_string(),
+        content: "[Service]\nExecStart=/run/overlay-runtime/control watch\n".to_string(),
+        wanted_by: vec!["multi-user.target".to_string()],
+    }];
+    plan
+}
+
+#[test]
+fn without_a_plan_or_a_mounted_nextroot_nothing_happens() {
+    let world = World::new();
+    assert_eq!(run(&world.env(true, 1_000)), Outcome::NothingToDo);
+    world.write_plan(&armed(Direction::Enter));
+    assert_eq!(run(&world.env(false, 1_000)), Outcome::NothingToDo);
+    assert!(world.runtime().join(PLAN_NAME).exists());
+}
+
+#[test]
+fn entering_repoints_current_system_masks_decoy_units_and_records_the_entry() {
+    let world = World::new();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+
+    assert_eq!(
+        world.current_system(),
+        Path::new("/nix/store/bbb-nixos-system")
+    );
+    let units = world.run().join("systemd/system");
+    assert_eq!(
+        fs::read_link(units.join("dev-vda3.swap")).unwrap(),
+        Path::new("/dev/null")
+    );
+    assert!(
+        units
+            .join("multi-user.target.wants/overlay-runtime-monitor.service")
+            .exists()
+    );
+    let after = world.plan();
+    assert_eq!(after.armed, None);
+    assert_eq!(after.entered_at, Some(1_010));
+}
+
+#[test]
+fn an_entry_whose_init_does_not_resolve_is_disarmed_instead_of_freezing_pid1() {
+    let world = World::new();
+    install_dropin(&world.run(), Path::new("/run/overlay-runtime/control")).unwrap();
+    world.write_plan(&armed(Direction::Enter));
+
+    assert!(matches!(
+        run(&world.env(true, 1_000)),
+        Outcome::Disarmed(why) if why.contains("does not resolve")
+    ));
+    // The repoint is undone and nothing of the failed activation is left.
+    assert_eq!(
+        world.current_system(),
+        Path::new("/nix/store/aaa-nixos-system")
+    );
+    assert!(!world.runtime().exists());
+    assert!(!world.run().join(DROPIN_DIR).exists());
+    assert!(!world.run().join("systemd/system/dev-vda3.swap").exists());
+}
+
+#[test]
+fn a_populated_nextroot_that_is_not_armed_is_never_entered() {
+    // The leftover guard: an activation died after building the tree, and a
+    // later plain reboot became a soft-reboot.
+    let world = World::new();
+    let mut plan = armed(Direction::Enter);
+    plan.armed = None;
+    world.write_plan(&plan);
+    assert!(matches!(run(&world.env(true, 1_000)), Outcome::Disarmed(_)));
+    assert!(!world.runtime().exists());
+
+    // An arming that expired is no arming.
+    let world = World::new();
+    world.write_plan(&armed(Direction::Enter));
+    let late = 1_001 + crate::whole_root::plan::ARM_VALIDITY_SECS;
+    assert!(matches!(run(&world.env(true, late)), Outcome::Disarmed(_)));
+}
+
+#[test]
+fn an_unarmed_nextroot_in_the_hidden_session_keeps_the_plan() {
+    let world = World::new();
+    let mut plan = armed(Direction::Leave);
+    plan.armed = None;
+    plan.entered_at = Some(900);
+    world.write_plan(&plan);
+    assert!(matches!(run(&world.env(true, 1_000)), Outcome::Disarmed(_)));
+    assert!(world.runtime().join(PLAN_NAME).exists());
+}
+
+#[test]
+fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
+    let world = World::new();
+    let r = world.run();
+    // In the decoy, just before entering: the snapshot and the utab copy.
+    let snapshot = Snapshot::take(&r);
+    fs::write(world.runtime().join(SNAPSHOT_NAME), snapshot.to_text()).unwrap();
+    fs::write(world.runtime().join(UTAB_NAME), "ID=1 decoy\n").unwrap();
+    // The hidden session.
+    repoint_current_system(&r, Path::new("/nix/store/bbb-nixos-system")).unwrap();
+    fs::write(r.join("hidden-probe"), "x").unwrap();
+    fs::write(r.join("mount/utab"), "ID=1 decoy\nID=77 /mnt/hidden-only\n").unwrap();
+    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
+    fs::write(world.kmsg(), "6,500,1,-;hidden record\n6,501,2,-;later\n").unwrap();
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+
+    let outcome = run(&world.env(true, 1_000));
+    assert!(
+        matches!(outcome, Outcome::Returned { failed: 0, .. }),
+        "{outcome:?}"
+    );
+
+    assert_eq!(
+        world.current_system(),
+        Path::new("/nix/store/aaa-nixos-system")
+    );
+    assert!(!r.join("hidden-probe").exists());
+    assert!(
+        !world.runtime().exists(),
+        "the runtime directory is scrubbed"
+    );
+    assert!(!r.join(DROPIN_DIR).exists(), "the drop-in is scrubbed");
+    assert_eq!(
+        fs::read_to_string(r.join("mount/utab")).unwrap(),
+        "ID=1 decoy\n"
+    );
+    assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
+    let cursor = fs::read(r.join(run_scrub::KERNEL_SEQNUM)).unwrap();
+    assert_eq!(u64::from_ne_bytes(cursor.try_into().unwrap()), 502);
+}
+
+#[test]
+fn the_dropin_runs_the_ram_copy_with_its_output_discarded() {
+    let text = dropin_text(Path::new("/run/overlay-runtime/control"));
+    assert!(text.contains("ExecStart=-/run/overlay-runtime/control transition\n"));
+    assert!(text.contains("StandardOutput=null"));
+    assert!(text.contains("StandardError=null"));
+    assert!(text.contains("Type=oneshot"));
+    assert!(!text.to_lowercase().contains("nails"));
+    assert!(!DROPIN_NAME.contains("nails"));
+}
