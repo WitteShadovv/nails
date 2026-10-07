@@ -37,6 +37,9 @@ pub mod cancel;
 // Artifact registry: the single source of what an activation can leave behind
 pub mod artifacts;
 
+// The residue catalog: every trace class, its probes, docs and VM test.
+pub mod residue_catalog;
+
 // Filesystem operations module
 pub mod filesystem;
 

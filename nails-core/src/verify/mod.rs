@@ -42,4 +42,4 @@ pub use residue_report::{
     write_activation_residue_report,
 };
 pub use types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
-pub use verifier::Verifier;
+pub use verifier::{VERIFY_CHECK_IDS, Verifier};

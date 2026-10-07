@@ -8,7 +8,10 @@ its own disk defeats the overlay model: those traces are created outside the
 overlays (or before they are mounted) and survive deactivation and reboot.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
-pre-flight, and how to satisfy each requirement on the supported platforms.
+pre-flight, and how to satisfy each requirement on the supported platforms. The
+[residue catalog](#residue-catalog) at the end lists every class of trace in one
+place, with the check that warns about it, the check that detects it and the VM
+test that asserts it.
 
 ## What NAILS enforces
 
@@ -18,11 +21,13 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 
 ### Fail closed (activation is refused)
 
+<!-- residue-catalog:begin fail-closed -->
 | Finding | Why it matters |
 |---|---|
-| systemd-journald `Storage=persistent`, or `auto` with an on-disk `/var/log/journal` | The journal records sudo command lines (including the hidden-root binary path), transient unit names and overlay events on the decoy disk before `/var` is overlaid. |
-| Active `rsyslog` or `syslog-ng` | A classic syslog daemon writes `/var/log/*` on the decoy disk. |
-| Active `auditd` | The audit daemon writes `/var/log/audit` on the decoy disk, independent of journald. |
+| [Persistent systemd journal](#fail-closed-activation-is-refused) | The journal records sudo command lines (including the hidden-root binary path), transient unit names and overlay events on the decoy disk before /var is overlaid. |
+| [Classic syslog daemon](#fail-closed-activation-is-refused) | rsyslog or syslog-ng writes every logged line to /var/log on the decoy disk, outside the journal. |
+| [Audit daemon log](#fail-closed-activation-is-refused) | auditd records executed commands and file access in /var/log/audit, independent of journald. |
+<!-- residue-catalog:end fail-closed -->
 
 Override these with `--accept-persistent-decoy` on `activate`/`check`, or
 `accept_persistent_decoy = true` in `nails.toml`, only if you understand and
@@ -48,6 +53,10 @@ decoy disk.
   `LOG_INPUT:`/`LOG_OUTPUT:` command tags, stored under `iolog_dir`) records
   whole terminal sessions, keystrokes and output included. Both write to the
   decoy disk, outside the journal.
+
+The `residue-catalog` pre-flight check adds the channels the catalog probes by
+path: a populated LVM metadata archive, udisks2 state, and the session-time
+stamps described below. It warns or notes them and never blocks.
 
 ## Suspend and the lid switch
 
@@ -170,6 +179,158 @@ volatile storage and discarded at power-off regardless, so these steps are
 defence in depth. Do **not** disable them during a session, re-enable history
 recording, or run `history -a`/`history -w`: each of those writes the commands
 you typed back to the decoy.
+
+## Writes that bypass the overlays
+
+The overlays cover the writable decoy trees. Anything mounted outside them takes
+writes directly:
+
+- **Base-OS trees.** A `/usr`, `/bin`, `/lib` or `/sbin` that is neither
+  overlaid nor read-only takes the session's package writes on the decoy disk.
+  The `writable-trees` check refuses activation in that case. On Debian and
+  Ubuntu the package database under `/var/lib/dpkg` and the apt logs are covered
+  by overlaying `/var`.
+- **Other disks.** A second disk, a Windows partition or an automounted USB drive
+  stays read-write on real storage for the whole session. The `stray-mounts`
+  check warns about the ones present at activation; unmount them first, or mount
+  them read-only. `verify` cannot tell what a session wrote there.
+
+## Session-time records
+
+Some records do not hold what the session did, only that the machine was
+running. An examiner compares them with the decoy's own logs, and unexplained
+uptime points to use the decoy does not account for.
+
+- **The timesyncd clock stamp.** `systemd-timesyncd` touches
+  `/var/lib/systemd/timesync/clock` at each sync and at shutdown. With `/var`
+  overlaid the session's touches go to the upper, but the shutdown after
+  deactivation stamps the decoy copy with the end of the session.
+- **Persistent timer stamps.** Timers with `Persistent=true` record their last
+  run under `/var/lib/systemd/timers`. Runs during the session land in the
+  upper; at the next decoy boot, missed timers catch up at once, which dates the
+  gap.
+- **SMART power-on hours.** The drive counts the hours it is powered, in
+  firmware. No software can change or hide this; a decoy that is used normally
+  keeps its logged uptime plausible.
+
+On an amnesic decoy (impermanence, overlayroot) the first two are wiped at every
+boot anyway. `verify` reports their timestamps as notes, so you can see what an
+examiner would see.
+
+## Setup traces an examiner looks for
+
+An examiner looks for traces of the setup as well as of a session: the backend's
+headers and tooling, configuration that opens encrypted storage, and history
+that names a container. `nails verify --offline --root <image> --examiner`
+reports these on a mounted decoy image, grouped by what an examiner would
+conclude from them. It reports only and changes nothing.
+
+### LVM metadata archives
+
+LVM writes a copy of a volume group's metadata to `/etc/lvm/archive` before
+every change and to `/etc/lvm/backup` after it, with the command line, host name
+and time. Running `pvcreate`, `vgcreate` or `lvchange` on the hidden backend from
+the decoy records a volume group the decoy does not use. Do not run LVM tools on
+the hidden backend from the decoy, or set `archive = 0` and `backup = 0` in the
+decoy's `/etc/lvm/lvm.conf` before you ever do.
+
+### udisks2 state
+
+Unlocking or mounting the backend through udisks (a file manager, GNOME Disks,
+`udisksctl`) leaves per-drive state under `/var/lib/udisks2` and asks the
+keyring to remember passphrases. Unlock and mount the backend with `cryptsetup`
+and `mount` from a shell instead.
+
+### crypttab and fstab
+
+An entry in `/etc/crypttab` or `/etc/fstab` for the hidden backend (a tcrypt or
+VeraCrypt mapping, a loop-mounted container, an unexplained mapper name) tells an
+examiner where to look. The decoy's own full-disk encryption legitimately has an
+entry; the hidden backend never should. Open it by hand each time.
+
+### Encryption headers, high-entropy space and containers
+
+The audit reads the raw disk when given `--disk` and reports:
+
+- LUKS1 and LUKS2 headers at partition starts, in gaps and in the LUKS2
+  secondary-header slots;
+- gaps between partitions and space after the last one, sampled for entropy:
+  random-looking bytes where a fresh disk holds zeros suggest a headerless
+  encrypted volume;
+- partitions with no known filesystem signature and high entropy;
+- files larger than the threshold whose size is a multiple of 512, with no known
+  header and high entropy: the TCHunt heuristic for TrueCrypt and VeraCrypt
+  containers.
+
+A VeraCrypt hidden volume inside an outer volume is indistinguishable from the
+outer volume's free space; what stands out is the outer volume itself. Fill free
+disk space with random data when the disk is set up so the encrypted region does
+not stand out, and prefer a partition or whole device over a container file on
+the decoy.
+
+### Backend tooling and history
+
+VeraCrypt installed on a decoy, or a `cryptsetup` binary whose access time is
+recent, says encrypted volumes were opened. VeraCrypt's `History.xml` and
+`Favorite Volumes.xml`, a `recently-used.xbel` entry and a shell history line
+running `cryptsetup` or `veracrypt` name the container and when it was used.
+Disable VeraCrypt's history, harden the decoy shell history (see
+[Shell history hardening](#shell-history-hardening)) and mount the decoy root
+`noatime`.
+
+## Residue catalog
+
+Generated from `nails-core/src/residue_catalog/rows.rs`; do not edit the tables
+by hand. A unit test fails when they drift; regenerate them with
+`REGENERATE_CATALOG_DOCS=1 cargo test -p nails-core residue_catalog`.
+
+A row with "none" in the pre-flight or verify column says why nothing at that
+point can see the class; verify lists those classes among the areas it did not
+check. A row with "none" in the VM-test column says why no VM test asserts it.
+
+### Session residue
+
+<!-- residue-catalog:begin session -->
+| Class | Where | Platforms | Pre-flight | Verify | Mitigation | VM test |
+|---|---|---|---|---|---|---|
+| [Persistent systemd journal](#fail-closed-activation-is-refused) (`persistent-journal`) | `/var/log/journal` | all | `decoy-persistence` (refuses) | `journal-scan` | Set Storage=volatile under [Journal] in journald.conf or a journald.conf.d drop-in. | `decoy-persistence-preflight` |
+| [Journal window before /var is overlaid](#the-sudo-log-exposure-and-its-mitigation) (`pre-overlay-journal-window`) | journald records between `sudo nails activate` and the /var overlay mount | all | `decoy-persistence` (refuses) | `journal-scan` | Run on a volatile journal, so the window stays in RAM; keep the binary at a neutral path. | `decoy-journal-leak` |
+| [Classic syslog daemon](#fail-closed-activation-is-refused) (`classic-syslog`) | `/var/log/syslog`, `/var/log/messages`, `/var/log/auth.log` | all | `decoy-persistence` (refuses) | `deep-scan-files` | Remove or disable rsyslog and syslog-ng on the decoy. | `decoy-persistence-preflight` |
+| [Audit daemon log](#fail-closed-activation-is-refused) (`auditd`) | `/var/log/audit` | all | `decoy-persistence` (refuses) | path probe (warn) | Disable auditd and the audit framework on the decoy. | `decoy-persistence-preflight` |
+| [sudo log file](#the-sudo-log-exposure-and-its-mitigation) (`sudo-logfile`) | `/var/log/sudo.log` | all | `decoy-persistence` | path probe (warn) | Remove `Defaults logfile=` from sudoers and sudoers.d. | none: no VM test seeds it yet |
+| [sudo I/O logging](#the-sudo-log-exposure-and-its-mitigation) (`sudo-io-log`) | `/var/log/sudo-io` | all | `decoy-persistence` | path probe (warn) | Remove every I/O logging option and tag from sudoers and sudoers.d. | none: no VM test seeds it yet |
+| [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
+| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Send core dumps nowhere persistent and disarm kdump on the decoy. | none: no VM test seeds it yet |
+| [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `shell-history-real-sudo` |
+| [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the /home overlay | `deep-scan-recent-files` | Keep /home overlaid; never open hidden files from a decoy session. | none: no VM test plants it yet |
+| [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-core/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
+| [NixOS account bookkeeping](threat-model.md#known-residual-changes) (`var-lib-nixos`) | `/var/lib/nixos` | NixOS | none: the decoy rewrites these files on every boot; only a control run tells noise from a leak | `platform-scanners` | Overlay /var; the drift test compares against a plain-reboot control. | `var-lib-nixos-drift` |
+| [Package database drift](#writes-that-bypass-the-overlays) (`package-database-drift`) | `/var/lib/dpkg`, `/var/log/apt`, `/var/log/dpkg.log` | Debian, Ubuntu | `writable-trees` (refuses) | `platform-scanners` | Overlay /var and keep /usr read-only or overlaid. | none: the NixOS VM suite has no dpkg; the Debian and Ubuntu smoke runs (scripts/distro-smoke) cover FHS hosts |
+| [Writable base-OS trees](#writes-that-bypass-the-overlays) (`writable-os-trees`) | `/usr`, `/bin`, `/sbin`, `/lib`, `/lib64` | all | `writable-trees` (refuses) | `writable-decoy-mounts` | Overlay the tree or keep it read-only; activation refuses otherwise. | none: the NixOS VMs keep the base OS in the read-only store; the refusal is unit-tested on a planted tree |
+| [Non-overlaid writable mounts](#writes-that-bypass-the-overlays) (`non-overlaid-mounts`) | a second disk, a Windows partition or a removable drive mounted read-write | all | `stray-mounts` | none: verify cannot tell what a session wrote to another filesystem | Unmount other disks before activation, or remount them read-only. | none: no VM test attaches a second writable disk yet |
+| [Decoy activation at deactivation time](threat-model.md#residual-channels) (`deactivation-fallback`) | the decoy generation's switch-to-configuration test, run when the reboot command fails | NixOS | none: happens only when the reboot command fails at deactivation | `journal-scan` | Keep a working reboot path; prefer `nails deactivate --poweroff`. | none: no VM test forces the reboot command to fail |
+| [EFI NVRAM, RTC and firmware pstore](threat-model.md#invariant) (`firmware-state`) | EFI variables, the real-time clock, firmware-backed pstore | all | none: not filesystem state, so nothing on the decoy root shows it | none: EFI variables and firmware storage are not part of a disk image | NAILS never writes NVRAM; avoid firmware tools inside the session. | `uefi-esp-nvram-invariant` |
+| [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) (`ram-remanence`) | DRAM contents until power-off | all | `memory-wipe` | `memory-swap` | Power off (`--poweroff`) before handing the machine over; boot the decoy with init_on_free=1. | none: memory forensics is out of scope; no VM test images RAM |
+| [timesyncd clock stamp](#session-time-records) (`timesync-clock`) | `/var/lib/systemd/timesync/clock` | all | path probe (info) | path probe (info) | Keep /var overlaid; on a persistent decoy, use the decoy normally after a session so its own activity follows the stamp. | none: no VM test seeds it yet |
+| [Persistent timer stamps](#session-time-records) (`timer-stamps`) | `/var/lib/systemd/timers` | all | path probe (info) | path probe (info) | Keep /var overlaid so session stamps land in the upper; expect catch-up runs at the next decoy boot. | none: no VM test seeds it yet |
+| [SMART power-on hours](#session-time-records) (`smart-power-on-hours`) | the drive's own power-on-hours and power-cycle counters | all | none: not filesystem state, so nothing on the decoy root shows it | none: a disk image does not carry SMART counters | None in software; use the decoy normally so its logged uptime is plausible. | none: virtual disks have no SMART log |
+| [SSD flash-translation-layer remnants](operator-guide.md#ssd-wear-levelling) (`ssd-ftl-remnants`) | remapped and over-provisioned flash blocks | all | none: not filesystem state, so nothing on the decoy root shows it | none: no host-side read reaches remapped flash cells | Full-disk encryption on the decoy, so remnants are ciphertext; no TRIM on a volume that holds a hidden volume. | none: virtual disks have no flash translation layer |
+<!-- residue-catalog:end session -->
+
+### Setup traces
+
+<!-- residue-catalog:begin setup -->
+| Class | Where | Platforms | Pre-flight | Verify | Mitigation | VM test |
+|---|---|---|---|---|---|---|
+| [LVM metadata archive and backup](#lvm-metadata-archives) (`lvm-metadata-archive`) | `/etc/lvm/archive`, `/etc/lvm/backup` | all | path probe (warn) | `examiner-lvm` | Never run LVM tools on the hidden backend from the decoy, or disable archive and backup in the decoy's lvm.conf first. | none: no VM test seeds it yet |
+| [udisks2 state](#udisks2-state) (`udisks2-state`) | `/var/lib/udisks2` | all | path probe (warn) | path probe (warn) | Unlock and mount the backend with cryptsetup and mount from a shell, not through the desktop. | none: no VM test seeds it yet |
+| [crypttab and fstab entries](#crypttab-and-fstab) (`crypttab-fstab`) | `/etc/crypttab`, `/etc/fstab` | all | none: the decoy's own full-disk encryption legitimately lists entries here; review them with verify --examiner | `examiner-config` | Never add the hidden backend to the decoy's crypttab or fstab; open it by hand each time. | none: no VM test seeds it yet |
+| [LUKS headers on partitions](#encryption-headers-high-entropy-space-and-containers) (`luks-headers`) | LUKS1/LUKS2 signatures at partition starts, in gaps and in LUKS2 secondary-header slots | all | `backend-detect` | `examiner-disk` | Prefer a deniable backend (a VeraCrypt hidden volume) over a bare LUKS volume next to the decoy. | none: no VM test seeds it yet |
+| [High-entropy unpartitioned space](#encryption-headers-high-entropy-space-and-containers) (`high-entropy-space`) | partition gaps, space after the last partition, partitions with no known signature | all | none: needs the raw disk, which verify --offline --examiner --disk reads | `examiner-disk` | Fill free space with random data when the disk is set up, so the hidden region does not stand out; explain it as wiped space. | none: no VM test seeds it yet |
+| [Encrypted container candidates](#encryption-headers-high-entropy-space-and-containers) (`container-candidates`) | large files whose size is a multiple of 512, with no known header and high entropy | all | `backend-detect` | `examiner-containers` | Put the hidden volume on a whole device or partition rather than in a file on the decoy. | none: no VM test seeds it yet |
+| [Encryption tooling and its access times](#backend-tooling-and-history) (`backend-tooling`) | `/usr/bin/veracrypt`, `/usr/sbin/cryptsetup`, `/sbin/cryptsetup` | all | none: the tools are part of the decoy install; their access times are what an examiner reads | `examiner-tooling` | Mount the decoy root noatime; run the backend tools from the separate machine or a live medium when you can. | none: no VM test seeds it yet |
+| [History naming a container or unlock](#backend-tooling-and-history) (`container-history`) | `~/.local/share/recently-used.xbel`, `~/.config/VeraCrypt/History.xml`, `~/.config/VeraCrypt/Favorite Volumes.xml`, `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `examiner-history` | Disable VeraCrypt's history, harden the decoy shell history, and unlock from a shell that records nothing. | none: no VM test seeds it yet |
+<!-- residue-catalog:end setup -->
 
 ## Out of scope
 

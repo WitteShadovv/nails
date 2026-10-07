@@ -325,6 +325,12 @@ impl<F: Filesystem> PreFlightRegistry<F> {
         self.checks.is_empty()
     }
 
+    /// The names of the registered checks, in execution order, without running
+    /// any of them.
+    pub fn names(&self) -> Vec<&'static str> {
+        self.checks.iter().map(|check| check.name()).collect()
+    }
+
     /// Execute all registered checks and return results
     ///
     /// All checks are executed regardless of individual failures.

@@ -143,26 +143,26 @@ control.
 ## Residual channels
 
 The overlay cannot cover these. Each is either bounded by an assumption above or
-documented as a known gap:
+documented as a known gap. The table is generated from the residue catalog
+(`nails-core/src/residue_catalog/rows.rs`), which also holds the classes the
+overlay does cover; [decoy-requirements.md](decoy-requirements.md#residue-catalog)
+has the whole catalog.
 
-- **The journal window before `/var` is overlaid.** Between `sudo nails
-  activate` and the moment the `/var` overlay mounts, journald records the sudo
-  command line, transient unit names and mount events on the decoy. Volatile
-  journald keeps this in RAM.
-- **The sudo log.** sudo records the invoking user and the command (including
-  the binary path on the hidden volume) through journald, syslog or
-  `/var/log/sudo.log`. NAILS cannot suppress it without tampering with sudo; an
-  amnesic decoy and a neutral binary path are the mitigation. See
-  [The sudo-log exposure](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation).
-- **Decoy activation at deactivation time.** When the reboot command fails, the
-  fallback runs the decoy generation's `switch-to-configuration test` on the
-  real system, which restarts decoy services and writes to the decoy journal.
-  This remains a channel until that fallback is removed.
-- **EFI NVRAM, RTC and firmware-backed pstore.** These are not filesystem writes
-  and are not overlaid. The invariant above keeps NAILS from writing NVRAM, but
-  other software in the session can.
-- **Memory.** RAM holds hidden-session data until power-off. Emergency drops the
-  page cache, which does not zero memory; only a power-off clears it.
+<!-- residue-catalog:begin residual -->
+| Channel | Why it survives the overlay | Bounded by | Detected by |
+|---|---|---|---|
+| [Journal window before /var is overlaid](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | The sudo command line, transient unit names and mount events are logged on the decoy before the overlay can redirect them. | Run on a volatile journal, so the window stays in RAM; keep the binary at a neutral path. | `journal-scan` |
+| [sudo log file](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | `Defaults logfile=` writes every sudo command line, including the activation command and binary path, to a file on the decoy disk. | Remove `Defaults logfile=` from sudoers and sudoers.d. | path probe (warn) |
+| [sudo I/O logging](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | `log_input`, `log_output` or the LOG_INPUT/LOG_OUTPUT tags record whole terminal sessions, keystrokes and output included, under iolog_dir on the decoy disk. | Remove every I/O logging option and tag from sudoers and sudoers.d. | path probe (warn) |
+| [Non-overlaid writable mounts](decoy-requirements.md#writes-that-bypass-the-overlays) | Whatever the session writes there lands on a real disk the overlays never see. | Unmount other disks before activation, or remount them read-only. | none: verify cannot tell what a session wrote to another filesystem |
+| [Decoy activation at deactivation time](#residual-channels) | Restarting decoy services on the real system writes ordinary decoy journal lines at the end of a session. | Keep a working reboot path; prefer `nails deactivate --poweroff`. | `journal-scan` |
+| [EFI NVRAM, RTC and firmware pstore](#invariant) | These are not filesystem writes, so the overlay cannot redirect them; other software in the session can write them. | NAILS never writes NVRAM; avoid firmware tools inside the session. | none: EFI variables and firmware storage are not part of a disk image |
+| [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) | RAM holds hidden-session data until the machine is powered off; a warm reboot does not clear it. | Power off (`--poweroff`) before handing the machine over; boot the decoy with init_on_free=1. | `memory-swap` |
+| [timesyncd clock stamp](decoy-requirements.md#session-time-records) | systemd-timesyncd touches this file at every sync and at shutdown, so its mtime records when the machine last ran, which can fall after the decoy's last logged activity. | Keep /var overlaid; on a persistent decoy, use the decoy normally after a session so its own activity follows the stamp. | path probe (info) |
+| [Persistent timer stamps](decoy-requirements.md#session-time-records) | Persistent=true timers stamp their last run; a stamp from the session, or a catch-up run at the next decoy boot, dates the session. | Keep /var overlaid so session stamps land in the upper; expect catch-up runs at the next decoy boot. | path probe (info) |
+| [SMART power-on hours](decoy-requirements.md#session-time-records) | The drive counts every hour it runs; hours the decoy's logs do not account for point to unlogged use. | None in software; use the decoy normally so its logged uptime is plausible. | none: a disk image does not carry SMART counters |
+| [SSD flash-translation-layer remnants](operator-guide.md#ssd-wear-levelling) | Old copies of rewritten blocks survive in cells the host can no longer address; a chip-off read can recover them. | Full-disk encryption on the decoy, so remnants are ciphertext; no TRIM on a volume that holds a hidden volume. | none: no host-side read reaches remapped flash cells |
+<!-- residue-catalog:end residual -->
 
 ## Answer to "cannot trust the OS"
 

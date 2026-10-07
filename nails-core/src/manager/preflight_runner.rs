@@ -90,9 +90,9 @@ pub fn build_registry<F: Filesystem>(
         BackendDetectCheck, BinaryLocationCheck, DecoyPersistenceCheck, HiddenVolumeCheck,
         HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, MemoryWipeCheck,
         MountNamespaceCheck, NixOSBuildTargetCheck, OverlayCompatibilityCheck, OverlayTargetsCheck,
-        SleepPolicyCheck, SnapshotMemoryCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
-        StrayMountsCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
-        WritableTreesCheck,
+        ResidueCatalogCheck, SleepPolicyCheck, SnapshotMemoryCheck, SpaceCheck, StateCheck,
+        StorageReadinessCheck, StrayMountsCheck, SwapCheck, SymlinkSupportCheck,
+        UpperFsCapabilityCheck, WritableTreesCheck,
     };
 
     let mut registry = PreFlightRegistry::new();
@@ -257,6 +257,11 @@ pub fn build_registry<F: Filesystem>(
         accept_persistent_decoy,
         config_layer.is_some(),
     )));
+
+    // Warns (never fails) about the residue channels the catalog probes by path
+    // (LVM metadata archives, udisks2 state, session-time stamps): each finding
+    // names the catalog row, its mitigation and its doc section. Read-only.
+    registry.add_check(Box::new(ResidueCatalogCheck::new()));
 
     registry.add_check(Box::new(SpaceCheck::new(
         config.hidden_volume_root.clone(),

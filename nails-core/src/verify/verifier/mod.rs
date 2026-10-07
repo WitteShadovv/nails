@@ -212,7 +212,7 @@ impl<F: Filesystem> Verifier<F> {
     pub fn run(&self, deep: bool) -> Result<VerifyResult> {
         let mut findings = Vec::new();
         let mut config_paths_checked: usize = 0;
-        let mut checks_run: usize = 0;
+        let mut ran: BTreeSet<&'static str> = BTreeSet::new();
         let mut scanner_not_checked: Vec<String> = Vec::new();
 
         let offline = self.is_offline();
@@ -221,47 +221,51 @@ impl<F: Filesystem> Verifier<F> {
         if !offline {
             // 1. Leftover overlays whose upper layer sits under the hidden root.
             findings.extend(self.check_overlay_upperdirs()?);
-            checks_run += 1;
+            ran.insert("overlay-upperdirs");
 
             // 1b. While active, flag a writable non-overlay decoy OS tree.
             findings.extend(self.check_writable_decoy_mounts()?);
-            checks_run += 1;
+            ran.insert("writable-decoy-mounts");
 
             // 1c. Flag leftover NAILS overlays and staging binds at non-standard
             // targets, classified from the live mount table.
             findings.extend(self.check_nails_owned_mounts()?);
-            checks_run += 1;
+            ran.insert("nails-owned-mounts");
 
             // 1d. Flag a hidden root still mounted while no hidden session is
             // active — the signature of an emergency teardown that did not close
             // the backend.
             findings.extend(self.check_hidden_root_mounted()?);
-            checks_run += 1;
+            ran.insert("hidden-root-mounted");
         }
 
         // 2. Check for artifact files from the shared registry.
         findings.extend(self.check_artifact_files()?);
-        checks_run += 1;
+        ran.insert("artifact-files");
+
+        // 2b. The residue catalog's path probes for session residue.
+        findings.extend(self.check_catalog_paths(crate::residue_catalog::ResidueKind::Session));
+        ran.insert("catalog-paths");
 
         if !offline {
             // 3. Check for nails processes (honest, identity-based match).
             findings.extend(self.check_nails_processes()?);
-            checks_run += 1;
+            ran.insert("processes");
 
             // 4. Check memory status (swap warnings).
             findings.extend(self.check_memory_status()?);
-            checks_run += 1;
+            ran.insert("memory-swap");
 
             // 4b. Name-independent open crypt mapper / loop device detection.
             findings.extend(self.check_block_devices()?);
-            checks_run += 1;
+            ran.insert("block-devices");
 
             // 4c. Platform-specific, read-only drift scanners (apt/dpkg on
             //     Debian, the /var/lib/nixos note on NixOS).
             let (scan_findings, scan_not_checked) = self.run_platform_scanners();
             findings.extend(scan_findings);
             scanner_not_checked = scan_not_checked;
-            checks_run += 1;
+            ran.insert("platform-scanners");
         }
 
         // 5. Config-aware checks run against live locations only.
@@ -269,20 +273,24 @@ impl<F: Filesystem> Verifier<F> {
             let (config_findings, paths_checked) = self.check_config_paths(config)?;
             findings.extend(config_findings);
             config_paths_checked = paths_checked;
-            checks_run += 1;
+            ran.insert("config-paths");
         }
 
         // 6. State-aware checks (if state is available).
         if !offline && let Some(ref state) = self.state {
             findings.extend(self.check_state(state)?);
-            checks_run += 1;
+            ran.insert("state");
         }
 
         // 7. Deep scan if requested (homes, histories, temp directories).
         let mut journal_searched = false;
         if deep {
             findings.extend(self.deep_scan()?);
-            checks_run += 1;
+            ran.extend([
+                "deep-scan-files",
+                "deep-scan-history",
+                "deep-scan-recent-files",
+            ]);
 
             // 7b. Grep the live journal for the tokens a leaked hidden session
             //     would leave there. Live-host only: an offline image scan has no
@@ -292,7 +300,9 @@ impl<F: Filesystem> Verifier<F> {
                 let (journal_findings, searched) = self.scan_journal();
                 findings.extend(journal_findings);
                 journal_searched = searched;
-                checks_run += 1;
+                if searched {
+                    ran.insert("journal-scan");
+                }
             }
         }
 
@@ -313,6 +323,7 @@ impl<F: Filesystem> Verifier<F> {
 
         let mut areas_not_checked = self.areas_not_checked(deep, journal_searched);
         areas_not_checked.extend(scanner_not_checked);
+        areas_not_checked.extend(self.catalog_areas_not_checked(&ran, false));
 
         let mut result = if self.config.is_some() {
             VerifyResult::new_config_aware(
@@ -325,7 +336,7 @@ impl<F: Filesystem> Verifier<F> {
         } else {
             VerifyResult::new(status, findings, scan_depth)
         };
-        result.checks_run = checks_run;
+        result.checks_run = ran.len();
         result.areas_not_checked = areas_not_checked;
         Ok(result)
     }
@@ -400,6 +411,8 @@ impl<F: Filesystem> Verifier<F> {
     }
 }
 
+mod catalog;
+pub use catalog::VERIFY_CHECK_IDS;
 mod config_state;
 mod deep_scan;
 mod mounts;
