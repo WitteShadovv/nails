@@ -143,7 +143,9 @@ in
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         hidden_log = machine.succeed("cat /mnt/data/logs/*.log 2>/dev/null || true")
         assert "emergency hot path finished" in hidden_log, hidden_log[-3000:]
-        assert "phases=" in hidden_log, hidden_log[-3000:]
+        # The log is JSON: the phases are one field, "name=ms" each.
+        for phase in ("prepare-return=", "kill-shells=", "enqueue=", "kill="):
+            assert phase in hidden_log, hidden_log[-3000:]
 
     with subtest("recover and emergency on the plain decoy change nothing"):
         out = machine.succeed(f"nails --config {CONFIG} recover")
