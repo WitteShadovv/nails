@@ -116,8 +116,11 @@ switch above, since a blocked suspend with the lid shut can overheat a laptop.
 
 - **overlayroot**: use the `overlayroot` package to make `/` a RAM-backed overlay
   wiped on reboot.
-- **Volatile journald**: set `Storage=volatile` in
-  `/etc/systemd/journald.conf`.
+- **Volatile journald**: set `Storage=volatile` under `[Journal]` in
+  `/etc/systemd/journald.conf`, or in a drop-in such as
+  `/etc/systemd/journald.conf.d/50-volatile.conf`. NAILS resolves the main
+  file and every `journald.conf.d/*.conf` drop-in the way systemd does, so a
+  drop-in that sets `Storage=persistent` is caught too.
 - Remove or disable `rsyslog` and `auditd` if installed.
 - Mount the root with `noatime`; disable swap and hibernation.
 
@@ -125,7 +128,8 @@ switch above, since a blocked suspend with the lid shut can overheat a laptop.
 
 - **bilibop-lockfs** (or an equivalent RAM-overlay setup) to make the base
   system amnesic.
-- **Volatile journald**: `Storage=volatile`.
+- **Volatile journald**: `Storage=volatile` in `journald.conf` or a
+  `journald.conf.d/*.conf` drop-in.
 - Remove or disable `rsyslog`/`syslog-ng` and `auditd`.
 - `noatime`; no swap; no hibernation.
 

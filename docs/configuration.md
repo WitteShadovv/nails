@@ -313,8 +313,10 @@ resident in RAM behind the decoy lock screen, so on resume the decoy login
 unlocks a still-live hidden session. logind's defaults make this the normal case:
 `HandleLidSwitch` defaults to `suspend`, and desktops add idle auto-suspend.
 
-The `sleep-policy` pre-flight check parses `/etc/systemd/logind.conf` and its
-`logind.conf.d/*.conf` drop-ins and **warns** (never blocks) when the effective
+The `sleep-policy` pre-flight check resolves `logind.conf` the way systemd
+does (the main file from `/etc`, `/run`, `/usr/local/lib` or `/usr/lib`, then
+every `logind.conf.d/*.conf` drop-in by file name, `/etc` shadowing the others)
+and **warns** (never blocks) when the effective
 lid-switch or idle settings would suspend an active session. Fix the host
 first: set the decoy's logind lid switch to `ignore` or `lock` and disable
 desktop auto-suspend (see [decoy-requirements.md](decoy-requirements.md)).

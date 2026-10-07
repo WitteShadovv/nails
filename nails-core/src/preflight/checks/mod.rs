@@ -29,6 +29,7 @@ pub mod stray_mounts;
 pub mod suspicious_nails_reference;
 pub mod swap;
 pub mod symlink_support;
+pub mod systemd_conf;
 pub mod upper_fs_probe;
 pub mod writable_trees;
 

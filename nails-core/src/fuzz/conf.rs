@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The systemd `journald.conf` and `logind.conf` parsers: the last valid
-//! assignment wins, comments and other keys are ignored.
+//! assignment in the daemon's own section wins; comments, other keys and other
+//! sections are ignored.
 
 use crate::preflight::checks::sleep_policy::{LogindSleepSettings, parse_logind_sleep};
 use crate::preflight::checks::{JournaldStorage, parse_journald_storage};
@@ -62,13 +63,28 @@ fn line(
 }
 
 fn storage(value: &str) -> Option<JournaldStorage> {
-    match value.to_ascii_lowercase().as_str() {
+    // journald matches values exactly: "Volatile" is not a valid value.
+    match value {
         "persistent" => Some(JournaldStorage::Persistent),
         "volatile" => Some(JournaldStorage::Volatile),
         "none" => Some(JournaldStorage::None),
         "auto" => Some(JournaldStorage::Auto),
         _ => None,
     }
+}
+
+/// The lines of `lines` that fall under `[section]`.
+fn in_section<'a>(lines: &'a [Line], section: &str) -> Vec<&'a Line> {
+    let mut current = None;
+    lines
+        .iter()
+        .filter(|l| {
+            if let Line::Section(name) = l {
+                current = Some(*name);
+            }
+            current == Some(section)
+        })
+        .collect()
 }
 
 proptest! {
@@ -78,7 +94,7 @@ proptest! {
         lines in prop::collection::vec(line(&["Storage", "Compress", "SystemMaxUse"], STORAGE_VALUES), 0..12)
     ) {
         let text = lines.iter().map(Line::render).collect::<Vec<_>>().join("\n");
-        let expected = lines.iter().rev().find_map(|l| match l {
+        let expected = in_section(&lines, "Journal").into_iter().rev().find_map(|l| match l {
             Line::Assign { key: "Storage", value, .. } => storage(value),
             _ => None,
         });
@@ -93,6 +109,9 @@ proptest! {
         drop_in in prop::collection::vec(line(&["HandleLidSwitch", "IdleAction"], ACTIONS), 0..8),
     ) {
         let render = |lines: &[Line]| lines.iter().map(Line::render).collect::<Vec<_>>().join("\n");
+        // A drop-in that opens with its section header behaves like the
+        // concatenation; without one its assignments sit outside any section.
+        let drop_in: Vec<Line> = std::iter::once(Line::Section("Login")).chain(drop_in).collect();
         let mut split = LogindSleepSettings::default();
         parse_logind_sleep(&render(&main), &mut split);
         parse_logind_sleep(&render(&drop_in), &mut split);
@@ -100,8 +119,11 @@ proptest! {
         parse_logind_sleep(&format!("{}\n{}", render(&main), render(&drop_in)), &mut joined);
         prop_assert_eq!(&split, &joined);
 
-        let last = |key: &str| main.iter().chain(&drop_in).rev().find_map(|l| match l {
-            Line::Assign { key: k, value, .. } if *k == key => Some(value.to_string()),
+        // Each file starts outside any section; logind rejects unknown actions.
+        let mut login = in_section(&main, "Login");
+        login.extend(in_section(&drop_in, "Login"));
+        let last = |key: &str| login.iter().rev().find_map(|l| match l {
+            Line::Assign { key: k, value, .. } if *k == key && *value != "junk" => Some(value.to_string()),
             _ => None,
         });
         prop_assert_eq!(split.handle_lid_switch.clone(), last("HandleLidSwitch"));

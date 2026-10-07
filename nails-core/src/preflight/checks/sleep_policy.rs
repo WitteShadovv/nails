@@ -18,15 +18,35 @@
 //! effective lid/idle settings so the operator knows whether closing the lid or
 //! walking away will strand a live session. Nothing here writes to the decoy.
 
+use super::systemd_conf::{self, Assignment};
 use crate::config::SleepPolicyMode;
 use crate::preflight::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result};
 use std::path::Path;
 
-/// Main logind configuration file.
-const LOGIND_CONF: &str = "/etc/systemd/logind.conf";
-/// Drop-in directory whose `*.conf` fragments override the main file.
-const LOGIND_CONF_D: &str = "/etc/systemd/logind.conf.d";
+/// logind's configuration name, resolved with its drop-ins by [`systemd_conf`].
+const LOGIND_CONF: &str = "logind.conf";
+/// The section logind reads these settings from.
+const LOGIN_SECTION: &str = "Login";
+
+/// Every value logind accepts for a `Handle*=`/`IdleAction=` setting. Anything
+/// else is rejected by logind with a warning and leaves the previous value.
+const HANDLE_ACTIONS: &[&str] = &[
+    "ignore",
+    "poweroff",
+    "reboot",
+    "halt",
+    "kexec",
+    "soft-reboot",
+    "suspend",
+    "hibernate",
+    "hybrid-sleep",
+    "suspend-then-hibernate",
+    "sleep",
+    "lock",
+    "factory-reset",
+    "secure-attention-key",
+];
 
 /// The effective logind settings that decide whether an active session is put to
 /// sleep.
@@ -79,74 +99,69 @@ impl LogindSleepSettings {
 /// Whether a logind `Handle*`/`IdleAction` value sends the machine to sleep.
 ///
 /// These are the actions that keep the session in RAM: ordinary suspend,
-/// hibernate, hybrid-sleep and suspend-then-hibernate. `poweroff`/`halt` clear
+/// hibernate, hybrid-sleep, suspend-then-hibernate and `sleep` (whichever sleep
+/// mode the host supports). `poweroff`/`halt` clear
 /// RAM, and `lock`/`ignore` keep the machine awake, so none of those strand a
 /// live session.
 pub fn action_sleeps(value: &str) -> bool {
     matches!(
         value.trim().to_ascii_lowercase().as_str(),
-        "suspend" | "hibernate" | "hybrid-sleep" | "suspend-then-hibernate"
+        "suspend" | "hibernate" | "hybrid-sleep" | "suspend-then-hibernate" | "sleep"
     )
 }
 
-/// Merge one logind configuration fragment into `settings`.
+/// Apply one `[Login]` assignment to `settings`.
 ///
-/// systemd concatenates the main file and its drop-ins with the last assignment
-/// winning, so this overwrites a field every time it sees a recognised key. Keys
-/// are matched case-insensitively; full-line `#`/`;` comments and lines without an
-/// assignment are ignored. Section headers are ignored: these keys only appear
-/// under `[Login]`, and matching the key alone keeps the parser simple without
-/// risking a false negative. systemd `.conf` files have no trailing inline
-/// comments, so the whole right-hand side is the value.
-pub fn parse_logind_sleep(config_text: &str, settings: &mut LogindSleepSettings) {
-    for raw in config_text.lines() {
-        let line = raw.trim();
-        if line.starts_with('#') || line.starts_with(';') {
-            continue;
+/// Keys match case-sensitively, as logind does. A `Handle*=`/`IdleAction=`
+/// value logind would reject leaves the previous value in place; an empty one
+/// resets the setting to logind's default. `IdleActionSec=` is kept verbatim.
+fn apply_logind(settings: &mut LogindSleepSettings, assignment: &Assignment) {
+    let field = match assignment.key.as_str() {
+        "HandleLidSwitch" => &mut settings.handle_lid_switch,
+        "HandleLidSwitchExternalPower" => &mut settings.handle_lid_switch_external_power,
+        "HandleLidSwitchDocked" => &mut settings.handle_lid_switch_docked,
+        "IdleAction" => &mut settings.idle_action,
+        "IdleActionSec" => {
+            settings.idle_action_sec =
+                Some(assignment.value.clone()).filter(|value| !value.is_empty());
+            return;
         }
-        let Some((key, value)) = line.split_once('=') else {
-            continue;
-        };
-        let value = value.trim().to_string();
-        let key = key.trim();
-        if key.eq_ignore_ascii_case("HandleLidSwitch") {
-            settings.handle_lid_switch = Some(value);
-        } else if key.eq_ignore_ascii_case("HandleLidSwitchExternalPower") {
-            settings.handle_lid_switch_external_power = Some(value);
-        } else if key.eq_ignore_ascii_case("HandleLidSwitchDocked") {
-            settings.handle_lid_switch_docked = Some(value);
-        } else if key.eq_ignore_ascii_case("IdleAction") {
-            settings.idle_action = Some(value);
-        } else if key.eq_ignore_ascii_case("IdleActionSec") {
-            settings.idle_action_sec = Some(value);
-        }
+        _ => return,
+    };
+    let value = assignment.value.as_str();
+    if value.is_empty() {
+        *field = None;
+    } else if HANDLE_ACTIONS.contains(&value) {
+        *field = Some(value.to_string());
     }
 }
 
-/// Read the effective logind sleep settings from the main file and its `*.conf`
-/// drop-ins.
+/// Merge one logind configuration text into `settings`.
 ///
-/// The main file is read first, then every `*.conf` under
-/// [`LOGIND_CONF_D`] in lexical order (systemd's drop-in order), each applied
-/// over the previous so the last assignment wins. A missing or unreadable file
-/// leaves logind's built-in defaults, which the accessors supply.
+/// Only the `[Login]` section counts and the syntax follows systemd (see
+/// [`systemd_conf`]). Applying the main file and then each drop-in this way is
+/// equivalent to reading them concatenated: the last assignment wins.
+pub fn parse_logind_sleep(config_text: &str, settings: &mut LogindSleepSettings) {
+    let mut assignments = Vec::new();
+    let _ = systemd_conf::parse_section(config_text, LOGIN_SECTION, &mut assignments);
+    for assignment in &assignments {
+        apply_logind(settings, assignment);
+    }
+}
+
+/// Read the effective logind sleep settings, resolving the main `logind.conf`
+/// and every drop-in the way systemd does (see [`systemd_conf`]). Settings
+/// nothing assigns keep logind's built-in defaults, which the accessors supply.
 pub fn effective_logind_sleep<F: Filesystem>(fs: &F) -> LogindSleepSettings {
+    effective_logind_sleep_at(fs, Path::new("/"))
+}
+
+/// [`effective_logind_sleep`] for the system tree rooted at `root`.
+pub fn effective_logind_sleep_at<F: Filesystem>(fs: &F, root: &Path) -> LogindSleepSettings {
     let mut settings = LogindSleepSettings::default();
-
-    if let Ok(text) = fs.read_file_content(Path::new(LOGIND_CONF)) {
-        parse_logind_sleep(&text, &mut settings);
+    for assignment in systemd_conf::section_assignments(fs, root, LOGIND_CONF, LOGIN_SECTION) {
+        apply_logind(&mut settings, &assignment);
     }
-
-    if let Ok(mut entries) = fs.list_directory(Path::new(LOGIND_CONF_D)) {
-        entries.retain(|p| p.extension().is_some_and(|ext| ext == "conf"));
-        entries.sort();
-        for entry in entries {
-            if let Ok(text) = fs.read_file_content(&entry) {
-                parse_logind_sleep(&text, &mut settings);
-            }
-        }
-    }
-
     settings
 }
 
@@ -243,29 +258,53 @@ impl<F: Filesystem> PreFlightCheck<F> for SleepPolicyCheck {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RealFilesystem;
     use crate::filesystem::MockFilesystem;
     use std::path::PathBuf;
 
+    const MAIN: &str = "/etc/systemd/logind.conf";
+    const DROP_IN_DIR: &str = "/etc/systemd/logind.conf.d";
+
+    fn write(root: &Path, rel: &str, content: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+    }
+
     #[test]
-    fn parses_lid_and_idle_keys_case_insensitively() {
+    fn parses_lid_and_idle_keys_like_logind() {
         let mut settings = LogindSleepSettings::default();
         parse_logind_sleep(
             "[Login]\nhandlelidswitch=ignore\nIdleAction=suspend\nIdleActionSec=600\n",
             &mut settings,
         );
-        assert_eq!(settings.handle_lid_switch.as_deref(), Some("ignore"));
+        // logind keys are case-sensitive: the lower-case key is not a setting.
+        assert_eq!(settings.handle_lid_switch, None);
         assert_eq!(settings.idle_action.as_deref(), Some("suspend"));
         assert_eq!(settings.idle_action_sec.as_deref(), Some("600"));
     }
 
     #[test]
-    fn ignores_comments_and_last_assignment_wins() {
+    fn only_the_login_section_counts() {
         let mut settings = LogindSleepSettings::default();
         parse_logind_sleep(
-            "#HandleLidSwitch=ignore\nHandleLidSwitch=suspend\nHandleLidSwitch=lock\n",
+            "HandleLidSwitch=ignore\n[Other]\nHandleLidSwitch=lock\n",
+            &mut settings,
+        );
+        assert_eq!(settings.handle_lid_switch, None);
+    }
+
+    #[test]
+    fn ignores_comments_and_last_valid_assignment_wins() {
+        let mut settings = LogindSleepSettings::default();
+        parse_logind_sleep(
+            "[Login]\n#HandleLidSwitch=ignore\nHandleLidSwitch=suspend\nHandleLidSwitch=lock\n\
+             HandleLidSwitch=junk\n",
             &mut settings,
         );
         assert_eq!(settings.handle_lid_switch.as_deref(), Some("lock"));
+        parse_logind_sleep("[Login]\nHandleLidSwitch=\n", &mut settings);
+        assert_eq!(settings.effective_lid_switch(), "suspend");
     }
 
     #[test]
@@ -284,6 +323,7 @@ mod tests {
             "hibernate",
             "hybrid-sleep",
             "suspend-then-hibernate",
+            "sleep",
             "SUSPEND",
         ] {
             assert!(action_sleeps(sleepy), "{sleepy} should count as sleep");
@@ -295,19 +335,49 @@ mod tests {
 
     #[test]
     fn drop_in_overrides_main_file_in_lexical_order() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(LOGIND_CONF, "[Login]\nHandleLidSwitch=suspend\n");
-        let first = format!("{LOGIND_CONF_D}/10-first.conf");
-        let last = format!("{LOGIND_CONF_D}/20-last.conf");
-        fs.mock_add_file(&first, "HandleLidSwitch=hibernate\n");
-        fs.mock_add_file(&last, "HandleLidSwitch=ignore\n");
-        // The mock returns the entries unsorted; the parser sorts them itself.
-        fs.mock_set_directory_contents(
-            Path::new(LOGIND_CONF_D),
-            vec![PathBuf::from(&last), PathBuf::from(&first)],
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "etc/systemd/logind.conf",
+            "[Login]\nHandleLidSwitch=suspend\n",
         );
-        let settings = effective_logind_sleep(&fs);
+        write(
+            root,
+            "etc/systemd/logind.conf.d/10-first.conf",
+            "[Login]\nHandleLidSwitch=hibernate\n",
+        );
+        write(
+            root,
+            "usr/lib/systemd/logind.conf.d/20-last.conf",
+            "[Login]\nHandleLidSwitch=ignore\n",
+        );
+        let settings = effective_logind_sleep_at(&RealFilesystem, root);
         assert_eq!(settings.effective_lid_switch(), "ignore");
+    }
+
+    #[test]
+    fn etc_drop_in_shadows_vendor_drop_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "usr/lib/systemd/logind.conf",
+            "[Login]\nHandleLidSwitch=ignore\n",
+        );
+        write(
+            root,
+            "usr/lib/systemd/logind.conf.d/50-lid.conf",
+            "[Login]\nHandleLidSwitch=lock\n",
+        );
+        write(
+            root,
+            "etc/systemd/logind.conf.d/50-lid.conf",
+            "[Login]\nIdleAction=suspend\n",
+        );
+        let settings = effective_logind_sleep_at(&RealFilesystem, root);
+        assert_eq!(settings.effective_lid_switch(), "ignore");
+        assert_eq!(settings.effective_idle_action(), "suspend");
     }
 
     #[test]
@@ -324,7 +394,7 @@ mod tests {
     fn reports_effective_settings_from_fixture() {
         let fs = MockFilesystem::new();
         fs.mock_add_file(
-            LOGIND_CONF,
+            MAIN,
             "[Login]\nHandleLidSwitch=suspend\nIdleAction=ignore\n",
         );
         let settings = effective_logind_sleep(&fs);
@@ -345,7 +415,7 @@ mod tests {
     fn idle_suspend_is_reported_with_timeout() {
         let fs = MockFilesystem::new();
         fs.mock_add_file(
-            LOGIND_CONF,
+            MAIN,
             "[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\n\
              IdleAction=suspend\nIdleActionSec=300\n",
         );
@@ -360,7 +430,7 @@ mod tests {
     fn safe_host_passes() {
         let fs = MockFilesystem::new();
         fs.mock_add_file(
-            LOGIND_CONF,
+            MAIN,
             "[Login]\nHandleLidSwitch=lock\nHandleLidSwitchExternalPower=ignore\nIdleAction=lock\n",
         );
         let check = SleepPolicyCheck::new(SleepPolicyMode::Warn);
@@ -380,10 +450,10 @@ mod tests {
     #[test]
     fn check_performs_no_writes() {
         let fs = MockFilesystem::new();
-        fs.mock_add_file(LOGIND_CONF, "[Login]\nHandleLidSwitch=suspend\n");
-        let drop_in = format!("{LOGIND_CONF_D}/10-lid.conf");
-        fs.mock_add_file(&drop_in, "HandleLidSwitch=ignore\n");
-        fs.mock_set_directory_contents(Path::new(LOGIND_CONF_D), vec![PathBuf::from(&drop_in)]);
+        fs.mock_add_file(MAIN, "[Login]\nHandleLidSwitch=suspend\n");
+        let drop_in = format!("{DROP_IN_DIR}/10-lid.conf");
+        fs.mock_add_file(&drop_in, "[Login]\nHandleLidSwitch=ignore\n");
+        fs.mock_set_directory_contents(Path::new(DROP_IN_DIR), vec![PathBuf::from(&drop_in)]);
 
         let before = fs.mock_ops().len();
         let check = SleepPolicyCheck::new(SleepPolicyMode::Warn);
