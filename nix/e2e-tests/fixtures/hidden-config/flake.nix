@@ -16,9 +16,7 @@
   # it leaves the test framework's instrumentation (the driver backdoor, the
   # qemu-vm filesystems) in place, where a bare from-scratch system would have
   # had switch-to-configuration stop the backdoor and unmount those filesystems.
-  outputs =
-    { ... }:
-    {
-      nixosConfigurations.nails-e2e.config.system.build.toplevel = builtins.storePath "@toplevel@";
-    };
+  outputs = _: {
+    nixosConfigurations.nails-e2e.config.system.build.toplevel = builtins.storePath "@toplevel@";
+  };
 }
