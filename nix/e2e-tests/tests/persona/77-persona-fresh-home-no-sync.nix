@@ -6,8 +6,8 @@
 # guide) is that the decoy's account-bound clients do not run in the hidden
 # session. Modelled here by not carrying the decoy Syncthing into the hidden
 # session: the canary the hidden session writes into its fresh synced folder
-# therefore never reaches the peer, and because the fresh upper is discarded on
-# deactivation there is nothing for the decoy client to pull back when it resumes.
+# (an opaque home in the root upper) therefore never reaches the peer, and the
+# decoy client finds nothing to pull back when it resumes after the way back.
 #
 # Hard assertions: the peer never receives the canary, and the decoy disk image
 # stays clean. Test 76 is the positive control that proves this plumbing can leak.
@@ -18,7 +18,6 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   persona = import ./../../lib/persona-helpers.nix { inherit self pkgs; };
   diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
 in
@@ -36,8 +35,8 @@ in
   testScript = _: ''
     ${persona.writePersonaConfigFn}
     ${persona.syncClientHelpersFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
-    ${assertions.assertOverlayMountedFn}
     ${diskForensics.pythonSetup}
 
     CLIENT_CFG = "${persona.clientConfigDir}"
@@ -95,13 +94,12 @@ in
 
     with subtest("activate the hidden session in fresh-home mode"):
         client.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        config_path = "/tmp/nails-persona.toml"
+        config_path = "/var/lib/nails-tests/persona.toml"
         write_persona_config(config_path, mode="fresh-home")
-        client.succeed(
-            f"NAILS_TARGET_USER=testuser nails --config {config_path} "
-            "activate --overlay-only --session keep -y"
+        uid = client.succeed("id -u testuser").strip()
+        canonical_activate(
+            config_path, "--overlay-only", "activate", env=f"SUDO_UID={uid} SUDO_USER=testuser"
         )
-        assert_overlay_mounted("/home")
         # The fresh persona home shadows the decoy home; the decoy's synced file
         # is not visible and the fresh synced folder starts empty.
         client.fail(f"test -e {CLIENT_SYNC}/baseline.txt")
@@ -111,8 +109,8 @@ in
         client.succeed(
             f"printf %s {CANARY_TOKEN} > {CLIENT_SYNC}/{CANARY}"
         )
-        # It lands on the hidden volume (the persona home upper), never the decoy.
-        client.succeed(f"test -f /mnt/data/persona/home/Sync/{CANARY}")
+        # It lands on the hidden volume (the opaque home in the upper), never the decoy.
+        client.succeed(f"test -f /mnt/data/root/upper/home/testuser/Sync/{CANARY}")
 
     with subtest("hard assertion: the peer never receives the canary"):
         # Give any stray push ample time to arrive, then require its absence.
@@ -121,16 +119,13 @@ in
         peer.fail(f"test -e {PEER_SYNC}/{CANARY}")
 
     with subtest("deactivate and let the decoy client resume"):
-        canonical_deactivate(
-            config_path, unit_name="nails-deactivate-persona-fresh-home"
-        )
-        client.fail("mount | grep 'overlay on /home'")
+        canonical_deactivate(config_path, "deactivate")
         client.succeed("systemctl unmask --runtime syncthing.service")
         client.succeed("systemctl start syncthing.service")
         st_wait_ready(client, CLIENT_CFG)
         st_rescan(client, CLIENT_CFG, FOLDER)
-        # Nothing to pull back: the canary never reached the peer and the fresh
-        # upper is gone.
+        # Nothing to pull back: the canary never reached the peer and the hidden
+        # home stays in the upper, invisible to the decoy.
         # sync-lint: allow sleep -- absence window: no event exists to wait for
         time.sleep(30)
         client.fail(f"test -e {CLIENT_SYNC}/{CANARY}")

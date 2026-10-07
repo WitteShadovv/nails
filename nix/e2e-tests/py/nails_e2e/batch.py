@@ -51,9 +51,10 @@ _SYSTEMD_PRIVATE = "systemd-private-"
 _VOLATILE_MOUNT_PREFIXES = ("/proc/", "/sys/", "/run/user/", "/run/credentials/")
 _VOLATILE_MOUNTS = frozenset({"/dev/hugepages", "/dev/mqueue"})
 
-# NAILS runtime state in /run: the random runtime root (16 hex digits,
-# nails-core/src/runtime_root.rs) and the fixed nails* and overlay-runtime
-# names. Harness captures are the files the capture helpers write there, and
+# NAILS runtime state in /run: the session's overlay-runtime directory and
+# nextroot (a populated /run/nextroot also shows up as an overlay mount), the
+# fixed nails* names, and the 16-hex-digit runtime root older builds created.
+# Harness captures are the files the capture helpers write there, and
 # the harness's own nails-tests directory, which is not NAILS state.
 _RUNTIME_ENTRY = re.compile(r"^(?:[0-9a-f]{16}|nails(?!-tests$).*|overlay-runtime)$")
 _CAPTURE_ENTRY = re.compile(r"\.(?:stdout|stderr|rc|typescript)$")

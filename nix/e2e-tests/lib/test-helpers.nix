@@ -184,9 +184,11 @@
 
   # Enter the hidden session from a test: `nails activate -y` soft-reboots into
   # the hidden root. Its output goes to the hidden volume (the decoy shell that
-  # ran it is gone after the switch). Returns the in-guest timings.
+  # ran it is gone after the switch). `env` is a prefix of variable
+  # assignments (for example the sudo variables that name the operator).
+  # Returns the in-guest timings.
   canonicalActivateFn = ''
-    def canonical_activate(config_path, extra_args="", label="activate"):
+    def canonical_activate(config_path, extra_args="", label="activate", env=""):
         import shlex
 
         from nails_e2e import session
@@ -194,7 +196,8 @@
         log = "/mnt/data/" + label + ".log"
         timings = session.follow_soft_reboot(
             machine,
-            "nails --config "
+            env
+            + " nails --config "
             + shlex.quote(config_path)
             + " activate -y "
             + extra_args

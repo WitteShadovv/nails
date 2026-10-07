@@ -19,7 +19,6 @@
 { self, pkgs }:
 let
   inherit (pkgs) system;
-  baseOs = import ./base-os-overlays.nix;
 
   # Shared Syncthing options for both nodes: no discovery, no relays, no usage
   # reporting. The nodes reach each other by static addresses the test sets when
@@ -105,23 +104,18 @@ rec {
   # persona.mask_inherited (for example '["syncthing.service"]'), or null to omit.
   writePersonaConfigFn = ''
     def write_persona_config(path, mode="shared-home", mask=None):
+        import os
+
         mask_line = f"mask_inherited = {mask}\n" if mask is not None else ""
+        machine.succeed("mkdir -p " + os.path.dirname(path))
         machine.succeed(
             """cat > %s <<'EOF'
     hidden_volume_root = "/mnt/data"
-    overlay_mode = "explicit"
-    risky_services = "skip"
+    minimum_space_mb = 100
 
     [persona]
     mode = "%s"
     %s
-    ${baseOs.toml}
-    [[overlays]]
-    name = "home"
-    lower = "/home"
-    upper = "/mnt/data/home"
-    work = "/mnt/data/.work/home"
-    target = "/home"
     EOF""" % (path, mode, mask_line)
         )
   '';

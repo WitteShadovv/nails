@@ -94,14 +94,6 @@ redirects it to the hidden volume.
 - `emergencyOutcomeFn` → `emergency_outcome(trigger, label, deadline_s=600, console_index=None)`: follows a teardown with a failed backend to `"decoy"` or `"off"`
 - `assertFaultExitFn` → `assert_fault_exit(outcome, run_before, wall)`
 
-### `lib/base-os-overlays.nix` and `lib/assertions.nix`
-
-Live-overlay helpers kept only for the tests that still wait for their port
-(`tests/overlay/74`, `tests/overlay/75`, `tests/persona/77`): the base-OS
-`[[overlays]]` stanzas, `assert_status_state`, `assert_overlay_mounted` and
-`assert_no_overlays`. New tests use `session.assert_hidden_root` /
-`session.assert_decoy_root` instead.
-
 ### VM profiles
 
 - `vm-config.nix`: base forensic-safe profile. It imports `soft-reboot-units.nix`,

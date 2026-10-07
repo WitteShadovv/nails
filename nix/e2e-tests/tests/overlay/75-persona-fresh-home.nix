@@ -1,81 +1,56 @@
-# Test 75: Fresh-home persona mode hides the decoy home
+# Test 75: fresh-home persona mode hides the decoy home
 #
-# In persona.mode = "fresh-home", once the /home overlay is mounted a clean,
-# empty home from the hidden volume is bind-mounted over the operator's home, so
-# the decoy home contents are not visible in the hidden session and the hidden
-# session's writes land on the hidden volume. Deactivation tears the bind down
-# and the decoy home reappears unchanged.
-#
-# This asserts the core security property of T-046 (decoy home invisible in
-# fresh-home mode) on the overlay-only path. It must be evaluated on a real
-# runner (the Nix VM driver) — it cannot be checked in the development sandbox.
-
+# With `[persona] mode = "fresh-home"` the entry makes the operator's home in
+# the root upper an opaque directory, so in the hidden session the decoy home's
+# contents are not visible and every write lands in the upper. Back on the
+# decoy the home is unchanged.
 _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
-  assertions = import ./../../lib/assertions.nix;
-  baseOs = import ./../../lib/base-os-overlays.nix;
+  testHelpers = import ./../../lib/test-helpers.nix;
 in
 {
   name = "persona-fresh-home";
-  meta.tags = [ "overlay" ];
+  meta.tags = [ "session" ];
+  globalTimeout = 1200;
 
   testScript = _: ''
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
+    from nails_e2e import session
 
-    def write_fresh_home_config(path):
-        machine.succeed(
-            """cat > %s <<'EOF'
-    hidden_volume_root = "/mnt/data"
-    overlay_mode = "explicit"
-    risky_services = "skip"
+    ${testHelpers.canonicalActivateFn}
 
-    [persona]
-    mode = "fresh-home"
-
-    ${baseOs.toml}
-    [[overlays]]
-    name = "home"
-    lower = "/home"
-    upper = "/mnt/data/home"
-    work = "/mnt/data/.work/home"
-    target = "/home"
-    EOF""" % path
-        )
-
+    CONFIG = "/var/lib/nails-tests/fresh-home.toml"
     machine.start()
     machine.wait_for_unit("multi-user.target")
-
-    config_path = "/tmp/nails-fresh-home.toml"
-    write_fresh_home_config(config_path)
+    machine.succeed("mkdir -p /var/lib/nails-tests")
+    machine.succeed(
+        f"cat > {CONFIG} <<'EOF'\n"
+        "hidden_volume_root = \"/mnt/data\"\n"
+        "minimum_space_mb = 100\n"
+        "\n"
+        "[persona]\n"
+        "mode = \"fresh-home\"\n"
+        "EOF"
+    )
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    machine.succeed("su - testuser -c 'printf %s decoy-secret > ~/decoy-secret.txt'")
 
-    with subtest("phase 1: the decoy home holds a secret before activation"):
-        machine.succeed("mkdir -p /home/testuser")
-        machine.succeed("printf %s decoy-secret > /home/testuser/decoy-secret.txt")
-        machine.succeed("test -f /home/testuser/decoy-secret.txt")
-
-    with subtest("phase 2: fresh-home activation hides the decoy home contents"):
-        machine.succeed(
-            f"NAILS_TARGET_USER=testuser nails --config {config_path} "
-            "activate --overlay-only --session keep -y"
+    with subtest("the decoy home is invisible in the hidden session"):
+        # The operator is the sudo caller, as in a real activation.
+        uid = machine.succeed("id -u testuser").strip()
+        canonical_activate(
+            CONFIG, "--overlay-only", "activate", env=f"SUDO_UID={uid} SUDO_USER=testuser"
         )
-        assert_overlay_mounted("/home")
-        # The persona bind shadows the decoy home: the secret is not visible.
         machine.fail("test -e /home/testuser/decoy-secret.txt")
+        machine.succeed("test -d /home/testuser")
 
-    with subtest("phase 3: hidden-session writes land on the hidden volume persona home"):
-        machine.succeed("printf %s hidden-note > /home/testuser/hidden-note.txt")
-        machine.succeed("test -f /mnt/data/persona/home/hidden-note.txt")
-        # The decoy home is untouched by the hidden session's writes.
-        machine.fail("test -e /mnt/data/home/hidden-note.txt")
+    with subtest("hidden writes land in the upper's opaque home"):
+        machine.succeed("su - testuser -c 'printf %s hidden-note > ~/hidden-note.txt'")
+        machine.succeed("test -f /mnt/data/root/upper/home/testuser/hidden-note.txt")
 
-    with subtest("phase 4: deactivation restores the decoy home"):
-        machine.succeed(f"nails --config {config_path} emergency")
-        assert_no_overlays(["/home"])
-        # The persona bind is gone; the decoy secret is visible again.
-        machine.succeed("test -f /home/testuser/decoy-secret.txt")
+    with subtest("emergency returns to the decoy home, unchanged"):
+        session.follow_soft_reboot(machine, f"nails --config {CONFIG} emergency", "emergency")
+        session.assert_decoy_root(machine)
         decoy = machine.succeed("cat /home/testuser/decoy-secret.txt").strip()
         assert decoy == "decoy-secret", f"decoy home changed: {decoy!r}"
         machine.fail("test -e /home/testuser/hidden-note.txt")
