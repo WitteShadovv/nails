@@ -206,6 +206,10 @@ pub struct Plan {
     /// When the hidden root was entered, in seconds since the epoch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entered_at: Option<u64>,
+    /// Whether the entry cleared `noexec` on `/run` (Debian and Ubuntu mount
+    /// it so) to run the binary copy there; the way back sets it again.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub run_noexec: bool,
 }
 
 /// Why a plan could not be used.
@@ -344,6 +348,7 @@ pub(crate) fn sample() -> Plan {
             at: 1_000,
         }),
         entered_at: None,
+        run_noexec: false,
     }
 }
 

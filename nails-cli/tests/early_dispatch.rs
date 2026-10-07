@@ -162,6 +162,7 @@ mod kernel_tests {
                 tools: Tools::default(),
                 armed: None,
                 entered_at: None,
+                run_noexec: false,
             };
             let plan_path = nails_teardown::whole_root::plan::default_plan_path();
             std::fs::create_dir_all(plan_path.parent().unwrap()).unwrap();

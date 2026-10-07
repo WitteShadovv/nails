@@ -37,6 +37,7 @@ fn plan(root: &Path) -> Plan {
         tools: Tools::default(),
         armed: None,
         entered_at: Some(1_700_000_000),
+        run_noexec: false,
     }
 }
 

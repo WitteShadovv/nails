@@ -174,6 +174,9 @@ fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
     if plan.entered_at.is_none() {
         remove_dropin(&env.run);
         let _ = std::fs::remove_dir_all(&env.runtime_dir);
+        if plan.run_noexec {
+            let _ = nextroot::set_noexec(&env.run, true);
+        }
     }
     Outcome::Disarmed(why.to_string())
 }
@@ -249,6 +252,10 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     };
     if let Some(utab) = utab {
         let _ = run_scrub::restore_utab(&env.run, &utab);
+    }
+    // A process exec'd from /run keeps running once it turns noexec again.
+    if plan.run_noexec {
+        let _ = nextroot::set_noexec(&env.run, true);
     }
     // Last: anything logged after this is imported by the decoy journald.
     if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {

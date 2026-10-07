@@ -114,6 +114,7 @@ mod kernel_tests {
                 tools: Tools::default(),
                 armed: Some(Arm::now(direction)),
                 entered_at: None,
+                run_noexec: false,
             }
         }
 
@@ -271,7 +272,10 @@ mod kernel_tests {
             nextroot::bind(run, &world.nextroot().join("run"), false).unwrap();
             let mut plan = world.plan(Direction::Leave);
             plan.entered_at = Some(1);
+            // The entry cleared noexec on this /run; the way back sets it again.
+            plan.run_noexec = true;
             plan.write_atomic(&runtime.join(PLAN_NAME)).unwrap();
+            assert!(!nextroot::is_noexec(run).unwrap());
 
             let outcome = transition::run(&world.env());
             assert!(
@@ -285,6 +289,7 @@ mod kernel_tests {
             assert!(mounted_below(&initramfs).is_empty());
             assert!(!run.join("nologin").exists());
             assert!(!runtime.exists());
+            assert!(nextroot::is_noexec(run).unwrap(), "noexec is back");
             assert!(run.join("decoy-lock").exists());
             assert_eq!(
                 std::fs::read_to_string(run.join("mount/utab")).unwrap(),
@@ -390,6 +395,7 @@ mod entry_kernel_tests {
     use nails_core::test_support::{Rerun, ScratchTmpfs};
     use nails_core::{NailsError, nixos::NixOSBuilder};
     use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
+    use nails_teardown::whole_root::nextroot;
     use nails_teardown::whole_root::plan::{
         DecoyRoot, Direction, Plan, PolicyMountKind, SNAPSHOT_NAME, unix_now,
     };
@@ -401,10 +407,21 @@ mod entry_kernel_tests {
     #[derive(Default)]
     struct FakeHost {
         reloads: Cell<u32>,
+        /// The next root to look at on the first reload.
+        nextroot: Option<PathBuf>,
+        /// Whether it was a mount point then.
+        populated_at_first_reload: Cell<Option<bool>>,
     }
 
     impl EntryHost for FakeHost {
         fn daemon_reload(&self) -> nails_core::Result<()> {
+            if self.reloads.get() == 0
+                && let Some(nextroot) = &self.nextroot
+            {
+                let entries = read_mountinfo().unwrap();
+                self.populated_at_first_reload
+                    .set(Some(entries.iter().any(|e| e.mount_point == *nextroot)));
+            }
             self.reloads.set(self.reloads.get() + 1);
             Ok(())
         }
@@ -434,8 +451,18 @@ mod entry_kernel_tests {
         /// listed in its fstab with a swap partition and an unmounted disk.
         fn new() -> Self {
             let decoy = ScratchTmpfs::new("");
-            for dir in ["etc", "usr/lib/systemd", "boot", "home", "run", "srv/data"] {
+            for dir in [
+                "etc",
+                "usr/lib/systemd/system",
+                "boot",
+                "home",
+                "run",
+                "srv/data",
+            ] {
                 decoy.mkdir(dir);
+            }
+            for unit in ["soft-reboot.target", "systemd-soft-reboot.service"] {
+                std::fs::write(decoy.path().join("usr/lib/systemd/system").join(unit), "").unwrap();
             }
             std::fs::write(decoy.path().join("etc/os-release"), "ID=debian\n").unwrap();
             std::fs::write(
@@ -518,9 +545,16 @@ mod entry_kernel_tests {
         .run(|| {
             let world = World::new();
             let paths = world.paths();
-            let host = FakeHost::default();
+            let host = FakeHost {
+                nextroot: Some(paths.nextroot()),
+                ..FakeHost::default()
+            };
             let entry = entry::prepare(&paths, &world.inputs(), &host).expect("the entry");
             let nextroot = paths.nextroot();
+            // The drop-in is live before anything is mounted at the next root,
+            // so an activation killed during the build leaves nothing a later
+            // soft-reboot would enter.
+            assert_eq!(host.populated_at_first_reload.get(), Some(false));
 
             assert_eq!(fstype_at(&nextroot).as_deref(), Some("overlay"));
             // The ESP is read-only, /home is an overlay with its own upper.
@@ -620,8 +654,69 @@ mod entry_kernel_tests {
                 "the next root is detached"
             );
             assert!(!paths.runtime().exists());
-            assert!(!world.run.path().join(DROPIN_DIR).exists());
-            assert_eq!(host.reloads.get(), 0);
+            assert!(!world.run.path().join(DROPIN_DIR).join(DROPIN_NAME).exists());
+            // One reload installs the drop-in, one removes it again.
+            assert_eq!(host.reloads.get(), 2);
+        });
+    }
+
+    #[test]
+    fn an_entry_whose_root_cannot_leave_again_is_refused() {
+        let _ = Rerun::new(test_path!(
+            an_entry_whose_root_cannot_leave_again_is_refused
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            std::fs::remove_file(
+                world
+                    .decoy
+                    .path()
+                    .join("usr/lib/systemd/system/systemd-soft-reboot.service"),
+            )
+            .unwrap();
+            let paths = world.paths();
+            let host = FakeHost::default();
+            let error = entry::prepare(&paths, &world.inputs(), &host).unwrap_err();
+            let text = error.to_string();
+            assert!(text.contains("systemd-soft-reboot.service"), "{text}");
+            assert!(text.contains("soft-reboot units"), "{text}");
+            assert!(!paths.runtime().exists());
+            let entries = read_mountinfo().unwrap();
+            assert!(
+                !entries
+                    .iter()
+                    .any(|e| e.mount_point.starts_with(paths.nextroot()))
+            );
+        });
+    }
+
+    #[test]
+    fn a_noexec_run_is_cleared_for_the_session_and_set_again_on_rollback() {
+        let _ = Rerun::new(test_path!(
+            a_noexec_run_is_cleared_for_the_session_and_set_again_on_rollback
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            let paths = world.paths();
+            nix::mount::mount(
+                None::<&str>,
+                &paths.run,
+                None::<&str>,
+                nix::mount::MsFlags::MS_REMOUNT
+                    | nix::mount::MsFlags::MS_BIND
+                    | nix::mount::MsFlags::MS_NOEXEC,
+                None::<&str>,
+            )
+            .unwrap();
+            assert!(nextroot::is_noexec(&paths.run).unwrap());
+            let host = FakeHost::default();
+            let entry = entry::prepare(&paths, &world.inputs(), &host).expect("the entry");
+            assert!(entry.plan.run_noexec);
+            assert!(!nextroot::is_noexec(&paths.run).unwrap());
+            entry::rollback(&paths);
+            assert!(nextroot::is_noexec(&paths.run).unwrap());
         });
     }
 }

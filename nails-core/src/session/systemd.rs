@@ -83,15 +83,20 @@ pub fn running_version(runner: &dyn ProcessRunner) -> Option<u32> {
         .flatten()
 }
 
-/// The soft-reboot units missing below `root`.
+/// The soft-reboot units missing in `root`, resolved as if `root` were `/`:
+/// on NixOS the unit directory is a link into `/etc/static` and the store, so
+/// following it on the running system would look at the wrong root's units.
 pub fn missing_soft_reboot_units(root: &Path) -> Vec<&'static str> {
     SOFT_REBOOT_UNITS
         .iter()
         .copied()
         .filter(|unit| {
-            !UNIT_DIRS
-                .iter()
-                .any(|dir| root.join(dir).join(unit).exists())
+            !UNIT_DIRS.iter().any(|dir| {
+                nails_teardown::whole_root::nextroot::exists_in_root(
+                    root,
+                    &Path::new("/").join(dir).join(unit),
+                )
+            })
         })
         .collect()
 }
@@ -133,5 +138,26 @@ mod tests {
             missing_soft_reboot_units(root.path()),
             ["systemd-soft-reboot.service"]
         );
+    }
+
+    #[test]
+    fn an_absolute_link_resolves_inside_the_root() {
+        // NixOS: /etc/systemd/system -> /etc/static/systemd/system, an absolute
+        // link that must resolve in this root, not on the running system.
+        let root = tempfile::tempdir().unwrap();
+        let units = root.path().join("etc/static/systemd/system");
+        std::fs::create_dir_all(&units).unwrap();
+        for unit in SOFT_REBOOT_UNITS {
+            std::fs::write(units.join(unit), "").unwrap();
+        }
+        std::fs::create_dir_all(root.path().join("etc/systemd")).unwrap();
+        std::os::unix::fs::symlink(
+            "/etc/static/systemd/system",
+            root.path().join("etc/systemd/system"),
+        )
+        .unwrap();
+        assert!(missing_soft_reboot_units(root.path()).is_empty());
+        std::fs::remove_dir_all(&units).unwrap();
+        assert_eq!(missing_soft_reboot_units(root.path()), SOFT_REBOOT_UNITS);
     }
 }

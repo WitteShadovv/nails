@@ -68,6 +68,36 @@ pub fn remount_read_only(target: &Path) -> io::Result<()> {
     rustix::mount::mount_remount(target, flags, "").map_err(to_io)
 }
 
+/// Whether the mount at `path` is `noexec`.
+pub fn is_noexec(path: &Path) -> io::Result<bool> {
+    let flags = rustix::fs::statvfs(path).map_err(to_io)?.f_flag;
+    Ok(flags.contains(StatVfsMountFlags::NOEXEC))
+}
+
+/// Set or clear `noexec` on the mount at `path`, keeping its other per-mount
+/// flags. Debian and Ubuntu mount `/run` `noexec`; the transition step and the
+/// session's units run the binary copy from it.
+pub fn set_noexec(path: &Path, noexec: bool) -> io::Result<()> {
+    let current = rustix::fs::statvfs(path).map_err(to_io)?.f_flag;
+    let mut flags = MountFlags::BIND;
+    for (have, keep) in [
+        (StatVfsMountFlags::RDONLY, MountFlags::RDONLY),
+        (StatVfsMountFlags::NOSUID, MountFlags::NOSUID),
+        (StatVfsMountFlags::NODEV, MountFlags::NODEV),
+        (StatVfsMountFlags::NOATIME, MountFlags::NOATIME),
+        (StatVfsMountFlags::NODIRATIME, MountFlags::NODIRATIME),
+        (StatVfsMountFlags::RELATIME, MountFlags::RELATIME),
+    ] {
+        if current.contains(have) {
+            flags |= keep;
+        }
+    }
+    if noexec {
+        flags |= MountFlags::NOEXEC;
+    }
+    rustix::mount::mount_remount(path, flags, "").map_err(to_io)
+}
+
 /// A read-only bind of `source` at `target` (not recursive).
 pub fn bind_read_only(source: &Path, target: &Path) -> io::Result<()> {
     bind(source, target, false)?;
@@ -215,6 +245,13 @@ fn open_in_root(root: &Path, path: &Path) -> io::Result<std::os::fd::OwnedFd> {
         ResolveFlags::IN_ROOT,
     )
     .map_err(to_io)
+}
+
+/// Whether `path` exists as if `root` were `/`: absolute symlinks resolve
+/// inside `root`, so on NixOS `/etc/systemd/system` (a link into `/etc/static`
+/// and the store) is looked up in that root's store, not the running one's.
+pub fn exists_in_root(root: &Path, path: &Path) -> bool {
+    open_in_root(root, path).is_ok()
 }
 
 /// Read the file at `path` as if `root` were `/` (absolute symlinks resolve

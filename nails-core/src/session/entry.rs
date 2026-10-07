@@ -8,17 +8,21 @@
 //!
 //! 1. snapshot `/run` and save `utab`, before NAILS adds anything to `/run`;
 //! 2. the runtime directory: the snapshot, the RAM copy of the binary and
-//!    configuration, the plan;
-//! 3. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
+//!    configuration, the plan; `noexec` cleared on `/run` when it is set
+//!    (Debian, Ubuntu), recorded in the plan;
+//! 3. the transition drop-in installed and the service manager reloaded,
+//!    before anything is mounted at `/run/nextroot`: an activation killed
+//!    later leaves an unarmed next root that any soft-reboot disarms;
+//! 4. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
 //!    the upper on the hidden volume;
-//! 4. on NixOS with a hidden configuration: the hidden toplevel built into the
+//! 5. on NixOS with a hidden configuration: the hidden toplevel built into the
 //!    next root's store and activated chrooted (see [`super::nixos`]);
-//! 5. the fstab policy on the next root's own fstab ([`super::policy`]): the
+//! 6. the fstab policy on the next root's own fstab ([`super::policy`]): the
 //!    hidden volume bound at its path, boot filesystems read-only, other decoy
 //!    filesystems overlaid, the rest masked at entry;
-//! 6. `/run` bound in and the tree made private; the init checked the way
-//!    PID 1 will;
-//! 7. the transition drop-in installed and the service manager reloaded;
+//! 7. `/run` bound in and the tree made private; the init checked the way
+//!    PID 1 will, and the soft-reboot units the way back needs found in the
+//!    next root;
 //! 8. the plan armed for the entry.
 //!
 //! Any failure undoes all of it ([`rollback`]): a populated `/run/nextroot`
@@ -204,9 +208,13 @@ fn fhs_init(root: &Path) -> PathBuf {
 /// Undo a failed or abandoned entry: detach `/run/nextroot`, remove the
 /// drop-in and the runtime directory. Returns the mounts still left.
 pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
+    let run_noexec = Plan::load(&paths.plan()).is_ok_and(|plan| plan.run_noexec);
     let remaining = nextroot::detach_tree(&paths.nextroot());
     transition::remove_dropin(&paths.run);
     let _ = std::fs::remove_dir_all(paths.runtime());
+    if run_noexec {
+        let _ = nextroot::set_noexec(&paths.run, true);
+    }
     remaining
 }
 
@@ -283,6 +291,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         },
         armed: None,
         entered_at: None,
+        run_noexec: false,
     }
 }
 
@@ -304,8 +313,15 @@ fn build(
     write_runtime(paths, inputs, &snapshot)?;
     let layout = Layout::new(inputs.hidden_root);
     let mut plan = skeleton(paths, inputs, &layout);
+    // Recorded before it is cleared, so a rollback always knows to set it again.
+    plan.run_noexec = nextroot::is_mount_point(&mounts, &paths.run)
+        && nextroot::is_noexec(&paths.run).unwrap_or(false);
     plan.write_atomic(&paths.plan())
         .map_err(|e| io(&paths.plan(), e))?;
+    if plan.run_noexec {
+        nextroot::set_noexec(&paths.run, false).map_err(|e| io(&paths.run, e))?;
+    }
+    install_transition(paths, host, dropin)?;
 
     make_layer(&layout.upper(), &layout.work(), &paths.root)?;
     std::fs::create_dir_all(&nextroot).map_err(|e| io(&nextroot, e))?;
@@ -363,17 +379,15 @@ fn build(
     nextroot::make_rprivate(&nextroot).map_err(|e| io(&nextroot, e))?;
     nextroot::precheck(&nextroot, &ret::init_before_repoint(&plan.hidden))
         .map_err(|e| NailsError::InvalidState(e.to_string()))?;
-
-    let binary = if paths.is_system() {
-        paths.binary_copy()
-    } else {
-        // Tests: the drop-in names the copy where the real system would run it.
-        Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR)
-            .join(nails_teardown::whole_root::plan::BINARY_NAME)
-    };
-    transition::install_dropin(&paths.run, &binary).map_err(|e| io(&paths.run, e))?;
-    *dropin = true;
-    host.daemon_reload()?;
+    let missing = super::systemd::missing_soft_reboot_units(&nextroot);
+    if !missing.is_empty() {
+        return Err(NailsError::InvalidState(format!(
+            "the hidden root cannot leave again: it lacks {}. The hidden configuration needs \
+             the soft-reboot units; on NixOS add:\n{}",
+            missing.join(" and "),
+            super::systemd::NIXOS_UNITS_SNIPPET
+        )));
+    }
 
     plan.armed = Some(Arm::now(Direction::Enter));
     plan.write_atomic(&paths.plan())
@@ -383,6 +397,20 @@ fn build(
         decisions,
         warnings,
     })
+}
+
+/// Install the transition drop-in and reload the service manager.
+fn install_transition(paths: &Paths, host: &dyn EntryHost, dropin: &mut bool) -> Result<()> {
+    let binary = if paths.is_system() {
+        paths.binary_copy()
+    } else {
+        // Tests: the drop-in names the copy where the real system would run it.
+        Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR)
+            .join(nails_teardown::whole_root::plan::BINARY_NAME)
+    };
+    transition::install_dropin(&paths.run, &binary).map_err(|e| io(&paths.run, e))?;
+    *dropin = true;
+    host.daemon_reload()
 }
 
 /// The mounts below `root`, with their mount points made relative to it (as
