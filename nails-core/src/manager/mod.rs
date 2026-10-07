@@ -187,6 +187,10 @@ pub struct NailsManager<F: Filesystem> {
 
     /// The plan the running activation records (see [`teardown_plan`]).
     teardown_plan: RefCell<Option<teardown_plan::PlanRecorder>>,
+
+    /// Whether the last activation restarted the operator's session, so its
+    /// results may still need delivering once the new session is up.
+    session_restarted: std::cell::Cell<bool>,
 }
 
 // Manual Debug implementation because NixOSBuilder contains trait objects
@@ -263,6 +267,7 @@ impl<F: Filesystem> NailsManager<F> {
             runtime_env: (*crate::runtime_env::current()).clone(),
             plan_path: default_plan_path(),
             teardown_plan: RefCell::new(None),
+            session_restarted: std::cell::Cell::new(false),
         }
     }
 
@@ -320,6 +325,7 @@ impl<F: Filesystem> NailsManager<F> {
             runtime_env: (*crate::runtime_env::current()).clone(),
             plan_path: default_plan_path(),
             teardown_plan: RefCell::new(None),
+            session_restarted: std::cell::Cell::new(false),
         }
     }
 

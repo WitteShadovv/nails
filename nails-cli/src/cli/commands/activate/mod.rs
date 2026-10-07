@@ -574,6 +574,13 @@ pub fn execute(
         );
     }
 
+    // A session restart can leave the results undelivered at commit time (the
+    // new session had no bus yet). Retry the push only now, with the state lock
+    // released, so a deactivation or emergency started meanwhile is not refused.
+    if matches!(result, Ok(nails_core::ActivationOutcome::Activated { .. })) {
+        deliver_after_releasing_lock(_state_lock, || manager.deliver_results_after_unlock());
+    }
+
     // Return the appropriate exit status: an activation that mounted the overlays
     // but could not apply the hidden NixOS configuration reports a distinct
     // success-with-warnings code, and a pre-flight refusal and an unsupported host
@@ -588,6 +595,13 @@ pub fn execute(
         Err(nails_core::NailsError::Cancelled) => ExitStatus::Cancelled,
         Err(_) => ExitStatus::Failed,
     }
+}
+
+/// Release the state lock, then run `deliver`: whatever waits for the session
+/// after an activation must never hold up the next nails operation.
+fn deliver_after_releasing_lock<L>(lock: L, deliver: impl FnOnce()) {
+    drop(lock);
+    deliver();
 }
 
 #[cfg(test)]

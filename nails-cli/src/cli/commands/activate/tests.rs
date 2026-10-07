@@ -240,3 +240,24 @@ fn execute_colour_settings_paint_dry_run_marks() {
         "stdout={stdout}"
     );
 }
+
+#[test]
+fn the_state_lock_is_released_before_the_session_delivery_retries() {
+    // The delivery after a session restart may wait up to 90 s for the new
+    // session's bus; a deactivate or emergency started meanwhile must get the
+    // lock. Inside the delivery another process-level acquire must succeed.
+    let dir = tempfile::tempdir().unwrap();
+    let lock = nails_core::StateLock::try_acquire(dir.path()).expect("first acquire");
+    assert!(
+        nails_core::StateLock::try_acquire(dir.path()).is_err(),
+        "the lock is exclusive while held"
+    );
+    let mut acquired_inside = false;
+    super::deliver_after_releasing_lock(lock, || {
+        acquired_inside = nails_core::StateLock::try_acquire(dir.path()).is_ok();
+    });
+    assert!(
+        acquired_inside,
+        "the delivery ran while the lock was still held"
+    );
+}

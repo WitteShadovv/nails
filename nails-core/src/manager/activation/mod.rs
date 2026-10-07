@@ -173,8 +173,8 @@ fn determine_session_restart_phase(
 /// verification, not by how the target happened to be mounted.
 const INTEGRITY_VERIFIED_TARGETS: &[&str] = &["/boot"];
 
-/// How long a committed activation that restarted the session waits for the
-/// new session's bus before leaving its results queued for the login
+/// How long [`NailsManager::deliver_results_after_unlock`] waits for the
+/// restarted session's bus before leaving the results queued for the login
 /// dispatcher.
 const SESSION_BUS_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
 
@@ -787,7 +787,7 @@ impl<F: Filesystem> NailsManager<F> {
         // so a failure here must never undo a successful activation.
         // Then push the queued results straight into the operator's session.
         self.install_backend_runtime_copy();
-        self.deliver_results_to_session(restart_phase == SessionRestartPhase::AfterOverlayMounts);
+        self.deliver_results_at_commit(restart_phase == SessionRestartPhase::AfterOverlayMounts);
 
         let final_state = self.current_state().ok();
 
@@ -877,12 +877,10 @@ impl<F: Filesystem> NailsManager<F> {
     /// whatever is still undelivered. Only a committed activation pushes; after a
     /// rollback the operator is on the decoy session.
     ///
-    /// When this activation restarted the operator's session, the new session
-    /// may not have its bus yet at commit time (the old one's went away with
-    /// the restart), so the push retries for up to [`SESSION_BUS_WAIT`] before
-    /// leaving the results queued. The wait only ever runs in the detached
-    /// worker, after the activation has committed.
-    fn deliver_results_to_session(&self, session_restarted: bool) {
+    /// With `wait_for_bus`, a push that finds no session bus is retried until
+    /// [`SESSION_BUS_WAIT`] runs out (see
+    /// [`deliver_results_after_unlock`](Self::deliver_results_after_unlock)).
+    fn deliver_results_to_session(&self, wait_for_bus: bool) {
         use crate::notification::deliver::{
             PushOutcome, RealSessionNotifier, SessionUser, push_pending,
         };
@@ -903,10 +901,11 @@ impl<F: Filesystem> NailsManager<F> {
                 user.as_ref(),
                 &RealSessionNotifier,
             );
-            let retry = session_restarted
+            let retry = wait_for_bus
                 && user.is_some()
                 && matches!(outcome, Ok(PushOutcome::NoSession))
-                && std::time::Instant::now() < deadline;
+                && std::time::Instant::now() < deadline
+                && self.session_still_hidden();
             if !retry {
                 break outcome;
             }
@@ -931,6 +930,40 @@ impl<F: Filesystem> NailsManager<F> {
             ),
             Err(e) => tracing::warn!(error = %e, "Could not read the queued activation results"),
         }
+    }
+
+    /// The one push at commit, remembering whether this activation restarted
+    /// the session for [`deliver_results_after_unlock`](Self::deliver_results_after_unlock).
+    fn deliver_results_at_commit(&self, session_restarted: bool) {
+        self.session_restarted.set(session_restarted);
+        self.deliver_results_to_session(false);
+    }
+
+    /// Push the activation's queued results into the operator's session again,
+    /// waiting up to [`SESSION_BUS_WAIT`] for the restarted session's bus.
+    ///
+    /// A committed activation that restarted the session pushes once at commit,
+    /// usually before the new session has a bus. The caller runs this after it
+    /// has released the state lock, so a deactivation or emergency started
+    /// meanwhile is never refused. The delivery needs no lock: the queue lives
+    /// on the hidden volume, and every attempt first checks that the hidden
+    /// root is still mounted and the state still Active, so once a teardown
+    /// starts the retry stops and nothing is read or deleted through a path
+    /// that might now be the decoy. A no-op unless this activation restarted
+    /// the session.
+    pub fn deliver_results_after_unlock(&self) {
+        if self.session_restarted.get() {
+            self.deliver_results_to_session(true);
+        }
+    }
+
+    /// Whether the hidden session is still up: the hidden root mounted and the
+    /// state file (read afresh, without the lock) still Active.
+    fn session_still_hidden(&self) -> bool {
+        let root = &self.config().hidden_volume_root;
+        self.filesystem().is_mounted(root).unwrap_or(false)
+            && crate::StateFile::load(&self.state_file_path)
+                .is_ok_and(|file| matches!(file.state, crate::SystemState::Active { .. }))
     }
 
     fn install_backend_runtime_copy(&self) {
