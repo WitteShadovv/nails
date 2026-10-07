@@ -130,6 +130,36 @@ fn structurally_owned(
     }
 }
 
+/// Whether the mount a step of `kind` made at `target` is still the one a
+/// lookup reaches, judged on the mount table `entries`: by `recorded_id` when
+/// one may be compared, else by where the visible mount sits.
+pub fn presence_in(
+    entries: &[MountEntry],
+    target: &Path,
+    kind: MountKind,
+    recorded_id: Option<i32>,
+    hidden_root: &Path,
+    runtime_root: Option<&Path>,
+) -> Presence {
+    let Some(top) = top_mount_at(entries, target) else {
+        return Presence::Absent;
+    };
+    if let Some(id) = recorded_id {
+        // Another mount covers the step's own (or replaced it): leave it to the
+        // reconcile sweep, which takes down any NAILS mount it finds.
+        return if top.mount_id == id {
+            Presence::Owned
+        } else {
+            Presence::Foreign
+        };
+    }
+    if structurally_owned(entries, top, kind, hidden_root, runtime_root) {
+        Presence::Owned
+    } else {
+        Presence::Foreign
+    }
+}
+
 impl MountOps for KernelMountOps {
     fn presence(
         &self,
@@ -138,33 +168,15 @@ impl MountOps for KernelMountOps {
         recorded_id: Option<i32>,
     ) -> io::Result<Presence> {
         let entries = self.entries()?;
-        let Some(top) = top_mount_at(&entries, target) else {
-            return Ok(Presence::Absent);
-        };
         let runtime_root = self.runtime_root_for(&entries);
-        if self.compare_ids
-            && let Some(id) = recorded_id
-        {
-            if top.mount_id == id {
-                return Ok(Presence::Owned);
-            }
-            // Another mount covers the step's own (or replaced it): leave it to
-            // the reconcile sweep, which takes down any NAILS mount it finds.
-            return Ok(Presence::Foreign);
-        }
-        Ok(
-            if structurally_owned(
-                &entries,
-                top,
-                kind,
-                &self.hidden_root,
-                runtime_root.as_deref(),
-            ) {
-                Presence::Owned
-            } else {
-                Presence::Foreign
-            },
-        )
+        Ok(presence_in(
+            &entries,
+            target,
+            kind,
+            recorded_id.filter(|_| self.compare_ids),
+            &self.hidden_root,
+            runtime_root.as_deref(),
+        ))
     }
 
     fn nails_mounts(&self) -> io::Result<NailsMounts> {

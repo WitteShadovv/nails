@@ -200,6 +200,14 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
         Ok(self.discover_nails_mounts(None)?.is_owned(target))
     }
 
+    /// The live mount table, when the backend reads a real one. The teardown
+    /// plan's presence check then judges a step exactly as the emergency hot
+    /// path does (the mount a lookup reaches, its mount id, where it sits);
+    /// without one it falls back to the backend's ownership answer.
+    fn mount_entries(&self) -> Option<Vec<crate::filesystem::MountEntry>> {
+        None
+    }
+
     /// Detach the top mount at `target` lazily (`MNT_DETACH`), whatever holds
     /// it. Only for a mount the caller has already proved NAILS's own (the
     /// teardown plan's presence check); by default the gated forced unmount.

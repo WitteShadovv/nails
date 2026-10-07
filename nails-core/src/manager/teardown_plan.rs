@@ -302,6 +302,20 @@ impl<F: Filesystem> MountOps for FsMountOps<'_, F> {
         kind: MountKind,
         recorded_id: Option<i32>,
     ) -> io::Result<Presence> {
+        if let Some(entries) = self.fs.mount_entries() {
+            let runtime_root = self.runtime_root.clone().or_else(|| {
+                crate::filesystem::NailsMounts::from_entries(&entries, Some(&self.hidden_root))
+                    .runtime_tmpfs
+            });
+            return Ok(nails_teardown::mounts::presence_in(
+                &entries,
+                target,
+                kind,
+                recorded_id.filter(|_| self.compare_ids),
+                &self.hidden_root,
+                runtime_root.as_deref(),
+            ));
+        }
         if !self.fs.is_mounted(target).map_err(io_error)? {
             return Ok(Presence::Absent);
         }

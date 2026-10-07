@@ -505,3 +505,57 @@ fn the_hot_path_kills_the_hidden_unit_and_a_writer_and_spares_the_session() {
         }
     });
 }
+
+#[test]
+fn a_reattach_over_a_shadowed_decoy_submount_undoes_once_and_reruns_clean() {
+    let _ = Rerun::new(crate::test_path!(
+        a_reattach_over_a_shadowed_decoy_submount_undoes_once_and_reruns_clean
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        // The decoy's /tmp with its own /tmp/xchg submount (the VM's 9p share),
+        // an overlay on /tmp that hides it, and the submount re-attached over
+        // the overlay from a staging bind, as activation does.
+        let fs = RealFilesystem;
+        let hidden = ScratchTmpfs::new("");
+        let decoy = ScratchTmpfs::new("");
+        let tmp = decoy.mkdir("tmp");
+        let xchg = decoy.mkdir("tmp/xchg");
+        fs.mount_tmpfs(&xchg, "4M").unwrap();
+        std::fs::write(xchg.join("share.txt"), "share").unwrap();
+        let recorder = PlanRecorder::memory(hidden.path().to_path_buf());
+        let mut tracker = MountTracker::with_plan(&fs, recorder.clone());
+        let staging = hidden.mkdir(".nails-submounts/staging/tmp%2Fxchg");
+        fs.bind_mount(&xchg, &staging).unwrap();
+        tracker.push_mount(MountInfo::bind(staging.clone()));
+        let upper = hidden.mkdir("tmp/upper");
+        let work = hidden.mkdir("tmp/work");
+        fs.mount_overlay(&[tmp.as_path()], &upper, &work, &tmp)
+            .unwrap();
+        tracker.push_mount(MountInfo::persistent(tmp.clone()));
+        std::fs::create_dir_all(&xchg).unwrap();
+        fs.bind_mount(&staging, &xchg).unwrap();
+        tracker.push_mount(MountInfo::bind(xchg.clone()));
+        tracker.take_mounts();
+        let plan = recorder.snapshot();
+
+        // Undo only the attachments first, as a deactivation does before its
+        // cleanup, then the whole plan: the re-attach is already gone and the
+        // decoy's own /tmp/xchg left in the table is not reached by a lookup.
+        let ops = FsMountOps::for_plan(&fs, &plan);
+        let first = nails_teardown::undo::run_plan(&ops, &plan, &[Phase::Dependents], false);
+        assert!(first.failures().is_empty(), "{first:?}");
+        let all = crate::manager::activation::rollback::undo_plan(&fs, &plan);
+        assert!(all.failures().is_empty(), "{all:?}");
+        let again = crate::manager::activation::rollback::undo_plan(&fs, &plan);
+        assert!(again.failures().is_empty(), "{again:?}");
+
+        assert!(!mounted(&staging));
+        assert_eq!(fstype(&tmp), None, "the /tmp overlay is gone");
+        assert_eq!(fstype(&xchg).as_deref(), Some("tmpfs"));
+        assert_eq!(
+            std::fs::read_to_string(xchg.join("share.txt")).unwrap(),
+            "share"
+        );
+    });
+}

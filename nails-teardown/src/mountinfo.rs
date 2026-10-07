@@ -339,20 +339,39 @@ pub fn is_read_only_self_bind(entries: &[MountEntry], target: &Path) -> bool {
     })
 }
 
-/// The topmost mount at exactly `target`: the entry at that mount point that no
-/// other entry at the same point is stacked on. `None` when nothing is mounted
-/// there. Two mounts can share a mount point (an overlay on the decoy's own
-/// `/home` partition, or a hand-stacked second overlay), and only the top one is
-/// what a lookup of the path reaches and what an unmount removes.
+/// The mount a lookup of `target` reaches, when that is a mount whose mount
+/// point is exactly `target`; `None` otherwise.
+///
+/// Two mounts can share a mount point (an overlay on the decoy's own `/home`
+/// partition, a hand-stacked second overlay), and a mount can also be shadowed
+/// without anything at its own point: the decoy's `/tmp/xchg` stays in the
+/// table after an overlay is mounted on `/tmp`, but a lookup of `/tmp/xchg` now
+/// ends in the overlay and never reaches it. So the visible mount is found the
+/// way the kernel walks: from the namespace root, at each prefix of `target`
+/// follow the mounts whose parent is the mount reached so far, topmost last.
 pub fn top_mount_at<'a>(entries: &'a [MountEntry], target: &Path) -> Option<&'a MountEntry> {
-    entries
-        .iter()
-        .filter(|entry| entry.mount_point == target)
-        .find(|entry| {
-            !entries
+    let root = Path::new("/");
+    let mut current = entries.iter().find(|e| {
+        e.mount_point == root
+            && !entries
                 .iter()
-                .any(|above| above.mount_point == target && above.parent_id == entry.mount_id)
-        })
+                .any(|below| below.mount_id == e.parent_id && below.mount_point == root)
+    })?;
+    let climb = |mut at: &'a MountEntry, point: &Path| {
+        while let Some(above) = entries.iter().find(|e| {
+            e.mount_point == point && e.parent_id == at.mount_id && e.mount_id != at.mount_id
+        }) {
+            at = above;
+        }
+        at
+    };
+    current = climb(current, root);
+    let mut prefix = PathBuf::from("/");
+    for component in target.components().skip(1) {
+        prefix.push(component);
+        current = climb(current, &prefix);
+    }
+    (current.mount_point == target).then_some(current)
 }
 
 /// The NAILS-created mounts currently present, classified by kind.
@@ -574,6 +593,37 @@ mod tests {
     const OCT_SPACE: &str = "\\040";
     const OCT_TAB: &str = "\\011";
     const OCT_BACKSLASH: &str = "\\134";
+
+    #[test]
+    fn the_visible_mount_skips_one_shadowed_by_an_overlay_above_it() {
+        let table = parse_mountinfo(
+            "\
+1 0 8:1 / / rw - ext4 /dev/sda1 rw
+2 1 0:30 / /tmp rw - tmpfs tmpfs rw
+3 2 0:31 / /tmp/xchg rw - 9p xchg rw
+4 2 0:50 / /tmp rw - overlay overlay rw,lowerdir=/tmp,upperdir=/h/u,workdir=/h/w
+5 4 0:31 / /tmp/xchg ro - 9p xchg rw
+6 4 0:51 / /tmp rw - overlay overlay rw,lowerdir=/x,upperdir=/h/x,workdir=/h/y
+",
+        );
+        // /tmp: the second overlay stacked on the first.
+        assert_eq!(
+            top_mount_at(&table, Path::new("/tmp")).map(|e| e.mount_id),
+            Some(6)
+        );
+        // /tmp/xchg: the re-attach (5) sits on overlay 4, now covered by 6, and
+        // the decoy's own (3) on the partition below: neither is reached.
+        assert_eq!(top_mount_at(&table, Path::new("/tmp/xchg")), None);
+        let without_top: Vec<_> = table.iter().filter(|e| e.mount_id != 6).cloned().collect();
+        assert_eq!(
+            top_mount_at(&without_top, Path::new("/tmp/xchg")).map(|e| e.mount_id),
+            Some(5)
+        );
+        assert_eq!(
+            top_mount_at(&table, Path::new("/")).map(|e| e.mount_id),
+            Some(1)
+        );
+    }
 
     #[test]
     fn a_mount_with_an_empty_source_is_kept() {

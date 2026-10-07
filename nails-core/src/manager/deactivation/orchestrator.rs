@@ -88,14 +88,17 @@ impl DeactivationOrchestrator {
         self
     }
 
-    /// The overlay-family targets the plan names, in plan order, for judging
-    /// afterwards which of them are still live.
+    /// The overlay targets the plan names, in plan order, for judging
+    /// afterwards which of them are still live. A nested overlay's point is
+    /// left out: once it is gone the decoy's own submount is there again (a
+    /// writable partition, possibly an overlay of its own, as the VM's store
+    /// is), and the live-table classifier judges that one.
     fn planned_targets(plan: &nails_teardown::Plan) -> Vec<PathBuf> {
         let mut targets = Vec::new();
         for step in &plan.steps {
             if let nails_teardown::Undo::Unmount {
                 target,
-                kind: nails_teardown::MountKind::Overlay | nails_teardown::MountKind::NestedOverlay,
+                kind: nails_teardown::MountKind::Overlay,
                 ..
             } = &step.undo
                 && !targets.contains(target)

@@ -12,8 +12,9 @@ use std::cell::RefCell;
 use std::collections::BTreeSet;
 use std::io;
 
-/// A mutable mount table. An unmount removes the top entry at the target; a
-/// target in `busy` refuses a normal unmount and accepts only a lazy one.
+/// A mutable mount table. An unmount removes the visible entry at the target;
+/// a target in `busy`, or one with mounts on it, refuses a normal unmount and
+/// accepts only a lazy one, which takes its subtree with it.
 struct Table {
     entries: RefCell<Vec<MountEntry>>,
     busy: BTreeSet<PathBuf>,
@@ -71,13 +72,15 @@ impl MountOps for Table {
     }
 
     fn unmount(&self, target: &Path, _kind: MountKind, lazy: bool) -> io::Result<()> {
-        if self.busy.contains(target) && !lazy {
-            return Err(io::Error::from_raw_os_error(libc::EBUSY));
-        }
         let mut entries = self.entries.borrow_mut();
         let Some(id) = top_mount_at(&entries, target).map(|e| e.mount_id) else {
             return Err(io::Error::from_raw_os_error(libc::EINVAL));
         };
+        // A mount with mounts on it, or one a process holds, is busy.
+        let has_children = entries.iter().any(|e| e.parent_id == id);
+        if (self.busy.contains(target) || has_children) && !lazy {
+            return Err(io::Error::from_raw_os_error(libc::EBUSY));
+        }
         // A lazy detach takes the whole subtree with it.
         let mut doomed = vec![id];
         if lazy {

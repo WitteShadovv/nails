@@ -119,6 +119,10 @@ impl Filesystem for RealFilesystem {
         ))
     }
 
+    fn mount_entries(&self) -> Option<Vec<crate::filesystem::MountEntry>> {
+        crate::filesystem::mountinfo::read_mountinfo().ok()
+    }
+
     fn detach_lazily(&self, target: &Path) -> Result<()> {
         nix::mount::umount2(
             target,
