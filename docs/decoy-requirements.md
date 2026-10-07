@@ -1,11 +1,27 @@
 # Decoy requirements: making the base system amnesic
 
-NAILS hides a session behind a decoy system by overlaying the writable trees so
-the hidden session's writes land on the hidden volume instead of the decoy disk.
+NAILS hides a session behind a decoy system by running it inside one overlay of
+the whole decoy root, entered and left with `systemctl soft-reboot`, so the
+hidden session's writes land on the hidden volume instead of the decoy disk.
 That guarantee only holds if the decoy itself keeps **no durable record** of the
-hidden session. A decoy that writes logs, audit records, crash dumps or swap to
-its own disk defeats the overlay model: those traces are created outside the
-overlays (or before they are mounted) and survive deactivation and reboot.
+hidden session. The decoy runs before the soft-reboot into the hidden session
+and again after the way back: a decoy that writes logs, audit records, crash
+dumps or swap to its own disk records the activation command, its own shutdown
+and start under one boot ID, and anything it imports from the kernel ring
+buffer.
+
+The decoy also has to be one the session can enter and leave:
+
+- **systemd 254 or newer** with `soft-reboot.target` and
+  `systemd-soft-reboot.service` installed (`systemd-version`,
+  `soft-reboot-units`). Debian 13, Ubuntu 24.04 and current NixOS qualify;
+  Debian 12 and Ubuntu 22.04 are refused. A NixOS decoy on a nixpkgs that does
+  not install the two units needs the module `nails check` prints (and so does a
+  hidden NixOS configuration, or the session could not leave).
+- **A decoy root on a block device** (`decoy-root`): ext4, xfs, btrfs (including
+  a subvolume) or f2fs. The way back mounts it again by device, so a tmpfs root
+  (impermanence), an overlay root (overlayroot, bilibop-lockfs) and ZFS are
+  refused.
 
 This document lists what an amnesic decoy must look like, what NAILS enforces at
 pre-flight, and how to satisfy each requirement on the supported platforms. The
@@ -31,7 +47,7 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 
 Override these with `--accept-persistent-decoy` on `activate`/`check`, or
 `accept_persistent_decoy = true` in `nails.toml`, only if you understand and
-accept that records written before the overlays are mounted may survive on the
+accept that what the decoy logs around each soft-reboot may survive on the
 decoy disk.
 
 ### Warn (surfaced, never blocking)
@@ -102,18 +118,21 @@ logind does not govern.
 
 For defence in depth, set `sleep_policy.mode` in `nails.toml`. `block` holds a
 sleep/idle inhibitor for the life of the session so the host cannot suspend while
-active; `teardown` holds a sleep *delay* inhibitor and runs the bounded emergency
-teardown when the host is about to sleep, within logind's `InhibitDelayMaxSec`
-window (default 5s). The inhibitor is a runtime backstop — still fix the lid
+active; `teardown` holds a sleep *delay* inhibitor and powers the machine off
+when the host is about to sleep, within logind's `InhibitDelayMaxSec` window
+(default 5s). Both run as runtime units of the hidden session. The inhibitor is a runtime backstop — still fix the lid
 switch above, since a blocked suspend with the lid shut can overheat a laptop.
 
 ## Satisfying the requirements per platform
 
 ### NixOS
 
-- **Impermanence** (`nixos-impermanence`): keep `/` (or at least `/var`, `/home`,
-  `/etc`) on a tmpfs or a wiped-on-boot dataset so the decoy is amnesic by
-  construction. This is the strongest documented posture.
+- **Soft-reboot units**: until nixpkgs installs `soft-reboot.target` and
+  `systemd-soft-reboot.service`, declare them as `nails check` shows
+  (`systemd.units`); the hidden configuration needs them too.
+- **A disk-backed root**: a tmpfs root (`nixos-impermanence` on `/`) is refused.
+  Keep the root on disk; a wiped-on-boot `/var` or `/home` on its own tmpfs is
+  fine (the hidden session mounts a fresh tmpfs there, in RAM).
 - **Volatile journald**: `services.journald.storage = "volatile";`.
 - **No classic syslog / audit**: do not enable `services.rsyslogd`,
   `services.syslog-ng` or `security.auditd` / the audit framework on the decoy.
@@ -123,8 +142,8 @@ switch above, since a blocked suspend with the lid shut can overheat a laptop.
 
 ### Ubuntu
 
-- **overlayroot**: use the `overlayroot` package to make `/` a RAM-backed overlay
-  wiped on reboot.
+- **Ubuntu 24.04 or newer** (systemd 255+). `overlayroot` is not supported: an
+  overlay root cannot be mounted again for the way back.
 - **Volatile journald**: set `Storage=volatile` under `[Journal]` in
   `/etc/systemd/journald.conf`, or in a drop-in such as
   `/etc/systemd/journald.conf.d/50-volatile.conf`. NAILS resolves the main
@@ -135,8 +154,8 @@ switch above, since a blocked suspend with the lid shut can overheat a laptop.
 
 ### Debian
 
-- **bilibop-lockfs** (or an equivalent RAM-overlay setup) to make the base
-  system amnesic.
+- **Debian 13 or newer** (systemd 257+). `bilibop-lockfs` and other RAM-overlay
+  roots are not supported: the way back mounts the decoy root by device.
 - **Volatile journald**: `Storage=volatile` in `journald.conf` or a
   `journald.conf.d/*.conf` drop-in.
 - Remove or disable `rsyslog`/`syslog-ng` and `auditd`.
@@ -147,7 +166,8 @@ switch above, since a blocked suspend with the lid shut can overheat a laptop.
 Running `sudo nails …` is itself a sensitive event: sudo logs the invoking user,
 the target command and its full path through its configured log channel
 (journald, syslog, or `/var/log/sudo.log`). On a persistent decoy that record
-names the hidden-root binary path before any overlay exists.
+names the hidden-root binary path; `nails activate` runs on the decoy, before
+the soft-reboot into the overlay.
 
 **Mitigation**: run NAILS on an amnesic decoy (volatile journald, no syslog,
 no sudo `logfile` or I/O logging in sudoers) so the sudo record is never durably
@@ -157,9 +177,14 @@ with the decoy, which would itself be a tell.
 
 ## Shell history hardening
 
-NAILS keeps hidden-session history off the decoy by killing shells before the
-unmount (see [bash-history-forensics.md](bash-history-forensics.md)), but it does
-**not** configure the decoy's own shells. If you type on the decoy — and the
+Hidden-session history never reaches the decoy: every hidden shell runs inside
+the overlay and writes its history file into the upper. On the decoy,
+`nails activate` SIGKILLs the decoy's interactive shells as its last step, so a
+shell that saves history on exit (bash on SIGHUP) never writes the activation
+command (see [bash-history-forensics.md](bash-history-forensics.md)). NAILS does
+**not** configure the decoy's own shells, and a shell that flushes history after
+every command (zsh `INC_APPEND_HISTORY`, `history -a` in `PROMPT_COMMAND`) has
+already written it; the `incremental-history-flush` check warns about that. If you type on the decoy — and the
 pre-activation unlock and mount commands must be typed there — harden the decoy's
 history yourself so an interactive shell has nowhere to write:
 
@@ -182,20 +207,26 @@ you typed back to the decoy.
 
 ## Writes that bypass the overlays
 
-The overlays cover the writable decoy trees. Anything mounted outside them takes
-writes directly:
+The root overlay covers only the root filesystem. The hidden systemd reads the
+decoy's fstab (or the hidden NixOS generation's) and would mount every other
+decoy filesystem **directly and read-write**, and activate decoy swap. Before
+the switch the `fstab-policy` decides each entry, and activation puts the
+decision in place inside the next root:
 
-- **Base-OS trees.** A `/usr`, `/bin`, `/lib` or `/sbin` that is neither
-  overlaid nor read-only takes the session's package writes on the decoy disk.
-  The `writable-trees` check refuses activation in that case. On Debian and
-  Ubuntu the package database under `/var/lib/dpkg` and the apt logs are covered
-  by overlaying `/var`.
-- **Other disks.** A second disk, a Windows partition or an automounted USB drive
-  stays read-write on real storage for the whole session. The `stray-mounts`
-  check warns about the ones present at activation; unmount them first, or mount
-  them read-only. `verify` cannot tell what a session wrote there, but
-  [`nails rehearse`](operator-guide.md#rehearsing-before-you-rely-on-it) scans
-  every mounted disk for its canary.
+| Entry | In the hidden session |
+| --- | --- |
+| `/boot`, `/boot/efi`, `/efi` (ESP, boot partitions), and filesystems mounted read-only | read-only bind |
+| other mounted local filesystems (a separate `/home`, `/var`, `/srv`), mounted VM host shares and overlays | overlay, upper at `<hidden>/root/mounts/<unit name>/upper` |
+| swap | masked: never activated |
+| local filesystems not mounted now but mounted at boot, network filesystems, overlay entries with an upper on a disk | masked: not available in the hidden session |
+| tmpfs and kernel filesystems, `noauto` entries, the hidden volume | left alone |
+
+A mount that is not in fstab (an automounted USB drive, a disk mounted by hand)
+is not carried into the hidden session at all; the hidden session can mount it
+again itself, and then writes to it directly. `verify` cannot tell what a
+session wrote there, but
+[`nails rehearse`](operator-guide.md#rehearsing-before-you-rely-on-it) scans
+every mounted disk for its canary.
 
 ## Session-time records
 
@@ -204,9 +235,9 @@ running. An examiner compares them with the decoy's own logs, and unexplained
 uptime points to use the decoy does not account for.
 
 - **The timesyncd clock stamp.** `systemd-timesyncd` touches
-  `/var/lib/systemd/timesync/clock` at each sync and at shutdown. With `/var`
-  overlaid the session's touches go to the upper, but the shutdown after
-  deactivation stamps the decoy copy with the end of the session.
+  `/var/lib/systemd/timesync/clock` at each sync and at shutdown. The session's
+  touches go to the upper, but the decoy's own shutdown before the session and
+  its start after it stamp the decoy copy.
 - **Persistent timer stamps.** Timers with `Persistent=true` record their last
   run under `/var/lib/systemd/timers`. Runs during the session land in the
   upper; at the next decoy boot, missed timers catch up at once, which dates the
@@ -304,7 +335,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
 | [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Send core dumps nowhere persistent and disarm kdump on the decoy. | `examiner-audit` |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `session-emergency` |
-| [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the /home overlay | `deep-scan-recent-files` | Keep /home overlaid; never open hidden files from a decoy session. | `rehearse-canary` |
+| [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the /home overlay | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-core/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
 | [NixOS account bookkeeping](threat-model.md#known-residual-changes) (`var-lib-nixos`) | `/var/lib/nixos` | NixOS | none: the decoy rewrites these files on every boot; only a control run tells noise from a leak | `platform-scanners` | Overlay /var; the drift test compares against a plain-reboot control. | `session-nixos-hidden-system` |
 | [Decoy filesystems the hidden systemd would mount](#writes-that-bypass-the-overlays) (`decoy-filesystems`) | fstab entries of the hidden root: a separate /home or /var, the ESP, decoy swap, a second disk | all | `fstab-policy` (refuses) | none: verify cannot tell what a session wrote to another filesystem | NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, and masks swap and unmounted disks before the switch. | `soft-reboot-mechanics` |
@@ -314,8 +345,8 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Soft-reboot counter and boot ID](threat-model.md#residual-channels) (`soft-reboot-counter`) | SoftRebootsCount and the unchanged boot ID and uptime, readable with systemctl and journalctl | all | none: kernel and PID 1 state, not a file | none: RAM only, gone at power-off | Power off after the session; keep the decoy journal volatile. | `soft-reboot-mechanics` |
 | [EFI NVRAM, RTC and firmware pstore](threat-model.md#invariant) (`firmware-state`) | EFI variables, the real-time clock, firmware-backed pstore | all | none: not filesystem state, so nothing on the decoy root shows it | none: EFI variables and firmware storage are not part of a disk image | NAILS never writes NVRAM; avoid firmware tools inside the session. | `uefi-esp-nvram-invariant` |
 | [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) (`ram-remanence`) | DRAM contents until power-off | all | `memory-wipe` | `memory-swap` | Power off (`--poweroff`) before handing the machine over; boot the decoy with init_on_free=1. | none: memory forensics is out of scope; no VM test images RAM |
-| [timesyncd clock stamp](#session-time-records) (`timesync-clock`) | `/var/lib/systemd/timesync/clock` | all | path probe (info) | path probe (info) | Keep /var overlaid; on a persistent decoy, use the decoy normally after a session so its own activity follows the stamp. | `examiner-audit` |
-| [Persistent timer stamps](#session-time-records) (`timer-stamps`) | `/var/lib/systemd/timers` | all | path probe (info) | path probe (info) | Keep /var overlaid so session stamps land in the upper; expect catch-up runs at the next decoy boot. | `examiner-audit` |
+| [timesyncd clock stamp](#session-time-records) (`timesync-clock`) | `/var/lib/systemd/timesync/clock` | all | path probe (info) | path probe (info) | Session touches land in the upper; on a persistent decoy, use the decoy normally after a session so its own activity follows the stamp. | `examiner-audit` |
+| [Persistent timer stamps](#session-time-records) (`timer-stamps`) | `/var/lib/systemd/timers` | all | path probe (info) | path probe (info) | Session stamps land in the upper; expect catch-up runs at the next decoy boot. | `examiner-audit` |
 | [SMART power-on hours](#session-time-records) (`smart-power-on-hours`) | the drive's own power-on-hours and power-cycle counters | all | none: not filesystem state, so nothing on the decoy root shows it | none: a disk image does not carry SMART counters | None in software; use the decoy normally so its logged uptime is plausible. | none: virtual disks have no SMART log |
 | [SSD flash-translation-layer remnants](operator-guide.md#ssd-wear-levelling) (`ssd-ftl-remnants`) | remapped and over-provisioned flash blocks | all | none: not filesystem state, so nothing on the decoy root shows it | none: no host-side read reaches remapped flash cells, so `nails rehearse` cannot see them either | Full-disk encryption on the decoy, so remnants are ciphertext; no TRIM on a volume that holds a hidden volume. | none: virtual disks have no flash translation layer |
 <!-- residue-catalog:end session -->

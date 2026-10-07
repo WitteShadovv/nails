@@ -318,7 +318,7 @@ after `mkfs.erofs` succeeded; anything else rebuilds as before). Machines
 without a store image keep the stock script. The tests that power-cycle a
 store-image VM restart it 17 times per full run: forensic-clean,
 standard-deactivation-forensic, snapshot-diff, post-emergency-image and
-tcrypt-veracrypt-hidden twice each, var-lib-nixos-drift three times,
+the VeraCrypt backend test twice each, var-lib-nixos-drift three times,
 activate-full-rebuild twice, nix-store-placement and decoy-journal-leak once.
 
 ### Expected savings
