@@ -468,6 +468,13 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Fixed
 
+- The read-only guard on a Debian-family host keeps the decoy root read-only in place, with the
+  per-mount read-only flag on the root mount, instead of stacking a self-bind on `/`. The stacked
+  bind left the root writable for every running process, could not be unmounted (`EBUSY`), piled
+  up across activations and left two mount table entries for `/`, a layout systemd's PID 1 can
+  abort on. A busy guard on another tree such as `/usr` is now detached lazily at teardown instead
+  of staying in place, and a failed start of the in-session watcher logs `systemd-run`'s message
+  and no longer waits on PID 1 without a limit.
 - Resolved the RUSTSEC advisories in the dependency graph and restored the Nix release build
   ([#54](https://github.com/WitteShadovv/nails/pull/54)).
 - The preflight README defers to rustdoc for the registered checks and states the real 500 MB

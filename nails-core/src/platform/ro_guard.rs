@@ -72,9 +72,11 @@ const FHS_CORE_ROOTS: &[&str] = &["/usr", "/bin", "/sbin", "/lib", "/lib64"];
 /// overlaying the root.
 const FHS_EXTRA_EXCLUSIONS: &[&str] = &["/snap", "/.snapshots", "/sysroot", "/ostree", "/efi"];
 
-/// The whole decoy root. Bind-remounted read-only on an FHS host so a write that
-/// is not caught by an overlay (a new top-level directory, a package payload
-/// under `/usr`) is refused with `EROFS` instead of reaching the decoy disk.
+/// The whole decoy root. Kept read-only on an FHS host so a write that is not
+/// caught by an overlay (a new top-level directory, a file under `/root`) is
+/// refused with `EROFS` instead of reaching the decoy disk. The root is guarded
+/// in place, by the per-mount read-only flag on its own mount, never by a bind
+/// stacked on `/` (see [`Filesystem::remount_read_only`]).
 const DECOY_ROOT: &str = "/";
 
 /// The overlay policy for a platform, expressed as data.
@@ -220,7 +222,7 @@ impl OverlayPolicy {
 /// Applies [`Filesystem::remount_read_only`] to each tree in order and returns
 /// the paths actually guarded. If any remount fails — most importantly with
 /// `EBUSY`, when a tree has active references — every guard made so far is undone
-/// (best-effort, via [`Filesystem::unmount_bind`]) and the original error is
+/// (best-effort, via [`Filesystem::remove_read_only_guard`]) and the original error is
 /// returned, so a partial guard never leaves the host inconsistent. The caller
 /// aborts and rolls the activation back on an error.
 pub fn guard_read_only_trees<F: Filesystem>(fs: &F, trees: &[PathBuf]) -> Result<Vec<PathBuf>> {
@@ -239,7 +241,7 @@ pub fn guard_read_only_trees<F: Filesystem>(fs: &F, trees: &[PathBuf]) -> Result
                     "Failed to keep decoy OS tree read-only; rolling back the read-only guard"
                 );
                 for done in guarded.iter().rev() {
-                    if let Err(undo_error) = fs.unmount_bind(done) {
+                    if let Err(undo_error) = fs.remove_read_only_guard(done) {
                         tracing::warn!(
                             tree = %done.display(),
                             error = %undo_error,

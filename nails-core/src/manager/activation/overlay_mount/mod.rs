@@ -772,12 +772,12 @@ impl<F: Filesystem> NailsManager<F> {
     }
 
     /// Undo the read-only guards activation recorded, returning write access to the
-    /// decoy OS trees. Best-effort and idempotent: `unmount_bind` is a no-op for a
+    /// decoy OS trees. Best-effort and idempotent: `remove_read_only_guard` is a no-op for a
     /// tree that is not currently guarded, so a partial or repeated teardown is
     /// safe. Called from deactivation and emergency teardown.
     pub(crate) fn teardown_read_only_guards(&self, guards: &[PathBuf]) {
         for tree in guards.iter().rev() {
-            if let Err(error) = self.filesystem.unmount_bind(tree) {
+            if let Err(error) = self.filesystem.remove_read_only_guard(tree) {
                 tracing::warn!(
                     tree = %tree.display(),
                     error = %error,

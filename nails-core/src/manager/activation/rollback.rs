@@ -244,7 +244,7 @@ impl<F: Filesystem> Drop for ActivationMounts<F> {
         // before the overlays stacked on them are removed. Best-effort: a failure
         // here must not stop the overlay rollback.
         for tree in self.read_only_guards.iter().rev() {
-            if let Err(error) = self.filesystem.unmount_bind(tree) {
+            if let Err(error) = self.filesystem.remove_read_only_guard(tree) {
                 tracing::error!(
                     tree = %tree.display(),
                     error = %error,

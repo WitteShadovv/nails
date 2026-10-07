@@ -232,7 +232,9 @@ pub fn start_watch_unit() {
         // A crash of the watcher must not dump core onto the decoy.
         .arg("--property=LimitCORE=0")
         .arg(&binary)
-        .arg("watch");
+        .arg("watch")
+        // A wedged PID 1 must not hold activation up; the watcher is optional.
+        .deadline(crate::process::run::SYSTEMCTL_ACTION_BUDGET);
 
     match RealProcessRunner.run(&command) {
         Ok(output) if output.status.success() => {
@@ -242,9 +244,12 @@ pub fn start_watch_unit() {
             );
         }
         Ok(output) => {
+            // systemd-run's own message is the diagnosis (a refused executable,
+            // an unreachable PID 1), so it is carried into the warning.
             tracing::warn!(
                 unit = WATCH_UNIT_NAME,
                 status = %output.status,
+                stderr = %String::from_utf8_lossy(&output.stderr).trim(),
                 "Could not start the in-session backend watcher; the session runs without it"
             );
         }

@@ -215,21 +215,33 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// bind is left at `mount_point`, undone with [`unmount_bind`](Self::unmount_bind).
     fn reattach_submount(&self, source: &Path, mount_point: &Path, read_only: bool) -> Result<()>;
 
-    /// Bind-remount `target` on itself read-only.
+    /// Keep `target` read-only for the session (the read-only guard).
     ///
-    /// Performs `mount(target, target, MS_BIND)` followed by
-    /// `mount(target, target, MS_BIND|MS_REMOUNT|MS_RDONLY)`, leaving one
-    /// read-only self-bind stacked at `target`. The read-only guard uses this to
-    /// keep a writable OS tree (`/usr` and the real-dir core binary roots on an
-    /// FHS host) read-only for the duration of a hidden session, so hidden
-    /// writes never reach the decoy disk. Undone with [`unmount_bind`]. A busy
+    /// For any tree but the root this performs `mount(target, target, MS_BIND)`
+    /// followed by `mount(target, target, MS_BIND|MS_REMOUNT|MS_RDONLY)`, leaving
+    /// one read-only self-bind stacked at `target`. The root is instead guarded in
+    /// place, by setting the per-mount read-only flag on its own mount: a mount
+    /// stacked on `/` is invisible to every running process and cannot be
+    /// unmounted again. The read-only guard uses this to keep a writable OS tree
+    /// (the root, `/usr` and the real-dir core binary roots on an FHS host)
+    /// read-only for the duration of a hidden session, so hidden writes never
+    /// reach the decoy disk. Undone with [`remove_read_only_guard`]. A busy
     /// target surfaces as [`NailsError::MountBusy`] so the guard can fail closed.
     ///
-    /// [`unmount_bind`]: Self::unmount_bind
+    /// [`remove_read_only_guard`]: Self::remove_read_only_guard
     fn remount_read_only(&self, target: &Path) -> Result<()>;
 
+    /// Undo the guard [`remount_read_only`](Self::remount_read_only) put on
+    /// `target` (idempotent). Defaults to [`unmount_bind`](Self::unmount_bind),
+    /// the undo of a self-bind; the real filesystem also clears the root's
+    /// in-place flag and detaches a busy self-bind lazily.
+    fn remove_read_only_guard(&self, target: &Path) -> Result<()> {
+        self.unmount_bind(target)
+    }
+
     /// Whether a read-only guard (the read-only self-bind
-    /// [`remount_read_only`](Self::remount_read_only) stacks) sits on `target`.
+    /// [`remount_read_only`](Self::remount_read_only) stacks, or the root's
+    /// in-place read-only flag) sits on `target`.
     ///
     /// An untrusted teardown cannot read the recorded guard list, so it removes
     /// only guards it can see here, never a decoy mount that merely sits at a

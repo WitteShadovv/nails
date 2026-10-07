@@ -227,6 +227,38 @@ distroVm.buildVmTest {
         return f"overlay on /{tree} type overlay" in vm.succeed("mount")
 
 
+    # Each probe is bounded on its own, so a wedged PID 1 or journald still lets
+    # the next one (and the test's own failure) run.
+    pid1_probes = (
+        ("PID 1 round trip", "time -p timeout 30 systemctl show -p Version"),
+        ("system state", "timeout 30 systemctl is-system-running"),
+        ("queued jobs", "timeout 30 systemctl list-jobs --no-pager"),
+        ("failed units", "timeout 30 systemctl --failed --no-pager"),
+        ("watcher unit", "timeout 30 systemctl status overlay-runtime-monitor --no-pager --full"),
+        ("PID 1 sockets", "ls -l /run/systemd/private /run/systemd/notify"),
+        ("root and /usr mounts", "grep -E ' / (/|/usr|/run) ' /proc/self/mountinfo"),
+        (
+            "PID 1 messages",
+            "timeout 30 journalctl -b _PID=1 -n 150 --no-pager -o short-monotonic",
+        ),
+        (
+            "warnings",
+            "timeout 30 journalctl -b -p warning -n 200 --no-pager -o short-monotonic",
+        ),
+        ("kernel tail", "dmesg | tail -n 40"),
+    )
+
+
+    def pid1_health(label):
+        # A self-explaining log: what PID 1, its job queue and the journal looked
+        # like at this point, and which units it started or stopped. Never fails.
+        report = [f"=== PID 1 health: {label} ==="]
+        for title, command in pid1_probes:
+            _, out = vm.execute(f"{{ {command}; }} 2>&1", check_return=False, timeout=120)
+            report.append(f"--- {title}: {command}\n{out.rstrip()}")
+        print("\n".join(report))
+
+
     vm.wait_for_unit("multi-user.target")
     vm.succeed(f"test -x {nails}")
 
@@ -280,9 +312,19 @@ distroVm.buildVmTest {
 
     with subtest("overlay-only activation isolates the writable trees"):
         vm.succeed(f"{nails_cmd} activate --overlay-only --session keep -y")
+        pid1_health("after the first activation")
 
         for tree in overlay_trees:
             assert overlay_mounted(tree), f"/{tree} is not overlaid"
+
+        # The guard covers the whole decoy root, in place: a write outside every
+        # overlay is refused, and the root's own mount is the only one at `/`.
+        root_err = vm.fail("touch /rw-probe-root 2>&1")
+        assert "read-only" in root_err.lower(), (
+            f"a write to the decoy root was not refused: {root_err}"
+        )
+        root_mounts = vm.succeed("awk '$5 == \"/\"' /proc/self/mountinfo").splitlines()
+        assert len(root_mounts) == 1, f"a mount is stacked on /: {root_mounts}"
 
         # /usr is kept read-only instead of overlaid.
         usr_options = vm.succeed("findmnt -rn -o OPTIONS /usr").split()
@@ -328,7 +370,11 @@ distroVm.buildVmTest {
         # overlay and lifts the read-only guard but leaves the hidden root
         # mounted (no --lock-backend).
         emergency = json.loads(vm.succeed(f"{nails_cmd} emergency --json"))["data"]
+        pid1_health("after emergency")
         assert emergency["status"] == "complete", f"emergency did not complete: {emergency}"
+        # Emergency lifts the guard: the decoy root and /usr are writable again.
+        vm.succeed("touch /rw-probe-root && rm -f /rw-probe-root")
+        vm.succeed("touch /usr/rw-probe && rm -f /usr/rw-probe")
         for tree in overlay_trees:
             assert not overlay_mounted(tree), f"/{tree} is still overlaid after emergency"
         status = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]
@@ -345,12 +391,20 @@ distroVm.buildVmTest {
         write_config()
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
         vm.succeed(f"{nails_cmd} activate --overlay-only --session keep -y")
+        pid1_health("after the re-activation")
         assert overlay_mounted("home"), "re-activation did not overlay /home"
         console_mark = len(vm.get_console_log())
-        vm.succeed(
+        teardown_rc, teardown_out = vm.execute(
             "systemd-run --unit smoke-teardown --no-block --service-type=exec "
-            + f"{nails_cmd} deactivate -y"
+            + f"{nails_cmd} deactivate -y 2>&1",
+            check_return=False,
         )
+        if teardown_rc != 0:
+            pid1_health("systemd-run refused the teardown unit")
+            raise AssertionError(
+                f"systemd-run could not start the teardown unit (rc={teardown_rc}): "
+                + teardown_out
+            )
         wait_for_guest_reboot(console_mark, "smoke-teardown")
         prepare_boot()
         for tree in overlay_trees:

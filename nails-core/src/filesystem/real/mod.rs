@@ -19,6 +19,7 @@ mod dir_ops;
 mod file_ops;
 mod mount_ops;
 mod noatime;
+mod ro_guard_ops;
 mod submount;
 mod system_ops;
 
@@ -248,14 +249,15 @@ impl Filesystem for RealFilesystem {
     }
 
     fn remount_read_only(&self, target: &Path) -> Result<()> {
-        mount_ops::remount_read_only(target)
+        ro_guard_ops::guard_read_only(target)
+    }
+
+    fn remove_read_only_guard(&self, target: &Path) -> Result<()> {
+        ro_guard_ops::remove_guard(self, target)
     }
 
     fn is_read_only_guard(&self, target: &Path) -> Result<bool> {
-        Ok(crate::filesystem::mountinfo::is_read_only_self_bind(
-            &crate::filesystem::read_mountinfo()?,
-            target,
-        ))
+        ro_guard_ops::is_guarded(target)
     }
 
     fn file_size(&self, path: &Path) -> Result<u64> {
