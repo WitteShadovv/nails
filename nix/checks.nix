@@ -142,9 +142,9 @@ in
   # fileset carries those inputs: deny.toml (the advisory-ignore config),
   # docs/ci.md plus .github/workflows (the workflow-documentation check), and
   # the E2E metadata sources the shard planner's tests scan (default.nix, the
-  # tests tree and the checked-in weights) and the helper library the E2E
-  # synchronisation lint scans. git is a tool because changes.py
-  # shells out to it and its tests build throwaway repositories.
+  # tests tree and the checked-in weights) and the helper library and batched
+  # scenarios the E2E synchronisation lint scans. git is a tool because
+  # changes.py shells out to it and its tests build throwaway repositories.
   ci-python = lint "ci-python" {
     files = fs.unions [
       ../ci
@@ -155,6 +155,7 @@ in
       ./e2e-tests/default.nix
       ./e2e-tests/lib
       ./e2e-tests/tests
+      ./e2e-tests/scenarios
       ./e2e-tests/shard-durations.json
     ];
     tools = [
@@ -227,6 +228,7 @@ in
   e2e-soft-assertions = import ./e2e-tests/lint.nix {
     inherit pkgs;
     tests = ./e2e-tests/tests;
+    scenarios = ./e2e-tests/scenarios;
   };
 
   # Validates the checked-in shard weights against the timeouts the test

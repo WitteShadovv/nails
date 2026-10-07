@@ -1,3 +1,10 @@
+# Scenario `preflight-state-check` of the `preflight-checks` batch:
+#   tests/preflight/19-preflight-checks.nix
+# Formerly the stand-alone test
+#   tests/preflight/20-preflight-state-check.nix
+# It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
+# its subtests and assertions are unchanged.
+#
 # Test 20: Preflight State Check Integrity
 #
 # A completed activation and deactivation must leave a signed state file
@@ -14,39 +21,41 @@ let
 in
 {
   name = "preflight-state-check";
-  meta.tags = [ "preflight" ];
+  tags = [ "preflight" ];
 
-  testScript = _: ''
-    import json
+  helpers = [
+    testHelpers.writeHeadlessConfigFn
+    testHelpers.canonicalDeactivateFn
+    testHelpers.readStatusJsonFn
+    assertions.assertStatusStateFn
+    assertions.assertOverlayMountedFn
+    assertions.assertNoOverlaysFn
+  ];
 
-    ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.canonicalDeactivateFn}
-    ${testHelpers.readStatusJsonFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
+  script = ''
+    def scenario_preflight_state_check() -> None:
+        import json
 
-    machine.start()
-    machine.wait_for_unit("multi-user.target")
+        machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/preflight-state-check.toml"
-    write_headless_config(config_path)
-    machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        config_path = "/tmp/preflight-state-check.toml"
+        write_headless_config(config_path)
+        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("baseline activation and deactivation produce a signed state file"):
-        machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
-        assert_status_state("active", config_path=config_path)
-        assert_overlay_mounted("/home")
-        canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-state-initial")
-        assert_status_state("inactive", config_path=config_path)
-        # The deactivation reboot closed the hidden volume; reopen it to read
-        # the state file the session left behind.
-        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-        persisted = json.loads(machine.succeed("cat /mnt/data/state.json"))
-        assert persisted.get("integrity_sha256"), (
-            f"Expected an integrity digest in the persisted state: {persisted}"
-        )
-        assert_status_state("inactive", config_path=config_path)
-        machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
+        with subtest("baseline activation and deactivation produce a signed state file"):
+            machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
+            assert_status_state("active", config_path=config_path)
+            assert_overlay_mounted("/home")
+            canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-state-initial")
+            assert_status_state("inactive", config_path=config_path)
+            # The deactivation reboot closed the hidden volume; reopen it to read
+            # the state file the session left behind.
+            machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
+            persisted = json.loads(machine.succeed("cat /mnt/data/state.json"))
+            assert persisted.get("integrity_sha256"), (
+                f"Expected an integrity digest in the persisted state: {persisted}"
+            )
+            assert_status_state("inactive", config_path=config_path)
+            machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
 }

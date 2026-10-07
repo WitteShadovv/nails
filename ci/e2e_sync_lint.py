@@ -24,8 +24,9 @@ A justified exception carries a marker on the same line or the line above:
 ``sync-lint: allow <rule> -- <reason>``. A marker without a reason is itself a
 finding.
 
-Usage: ``python3 -m ci.e2e_sync_lint [PATH ...]`` (defaults to the E2E tests and
-their helper library). Exit status 1 when anything is flagged.
+Usage: ``python3 -m ci.e2e_sync_lint [PATH ...]`` (defaults to the E2E tests,
+the batched scenarios and their helper library). Exit status 1 when anything is
+flagged.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PATHS = (
     REPO_ROOT / "nix" / "e2e-tests" / "tests",
+    REPO_ROOT / "nix" / "e2e-tests" / "scenarios",
     REPO_ROOT / "nix" / "e2e-tests" / "lib",
 )
 # How far above a sleep or a wait_for_shutdown() to look for the loop or the
