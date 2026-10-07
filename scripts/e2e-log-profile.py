@@ -21,6 +21,12 @@ action (one whose parent is a subtest or the script itself) to a category:
             (disk imaging and scanning, screenshots), `time.sleep`, and
             `machine.execute` calls, which the driver does not log
 
+The JSON rows also count how often a store-image VM packed its erofs store
+image (`store_image_builds`) and how often a restart reused it
+(`store_image_reuses`, nails_e2e/store_image.py), and give each scenario of a
+batched test its own time (`scenarios`, from the `batch: <name> passed in N s`
+lines nails_e2e/batch.py prints).
+
 Usage:
   e2e-log-profile.py LOG [LOG...]            # table of the top tests
   e2e-log-profile.py --json LOG [LOG...]     # one JSON object per test
@@ -50,6 +56,11 @@ FINISHED = re.compile(
 # scanning, which the driver itself does not time.
 FORENSIC = re.compile(r"^disk_forensics: (?P<what>.+) took (?P<sec>[\d.]+) seconds$")
 TAIL = re.compile(r", in (?P<sec>[\d.]+) seconds\)$")
+STORE_IMAGE_BUILD = re.compile(r"Creating Nix store image\.\.\.")
+STORE_IMAGE_REUSE = re.compile(r"Reusing Nix store image\.")
+SCENARIO = re.compile(
+    r"^batch: (?P<name>\S+) (?:passed in|FAILED after) (?P<sec>[\d.]+) s\b"
+)
 START = re.compile(r"^(?:(?P<who>[\w-]+): )?(?P<msg>.+)$")
 
 CATEGORIES = (
@@ -202,6 +213,9 @@ def profile(name: str, lines: list[str]) -> dict:
     )
     logged = sum(out[c] for c in CATEGORIES if c != "unlogged")
     out["unlogged"] = max(0.0, total - logged)
+    scenarios = {
+        m["name"]: float(m["sec"]) for m in map(SCENARIO.match, lines) if m is not None
+    }
     return {
         "test": name,
         "total": round(total, 2),
@@ -209,6 +223,9 @@ def profile(name: str, lines: list[str]) -> dict:
         "reboots": max(0, boots - 1),
         "guest_sleeps": sleeps,
         **{k: round(v, 2) for k, v in out.items()},
+        "store_image_builds": sum(1 for ln in lines if STORE_IMAGE_BUILD.search(ln)),
+        "store_image_reuses": sum(1 for ln in lines if STORE_IMAGE_REUSE.search(ln)),
+        "scenarios": scenarios,
     }
 
 
