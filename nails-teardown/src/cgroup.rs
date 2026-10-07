@@ -175,6 +175,27 @@ mod tests {
         );
     }
 
+    /// A unit with `DelegateSubgroup=` runs its process one cgroup below its
+    /// own: systemd-udevd.service sets `DelegateSubgroup=udev`.
+    #[test]
+    fn a_process_in_a_delegated_subgroup_belongs_to_its_unit() {
+        assert_eq!(
+            service_of("/system.slice/systemd-udevd.service/udev"),
+            Some((
+                "systemd-udevd.service".to_string(),
+                "/system.slice/systemd-udevd.service".to_string()
+            ))
+        );
+        assert_eq!(
+            service_unit_from_cgroup("0::/system.slice/systemd-udevd.service/udev\n").as_deref(),
+            Some("systemd-udevd.service")
+        );
+        assert_eq!(
+            service_of("/system.slice/system-getty.slice/getty@tty1.service/payload").map(|s| s.0),
+            Some("getty@tty1.service".to_string())
+        );
+    }
+
     #[test]
     fn the_graphical_session_and_user_units_are_never_services_to_kill() {
         for path in [
