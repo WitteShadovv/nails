@@ -173,6 +173,11 @@ fn determine_session_restart_phase(
 /// verification, not by how the target happened to be mounted.
 const INTEGRITY_VERIFIED_TARGETS: &[&str] = &["/boot"];
 
+/// How long a committed activation that restarted the session waits for the
+/// new session's bus before leaving its results queued for the login
+/// dispatcher.
+const SESSION_BUS_WAIT: std::time::Duration = std::time::Duration::from_secs(90);
+
 /// How many writers the desktop notification names before summarising the rest.
 const NOTIFICATION_WRITER_LIMIT: usize = 3;
 
@@ -782,7 +787,7 @@ impl<F: Filesystem> NailsManager<F> {
         // so a failure here must never undo a successful activation.
         // Then push the queued results straight into the operator's session.
         self.install_backend_runtime_copy();
-        self.deliver_results_to_session();
+        self.deliver_results_to_session(restart_phase == SessionRestartPhase::AfterOverlayMounts);
 
         let final_state = self.current_state().ok();
 
@@ -871,7 +876,13 @@ impl<F: Filesystem> NailsManager<F> {
     /// they stay queued for the login dispatcher, and `nails status` lists
     /// whatever is still undelivered. Only a committed activation pushes; after a
     /// rollback the operator is on the decoy session.
-    fn deliver_results_to_session(&self) {
+    ///
+    /// When this activation restarted the operator's session, the new session
+    /// may not have its bus yet at commit time (the old one's went away with
+    /// the restart), so the push retries for up to [`SESSION_BUS_WAIT`] before
+    /// leaving the results queued. The wait only ever runs in the detached
+    /// worker, after the activation has committed.
+    fn deliver_results_to_session(&self, session_restarted: bool) {
         use crate::notification::deliver::{
             PushOutcome, RealSessionNotifier, SessionUser, push_pending,
         };
@@ -885,11 +896,23 @@ impl<F: Filesystem> NailsManager<F> {
                 uid: user.uid,
                 name: user.name,
             });
-        match push_pending(
-            &self.config().hidden_volume_root,
-            user.as_ref(),
-            &RealSessionNotifier,
-        ) {
+        let deadline = std::time::Instant::now() + SESSION_BUS_WAIT;
+        let outcome = loop {
+            let outcome = push_pending(
+                &self.config().hidden_volume_root,
+                user.as_ref(),
+                &RealSessionNotifier,
+            );
+            let retry = session_restarted
+                && user.is_some()
+                && matches!(outcome, Ok(PushOutcome::NoSession))
+                && std::time::Instant::now() < deadline;
+            if !retry {
+                break outcome;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(1));
+        };
+        match outcome {
             Ok(PushOutcome::Delivered(count)) => {
                 tracing::debug!(
                     count,
