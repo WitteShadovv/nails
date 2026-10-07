@@ -335,6 +335,16 @@ upper's `/etc` holds. [I]
 1. In the hidden root, mount the decoy root device at `/run/nextroot`. It is the
    same superblock as the overlay's lower, so the mount writes nothing. Then bind
    `/run` there (NixOS init check) and `--make-rprivate`. [V-spike]
+   The decoy root device alone is often not bootable: a NixOS init lives in a
+   `/nix/store` that may be a filesystem of its own (a separate `/nix`, a VM's
+   9p store with a tmpfs upper). Mounting those again from their sources is
+   not always possible (a virtio 9p channel takes one mount at a time) and
+   would lose what a tmpfs held, so the entry *carries* them: each decoy
+   filesystem the fstab policy placed is bound read-only, non-recursively,
+   onto `<hidden>/root/decoy/<unit>` inside `/run/nextroot`, which the hidden
+   session therefore holds. The way back binds each one at its mount point in
+   the decoy root, parents first, writable again where the decoy had it so.
+   [I; the session tests' VM runs found the decoy init missing without it]
 2. Close the hidden backend: either `cryptsetup close --deferred data` before the
    switch, so the mapping and its key go away the moment the last opener (the
    detached overlay) is released, or a strict `cryptsetup close` from the decoy
@@ -654,7 +664,7 @@ supported.
   policy (§2: boot filesystems read-only, mounted decoy filesystems overlaid
   with an upper on the hidden volume, swap, unmounted disks, network
   filesystems and disk-backed overlay entries masked), the entry, the way back,
-  the probes `status` uses, and the new pre-flight checks (`systemd-version`,
+  the carried decoy filesystems (§5), the probes `status` uses, and the new pre-flight checks (`systemd-version`,
   `soft-reboot-units`, `decoy-root`, `session-state`, `fstab-policy`).
 - **NixOS, variant B**: the hidden toplevel is built into the next root's
   store (`nix build --store /run/nextroot`, the evaluation cache on the hidden

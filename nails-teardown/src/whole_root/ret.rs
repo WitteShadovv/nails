@@ -7,20 +7,23 @@
 //!
 //! 1. mount the decoy root device at `/run/nextroot`. It is the same superblock
 //!    as the overlay's lower, so the mount writes nothing;
-//! 2. bind `/run` there (PID 1's init check on NixOS resolves
+//! 2. put the decoy filesystems the hidden session carried back in place
+//!    ([`crate::whole_root::carry`]), so a decoy store on its own filesystem
+//!    is there for the init check;
+//! 3. bind `/run` there (PID 1's init check on NixOS resolves
 //!    `/run/current-system` inside the new root) and make the tree private;
-//! 3. check the decoy init resolves in it;
-//! 4. mark the hidden backend's device-mapper stack for deferred removal, so its
+//! 4. check the decoy init resolves in it;
+//! 5. mark the hidden backend's device-mapper stack for deferred removal, so its
 //!    key leaves the kernel the moment the switch releases the hidden volume;
-//! 5. arm the plan for the way back.
+//! 6. arm the plan for the way back.
 //!
 //! The caller then enqueues the soft-reboot. The transition step
 //! ([`crate::whole_root::transition`]) does the rest.
 
 use crate::mountinfo::{MountEntry, parse_overlay_opts, read_mountinfo, top_mount_at};
-use crate::whole_root::nextroot;
 use crate::whole_root::plan::{Arm, Direction, Plan, RootSide};
 use crate::whole_root::tools;
+use crate::whole_root::{carry, nextroot};
 use std::path::{Path, PathBuf};
 
 /// Whether this process runs in the hidden root of `plan`: `/` is an overlay
@@ -81,6 +84,7 @@ pub fn mount_decoy_root(plan: &Plan, nextroot: &Path, run: &Path) -> Result<(), 
             nextroot,
         )
         .map_err(|e| ReturnError::Mount(format!("{}: {e}", plan.decoy_root.source.display())))?;
+        carry::restore(&plan.carried, nextroot).map_err(|e| ReturnError::Mount(e.to_string()))?;
         nextroot::bind(
             run,
             &nextroot.join(run.strip_prefix("/").unwrap_or(run)),

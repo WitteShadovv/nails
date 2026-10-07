@@ -163,6 +163,7 @@ mod kernel_tests {
                 armed: None,
                 entered_at: None,
                 run_noexec: false,
+                carried: Vec::new(),
             };
             let plan_path = nails_teardown::whole_root::plan::default_plan_path();
             std::fs::create_dir_all(plan_path.parent().unwrap()).unwrap();

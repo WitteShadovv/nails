@@ -38,6 +38,7 @@ fn plan(root: &Path) -> Plan {
         armed: None,
         entered_at: Some(1_700_000_000),
         run_noexec: false,
+        carried: Vec::new(),
     }
 }
 

@@ -40,12 +40,12 @@ use crate::nixos::NixOSBuilder;
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{
-    Arm, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount, PolicyMountKind, RootSide,
-    SNAPSHOT_NAME, Tools, UTAB_NAME,
+    Arm, CarriedMount, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount,
+    PolicyMountKind, RootSide, SNAPSHOT_NAME, Tools, UTAB_NAME,
 };
 use nails_teardown::whole_root::run_scrub::{Snapshot, UTAB};
 use nails_teardown::whole_root::runtime_units::RuntimeUnit;
-use nails_teardown::whole_root::{ret, transition};
+use nails_teardown::whole_root::{carry, ret, transition};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -303,6 +303,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         armed: None,
         entered_at: None,
         run_noexec: false,
+        carried: Vec::new(),
     }
 }
 
@@ -402,6 +403,7 @@ fn build(
         super::persona::write_masks(&home, &inputs.persona, operator);
     }
 
+    plan.carried = carry_decoy_mounts(paths, &layout, &plan.policy_mounts, &decoy_mounts)?;
     nextroot::bind(&paths.run, &paths.in_nextroot(Path::new("/run")), false)
         .map_err(|e| io(&nextroot, e))?;
     nextroot::make_rprivate(&nextroot).map_err(|e| io(&nextroot, e))?;
@@ -425,6 +427,33 @@ fn build(
         decisions,
         warnings,
     })
+}
+
+/// Carry every decoy filesystem the fstab policy placed into the hidden
+/// session, so the way back can put it in place again (see
+/// [`nails_teardown::whole_root::carry`]).
+fn carry_decoy_mounts(
+    paths: &Paths,
+    layout: &Layout,
+    policy_mounts: &[PolicyMount],
+    decoy_mounts: &[MountEntry],
+) -> Result<Vec<CarriedMount>> {
+    let mut carried = Vec::new();
+    for mount in policy_mounts {
+        if mount.kind == PolicyMountKind::HiddenVolume {
+            continue;
+        }
+        let at = layout.carried(&mount.target);
+        let in_nextroot = paths.in_nextroot(&at);
+        carry::carry(&paths.decoy(&mount.target), &at, &in_nextroot)
+            .map_err(|e| io(&in_nextroot, e))?;
+        carried.push(CarriedMount {
+            read_only: top_mount_at(decoy_mounts, &mount.target).is_some_and(MountEntry::read_only),
+            target: mount.target.clone(),
+            at,
+        });
+    }
+    Ok(carried)
 }
 
 /// Refuse a hidden NixOS build when the hidden volume holding `upper` has less

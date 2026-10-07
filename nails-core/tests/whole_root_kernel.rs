@@ -115,6 +115,7 @@ mod kernel_tests {
                 armed: Some(Arm::now(direction)),
                 entered_at: None,
                 run_noexec: false,
+                carried: Vec::new(),
             }
         }
 
@@ -395,11 +396,11 @@ mod entry_kernel_tests {
     use nails_core::test_support::{Rerun, ScratchTmpfs};
     use nails_core::{NailsError, nixos::NixOSBuilder};
     use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
-    use nails_teardown::whole_root::nextroot;
     use nails_teardown::whole_root::plan::{
         DecoyRoot, Direction, Plan, PolicyMountKind, SNAPSHOT_NAME, unix_now,
     };
     use nails_teardown::whole_root::transition::{self, DROPIN_DIR, DROPIN_NAME, Env, Outcome};
+    use nails_teardown::whole_root::{carry, nextroot};
     use std::cell::Cell;
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
@@ -593,6 +594,64 @@ mod entry_kernel_tests {
                 Some("overlay")
             );
             assert!(entry.plan.masks.contains(&"dev-vda4.swap".to_string()));
+            entry::rollback(&paths);
+        });
+    }
+
+    #[test]
+    fn the_decoy_filesystems_are_carried_through_the_session_and_put_back_on_the_way_back() {
+        // The way back mounts the decoy root device alone; the VM run found
+        // the decoy init missing because its store is a filesystem of its own.
+        let _ = Rerun::new(test_path!(
+            the_decoy_filesystems_are_carried_through_the_session_and_put_back_on_the_way_back
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            let paths = world.paths();
+            let entry =
+                entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+            let mut carried = entry.plan.carried.clone();
+            let targets: Vec<_> = carried.iter().map(|c| c.target.clone()).collect();
+            assert!(targets.contains(&PathBuf::from("/home")), "{targets:?}");
+            assert!(targets.contains(&PathBuf::from("/boot")), "{targets:?}");
+            assert!(carried.iter().all(|c| !c.read_only));
+            for mount in &mut carried {
+                // The hidden session sees the hidden volume at its own path;
+                // from the decoy it is reached through the next root.
+                assert!(mount.at.starts_with(world.hidden.path()));
+                mount.at = paths.in_nextroot(&mount.at);
+                assert!(
+                    std::fs::write(mount.at.join("x"), "").is_err(),
+                    "carried read-only"
+                );
+            }
+            let home = carried
+                .iter()
+                .find(|c| c.target == Path::new("/home"))
+                .unwrap();
+            assert_eq!(
+                std::fs::read_to_string(home.at.join("decoy-file")).unwrap(),
+                "decoy"
+            );
+
+            // The way back: a bare decoy root gets its filesystems again,
+            // writable as the decoy had them.
+            let back = ScratchTmpfs::new("");
+            back.mkdir("home");
+            back.mkdir("boot");
+            carry::restore(&carried, back.path()).expect("restored");
+            assert_eq!(
+                std::fs::read_to_string(back.path().join("home/decoy-file")).unwrap(),
+                "decoy"
+            );
+            std::fs::write(back.path().join("boot/written-back"), "").unwrap();
+            assert!(world._esp.path().join("written-back").exists());
+
+            // A missing mount point is refused, never created on the decoy.
+            let bare = ScratchTmpfs::new("");
+            assert!(carry::restore(&carried, bare.path()).is_err());
+            assert!(!bare.path().join("home").exists());
             entry::rollback(&paths);
         });
     }

@@ -11,11 +11,14 @@
 //!   check, the `current-system` repoint, the `/run` scrub, the kmsg cursor);
 //! - [`run_scrub`]: the `/run` snapshot and scrub;
 //! - [`ret`]: preparing the way back to the decoy;
+//! - [`carry`]: the decoy filesystems the hidden session holds for the way
+//!   back;
 //! - [`runtime_units`]: runtime units and masks in `/run`;
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
 //! - [`emergency`]: the emergency hot path;
 //! - [`tools`]: the bounded `systemctl` and `dmsetup` calls.
 
+pub mod carry;
 pub mod emergency;
 pub mod kill;
 pub mod nextroot;

@@ -51,8 +51,21 @@ pub fn bind(source: &Path, target: &Path, recursive: bool) -> io::Result<()> {
 /// Make the bind mount at `target` read-only, keeping the per-mount flags it
 /// already has (a user namespace refuses to clear locked `nosuid`/`nodev`).
 pub fn remount_read_only(target: &Path) -> io::Result<()> {
+    remount_bind(target, true)
+}
+
+/// Make the bind mount at `target` writable again, keeping its other per-mount
+/// flags.
+pub fn remount_writable(target: &Path) -> io::Result<()> {
+    remount_bind(target, false)
+}
+
+fn remount_bind(target: &Path, read_only: bool) -> io::Result<()> {
     let current = rustix::fs::statvfs(target).map_err(to_io)?.f_flag;
-    let mut flags = MountFlags::BIND | MountFlags::RDONLY;
+    let mut flags = MountFlags::BIND;
+    if read_only {
+        flags |= MountFlags::RDONLY;
+    }
     for (have, keep) in [
         (StatVfsMountFlags::NOSUID, MountFlags::NOSUID),
         (StatVfsMountFlags::NODEV, MountFlags::NODEV),

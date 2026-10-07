@@ -109,6 +109,17 @@ pub enum PolicyMountKind {
     HiddenVolume,
 }
 
+/// A decoy filesystem carried into the hidden session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CarriedMount {
+    /// Its mount point in the decoy root.
+    pub target: PathBuf,
+    /// Where the hidden session holds it: a read-only bind on the hidden volume.
+    pub at: PathBuf,
+    /// Whether the decoy had it read-only.
+    pub read_only: bool,
+}
+
 /// Absolute paths of the tools a transition-side step runs, resolved at
 /// activation so nothing searches a `PATH` later.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -210,6 +221,11 @@ pub struct Plan {
     /// it so) to run the binary copy there; the way back sets it again.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub run_noexec: bool,
+    /// Decoy filesystems carried into the hidden session, so the way back can
+    /// put them in place in the decoy root again (see
+    /// [`crate::whole_root::carry`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub carried: Vec<CarriedMount>,
 }
 
 /// Why a plan could not be used.
@@ -349,6 +365,7 @@ pub(crate) fn sample() -> Plan {
         }),
         entered_at: None,
         run_noexec: false,
+        carried: Vec::new(),
     }
 }
 

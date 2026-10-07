@@ -10,6 +10,8 @@
 //! <hidden>/root/mounts/<unit>/…    upper/work of each other overlaid decoy
 //!                                  filesystem (a separate /home), named by its
 //!                                  systemd path escape
+//! <hidden>/root/decoy/<unit>      mount points of the decoy filesystems the
+//!                                  hidden session carries for the way back
 //! <hidden>/root/cache              nix's evaluation cache during the build
 //! <hidden>/config/nixos/           the hidden NixOS module (NixOS)
 //! ```
@@ -59,6 +61,13 @@ impl Layout {
             .join("root/mounts")
             .join(escape_path(target));
         (base.join("upper"), base.join("work"))
+    }
+
+    /// Where the hidden session holds the decoy filesystem at `target`.
+    pub fn carried(&self, target: &Path) -> PathBuf {
+        self.hidden_root
+            .join("root/decoy")
+            .join(escape_path(target))
     }
 
     /// The upper of `path` in the hidden root (where a hidden file at `path`
