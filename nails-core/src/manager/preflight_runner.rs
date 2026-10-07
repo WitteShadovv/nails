@@ -23,9 +23,9 @@ pub struct RegistryInputs {
     /// Skip the config-layer and build-target checks (overlay-only activation).
     pub overlay_only: bool,
     /// Assemble a registry that only inspects the system: no check creates a
-    /// directory or changes permissions. Activation leaves this `false` so the
-    /// storage check still auto-creates the hidden layout; `nails check` sets it
-    /// so the command is strictly read-only.
+    /// directory or changes permissions. Both `nails check` and activation set
+    /// it: a refused activation leaves nothing on the hidden volume, and the
+    /// entry creates the layout itself once every check passed.
     pub read_only: bool,
     /// The current system state, validated by [`StateCheck`](crate::StateCheck).
     pub current_state: SystemState,
@@ -316,8 +316,10 @@ impl<F: Filesystem> NailsManager<F> {
         overlay_only: bool,
         accept_persistent_decoy: bool,
     ) -> Result<()> {
-        // Activation keeps the auto-creating storage check: `read_only = false`.
-        let registry = self.preflight_registry(overlay_only, false, accept_persistent_decoy)?;
+        // The storage check only reports here (`read_only = true`): a refused
+        // activation must leave nothing on the hidden volume, and the entry
+        // creates the root overlay's directories itself once every check passed.
+        let registry = self.preflight_registry(overlay_only, true, accept_persistent_decoy)?;
 
         // Run all checks (always get full results for display)
         let (results, all_passed) = registry.run_all_detailed(&self.filesystem);

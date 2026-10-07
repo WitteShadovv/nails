@@ -204,6 +204,8 @@ fn match_attributes(dir: &Path, like: &Path) -> Result<()> {
 fn make_layer(upper: &Path, work: &Path, like: &Path) -> Result<()> {
     std::fs::create_dir_all(upper).map_err(|e| io(upper, e))?;
     std::fs::create_dir_all(work).map_err(|e| io(work, e))?;
+    std::fs::set_permissions(work, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| io(work, e))?;
     match_attributes(upper, like)
 }
 
