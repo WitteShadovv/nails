@@ -101,7 +101,9 @@ in
     with subtest("deactivate: neither token is in the live decoy journal"):
         canonical_deactivate(config, "deactivate")
         # The probe really ran: its record is in the kernel ring buffer (RAM).
-        machine.succeed(f"dmesg | grep -qF {late_kmsg_token}")
+        # grep without -q reads all of dmesg: -q stops at the match, and
+        # dmesg's write error then fails the pipeline.
+        machine.succeed(f"dmesg | grep -F {late_kmsg_token} > /dev/null")
         machine.succeed("journalctl --sync")
         for token in hidden_tokens:
             count = machine.succeed(
