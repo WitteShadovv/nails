@@ -18,9 +18,8 @@
 //! Case counts are bounded so the suites run in the normal `cargo test` gate.
 
 use nails_core::config::ConfigBuilder;
-use nails_core::filesystem::{
-    NailsMounts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,
-};
+use nails_core::filesystem::{escape_overlay_path, parse_mountinfo, parse_overlay_opts};
+use nails_core::session::probe::root_is_hidden_overlay;
 use nails_core::{NailsError, StateLock};
 use proptest::prelude::*;
 use std::path::{Path, PathBuf};
@@ -227,21 +226,19 @@ proptest! {
     }
 
     #[test]
-    fn overlay_mounted_from_any_hidden_root_is_recognised_as_owned(
+    fn a_hidden_overlay_root_is_recognised_from_any_hidden_root(
         hidden_root in mountable_path(),
-        mount_point in mountable_path(),
+        lower in mountable_path(),
     ) {
-        // A hidden root with a space once read as "not mounted", so teardown
-        // skipped its overlays. Ownership must hold for any root.
-        let upper = format!("{hidden_root}/upper");
-        let work = format!("{hidden_root}/.work/upper");
-        let line = overlay_line(40, &mount_point, &kernel_overlay_opts(
-            std::slice::from_ref(&mount_point), &upper, &work,
+        // A hidden root with a space must not hide the session from the probe.
+        let upper = format!("{hidden_root}/root/upper");
+        let work = format!("{hidden_root}/root/work");
+        let line = overlay_line(40, "/", &kernel_overlay_opts(
+            std::slice::from_ref(&lower), &upper, &work,
         ));
 
-        let mounts = NailsMounts::from_entries(&parse_mountinfo(&line), Some(Path::new(&hidden_root)));
-
-        prop_assert!(mounts.is_owned(Path::new(&mount_point)));
+        let entries = parse_mountinfo(&line);
+        prop_assert!(root_is_hidden_overlay(&entries, Path::new(&hidden_root)).is_some());
     }
 
     #[test]
@@ -309,8 +306,6 @@ fn overlay_with_a_space_comma_and_colon_round_trips() {
     assert_eq!(opts.lowerdir, vec![PathBuf::from(&lower)]);
     assert_eq!(opts.upperdir, Some(PathBuf::from(upper)));
     assert_eq!(opts.workdir, Some(PathBuf::from(work)));
-    let mounts = NailsMounts::from_entries(&entries, Some(Path::new("/media/user/My Volume")));
-    assert!(mounts.is_owned(Path::new("/srv")));
 }
 
 #[test]

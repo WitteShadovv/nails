@@ -46,7 +46,7 @@ pub use testing::TestWorld;
 
 // Re-exports for public API - color types
 pub use backend_watch::BackendWatchConfig;
-pub use persona::{PersonaConfig, PersonaMode, persona_home_source};
+pub use persona::{PersonaConfig, PersonaMode};
 
 // Re-exports for public API - core types
 pub use types::{

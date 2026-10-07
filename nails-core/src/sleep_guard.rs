@@ -4,15 +4,16 @@
 //! Sleep guard: keep an active hidden session out of the hands of a suspend.
 //!
 //! When [`sleep_policy.mode`](crate::config::SleepPolicyConfig) is `block` or
-//! `teardown`, activation starts this guard from the RAM-backed runtime copy as a
-//! transient systemd unit (the same mechanism as the backend watcher). The guard
+//! `teardown`, the entry installs this guard as one of the hidden session's
+//! runtime units ([`crate::session::units`]), run from the RAM-backed copy of
+//! the binary like the backend watcher. The guard
 //! takes a logind inhibitor over the system D-Bus and holds it for the life of the
 //! session:
 //!
 //! * **block** — a `sleep:idle` *block* inhibitor. logind refuses to suspend or
 //!   idle-sleep while it is held, so a closed lid or an idle timeout cannot strand
 //!   the hidden session resident in RAM. The inhibitor is released when the unit
-//!   is stopped at deactivation (the process exits and the kernel drops the fd).
+//!   is stopped at the way back (the process exits and the kernel drops the fd).
 //! * **teardown** — a `sleep` *delay* inhibitor. logind lets the sleep begin but
 //!   blocks it for up to `InhibitDelayMaxSec` (default 5s) after emitting
 //!   `PrepareForSleep(true)`. In that window the guard runs the bounded emergency
@@ -162,74 +163,6 @@ fn wait_for_sleep_then<F: FnOnce()>(on_prepare_for_sleep: F) -> Result<()> {
     // The signal stream ended without a sleep (bus closed): release and exit.
     drop(fd);
     Ok(())
-}
-
-/// Start the sleep guard as a transient systemd unit from the runtime copy.
-///
-/// Mirrors [`crate::runtime_copy::start_watch_unit`]: launched from the mirrored
-/// executable under [`SLEEP_GUARD_UNIT_NAME`], with `--collect` so systemd reaps
-/// the unit when it exits. Best-effort — a failure to start only means the session
-/// runs without sleep protection, never that activation fails. Callers must gate
-/// this on a non-test runtime; it performs a real host operation.
-pub fn start_sleep_guard_unit() {
-    use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
-
-    let binary = crate::runtime_copy::binary_copy_path();
-    let command = ProcessCommand::tool("systemd-run")
-        .arg("--unit")
-        .arg(SLEEP_GUARD_UNIT_NAME)
-        .arg("--collect")
-        .arg("--quiet")
-        // A crash of the guard must not dump core onto the decoy.
-        .arg("--property=LimitCORE=0")
-        .arg(&binary)
-        .arg("sleep-guard");
-
-    match RealProcessRunner.run(&command) {
-        Ok(output) if output.status.success() => {
-            tracing::info!(unit = SLEEP_GUARD_UNIT_NAME, "Started the sleep guard");
-        }
-        Ok(output) => {
-            tracing::warn!(
-                unit = SLEEP_GUARD_UNIT_NAME,
-                status = %output.status,
-                "Could not start the sleep guard; the session runs without sleep protection"
-            );
-        }
-        Err(e) => {
-            tracing::warn!(
-                unit = SLEEP_GUARD_UNIT_NAME,
-                error = %e,
-                "Could not start the sleep guard; the session runs without sleep protection"
-            );
-        }
-    }
-}
-
-/// Stop the sleep guard's transient unit, best-effort.
-///
-/// Called by deactivation and emergency teardown. A guard that was never started
-/// (warn mode, or a start that failed) makes `systemctl stop` a harmless no-op.
-/// Callers must gate this on a non-test runtime; it performs a real host operation.
-pub fn stop_sleep_guard_unit() {
-    use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
-
-    let own_unit = crate::process::cgroup_unit::own_service_unit();
-    if !crate::process::cgroup_unit::may_stop_unit(own_unit.as_deref(), SLEEP_GUARD_UNIT_NAME) {
-        // The teardown runs inside this very unit (the watcher's auto-emergency):
-        // stopping it would SIGTERM the teardown. The unit ends on its own when
-        // the process returns.
-        tracing::info!(
-            unit = SLEEP_GUARD_UNIT_NAME,
-            "Not stopping the unit this teardown runs in"
-        );
-        return;
-    }
-    let command = ProcessCommand::tool("systemctl")
-        .arg("stop")
-        .arg(SLEEP_GUARD_UNIT_NAME)
-        .deadline(crate::process::run::UNIT_STOP_BUDGET);
-    let _ = RealProcessRunner.run(&command);
 }
 
 #[cfg(test)]

@@ -46,7 +46,7 @@ mod traits;
 pub use mock::{MockFilesystem, MockOp, PathKind};
 pub use mount_info::MountInfo;
 pub use mountinfo::{
-    MountEntry, NailsMounts, OverlayOpts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,
+    MountEntry, OverlayOpts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,
     read_mountinfo,
 };
 pub use real::RealFilesystem;

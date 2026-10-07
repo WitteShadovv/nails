@@ -3,7 +3,6 @@
 
 //! Running external programs, and process hardening.
 
-pub(crate) mod cgroup_unit;
 pub mod hardening;
 pub mod run;
 
