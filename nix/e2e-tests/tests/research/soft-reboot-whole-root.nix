@@ -311,7 +311,7 @@ in
     def nix_build(name, content):
         """A trivial offline build through the daemon; returns the output path."""
         expr = (
-            'derivation { name = "%s"; system = builtins.currentSystem; '
+            'derivation { name = "%s"; system = "${pkgs.stdenv.hostPlatform.system}"; '
             'builder = builtins.storePath "%s" + "/bin/bash"; '
             'args = [ "-c" "echo %s > $out" ]; }'
         ) % (name, BASH_STORE_PATH, content)
