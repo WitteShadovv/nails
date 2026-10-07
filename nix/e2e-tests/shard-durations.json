@@ -10,7 +10,6 @@
   "cleanup-fast-mode": 68,
   "config-exclusions": 120,
   "config-explicit-overlays": 254,
-  "config-handling": 63,
   "config-inject-hardware-imports": 143,
   "contract-json-schema": 160,
   "decoy-journal-leak": 420,
@@ -82,6 +81,7 @@
   "shell-rc-integration-bash": 108,
   "shell-rc-integration-fish": 118,
   "shell-rc-integration-zsh": 109,
+  "smoke-verify-config": 120,
   "snapshot-diff": 260,
   "stale-active-after-reset": 150,
   "standard-deactivation-forensic": 401,
@@ -97,7 +97,6 @@
   "tcrypt-veracrypt-hidden": 700,
   "uefi-esp-nvram-invariant": 300,
   "var-lib-nixos-drift": 600,
-  "verify": 120,
   "verify-base-config-clean": 64,
   "verify-seeded-artifacts": 120
 }
