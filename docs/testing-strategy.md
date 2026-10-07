@@ -46,6 +46,10 @@ Building the prototype for this document found three more such beliefs:
 
 ## How much is mocked
 
+This survey, like the tier (a) list below, was taken on the live-overlay code
+base; the whole-root session removed much of what it names (see
+[After the whole-root session](#after-the-whole-root-session)).
+
 `MockFilesystem` appears 1,706 times in 157 files (1,755 before the T-139
 migration). The other doubles, and what they stand in for:
 
@@ -149,16 +153,19 @@ The tests, about 0.2 s together:
 | `kernel_semantics::copy_tree_leaves_source_atimes_untouched_on_a_strictatime_fs`, with a control proving a plain read updates atime | a lost `O_NOATIME`, verified by mutation. The older unit test passes vacuously on a `noatime` host filesystem. |
 | `nails-cli` `broken_pipe::stderr_helpers_survive_a_reader_that_has_gone`: a child whose stderr is a pipe with no reader, with a control asserting that `eprintln!` panics there | the emergency broken-pipe panic, verified by swapping the helper for `eprintln!` |
 
-Added by T-139:
+Added by T-139, as they stand after the whole-root session:
 
 | Test | Covers |
 | --- | --- |
-| `filesystem_contract::real_filesystem_satisfies_mount_contract_in_a_user_namespace` | the mount contract the mock also runs: overlay description, layer validation, idempotent and forced unmounts, lazy detach, the ownership gate, tmpfs sizes, binds, the read-only guard |
-| `privileged_mounts` (6 tests) | the former root-only suite, now rootless in `just test` |
-| `manager::state_management::kernel_tests` | `reconcile_state` against a real mount table |
-| `process::restart::kernel_tests`, `process::session::management::kernel_tests` | SIGTERM/SIGKILL escalation, the user-process kill and the interactive-shell kill, as PID 1 of a PID namespace |
-| `overlay::pivot::kernel_tests` | the snapshot pivot's tmpfs size as the kernel reports it |
-| `cleanup::temp_files::kernel_tests` | the temp-file cleaner on a private tmpfs over `/tmp` |
+| `filesystem_contract::real_filesystem_satisfies_mount_query_contract_in_a_user_namespace` | the mount queries the mock also answers: mount point, filesystem type, read-only flag and source, on a writable and a read-only tmpfs |
+| `privileged_mounts` (6 tests) | the former root-only suite, now rootless in `just test`; it mounts straight through `nix::mount`, as the `Filesystem` trait no longer mounts |
+
+The rest of the T-139 kernel tests (`reconcile_state`, the restart and session
+kills, the snapshot pivot, the temp-file cleaner, the journald fd check) went
+with the code they tested. The session's own mechanics run in
+`tests/whole_root_kernel.rs`: the root overlay, the binds, the read-only ESP,
+the transition step against a live mount table and the kill in a delegated
+cgroup.
 
 Only the whiteout and opaque-directory test of `privileged_mounts` still needs
 real root.
@@ -172,18 +179,18 @@ exactly one test.
 
 ### (b) Recorded real-world fixtures
 
-**This tier is built; the VM half waits for one VM run.**
+**This tier is built.**
 `scripts/capture-kernel-fixtures.sh userns` captures, unprivileged, an overlay
-scene with fdinfo, a hidden-root scene (a mapper-named tmpfs at a root with a
+scene, a hidden-root scene (a mapper-named tmpfs at a root with a
 space, an overlay with its upper on it, a shadowed overlay pair), a `setsid`
 child's `stat` and `status`, and `/proc/swaps`. The fixtures live in
 `nails-core/tests/fixtures/kernel/userns/` and `nails_core::kernel_fixtures`
-reads them. `... vm` captures, as root, the host's and journald's mountinfo,
-journald's fds, fdinfo, `stat`, `status` and `cgroup`, `/proc/swaps`, logind's
-session records and every systemctl and loginctl invocation the code makes.
-decoy-journal-leak and emergency-graphical run it on every VM run; the
-captures from the run at `27090f96` are committed in `vm/` and `vm-graphical/`,
-and every test that reads them passes against them.
+reads them. `... vm` captures, as root in the hidden root of a live session,
+the session's mountinfo, `/proc/swaps`, journald's `stat`, `status` and
+`cgroup`, and the systemd version in the two invocations the session probe
+uses. decoy-journal-leak runs it on every VM run; the files committed in `vm/`
+come from the run at `27090f96`, before the whole-root session, and the
+fixture README lists which of them the session's tests read.
 
 Cost: one VM run per format change. CI fit: perfect, since fixtures are plain
 unit-test inputs. Flakiness: none. What it catches: format drift such as the
@@ -197,7 +204,9 @@ the source.
 These need systemd and journald: journald restarts and fd re-homing with the
 real daemon, `systemctl` call cost, an emergency teardown whose stderr is the
 journal stream, and overlay-only activation against the booted host's real
-mountinfo. They are covered by existing VM tests rather than a new boot:
+mountinfo. Under T-139 they were covered by existing VM tests rather than a
+new boot (the whole-root session retired the first two, see
+[After the whole-root session](#after-the-whole-root-session)):
 
 - journald re-home: decoy-journal-leak requires the activation's own log to
   carry the positive verdict of the fd check (an indeterminate one is only a
@@ -220,15 +229,19 @@ measured time).
 
 **Done.** `tests/filesystem_contract.rs` runs a file contract and a mount
 contract against both backends; `RealFilesystem` runs the mount half inside
-`Rerun::in_user_mount_ns`. Its first run found three drifts, fixed in the mock:
+`Rerun::in_user_mount_ns`. Since the whole-root session the trait no longer
+mounts, so the mount half is a mount-query contract: the mock is seeded and the
+kernel mounts a tmpfs, and both must answer the same. Its first run, on the
+live-overlay trait, found three drifts, fixed in the mock:
 `get_filesystem_type` reported nothing for an overlay or tmpfs; an overlay
 mounted although its upper or work directory did not exist; and `unmount`
 passed any tmpfs or bind through the ownership gate, which the kernel side
-refuses outside the runtime root. Two known drifts stay outside the contract:
-the mock refuses a second `mount_tmpfs` on one target where the kernel stacks
-it, and the mock's `find_files_with_pattern` returns seeded directories where
-the real walk returns only files (so the temp-file cleaner's directory branch
-never runs on a real host; see the T-139 status in TODO.md).
+refuses outside the runtime root. Two known drifts stayed outside the
+contract: the mock refused a second `mount_tmpfs` on one target where the
+kernel stacks it, and the mock's `find_files_with_pattern` returns seeded
+directories where the real walk returns only files (which mattered to the
+temp-file cleaner; see the T-139 status in TODO.md). The session removed
+`mount_tmpfs` and the cleaner.
 
 The other doubles have no cheap real side (systemctl, loginctl, journalctl).
 For them, tier (b) fixtures serve as the contract: the scripted executor
@@ -367,11 +380,40 @@ Where a real file tree was practical, the mock also gave way: the history and
 temp-file cleaner tests run on temporary homes and a private `/tmp`, and
 configuration-only tests use `RealFilesystem` as the untouched backend.
 
+### After the whole-root session
+
+The whole-root soft-reboot session ([ADR 0008](adr/0008-whole-root-soft-reboot.md))
+removed the live-overlay machinery, and with it most of what T-139 tested.
+What stayed and what went:
+
+- **Kept:** the file contract; the mount-query half of the mount contract
+  (tier (d)); the rootless `privileged_mounts`, now on `nix::mount`; the one
+  `/proc/<pid>/stat` and `status` parser in `nails_teardown::proc`, which
+  `filesystem/real/system_ops` reads its parent pids through; `verify`'s
+  mountinfo scans through the shared parser, with the captured hidden-root
+  scene (the leftover-overlay scan returned in the session-leftovers check);
+  the `nixos/config`, `backend_detect`, `classify_swap` and stat/status
+  fixture tests.
+- **New consumers of the captures:** the cgroup-to-unit mapping in
+  `nails_teardown::cgroup` (journald's captured cgroup, and the
+  `DelegateSubgroup=` case that T-139 fixed in the process detection's
+  `system_unit_from_cgroup_line`), `session::systemd::parse_version` and the
+  `session::probe` hidden-overlay-root test.
+- **Gone with their code:** `reconcile_state` and its kernel test, the
+  restart and session kills, the snapshot pivot, the temp-file and history
+  cleaners, the journald fd check with its fixtures, `parse_active_units`,
+  the logind spare set and the graphical capture, the journald re-home
+  verdict in decoy-journal-leak and the systemctl budget in
+  performance-validation (the calls it timed were the unit snapshots and
+  restarts around a live switch; the activation's own systemctl calls now
+  fall inside the `trigger_to_settled` budget of the soft-reboot).
+
 **Next:**
 
 - Feed `classify_nixos_failure_category` captured `nixos-rebuild` errors.
 - The `nails init` scenarios in tier (a), as planned under T-140.
-- Decide the two contract-external drifts (tier (d)).
+- Commit the first VM capture taken in a whole-root session (the fixture
+  README says which files it adds).
 
 **Keep as they are** (pure logic or error injection):
 
@@ -391,12 +433,12 @@ configuration-only tests use `RealFilesystem` as the untouched backend.
 ## What to run
 
 - **Locally or in any sandbox:** `just kernel-tests` (fails rather than skips;
-  it now includes the mount contract and `privileged_mounts`). Plain
+  it includes the mount-query contract, `privileged_mounts` and
+  `whole_root_kernel`). Plain
   `just test` runs the same tests and skips them without user namespaces.
 - **CI:** the `rust` job clears `kernel.apparmor_restrict_unprivileged_userns`
   and sets `NAILS_REQUIRE_USERNS=1`; the `privileged-mounts` job runs only the
   whiteout test as root.
-- **VM:** decoy-journal-leak (journald re-home verdict), emergency-graphical
-  and performance-validation (the systemctl budget, on the default
-  activation). The first two also write fresh captures; copy them as the
-  fixture README says when a format changes.
+- **VM:** the full suite. decoy-journal-leak also writes a fresh capture from
+  inside the hidden root; copy it as the fixture README says when a format
+  changes.

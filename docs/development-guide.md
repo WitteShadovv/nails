@@ -14,10 +14,11 @@ Most of the suite is unprivileged and runs with a plain `cargo test
 --workspace`: it drives the mount and overlay logic through `MockFilesystem` and
 temporary directories, so it needs neither root nor an overlayfs-capable kernel.
 
-A second tier exercises the real mount path — `RealFilesystem` against a live
-overlayfs, with bind and tmpfs submounts, force-unmount, and reverse-order
-teardown — without root: each test re-runs itself as root of an unprivileged
-user + mount namespace (`nails_core::test_support::Rerun`). The mount contract
+A second tier exercises the real mount path — a live overlayfs with bind and
+tmpfs submounts, force-unmount and reverse-order teardown, and
+`RealFilesystem`'s mount queries against the kernel's own table — without
+root: each test re-runs itself as root of an unprivileged user + mount
+namespace (`nails_core::test_support::Rerun`). The mount-query contract
 (`nails-core/tests/filesystem_contract.rs`), `privileged_mounts.rs`,
 `kernel_semantics.rs` and the `kernel_tests` modules run this way in the normal
 `cargo test`; `just kernel-tests` runs only them and fails, instead of
