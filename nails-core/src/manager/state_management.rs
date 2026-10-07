@@ -685,3 +685,7 @@ pub(crate) mod reconcile_mounts_override {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "state_management_kernel_tests.rs"]
+mod kernel_tests;
