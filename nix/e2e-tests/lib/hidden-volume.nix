@@ -70,9 +70,12 @@ let
   reopenHiddenVolume = ''
     echo 'Reopening data volume...'
 
-    echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/disk/by-id/virtio-data data
+    # A soft-reboot back into the same root (a plain reboot that met a
+    # leftover next root) unmounts the volume but keeps its mapping open.
+    test -e /dev/mapper/data \
+      || echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/disk/by-id/virtio-data data
     mkdir -p /mnt/data
-    mount /dev/mapper/data /mnt/data
+    mountpoint -q /mnt/data || mount /dev/mapper/data /mnt/data
 
     echo 'Data volume reopened at: /mnt/data'
   '';
