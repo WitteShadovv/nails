@@ -252,6 +252,41 @@ fn test_finding_without_fix_guidance_omits_field() {
 // Verification Check Tests
 // ========================================================================
 
+/// The whole captured hidden-root scene, unedited: every overlay whose upper
+/// lies on the hidden root is a leftover, including the `/nix/store` one a
+/// later `/nix` overlay shadows.
+#[test]
+fn captured_hidden_root_overlays_are_all_reported() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/proc/self/mountinfo",
+        &crate::kernel_fixtures::userns("mountinfo-hidden-root.txt"),
+    );
+    let config = crate::config::Config {
+        hidden_volume_root: std::path::PathBuf::from("/fixture/mnt/hidden root"),
+        ..crate::config::Config::default()
+    };
+    let result = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked)
+        .run(false)
+        .unwrap();
+
+    let mounts: Vec<&str> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "mount" && f.severity == Severity::Critical)
+        .map(|f| f.message.as_str())
+        .collect();
+    for target in ["/fixture/home", "/fixture/nix/store", "/fixture/nix"] {
+        assert!(
+            mounts
+                .iter()
+                .any(|m| m.contains(&format!("Leftover overlay at {target}:"))),
+            "{target} is reported: {mounts:?}"
+        );
+    }
+    assert_eq!(mounts.len(), 3, "one finding per overlay: {mounts:?}");
+}
+
 #[test]
 fn test_overlay_with_its_upper_on_the_hidden_volume_is_critical() {
     let (_fs, verifier) = overlay_verifier(
