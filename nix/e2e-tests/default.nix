@@ -252,12 +252,11 @@ let
     lib.filter (name: builtins.elem name testNames) (
       map resolveAlias [
         "basic-workflow"
-        "verify"
+        "smoke-verify-config" # verify, config-handling
         "emergency"
         "forensic-clean"
-        "config-handling"
         "status-verify"
-        "preflight-nixos-build-target"
+        "preflight-checks" # preflight-nixos-build-target and three more
         "session-kill-graphical"
         "notify-autostart-lifecycle"
         "activate-auto-lifecycle"
