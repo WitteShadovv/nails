@@ -69,10 +69,20 @@ in
             )
             + " </dev/null >/dev/null 2>&1 &"
         )
-        # `[6]` keeps the pattern from matching the shell that runs pgrep.
-        machine.wait_until_succeeds(
-            "pgrep -f 'sleep [6]000' && mountpoint -q /run/nextroot", timeout=180
-        )
+        log = f"/mnt/data/{label}.log"
+
+        def building(_last_try: bool) -> bool:
+            # `[6]` keeps the pattern from matching the shell that runs pgrep.
+            if machine.execute("pgrep -f 'sleep [6]000' && mountpoint -q /run/nextroot")[0] == 0:
+                return True
+            if machine.execute(f"! pgrep -x nails && test -s {log}")[0] == 0:
+                raise Exception(
+                    f"{label}: the activation ended before its build:\n"
+                    + machine.execute(f"cat {log}")[1]
+                )
+            return False
+
+        retry(building, timeout_seconds=180)
         machine.succeed("test -s /run/overlay-runtime/plan.json")
         machine.succeed(
             "test -s /run/systemd/system/systemd-soft-reboot.service.d/50-overlay-runtime.conf"
@@ -120,6 +130,12 @@ in
         "    };\n"
         "  };\n"
         "}\n"
+        "EOF"
+    )
+    # nails builds with --no-update-lock-file: the flake carries its lock.
+    machine.succeed(
+        f"cat > {FLAKE}/flake.lock <<'EOF'\n"
+        '{ "nodes": { "root": {} }, "root": "root", "version": 7 }\n'
         "EOF"
     )
 
