@@ -277,7 +277,6 @@ mod tests {
     fn manifest(targets: &[&str]) -> RuntimeManifest {
         RuntimeManifest {
             hidden_root: PathBuf::from("/mnt/data"),
-            state_file: PathBuf::from("/mnt/data/state.json"),
             overlay_targets: targets.iter().map(PathBuf::from).collect(),
         }
     }

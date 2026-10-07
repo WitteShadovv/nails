@@ -189,30 +189,6 @@ pub(super) fn self_session_and_pgid() -> (u32, u32) {
     (sid, pgid)
 }
 
-/// Decide whether a path-matched emergency-kill candidate is genuinely rooted in
-/// an overlay and so should be signalled.
-///
-/// The process classifier matched it to an overlay target by path prefix only.
-/// That is kept when:
-/// - no NAILS mount id could be read (`!overlay_mount_set_known`): fall back to
-///   the path match rather than spare everything and leave the overlays pinned;
-/// - the process is an unverifiable writer (a foreign mount namespace or chroot
-///   whose mount ids cannot be compared): fail-safe, keep killing it;
-/// - a reference of the process actually lives on a NAILS mount.
-///
-/// Otherwise the path matched the decoy directory the overlay is mounted over, not
-/// the overlay itself, so the process is spared.
-pub(super) fn candidate_is_overlay_rooted(
-    is_unverifiable_writer: bool,
-    references_overlay_mount: bool,
-    overlay_mount_set_known: bool,
-) -> bool {
-    if !overlay_mount_set_known || is_unverifiable_writer {
-        return true;
-    }
-    references_overlay_mount
-}
-
 /// Decide whether a recorded activation owner pid should be signalled before an
 /// emergency/recover teardown.
 ///
@@ -254,39 +230,6 @@ pub(super) fn owner_identity_matches(
         _ => true,
     };
     same_boot && recorded_start.is_some() && recorded_start == live_start
-}
-
-/// How long the batched `systemctl stop --no-block` may take. It only enqueues
-/// jobs, so it returns at once on a healthy manager; the deadline keeps a wedged
-/// manager from delaying the kill and the unmount behind it.
-pub(super) const STOP_ENQUEUE_BUDGET: std::time::Duration = std::time::Duration::from_secs(2);
-
-/// Enqueue a stop job for every unit, without waiting for the jobs to run.
-///
-/// Best-effort and bounded: a failure only means systemd may restart a unit
-/// after the kill, which the caller cannot do anything more about.
-pub(super) fn enqueue_unit_stops(units: &std::collections::BTreeSet<String>) {
-    use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
-    if units.is_empty() {
-        return;
-    }
-    if crate::runtime_safety::should_skip_host_interaction() {
-        #[cfg(test)]
-        for unit in units {
-            crate::manager::helpers::record_service_action(format!("stop:{unit}"));
-        }
-        return;
-    }
-    tracing::info!(units = ?units, "Enqueuing stop jobs before the overlay kill so Restart= cannot revive them");
-    let command = ProcessCommand::tool("systemctl")
-        .arg("stop")
-        .arg("--no-block")
-        .arg("--")
-        .args(units.iter())
-        .deadline(STOP_ENQUEUE_BUDGET);
-    if let Err(e) = RealProcessRunner.run(&command) {
-        tracing::warn!(error = %e, "Could not enqueue the stop jobs; continuing with the kill");
-    }
 }
 
 #[cfg(test)]

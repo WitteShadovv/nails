@@ -470,13 +470,8 @@ fn test_emergency_deactivate_removes_the_runtime_copy() {
         // written it. The removal routes through the manager's (mock) filesystem,
         // so a teardown must clear it.
         fs.mock_set_directory_creatable(crate::runtime_copy::RUNTIME_COPY_DIR, true);
-        crate::runtime_copy::write_runtime_copy(
-            fs,
-            guard.config(),
-            Path::new("/bin/control"),
-            &[PathBuf::from("/home")],
-        )
-        .unwrap();
+        crate::runtime_copy::write_runtime_copy(fs, guard.config(), Path::new("/bin/control"))
+            .unwrap();
         assert!(
             fs.path_exists(&crate::runtime_copy::runtime_copy_dir())
                 .unwrap()
@@ -504,13 +499,8 @@ fn test_normal_deactivate_removes_the_runtime_copy() {
         let guard = manager.lock().unwrap();
         let fs = guard.filesystem();
         fs.mock_set_directory_creatable(crate::runtime_copy::RUNTIME_COPY_DIR, true);
-        crate::runtime_copy::write_runtime_copy(
-            fs,
-            guard.config(),
-            Path::new("/bin/control"),
-            &[PathBuf::from("/home")],
-        )
-        .unwrap();
+        crate::runtime_copy::write_runtime_copy(fs, guard.config(), Path::new("/bin/control"))
+            .unwrap();
     }
 
     manager.lock().unwrap().deactivate().unwrap();
@@ -581,26 +571,21 @@ fn test_emergency_stops_recorded_units_but_never_touches_the_session_or_dm() {
         mount_nails_overlay(guard.filesystem(), &hidden_root, Path::new("/home"));
     }
 
+    // The plan the emergency runs stops exactly the units the hidden switch
+    // added (the hot path enqueues their stop jobs and kills their cgroups; the
+    // runtime-safety mode of this test only undoes the mounts).
+    let (plan, _) = manager.lock().unwrap().plan_for_teardown(true);
+    assert_eq!(
+        plan.hidden_units(),
+        vec!["hidden-app.service", "hidden-config.service"]
+    );
+
     // Start from a clean recorder so only this teardown's actions are observed.
     let _ = crate::manager::helpers::drain_recorded_service_actions();
 
     manager.lock().unwrap().emergency_deactivate().unwrap();
 
     let actions = crate::manager::helpers::drain_recorded_service_actions();
-
-    // The recorded hidden units are stopped: the service-level stop entries
-    // (ignoring the paired `.socket` steps) are precisely the two units the hidden
-    // switch added, and nothing else.
-    let service_stops: Vec<&str> = actions
-        .iter()
-        .filter_map(|a| a.strip_prefix("stop:"))
-        .filter(|unit| !unit.ends_with(".socket"))
-        .collect();
-    assert_eq!(
-        service_stops,
-        vec!["hidden-app.service", "hidden-config.service"],
-        "emergency must stop exactly the recorded hidden units: {actions:?}"
-    );
 
     // Emergency must leave the desktop looking unchanged: it never logs the
     // operator out and never touches the display manager. None of the logind
@@ -791,16 +776,12 @@ fn test_emergency_tears_down_every_overlay_when_the_hidden_volume_is_dead() {
     assert!(!guard.filesystem().is_mounted(Path::new("/home")).unwrap());
     assert!(!guard.filesystem().is_mounted(Path::new("/etc")).unwrap());
     assert_eq!(report.final_state, SystemState::Inactive);
-    assert!(
-        report.state_write_errors.len() >= 2,
-        "both the baseline and the final state write must be reported: {:?}",
-        report.state_write_errors
-    );
+    // The state is written once, after the unmount; its failure is reported.
     assert!(
         report
             .state_write_errors
             .iter()
-            .any(|e| e.starts_with("untrusted baseline")),
+            .any(|e| e.starts_with("final state")),
         "{:?}",
         report.state_write_errors
     );

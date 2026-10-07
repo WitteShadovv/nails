@@ -101,7 +101,9 @@ in
         assert machine.succeed(f"stat -c %a {runtime_dir}").strip() == "700", "runtime copy must be 0700"
         machine.succeed(f"test -x {runtime_dir}/control")
         machine.succeed(f"test -f {runtime_dir}/settings.toml")
-        machine.succeed(f"test -f {runtime_dir}/mounts.json")
+        # The teardown plan activation records step by step (it replaced mounts.json).
+        machine.succeed(f"test -f {runtime_dir}/plan.json")
+        assert machine.succeed(f"stat -c %a {runtime_dir}/plan.json").strip() == "600", "the plan must be 0600"
         # No mirrored name may reveal the product.
         machine.fail(f"ls -R {runtime_dir} | grep -i nails")
 

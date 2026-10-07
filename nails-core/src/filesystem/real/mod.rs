@@ -114,6 +114,11 @@ impl Filesystem for RealFilesystem {
         ))
     }
 
+    fn top_mount_id(&self, target: &Path) -> Option<i32> {
+        let entries = crate::filesystem::mountinfo::read_mountinfo().ok()?;
+        crate::filesystem::mountinfo::top_mount_at(&entries, target).map(|e| e.mount_id)
+    }
+
     fn path_exists(&self, path: &Path) -> Result<bool> {
         file_ops::path_exists(path)
     }

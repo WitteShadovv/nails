@@ -169,7 +169,10 @@ impl<F: Filesystem> NailsManager<F> {
         // The tracker is the mid-mount safety net: if any mount below fails it
         // rolls back on drop. Its mounts are taken out on success instead of
         // committed, so a later activation failure can still unmount them.
-        let mut tracker = MountTracker::new(&self.filesystem);
+        let mut tracker = match self.plan_recorder() {
+            Some(plan) => MountTracker::with_plan(&self.filesystem, plan),
+            None => MountTracker::new(&self.filesystem),
+        };
 
         // Create the per-activation runtime scaffolding root first and push it onto
         // the tracker before any overlay, so LIFO rollback tears it down last —
@@ -640,6 +643,9 @@ impl<F: Filesystem> NailsManager<F> {
     }
 
     pub(super) fn record_read_only_guards(&self, guards: &[PathBuf]) -> Result<()> {
+        for tree in guards {
+            self.record_plan_step(nails_teardown::Undo::RemoveReadOnlyGuard { tree: tree.clone() });
+        }
         let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             if state_file.read_only_guards == guards {
@@ -750,6 +756,11 @@ impl<F: Filesystem> NailsManager<F> {
                 .mount_overlay(&lower_refs, &overlay.upper, &overlay.work, target)
             {
                 Ok(()) => {
+                    self.record_plan_step(nails_teardown::Undo::Unmount {
+                        target: target.to_path_buf(),
+                        kind: nails_teardown::MountKind::Overlay,
+                        mount_id: self.filesystem.top_mount_id(target),
+                    });
                     if verbosity >= Verbosity::Normal {
                         tracing::warn!(
                             target = %target.display(),
@@ -769,59 +780,6 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         remounted
-    }
-
-    /// Undo the read-only guards activation recorded, returning write access to the
-    /// decoy OS trees. Best-effort and idempotent: `remove_read_only_guard` is a no-op for a
-    /// tree that is not currently guarded, so a partial or repeated teardown is
-    /// safe. Called from deactivation and emergency teardown.
-    pub(crate) fn teardown_read_only_guards(&self, guards: &[PathBuf]) {
-        for tree in guards.iter().rev() {
-            if let Err(error) = self.filesystem.remove_read_only_guard(tree) {
-                tracing::warn!(
-                    tree = %tree.display(),
-                    error = %error,
-                    "Best-effort removal of a read-only guard failed; continuing teardown"
-                );
-            } else {
-                tracing::info!(tree = %tree.display(), "Removed read-only guard from decoy OS tree");
-            }
-        }
-    }
-
-    /// Undo the submount attachments activation recorded, in reverse order.
-    ///
-    /// Reverse order is what keeps teardown valid: a nested overlay comes off
-    /// before the staging bind backing its lower layer, and every re-attach comes
-    /// off before the parent overlay it was stacked on (the parent overlays are
-    /// unmounted later, by the orchestrator). Best-effort and idempotent — a bind
-    /// unmount is a no-op for a mount that is not present, and an overlay unmount
-    /// escalates to a forced detach — so a partial or repeated teardown is safe.
-    pub(crate) fn teardown_submount_attachments(
-        &self,
-        attachments: &[crate::state::SubmountAttachment],
-    ) {
-        use crate::state::SubmountAttachment;
-        for attachment in attachments.iter().rev() {
-            let outcome = match attachment {
-                SubmountAttachment::Bind { path } => self.filesystem.unmount_bind(path),
-                SubmountAttachment::Overlay { path } => self
-                    .filesystem
-                    .unmount(path, false)
-                    .or_else(|_| self.filesystem.unmount(path, true)),
-            };
-            match outcome {
-                Ok(()) => tracing::info!(
-                    path = %attachment.path().display(),
-                    "Removed submount attachment"
-                ),
-                Err(error) => tracing::warn!(
-                    path = %attachment.path().display(),
-                    error = %error,
-                    "Best-effort removal of a submount attachment failed; continuing teardown"
-                ),
-            }
-        }
     }
 
     /// Record failed overlay mounts in state for status reporting

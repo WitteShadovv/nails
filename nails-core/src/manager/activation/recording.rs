@@ -125,6 +125,9 @@ impl<F: Filesystem> NailsManager<F> {
         if added.is_empty() {
             return;
         }
+        for unit in &added {
+            self.record_plan_step(nails_teardown::Undo::StopUnit { unit: unit.clone() });
+        }
         let mut cached = self.cached_state.borrow_mut();
         if let Some(ref mut state_file) = *cached {
             state_file.hidden_added_units = added;

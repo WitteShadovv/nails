@@ -54,6 +54,7 @@ pub(crate) mod helpers;
 pub mod mount_tracker;
 pub mod preflight_runner;
 pub mod state_management;
+pub mod teardown_plan;
 
 // Tests live in tests/, one file per production module
 #[cfg(test)]
@@ -178,6 +179,14 @@ pub struct NailsManager<F: Filesystem> {
     /// when none is installed, as in unit tests); tests inject a built
     /// [`RuntimeEnv`](crate::RuntimeEnv).
     runtime_env: crate::RuntimeEnv,
+
+    /// Where the teardown plan lives (the decoy's `/run` tmpfs). `None` keeps
+    /// the plan in memory only, which is what the unit tests and the
+    /// runtime-safety mode get by default.
+    plan_path: Option<PathBuf>,
+
+    /// The plan the running activation records (see [`teardown_plan`]).
+    teardown_plan: RefCell<Option<teardown_plan::PlanRecorder>>,
 }
 
 // Manual Debug implementation because NixOSBuilder contains trait objects
@@ -201,6 +210,13 @@ impl<F: Filesystem> std::fmt::Debug for NailsManager<F> {
             .field("verbosity", &self.verbosity)
             .finish()
     }
+}
+
+/// The plan file a manager uses by default: the decoy's `/run` copy in a real
+/// run, none (memory only) in a test or runtime-safety run.
+fn default_plan_path() -> Option<PathBuf> {
+    (!crate::runtime_safety::should_skip_host_interaction())
+        .then(nails_teardown::plan::default_plan_path)
 }
 
 impl<F: Filesystem> NailsManager<F> {
@@ -245,6 +261,8 @@ impl<F: Filesystem> NailsManager<F> {
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
             reporter: crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
             runtime_env: (*crate::runtime_env::current()).clone(),
+            plan_path: default_plan_path(),
+            teardown_plan: RefCell::new(None),
         }
     }
 
@@ -300,6 +318,8 @@ impl<F: Filesystem> NailsManager<F> {
             last_rollback: RefCell::new(activation::rollback::RollbackOutcome::NotNeeded),
             reporter: crate::reporter::progress::shared(crate::reporter::progress::TracingReporter),
             runtime_env: (*crate::runtime_env::current()).clone(),
+            plan_path: default_plan_path(),
+            teardown_plan: RefCell::new(None),
         }
     }
 

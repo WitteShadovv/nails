@@ -115,6 +115,41 @@ pub fn derive_plan(entries: &[MountEntry], hidden_root: &Path) -> Plan {
     plan
 }
 
+/// Derive a plan from an already classified table, when only the
+/// classification is available (no per-entry mount ids): the runtime root
+/// first, then the overlays, the persona binds, the staging mounts inside the
+/// runtime root and the `/nix/store` bind, so the undo takes them down in the
+/// reverse of that order.
+pub fn plan_from_nails_mounts(mounts: &NailsMounts, hidden_root: &Path) -> Plan {
+    let mut plan = Plan::new(hidden_root.to_path_buf());
+    plan.runtime_root = mounts.runtime_tmpfs.clone();
+    let mut push = |target: &Path, kind| {
+        plan.push(Undo::Unmount {
+            target: target.to_path_buf(),
+            kind,
+            mount_id: None,
+        });
+    };
+    if let Some(root) = &mounts.runtime_tmpfs {
+        push(root, MountKind::RuntimeRoot);
+    }
+    for target in mounts
+        .persistent_overlays
+        .iter()
+        .chain(&mounts.ephemeral_overlays)
+        .chain(&mounts.persona_binds)
+        .chain(&mounts.pivot_binds)
+    {
+        push(target, MountKind::Overlay);
+    }
+    if mounts.nix_overlay_present
+        && let Some(bind) = &mounts.nix_store_bind
+    {
+        push(bind, MountKind::StoreBind);
+    }
+    plan
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

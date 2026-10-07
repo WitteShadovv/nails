@@ -37,6 +37,35 @@ pub(crate) use service_controller::recorder::drain as drain_recorded_service_act
 #[cfg(test)]
 pub(crate) use service_controller::recorder::record as record_service_action;
 
+/// The tools the teardown plan records: `systemctl` as the `/nix` runtime
+/// cache resolved it (through the pre-overlay store's loader when `/nix` is
+/// overlaid on NixOS), `journalctl` resolved on the decoy system now.
+pub(crate) fn teardown_tools() -> nails_teardown::plan::Tools {
+    use nails_teardown::plan::Tool;
+    let resolve = |name: &str| {
+        let path = command_cache::host_tool_path(name);
+        Tool::direct(std::fs::canonicalize(&path).unwrap_or(path))
+    };
+    let systemctl = match SYSTEMCTL_COMMAND.get() {
+        Some(command_cache::CachedCommand::Direct(path)) => Tool::direct(path.clone()),
+        Some(command_cache::CachedCommand::ViaLoader {
+            loader,
+            library_path,
+            program,
+            ..
+        }) => Tool {
+            program: program.clone(),
+            loader: Some(loader.clone()),
+            library_path: Some(library_path.to_string_lossy().into_owned()),
+        },
+        None => resolve("systemctl"),
+    };
+    nails_teardown::plan::Tools {
+        systemctl: Some(systemctl),
+        journalctl: Some(resolve("journalctl")),
+    }
+}
+
 /// The directory holding the system profile generations, from the system
 /// profile path in the startup snapshot (`NAILS_SYSTEM_PROFILE_PATH`).
 pub(crate) fn system_profiles_dir(env: &RuntimeEnv) -> PathBuf {

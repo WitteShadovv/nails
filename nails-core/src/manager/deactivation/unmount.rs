@@ -4,80 +4,9 @@
 //! Choosing the overlay targets to unmount and judging whether a target is
 //! still a live NAILS mount after the teardown attempted it.
 
-use crate::filesystem::NailsMounts;
+use crate::Filesystem;
 use crate::manager::NailsManager;
-use crate::{Filesystem, NailsError, Result, SystemState};
 use std::path::{Path, PathBuf};
-
-pub(super) fn overlay_unmount_targets<F: Filesystem>(
-    manager: &NailsManager<F>,
-    current_state: &SystemState,
-) -> Result<Vec<PathBuf>> {
-    let active_overlays = match current_state {
-        SystemState::Active { overlays, .. } => overlays.clone(),
-        _ => {
-            return Err(NailsError::InvalidState(
-                "Cannot extract overlays: not in ACTIVE state".to_string(),
-            ));
-        }
-    };
-
-    let mut merged = manager.tracked_overlay_paths_by_mount_order()?;
-    for path in active_overlays {
-        if !merged.iter().any(|existing| existing == &path) {
-            merged.push(path);
-        }
-    }
-
-    Ok(merged)
-}
-
-/// Targets to unmount for an untrusted-state teardown, in mount order.
-///
-/// [`unmount_overlays`](DeactivationOrchestrator::unmount_overlays) reverses this
-/// list, so placing the `/nix/store` restore bind last makes it come off before
-/// the `/nix` overlay it sits on, the fresh-home persona binds come off before
-/// the `/home` overlay they sit on, and the persistent overlays come off last.
-/// The `/nix/store` bind is only ours when `/nix` is overlaid, so it is included
-/// only then (and only when still present — the `/nix` teardown path may already
-/// have removed it before the orchestrator runs).
-pub(super) fn discovered_unmount_targets(mounts: &NailsMounts) -> Vec<PathBuf> {
-    let mut targets = Vec::new();
-    targets.extend(mounts.persistent_overlays.iter().cloned());
-    targets.extend(mounts.ephemeral_overlays.iter().cloned());
-    targets.extend(mounts.persona_binds.iter().cloned());
-    targets.extend(mounts.pivot_binds.iter().cloned());
-    if mounts.nix_overlay_present
-        && let Some(bind) = &mounts.nix_store_bind
-    {
-        targets.push(bind.clone());
-    }
-    targets
-}
-
-/// The trusted teardown's targets: the recorded overlays in mount order, then
-/// every live NAILS mount the recorded list misses (a persona bind, a staging
-/// mount, an overlay the state never recorded), in discovery order.
-///
-/// The list is unmounted in reverse, so the discovered extras come off first:
-/// they sit on top of the recorded overlays (a persona bind over `/home`, the
-/// `/nix/store` bind over `/nix`) or inside the runtime root. Each mount point
-/// appears once.
-pub(super) fn merge_recorded_with_discovered(
-    recorded: Vec<PathBuf>,
-    discovered: Option<&NailsMounts>,
-) -> Vec<PathBuf> {
-    let mut targets = recorded;
-    for path in discovered
-        .map(discovered_unmount_targets)
-        .unwrap_or_default()
-    {
-        if !targets.contains(&path) {
-            targets.push(path);
-        }
-    }
-    targets
-}
 
 /// Result of attempting to unmount every tracked overlay.
 ///

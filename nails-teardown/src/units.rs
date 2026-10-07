@@ -13,7 +13,7 @@
 //! cleared environment and a deadline: a wedged PID 1 or journald costs at most
 //! the deadline and never blocks the unmount.
 
-use std::path::Path;
+use crate::plan::Tool;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -23,10 +23,21 @@ pub const STOP_BUDGET: Duration = Duration::from_secs(2);
 /// How long `journalctl --relinquish-var` may take.
 pub const RELINQUISH_BUDGET: Duration = Duration::from_secs(2);
 
-/// Run `program args…` and wait at most `budget`. `true` when it exited 0 in
+/// Run `tool args…` and wait at most `budget`. `true` when it exited 0 in
 /// time; a child that overruns is killed.
-pub fn run_bounded(program: &Path, args: &[&str], budget: Duration) -> bool {
-    let child = Command::new(program)
+pub fn run_bounded(tool: &Tool, args: &[&str], budget: Duration) -> bool {
+    let mut command = match (&tool.loader, &tool.library_path) {
+        (Some(loader), Some(library_path)) => {
+            let mut command = Command::new(loader);
+            command
+                .arg("--library-path")
+                .arg(library_path)
+                .arg(&tool.program);
+            command
+        }
+        _ => Command::new(&tool.program),
+    };
+    let child = command
         .args(args)
         .env_clear()
         .env(
@@ -57,7 +68,7 @@ pub fn run_bounded(program: &Path, args: &[&str], budget: Duration) -> bool {
 }
 
 /// Enqueue a stop job for every unit at once, without waiting for the jobs.
-pub fn stop_units(systemctl: &Path, units: &[String]) -> bool {
+pub fn stop_units(systemctl: &Tool, units: &[String]) -> bool {
     if units.is_empty() {
         return true;
     }
@@ -67,7 +78,7 @@ pub fn stop_units(systemctl: &Path, units: &[String]) -> bool {
 }
 
 /// Hand journald's persistent journal back to `/run` before `/var` comes down.
-pub fn relinquish_journal(journalctl: &Path) -> bool {
+pub fn relinquish_journal(journalctl: &Tool) -> bool {
     run_bounded(journalctl, &["--relinquish-var"], RELINQUISH_BUDGET)
 }
 
@@ -75,11 +86,15 @@ pub fn relinquish_journal(journalctl: &Path) -> bool {
 mod tests {
     use super::*;
 
+    fn sh() -> Tool {
+        Tool::direct("/bin/sh".into())
+    }
+
     #[test]
     fn a_child_that_overruns_its_budget_is_killed() {
         let start = Instant::now();
         assert!(!run_bounded(
-            Path::new("/bin/sh"),
+            &sh(),
             &["-c", "exec sleep 30"],
             Duration::from_millis(100)
         ));
@@ -88,18 +103,10 @@ mod tests {
 
     #[test]
     fn exit_status_and_a_missing_program_are_reported() {
-        assert!(run_bounded(
-            Path::new("/bin/sh"),
-            &["-c", "exit 0"],
-            STOP_BUDGET
-        ));
+        assert!(run_bounded(&sh(), &["-c", "exit 0"], STOP_BUDGET));
+        assert!(!run_bounded(&sh(), &["-c", "exit 3"], STOP_BUDGET));
         assert!(!run_bounded(
-            Path::new("/bin/sh"),
-            &["-c", "exit 3"],
-            STOP_BUDGET
-        ));
-        assert!(!run_bounded(
-            Path::new("/nonexistent/tool"),
+            &Tool::direct("/nonexistent/tool".into()),
             &[],
             STOP_BUDGET
         ));

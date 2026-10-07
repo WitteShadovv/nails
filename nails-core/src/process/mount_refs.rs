@@ -24,84 +24,18 @@ use std::path::Path;
 
 /// Parse the `mnt_id:` value of a `/proc/<pid>/fdinfo/<n>` body.
 pub(crate) fn parse_fdinfo_mnt_id(content: &str) -> Option<i32> {
-    content
-        .lines()
-        .find_map(|line| line.strip_prefix("mnt_id:"))
-        .and_then(|rest| rest.trim().parse().ok())
+    nails_teardown::refs::parse_fdinfo(content).0
 }
 
-/// The mount id of whatever `path` resolves to, following `/proc` magic links:
-/// opened `O_PATH` (no read access, no side effects on the object, no atime
-/// update) and read back from this process's own fdinfo.
+/// The mount id of whatever `path` resolves to, following `/proc` magic links
+/// (see [`nails_teardown::refs::path_mount_id`]).
 pub(crate) fn path_mount_id(path: &Path) -> Option<i32> {
-    use nix::fcntl::OFlag;
-    use std::os::fd::AsRawFd;
-    let fd = nix::fcntl::open(
-        path,
-        OFlag::O_PATH | OFlag::O_CLOEXEC,
-        nix::sys::stat::Mode::empty(),
-    )
-    .ok()?;
-    let fdinfo = std::fs::read_to_string(format!("/proc/self/fdinfo/{}", fd.as_raw_fd())).ok()?;
-    parse_fdinfo_mnt_id(&fdinfo)
+    nails_teardown::refs::path_mount_id(path)
 }
 
-/// The `start-end` address ranges of a `/proc/<pid>/maps` body whose mapping is
-/// shared and writable (`rw?s`) and backed by a file — the mappings through
-/// which a process can write to a file without holding a descriptor.
+/// The shared, writable, file-backed mappings of a `/proc/<pid>/maps` body.
 pub(crate) fn shared_writable_map_ranges(maps: &str) -> Vec<String> {
-    maps.lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            let range = fields.next()?;
-            let perms = fields.next()?;
-            let _offset = fields.next()?;
-            let _dev = fields.next()?;
-            let inode = fields.next()?;
-            let perms = perms.as_bytes();
-            let shared_writable = perms.len() == 4 && perms[1] == b'w' && perms[3] == b's';
-            (shared_writable && inode != "0").then(|| range.to_string())
-        })
-        .collect()
-}
-
-/// Whether any reference of `pid` lives on one of the mounts in `mount_ids`:
-/// its cwd, its root, any open file descriptor, or any shared-writable file
-/// mapping. A vanished process or an unreadable entry contributes no match.
-pub(crate) fn process_references_mounts(pid: u32, mount_ids: &HashSet<i32>) -> bool {
-    if mount_ids.is_empty() {
-        return false;
-    }
-    let base = format!("/proc/{pid}");
-    let on_mount = |id: Option<i32>| id.is_some_and(|id| mount_ids.contains(&id));
-
-    if ["cwd", "root"]
-        .iter()
-        .any(|link| on_mount(path_mount_id(Path::new(&format!("{base}/{link}")))))
-    {
-        return true;
-    }
-
-    if let Ok(entries) = std::fs::read_dir(format!("{base}/fdinfo")) {
-        for entry in entries.flatten() {
-            if let Ok(fdinfo) = std::fs::read_to_string(entry.path())
-                && on_mount(parse_fdinfo_mnt_id(&fdinfo))
-            {
-                return true;
-            }
-        }
-    }
-
-    if let Ok(maps) = std::fs::read_to_string(format!("{base}/maps")) {
-        for range in shared_writable_map_ranges(&maps) {
-            if on_mount(path_mount_id(Path::new(&format!(
-                "{base}/map_files/{range}"
-            )))) {
-                return true;
-            }
-        }
-    }
-    false
+    nails_teardown::refs::shared_writable_map_ranges(maps)
 }
 
 /// Whether `pid` holds a reference *under `target`* (by path) that does not
@@ -242,14 +176,14 @@ mod tests {
         let pid = child.id();
         let mut found = false;
         for _ in 0..100 {
-            if process_references_mounts(pid, &ids) {
+            if nails_teardown::refs::writes_through(pid, &ids) {
                 found = true;
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         let unrelated: HashSet<i32> = [i32::MAX].into();
-        let spared = !process_references_mounts(pid, &unrelated);
+        let spared = !nails_teardown::refs::writes_through(pid, &unrelated);
         child.stdin.take().unwrap().write_all(b"\n").unwrap();
         child.wait().unwrap();
         assert!(found, "the open file descriptor must match its mount id");
@@ -299,7 +233,7 @@ mod tests {
             .spawn()
             .unwrap();
         let ids: HashSet<i32> = [mount_id_holding(dir.path())].into();
-        let found = process_references_mounts(child.id(), &ids);
+        let found = nails_teardown::refs::writes_through(child.id(), &ids);
         child.stdin.take().unwrap().write_all(b"\n").unwrap();
         child.wait().unwrap();
         assert!(found);

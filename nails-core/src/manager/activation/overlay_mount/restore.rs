@@ -134,35 +134,6 @@ unsafe fn replace_symlink_child(
     0
 }
 
-/// Child body for removing a bind mount, entered after `fork`.
-///
-/// Async-signal-safe: raw syscalls only. Removes exactly one mount at `target`
-/// (the most recently stacked bind there), which is the read-only self-bind the
-/// matching activation helper created in this namespace.
-///
-/// # Safety
-/// Must be called only in the forked child with `target` pointing at a NUL
-/// terminated string that outlives the call, and `ns_fd` referring to an open
-/// mount-namespace file.
-#[allow(unsafe_code)]
-unsafe fn umount_in_init_namespace_child(ns_fd: RawFd, target: *const nix::libc::c_char) -> i32 {
-    use nix::libc;
-    // SAFETY: the caller guarantees `ns_fd` is an open namespace file and
-    // `target` a live NUL-terminated path; the kernel only reads them.
-    unsafe {
-        if libc::unshare(libc::CLONE_FS) != 0 {
-            return child_exit::UNSHARE_FS;
-        }
-        if libc::setns(ns_fd, libc::CLONE_NEWNS) != 0 {
-            return child_exit::SETNS;
-        }
-        if libc::umount(target) != 0 {
-            return child_exit::UMOUNT;
-        }
-    }
-    0
-}
-
 impl<F: Filesystem> NailsManager<F> {
     /// Whether this process runs in a different mount namespace than PID 1.
     ///
@@ -210,62 +181,6 @@ impl<F: Filesystem> NailsManager<F> {
                 "Manager and init mount namespaces are identical; one /nix/store bind suffices"
             );
             Ok(false)
-        }
-    }
-
-    /// Undo the read-only `/nix/store` self-bind this process created in PID 1's
-    /// mount namespace during activation.
-    ///
-    /// Called only when activation recorded making that bind (the manager and
-    /// init namespaces differed). The namespaces are re-compared here: if they
-    /// now coincide, the manager-namespace `/nix/store` unmount already removed
-    /// the bind and a second `umount` would instead strip the system's own
-    /// boot-time bind, so this is a no-op in that case.
-    pub(crate) fn teardown_nix_store_init_namespace_bind() -> Result<()> {
-        if !Self::init_namespace_differs()? {
-            tracing::debug!(
-                "Manager and init mount namespaces now coincide; no separate /nix/store bind to undo"
-            );
-            return Ok(());
-        }
-
-        Self::undo_read_only_self_bind_in_init_namespace(Path::new("/nix/store"))?;
-        tracing::info!("Removed read-only /nix/store self-bind from init mount namespace");
-        Ok(())
-    }
-
-    #[allow(unsafe_code)]
-    fn undo_read_only_self_bind_in_init_namespace(target: &Path) -> Result<()> {
-        // Build everything in the parent so the child allocates nothing.
-        let init_namespace = std::fs::File::open("/proc/1/ns/mnt").map_err(|e| {
-            NailsError::OverlayError(format!("Failed to open init mount namespace: {e}"))
-        })?;
-        let ns_fd = init_namespace.as_raw_fd();
-        let target_c = cstring_for(target)?;
-
-        #[cfg(debug_assertions)]
-        assert_single_threaded_before_fork();
-
-        // SAFETY: the child runs only async-signal-safe code (raw syscalls in
-        // `umount_in_init_namespace_child`, then `_exit`), so it never touches a
-        // lock or an allocator another thread held at fork time.
-        let child = unsafe { fork() }.map_err(|e| {
-            NailsError::OverlayError(format!("Failed to fork init namespace unmount helper: {e}"))
-        })?;
-
-        match child {
-            ForkResult::Child => {
-                // SAFETY: this is the forked child; `ns_fd` stays open and
-                // `target_c` alive until `_exit`, since both were made before the
-                // fork and nothing in the child drops them.
-                let code = unsafe { umount_in_init_namespace_child(ns_fd, target_c.as_ptr()) };
-                // SAFETY: `_exit` skips destructors and atexit handlers, which
-                // must not run on the parent's state copied into the child.
-                unsafe { nix::libc::_exit(code) }
-            }
-            ForkResult::Parent { child } => {
-                Self::wait_for_init_namespace_helper(child, "/nix/store unmount")
-            }
         }
     }
 
@@ -496,6 +411,22 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// Record the `/nix/store` self-bind (and its twin in PID 1's namespace, when
+    /// one had to be made) in the teardown plan.
+    fn record_store_bind_step(&self, init_namespace_bound: bool) {
+        let store = Path::new("/nix/store");
+        self.record_plan_step(nails_teardown::Undo::Unmount {
+            target: store.to_path_buf(),
+            kind: nails_teardown::MountKind::StoreBind,
+            mount_id: self.filesystem.top_mount_id(store),
+        });
+        if init_namespace_bound {
+            self.record_plan_step(nails_teardown::Undo::UnmountInInitNamespace {
+                target: store.to_path_buf(),
+            });
+        }
+    }
+
     /// Persist whether a `/nix/store` self-bind was created in PID 1's mount
     /// namespace, so a later teardown undoes exactly that bind and nothing else.
     fn record_nix_store_init_namespace_bind(&self, bound: bool) -> Result<()> {
@@ -521,11 +452,13 @@ impl<F: Filesystem> NailsManager<F> {
         if crate::runtime_safety::should_skip_host_interaction() {
             self.filesystem
                 .bind_mount(Path::new("/nix/store"), Path::new("/nix/store"))?;
+            self.record_store_bind_step(false);
             // The test runtime never forks into the init namespace, so there is
             // never a separate bind to undo at teardown.
             self.record_nix_store_init_namespace_bind(false)?;
         } else {
             let init_namespace_bound = Self::restore_nix_store_bind_mount()?;
+            self.record_store_bind_step(init_namespace_bound);
             // Record the outcome either way so a stale flag from a previous
             // (unusual) differing-namespace activation cannot trigger a spurious
             // init-namespace unmount at the next teardown.

@@ -284,13 +284,16 @@ fails or is pulled mid-session the panic button may no longer be runnable and th
 configuration that records where the overlays are can no longer be read — exactly
 when they are needed most. Activation guards against this in two ways.
 
-First, it mirrors the running binary, the effective configuration and a manifest
-of the mounted overlay targets into a private (`0700`) directory on the decoy's
-RAM-backed `/run`, under a neutral name that reveals nothing about the tool. If
-the hidden volume is gone, run emergency from that copy by full path (activation
-prints the exact command); `emergency` and `recover` also read the mirrored config
-and manifest when the real config file is unreadable, and tell you which source
-they used. The copy is removed on deactivation and emergency.
+First, it mirrors the running binary and the effective configuration into a
+private (`0700`) directory on the decoy's RAM-backed `/run`, under a neutral name
+that reveals nothing about the tool. The same directory holds the teardown plan
+activation writes step by step (every mount it made and how to undo it; see
+[the emergency architecture](adr/0007-emergency-architecture.md)). If the hidden
+volume is gone, run emergency from that copy by full path (activation prints the
+exact command): it tears down from the plan without reading anything on the
+hidden volume, and `emergency` and `recover` read the mirrored config when the
+real config file is unreadable and tell you which source they used. The copy is
+removed on deactivation and emergency.
 
 Second, when `backend_watch.enabled` is `true` (the default), it starts a small
 watcher from that copy as a transient systemd unit with a neutral name. The

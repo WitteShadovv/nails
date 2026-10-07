@@ -630,6 +630,11 @@ impl<F: Filesystem> NailsManager<F> {
         // state (Inactive) and nothing was ever created. See `crate::cancel`.
         crate::cancel::checkpoint()?;
 
+        // Every step from here on records its undo in the teardown plan on the
+        // decoy's /run, rewritten after each step, so rollback, deactivation and
+        // emergency all undo exactly what was done (ADR 0007, T-136).
+        let plan = guard.begin_teardown_plan(restart_plan.target_uid);
+
         // Step 7: Mount persistent and ephemeral overlays.
         step.emit("overlay_mount", "Mounting overlays...");
         let mount_timer = Stopwatch::start();
@@ -655,10 +660,13 @@ impl<F: Filesystem> NailsManager<F> {
         // StateGuard holds by `&mut`.
         let mut activation_mounts = rollback::ActivationMounts::arm(
             guard.filesystem().clone(),
-            mounts,
+            plan,
             residue.clone(),
             rollback_outcome.clone(),
         );
+        // The mount phase cached `systemctl` against the pre-overlay store when
+        // it overlaid /nix; the plan's emergency stop jobs run that copy.
+        guard.refresh_plan_tools();
 
         // The posture depends on surviving writers that still leak to the decoy,
         // not on whether any overlay used the pivot method.
@@ -744,7 +752,6 @@ impl<F: Filesystem> NailsManager<F> {
         // so deactivation and emergency teardown undo exactly these binds.
         let read_only_guards = guard.apply_read_only_guard()?;
         if !read_only_guards.is_empty() {
-            activation_mounts.set_read_only_guards(read_only_guards.clone());
             guard.record_read_only_guards(&read_only_guards)?;
         }
 
@@ -758,9 +765,6 @@ impl<F: Filesystem> NailsManager<F> {
 
         // Step 10: Finalize - transition to Active.
         step.emit("finalize", "Finalizing activation...");
-        // Keep a copy of the overlay targets for the RAM-backed runtime copy
-        // below, since the list is moved into the Active state here.
-        let overlay_targets_for_copy = mounted_overlays.clone();
         let current = guard.current_state()?;
         let active_state = current.complete_activation(mounted_overlays, decoy_writers)?;
         guard.commit_active_state(active_state, total_timer.elapsed())?;
@@ -779,7 +783,7 @@ impl<F: Filesystem> NailsManager<F> {
         // net for a backend that fails mid-session, not part of the overlay stack,
         // so a failure here must never undo a successful activation.
         // Then push the queued results straight into the operator's session.
-        self.install_backend_runtime_copy(&overlay_targets_for_copy);
+        self.install_backend_runtime_copy();
         self.deliver_results_to_session();
 
         let final_state = self.current_state().ok();
@@ -908,7 +912,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
-    fn install_backend_runtime_copy(&self, overlay_targets: &[std::path::PathBuf]) {
+    fn install_backend_runtime_copy(&self) {
         if crate::runtime_safety::should_skip_host_interaction() {
             return;
         }
@@ -924,12 +928,9 @@ impl<F: Filesystem> NailsManager<F> {
             }
         };
 
-        if let Err(e) = crate::runtime_copy::write_runtime_copy(
-            self.filesystem(),
-            self.config(),
-            &exe,
-            overlay_targets,
-        ) {
+        if let Err(e) =
+            crate::runtime_copy::write_runtime_copy(self.filesystem(), self.config(), &exe)
+        {
             tracing::warn!(
                 error = %e,
                 "Failed to write the RAM-backed runtime copy; emergency teardown will still work \

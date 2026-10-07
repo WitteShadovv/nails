@@ -14,25 +14,25 @@ use crate::deactivation::test_gate::should_skip_shell_cleanup_before_deactivatio
 #[cfg(not(test))]
 use crate::process::kill_shells_for_teardown;
 use crate::{
-    CleanupConfig, CleanupManager, CleanupMode, CleanupReport, Filesystem, NailsError, Result,
-    SystemState,
+    CleanupConfig, CleanupManager, CleanupMode, Filesystem, NailsError, Result, SystemState,
 };
 use std::path::{Path, PathBuf};
 
 mod decoy;
+mod emergency;
 mod orchestrator;
 mod overlay_context;
 mod process_teardown;
 mod reboot;
-mod session_guard;
 mod unmount;
 
 use decoy::{recorded_decoy_system, requires_decoy_restore};
+pub use emergency::harness_spares;
 pub use orchestrator::{DeactivationMode, DeactivationOrchestrator};
 use overlay_context::{OverlayContext, inspect_overlay_context, overlay_context_from_mounts};
 use process_teardown::{
-    candidate_is_overlay_rooted, current_process_ancestry, is_own_invocation_process,
-    owner_pid_to_signal, read_proc_cgroup, read_session_and_pgid, self_session_and_pgid,
+    current_process_ancestry, is_own_invocation_process, owner_pid_to_signal, read_proc_cgroup,
+    read_session_and_pgid, self_session_and_pgid,
 };
 
 pub use reboot::{HostEffects, PostTeardownPower};
@@ -101,26 +101,6 @@ fn build_cleanup_config<F: Filesystem>(manager: &NailsManager<F>) -> CleanupConf
 }
 
 impl<F: Filesystem> NailsManager<F> {
-    /// Tear down what sits on top of the parent overlays, before those come down:
-    /// the read-only guards on the decoy OS trees and the submount attachments.
-    fn teardown_overlay_dependents(&self, overlay_context: &OverlayContext) {
-        if !overlay_context.read_only_guards.is_empty() {
-            tracing::info!(
-                guards = ?overlay_context.read_only_guards,
-                "Removing read-only guards from decoy OS trees"
-            );
-            self.teardown_read_only_guards(&overlay_context.read_only_guards);
-        }
-
-        if !overlay_context.submount_attachments.is_empty() {
-            tracing::info!(
-                count = overlay_context.submount_attachments.len(),
-                "Removing submount attachments"
-            );
-            self.teardown_submount_attachments(&overlay_context.submount_attachments);
-        }
-    }
-
     /// Stop the in-session backend watcher and remove the RAM-backed runtime copy.
     ///
     /// Best-effort on every teardown path (deactivate, emergency and recover): a
@@ -139,244 +119,6 @@ impl<F: Filesystem> NailsManager<F> {
         if !crate::runtime_safety::should_skip_host_interaction() {
             crate::runtime_copy::stop_watch_unit();
             crate::sleep_guard::stop_sleep_guard_unit();
-        }
-    }
-
-    /// The live NAILS overlay mount points, for the emergency overlay-rooted
-    /// process scan. The read-only `/nix/store` restore bind is left out: it
-    /// shares the decoy filesystem and cannot be written through, so a process
-    /// using it is no writer to stop. Best-effort: a discovery error yields an
-    /// empty list rather than blocking the teardown.
-    fn emergency_overlay_targets(&self) -> Vec<PathBuf> {
-        let hidden_root = self.config().hidden_volume_root.clone();
-        match self.filesystem().discover_nails_mounts(Some(&hidden_root)) {
-            Ok(discovered) => discovered
-                .owned_mount_points()
-                .into_iter()
-                .filter(|point| discovered.nix_store_bind.as_ref() != Some(point))
-                .collect(),
-            Err(e) => {
-                tracing::warn!(error = %e, "Could not enumerate NAILS mounts for emergency process cleanup");
-                Vec::new()
-            }
-        }
-    }
-
-    /// Emergency only: run the pre-teardown service cleanup. A no-op for the
-    /// normal and recovery kinds, which keep the thorough teardown order.
-    fn prepare_emergency_pre_unmount_cleanup(&self, kind: ManagerDeactivationKind) {
-        if kind != ManagerDeactivationKind::Emergency {
-            return;
-        }
-        let overlay_targets = self.emergency_overlay_targets();
-        self.stop_hidden_units_before_teardown(&overlay_targets);
-    }
-
-    /// Emergency only: stop the service units the hidden configuration added, then
-    /// signal any process still able to write to the decoy *through an overlay
-    /// target*, before the overlays come down.
-    ///
-    /// It deliberately leaves the desktop looking unchanged: emergency never logs
-    /// the operator out (no logind session/user terminate) and never stops or
-    /// restarts the display manager or X server. Emergency detaches the overlays
-    /// from underneath the running session instead — lazily where a process still
-    /// holds a path busy — and the report then names any mount or backend that
-    /// could not be released. The overlay-rooted process signal is the targeted
-    /// anti-leak step (a process whose references resolve onto an overlay's own
-    /// device could re-dirty the decoy once the mount is lazily detached); it
-    /// spares the teardown's own session and never touches the display manager.
-    /// All of it is best-effort.
-    fn stop_hidden_units_before_teardown(&self, overlay_targets: &[PathBuf]) {
-        let added_units = self
-            .cached_state
-            .borrow()
-            .as_ref()
-            .map(|state_file| state_file.hidden_added_units.clone())
-            .unwrap_or_default();
-
-        // Enqueue every stop at once rather than waiting for each unit in turn:
-        // one bounded call, so a slow unit can never hold the overlays up. The
-        // jobs also keep Restart= from reviving a unit the kill below hits.
-        if !added_units.is_empty() {
-            let units = added_units
-                .iter()
-                .map(|unit| {
-                    if unit.contains('.') {
-                        unit.clone()
-                    } else {
-                        format!("{unit}.service")
-                    }
-                })
-                .collect();
-            process_teardown::enqueue_unit_stops(&units);
-        }
-
-        self.kill_overlay_rooted_processes(overlay_targets);
-    }
-
-    /// Signal any process that can still write to the decoy through an overlay
-    /// target (a cwd/root inside it, a writable or directory fd, a shared-writable
-    /// mapping). Reuses the capability-aware process classifier; read-only
-    /// consumers are left alone. Best-effort and a no-op in test/test-like
-    /// runtimes, where the `/proc` snapshot is empty.
-    ///
-    /// The classifier matches targets by path prefix, which cannot by itself tell
-    /// a reference *inside the overlay* from one on the decoy directory the overlay
-    /// is mounted over: a decoy process whose cwd is `/tmp` (set before activation)
-    /// still reads back as `/tmp` and would be signalled, even though it is on the
-    /// decoy and neither pins the overlay nor can write into its upper. So a
-    /// path-matched candidate is kept only when a reference of its — cwd, root,
-    /// any open fd or a shared-writable mapping — really lives on one of the
-    /// writable NAILS mounts, judged by mount id (see [`crate::process::mount_refs`];
-    /// `st_dev` cannot be used, as an overlay's non-directory files report their
-    /// layer's device). An unverifiable writer (foreign mount namespace or chroot,
-    /// where mount ids are not comparable) is kept fail-safe, as is every
-    /// candidate when the NAILS mount ids could not be read at all.
-    ///
-    /// On a graphical host the whole desktop is overlay-rooted (the session logs
-    /// back in under the overlays), so the display manager, X server, logind
-    /// session leader/wrapper, window/session manager and user systemd manager
-    /// would all match. Killing any of them logs the operator out, which emergency
-    /// forbids, so [`session_guard::GraphicalSessionGuard`] spares every process in
-    /// the operator's graphical session (see that module for the policy and for the
-    /// residual exposure a spared process can leak after the lazy detach). Processes
-    /// outside the graphical session are still killed.
-    fn kill_overlay_rooted_processes(&self, targets: &[PathBuf]) {
-        if targets.is_empty() || crate::runtime_safety::should_skip_host_interaction() {
-            return;
-        }
-
-        let snapshot = match crate::process::detection::ProcSnapshot::capture() {
-            Ok(snapshot) => snapshot,
-            Err(e) => {
-                tracing::warn!(error = %e, "Could not snapshot /proc for overlay-rooted process cleanup");
-                return;
-            }
-        };
-
-        // The mount ids of the writable NAILS mounts. A reference on one of these
-        // is genuinely inside an overlay; one elsewhere only collided on the path
-        // string.
-        let hidden_root = self.config().hidden_volume_root.clone();
-        let overlay_mount_ids = crate::filesystem::read_mountinfo()
-            .map(|entries| {
-                crate::filesystem::NailsMounts::owned_writable_mount_ids(
-                    &entries,
-                    Some(&hidden_root),
-                )
-            })
-            .unwrap_or_default();
-
-        // The processes that keep the operator's graphical session alive. Emergency
-        // detaches the overlays from under a running desktop without logging the
-        // operator out, so these are spared even though they are overlay-rooted.
-        // Bounded: a hung logind must not hold the overlays up. A query that
-        // runs out of budget makes the guard spare every user session, the
-        // desktop-safe answer.
-        let session_guard = session_guard::GraphicalSessionGuard::detect(
-            &session_guard::BoundedLoginctl::new(session_guard::SESSION_DETECTION_BUDGET),
-        );
-        let mut spared_session_pids = std::collections::BTreeSet::new();
-
-        // Never signal a process that belongs to this teardown's own invocation:
-        // its ancestry, session or process group. A piped emergency
-        // (`nails emergency | base64`) has its pipe reader in the same session
-        // (and process group) with a cwd inside the full-root overlay, so without
-        // this guard it would be killed and the teardown's own final stdout write
-        // would hit a closed pipe.
-        let ancestry = current_process_ancestry();
-        let (self_sid, self_pgid) = self_session_and_pgid();
-        let self_pid = std::process::id();
-
-        let mut pids = std::collections::BTreeSet::new();
-        for target in targets {
-            for info in snapshot.processes_using(target) {
-                if !info.is_write_blocking() || info.pid == self_pid {
-                    continue;
-                }
-                let (sid, pgid) = read_session_and_pgid(info.pid).unwrap_or((0, 0));
-                if is_own_invocation_process(info.pid, sid, pgid, &ancestry, self_sid, self_pgid) {
-                    tracing::debug!(
-                        pid = info.pid,
-                        "Sparing a process in the teardown's own session/group from the overlay kill"
-                    );
-                    continue;
-                }
-                if read_proc_cgroup(info.pid).is_some_and(|cgroup| session_guard.covers(&cgroup)) {
-                    spared_session_pids.insert(info.pid);
-                    tracing::debug!(
-                        pid = info.pid,
-                        "Sparing a process that keeps the operator's graphical session alive"
-                    );
-                    continue;
-                }
-                let unverifiable = info.is_unverifiable_writer
-                    || !crate::process::mount_refs::same_mount_namespace(info.pid);
-                let on_overlay_mount = !overlay_mount_ids.is_empty()
-                    && crate::process::mount_refs::process_references_mounts(
-                        info.pid,
-                        &overlay_mount_ids,
-                    );
-                if !candidate_is_overlay_rooted(
-                    unverifiable,
-                    on_overlay_mount,
-                    !overlay_mount_ids.is_empty(),
-                ) {
-                    tracing::debug!(
-                        pid = info.pid,
-                        "Sparing a decoy-side process (path matched an overlay target but no reference lives on a NAILS mount)"
-                    );
-                    continue;
-                }
-                pids.insert(info.pid);
-            }
-        }
-
-        if !spared_session_pids.is_empty() {
-            // These processes keep the operator's graphical session alive and were
-            // left running by design. After the lazy overlay detach a spared process
-            // that reopens an absolute path onto the now-exposed decoy could still
-            // write to it; emergency accepts that rather than log the operator out,
-            // and the honest "hidden root still mounted" report tells them to finish
-            // with a reboot/power-off.
-            tracing::info!(
-                spared = spared_session_pids.len(),
-                "Spared processes belonging to the operator's graphical session (display manager, X server, session leader/clients, user service manager) from the overlay-rooted kill"
-            );
-        }
-
-        // Pin each target now: the TERM/KILL sequence below signals these exact
-        // processes (pidfd), never a later process that reuses a pid.
-        let handles: Vec<crate::process::identity::ProcessHandle> = pids
-            .iter()
-            .filter_map(|&pid| crate::process::identity::ProcessHandle::open(pid))
-            .collect();
-        if handles.is_empty() {
-            return;
-        }
-
-        // A killed process of a `Restart=` service would be revived by systemd
-        // after the overlays are gone and then write to the decoy. Enqueue a stop
-        // job for every such unit first (never the unit this teardown runs in;
-        // the graphical session's units were spared above), then signal.
-        let own_unit = crate::process::cgroup_unit::own_service_unit();
-        let units: std::collections::BTreeSet<String> = handles
-            .iter()
-            .filter_map(|handle| read_proc_cgroup(handle.pid()))
-            .filter(|cgroup| !session_guard.covers(cgroup))
-            .filter_map(|cgroup| crate::process::cgroup_unit::service_unit_from_cgroup(&cgroup))
-            .filter(|unit| crate::process::cgroup_unit::may_stop_unit(own_unit.as_deref(), unit))
-            .collect();
-        process_teardown::enqueue_unit_stops(&units);
-
-        for handle in &handles {
-            handle.signal(rustix::process::Signal::TERM);
-        }
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        for handle in &handles {
-            if handle.is_alive() {
-                handle.signal(rustix::process::Signal::KILL);
-            }
         }
     }
 
@@ -419,10 +161,11 @@ impl<F: Filesystem> NailsManager<F> {
         }
         // Never signal a process of the operator's graphical session (emergency
         // never logs the operator out), whatever the state file claims.
-        let session_guard = session_guard::GraphicalSessionGuard::detect(
-            &session_guard::BoundedLoginctl::new(session_guard::SESSION_DETECTION_BUDGET),
+        let session = nails_teardown::session::SpareSet::at_panic(
+            &[],
+            Path::new(nails_teardown::session::SESSIONS_DIR),
         );
-        if read_proc_cgroup(pid).is_some_and(|cgroup| session_guard.covers(&cgroup)) {
+        if read_proc_cgroup(pid).is_some_and(|cgroup| session.covers(&cgroup)) {
             tracing::info!(
                 pid,
                 "Recorded owner belongs to the graphical session; not signalling it"
@@ -493,50 +236,31 @@ impl<F: Filesystem> NailsManager<F> {
         Ok(())
     }
 
+    /// Undo the steps of `plan` in `phases` through the manager's filesystem,
+    /// without the reconcile, and log what was done.
+    fn undo_plan_phases(&self, plan: &nails_teardown::Plan, phases: &[nails_teardown::Phase]) {
+        let ops = crate::manager::teardown_plan::FsMountOps::for_plan(&self.filesystem, plan);
+        let report = nails_teardown::undo::run_plan(&ops, plan, phases, false);
+        crate::manager::teardown_plan::log_undo(&report);
+    }
+
     fn run_deactivation(&mut self, kind: ManagerDeactivationKind) -> Result<DeactivationReport> {
-        // The emergency panic button must work from every state, not only a
-        // clean Active one: the state is Activating during the whole switch, it
-        // is Deactivating after an interrupted teardown, and it may be a corrupt
-        // or unreadable file. Only a state that is *verifiably* clean Active
-        // (readable file, Active state) takes the fast trusted path with its
-        // recorded overlay list; every other emergency enumerates the NAILS
-        // overlays from the live mount table instead. Normal deactivation still
-        // requires a trustworthy Active state.
-        let untrusted_state = kind.always_untrusted()
-            || (kind == ManagerDeactivationKind::Emergency
-                && !self
-                    .current_state_with_outcome()
-                    .map(|(state, outcome)| {
-                        !outcome.is_unknown() && matches!(state, SystemState::Active { .. })
-                    })
-                    .unwrap_or(false));
+        // Normal deactivation requires a trustworthy Active state and tears
+        // down from the recorded plan. Recovery never trusts the state and
+        // rebuilds the plan from the live mount table when none is recorded.
+        let untrusted_state = kind.always_untrusted();
 
         if !untrusted_state {
-            // Preconditions: both modes require an Active system; only the messages differ.
             let state = self.current_state()?;
             if !matches!(state, SystemState::Active { .. }) {
-                let message = match kind {
-                    // Recover is always untrusted, so this precondition block is
-                    // never reached for it; the arm exists only for exhaustiveness.
-                    ManagerDeactivationKind::Normal | ManagerDeactivationKind::Recover => {
-                        "Cannot deactivate: system is not in Active state".to_string()
-                    }
-                    ManagerDeactivationKind::Emergency if state == SystemState::Inactive => {
-                        "Cannot deactivate from state Inactive. Must be ACTIVE.".to_string()
-                    }
-                    ManagerDeactivationKind::Emergency => {
-                        format!("Cannot deactivate from state {:?}. Must be ACTIVE.", state)
-                    }
-                };
-                return Err(NailsError::InvalidState(message));
+                return Err(NailsError::InvalidState(
+                    "Cannot deactivate: system is not in Active state".to_string(),
+                ));
             }
         }
 
-        // A state-independent teardown (emergency from a non-Active state, or
-        // recovery) must not disturb a system that is already the decoy: with no
-        // NAILS mount live and the state Inactive there is nothing to tear down,
-        // so skip the shell kill, the forced state write and the service restarts
-        // entirely and report a clean no-op.
+        // Recovery must not disturb a system that is already the decoy: with no
+        // NAILS mount live and the state Inactive there is nothing to tear down.
         if untrusted_state {
             let hidden_root = self.config().hidden_volume_root.clone();
             let discovered = self
@@ -551,31 +275,20 @@ impl<F: Filesystem> NailsManager<F> {
                     "Nothing to tear down: no live NAILS mounts and the state is Inactive"
                 );
                 return Ok(DeactivationReport {
-                    cleanup_report: CleanupReport::default(),
-                    unmounted_overlays: Vec::new(),
-                    failed_overlays: Vec::new(),
-                    remaining_mounts: Vec::new(),
-                    duration: std::time::Duration::ZERO,
                     final_state: SystemState::Inactive,
                     was_already_inactive: true,
-                    force_detached_overlays: Vec::new(),
-                    page_cache_dropped: false,
-                    runtime_journal_scrubbed: false,
-                    reboot_recommended: false,
-                    state_write_errors: Vec::new(),
+                    ..DeactivationReport::default()
                 });
             }
         }
 
-        // Emergency/recover: quiet a still-running activation owner before the
-        // first unmount so a stale writer cannot re-dirty the overlays mid-
-        // teardown. Try-lock only — it never blocks the panic button.
+        // Recovery: quiet a still-running activation owner before the first
+        // unmount so a stale writer cannot re-dirty the overlays mid-teardown.
         self.signal_owner_pid_before_teardown(kind);
 
         // A swap device that reappeared while the hidden session ran would have
-        // paged memory to the decoy disk; surface it before teardown. Skipped in
-        // emergency mode, which must stay fast and best-effort. The same Normal-only
-        // pre-teardown block refuses up front if the decoy could not be restored
+        // paged memory to the decoy disk; surface it before teardown. The same
+        // Normal-only block refuses up front if the decoy could not be restored
         // afterwards, while the Active session is still intact.
         if kind == ManagerDeactivationKind::Normal {
             let hidden_root = self.config().hidden_volume_root.clone();
@@ -589,57 +302,22 @@ impl<F: Filesystem> NailsManager<F> {
             inspect_overlay_context(self)?
         };
 
-        if overlay_context.nix_was_overlaid {
-            // Emergency does not wait for nix-daemon to stop: the overlay-rooted
-            // kill below stops (stop job first) and kills any daemon still using
-            // the /nix overlay, and the unmounts fall back to a lazy detach, so
-            // the overlays never wait on it.
-            if kind != ManagerDeactivationKind::Emergency {
-                tracing::info!("Stopping nix-daemon before /nix overlay unmount...");
-                let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
-            }
-
-            tracing::info!("Unmounting /nix/store bind mount...");
-            // Best-effort: a failure here must not short-circuit the teardown
-            // before the service restart below, which would otherwise leave the
-            // decoy without a nix-daemon. The /nix overlay unmount in the
-            // orchestrator surfaces any remaining problem.
-            if let Err(graceful_error) = self.filesystem.unmount(Path::new("/nix/store"), false) {
-                tracing::warn!(
-                    error = %graceful_error,
-                    "Graceful /nix/store unmount failed, trying force unmount"
-                );
-                if let Err(force_error) = self.filesystem.unmount(Path::new("/nix/store"), true) {
-                    tracing::warn!(
-                        error = %force_error,
-                        "Force /nix/store unmount failed; continuing to overlay teardown and service restart"
-                    );
-                }
-            }
-
-            // When activation had to bind /nix/store read-only in PID 1's mount
-            // namespace as well (an invocation preflight normally refuses), the
-            // manager-namespace unmount above cannot reach that bind. Undo exactly
-            // the bind activation recorded; best-effort so a failure never leaves
-            // the decoy without nix-daemon.
-            if overlay_context.nix_store_init_namespace_bound
-                && !crate::runtime_safety::should_skip_host_interaction()
-                && let Err(e) = Self::teardown_nix_store_init_namespace_bind()
-            {
-                tracing::warn!(
-                    error = %e,
-                    "Best-effort init-namespace /nix/store unmount failed; continuing to overlay teardown and service restart"
-                );
-            }
+        // The plan activation recorded, or the one the state file (or, for
+        // recovery, the mount table) implies when no plan file is left.
+        let (plan, source) = self.plan_for_teardown(!untrusted_state);
+        if let nails_teardown::PlanSource::Derived(why) = &source {
+            tracing::info!(reason = %why, "Tearing down from a rebuilt teardown plan");
         }
 
-        // Emergency only: before the overlays come down, stop the service units the
-        // hidden configuration added and signal any process still writing to the
-        // decoy through an overlay target. It never logs the operator out and never
-        // touches the display manager or X server — the desktop must look unchanged
-        // while the overlays are detached underneath it (lazily where a process
-        // holds a path busy).
-        self.prepare_emergency_pre_unmount_cleanup(kind);
+        if overlay_context.nix_was_overlaid {
+            tracing::info!("Stopping nix-daemon before /nix overlay unmount...");
+            let _ = crate::manager::helpers::ServiceController::stop_nix_daemon();
+        }
+        // The /nix/store binds (in this namespace and, when activation had to
+        // make one there, in PID 1's) come off before the shell kill, as they
+        // always have. Best-effort: the orchestrator's unmount surfaces anything
+        // that remains, and nix-daemon is restarted below on every path.
+        self.undo_plan_phases(&plan, &[nails_teardown::Phase::Store]);
 
         let cleanup_config = build_cleanup_config(self);
 
@@ -656,9 +334,7 @@ impl<F: Filesystem> NailsManager<F> {
             // Teardown kills root's decoy shell too, so its in-memory history is
             // never flushed; only the teardown's own invocation stays protected —
             // its ancestry plus any sibling sharing its session or process group,
-            // such as the pipe reader capturing this command's output — and the
-            // deactivation detach means the invoking shell is torn down with the
-            // rest rather than permanently spared.
+            // such as the pipe reader capturing this command's output.
             let report = kill_shells_for_teardown(&protected, self.runtime_env());
             tracing::info!(
                 killed = report.killed.len(),
@@ -675,14 +351,14 @@ impl<F: Filesystem> NailsManager<F> {
         let orchestrator = DeactivationOrchestrator::new(cleanup_config)
             .with_mode(kind.orchestrator_mode())
             .with_decoy_profile_restore(restore_decoy_profile)
-            .with_untrusted_state(untrusted_state);
+            .with_untrusted_state(untrusted_state)
+            .with_plan(plan.clone());
 
         // Return write access to the decoy OS trees and undo the submount
-        // attachments before the overlays they sit on come down (the orchestrator
-        // unmounts the parent overlays below). Only now, after the writer kill and
-        // the shell kill: lifting a read-only guard while a hidden-session writer
-        // still runs would let it write to the decoy tree in the meantime.
-        self.teardown_overlay_dependents(&overlay_context);
+        // attachments before the overlays they sit on come down. Only now,
+        // after the shell kill: lifting a read-only guard while a hidden-session
+        // writer still runs would let it write to the decoy tree in the meantime.
+        self.undo_plan_phases(&plan, &[nails_teardown::Phase::Dependents]);
 
         Self::relinquish_journal_before_unmount(&overlay_context);
 
@@ -705,47 +381,37 @@ impl<F: Filesystem> NailsManager<F> {
         }
 
         // Stop the in-session backend watcher and remove the RAM-backed runtime
-        // copy on every teardown path. Runs before the orchestrator result is
-        // unwrapped so the watcher never outlives the overlays even when the
-        // teardown reported a problem.
+        // copy (and the plan with it) on every teardown path.
         self.teardown_backend_runtime_copy();
 
         let mut report = match result {
             Ok(report) => report,
             Err(error) => {
-                // A teardown that failed after detaching overlays (incomplete, or a
-                // late error) still scrubs the RAM-backed state: the runtime journal,
-                // the pivot staging and runtime root, and the page cache. One that
-                // failed before any unmount rolled back to Active and keeps running,
-                // so nothing is scrubbed from under the live session.
+                // A teardown that failed after detaching overlays still scrubs the
+                // RAM-backed state; one that failed before any unmount rolled back
+                // to Active and keeps running, so nothing is scrubbed from under
+                // the live session.
                 if !matches!(self.current_state(), Ok(SystemState::Active { .. })) {
                     orchestrator.cleanup_after_failed_teardown(self);
                     let mut scratch = DeactivationReport::default();
-                    self.scrub_runtime_journal_and_warn(&overlay_context, kind, &mut scratch);
+                    self.scrub_runtime_journal_and_warn(kind, &mut scratch);
                 }
                 return Err(error);
             }
         };
 
-        self.scrub_runtime_journal_and_warn(&overlay_context, kind, &mut report);
+        self.scrub_runtime_journal_and_warn(kind, &mut report);
 
         // After the unmount every history file and temp entry a cleanup could
         // reach is on the decoy, and editing or even reading one would leave
         // fresh timestamps there. So no teardown kind writes to (or reads from)
-        // any decoy filesystem after the unmount: decoy-history hygiene belongs
-        // to the pre-activation cleanup, the pre-teardown shell kill stops a
-        // shell from flushing its history, and hidden-session shells keep no
-        // history file. Only RAM-backed state (the runtime journal, the page
-        // cache, the per-activation runtime root) is scrubbed here.
+        // any decoy filesystem after the unmount; only RAM-backed state (the
+        // runtime journal, the page cache, the per-activation runtime root) is
+        // scrubbed here.
 
         // Record the post-teardown self-check on the hidden volume before the
-        // reboot. At this point the decoy configuration is restored and the
-        // overlays are unmounted, yet the hidden volume is still attached and
-        // writable (the state file was just written to it), so this is the last
-        // moment the report can land on the hidden root. It is written only on a
-        // standard deactivation that reboots, only after a real teardown, and only
-        // ever to the hidden volume — never to the decoy. Best-effort: a write
-        // failure is logged and the reboot proceeds.
+        // reboot, the last moment the report can land there. Only ever to the
+        // hidden volume, never to the decoy; a write failure is logged.
         self.write_last_deactivation_report_before_reboot(kind, &report);
 
         if kind.reboots_on_success() {
@@ -753,11 +419,10 @@ impl<F: Filesystem> NailsManager<F> {
                 tracing::info!("Rebooting system...");
             }
 
-            // The reboot step is always reached: the runtime-safety skip now lives
-            // inside `HostEffects::Real` (a compile-time `false` in shipped builds)
-            // rather than wrapping this call, so a `Simulated` dispatcher can
-            // observe the request and a guard that refuses surfaces as an error
-            // here instead of being silently swallowed.
+            // The reboot step is always reached: the runtime-safety skip lives
+            // inside `HostEffects::Real` rather than wrapping this call, so a
+            // `Simulated` dispatcher can observe the request and a guard that
+            // refuses surfaces as an error here instead of being swallowed.
             let host_effects = self.host_effects.clone();
             let _outcome = host_effects.reboot_into_decoy(
                 self.filesystem(),
@@ -802,7 +467,6 @@ impl<F: Filesystem> NailsManager<F> {
     /// full power-off clears kernel and RAM residue.
     fn scrub_runtime_journal_and_warn(
         &self,
-        _overlay_context: &OverlayContext,
         kind: ManagerDeactivationKind,
         report: &mut DeactivationReport,
     ) {
@@ -886,16 +550,6 @@ impl<F: Filesystem> NailsManager<F> {
     /// Deactivate NAILS, restoring the decoy configuration, then reboot.
     pub fn deactivate(&mut self) -> Result<DeactivationReport> {
         self.run_deactivation(ManagerDeactivationKind::Normal)
-    }
-
-    /// Emergency deactivation: fast, best-effort teardown without a reboot.
-    ///
-    /// Returns the [`DeactivationReport`] so the caller can surface an honest
-    /// account of what was detached (including overlays that needed the forced
-    /// detach), what cleanup did, whether the page cache was dropped, and the
-    /// history-verification result, rather than a fixed success string.
-    pub fn emergency_deactivate(&mut self) -> Result<DeactivationReport> {
-        self.run_deactivation(ManagerDeactivationKind::Emergency)
     }
 
     /// Run the operator's post-teardown power request (`--poweroff`/`--reboot`).

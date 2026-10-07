@@ -7,10 +7,7 @@ use super::decoy::{
     recorded_decoy_system, recorded_hidden_toplevel, restore_decoy_current_system,
     restore_hidden_current_system,
 };
-use super::unmount::{
-    UnmountOutcome, discovered_unmount_targets, merge_recorded_with_discovered,
-    overlay_unmount_targets, remaining_nails_mounts,
-};
+use super::unmount::{UnmountOutcome, remaining_nails_mounts};
 use crate::cleanup::history::history_cleanup_homes;
 use crate::deactivation::DeactivationReport;
 use crate::deactivation::test_gate::maybe_block_after_deactivating_state_transition;
@@ -67,6 +64,9 @@ pub struct DeactivationOrchestrator {
     /// the report so the operator learns the hidden volume could not record the
     /// teardown.
     state_write_errors: RefCell<Vec<String>>,
+    /// The teardown plan whose undo takes the mounts down; when none is given
+    /// the manager supplies one (see `NailsManager::plan_for_teardown`).
+    plan: Option<nails_teardown::Plan>,
 }
 
 impl DeactivationOrchestrator {
@@ -78,7 +78,32 @@ impl DeactivationOrchestrator {
             restore_decoy_profile: true,
             untrusted_state: false,
             state_write_errors: RefCell::new(Vec::new()),
+            plan: None,
         }
+    }
+
+    /// The teardown plan to undo (builder pattern).
+    pub fn with_plan(mut self, plan: nails_teardown::Plan) -> Self {
+        self.plan = Some(plan);
+        self
+    }
+
+    /// The overlay-family targets the plan names, in plan order, for judging
+    /// afterwards which of them are still live.
+    fn planned_targets(plan: &nails_teardown::Plan) -> Vec<PathBuf> {
+        let mut targets = Vec::new();
+        for step in &plan.steps {
+            if let nails_teardown::Undo::Unmount {
+                target,
+                kind: nails_teardown::MountKind::Overlay | nails_teardown::MountKind::NestedOverlay,
+                ..
+            } = &step.undo
+                && !targets.contains(target)
+            {
+                targets.push(target.clone());
+            }
+        }
+        targets
     }
 
     /// Set the deactivation mode (builder pattern).
@@ -118,10 +143,14 @@ impl DeactivationOrchestrator {
         // When the state file is untrusted the recorded overlay list cannot be
         // read, so that teardown enumerates NAILS mounts from the live mount
         // table instead of the Active state's overlay list.
+        let plan = match &self.plan {
+            Some(plan) => plan.clone(),
+            None => manager.plan_for_teardown(!self.untrusted_state).0,
+        };
         if self.untrusted_state {
-            self.run_from_untrusted_state(manager, start)
+            self.run_from_untrusted_state(manager, &plan, start)
         } else {
-            self.run_from_trusted_state(manager, start)
+            self.run_from_trusted_state(manager, &plan, start)
         }
     }
 
@@ -176,6 +205,7 @@ impl DeactivationOrchestrator {
     fn run_from_trusted_state<F: Filesystem>(
         &self,
         manager: &mut NailsManager<F>,
+        plan: &nails_teardown::Plan,
         start: Instant,
     ) -> Result<DeactivationReport> {
         // Step 0: Check if already inactive (idempotent). Emergency mode refuses.
@@ -214,18 +244,9 @@ impl DeactivationOrchestrator {
             )));
         }
 
-        // Extract overlays BEFORE transitioning away from ACTIVE, and add every
-        // live NAILS mount the recorded list misses, so nothing NAILS mounted is
-        // left behind on a trusted teardown either.
-        let hidden_root = manager.config().hidden_volume_root.clone();
-        let discovered = manager
-            .filesystem()
-            .discover_nails_mounts(Some(&hidden_root))
-            .ok();
-        let overlays_to_unmount = merge_recorded_with_discovered(
-            overlay_unmount_targets(manager, &current_state)?,
-            discovered.as_ref(),
-        );
+        // The plan's overlay targets; the undo below also reconciles against
+        // the live table, so a NAILS mount the plan misses comes down too.
+        let overlays_to_unmount = Self::planned_targets(plan);
 
         // The decoy system recorded at activation, read before the guard borrows
         // the manager mutably. Step 5 restores `/run/current-system` to it.
@@ -252,7 +273,7 @@ impl DeactivationOrchestrator {
         if self.mode == DeactivationMode::Emergency {
             // Step 2 (emergency): detach every overlay first.
             Self::never_roll_back_to_active(&mut guard, &overlays_to_unmount);
-            let outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
+            let outcome = self.unmount_overlays(&guard, plan);
             guard =
                 self.finish_or_degrade(guard, &overlays_to_unmount, "deactivation", &outcome)?;
             let unmounted = &outcome.unmounted;
@@ -304,7 +325,7 @@ impl DeactivationOrchestrator {
             // writes onto the decoy disk, so a teardown that cannot finish ends
             // DEGRADED instead.
             Self::never_roll_back_to_active(&mut guard, &overlays_to_unmount);
-            let outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
+            let outcome = self.unmount_overlays(&guard, plan);
             guard =
                 self.finish_or_degrade(guard, &overlays_to_unmount, "deactivation", &outcome)?;
             tracing::info!(
@@ -315,10 +336,6 @@ impl DeactivationOrchestrator {
             unmount_outcome = outcome;
             page_cache_dropped = false;
         }
-
-        // Detach and remove any pivot staging the target unmount left behind, so a
-        // pivoted (VFAT) target leaves no mount or directory under the staging base.
-        self.cleanup_pivot_staging(&guard);
 
         let unmounted = unmount_outcome.unmounted;
         let force_detached = unmount_outcome.force_detached;
@@ -471,13 +488,10 @@ impl DeactivationOrchestrator {
     fn run_from_untrusted_state<F: Filesystem>(
         &self,
         manager: &mut NailsManager<F>,
+        plan: &nails_teardown::Plan,
         start: Instant,
     ) -> Result<DeactivationReport> {
-        let hidden_root = manager.config().hidden_volume_root.clone();
-        let discovered = manager
-            .filesystem()
-            .discover_nails_mounts(Some(&hidden_root))?;
-        let overlays_to_unmount = discovered_unmount_targets(&discovered);
+        let overlays_to_unmount = Self::planned_targets(plan);
         // Whatever the cache still holds (nothing for a corrupt file), read before
         // the baseline write replaces the state.
         let recorded_decoy = recorded_decoy_system(manager);
@@ -511,17 +525,13 @@ impl DeactivationOrchestrator {
         // then run best-effort cleanup, then drop the page cache. The unmount is
         // the one step that matters, so nothing is allowed to run before it.
         let unmount_start = Instant::now();
-        let unmount_outcome = self.unmount_overlays(&guard, &overlays_to_unmount);
+        let unmount_outcome = self.unmount_overlays(&guard, plan);
         guard = self.finish_or_degrade(
             guard,
             &overlays_to_unmount,
             "emergency teardown",
             &unmount_outcome,
         )?;
-
-        // Detach and remove any pivot staging left behind (directories survive even
-        // when the staging mounts were already in the discovered unmount set).
-        self.cleanup_pivot_staging(&guard);
 
         let unmounted = unmount_outcome.unmounted.clone();
         let force_detached = unmount_outcome.force_detached.clone();
@@ -615,7 +625,6 @@ impl DeactivationOrchestrator {
     /// owes: the pivot staging and runtime root, and (emergency) the page cache.
     /// Best-effort; the caller returns the teardown's error afterwards.
     pub(super) fn cleanup_after_failed_teardown<F: Filesystem>(&self, manager: &NailsManager<F>) {
-        self.cleanup_pivot_staging(manager);
         if self.mode == DeactivationMode::Emergency {
             self.drop_page_cache_after_unmount(manager);
         }
@@ -645,143 +654,38 @@ impl DeactivationOrchestrator {
         }
     }
 
-    /// Attempt to unmount every overlay in reverse LIFO order.
+    /// Undo the plan with the shared executor, reconciled against the live
+    /// table, and collect what came down and what did not.
     ///
-    /// Unlike the old teardown this never aborts on the first failure and never
-    /// remounts: every target is attempted (graceful, then forced) and the
-    /// per-target failures are collected so the caller can decide whether the
-    /// teardown is complete or must be recorded as degraded.
-    /// Detach everything staged inside the per-activation runtime scaffolding
-    /// root, then unmount and remove the root tmpfs itself.
-    ///
-    /// All of an activation's volatile scaffolding — pivot staging overlays, the
-    /// vfat snapshot tmpfs, and the read-only `/nix/store` bind — lives inside one
-    /// random-named umbrella tmpfs under `/run`. The main overlay unmount only
-    /// takes the *target* binds down; the scaffolding stacked inside the umbrella
-    /// stays behind and keeps the hidden upper on the backend busy.
-    ///
-    /// The root is found two ways and both are honoured: structural discovery from
-    /// the live mount table (so an untrusted / emergency teardown with no state
-    /// still finds it) and the path recorded in the state file (so a trusted
-    /// teardown removes even an *empty* umbrella that a mount-table scan does not
-    /// correlate). Scaffolding is detached snapshot-last — the staging overlay
-    /// stacks on the `-snapshot` tmpfs — then the umbrella tmpfs is unmounted and
-    /// its directory removed. Best-effort and a no-op when no scaffolding exists.
-    pub(super) fn cleanup_pivot_staging<F: Filesystem>(&self, manager: &NailsManager<F>) {
-        let fs = manager.filesystem();
-        let hidden_root = manager.config().hidden_volume_root.clone();
-
-        // The umbrella root recorded at activation (reliable even when empty).
-        let recorded_root = manager
-            .cached_state
-            .borrow()
-            .as_ref()
-            .and_then(|state| state.runtime_root.clone());
-
-        let mut discovered_root = None;
-        if let Ok(mounts) = fs.discover_nails_mounts(Some(&hidden_root)) {
-            discovered_root = mounts.runtime_tmpfs.clone();
-            let mut staging = mounts.pivot_binds.clone();
-            // Detach the staging overlay before the `-snapshot` tmpfs it stacks on.
-            staging.sort_by_key(|p| {
-                p.file_name()
-                    .map(|n| n.to_string_lossy().ends_with("-snapshot"))
-                    .unwrap_or(false)
-            });
-            for target in &staging {
-                if fs.unmount(target, false).is_err() {
-                    let _ = fs.unmount(target, true);
-                }
-                // The snapshot tmpfs staged inside the root is a tmpfs, not an
-                // overlay; unmount_tmpfs is idempotent and a no-op for the overlay
-                // and bind staging, so this cleans both without knowing the fstype.
-                let _ = fs.unmount_tmpfs(target);
-            }
-        }
-
-        // Tear down the umbrella tmpfs last, from whichever source found it. The
-        // recorded path is tried too, deduplicated, so an empty umbrella the
-        // mount-table scan did not correlate is still removed.
-        for root in [discovered_root, recorded_root].into_iter().flatten().fold(
-            Vec::new(),
-            |mut acc: Vec<PathBuf>, root| {
-                if !acc.contains(&root) {
-                    acc.push(root);
-                }
-                acc
-            },
-        ) {
-            // Unmounting the tmpfs discards every staging directory it held, so
-            // only the umbrella itself needs removing afterwards.
-            let _ = fs.unmount_tmpfs(&root);
-            let _ = fs.remove_directory(&root);
-        }
-    }
-
+    /// Every target is attempted (graceful, then lazy) and nothing is ever
+    /// remounted, so the caller decides from the outcome whether the teardown
+    /// is complete or must be recorded as degraded.
     fn unmount_overlays<F: Filesystem>(
         &self,
         manager: &NailsManager<F>,
-        overlays: &[PathBuf],
+        plan: &nails_teardown::Plan,
     ) -> UnmountOutcome {
-        let mut unmounted = Vec::new();
-        let mut failed = Vec::new();
-        let mut force_detached = Vec::new();
-
-        for overlay_path in overlays.iter().rev() {
-            match self.unmount_single_overlay(manager, overlay_path) {
-                Ok(needed_force) => {
-                    let display = overlay_path.to_string_lossy().to_string();
-                    if needed_force {
-                        force_detached.push(display.clone());
-                    }
-                    unmounted.push(display);
-                }
-                Err(e) => {
-                    tracing::error!(
-                        error = %e,
-                        path = %overlay_path.display(),
-                        phase = "unmount",
-                        "Unmount failed for overlay; continuing with the remaining targets"
-                    );
-                    failed.push(overlay_path.clone());
-                }
-            }
-        }
-
+        let ops = crate::manager::teardown_plan::FsMountOps::for_plan(manager.filesystem(), plan);
+        let report = nails_teardown::undo::run_plan(
+            &ops,
+            plan,
+            &[
+                nails_teardown::Phase::Dependents,
+                nails_teardown::Phase::Store,
+                nails_teardown::Phase::Main,
+            ],
+            true,
+        );
+        crate::manager::teardown_plan::log_undo(&report);
+        let (unmounted, force_detached) = crate::manager::teardown_plan::detached_overlays(&report);
         UnmountOutcome {
             unmounted,
-            failed,
+            failed: report
+                .failures()
+                .into_iter()
+                .map(|(path, _)| path)
+                .collect(),
             force_detached,
-        }
-    }
-
-    /// Unmount a single overlay with graceful -> force fallback.
-    ///
-    /// Returns `Ok(true)` when the overlay only came down after the forced (lazy)
-    /// detach, `Ok(false)` when the graceful unmount succeeded, and an error when
-    /// both attempts failed.
-    fn unmount_single_overlay<F: Filesystem>(
-        &self,
-        manager: &NailsManager<F>,
-        path: &Path,
-    ) -> Result<bool> {
-        match manager.filesystem().unmount(path, false) {
-            Ok(()) => {
-                tracing::info!(
-                    path = %path.display(),
-                    method = "graceful",
-                    "Overlay unmounted"
-                );
-                Ok(false)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %e,
-                    "Graceful unmount failed, trying force unmount"
-                );
-                manager.filesystem().unmount(path, true).map(|()| true)
-            }
         }
     }
 }

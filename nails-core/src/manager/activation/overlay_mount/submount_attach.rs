@@ -281,6 +281,7 @@ mod tests {
     use crate::MockFilesystem;
     use crate::config::Config;
     use crate::manager::NailsManager;
+    use crate::manager::teardown_plan::PlanRecorder;
 
     fn manager_with_hidden_root(
         hidden_root: &str,
@@ -316,7 +317,8 @@ mod tests {
             }],
         );
 
-        let mut tracker = MountTracker::new(manager.filesystem());
+        let plan = PlanRecorder::memory(PathBuf::from("/mnt/hidden"));
+        let mut tracker = MountTracker::with_plan(manager.filesystem(), plan.clone());
         let mut attachments = Vec::new();
         let staged = manager.stage_submounts(Path::new("/snap"), &mut tracker, &mut attachments);
         manager.reattach_staged_submounts(&staged, &mut tracker, &mut attachments);
@@ -331,7 +333,8 @@ mod tests {
             SubmountAttachment::Bind { path } if path == Path::new("/snap/firefox/1234")
         ));
 
-        manager.teardown_submount_attachments(&attachments);
+        // The steps' recorded undo takes them down again.
+        crate::manager::activation::rollback::undo_plan(manager.filesystem(), &plan.snapshot());
         assert!(!fs.mock_is_read_only_guarded(Path::new("/snap/firefox/1234")));
     }
 
@@ -347,7 +350,8 @@ mod tests {
             }],
         );
 
-        let mut tracker = MountTracker::new(manager.filesystem());
+        let plan = PlanRecorder::memory(PathBuf::from("/mnt/hidden"));
+        let mut tracker = MountTracker::with_plan(manager.filesystem(), plan.clone());
         let mut attachments = Vec::new();
         let staged = manager.stage_submounts(Path::new("/var"), &mut tracker, &mut attachments);
         manager.reattach_staged_submounts(&staged, &mut tracker, &mut attachments);
@@ -365,7 +369,7 @@ mod tests {
             SubmountAttachment::Overlay { path } if path == Path::new("/var/log")
         ));
 
-        manager.teardown_submount_attachments(&attachments);
+        crate::manager::activation::rollback::undo_plan(manager.filesystem(), &plan.snapshot());
         assert!(!fs.is_overlay_mounted(Path::new("/var/log")).unwrap());
     }
 

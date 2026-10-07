@@ -156,6 +156,33 @@ pub struct Step {
     pub undo: Undo,
 }
 
+/// How to run one tool: its absolute path, or the pre-overlay store's dynamic
+/// loader with an explicit library path when the tool lives in a `/nix/store`
+/// that will be overlaid (the loader then runs `program` from the pre-overlay
+/// bind, never through the overlay).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tool {
+    /// The program to run.
+    pub program: PathBuf,
+    /// The dynamic loader to run it through, when one is needed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loader: Option<PathBuf>,
+    /// The loader's `--library-path`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub library_path: Option<String>,
+}
+
+impl Tool {
+    /// A tool run directly from `program`.
+    pub fn direct(program: PathBuf) -> Self {
+        Self {
+            program,
+            loader: None,
+            library_path: None,
+        }
+    }
+}
+
 /// Absolute paths of the tools the teardown runs, resolved at activation against
 /// the decoy system (never through an overlay), so the panic path executes
 /// exactly these files and never searches a `PATH`.
@@ -163,10 +190,10 @@ pub struct Step {
 pub struct Tools {
     /// `systemctl`, for the stop jobs that keep `Restart=` from reviving a unit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub systemctl: Option<PathBuf>,
+    pub systemctl: Option<Tool>,
     /// `journalctl`, to hand the journal back to `/run` before `/var` comes down.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub journalctl: Option<PathBuf>,
+    pub journalctl: Option<Tool>,
 }
 
 /// What activation decided about the operator's graphical session, so the panic

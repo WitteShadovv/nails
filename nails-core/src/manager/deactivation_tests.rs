@@ -261,25 +261,6 @@ fn own_invocation_process_ignores_zero_sentinels() {
 }
 
 #[test]
-fn overlay_kill_candidate_is_gated_on_the_overlay_device() {
-    use super::process_teardown::candidate_is_overlay_rooted;
-
-    // A path-matched candidate whose references are on the overlay device is
-    // genuinely inside the overlay and is killed.
-    assert!(candidate_is_overlay_rooted(false, true, true));
-    // A path-matched candidate whose references are on the decoy device (the
-    // overlay device set is known, but it does not resolve onto it) is a decoy
-    // process that only collided on the path string: it is spared.
-    assert!(!candidate_is_overlay_rooted(false, false, true));
-    // An unverifiable writer (foreign mount namespace / chroot) cannot be device
-    // checked, so it is kept fail-safe even without a device match.
-    assert!(candidate_is_overlay_rooted(true, false, true));
-    // When no overlay device could be read at all, fall back to the path match so
-    // the overlays are never left pinned by an unkilled writer.
-    assert!(candidate_is_overlay_rooted(false, false, false));
-}
-
-#[test]
 fn a_decoy_mount_point_left_after_its_overlay_is_not_a_leftover() {
     use super::unmount::still_nails_owned;
     use crate::filesystem::NailsMounts;
@@ -310,10 +291,8 @@ fn a_decoy_mount_point_left_after_its_overlay_is_not_a_leftover() {
 }
 
 #[test]
-fn cleanup_pivot_staging_detaches_and_removes_the_staging() {
-    use crate::{
-        CleanupConfig, Config, DeactivationOrchestrator, Filesystem, MockFilesystem, NailsManager,
-    };
+fn a_rebuilt_plan_detaches_and_removes_the_pivot_staging() {
+    use crate::{Config, Filesystem, MockFilesystem, NailsManager};
     use std::path::{Path, PathBuf};
 
     // A VFAT /boot pivot stages its scaffolding inside the per-activation runtime
@@ -350,8 +329,11 @@ fn cleanup_pivot_staging_detaches_and_removes_the_staging() {
     };
     let manager = NailsManager::new(fs, config, temp_dir.path().join("state.json"));
 
-    let orchestrator = DeactivationOrchestrator::new(CleanupConfig::default());
-    orchestrator.cleanup_pivot_staging(&manager);
+    // No plan file: the plan is rebuilt from the mount table and undone with
+    // the reconcile, as recovery does.
+    let (plan, _) = manager.plan_for_teardown(false);
+    let ops = crate::manager::teardown_plan::FsMountOps::for_plan(manager.filesystem(), &plan);
+    nails_teardown::undo::run_plan(&ops, &plan, &[nails_teardown::Phase::Main], true);
 
     // The staging overlay and snapshot tmpfs are detached, and the umbrella tmpfs
     // is unmounted and its directory removed, so nothing under the runtime root
@@ -402,11 +384,16 @@ fn untrusted_teardown_lifts_only_guards_it_can_see() {
     };
     let manager = NailsManager::new(fs.clone(), config, state_path);
 
-    let context = super::overlay_context::overlay_context_from_mounts(&manager).unwrap();
-    assert_eq!(
-        context.read_only_guards,
-        vec![std::path::PathBuf::from("/usr")]
-    );
+    let (plan, _) = manager.plan_for_teardown(false);
+    let guards: Vec<_> = plan
+        .steps
+        .iter()
+        .filter_map(|step| match &step.undo {
+            nails_teardown::Undo::RemoveReadOnlyGuard { tree } => Some(tree.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(guards, vec![std::path::PathBuf::from("/usr")]);
 }
 
 #[test]

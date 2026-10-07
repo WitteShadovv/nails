@@ -53,6 +53,15 @@ impl Filesystem for MockFilesystem {
         self.discover_nails_mounts_impl(hidden_root)
     }
 
+    fn is_nails_owned(&self, target: &Path) -> Result<bool> {
+        Ok(self
+            .nails_owned_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains(target)
+            || self.discover_nails_mounts_impl(None)?.is_owned(target))
+    }
+
     fn bind_mount(&self, source: &Path, target: &Path) -> Result<()> {
         self.bind_mount_impl(source, target)
     }

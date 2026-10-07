@@ -3,9 +3,11 @@
 
 //! Activation-scope overlay rollback.
 //!
-//! [`rollback_mounts`] is the single unmount routine. It is shared by
-//! [`MountTracker`](crate::MountTracker)'s mid-mount safety net and by
-//! [`ActivationMounts`], the guard that unmounts overlays when activation fails
+//! Activation records every step's undo in the teardown plan (see
+//! [`crate::manager::teardown_plan`]); rolling back is undoing that plan with
+//! the executor deactivation and emergency use too ([`undo_plan`]). It is run
+//! by [`MountTracker`](crate::MountTracker)'s mid-mount safety net and by
+//! [`ActivationMounts`], the guard that rolls back when activation fails
 //! *after* the mounts have been taken out of the tracker.
 //!
 //! # Why a second guard exists
@@ -19,10 +21,13 @@
 //! the filesystem (so it never borrows the filesystem back out of the
 //! `StateGuard`'s exclusive `&mut` borrow of the manager) and unmounts on drop.
 
-use super::{MountInfo, MountType};
+use super::MountInfo;
 use crate::Filesystem;
+use crate::manager::teardown_plan::{FsMountOps, PlanRecorder};
+use nails_teardown::undo::UndoReport;
+use nails_teardown::{Phase, Plan};
 use std::cell::RefCell;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::rc::Rc;
 
 /// What the activation-scope overlay rollback did when activation failed.
@@ -44,156 +49,81 @@ pub enum RollbackOutcome {
     Failed(Vec<String>),
 }
 
-/// Unmount a set of tracked overlays in reverse (LIFO) order, best-effort.
-///
-/// Each overlay is unmounted gracefully first and forcibly only if that fails.
-/// Ephemeral overlays additionally have their tmpfs upper/work filesystems
-/// unmounted after the overlay itself (cascade). Unmounting continues past
-/// individual failures so one stuck mount cannot strand the rest.
+/// Undo every step of `plan`, in reverse, through the plan executor every
+/// teardown shares, and log what it did. Unit stops are left out: a failed
+/// activation's hidden units are stopped by the session restart onto the decoy.
+pub(crate) fn undo_plan<F: Filesystem>(filesystem: &F, plan: &Plan) -> UndoReport {
+    let ops = FsMountOps::for_plan(filesystem, plan);
+    let report = nails_teardown::undo::run_plan(
+        &ops,
+        plan,
+        &[Phase::Dependents, Phase::Store, Phase::Main],
+        false,
+    );
+    crate::manager::teardown_plan::log_undo(&report);
+    #[cfg(test)]
+    for (path, _) in report.detached(&[
+        nails_teardown::MountKind::Overlay,
+        nails_teardown::MountKind::NestedOverlay,
+        nails_teardown::MountKind::Attachment,
+        nails_teardown::MountKind::StoreBind,
+        nails_teardown::MountKind::Tmpfs,
+        nails_teardown::MountKind::RuntimeRoot,
+    ]) {
+        test_events::record(test_events::ActivationEvent::Unmounted(path));
+    }
+    report
+}
+
+/// Undo the plan `recorder` holds and keep only what could not be undone in
+/// it. Returns the targets left behind (empty on full success).
+pub(crate) fn undo_recorded<F: Filesystem>(
+    filesystem: &F,
+    recorder: &PlanRecorder,
+) -> Vec<PathBuf> {
+    let report = undo_plan(filesystem, &recorder.snapshot());
+    recorder.retain_failed(&report);
+    report
+        .failures()
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect()
+}
+
+/// Unmount a set of tracked mounts in reverse (LIFO) order, best-effort, as
+/// the plan they make: the undo of a tracker that belongs to no activation.
 ///
 /// Returns the targets that could not be unmounted (empty on full success), so
 /// the caller can persist them as the still-live mounts of a degraded state.
 pub(crate) fn rollback_mounts<F: Filesystem>(filesystem: &F, mounts: &[MountInfo]) -> Vec<PathBuf> {
-    let mut remaining: Vec<PathBuf> = Vec::new();
-
-    // LIFO: unmount in reverse of mount order.
-    for mount_info in mounts.iter().rev() {
-        let path = &mount_info.target;
-        let mount_type_str = match mount_info.mount_type {
-            MountType::Persistent => "persistent",
-            MountType::Ephemeral => "ephemeral",
-            MountType::Bind => "bind",
-            MountType::NestedOverlay => "nested-overlay",
-            MountType::Tmpfs => "tmpfs",
-        };
-
-        // The runtime scaffolding tmpfs is not a managed overlay: unmount it as a
-        // tmpfs (idempotent) and remove the now-empty umbrella directory. Pushed
-        // first, so LIFO reaches it last — after everything staged inside it.
-        if mount_info.mount_type == MountType::Tmpfs {
-            if let Err(e) = filesystem.unmount_tmpfs(path) {
-                tracing::warn!(path = %path.display(), error = %e, "Runtime tmpfs unmount failed");
-                remaining.push(path.clone());
-            } else {
-                let _ = filesystem.remove_directory(path);
-                #[cfg(test)]
-                test_events::record(test_events::ActivationEvent::Unmounted(path.clone()));
-            }
-            continue;
-        }
-
-        tracing::info!(
-            path = %path.display(),
-            mount_type = mount_type_str,
-            phase = "rollback",
-            "Unmounting overlay"
-        );
-
-        // A submount bind is not a managed overlay, so its idempotent bind unmount
-        // is used instead of the overlay graceful-then-force path (which would
-        // refuse it as an unmanaged target).
-        let unmounted = if mount_info.mount_type == MountType::Bind {
-            match filesystem.unmount_bind(path) {
-                Ok(()) => true,
-                Err(e) => {
-                    tracing::warn!(path = %path.display(), error = %e, "Submount bind unmount failed");
-                    false
-                }
-            }
-        } else {
-            unmount_graceful_then_force(filesystem, path)
-        };
-
-        if unmounted {
-            #[cfg(test)]
-            test_events::record(test_events::ActivationEvent::Unmounted(path.clone()));
-        } else {
-            remaining.push(path.clone());
-        }
-
-        // For ephemeral mounts, also tear down the backing tmpfs filesystems.
-        if mount_info.mount_type == MountType::Ephemeral {
-            for tmpfs_path in &mount_info.tmpfs_paths {
-                tracing::info!(
-                    path = %tmpfs_path.display(),
-                    filesystem_type = "tmpfs",
-                    "Unmounting tmpfs"
-                );
-
-                if let Err(e) = filesystem.unmount_tmpfs(tmpfs_path) {
-                    tracing::warn!(
-                        path = %tmpfs_path.display(),
-                        error = %e,
-                        filesystem_type = "tmpfs",
-                        "Tmpfs unmount failed"
-                    );
-                    remaining.push(tmpfs_path.clone());
-                } else {
-                    tracing::info!(
-                        path = %tmpfs_path.display(),
-                        filesystem_type = "tmpfs",
-                        "Tmpfs unmounted"
-                    );
-                }
-            }
-        }
+    let recorder = PlanRecorder::memory(PathBuf::new());
+    for mount in mounts {
+        recorder.record_mount(filesystem, mount);
     }
-
-    remaining
+    undo_recorded(filesystem, &recorder)
 }
 
-/// Try a graceful unmount, then force. Returns `true` if either succeeded.
-fn unmount_graceful_then_force<F: Filesystem>(filesystem: &F, path: &Path) -> bool {
-    match filesystem.unmount(path, false) {
-        Ok(()) => {
-            tracing::info!(path = %path.display(), method = "graceful", "Unmount succeeded");
-            true
-        }
-        Err(e) => {
-            tracing::warn!(
-                path = %path.display(),
-                error = %e,
-                attempt = "graceful",
-                "Unmount failed, trying force unmount"
-            );
-            match filesystem.unmount(path, true) {
-                Ok(()) => {
-                    tracing::info!(path = %path.display(), method = "force", "Unmount succeeded");
-                    true
-                }
-                Err(force_err) => {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %force_err,
-                        attempts = "both",
-                        "Force unmount also failed"
-                    );
-                    false
-                }
-            }
-        }
-    }
-}
-
-/// Activation-scope rollback guard for mounted overlays.
+/// Activation-scope rollback guard.
 ///
-/// Armed with the overlays `mount_overlays` took out of the [`MountTracker`],
-/// this guard unmounts them in reverse order on drop unless it has been
-/// disarmed by a successful activation. It owns a clone of the filesystem, so
-/// its drop never needs to reach back through the [`StateGuard`]'s exclusive
+/// Armed with the plan the mount phase recorded, this guard undoes it in
+/// reverse on drop unless it has been disarmed by a successful activation:
+/// the read-only guards (recorded last) first, then the mounts. Every later
+/// activation step appends its undo to the same plan, so the guard needs no
+/// list of its own. It owns a clone of the filesystem, so its drop never needs
+/// to reach back through the [`StateGuard`](crate::StateGuard)'s exclusive
 /// borrow of the manager.
 ///
-/// Declaring the guard *after* the [`StateGuard`] makes drop order do the
-/// sequencing for free: the overlays come down first, then the `StateGuard`
-/// writes the rolled-back state, then the session is restarted onto the decoy.
+/// Declaring the guard *after* the [`StateGuard`](crate::StateGuard) makes drop
+/// order do the sequencing for free: the mounts come down first, then the
+/// `StateGuard` writes the rolled-back state, then the session is restarted
+/// onto the decoy.
 ///
-/// Any target the rollback could not unmount is written into the shared
-/// `residue` handle, which the [`StateGuard`] reads to persist `Degraded`
-/// (with those mounts listed) instead of `Inactive`.
+/// Any target the rollback could not undo is written into the shared `residue`
+/// handle, which the [`StateGuard`](crate::StateGuard) reads to persist
+/// `Degraded` (with those mounts listed) instead of `Inactive`.
 pub(super) struct ActivationMounts<F: Filesystem> {
     filesystem: F,
-    mounts: Vec<MountInfo>,
-    read_only_guards: Vec<PathBuf>,
+    plan: PlanRecorder,
     residue: Rc<RefCell<Vec<PathBuf>>>,
     /// Records, on drop, whether a rollback ran and whether it succeeded, so the
     /// CLI can report it truthfully. Left at `NotNeeded` on the disarmed (success)
@@ -203,29 +133,22 @@ pub(super) struct ActivationMounts<F: Filesystem> {
 }
 
 impl<F: Filesystem> ActivationMounts<F> {
-    /// Arm the guard with the filesystem clone, the overlays to roll back, the
-    /// shared handle that receives any mounts rollback could not remove, and the
+    /// Arm the guard with the filesystem clone, the activation's plan, the
+    /// shared handle that receives anything rollback could not undo, and the
     /// shared handle that records the rollback outcome.
     pub(super) fn arm(
         filesystem: F,
-        mounts: Vec<MountInfo>,
+        plan: PlanRecorder,
         residue: Rc<RefCell<Vec<PathBuf>>>,
         outcome: Rc<RefCell<RollbackOutcome>>,
     ) -> Self {
         Self {
             filesystem,
-            mounts,
-            read_only_guards: Vec::new(),
+            plan,
             residue,
             outcome,
             disarmed: false,
         }
-    }
-
-    /// Record the read-only guards applied after the overlays, so a rollback
-    /// returns write access to the decoy OS trees before the overlays come down.
-    pub(super) fn set_read_only_guards(&mut self, guards: Vec<PathBuf>) {
-        self.read_only_guards = guards;
     }
 
     /// Disarm the guard after a successful activation so the overlays stay mounted.
@@ -236,42 +159,30 @@ impl<F: Filesystem> ActivationMounts<F> {
 
 impl<F: Filesystem> Drop for ActivationMounts<F> {
     fn drop(&mut self) {
-        if self.disarmed || (self.mounts.is_empty() && self.read_only_guards.is_empty()) {
+        if self.disarmed {
             return;
         }
-
-        // Undo the read-only guards first so the decoy OS trees are writable again
-        // before the overlays stacked on them are removed. Best-effort: a failure
-        // here must not stop the overlay rollback.
-        for tree in self.read_only_guards.iter().rev() {
-            if let Err(error) = self.filesystem.remove_read_only_guard(tree) {
-                tracing::error!(
-                    tree = %tree.display(),
-                    error = %error,
-                    "Rollback could not remove the read-only guard; the decoy tree may stay read-only"
-                );
-            }
-        }
-
-        if self.mounts.is_empty() {
-            // Only read-only guards were undone above; that still counts as a
-            // rollback having run.
-            *self.outcome.borrow_mut() = RollbackOutcome::Completed;
+        let plan = self.plan.snapshot();
+        if !plan
+            .steps
+            .iter()
+            .any(|step| !matches!(step.undo, nails_teardown::Undo::StopUnit { .. }))
+        {
             return;
         }
 
         tracing::warn!(
-            mount_count = self.mounts.len(),
-            "Activation failed after mounting; rolling back overlays before state is restored"
+            steps = plan.steps.len(),
+            "Activation failed after mounting; rolling back the recorded steps before state is restored"
         );
 
-        let remaining = rollback_mounts(&self.filesystem, &self.mounts);
+        let remaining = undo_recorded(&self.filesystem, &self.plan);
         if remaining.is_empty() {
             *self.outcome.borrow_mut() = RollbackOutcome::Completed;
         } else {
             tracing::error!(
                 remaining = ?remaining,
-                "Overlay rollback left mounts behind; system will be marked Degraded"
+                "Rollback left mounts behind; system will be marked Degraded"
             );
             *self.outcome.borrow_mut() = RollbackOutcome::Failed(
                 remaining.iter().map(|p| p.display().to_string()).collect(),
@@ -342,6 +253,15 @@ mod tests {
 
     /// Mount two overlays on the mock and mark them NAILS-owned so unmount is
     /// permitted, returning their `MountInfo` in mount order.
+    /// The plan an activation would have recorded for `mounts`.
+    fn plan_of(fs: &MockFilesystem, mounts: &[MountInfo]) -> PlanRecorder {
+        let recorder = PlanRecorder::memory(PathBuf::from("/mnt/hidden"));
+        for mount in mounts {
+            recorder.record_mount(fs, mount);
+        }
+        recorder
+    }
+
     fn mount_pair(fs: &MockFilesystem) -> Vec<MountInfo> {
         for target in ["/home", "/etc"] {
             fs.mock_set_mounted(Path::new(target), true);
@@ -432,8 +352,12 @@ mod tests {
         let outcome = Rc::new(RefCell::new(RollbackOutcome::default()));
 
         {
-            let mut guard =
-                ActivationMounts::arm(fs.clone(), mounts, residue.clone(), outcome.clone());
+            let mut guard = ActivationMounts::arm(
+                fs.clone(),
+                plan_of(&fs, &mounts),
+                residue.clone(),
+                outcome.clone(),
+            );
             guard.disarm();
         }
 
@@ -453,7 +377,7 @@ mod tests {
 
         drop(ActivationMounts::arm(
             fs.clone(),
-            mounts,
+            plan_of(&fs, &mounts),
             residue.clone(),
             outcome.clone(),
         ));
@@ -474,7 +398,7 @@ mod tests {
 
         drop(ActivationMounts::arm(
             fs.clone(),
-            mounts,
+            plan_of(&fs, &mounts),
             residue.clone(),
             outcome.clone(),
         ));

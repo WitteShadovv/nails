@@ -1277,7 +1277,12 @@ fn test_read_only_guard_applies_and_tears_down_on_fhs() {
     assert!(fs.mock_is_read_only_guarded(Path::new("/")));
     assert!(fs.mock_is_read_only_guarded(Path::new("/usr")));
 
-    manager.teardown_read_only_guards(&guarded);
+    // The guards' recorded undo returns write access.
+    let plan = manager.begin_teardown_plan(None);
+    for tree in &guarded {
+        plan.record(nails_teardown::Undo::RemoveReadOnlyGuard { tree: tree.clone() });
+    }
+    crate::manager::activation::rollback::undo_plan(manager.filesystem(), &plan.snapshot());
     assert!(!fs.mock_is_read_only_guarded(Path::new("/")));
     assert!(!fs.mock_is_read_only_guarded(Path::new("/usr")));
 }

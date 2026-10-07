@@ -25,7 +25,7 @@
 use crate::cgroup;
 use crate::mountinfo::{NailsMounts, read_mountinfo, read_mountinfo_at};
 use crate::mounts::MountOps;
-use crate::plan::{Phase, Plan};
+use crate::plan::{Phase, Plan, Tool};
 use crate::proc::{self, Invocation, ProcessHandle};
 use crate::refs;
 use crate::session::SpareSet;
@@ -55,9 +55,9 @@ pub enum PlanSource {
 #[derive(Debug, Clone)]
 pub struct Host {
     /// `systemctl`, from the plan or resolved by the caller.
-    pub systemctl: Option<PathBuf>,
+    pub systemctl: Option<Tool>,
     /// `journalctl`, from the plan or resolved by the caller.
-    pub journalctl: Option<PathBuf>,
+    pub journalctl: Option<Tool>,
     /// System services whose processes are never killed (the caller's own
     /// supervision, named explicitly).
     pub spared_units: Vec<String>,
@@ -343,6 +343,19 @@ pub fn run<M: MountOps>(m: &M, plan: Plan, source: PlanSource, host: Option<&Hos
         true,
     );
     report.remaining = remaining(m, &plan);
+    // A failed unmount leaves its mount in place, whatever the table says;
+    // except the /nix/store bind, which is only ever NAILS's while /nix is
+    // overlaid and goes with the /nix overlay's (lazy) detach.
+    let nix_still_overlaid = m.nails_mounts().is_ok_and(|n| n.nix_overlay_present);
+    for action in &report.undo.actions {
+        if !matches!(action.outcome, crate::undo::Outcome::Failed(_)) {
+            continue;
+        }
+        let store_bind = action.kind == Some(crate::plan::MountKind::StoreBind);
+        if (!store_bind || nix_still_overlaid) && !report.remaining.contains(&action.target) {
+            report.remaining.push(action.target.clone());
+        }
+    }
     report.source = Some(source);
     report.plan = Some(plan);
     report.elapsed = start.elapsed();

@@ -13,8 +13,9 @@
 //!   when the hidden root is gone;
 //! - the effective configuration, so teardown knows the hidden root and state
 //!   file without re-reading them from the failed volume;
-//! - a manifest of the overlay targets that were mounted, so a teardown that
-//!   cannot consult the live mount table still has a record of what to look for.
+//! - the teardown plan ([`nails_teardown::plan`]), written there by activation
+//!   step by step, which records what was mounted and how to undo it, and from
+//!   which the watcher reads the hidden root and the targets it probes.
 //!
 //! The directory and every file in it carry a **neutral, non-product name**: a
 //! forensic examiner enumerating `/run` must not find the tool's name, and the
@@ -24,8 +25,6 @@
 //! failure, the same contract as the per-activation runtime scaffolding root.
 
 use std::path::{Path, PathBuf};
-
-use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 use crate::filesystem::Filesystem;
@@ -49,8 +48,8 @@ pub const BINARY_NAME: &str = "control";
 /// File name of the mirrored configuration inside [`RUNTIME_COPY_DIR`]. Neutral.
 pub const CONFIG_NAME: &str = "settings.toml";
 
-/// File name of the mount manifest inside [`RUNTIME_COPY_DIR`]. Neutral.
-pub const MANIFEST_NAME: &str = "mounts.json";
+/// File name of the teardown plan inside [`RUNTIME_COPY_DIR`]. Neutral.
+pub const PLAN_NAME: &str = nails_teardown::plan::PLAN_NAME;
 
 /// Transient systemd unit name for the in-session watcher started from this copy.
 ///
@@ -77,48 +76,73 @@ pub fn config_copy_path() -> PathBuf {
     runtime_copy_dir().join(CONFIG_NAME)
 }
 
-/// Path of the mount manifest.
-pub fn manifest_path() -> PathBuf {
-    runtime_copy_dir().join(MANIFEST_NAME)
+/// Path of the teardown plan.
+pub fn plan_path() -> PathBuf {
+    runtime_copy_dir().join(PLAN_NAME)
 }
 
-/// What teardown needs to know when the hidden volume and its `state.json` can no
-/// longer be read.
-///
-/// Recorded at activation into [`manifest_path`] so `emergency`/`recover` have a
-/// durable, RAM-backed record of the hidden root and the overlay targets that
-/// were brought up, independent of the volume that may now be gone.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// What the backend watcher needs to know when the hidden volume and its
+/// `state.json` can no longer be read: the hidden root and the overlay targets,
+/// read from the teardown plan activation keeps in the runtime copy.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeManifest {
     /// The configured hidden volume root at activation.
     pub hidden_root: PathBuf,
-    /// The state file path at activation.
-    pub state_file: PathBuf,
     /// The overlay targets that were mounted, in activation order.
     pub overlay_targets: Vec<PathBuf>,
 }
 
-/// Write the runtime copy: the executable, the effective config and the mount
-/// manifest, into a fresh `0700` directory under `/run`.
+impl RuntimeManifest {
+    /// The watcher's view of a teardown plan: the hidden root and every overlay
+    /// target outside the runtime scaffolding root, once each.
+    pub fn from_plan(plan: &nails_teardown::Plan) -> Self {
+        let mut overlay_targets: Vec<PathBuf> = Vec::new();
+        for step in &plan.steps {
+            if let nails_teardown::Undo::Unmount {
+                target,
+                kind: nails_teardown::MountKind::Overlay,
+                ..
+            } = &step.undo
+                && !plan
+                    .runtime_root
+                    .as_ref()
+                    .is_some_and(|r| target.starts_with(r))
+                && !overlay_targets.contains(target)
+            {
+                overlay_targets.push(target.clone());
+            }
+        }
+        Self {
+            hidden_root: plan.hidden_root.clone(),
+            overlay_targets,
+        }
+    }
+}
+
+/// Write the runtime copy: the executable and the effective config, into the
+/// private (`0700`) directory under `/run` that already holds this activation's
+/// teardown plan.
 ///
 /// `binary_src` is the path of the running executable (the caller passes
-/// [`std::env::current_exe`]). Any pre-existing copy is removed first so a stale
-/// directory from a crashed prior session cannot leave a mismatched binary or
-/// manifest behind.
+/// [`std::env::current_exe`]).
+/// A binary or config left by a crashed prior session is replaced, so it
+/// cannot shadow the current one; the plan the running activation wrote is kept.
 pub fn write_runtime_copy<F: Filesystem>(
     filesystem: &F,
     config: &Config,
     binary_src: &Path,
-    overlay_targets: &[PathBuf],
 ) -> Result<()> {
     let dir = runtime_copy_dir();
 
-    // Start from a clean directory: a leftover from a crashed session would
-    // otherwise shadow the current binary or manifest.
     if filesystem.path_exists(&dir)? {
-        filesystem.remove_dir_all(&dir)?;
+        for stale in [binary_copy_path(), config_copy_path()] {
+            if filesystem.path_exists(&stale)? {
+                filesystem.remove_file(&stale)?;
+            }
+        }
+    } else {
+        filesystem.create_directory(&dir)?;
     }
-    filesystem.create_directory(&dir)?;
     filesystem.set_permissions(&dir, PRIVATE_MODE)?;
 
     // The executable: raw bytes, then locked to 0700 so only root can read or run
@@ -136,24 +160,9 @@ pub fn write_runtime_copy<F: Filesystem>(
     })?;
     filesystem.write_file_content(&config_copy_path(), &config_toml)?;
 
-    // The mount manifest.
-    let manifest = RuntimeManifest {
-        hidden_root: config.hidden_volume_root.clone(),
-        state_file: config.state_file_path.clone(),
-        overlay_targets: overlay_targets.to_vec(),
-    };
-    let manifest_json = serde_json::to_string_pretty(&manifest).map_err(|e| {
-        NailsError::io(
-            manifest_path(),
-            std::io::Error::other(format!("failed to serialize the runtime manifest: {e}")),
-        )
-    })?;
-    filesystem.write_file_content(&manifest_path(), &manifest_json)?;
-
     tracing::info!(
         dir = %dir.display(),
-        targets = overlay_targets.len(),
-        "Wrote the RAM-backed runtime copy (binary, config, mount manifest)"
+        "Wrote the RAM-backed runtime copy (binary, config) next to the teardown plan"
     );
     Ok(())
 }
@@ -172,26 +181,20 @@ pub fn remove_runtime_copy<F: Filesystem>(filesystem: &F) -> Result<()> {
     Ok(())
 }
 
-/// Read the mount manifest back from the runtime copy, if one is present.
+/// Read the watcher's manifest from the teardown plan in the runtime copy, if
+/// one is present.
 ///
-/// `Ok(None)` when no runtime copy exists (no activation wrote one, or it was
-/// already torn down); an error only on a present-but-unparseable manifest.
+/// `Ok(None)` when no plan exists (no activation wrote one, or it was already
+/// torn down); an error only on a present-but-unusable plan.
 pub fn read_manifest<F: Filesystem>(filesystem: &F) -> Result<Option<RuntimeManifest>> {
-    let path = manifest_path();
+    let path = plan_path();
     if !filesystem.path_exists(&path)? {
         return Ok(None);
     }
     let content = filesystem.read_file_content(&path)?;
-    let manifest: RuntimeManifest = serde_json::from_str(&content).map_err(|e| {
-        NailsError::io(
-            &path,
-            std::io::Error::other(format!(
-                "runtime manifest at {} is unparseable: {e}",
-                path.display()
-            )),
-        )
-    })?;
-    Ok(Some(manifest))
+    let plan = nails_teardown::Plan::from_json(&content)
+        .map_err(|e| NailsError::io(&path, std::io::Error::other(e.to_string())))?;
+    Ok(Some(RuntimeManifest::from_plan(&plan)))
 }
 
 /// Load the mirrored configuration from the runtime copy, if one is present.
@@ -306,7 +309,7 @@ mod tests {
             RUNTIME_COPY_DIR,
             BINARY_NAME,
             CONFIG_NAME,
-            MANIFEST_NAME,
+            PLAN_NAME,
             WATCH_UNIT_NAME,
         ] {
             assert!(
@@ -317,21 +320,19 @@ mod tests {
     }
 
     #[test]
-    fn write_creates_private_dir_with_binary_config_and_manifest() {
+    fn write_creates_private_dir_with_binary_and_config() {
         let fs = MockFilesystem::new();
         // The parent /run must exist for the writes to land, as on a real host.
         fs.mock_set_directory_creatable("/run/overlay-runtime", true);
 
         let config = test_config();
-        let targets = vec![PathBuf::from("/home"), PathBuf::from("/etc")];
         let binary = PathBuf::from("/mnt/data/bin/control");
 
-        write_runtime_copy(&fs, &config, &binary, &targets).unwrap();
+        write_runtime_copy(&fs, &config, &binary).unwrap();
 
         assert!(fs.path_exists(&runtime_copy_dir()).unwrap());
         assert!(fs.path_exists(&binary_copy_path()).unwrap());
         assert!(fs.path_exists(&config_copy_path()).unwrap());
-        assert!(fs.path_exists(&manifest_path()).unwrap());
 
         // The directory and the mirrored binary are private (0700).
         assert_eq!(
@@ -345,18 +346,38 @@ mod tests {
     }
 
     #[test]
-    fn manifest_round_trips_the_hidden_root_and_targets() {
+    fn the_manifest_is_read_from_the_plan_without_the_scaffolding() {
+        use nails_teardown::{MountKind, Plan, Undo};
         let fs = MockFilesystem::new();
         fs.mock_set_directory_creatable("/run/overlay-runtime", true);
-
         let config = test_config();
-        let targets = vec![PathBuf::from("/home"), PathBuf::from("/var")];
-        write_runtime_copy(&fs, &config, Path::new("/bin/control"), &targets).unwrap();
+        let mut plan = Plan::new(config.hidden_volume_root.clone());
+        plan.runtime_root = Some(PathBuf::from("/run/0123456789abcdef"));
+        for (target, kind) in [
+            ("/run/0123456789abcdef", MountKind::RuntimeRoot),
+            ("/run/0123456789abcdef/etc", MountKind::Overlay),
+            ("/home", MountKind::Overlay),
+            ("/etc", MountKind::Overlay),
+            ("/etc", MountKind::Overlay),
+            ("/home/data", MountKind::Attachment),
+        ] {
+            plan.push(Undo::Unmount {
+                target: PathBuf::from(target),
+                kind,
+                mount_id: None,
+            });
+        }
+        fs.create_directory(&runtime_copy_dir()).unwrap();
+        fs.write_file_content(&plan_path(), &plan.to_json())
+            .unwrap();
+        write_runtime_copy(&fs, &config, Path::new("/bin/control")).unwrap();
 
-        let manifest = read_manifest(&fs).unwrap().expect("manifest present");
+        let manifest = read_manifest(&fs).unwrap().expect("plan present");
         assert_eq!(manifest.hidden_root, config.hidden_volume_root);
-        assert_eq!(manifest.state_file, config.state_file_path);
-        assert_eq!(manifest.overlay_targets, targets);
+        assert_eq!(
+            manifest.overlay_targets,
+            vec![PathBuf::from("/home"), PathBuf::from("/etc")]
+        );
     }
 
     #[test]
@@ -365,7 +386,7 @@ mod tests {
         fs.mock_set_directory_creatable("/run/overlay-runtime", true);
 
         let config = test_config();
-        write_runtime_copy(&fs, &config, Path::new("/bin/control"), &[]).unwrap();
+        write_runtime_copy(&fs, &config, Path::new("/bin/control")).unwrap();
 
         let loaded = read_config_copy(&fs).unwrap().expect("config copy present");
         assert_eq!(loaded.hidden_volume_root, config.hidden_volume_root);
@@ -378,7 +399,7 @@ mod tests {
         fs.mock_set_directory_creatable("/run/overlay-runtime", true);
 
         let config = test_config();
-        write_runtime_copy(&fs, &config, Path::new("/bin/control"), &[]).unwrap();
+        write_runtime_copy(&fs, &config, Path::new("/bin/control")).unwrap();
         assert!(fs.path_exists(&runtime_copy_dir()).unwrap());
 
         remove_runtime_copy(&fs).unwrap();

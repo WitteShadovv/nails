@@ -192,6 +192,21 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
         hidden_root: Option<&Path>,
     ) -> Result<crate::filesystem::NailsMounts>;
 
+    /// Whether the mount at `target` is one NAILS created and so may unmount:
+    /// the same gate [`unmount`](Self::unmount) applies before it touches a
+    /// mount. The teardown plan's executor asks first, so a step whose mount is
+    /// gone never takes down the decoy mount that lay beneath it.
+    fn is_nails_owned(&self, target: &Path) -> Result<bool> {
+        Ok(self.discover_nails_mounts(None)?.is_owned(target))
+    }
+
+    /// The kernel's mount id of the top mount at exactly `target`, when the
+    /// backend can read one. The teardown plan records it at activation and
+    /// compares it at teardown, so a step only ever undoes its own mount.
+    fn top_mount_id(&self, _target: &Path) -> Option<i32> {
+        None
+    }
+
     // ------------------------------------------------------------------------
     // Bind Mount Operations (Pivot Mount Strategy)
     // ------------------------------------------------------------------------

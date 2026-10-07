@@ -174,6 +174,9 @@ pub struct MountTracker<'a, F: Filesystem> {
     filesystem: &'a F,
     /// Whether mounts have been committed (prevents rollback on drop)
     pub committed: bool,
+    /// The teardown plan each tracked mount's undo is recorded in, when the
+    /// tracker belongs to an activation. Rollback undoes that plan.
+    plan: Option<crate::manager::teardown_plan::PlanRecorder>,
 }
 
 impl<'a, F: Filesystem> MountTracker<'a, F> {
@@ -191,6 +194,17 @@ impl<'a, F: Filesystem> MountTracker<'a, F> {
             mounted: Vec::new(),
             filesystem,
             committed: false,
+            plan: None,
+        }
+    }
+
+    /// A tracker that records every mount's undo in `plan` as it is pushed.
+    pub fn with_plan(filesystem: &'a F, plan: crate::manager::teardown_plan::PlanRecorder) -> Self {
+        Self {
+            mounted: Vec::new(),
+            filesystem,
+            committed: false,
+            plan: Some(plan),
         }
     }
 
@@ -202,6 +216,9 @@ impl<'a, F: Filesystem> MountTracker<'a, F> {
     ///
     /// - `mount_info`: Information about the successfully mounted overlay
     pub fn push_mount(&mut self, mount_info: MountInfo) {
+        if let Some(plan) = &self.plan {
+            plan.record_mount(self.filesystem, &mount_info);
+        }
         self.mounted.push(mount_info);
     }
 
@@ -225,11 +242,11 @@ impl<'a, F: Filesystem> MountTracker<'a, F> {
 
     /// Roll back all tracked mounts in reverse (LIFO) order, best-effort.
     ///
-    /// Delegates to [`rollback_mounts`](crate::manager::activation::rollback::rollback_mounts),
-    /// the single unmount routine shared with the activation-scope guard: it
-    /// tries a graceful unmount before forcing, cascades ephemeral tmpfs
-    /// teardown, and continues past individual failures. The tracker is emptied
-    /// so a later drop is a no-op.
+    /// Undoes the teardown plan the mounts were recorded in (or, for a tracker
+    /// without one, a plan built from its mounts) with the plan executor every
+    /// teardown shares: a graceful unmount before a lazy one, the ephemeral
+    /// tmpfs layers after their overlay, past individual failures. The tracker
+    /// is emptied so a later drop is a no-op.
     ///
     /// # Returns
     ///
@@ -239,8 +256,15 @@ impl<'a, F: Filesystem> MountTracker<'a, F> {
     ///
     /// (Extended Overlay Strategy with tmpfs cleanup)
     pub fn rollback_all(&mut self) -> Result<()> {
-        let remaining =
-            crate::manager::activation::rollback::rollback_mounts(self.filesystem, &self.mounted);
+        let remaining = match &self.plan {
+            Some(plan) => {
+                crate::manager::activation::rollback::undo_recorded(self.filesystem, plan)
+            }
+            None => crate::manager::activation::rollback::rollback_mounts(
+                self.filesystem,
+                &self.mounted,
+            ),
+        };
         self.mounted.clear();
 
         if remaining.is_empty() {
