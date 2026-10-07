@@ -1,9 +1,9 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Argument parsing tests for activate and deactivate commands
+//! Argument parsing tests for the activate and deactivate commands
 
-use super::args::{ActivateArgs, DeactivateArgs, PivotPolicy, SessionPolicy};
+use super::args::{ActivateArgs, DeactivateArgs};
 use super::*;
 
 fn activate(args: &[&str]) -> ActivateArgs {
@@ -14,186 +14,67 @@ fn activate(args: &[&str]) -> ActivateArgs {
     }
 }
 
-fn deactivate(args: &[&str]) -> (GlobalArgs, DeactivateArgs) {
+fn deactivate(args: &[&str]) -> DeactivateArgs {
     let cli = Cli::try_parse_checked_from(["nails", "deactivate"].iter().chain(args)).unwrap();
     match cli.command {
-        Commands::Deactivate(args) => (cli.global, args),
+        Commands::Deactivate(args) => args,
         _ => panic!("Expected Deactivate command"),
     }
 }
 
-#[test]
-fn test_activate_defaults_to_kill_session_refuse_pivot_and_no_yes() {
-    let args = activate(&[]);
-    assert_eq!(args, ActivateArgs::default());
-    assert_eq!(args.session, SessionPolicy::Kill);
-    assert_eq!(args.pivot, PivotPolicy::Refuse);
-    assert!(!args.yes);
+fn refused(command: &str, args: &[&str]) -> bool {
+    Cli::try_parse_checked_from(["nails", command].iter().chain(args)).is_err()
 }
 
 #[test]
-fn test_activate_session_keep_flag() {
-    assert_eq!(
-        activate(&["--session", "keep"]).session,
-        SessionPolicy::Keep
-    );
-    assert_eq!(
-        activate(&["--session", "kill"]).session,
-        SessionPolicy::Kill
-    );
+fn activate_defaults_to_prompting_with_preflight() {
+    assert_eq!(activate(&[]), ActivateArgs::default());
 }
 
 #[test]
-fn test_activate_yes_flag() {
-    assert!(activate(&["--yes"]).yes);
-    assert!(activate(&["-y"]).yes);
-    assert!(!activate(&[]).yes);
-}
-
-#[test]
-fn test_activate_pivot_policy_values() {
-    assert_eq!(activate(&["--pivot", "allow"]).pivot, PivotPolicy::Allow);
-    assert_eq!(activate(&["--pivot", "refuse"]).pivot, PivotPolicy::Refuse);
-    assert_eq!(activate(&["--pivot", "ask"]).pivot, PivotPolicy::Ask);
-}
-
-#[test]
-fn test_activate_rejects_removed_flags() {
-    // Build the flag tokens from their names so the removed spellings never
-    // appear verbatim in the tree (the redesign's grep gate expects that).
-    for name in [
-        "kill-session",
-        "no-kill-session",
-        "accept-pivot-risks",
-        "no-pivot",
-        "interactive",
-        "no-clear-history",
-    ] {
-        let flag = format!("--{name}");
-        let result = Cli::try_parse_checked_from(["nails", "activate", flag.as_str()]);
-        assert!(result.is_err(), "activate {flag} must be rejected");
-    }
-}
-
-#[test]
-fn test_activate_rejects_unknown_policy_value() {
-    assert!(Cli::try_parse_checked_from(["nails", "activate", "--session", "pause"]).is_err());
-    assert!(Cli::try_parse_checked_from(["nails", "activate", "--pivot", "maybe"]).is_err());
-}
-
-#[test]
-fn test_activate_flake_conflicts_with_overlay_only() {
-    let result = Cli::try_parse_checked_from([
-        "nails",
-        "activate",
-        "--nixos-flake",
-        "/etc/nixos",
+fn activate_accepts_its_flags() {
+    let args = activate(&[
+        "-y",
+        "--no-preflight",
         "--overlay-only",
+        "--accept-persistent-decoy",
     ]);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_activate_default_args_map_to_default_options() {
+    assert!(args.yes && args.no_preflight && args.overlay_only && args.accept_persistent_decoy);
     assert_eq!(
-        ActivateArgs::default().to_activate_options(),
-        nails_core::ActivateOptions::default()
+        activate(&["--nixos-flake", "/etc/nixos#host"])
+            .nixos_flake
+            .as_deref(),
+        Some("/etc/nixos#host")
     );
+    assert!(activate(&["--dry-run"]).dry_run);
 }
 
 #[test]
-fn test_activate_policy_flags_map_onto_options() {
-    let kill_refuse = activate(&[]).to_activate_options();
-    assert!(kill_refuse.kill_session && kill_refuse.no_pivot && !kill_refuse.accept_pivot_risks);
-
-    let keep = activate(&["--session", "keep"]).to_activate_options();
-    assert!(!keep.kill_session);
-
-    let allow = activate(&["--pivot", "allow"]).to_activate_options();
-    assert!(allow.accept_pivot_risks && !allow.no_pivot);
-
-    let ask = activate(&["--pivot", "ask"]).to_activate_options();
-    assert!(!ask.accept_pivot_risks && !ask.no_pivot);
-
-    let yes = activate(&["-y"]).to_activate_options();
-    assert!(yes.yes);
-}
-
-#[test]
-fn test_deactivate_args_parsing_defaults() {
-    let (global, args) = deactivate(&[]);
-    assert_eq!(global, GlobalArgs::default());
-    assert_eq!(args, DeactivateArgs::default());
-}
-
-#[test]
-fn test_deactivate_poweroff_flag() {
-    assert!(deactivate(&["--poweroff"]).1.poweroff);
-    assert!(!deactivate(&[]).1.poweroff);
-}
-
-#[test]
-fn test_deactivate_no_clear_history_flag() {
-    assert!(deactivate(&["--no-clear-history"]).1.no_clear_history);
-}
-
-#[test]
-fn test_deactivate_accepts_global_output_flags() {
-    let (global, args) = deactivate(&["--no-clear-history", "--json", "--color", "never", "-q"]);
-    assert!(args.no_clear_history);
-    assert!(global.json);
-    assert!(global.quiet);
-    assert_eq!(global.color, args::ColorChoice::Never);
-}
-
-#[test]
-fn test_deactivate_verbose_flag_counting() {
-    assert_eq!(deactivate(&["-v"]).0.verbose, 1);
-    assert_eq!(deactivate(&["-vv"]).0.verbose, 2);
-}
-
-#[test]
-fn test_deactivate_quiet_verbose_conflict() {
-    let result = Cli::try_parse_checked_from(["nails", "deactivate", "--quiet", "-v"]);
-    assert!(result.is_err());
-}
-
-#[test]
-fn test_activate_flake_flag() {
-    assert_eq!(
-        activate(&["--nixos-flake", "/etc/nixos#myhost"]).nixos_flake,
-        Some("/etc/nixos#myhost".to_string())
-    );
-}
-
-#[test]
-fn test_activate_flake_flag_path_only() {
-    assert_eq!(
-        activate(&["--nixos-flake", "/etc/nixos"]).nixos_flake,
-        Some("/etc/nixos".to_string())
-    );
-}
-
-#[test]
-fn test_activate_without_flake_flag() {
-    assert_eq!(activate(&[]).nixos_flake, None);
-}
-
-#[test]
-fn test_verbosity_reaches_activate_from_either_position() {
-    for argv in [
-        &["nails", "-vv", "activate", "--session", "keep"][..],
-        &["nails", "activate", "--session", "keep", "-vv"][..],
+fn the_live_overlay_flags_are_gone() {
+    for flags in [
+        &["--session", "keep"][..],
+        &["--pivot", "allow"][..],
+        &["--risky-services", "skip"][..],
+        &["--terminate-processes"][..],
     ] {
-        let cli = Cli::try_parse_checked_from(argv).unwrap();
-        assert_eq!(cli.global.verbose, 2, "{argv:?}");
+        assert!(refused("activate", flags), "{flags:?}");
     }
+    assert!(refused("deactivate", &["--no-clear-history"]));
+    assert!(refused("emergency", &["--lock-backend"]));
+    assert!(refused("reapply", &[]));
 }
 
 #[test]
-fn test_activate_flake_flag_with_equals_syntax() {
-    assert_eq!(
-        activate(&["--nixos-flake=/etc/nixos#my-host"]).nixos_flake,
-        Some("/etc/nixos#my-host".to_string())
-    );
+fn nixos_flake_conflicts_with_overlay_only() {
+    assert!(refused(
+        "activate",
+        &["--overlay-only", "--nixos-flake", "/x#y"]
+    ));
+}
+
+#[test]
+fn deactivate_accepts_yes_and_poweroff() {
+    assert_eq!(deactivate(&[]), DeactivateArgs::default());
+    let args = deactivate(&["-y", "--poweroff"]);
+    assert!(args.yes && args.poweroff);
 }

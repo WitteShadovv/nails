@@ -285,7 +285,10 @@ fn the_new_research_classes_are_catalogued() {
         "timesync-clock",
         "timer-stamps",
         "smart-power-on-hours",
-        "non-overlaid-mounts",
+        "decoy-filesystems",
+        "run-carry-over",
+        "kmsg-import",
+        "soft-reboot-counter",
     ] {
         assert!(class(id).is_some(), "catalog row {id} is missing");
     }

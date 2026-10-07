@@ -50,7 +50,6 @@ const HELP_INVOCATIONS: &[&[&str]] = &[
     &["--version"],
     &["activate", "--help"],
     &["deactivate", "--help"],
-    &["reapply", "--help"],
     &["emergency", "--help"],
     &["recover", "--help"],
     &["status", "--help"],
@@ -64,7 +63,7 @@ const HELP_INVOCATIONS: &[&[&str]] = &[
     &["config", "show", "--help"],
     &["config", "validate", "--help"],
     &["completions", "--help"],
-    &["notify-dispatch", "--help"],
+    &["transition", "--help"],
 ];
 
 /// A fresh `nails` command with the colour-affecting environment cleared, so a
@@ -267,7 +266,7 @@ fn help_and_version_carry_no_blocked_substrings() {
 /// Internal commands that run but are marked `hide = true`: the watcher and the
 /// notification dispatcher are started by the tool itself. No help or version
 /// text a user can reach may name them.
-const HIDDEN_COMMANDS: &[&str] = &["notify-dispatch", "watch"];
+const HIDDEN_COMMANDS: &[&str] = &["watch", "sleep-guard", "transition"];
 
 /// Every command the public help promises; each one's long help renders an
 /// EXAMPLES section.
@@ -280,7 +279,6 @@ const PUBLIC_COMMANDS: &[&str] = &[
     "recover",
     "status",
     "verify",
-    "reapply",
     "reset-upper",
     "config",
 ];
@@ -686,69 +684,32 @@ fn verify_offline_examiner_json_matches_schema_and_groups_traces() {
 // the exact documents the renderers emit, and reject a malformed one.
 // ---------------------------------------------------------------------------
 
-/// The NDJSON lines the activation's JSON reporter writes for one step, one
-/// detail and one heartbeat.
-fn json_reporter_events() -> Vec<Value> {
-    use nails_core::reporter::progress::{JsonReporter, Reporter, Step};
-    use std::io::Write;
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Clone, Default)]
-    struct Buffer(Arc<Mutex<Vec<u8>>>);
-    impl Write for Buffer {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    let buffer = Buffer::default();
-    let mut reporter = JsonReporter::new(Box::new(buffer.clone()), 1, "activate");
-    reporter.step(Step {
-        index: 4,
-        total: 5,
-        phase: "overlay_mount",
-        label: "Mounting overlays",
-    });
-    reporter.detail("mounting /home (1/2)");
-    reporter.heartbeat(
-        "building",
-        std::time::Duration::from_secs(30),
-        Some("raw build line"),
-    );
-    let text = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
-    let events: Vec<Value> = text
-        .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    assert_eq!(events.len(), 3, "{text}");
-    events
-}
-
 #[test]
 fn activate_schema_accepts_progress_result_and_error_lines() {
     let schema = load_schema("activate");
     let progress = serde_json::json!({
-        "schema_version": 1, "command": "activate", "type": "progress", "phase": "mounting"
+        "schema_version": 1, "command": "activate", "type": "progress", "phase": "preparing"
     });
     assert_matches_schema(&schema, &progress);
 
-    // Every event the activation's JSON reporter emits fits the progress branch.
-    for event in json_reporter_events() {
-        assert_matches_schema(&schema, &event);
-    }
-
     let result = serde_json::json!({
         "schema_version": 1, "command": "activate", "type": "result",
-        "ok": true, "status": "success", "duration": 1.5,
-        "state": {"kind": "active"},
-        "decoy_writers": [],
-        "message": "Activation complete in 1.5s"
+        "ok": true, "status": "entering", "duration": 12.5,
+        "hidden_system": "/nix/store/0000-nixos-system-hidden",
+        "filesystems": ["/boot: read-only", "/home: overlaid"],
+        "masked_units": ["dev-vda3.swap"],
+        "message": "Prepared in 12.5s; soft-rebooting into the hidden session"
     });
     assert_matches_schema(&schema, &result);
+
+    let refused = serde_json::json!({
+        "schema_version": 1, "command": "activate", "type": "result",
+        "ok": false, "status": "error", "duration": 0.2,
+        "filesystems": [], "masked_units": [],
+        "message": "Pre-flight checks failed",
+        "failed_checks": [{"name": "systemd-version", "reason": "systemd 252 is too old", "fix": "Use Debian 13"}]
+    });
+    assert_matches_schema(&schema, &refused);
 
     let error = serde_json::json!({
         "schema_version": 1, "command": "activate", "ok": false,
@@ -756,7 +717,6 @@ fn activate_schema_accepts_progress_result_and_error_lines() {
     });
     assert_matches_schema(&schema, &error);
 
-    // A result line that drops a required field is rejected by every branch.
     let bad = serde_json::json!({
         "schema_version": 1, "command": "activate", "type": "result", "ok": true
     });
@@ -770,76 +730,56 @@ fn activate_schema_accepts_progress_result_and_error_lines() {
 #[test]
 fn deactivate_schema_accepts_the_success_envelope() {
     let schema = load_schema("deactivate");
-    let value = serde_json::json!({
-        "schema_version": 1, "command": "deactivate", "ok": true,
-        "data": {
-            "status": "reboot_requested",
-            "recovery_guidance": ["Important: Hidden storage may still be mounted."]
-        }
-    });
-    assert_matches_schema(&schema, &value);
-
-    let poweroff = serde_json::json!({
-        "schema_version": 1, "command": "deactivate", "ok": true,
-        "data": {"status": "poweroff_requested", "recovery_guidance": ["Powered off."]}
-    });
-    assert_matches_schema(&schema, &poweroff);
-
+    for status in ["return_requested", "poweroff_requested"] {
+        let value = serde_json::json!({
+            "schema_version": 1, "command": "deactivate", "ok": true,
+            "data": {"status": status}
+        });
+        assert_matches_schema(&schema, &value);
+    }
     let error = serde_json::json!({
         "schema_version": 1, "command": "deactivate", "ok": false,
-        "error": {"code": "mount_busy", "message": "overlay busy: /home", "hint": "retry"}
+        "error": {"code": "invalid_state", "message": "not in a hidden session", "hint": "nails recover"}
     });
     assert_matches_schema(&schema, &error);
 }
 
 #[test]
-fn emergency_schema_accepts_a_complete_teardown() {
+fn emergency_schema_accepts_the_hot_path_report() {
     let schema = load_schema("emergency");
-    let value = serde_json::json!({
+    let hidden = serde_json::json!({
         "schema_version": 1, "command": "emergency", "ok": true,
         "data": {
-            "status": "complete",
-            "detached_overlays": ["/home", "/etc"],
-            "force_detached_overlays": [],
-            "cleanup_errors": [],
-            "state_write_errors": ["inactive: state.json: read-only file system"],
-            "page_cache_dropped": true,
-            "runtime_journal_scrubbed": true,
-            "hidden_root_still_mounted": false,
-            "hidden_root": "/mnt/data",
-            "backend_lock": null,
-            "backend_close_commands": ["cryptsetup close data0"],
-            "power_action": null,
-            "power_result": null,
-            "recovery_guidance": ["Reboot to clear RAM."]
+            "side": "hidden",
+            "requested": "return_to_decoy",
+            "dispatched": "return_to_decoy",
+            "fallback": null,
+            "kernel_power_off": false,
+            "backend_closing": ["data"],
+            "cgroups_killed": 14,
+            "processes_killed": 2,
+            "remaining_mounts": [],
+            "phases": [
+                {"name": "prepare-return", "ms": 41},
+                {"name": "close-backend", "ms": 9},
+                {"name": "arm", "ms": 1},
+                {"name": "enqueue", "ms": 22},
+                {"name": "kill", "ms": 6}
+            ],
+            "elapsed_ms": 80
         }
     });
-    assert_matches_schema(&schema, &value);
-}
-
-#[test]
-fn emergency_schema_accepts_an_incomplete_teardown_with_its_followup() {
-    let schema = load_schema("emergency");
-    let value = serde_json::json!({
-        "schema_version": 1, "command": "emergency", "ok": false,
-        "error": {
-            "code": "teardown_incomplete",
-            "message": "REBOOT REQUIRED: could not remove every NAILS mount: /home",
-            "hint": "reboot"
-        },
+    assert_matches_schema(&schema, &hidden);
+    let fallback = serde_json::json!({
+        "schema_version": 1, "command": "emergency", "ok": true,
         "data": {
-            "status": "incomplete",
-            "remaining_mounts": ["/home"],
-            "hidden_root_still_mounted": true,
-            "hidden_root": "/mnt/data",
-            "backend_lock": null,
-            "backend_close_commands": [],
-            "power_action": "poweroff",
-            "power_result": "power off dispatched",
-            "recovery_guidance": ["Reboot to clear RAM."]
+            "side": "hidden", "requested": "return_to_decoy", "dispatched": "poweroff",
+            "fallback": "could not mount the decoy root: EBUSY; powering off instead",
+            "kernel_power_off": false, "backend_closing": [], "cgroups_killed": 3,
+            "processes_killed": 0, "remaining_mounts": [], "phases": [], "elapsed_ms": 5
         }
     });
-    assert_matches_schema(&schema, &value);
+    assert_matches_schema(&schema, &fallback);
 }
 
 // ---------------------------------------------------------------------------

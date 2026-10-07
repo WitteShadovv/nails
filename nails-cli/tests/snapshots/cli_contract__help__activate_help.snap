@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Activate the hidden environment (mount overlays and apply the platform layer)
+Soft-reboot into the hidden session (whole-root overlay on the hidden volume)
 
 Usage: nails activate [OPTIONS]
 
@@ -20,27 +20,18 @@ Options:
       --no-preflight
           Skip pre-flight checks (DANGEROUS - expert use only)
 
-      --session <POLICY>
-          What to do with the graphical session (default: kill)
-
-          Possible values:
-          - kill: Terminate the graphical session before mounting (the secure default)
-          - keep: Keep the current session running (mounts only what can be overlaid live)
-
-          [default: kill]
-
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
 
-      --pivot <POLICY>
-          How to handle a volume that needs a pivot mount (default: refuse)
+  -y, --yes
+          Proceed without the confirmation prompt
 
-          Possible values:
-          - refuse: Abort rather than fall back to a pivot mount (the secure default)
-          - allow:  Fall back to a pivot mount without asking (degraded security)
-          - ask:    Prompt on a terminal before falling back to a pivot mount; refuse without one
+          Without this flag activation prompts on a terminal and refuses to run without one, because it logs you out.
 
-          [default: refuse]
+      --nixos-flake <FLAKE_REF>
+          NixOS: the hidden configuration as a flake reference <path>#<host>
+
+          The hidden system is built from it into the hidden root's store before the soft-reboot. Supports attribute selection after the `#`.
 
   -q, --quiet
           Print only errors and the final result
@@ -55,21 +46,19 @@ Options:
 
           [default: auto]
 
-  -y, --yes
-          Proceed without confirmation prompts
-
-          Without this flag activation prompts on a terminal and refuses to run without one, so it never ends a graphical session unattended.
+      --dry-run
+          Preview activation steps without making changes
 
       --ascii
           Use ASCII markers instead of Unicode symbols and box drawing
 
-      --nixos-flake <FLAKE_REF>
-          NixOS layer: flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
+      --overlay-only
+          NixOS: enter with the decoy's own system, without building the hidden configuration (the hidden /etc and home still apply)
 
-          Only applies on NixOS. When set, this value is passed directly to `nixos-rebuild --flake` instead of auto-detecting the flake path. Supports attribute selection after the `#`.
+      --accept-persistent-decoy
+          Accept a persistent decoy posture instead of refusing activation
 
-      --dry-run
-          Preview activation steps without making changes
+          By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk. This flag accepts that risk (and overrides `accept_persistent_decoy` in `nails.toml`).
 
       --json
           Print machine-readable JSON on stdout
@@ -77,35 +66,20 @@ Options:
       --no-log-file
           Do not write the log file on the hidden volume (diagnostics still go to stderr)
 
-      --overlay-only
-          Mount overlays only, skip the platform configuration layer
-
-      --risky-services <POLICY>
-          What to do with risky services still referencing a target (overrides the `risky_services` config key)
-
-          Unset: restart when the session is killed, prompt on a terminal otherwise, and refuse a non-interactive run that keeps the session.
-
-          Possible values:
-          - restart: Restart them so they no longer reference the decoy
-          - skip:    Leave them running; they are reported as surviving writers
-
-      --terminate-processes
-          Signal non-service processes (shells, editors, scripts) holding a target instead of aborting
-
-          Off by default: a process with no systemd unit can only be stopped by signal, so activation never signals one and aborts before mounting, listing them. This flag ends them anyway.
-
-      --accept-persistent-decoy
-          Accept a persistent decoy posture instead of refusing activation
-
-          By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. Records those sinks write before the overlays are mounted survive deactivation and reboot. This flag accepts that risk (and overrides `accept_persistent_decoy` in `nails.toml`).
-
   -h, --help
           Print help (see a summary with '-h')
 
+WHAT HAPPENS:
+  Activation builds one overlay over the whole decoy root at /run/nextroot,
+  with every change stored on the hidden volume, and soft-reboots into it
+  (systemd 254 or newer). Every program is closed and you are logged out; the
+  hidden session starts at its own login screen. Nothing of the hidden session
+  can reach the decoy disk: the ESP is read-only, other decoy filesystems are
+  overlaid, and decoy swap is never used.
+
 EXAMPLES:
-  nails activate                      Mount the overlays and apply the layer
-  nails activate --session keep       Keep the current graphical session
-  nails activate --overlay-only       Mount overlays, skip the platform layer
+  nails activate                      Enter the hidden session
+  nails activate --overlay-only       Enter with the decoy's own system (NixOS)
   nails activate --dry-run            Preview without changing anything
 
 ----- stderr -----

@@ -7,7 +7,6 @@ This document contains the help content for the `nails` command-line program.
 * [`nails`↴](#nails)
 * [`nails activate`↴](#nails-activate)
 * [`nails deactivate`↴](#nails-deactivate)
-* [`nails reapply`↴](#nails-reapply)
 * [`nails emergency`↴](#nails-emergency)
 * [`nails recover`↴](#nails-recover)
 * [`nails status`↴](#nails-status)
@@ -30,28 +29,31 @@ This document contains the help content for the `nails` command-line program.
 
 Overlay environment manager.
 
-NAILS layers a hidden environment over a decoy system using OverlayFS. The
-binary and its configuration live on the hidden volume, so you run it by its
-full path from the mounted volume (e.g. `sudo /mnt/data/nails status`), never
-from a copy on the decoy disk.
+NAILS runs a hidden session on a decoy system: one OverlayFS over the whole
+decoy root, with every change kept on the hidden volume, entered and left with
+`systemctl soft-reboot` (systemd 254 or newer). The binary and its
+configuration live on the hidden volume, so you run it by its
+full path from the mounted volume (e.g. `sudo /mnt/data/nails status`),
+never from a copy on the decoy disk.
 
 The workflow has four steps:
   1. Open and mount the hidden backend (e.g. unlock the LUKS/VeraCrypt volume).
   2. `init <root>` once, to lay out the hidden volume.
-  3. `activate` to mount the overlays and apply the platform layer.
-  4. `deactivate` to return to the decoy and reboot, or `emergency` to tear
-     everything down now. If a run is interrupted and the system is stuck,
-     `recover` reconciles the state and finishes the teardown.
+  3. `activate` to soft-reboot into the hidden session. You are logged out;
+     the hidden session starts at its own login screen.
+  4. `deactivate` to soft-reboot back to the plain decoy, or `emergency` to
+     kill the hidden session at once and return (or power off). If an
+     activation was interrupted, `recover` removes what it left behind.
 
 **Usage:** `nails [OPTIONS] <COMMAND>`
 
 EXAMPLES:
   # Run by full path from the mounted backend, never from a decoy copy.
   sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
-  sudo /mnt/data/nails activate         Mount the overlays and apply the layer
+  sudo /mnt/data/nails activate         Soft-reboot into the hidden session
   /mnt/data/nails status --json         Machine-readable state and uptime
-  sudo /mnt/data/nails deactivate       Restore the decoy and reboot
-  sudo /mnt/data/nails emergency        Tear everything down immediately
+  sudo /mnt/data/nails deactivate       Soft-reboot back to the decoy
+  sudo /mnt/data/nails emergency        Kill the hidden session and return now
   source <(/mnt/data/nails completions bash)   Load completions in the session
 
 EXIT STATUS:
@@ -71,17 +73,16 @@ EXIT STATUS:
 
 ###### **Subcommands:**
 
-* `activate` — Activate the hidden environment (mount overlays and apply the platform layer)
-* `deactivate` — Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
-* `reapply` — Reapply the hidden configuration layer while active (platforms with a layer only)
-* `emergency` — Emergency teardown: detach overlays immediately, nothing written to the decoy
-* `recover` — Reconcile a stuck state and finish an interrupted or degraded teardown
+* `activate` — Soft-reboot into the hidden session (whole-root overlay on the hidden volume)
+* `deactivate` — Soft-reboot from the hidden session back to the plain decoy
+* `emergency` — Kill the hidden session at once and soft-reboot back to the decoy (or power off)
+* `recover` — Remove what an interrupted activation left in /run
 * `status` — Show current status and uptime
 * `verify` — Verify system is clean of NAILS artifacts
 * `rehearse` — Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
 * `check` — Check readiness to activate without making any changes (alias: doctor)
 * `init` — Initialize NAILS directory structure on a hidden volume
-* `reset-upper` — Delete a target's persistent overlay upper on the hidden volume
+* `reset-upper` — Delete a path's hidden copy from the hidden root's upper
 * `config` — Inspect and check the configuration file (nails.toml)
 * `completions` — Print a shell completion script on stdout (for `source <(...)`)
 
@@ -110,141 +111,109 @@ EXIT STATUS:
 
 ## `nails activate`
 
-Activate the hidden environment (mount overlays and apply the platform layer)
+Soft-reboot into the hidden session (whole-root overlay on the hidden volume)
 
 **Usage:** `nails activate [OPTIONS]`
 
+WHAT HAPPENS:
+  Activation builds one overlay over the whole decoy root at /run/nextroot,
+  with every change stored on the hidden volume, and soft-reboots into it
+  (systemd 254 or newer). Every program is closed and you are logged out; the
+  hidden session starts at its own login screen. Nothing of the hidden session
+  can reach the decoy disk: the ESP is read-only, other decoy filesystems are
+  overlaid, and decoy swap is never used.
+
 EXAMPLES:
-  nails activate                      Mount the overlays and apply the layer
-  nails activate --session keep       Keep the current graphical session
-  nails activate --overlay-only       Mount overlays, skip the platform layer
+  nails activate                      Enter the hidden session
+  nails activate --overlay-only       Enter with the decoy's own system (NixOS)
   nails activate --dry-run            Preview without changing anything
 
 ###### **Options:**
 
 * `--no-preflight` — Skip pre-flight checks (DANGEROUS - expert use only)
-* `--session <POLICY>` — What to do with the graphical session (default: kill)
+* `-y`, `--yes` — Proceed without the confirmation prompt
 
-  Default value: `kill`
+   Without this flag activation prompts on a terminal and refuses to run without one, because it logs you out.
+* `--nixos-flake <FLAKE_REF>` — NixOS: the hidden configuration as a flake reference <path>#<host>
 
-  Possible values:
-  - `kill`:
-    Terminate the graphical session before mounting (the secure default)
-  - `keep`:
-    Keep the current session running (mounts only what can be overlaid live)
-
-* `--pivot <POLICY>` — How to handle a volume that needs a pivot mount (default: refuse)
-
-  Default value: `refuse`
-
-  Possible values:
-  - `refuse`:
-    Abort rather than fall back to a pivot mount (the secure default)
-  - `allow`:
-    Fall back to a pivot mount without asking (degraded security)
-  - `ask`:
-    Prompt on a terminal before falling back to a pivot mount; refuse without one
-
-* `-y`, `--yes` — Proceed without confirmation prompts
-
-   Without this flag activation prompts on a terminal and refuses to run without one, so it never ends a graphical session unattended.
-* `--nixos-flake <FLAKE_REF>` — NixOS layer: flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
-
-   Only applies on NixOS. When set, this value is passed directly to `nixos-rebuild --flake` instead of auto-detecting the flake path. Supports attribute selection after the `#`.
+   The hidden system is built from it into the hidden root's store before the soft-reboot. Supports attribute selection after the `#`.
 * `--dry-run` — Preview activation steps without making changes
-* `--overlay-only` — Mount overlays only, skip the platform configuration layer
-* `--risky-services <POLICY>` — What to do with risky services still referencing a target (overrides the `risky_services` config key)
-
-   Unset: restart when the session is killed, prompt on a terminal otherwise, and refuse a non-interactive run that keeps the session.
-
-  Possible values:
-  - `restart`:
-    Restart them so they no longer reference the decoy
-  - `skip`:
-    Leave them running; they are reported as surviving writers
-
-* `--terminate-processes` — Signal non-service processes (shells, editors, scripts) holding a target instead of aborting
-
-   Off by default: a process with no systemd unit can only be stopped by signal, so activation never signals one and aborts before mounting, listing them. This flag ends them anyway.
+* `--overlay-only` — NixOS: enter with the decoy's own system, without building the hidden configuration (the hidden /etc and home still apply)
 * `--accept-persistent-decoy` — Accept a persistent decoy posture instead of refusing activation
 
-   By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. Records those sinks write before the overlays are mounted survive deactivation and reboot. This flag accepts that risk (and overrides `accept_persistent_decoy` in `nails.toml`).
+   By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk. This flag accepts that risk (and overrides `accept_persistent_decoy` in `nails.toml`).
 
 
 
 ## `nails deactivate`
 
-Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
+Soft-reboot from the hidden session back to the plain decoy
 
 **Usage:** `nails deactivate [OPTIONS]`
 
+WHAT HAPPENS:
+  In the hidden session, deactivation mounts the decoy root at /run/nextroot,
+  marks the hidden volume for closing and soft-reboots: every hidden program
+  is stopped in order, /run is scrubbed of the hidden session, and the decoy
+  starts again at its own login screen. The hidden volume is unmounted and
+  its encryption mapping closed by the switch itself.
+
 EXAMPLES:
-  nails deactivate                    Restore the decoy and reboot
-  nails deactivate --poweroff         Restore the decoy and power off
+  nails deactivate                    Soft-reboot back to the decoy
+  nails deactivate --poweroff         Power off instead
   nails deactivate -y                 Skip the confirmation prompt
 
 ###### **Options:**
 
-* `--no-clear-history` — Skip shell history cleanup
-
-   By default, deactivation removes all 'nails' commands from shell history. Use this flag to preserve history (not recommended for forensic safety).
 * `-y`, `--yes` — Proceed without the confirmation prompt
 
-   Deactivation restores the decoy configuration and reboots. Without this flag it prompts on a terminal and refuses to run without one.
-* `--poweroff` — Power the machine off instead of rebooting once the decoy is restored.
+   Deactivation ends the hidden session. Without this flag it prompts on a terminal and refuses to run without one.
+* `--poweroff` — Power the machine off instead of returning to the decoy.
 
-   A warm reboot does not clear RAM: DRAM keeps its contents across a reset unless the firmware honours the TCG memory-overwrite request (MOR), and setting MOR writes EFI NVRAM. Powering off lets the memory decay; leave the machine off for a few minutes before handing it over.
-
-
-
-## `nails reapply`
-
-Reapply the hidden configuration layer while active (platforms with a layer only)
-
-**Usage:** `nails reapply`
-
-EXAMPLES:
-  nails reapply                       Rebuild and switch the hidden config
+   Powering off lets RAM decay; leave the machine off for a few minutes before handing it over.
 
 
 
 ## `nails emergency`
 
-Emergency teardown: detach overlays immediately, nothing written to the decoy
+Kill the hidden session at once and soft-reboot back to the decoy (or power off)
 
 **Usage:** `nails emergency [OPTIONS]`
 
+WHAT HAPPENS:
+  In the hidden session: the decoy root is mounted at /run/nextroot, the
+  hidden volume is marked for closing, the soft-reboot is enqueued and every
+  hidden program is killed at once. The machine returns to the plain decoy,
+  which shows its normal login screen; log in with the decoy password. With
+  --poweroff the machine powers off instead. On the decoy, emergency removes
+  what an interrupted activation left in /run.
+
 EXAMPLES:
-  nails emergency                     Tear everything down immediately
-  nails emergency --countdown 5       Wait 5s (Ctrl+C to abort), then tear down
-  nails emergency --poweroff          Tear down, then power the machine off
-  nails emergency --reboot            Tear down, then reboot into the decoy
+  nails emergency                     Kill the hidden session and return now
+  nails emergency --countdown 5       Wait 5s (Ctrl+C to abort), then act
+  nails emergency --poweroff          Kill the hidden session and power off
+  nails emergency --reboot            Kill the hidden session and reboot fully
 
 ###### **Options:**
 
-* `--countdown <SECS>` — Wait this many seconds before tearing down, printing a Ctrl+C abort hint.
+* `--countdown <SECS>` — Wait this many seconds before acting, printing a Ctrl+C abort hint.
 
-   Omitted (the default) tears down immediately. The wait is never affected by `--quiet` or `--json`, so output flags never change the timing.
-* `--poweroff` — Power the machine off after the teardown attempt, whatever its outcome.
+   Omitted (the default) acts immediately. The wait is never affected by `--quiet` or `--json`, so output flags never change the timing.
+* `--poweroff` — Power the machine off instead of returning to the decoy, whatever the outcome. RAM decays: the strongest answer to a seizure. Leave the machine off for a few minutes. Mutually exclusive with `--reboot`
+* `--reboot` — Reboot fully (firmware and bootloader) instead of the soft-reboot back.
 
-   Powering off lets RAM decay, the only complete remedy for residue the teardown cannot remove; it runs even when a mount could not be removed. Leave the machine off for a few minutes. Mutually exclusive with `--reboot`.
-* `--reboot` — Reboot into the decoy after the teardown attempt, whatever its outcome.
-
-   A warm reboot does not clear RAM: DRAM keeps its contents across a reset unless the firmware honours the TCG memory-overwrite request (MOR), and setting MOR writes EFI NVRAM. Prefer `--poweroff` when RAM residue matters. Mutually exclusive with `--poweroff`.
-* `--lock-backend` — Close the encrypted backend after the teardown attempt: lazy-unmount the hidden root and mark its device-mapper stack for deferred removal, wiping the master key from kernel memory when the last reference drops.
-
-   Forces the close for this run regardless of the `[emergency] lock_backend` config key. Without it (and without the key) the hidden filesystem stays mounted and readable after the emergency, and the printed sequence closes it by hand.
+   A warm reboot does not clear RAM. Prefer `--poweroff` when RAM residue matters. Mutually exclusive with `--poweroff`.
 
 
 
 ## `nails recover`
 
-Reconcile a stuck state and finish an interrupted or degraded teardown
+Remove what an interrupted activation left in /run
 
 **Usage:** `nails recover`
 
 EXAMPLES:
-  nails recover                       Reconcile a stuck state and finish teardown
+  nails recover                       Remove an interrupted activation's leftovers
 
 
 
@@ -296,7 +265,7 @@ Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
 
 STEPS:
   1. In an active hidden session:     nails rehearse plant
-  2. Deactivate as usual (it reboots), then unlock and mount the hidden volume
+  2. Deactivate as usual, then on the decoy unlock and mount the hidden volume
   3. From the decoy, or a later session: nails rehearse scan
   Then `nails rehearse reset` removes the rehearsal from the hidden volume.
 
@@ -373,11 +342,11 @@ Check readiness to activate without making any changes (alias: doctor)
 EXAMPLES:
   nails check                         Report readiness to activate
   nails doctor                        Same, via the alias
-  nails check --overlay-only          Skip the platform-layer checks
+  nails check --overlay-only          Skip the hidden NixOS build checks
 
 ###### **Options:**
 
-* `--overlay-only` — Check as for an overlay-only activation (skip the platform-layer checks)
+* `--overlay-only` — Check as for `activate --overlay-only` (skip the hidden NixOS build checks)
 * `--nixos-flake <FLAKE_REF>` — NixOS layer: check a specific flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
 * `--accept-persistent-decoy` — Report a persistent decoy posture as a warning instead of a failure
 
@@ -413,17 +382,17 @@ EXAMPLES:
 
 ## `nails reset-upper`
 
-Delete a target's persistent overlay upper on the hidden volume
+Delete a path's hidden copy from the hidden root's upper
 
 **Usage:** `nails reset-upper [OPTIONS] <TARGET>`
 
 EXAMPLES:
-  nails reset-upper /home             Delete the persistent /home upper
-  nails reset-upper /nix -y           Delete the /nix upper without prompting
+  nails reset-upper /home             Delete the hidden copy of /home
+  nails reset-upper /nix -y           Delete the hidden /nix without prompting
 
 ###### **Arguments:**
 
-* `<TARGET>` — Overlay target whose persistent upper to delete (e.g. /home, /etc, /nix)
+* `<TARGET>` — Path whose hidden copy to delete (e.g. /home, /etc, /nix); the decoy's own files show through again
 
 ###### **Options:**
 
@@ -471,7 +440,6 @@ Print the effective configuration and where each value comes from
 
 * `--example` — Print a commented example configuration instead (not with --json)
 * `--nixos-flake <FLAKE_REF>` — Preview the effect of `activate --nixos-flake FLAKE_REF`
-* `--no-clear-history` — Preview the effect of `deactivate --no-clear-history`
 
 
 

@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 pub mod args;
+pub(crate) mod chokepoint;
 pub mod commands;
-mod detach;
 pub mod early;
 pub mod logging;
 pub mod main_guard;
@@ -11,7 +11,7 @@ pub mod output;
 
 // Re-export main types for convenience
 pub use args::{Cli, Commands, ConfigCommand, GlobalArgs};
-pub use detach::install_panic_hook;
+pub use chokepoint::install_panic_hook;
 pub use logging::init_subscriber;
 pub use output::{ExitStatus, OutputSettings};
 
@@ -21,14 +21,13 @@ pub use output::{ExitStatus, OutputSettings};
 /// The mutating commands take overlays up or down and run a chain of rollback
 /// guards that a signal's default action would skip; for them we install the
 /// cancellation handlers and bias the process away from the OOM killer. Read-only
-/// commands (`status`, `verify`, `check`, `config`, `notify-dispatch`) and `init`
+/// commands (`status`, `verify`, `check`, `config`) and `init`
 /// touch no live overlay, so they keep the default signal behaviour.
 fn command_is_mutating(command: &Commands) -> bool {
     matches!(
         command,
         Commands::Activate(_)
             | Commands::Deactivate(_)
-            | Commands::Reapply(_)
             | Commands::Emergency(_)
             | Commands::Recover(_)
             | Commands::ResetUpper(_)
@@ -86,7 +85,6 @@ pub fn execute_command(
     match cli.command {
         Commands::Activate(args) => commands::activate::execute(settings, env, &args, config),
         Commands::Deactivate(args) => commands::deactivate::execute(settings, env, &args, config),
-        Commands::Reapply(args) => commands::reapply::execute(settings, env, &args, config),
         Commands::Emergency(args) => commands::emergency::execute(settings, env, &args, config),
         Commands::Recover(args) => commands::recover::execute(settings, env, &args, config),
         Commands::Status(args) => commands::status::execute(settings, &args, config),
@@ -97,9 +95,11 @@ pub fn execute_command(
         Commands::ResetUpper(args) => commands::reset_upper::execute(settings, env, &args, config),
         Commands::Config(command) => commands::config::execute(settings, config, &command),
         Commands::Completions(args) => commands::completions::execute(&args),
-        Commands::NotifyDispatch => commands::notify_dispatch::execute(settings, env, config),
         Commands::Watch => commands::watch::execute(settings, env, config),
         Commands::SleepGuard => commands::sleep_guard::execute(settings, env, config),
+        // The transition step runs in `early::dispatch` as root; reaching clap
+        // means it was not run by systemd, so it does nothing.
+        Commands::Transition => ExitStatus::Ok,
     }
 }
 

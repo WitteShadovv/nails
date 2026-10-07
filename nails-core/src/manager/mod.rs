@@ -53,6 +53,7 @@ pub mod deactivation;
 pub(crate) mod helpers;
 pub mod mount_tracker;
 pub mod preflight_runner;
+pub mod session_flow;
 pub mod state_management;
 pub mod teardown_plan;
 
@@ -72,6 +73,7 @@ pub use state_management::ResetUpperPlan;
 // Re-export public functions from helpers
 pub use helpers::{apply_exclusion_filter, build_overlay_targets};
 pub use preflight_runner::{RegistryInputs, build_registry};
+pub use session_flow::{EnterOptions, EnterOutcome, SessionRecovery};
 
 // Re-export crate-internal helpers so sub-modules (e.g., activation) can use `super::*`
 pub(crate) use helpers::{

@@ -3,44 +3,32 @@
 
 //! Output formatting for the deactivate command.
 //!
-//! The quick-deactivation flow restores the decoy configuration and reboots, so
-//! its machine-readable result is a small typed envelope rather than a
-//! hand-built string, and its failures are mapped to a structured error whose
-//! `hint` carries the remedy (keeping any multi-line library message out of the
-//! JSON document).
+//! Deactivation enqueues the soft-reboot back to the decoy (or a power-off),
+//! so its machine-readable result is a small typed envelope printed before the
+//! switch, and its failures are mapped to a structured error whose `hint`
+//! carries the remedy.
 
 use nails_core::NailsError;
 use serde::Serialize;
 
 use crate::cli::output::envelope::{Envelope, ErrorBody};
 
-/// Recovery guidance shown after deactivation; the operator must still dismount
-/// the hidden volume and reboot for a fully clean state.
-pub const DEACTIVATE_RECOVERY_GUIDANCE: &[&str] = &[
-    "Important: Hidden storage may still be mounted. Your system is not in a fully safe state until:",
-    "  1. The hidden volume is dismounted",
-    "  2. The system is powered off (a warm reboot does not clear RAM)",
-];
-
 /// The `data` payload for a successful `deactivate --json`.
 #[derive(Debug, Serialize)]
 pub struct DeactivateData {
-    /// What happened (`reboot_requested` or `poweroff_requested`).
+    /// What happens (`return_requested` or `poweroff_requested`).
     status: &'static str,
-    /// The recovery steps the operator should still take.
-    recovery_guidance: Vec<&'static str>,
 }
 
-/// Print the success envelope for a deactivation that requested a reboot, or a
-/// power-off when `poweroff` is set.
+/// Print the success envelope for a deactivation that is returning to the
+/// decoy, or powering off when `poweroff` is set.
 pub fn print_deactivate_json(poweroff: bool) {
     let data = DeactivateData {
         status: if poweroff {
             "poweroff_requested"
         } else {
-            "reboot_requested"
+            "return_requested"
         },
-        recovery_guidance: DEACTIVATE_RECOVERY_GUIDANCE.to_vec(),
     };
     Envelope::success("deactivate", data).print();
 }
@@ -62,8 +50,9 @@ pub fn deactivate_error_body(error: &NailsError) -> ErrorBody {
             format!("unmount failed: {}: {reason}", path.display()),
         )
         .with_hint("check if the overlay is in use and retry"),
-        NailsError::InvalidState(msg) => ErrorBody::new("invalid_state", msg.clone())
-            .with_hint("if the system is stuck, run 'nails recover' to finish teardown, or 'nails emergency' to tear down now"),
+        NailsError::InvalidState(msg) => ErrorBody::new("invalid_state", msg.clone()).with_hint(
+            "'nails emergency' kills the hidden session and returns, or powers off with --poweroff",
+        ),
         other => ErrorBody::new("deactivation_failed", other.to_string())
             .with_hint("check system state and retry"),
     }

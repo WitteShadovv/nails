@@ -131,7 +131,7 @@ fn subprocess_status_entrypoint() {
         "invalid-config" => execute(&OutputSettings::default(), &StatusArgs::default(), config),
         other => panic!("unknown status subprocess case: {other}"),
     };
-    crate::cli::detach::exit_process(status.code());
+    crate::cli::chokepoint::exit_process(status.code());
 }
 
 #[test]

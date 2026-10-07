@@ -3,17 +3,17 @@
 
 //! Hidden `watch` command: the in-session backend watcher.
 //!
-//! This is not an operator-facing command. It is launched at activation from the
-//! RAM-backed runtime copy as a transient systemd unit (see
-//! [`nails_core::runtime_copy`]) and runs for the life of the session, polling the
-//! hidden backend and alerting the operator the moment it fails. It is marked
+//! This is not an operator-facing command. It runs from the RAM-backed runtime
+//! copy as a runtime unit of the hidden session (installed in `/run` by the
+//! entry transition) for the life of the session, polling the hidden backend
+//! and alerting the operator the moment it fails. It is marked
 //! `hide = true` so it never appears in help, and it keeps all of its state in the
 //! `/run` copy so it keeps working even after the hidden volume is gone.
 
 use std::path::Path;
 
 use nails_core::notification::{Notification, send_immediate};
-use nails_core::{NailsManager, RealFilesystem, runtime_copy, watcher};
+use nails_core::{RealFilesystem, runtime_copy, watcher};
 
 use crate::cli::output::{ExitStatus, OutputSettings};
 
@@ -66,7 +66,6 @@ pub fn execute(
         "Backend watcher started"
     );
 
-    let emergency_config = config.clone();
     watcher::run_loop(
         &watch_config,
         || watcher::probe_backend(&filesystem, &manifest),
@@ -76,14 +75,10 @@ pub fn execute(
             }
         },
         || {
-            tracing::warn!("Backend failure outlasted the debounce; running emergency teardown");
-            let state_path = emergency_config.state_file_path.clone();
-            let mut manager =
-                NailsManager::new(RealFilesystem, emergency_config.clone(), state_path)
-                    .with_runtime_env(env.clone());
-            if let Err(e) = manager.emergency_deactivate() {
-                tracing::error!(error = %e, "Automatic emergency teardown failed");
-            }
+            tracing::warn!("Backend failure outlasted the debounce; running the emergency");
+            super::emergency::run_hot_path_with(
+                nails_teardown::whole_root::emergency::Finish::Return,
+            );
         },
     );
 

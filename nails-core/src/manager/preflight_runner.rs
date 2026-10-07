@@ -9,9 +9,7 @@
 
 use super::NailsManager;
 use crate::preflight::PreFlightRegistry;
-use crate::{
-    Config, Filesystem, NailsError, Result, StateFile, SystemState, build_overlay_targets,
-};
+use crate::{Config, Filesystem, NailsError, Result, StateFile, SystemState};
 use std::path::PathBuf;
 
 /// The runtime facts the shared pre-flight registry is assembled from.
@@ -89,119 +87,78 @@ pub fn build_registry<F: Filesystem>(
     use crate::preflight::{
         BackendDetectCheck, BinaryLocationCheck, DecoyPersistenceCheck, HiddenVolumeCheck,
         HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, MemoryWipeCheck,
-        MountNamespaceCheck, NixOSBuildTargetCheck, OverlayCompatibilityCheck, OverlayTargetsCheck,
-        ResidueCatalogCheck, SleepPolicyCheck, SnapshotMemoryCheck, SpaceCheck, StateCheck,
-        StorageReadinessCheck, StrayMountsCheck, SwapCheck, SymlinkSupportCheck,
-        UpperFsCapabilityCheck, WritableTreesCheck,
+        MountNamespaceCheck, NixOSBuildTargetCheck, ResidueCatalogCheck, SleepPolicyCheck,
+        SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck,
+        UpperFsCapabilityCheck,
+    };
+    use crate::session::checks::{
+        DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
+        SystemdVersionCheck,
     };
 
+    let _ = fs;
     let mut registry = PreFlightRegistry::new();
+    let hidden_root = config.hidden_volume_root.clone();
+    let paths = crate::session::Paths::system();
 
-    registry.add_check(Box::new(HiddenVolumeCheck::new(
-        config.hidden_volume_root.clone(),
+    registry.add_check(Box::new(HiddenVolumeCheck::new(hidden_root.clone())));
+
+    // Neither already in the hidden root nor with the leftovers of an
+    // interrupted entry (a populated /run/nextroot must never be entered by a
+    // later plain reboot).
+    registry.add_check(Box::new(SessionStateCheck::new(
+        paths.clone(),
+        hidden_root.clone(),
     )));
 
-    // Refuses an overlay target that would hide the hidden volume, its state
-    // file, its logs or the binary, and an exclusion that leaks to the decoy
-    // disk, while the decoy session is still intact.
-    registry.add_check(Box::new(OverlayTargetsCheck::new(config.clone())));
+    // The hidden root is entered with `systemctl soft-reboot` (systemd 254),
+    // through the two units that implement it.
+    registry.add_check(Box::new(SystemdVersionCheck));
+    registry.add_check(Box::new(SoftRebootUnitsCheck::new(
+        paths.root.clone(),
+        config_layer.is_some(),
+    )));
 
-    // Refuses activation when a base-OS tree (e.g. /usr) would be left writable on
-    // the decoy — neither overlaid nor kept read-only — while the decoy session is
-    // still intact, so the read-only invariant is enforced before any mount.
-    registry.add_check(Box::new(WritableTreesCheck::new(config.clone())));
+    // The way back mounts the decoy root again by device.
+    registry.add_check(Box::new(DecoyRootCheck::new(paths.root.clone())));
 
-    // Warns (never fails) about read-write disk mounts that are neither overlay
-    // targets nor on the hidden volume (a second disk, a Windows partition, a
-    // removable drive under /run/media): they stay writable on a real disk for
-    // the whole session.
-    registry.add_check(Box::new(StrayMountsCheck::new(config.clone())));
+    // Every decoy filesystem the hidden systemd would mount has a safe decision:
+    // read-only, overlaid, or masked.
+    registry.add_check(Box::new(FstabPolicyCheck::new(
+        paths.root.clone(),
+        hidden_root.clone(),
+    )));
 
-    // Runs before the session kill so a private mount namespace or a non-shared
-    // root is caught while the decoy session is still intact.
+    // PID 1 must see /run/nextroot: activation must run in its mount namespace.
     registry.add_check(Box::new(MountNamespaceCheck::new()));
 
     // Resolves every host tool nails spawns from the detected platform's search
-    // list before any state is written, so a missing tool fails early with a
-    // tool-to-package table instead of a late ENOENT after the session is gone.
+    // list before anything is built.
     registry.add_check(Box::new(HostToolsCheck::new()));
 
-    registry.add_check(Box::new(SymlinkSupportCheck::new(
-        config.hidden_volume_root.clone(),
-    )));
+    registry.add_check(Box::new(SymlinkSupportCheck::new(hidden_root.clone())));
 
-    // Runs before the session kill so an upper filesystem that cannot back an
-    // overlay (NFS/FUSE/FAT, missing xattrs/d_type/whiteouts) is refused while
-    // the decoy session is still intact, not after staging has begun.
-    registry.add_check(Box::new(UpperFsCapabilityCheck::new(
-        config.hidden_volume_root.clone(),
-    )));
+    // The hidden filesystem must host the root overlay's upper.
+    registry.add_check(Box::new(UpperFsCapabilityCheck::new(hidden_root.clone())));
 
-    // Warns, never fails: names deniability hazards of the detected backend
-    // (discard-enabled tcrypt/plain mappings, file-container timestamps,
-    // containers on a copy-on-write decoy) while they can still be fixed.
-    registry.add_check(Box::new(BackendDetectCheck::new(
-        config.hidden_volume_root.clone(),
-    )));
+    // Warns, never fails: deniability hazards of the detected backend.
+    registry.add_check(Box::new(BackendDetectCheck::new(hidden_root.clone())));
 
-    let overlay_dirs: Vec<crate::preflight::OverlayDirs> = match config.overlay_mode {
-        crate::config::OverlayMode::Auto => {
-            let targets = build_overlay_targets(fs, config)?;
-            targets
-                .iter()
-                .map(|target| {
-                    let dir_name = target
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    let upper = config.hidden_volume_root.join(&dir_name);
-                    let work = config.hidden_volume_root.join(".work").join(&dir_name);
-
-                    crate::preflight::OverlayDirs::new(dir_name, target.clone(), upper, work)
-                })
-                .collect()
-        }
-        crate::config::OverlayMode::Explicit => config
-            .overlays
-            .iter()
-            .map(|o| {
-                crate::preflight::OverlayDirs::new(
-                    o.name.clone(),
-                    o.lower.clone(),
-                    o.upper.clone(),
-                    o.work.clone(),
-                )
-            })
-            .collect(),
-    };
-
-    let storage_check = StorageReadinessCheck::new(config.hidden_volume_root.clone(), overlay_dirs);
+    let layout = crate::session::Layout::new(&hidden_root);
+    let storage_check = StorageReadinessCheck::new(
+        hidden_root.clone(),
+        vec![crate::preflight::OverlayDirs::new(
+            "root".to_string(),
+            PathBuf::from("/"),
+            layout.upper(),
+            layout.work(),
+        )],
+    );
     registry.add_check(Box::new(if inputs.read_only {
         storage_check.read_only()
     } else {
         storage_check
     }));
-
-    let persistent_overlay_target_paths: Vec<std::path::PathBuf> = match config.overlay_mode {
-        crate::config::OverlayMode::Auto => build_overlay_targets(fs, config)?,
-        crate::config::OverlayMode::Explicit => {
-            config.overlays.iter().map(|o| o.lower.clone()).collect()
-        }
-    };
-
-    registry.add_check(Box::new(OverlayCompatibilityCheck::new(
-        persistent_overlay_target_paths.clone(),
-        config.hidden_volume_root.clone(),
-    )));
-
-    // Warn-only: estimate the RAM the snapshot tmpfs filesystems for
-    // overlay-incompatible targets would consume against MemAvailable. Swap is
-    // disabled during a hidden session, so a large snapshot on a low-memory host
-    // can cause pressure; this surfaces that before activation without blocking.
-    registry.add_check(Box::new(SnapshotMemoryCheck::new(
-        persistent_overlay_target_paths,
-    )));
 
     // The config layer's base-config reference gate (on NixOS: a base
     // `/etc/nixos` that still references the hidden environment). Activation

@@ -110,7 +110,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
         }
 
         // Check 3: Hidden etc/nixos directory exists
-        let hidden_etc_nixos = self.hidden_storage_path.join("etc/nixos");
+        let hidden_etc_nixos = crate::nixos::config::hidden_etc_nixos(&self.hidden_storage_path);
         if !fs.path_exists(&hidden_etc_nixos)? {
             return Ok(CheckResult::fail(format!(
                 "Hidden storage missing etc/nixos/ directory at {}. Create this directory with modified hardware-configuration.nix.",

@@ -22,7 +22,7 @@ fn stdout_format_for(command: &Commands, settings: &OutputSettings) -> StdoutFor
 /// Whether a command may write a log file onto the hidden volume.
 ///
 /// Only the commands that act on an attached hidden volume do. Read-only
-/// commands (`status`, `verify`, `check`, `notify-dispatch`, `config`) and `init` — which
+/// commands (`status`, `verify`, `check`, `config`, `transition`) and `init` — which
 /// runs before the volume holds any NAILS structure — never create a log
 /// directory or file, so running them from the decoy or a download directory
 /// leaves nothing behind there. The attach gate is still the backstop: even a
@@ -31,7 +31,6 @@ fn command_writes_logs(command: &Commands) -> bool {
     match command {
         Commands::Activate(_)
         | Commands::Deactivate(_)
-        | Commands::Reapply(_)
         | Commands::Emergency(_)
         | Commands::ResetUpper(_) => true,
         // The rehearsal steps act on the attached hidden volume; the status view
@@ -48,10 +47,11 @@ fn main() -> std::process::ExitCode {
     // First, before parsing: no crash from here on may dump core onto the decoy.
     let core_dump_error = nails::cli::disable_core_dumps();
 
-    // The emergency hot path runs here, before clap, the environment snapshot,
-    // the configuration and tracing exist (ADR 0007): the overlays are gone
-    // before any of that runs. The emergency command then does the bookkeeping
-    // and prints the result. Any other command line is left untouched.
+    // The emergency hot path and the soft-reboot transition step run here,
+    // before clap, the environment snapshot, the configuration and tracing exist
+    // (ADR 0007, ADR 0008). The emergency command then prints and logs the
+    // result; the transition step ends the process itself. Any other command
+    // line is left untouched.
     nails::cli::early::dispatch();
 
     let cli = Cli::parse_checked();
@@ -164,6 +164,6 @@ mod tests {
             path: PathBuf::from("/mnt/data"),
             ..Default::default()
         })));
-        assert!(!command_writes_logs(&Commands::NotifyDispatch));
+        assert!(!command_writes_logs(&Commands::Transition));
     }
 }

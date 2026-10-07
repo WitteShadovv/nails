@@ -128,8 +128,7 @@ fn test_verify_flags() {
 }
 
 #[test]
-fn test_notify_dispatch_takes_global_json() {
-    let cli = parse(&["notify-dispatch", "--json"]);
-    assert!(matches!(cli.command, Commands::NotifyDispatch));
-    assert!(cli.global.json);
+fn test_transition_is_a_bare_hidden_subcommand() {
+    let cli = parse(&["transition"]);
+    assert!(matches!(cli.command, Commands::Transition));
 }

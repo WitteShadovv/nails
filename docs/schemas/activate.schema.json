@@ -2,34 +2,31 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/activate.schema.json",
   "title": "NAILS activate --json",
-  "description": "A single line of the activate --json NDJSON stream. Each line is one document: zero or more progress events, then exactly one terminal line, which is either a result event (activation ran) or a plain error envelope (a pre-dispatch failure such as a usage, config or state error).",
+  "description": "A single line of the activate --json NDJSON stream. Each line is one document: zero or more progress events, then exactly one terminal line, which is either a result event (the entry was prepared, the session was already active, or preparing it failed) or a plain error envelope (a pre-dispatch failure such as a usage, config or state error). The result is printed before the soft-reboot, which ends the process.",
   "oneOf": [
     {
       "title": "progress event",
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "command", "type", "phase"],
+      "required": [
+        "schema_version",
+        "command",
+        "type",
+        "phase"
+      ],
       "properties": {
-        "schema_version": { "const": 1 },
-        "command": { "const": "activate" },
-        "type": { "const": "progress" },
-        "phase": { "type": "string", "minLength": 1 },
-        "step": {
-          "description": "Present on a step event: the 1-based index of the step that started.",
-          "type": "integer",
-          "minimum": 1
+        "schema_version": {
+          "const": 1
         },
-        "total_steps": { "type": "integer", "minimum": 1 },
-        "label": { "type": "string", "minLength": 1 },
-        "detail": {
-          "description": "Present on a detail event: progress within the current step, such as the overlay being mounted.",
+        "command": {
+          "const": "activate"
+        },
+        "type": {
+          "const": "progress"
+        },
+        "phase": {
           "type": "string",
           "minLength": 1
-        },
-        "elapsed_seconds": {
-          "description": "Present on a heartbeat event: how long the current long-running step (a build or switch) has been running.",
-          "type": "integer",
-          "minimum": 0
         }
       }
     },
@@ -44,93 +41,90 @@
         "ok",
         "status",
         "duration",
-        "state",
-        "decoy_writers",
+        "filesystems",
+        "masked_units",
         "message"
       ],
       "properties": {
-        "schema_version": { "const": 1 },
-        "command": { "const": "activate" },
-        "type": { "const": "result" },
-        "ok": { "type": "boolean" },
+        "schema_version": {
+          "const": 1
+        },
+        "command": {
+          "const": "activate"
+        },
+        "type": {
+          "const": "result"
+        },
+        "ok": {
+          "type": "boolean"
+        },
         "status": {
           "type": "string",
-          "enum": ["success", "success_with_warnings", "already_active", "error"]
+          "enum": [
+            "entering",
+            "entering_with_warnings",
+            "already_active",
+            "error"
+          ]
         },
-        "duration": { "type": "number", "minimum": 0 },
-        "state": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind"],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "enum": [
-                "inactive",
-                "activating",
-                "active",
-                "deactivating",
-                "degraded",
-                "unknown"
-              ]
-            },
-            "reason": { "type": "string", "minLength": 1 },
-            "remaining_mounts": {
-              "type": "array",
-              "items": { "type": "string" }
-            }
-          }
+        "duration": {
+          "type": "number",
+          "minimum": 0
         },
-        "decoy_writers": {
+        "hidden_system": {
+          "description": "The hidden NixOS toplevel entered, when one was built.",
+          "type": "string",
+          "minLength": 1
+        },
+        "filesystems": {
+          "description": "What happens to each decoy filesystem in the hidden root (read-only, overlaid, masked).",
           "type": "array",
           "items": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["pid", "name", "targets", "kind"],
-            "properties": {
-              "pid": { "type": "integer", "minimum": 0 },
-              "name": { "type": "string", "minLength": 1 },
-              "service": { "type": "string", "minLength": 1 },
-              "targets": {
-                "type": "array",
-                "items": { "type": "string", "pattern": "^/" }
-              },
-              "kind": {
-                "type": "string",
-                "enum": ["surviving", "stale_lower", "unverifiable"]
-              }
-            }
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "masked_units": {
+          "description": "Decoy units masked in the hidden root (swap, unmounted disks).",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
           }
         },
         "warnings": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "message": { "type": "string" },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
         "failed_checks": {
           "type": "array",
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["name", "reason"],
+            "required": [
+              "name",
+              "reason"
+            ],
             "properties": {
-              "name": { "type": "string", "minLength": 1 },
-              "reason": { "type": "string", "minLength": 1 },
-              "fix": { "type": "string", "minLength": 1 }
-            }
-          }
-        },
-        "shell_instructions": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["shell_type", "prompt_script", "alias_script", "instructions"],
-          "properties": {
-            "shell_type": { "type": "string", "minLength": 1 },
-            "prompt_script": { "type": "string", "minLength": 1 },
-            "alias_script": { "type": "string", "minLength": 1 },
-            "instructions": {
-              "type": "array",
-              "items": { "type": "string", "minLength": 1 }
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1
+              },
+              "fix": {
+                "type": "string",
+                "minLength": 1
+              }
             }
           }
         }
@@ -140,19 +134,42 @@
       "title": "error envelope",
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "command", "ok", "error"],
+      "required": [
+        "schema_version",
+        "command",
+        "ok",
+        "error"
+      ],
       "properties": {
-        "schema_version": { "const": 1 },
-        "command": { "const": "activate" },
-        "ok": { "const": false },
+        "schema_version": {
+          "const": 1
+        },
+        "command": {
+          "const": "activate"
+        },
+        "ok": {
+          "const": false
+        },
         "error": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["code", "message"],
+          "required": [
+            "code",
+            "message"
+          ],
           "properties": {
-            "code": { "type": "string", "minLength": 1 },
-            "message": { "type": "string", "minLength": 1 },
-            "hint": { "type": "string", "minLength": 1 }
+            "code": {
+              "type": "string",
+              "minLength": 1
+            },
+            "message": {
+              "type": "string",
+              "minLength": 1
+            },
+            "hint": {
+              "type": "string",
+              "minLength": 1
+            }
           }
         }
       }

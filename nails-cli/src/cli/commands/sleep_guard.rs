@@ -3,16 +3,18 @@
 
 //! Hidden `sleep-guard` command: hold a logind inhibitor for the session.
 //!
-//! Not an operator-facing command. It is launched at activation from the
-//! RAM-backed runtime copy as a transient systemd unit (see
-//! [`nails_core::sleep_guard`]) when `sleep_policy.mode` is `block` or `teardown`,
-//! and runs for the life of the session. It is marked `hide = true` so it never
+//! Not an operator-facing command. It runs from the RAM-backed runtime copy as
+//! a runtime unit of the hidden session (installed in `/run` by the entry
+//! transition) when `sleep_policy.mode` is `block` or `teardown`, and runs for
+//! the life of the session. In `teardown` mode an imminent sleep powers the
+//! machine off instead: a session kept in RAM behind a lock screen is what the
+//! policy exists to prevent. It is marked `hide = true` so it never
 //! appears in help, and it reads its configuration from the `/run` copy so it
 //! keeps working even after the hidden volume is gone.
 
 use std::path::Path;
 
-use nails_core::{NailsManager, RealFilesystem, runtime_copy, sleep_guard};
+use nails_core::{RealFilesystem, runtime_copy, sleep_guard};
 
 use crate::cli::output::{ExitStatus, OutputSettings};
 
@@ -47,14 +49,12 @@ pub fn execute(
 
     tracing::info!(?mode, "Sleep guard started");
 
-    let emergency_config = config.clone();
-    let on_prepare_for_sleep = move || {
-        let state_path = emergency_config.state_file_path.clone();
-        let mut manager = NailsManager::new(RealFilesystem, emergency_config.clone(), state_path)
-            .with_runtime_env(env.clone());
-        if let Err(e) = manager.emergency_deactivate() {
-            tracing::error!(error = %e, "Emergency teardown on suspend failed");
-        }
+    let _ = env;
+    let on_prepare_for_sleep = || {
+        tracing::warn!("The host is about to sleep; powering off instead");
+        super::emergency::run_hot_path_with(
+            nails_teardown::whole_root::emergency::Finish::Poweroff,
+        );
     };
 
     if let Err(e) = sleep_guard::run_guard(mode, on_prepare_for_sleep) {

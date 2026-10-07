@@ -5,7 +5,7 @@
 //!
 //! One typed [`CheckReport`] carries the whole readiness picture: the pre-flight
 //! check results plus the effective configuration, the overlay targets, how the
-//! session would be handled and which NixOS profile would be built. The report
+//! decoy filesystems would be handled and which NixOS profile would be built. The report
 //! renders either as a human summary or as one JSON [`Envelope`](super::envelope::Envelope),
 //! so the two outputs can never describe different things.
 
@@ -81,23 +81,10 @@ pub struct ConfigSummary {
     pub state_file: String,
     /// Log directory.
     pub log_path: String,
-    /// `"auto"` or `"explicit"`.
-    pub overlay_mode: &'static str,
     /// Persona mode: `"shared-home"` or `"fresh-home"`.
     pub persona_mode: &'static str,
     /// Minimum free space required to activate, in MB.
     pub minimum_space_mb: u64,
-}
-
-/// How the graphical session would be handled at activation.
-#[derive(Debug, Serialize)]
-pub struct SessionSummary {
-    /// The detected session kind, or `"unknown"` when detection failed.
-    pub kind: &'static str,
-    /// The display manager that would be restarted, if any.
-    pub display_manager: Option<String>,
-    /// Whether activation would end the graphical session.
-    pub would_terminate: bool,
 }
 
 /// Which NixOS profile activation would build and switch to.
@@ -174,10 +161,8 @@ pub struct CheckReport {
     pub summary: CheckSummary,
     /// The effective configuration.
     pub config: ConfigSummary,
-    /// The overlay targets that would be mounted.
-    pub overlay_targets: Vec<String>,
-    /// How the session would be handled.
-    pub session: SessionSummary,
+    /// What happens to each decoy filesystem in the hidden root.
+    pub filesystems: Vec<String>,
     /// Which NixOS profile would be built.
     pub profile: ProfileSummary,
     /// The decoy persona state the hidden session would inherit.
@@ -189,8 +174,7 @@ impl CheckReport {
     pub fn finalize(
         checks: Vec<CheckRow>,
         config: ConfigSummary,
-        overlay_targets: Vec<String>,
-        session: SessionSummary,
+        filesystems: Vec<String>,
         profile: ProfileSummary,
         inherited: InheritedSummary,
     ) -> Self {
@@ -213,8 +197,7 @@ impl CheckReport {
             checks,
             summary,
             config,
-            overlay_targets,
-            session,
+            filesystems,
             profile,
             inherited,
         }
@@ -254,7 +237,6 @@ pub fn print_check_human(report: &CheckReport, style: Style) {
     println!("  hidden volume root: {}", report.config.hidden_volume_root);
     println!("  state file:         {}", report.config.state_file);
     println!("  log directory:      {}", report.config.log_path);
-    println!("  overlay mode:       {}", report.config.overlay_mode);
     println!("  persona mode:       {}", report.config.persona_mode);
     println!(
         "  minimum free space: {} MB",
@@ -262,28 +244,20 @@ pub fn print_check_human(report: &CheckReport, style: Style) {
     );
     println!();
 
-    println!("Overlay targets:");
-    if report.overlay_targets.is_empty() {
-        println!("  {} none resolved", style.mark(Mark::Warn));
+    println!("Decoy filesystems in the hidden root:");
+    if report.filesystems.is_empty() {
+        println!("  {} only the root (overlaid)", style.mark(Mark::Bullet));
     } else {
-        for target in &report.overlay_targets {
-            println!("  {} {target}", style.mark(Mark::Bullet));
+        for line in &report.filesystems {
+            println!("  {} {line}", style.mark(Mark::Bullet));
         }
     }
     println!();
 
-    println!("Session handling:");
-    println!("  detected session:   {}", report.session.kind);
-    if let Some(dm) = &report.session.display_manager {
-        println!("  display manager:    {dm}");
-    }
+    println!("Session:");
     println!(
-        "  activation would:   {}",
-        if report.session.would_terminate {
-            "end the graphical session"
-        } else {
-            "keep the current session"
-        }
+        "  {} activation soft-reboots into the hidden root: every program closes and you are logged out",
+        style.mark(Mark::Info)
     );
     println!();
 
@@ -369,16 +343,10 @@ mod tests {
                 hidden_volume_root: "/mnt/vault".into(),
                 state_file: "/mnt/vault/state.json".into(),
                 log_path: "/mnt/vault/logs".into(),
-                overlay_mode: "auto",
                 persona_mode: "shared-home",
                 minimum_space_mb: 100,
             },
-            vec!["/home".into()],
-            SessionSummary {
-                kind: "tty",
-                display_manager: None,
-                would_terminate: false,
-            },
+            vec!["/home: overlaid".into()],
             ProfileSummary {
                 mode: "none",
                 detail: None,

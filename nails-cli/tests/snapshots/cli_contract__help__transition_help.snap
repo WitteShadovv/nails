@@ -3,15 +3,15 @@ source: nails-cli/tests/cli_contract.rs
 info:
   program: nails
   args:
-    - notify-dispatch
+    - transition
     - "--help"
 ---
 success: true
 exit_code: 0
 ----- stdout -----
-Dispatch pending desktop notifications (called by XDG autostart on login)
+The last step before each soft-reboot switch (run by systemd, not by hand)
 
-Usage: nails notify-dispatch [OPTIONS]
+Usage: nails transition [OPTIONS]
 
 Options:
   -c, --config <PATH>

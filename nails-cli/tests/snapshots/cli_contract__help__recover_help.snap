@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Reconcile a stuck state and finish an interrupted or degraded teardown
+Remove what an interrupted activation left in /run
 
 Usage: nails recover [OPTIONS]
 
@@ -46,6 +46,6 @@ Options:
           Print help (see a summary with '-h')
 
 EXAMPLES:
-  nails recover                       Reconcile a stuck state and finish teardown
+  nails recover                       Remove an interrupted activation's leftovers
 
 ----- stderr -----

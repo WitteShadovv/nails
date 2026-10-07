@@ -64,7 +64,7 @@ fn test_deactivate_command_flags_help() {
     cmd.args(["deactivate", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("--no-clear-history"))
+        .stdout(predicates::str::contains("--poweroff"))
         .stdout(predicates::str::contains("--quiet"))
         .stdout(predicates::str::contains("--verbose"))
         .stdout(predicates::str::contains("--json"))
@@ -201,70 +201,6 @@ fn test_activate_color_never_flag() {
         .assert()
         .success()
         .stdout(predicates::str::is_match(r"\x1b\[").unwrap().not()); // No ANSI escape sequences
-}
-
-/// Test that notify-dispatch command exists and has help text
-#[test]
-fn test_notify_dispatch_command_help() {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["notify-dispatch", "--help"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("dispatch"))
-        .stdout(predicates::str::contains("notification"));
-}
-
-/// Test that notify-dispatch command accepts --json flag
-#[test]
-fn test_notify_dispatch_json_flag() {
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.args(["notify-dispatch", "--help"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("--json"));
-}
-
-/// Test that notify-dispatch executes without crashing
-#[test]
-fn test_notify_dispatch_executes() {
-    // This test verifies notify-dispatch runs without panic
-    // It will exit 0 even if hidden volume doesn't exist (graceful degradation)
-    // SAFETY: Set NAILS_DISABLE_NOTIFICATIONS to prevent real desktop notifications
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.env("NAILS_DISABLE_NOTIFICATIONS", "1")
-        .args(["notify-dispatch"])
-        .assert()
-        .success(); // Should exit 0 even on error (non-critical feature)
-}
-
-/// Test that notify-dispatch with --json outputs JSON format
-#[test]
-fn test_notify_dispatch_json_output() {
-    // SAFETY: Set NAILS_DISABLE_NOTIFICATIONS to prevent real desktop notifications
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.env("NAILS_DISABLE_NOTIFICATIONS", "1")
-        .args(["notify-dispatch", "--json"])
-        .assert()
-        .success()
-        .stdout(predicates::str::contains("dispatched"))
-        .stdout(predicates::str::contains("status"));
-}
-
-/// Test that notify-dispatch with custom config path
-#[test]
-fn test_notify_dispatch_with_config() {
-    let config_file = create_test_config_file("/tmp/test-volume");
-
-    // SAFETY: Set NAILS_DISABLE_NOTIFICATIONS to prevent real desktop notifications
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-    cmd.env("NAILS_DISABLE_NOTIFICATIONS", "1")
-        .args([
-            "--config",
-            config_file.path().to_str().unwrap(),
-            "notify-dispatch",
-        ])
-        .assert()
-        .success();
 }
 
 /// Test that status command executes successfully
@@ -802,8 +738,6 @@ fn test_activate_overlay_only_refuses_unmounted_hidden_root_without_writing() {
             config_file.path().to_str().unwrap(),
             "activate",
             "--overlay-only",
-            "--session",
-            "keep",
             "-y",
         ])
         .env("NAILS_UNSAFE_REAL_OPS", "1")
@@ -821,227 +755,6 @@ fn test_activate_overlay_only_refuses_unmounted_hidden_root_without_writing() {
         entries.is_empty(),
         "unmounted hidden root must be left empty, found: {entries:?}"
     );
-}
-
-#[test]
-fn test_activate_kill_session_detaches_via_systemd_run() {
-    use std::fs;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    let fake_bin = temp_dir.path().join("bin");
-    let systemd_run_log = temp_dir.path().join("systemd-run.log");
-    let shell_path = locate_shell_path();
-
-    fs::create_dir_all(&hidden_root).unwrap();
-    fs::create_dir_all(&fake_bin).unwrap();
-
-    let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"",
-        hidden_root.display()
-    )
-    .unwrap();
-
-    let systemd_run_path = fake_bin.join("systemd-run");
-    fs::write(
-        &systemd_run_path,
-        format!(
-            "#!{}\nprintf '%s\\n' \"$@\" > \"{}\"\nexit 0\n",
-            shell_path.display(),
-            systemd_run_log.display()
-        ),
-    )
-    .unwrap();
-    let mut perms = fs::metadata(&systemd_run_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&systemd_run_path, perms).unwrap();
-
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
-        .args([
-            "--config",
-            config_file.path().to_str().unwrap(),
-            "activate",
-            "--session",
-            "kill",
-            "--no-preflight",
-            "-y",
-        ])
-        .env(
-            "PATH",
-            std::env::join_paths([
-                fake_bin.as_path(),
-                std::path::Path::new("/run/current-system/sw/bin"),
-                std::path::Path::new("/usr/bin"),
-                std::path::Path::new("/bin"),
-            ])
-            .unwrap(),
-        )
-        .env("NAILS_SYSTEMD_RUN_PATH", &systemd_run_path)
-        .env("DISPLAY", ":0")
-        .env("NAILS_SESSION_ID", "c42")
-        .env("NAILS_DISPLAY_MANAGER", "gdm")
-        .env("NAILS_TARGET_UID", "1000")
-        .env("NAILS_TARGET_USER", "amnesia")
-        .env("NAILS_LOGIND_AVAILABLE", "1")
-        .output()
-        .expect("failed to run activate detach handoff test");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "stdout={}\nstderr={stderr}",
-        String::from_utf8_lossy(&output.stdout)
-    );
-    assert!(stderr.contains("Detached to background via systemd transient service."));
-    // The detached parent names the follow-up command with the absolute binary path.
-    let exe = assert_cmd::cargo::cargo_bin!("nails");
-    assert!(
-        stderr.contains(&format!("sudo {} status", exe.display())),
-        "stderr={stderr}"
-    );
-
-    let logged_args = fs::read_to_string(systemd_run_log).unwrap();
-    // No --unit (systemd auto-names the unit) and no product name in it, a
-    // neutral description, and discarded streams keep the decoy journal clean.
-    assert!(
-        !logged_args.lines().any(|line| line == "--unit"),
-        "detached unit must not pass --unit: {logged_args}"
-    );
-    assert!(
-        !logged_args.contains("nails-activate-"),
-        "detached unit name must not carry the product name: {logged_args}"
-    );
-    assert!(
-        logged_args.contains("--description=System maintenance task"),
-        "detached unit must pass a neutral description: {logged_args}"
-    );
-    assert!(
-        logged_args.contains("--property=StandardOutput=null")
-            && logged_args.contains("--property=StandardError=null"),
-        "detached worker streams must be discarded: {logged_args}"
-    );
-    assert!(
-        !logged_args.contains("StandardOutput=journal")
-            && !logged_args.contains("StandardError=journal"),
-        "detached worker streams must not reach the journal: {logged_args}"
-    );
-    assert!(logged_args.contains("--slice=system.slice"));
-    assert!(logged_args.contains("--same-dir"));
-    assert!(logged_args.contains("--collect"));
-    assert!(logged_args.contains("--setenv=NAILS_DETACHED=1"));
-    assert!(logged_args.contains("--setenv=XDG_SESSION_ID="));
-    assert!(logged_args.contains("--setenv=NAILS_SESSION_ID=c42"));
-    assert!(logged_args.contains("--setenv=NAILS_DISPLAY_MANAGER=gdm"));
-    assert!(logged_args.contains("--setenv=NAILS_TARGET_UID=1000"));
-    assert!(logged_args.contains("--setenv=NAILS_TARGET_USER=amnesia"));
-    assert!(logged_args.contains("activate"));
-    assert!(logged_args.contains("--session"));
-    assert!(logged_args.contains("--no-preflight"));
-}
-
-#[test]
-fn test_activate_kill_session_surfaces_systemd_run_failures() {
-    use std::fs;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    let fake_bin = temp_dir.path().join("bin");
-    let shell_path = locate_shell_path();
-
-    fs::create_dir_all(&hidden_root).unwrap();
-    fs::create_dir_all(&fake_bin).unwrap();
-
-    let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"",
-        hidden_root.display()
-    )
-    .unwrap();
-
-    let systemd_run_path = fake_bin.join("systemd-run");
-    fs::write(
-        &systemd_run_path,
-        format!(
-            "#!{}\nprintf 'mock detach failure' >&2\nexit 1\n",
-            shell_path.display()
-        ),
-    )
-    .unwrap();
-    let mut perms = fs::metadata(&systemd_run_path).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&systemd_run_path, perms).unwrap();
-
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
-        .args([
-            "--config",
-            config_file.path().to_str().unwrap(),
-            "activate",
-            "--session",
-            "kill",
-            "--no-preflight",
-            "-y",
-        ])
-        .env("PATH", &fake_bin)
-        .env("NAILS_SYSTEMD_RUN_PATH", &systemd_run_path)
-        .env("DISPLAY", ":0")
-        .env("NAILS_SESSION_ID", "c42")
-        .env("NAILS_DISPLAY_MANAGER", "gdm")
-        .env("NAILS_TARGET_UID", "1000")
-        .env("NAILS_TARGET_USER", "amnesia")
-        .env("NAILS_LOGIND_AVAILABLE", "1")
-        .output()
-        .expect("failed to run activate detach failure test");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
-    assert!(stderr.contains("systemd-run failed"), "stderr={stderr}");
-    assert!(stderr.contains("mock detach failure"), "stderr={stderr}");
-}
-
-#[test]
-fn test_activate_kill_session_refuses_real_transient_units_in_test_runtime() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    std::fs::create_dir_all(&hidden_root).unwrap();
-
-    let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"",
-        hidden_root.display()
-    )
-    .unwrap();
-
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
-        .args([
-            "--config",
-            config_file.path().to_str().unwrap(),
-            "activate",
-            "--session",
-            "kill",
-            "--no-preflight",
-            "-y",
-        ])
-        .env("DISPLAY", ":0")
-        .env("NAILS_SESSION_ID", "c42")
-        .env("NAILS_DISPLAY_MANAGER", "gdm")
-        .env("NAILS_TARGET_UID", "1000")
-        .env("NAILS_TARGET_USER", "amnesia")
-        .output()
-        .expect("failed to run activate detach safety test");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(1), "stderr={stderr}");
-    assert!(stderr.contains("Refusing to start transient systemd units"));
 }
 
 #[test]
@@ -1076,8 +789,10 @@ fn test_check_reports_sections_and_refuses_when_volume_not_ready() {
         .stdout(predicates::str::contains("NAILS Readiness Check"))
         .stdout(predicates::str::contains("Pre-flight checks:"))
         .stdout(predicates::str::contains("Effective configuration:"))
-        .stdout(predicates::str::contains("Overlay targets:"))
-        .stdout(predicates::str::contains("Session handling:"))
+        .stdout(predicates::str::contains(
+            "Decoy filesystems in the hidden root:",
+        ))
+        .stdout(predicates::str::contains("Session:"))
         .stdout(predicates::str::contains("NixOS profile:"))
         .stdout(predicates::str::contains("hidden-volume:"));
 }
@@ -1201,113 +916,6 @@ fn test_doctor_alias_runs_the_check_command() {
 }
 
 #[test]
-fn test_activate_kill_session_fails_before_detach_on_flake_lock_preflight_error() {
-    use std::fs;
-    use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
-
-    let temp_dir = tempfile::tempdir().unwrap();
-    let fake_bin = temp_dir.path().join("bin");
-    std::fs::create_dir_all(&fake_bin).unwrap();
-
-    let nix_script = fake_bin.join("nix");
-    let nix_invocation_log = temp_dir.path().join("nix-invocations.log");
-    let systemd_run_script = fake_bin.join("systemd-run");
-    let systemd_run_log = temp_dir.path().join("systemd-run.log");
-
-    let shell_path = locate_shell_path();
-    // A nix that records any invocation and fails loudly. After T-067 the
-    // pre-detach phase must do static checks only, so this must never run before
-    // the overlays are mounted; the test asserts the log stays absent.
-    fs::write(
-        &nix_script,
-        format!(
-            "#!{}\nprintf '%s\\n' \"$*\" >> {}\nprintf 'nix must not run before the overlays are mounted\\n' 1>&2\nexit 1\n",
-            shell_path.display(),
-            nix_invocation_log.display()
-        ),
-    )
-    .unwrap();
-    let mut perms = fs::metadata(&nix_script).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&nix_script, perms).unwrap();
-
-    fs::write(
-        &systemd_run_script,
-        format!(
-            "#!{}\nprintf '%s\\n' \"$*\" >> {}\nexit 0\n",
-            shell_path.display(),
-            systemd_run_log.display()
-        ),
-    )
-    .unwrap();
-    let mut perms = fs::metadata(&systemd_run_script).unwrap().permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&systemd_run_script, perms).unwrap();
-
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    let explicit_flake_dir = temp_dir.path().join("explicit-flake");
-    std::fs::create_dir_all(&hidden_root).unwrap();
-    std::fs::create_dir_all(&explicit_flake_dir).unwrap();
-    std::fs::write(
-        explicit_flake_dir.join("flake.nix"),
-        "{ outputs = _: {}; }\n",
-    )
-    .unwrap();
-
-    let mut config_file = tempfile::NamedTempFile::new().unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"\nnixos_flake = \"{}#host-alpha\"",
-        hidden_root.display(),
-        explicit_flake_dir.display()
-    )
-    .unwrap();
-
-    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
-        .args([
-            "--config",
-            config_file.path().to_str().unwrap(),
-            "activate",
-            "--session",
-            "kill",
-            "--ascii",
-            "-y",
-        ])
-        .env("PATH", &fake_bin)
-        .env("DISPLAY", ":0")
-        .env("NAILS_SESSION_ID", "c42")
-        .env("NAILS_DISPLAY_MANAGER", "gdm")
-        .env("NAILS_TARGET_UID", "1000")
-        .env("NAILS_TARGET_USER", "amnesia")
-        .env("NAILS_LOGIND_AVAILABLE", "1")
-        .output()
-        .expect("failed to run activate kill-session preflight test");
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert_eq!(output.status.code(), Some(4), "stderr={stderr}");
-    // The missing flake.lock is caught by the static pre-detach check, with no
-    // nix invocation against the hidden flake.
-    assert!(stderr.contains("flake.lock not found"), "stderr={stderr}");
-    assert!(
-        stderr.contains("does not run 'nix flake update' automatically"),
-        "stderr={stderr}"
-    );
-    assert!(
-        !nix_invocation_log.exists(),
-        "nix must not be invoked before the overlays are mounted"
-    );
-    assert!(
-        !systemd_run_log.exists()
-            || std::fs::read_to_string(&systemd_run_log)
-                .unwrap()
-                .trim()
-                .is_empty(),
-        "systemd-run should not have been called before preflight failure"
-    );
-}
-
-#[test]
 fn test_activate_fails_closed_on_invalid_config() {
     let config_file = create_invalid_config_file();
 
@@ -1316,8 +924,6 @@ fn test_activate_fails_closed_on_invalid_config() {
         "--config",
         config_file.path().to_str().unwrap(),
         "activate",
-        "--session",
-        "keep",
         "--no-preflight",
     ])
     .assert()
@@ -1326,31 +932,26 @@ fn test_activate_fails_closed_on_invalid_config() {
     .stderr(predicates::str::contains("invalid config"));
 }
 
-/// `activate --help` advertises the redesigned flags and drops the removed ones.
+/// `activate --help` explains the soft-reboot and the logout.
 #[test]
-fn test_activate_help_lists_session_pivot_and_yes_flags() {
+fn test_activate_help_explains_the_soft_reboot() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["activate", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("--session"))
-        .stdout(predicates::str::contains("default: kill"))
-        .stdout(predicates::str::contains("--pivot"))
-        .stdout(predicates::str::contains("default: refuse"))
+        .stdout(predicates::str::contains("soft-reboots into it"))
+        .stdout(predicates::str::contains("logged out"))
         .stdout(predicates::str::contains("--yes"));
-    // The removed spellings are covered by the parser rejection test; asserting
-    // their absence here is skipped so the removed flag names do not reappear in
-    // the tree.
 }
 
-/// `deactivate --help` states that it reboots.
+/// `deactivate --help` states that it soft-reboots back to the decoy.
 #[test]
-fn test_deactivate_help_mentions_reboot() {
+fn test_deactivate_help_mentions_the_soft_reboot() {
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["deactivate", "--help"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("reboot"));
+        .stdout(predicates::str::contains("soft-reboots"));
 }
 
 /// Test that --config flag is accepted globally
@@ -1448,10 +1049,10 @@ fn test_activate_dry_run_json_is_parseable() {
     );
 }
 
-/// `deactivate --json` off a terminal refuses at its confirmation gate, before
-/// any teardown or reboot, with a machine-readable error envelope.
+/// `deactivate --json` outside a hidden session refuses with a
+/// machine-readable error envelope, before any confirmation.
 #[test]
-fn test_deactivate_json_refuses_off_terminal_with_envelope() {
+fn test_deactivate_json_refuses_outside_a_session_with_envelope() {
     let config = create_test_config_file("/tmp/nails-contract-volume");
     let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
         .args([
@@ -1462,24 +1063,24 @@ fn test_deactivate_json_refuses_off_terminal_with_envelope() {
         ])
         .output()
         .expect("run nails deactivate --json");
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert_eq!(output.status.code(), Some(6), "{output:?}");
     let value = parse_json_tail(&output);
     assert_eq!(value["ok"], false);
     assert_eq!(value["command"], "deactivate");
-    assert_eq!(value["error"]["code"], "needs_confirmation");
+    assert_eq!(value["error"]["code"], "invalid_state");
 }
 
-/// `deactivate` off a terminal refuses with the human message naming the missing
-/// confirmation, before any teardown.
+/// `deactivate` outside a hidden session says so and points at `recover`.
 #[test]
-fn test_deactivate_human_refuses_off_terminal() {
+fn test_deactivate_human_refuses_outside_a_session() {
     let config = create_test_config_file("/tmp/nails-contract-volume");
     std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
         .args(["--config", config.path().to_str().unwrap(), "deactivate"])
         .assert()
         .failure()
-        .code(2)
-        .stderr(predicates::str::contains("stdin is not a terminal"));
+        .code(6)
+        .stderr(predicates::str::contains("not in a hidden session"))
+        .stderr(predicates::str::contains("nails recover"));
 }
 
 // ========== Config Discovery Helper ==========
@@ -1498,16 +1099,6 @@ fn create_invalid_config_file() -> tempfile::NamedTempFile {
     let mut config_file = tempfile::NamedTempFile::new().unwrap();
     writeln!(config_file, "hidden_volume_root = [broken").unwrap();
     config_file
-}
-
-fn locate_shell_path() -> std::path::PathBuf {
-    std::env::var_os("PATH")
-        .and_then(|paths| {
-            std::env::split_paths(&paths)
-                .flat_map(|dir| [dir.join("bash"), dir.join("sh")])
-                .find(|candidate| candidate.is_file())
-        })
-        .expect("expected to locate a usable shell binary")
 }
 
 /// Helper function to create a test config file with standard content

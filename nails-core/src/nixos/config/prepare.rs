@@ -59,7 +59,7 @@ pub fn prepare_nixos_config_overlay<F: Filesystem>(
     fs: &F,
     hidden_path: &Path,
 ) -> Result<NixOSConfigInfo> {
-    let etc_nixos = hidden_path.join("etc/nixos");
+    let etc_nixos = super::hidden_etc_nixos(hidden_path);
     let hardware_config = etc_nixos.join("hardware-configuration.nix");
     let hidden_config = hidden_path.join("config/nixos/configuration.nix");
 
@@ -179,12 +179,12 @@ pub fn ensure_hidden_hardware_configuration<F: Filesystem>(
     hidden_path: &Path,
     base_hardware_config: &Path,
 ) -> Result<()> {
-    let hidden_etc_nixos = hidden_path.join("etc/nixos");
+    let hidden_etc_nixos = super::hidden_etc_nixos(hidden_path);
     let hidden_hardware = hidden_etc_nixos.join(super::HARDWARE_CONFIG_FILE);
     let hidden_base = hidden_etc_nixos.join(super::HARDWARE_BASE_CONFIG_FILE);
 
     if !fs.path_exists(&hidden_etc_nixos)? {
-        fs.create_directory(&hidden_etc_nixos).map_err(|e| {
+        create_ancestors(fs, &hidden_etc_nixos).map_err(|e| {
             NailsError::NixOSError(format!(
                 "Failed to create hidden etc/nixos directory {}: {}",
                 hidden_etc_nixos.display(),
@@ -388,7 +388,7 @@ pub fn stage_hidden_nixos_config<F: Filesystem>(
 ///
 /// Returns `NailsError::NixOSError` if directory creation or symlink creation fails.
 pub fn stage_hidden_config_symlink<F: Filesystem>(fs: &F, hidden_path: &Path) -> Result<()> {
-    let nails_dir = hidden_path.join("etc/nixos/nails");
+    let nails_dir = super::hidden_etc_nixos(hidden_path).join("nails");
     let symlink_path = nails_dir.join("configuration.nix");
     let symlink_target = hidden_path.join("config/nixos/configuration.nix");
 
@@ -396,7 +396,7 @@ pub fn stage_hidden_config_symlink<F: Filesystem>(fs: &F, hidden_path: &Path) ->
 
     // Create {hidden}/etc/nixos/nails/ if it doesn't exist (idempotent)
     if !fs.path_exists(&nails_dir)? {
-        fs.create_directory(&nails_dir).map_err(|e| {
+        create_ancestors(fs, &nails_dir).map_err(|e| {
             NailsError::NixOSError(format!(
                 "Failed to create directory {}: {}",
                 nails_dir.display(),
@@ -424,6 +424,24 @@ pub fn stage_hidden_config_symlink<F: Filesystem>(fs: &F, hidden_path: &Path) ->
             ))
         })?;
 
+    Ok(())
+}
+
+/// Create `path` and every missing ancestor, top-down, through `fs`: the hidden
+/// `/etc/nixos` sits in the root upper, whose `etc` may not exist yet.
+fn create_ancestors<F: Filesystem>(fs: &F, path: &Path) -> Result<()> {
+    let mut missing = Vec::new();
+    let mut current = Some(path);
+    while let Some(dir) = current {
+        if fs.path_exists(dir)? {
+            break;
+        }
+        missing.push(dir.to_path_buf());
+        current = dir.parent();
+    }
+    for dir in missing.iter().rev() {
+        fs.create_directory(dir)?;
+    }
     Ok(())
 }
 

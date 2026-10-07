@@ -85,7 +85,7 @@ pub(crate) fn collect_config_tree<F: Filesystem>(
         walk_dir(fs, flake_source, flake_source, &mut entries, 0);
     } else {
         // Legacy build: the staged hidden config trees are the build input.
-        for sub in ["etc/nixos", "config/nixos"] {
+        for sub in [crate::nixos::config::HIDDEN_ETC_NIXOS, "config/nixos"] {
             let dir = hidden_volume_root.join(sub);
             walk_dir(fs, hidden_volume_root, &dir, &mut entries, 0);
         }
@@ -402,14 +402,14 @@ mod tests {
         // session rewrites it. In flake mode it must not feed the fingerprint.
         mock_dir(
             &fs,
-            "/mnt/hidden/etc/nixos",
+            "/mnt/hidden/root/upper/etc/nixos",
             &[("hardware-configuration.nix", "wrapper-v1")],
         );
         let before = fp_flake(&fs);
 
         mock_dir(
             &fs,
-            "/mnt/hidden/etc/nixos",
+            "/mnt/hidden/root/upper/etc/nixos",
             &[
                 ("hardware-configuration.nix", "wrapper-v2"),
                 ("flake.nix", "regenerated-store-symlink"),
@@ -427,7 +427,7 @@ mod tests {
         let fs = MockFilesystem::new();
         mock_dir(
             &fs,
-            "/mnt/hidden/etc/nixos",
+            "/mnt/hidden/root/upper/etc/nixos",
             &[("configuration.nix", "cfg-v1")],
         );
         let legacy = |fs: &MockFilesystem| {
@@ -442,7 +442,7 @@ mod tests {
         let before = legacy(&fs);
         mock_dir(
             &fs,
-            "/mnt/hidden/etc/nixos",
+            "/mnt/hidden/root/upper/etc/nixos",
             &[("configuration.nix", "cfg-v2")],
         );
         assert_ne!(

@@ -115,6 +115,15 @@ pub(crate) const AUTO_GENERATED_HIDDEN_CONFIGURATION: &str = r#"{ config, lib, p
 "#;
 
 /// The live hardware configuration file NixOS reads at build time.
+/// The hidden `/etc/nixos` on the hidden volume: inside the root overlay's
+/// upper, so the hidden session sees it as its own `/etc/nixos`.
+pub fn hidden_etc_nixos(hidden_root: &std::path::Path) -> std::path::PathBuf {
+    hidden_root.join(HIDDEN_ETC_NIXOS)
+}
+
+/// [`hidden_etc_nixos`] relative to the hidden volume root.
+pub const HIDDEN_ETC_NIXOS: &str = "root/upper/etc/nixos";
+
 pub(crate) const HARDWARE_CONFIG_FILE: &str = "hardware-configuration.nix";
 
 /// The original hardware configuration, moved aside so the wrapper can import it.

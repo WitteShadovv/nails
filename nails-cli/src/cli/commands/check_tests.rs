@@ -7,7 +7,7 @@
 //! covered end to end against the compiled binary in
 //! `nails-cli/tests/cli_integration.rs`; these focus on the pure helpers.
 
-use super::{profile_summary, session_summary};
+use super::{decoy_filesystems, profile_summary};
 use nails_core::platform::FakePlatform;
 use nails_core::{Config, HostTarget, MockFilesystem, NailsManager};
 use std::path::PathBuf;
@@ -98,14 +98,8 @@ fn summary_reports_an_explicit_flake_on_any_host() {
 }
 
 #[test]
-fn session_summary_reports_a_known_kind() {
-    let summary = session_summary(&nails_core::RuntimeEnv::empty());
-    assert!(
-        matches!(
-            summary.kind,
-            "tty" | "graphical-user" | "graphical-root" | "ssh" | "unknown"
-        ),
-        "unexpected session kind: {}",
-        summary.kind
-    );
+fn decoy_filesystems_never_list_the_left_alone_entries() {
+    for line in decoy_filesystems(std::path::Path::new("/mnt/data")) {
+        assert!(!line.contains("left as is"), "{line}");
+    }
 }

@@ -32,7 +32,7 @@ pub fn requires_root(command: &Commands) -> bool {
         Commands::Deactivate(_)
         | Commands::Emergency(_)
         | Commands::Recover(_)
-        | Commands::Reapply(_) => true,
+        | Commands::Transition => true,
         // Planting writes into the overlays, a live scan reads raw block devices
         // and reset deletes from the hidden volume. An offline scan of image
         // files and the status view need no privileges.
@@ -50,7 +50,6 @@ fn subcommand_name(command: &Commands) -> &'static str {
     match command {
         Commands::Activate(_) => "activate",
         Commands::Deactivate(_) => "deactivate",
-        Commands::Reapply(_) => "reapply",
         Commands::Emergency(_) => "emergency",
         Commands::Recover(_) => "recover",
         Commands::Status(_) => "status",
@@ -61,9 +60,9 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::ResetUpper(_) => "reset-upper",
         Commands::Config(_) => "config",
         Commands::Completions(_) => "completions",
-        Commands::NotifyDispatch => "notify-dispatch",
         Commands::Watch => "watch",
         Commands::SleepGuard => "sleep-guard",
+        Commands::Transition => "transition",
     }
 }
 
@@ -163,7 +162,6 @@ mod tests {
         assert!(!requires_root(&Commands::Status(StatusArgs::default())));
         assert!(!requires_root(&Commands::Verify(VerifyArgs::default())));
         assert!(!requires_root(&Commands::Check(Default::default())));
-        assert!(!requires_root(&Commands::NotifyDispatch));
     }
 
     #[test]

@@ -35,13 +35,14 @@ fn make_check_with_overlays() -> StorageReadinessCheck {
 /// Helper: set up all required directories on hidden volume
 fn setup_all_required_dirs(fs: &MockFilesystem) {
     for dir in &[
-        "etc",
+        "root",
+        "root/upper",
+        "root/work",
         "home",
-        "config",
-        "nix",
-        ".work/etc",
+        ".work",
         ".work/home",
-        ".work/nix",
+        "etc",
+        ".work/etc",
     ] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
@@ -120,29 +121,22 @@ fn test_storage_readiness_missing_dir_autocreate_success() {
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
 
-    // Most dirs exist
-    for dir in &[
-        "home",
-        "config",
-        "nix",
-        ".work/etc",
-        ".work/home",
-        ".work/nix",
-    ] {
+    // The work directory exists
+    for dir in &["root", "root/work"] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
         fs.mock_set_path_type(&path, PathKind::Dir);
     }
 
-    // etc/ is missing but creatable
-    fs.mock_set_path_exists("/mnt/data/etc", false);
-    fs.mock_set_directory_creatable("/mnt/data/etc", true);
+    // root/upper is missing but creatable
+    fs.mock_set_path_exists("/mnt/data/root/upper", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/upper", true);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass());
 
     // Verify permissions set
-    let perms = fs.mock_get_permissions(Path::new("/mnt/data/etc"));
+    let perms = fs.mock_get_permissions(Path::new("/mnt/data/root/upper"));
     assert_eq!(perms, Some(0o700));
 }
 
@@ -152,25 +146,18 @@ fn test_storage_readiness_missing_dir_autocreate_fails() {
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
 
-    for dir in &[
-        "home",
-        "config",
-        "nix",
-        ".work/etc",
-        ".work/home",
-        ".work/nix",
-    ] {
+    for dir in &["root", "root/work"] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
         fs.mock_set_path_type(&path, PathKind::Dir);
     }
 
-    fs.mock_set_path_exists("/mnt/data/etc", false);
-    fs.mock_set_directory_creatable("/mnt/data/etc", false);
+    fs.mock_set_path_exists("/mnt/data/root/upper", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/upper", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
-    assert!(result.message().contains("etc/"));
+    assert!(result.message().contains("root/upper/"));
 }
 
 #[test]
@@ -228,17 +215,17 @@ fn test_storage_readiness_mixed_issues_single_fail() {
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
 
-    // config/ and nix/ missing and not creatable
-    for dir in &["etc", "home", ".work/etc", ".work/home", ".work/nix"] {
+    // root/upper and root/work missing and not creatable
+    for dir in &["root", "etc", "home", ".work", ".work/etc", ".work/home"] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
         fs.mock_set_path_type(&path, PathKind::Dir);
         fs.mock_set_writable(&path, true);
     }
-    fs.mock_set_path_exists("/mnt/data/config", false);
-    fs.mock_set_directory_creatable("/mnt/data/config", false);
-    fs.mock_set_path_exists("/mnt/data/nix", false);
-    fs.mock_set_directory_creatable("/mnt/data/nix", false);
+    fs.mock_set_path_exists("/mnt/data/root/upper", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/upper", false);
+    fs.mock_set_path_exists("/mnt/data/root/work", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/work", false);
 
     // Lower dirs: /etc not readable
     fs.mock_set_path_exists("/home", true);
@@ -249,8 +236,8 @@ fn test_storage_readiness_mixed_issues_single_fail() {
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
     let msg = result.message();
-    assert!(msg.contains("config/"), "missing config/: {}", msg);
-    assert!(msg.contains("nix/"), "missing nix/: {}", msg);
+    assert!(msg.contains("root/upper/"), "missing root/upper/: {}", msg);
+    assert!(msg.contains("root/work/"), "missing root/work/: {}", msg);
     assert!(
         msg.contains("etc lower directory not readable"),
         "etc not readable: {}",
@@ -264,28 +251,21 @@ fn test_storage_readiness_directory_is_file_triggers_autocreate() {
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
 
-    for dir in &[
-        "home",
-        "config",
-        "nix",
-        ".work/etc",
-        ".work/home",
-        ".work/nix",
-    ] {
+    for dir in &["root", "root/work"] {
         let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
         fs.mock_set_path_type(&path, PathKind::Dir);
         fs.mock_set_writable(&path, true);
     }
 
-    // etc/ exists but is a file, not a directory
-    fs.mock_set_path_exists("/mnt/data/etc", true);
-    fs.mock_set_path_type("/mnt/data/etc", PathKind::File);
-    fs.mock_set_directory_creatable("/mnt/data/etc", false);
+    // root/upper exists but is a file, not a directory
+    fs.mock_set_path_exists("/mnt/data/root/upper", true);
+    fs.mock_set_path_type("/mnt/data/root/upper", PathKind::File);
+    fs.mock_set_directory_creatable("/mnt/data/root/upper", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
-    assert!(result.message().contains("etc/"));
+    assert!(result.message().contains("root/upper/"));
 }
 
 #[test]
@@ -378,26 +358,19 @@ fn test_storage_readiness_multiple_missing_dirs_autocreate_partial() {
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
 
-    for dir in &["home", ".work/etc", ".work/home", ".work/nix"] {
-        let path = format!("/mnt/data/{}", dir);
-        fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, PathKind::Dir);
-    }
-
-    // config/ missing but creatable
-    fs.mock_set_path_exists("/mnt/data/config", false);
-    fs.mock_set_directory_creatable("/mnt/data/config", true);
-    // nix/ missing and NOT creatable
-    fs.mock_set_path_exists("/mnt/data/nix", false);
-    fs.mock_set_directory_creatable("/mnt/data/nix", false);
-    // etc/ exists
-    fs.mock_set_path_exists("/mnt/data/etc", true);
-    fs.mock_set_path_type("/mnt/data/etc", PathKind::Dir);
+    fs.mock_set_path_exists("/mnt/data/root", true);
+    fs.mock_set_path_type("/mnt/data/root", PathKind::Dir);
+    // root/upper missing but creatable
+    fs.mock_set_path_exists("/mnt/data/root/upper", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/upper", true);
+    // root/work missing and NOT creatable
+    fs.mock_set_path_exists("/mnt/data/root/work", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/work", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
-    assert!(result.message().contains("nix/"));
-    // config/ was auto-created, so should NOT be in the error
+    assert!(result.message().contains("root/work/"));
+    // root/upper was auto-created; only root/work is reported missing
 }
 
 #[test]

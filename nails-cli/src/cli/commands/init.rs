@@ -33,26 +33,21 @@ use nails_core::{
 
 /// Platform-agnostic subdirectories to create, each with 0700 permissions.
 ///
-/// These back the overlay layout on every supported host and are created
-/// regardless of the detected platform.
-const COMMON_SUBDIRS: &[&str] = &[
-    "logs",
-    "config",
-    "etc",
-    "home",
-    ".work",
-    ".work/etc",
-    ".work/home",
-];
+/// These back the whole-root layout on every supported host and are created
+/// regardless of the detected platform. The root overlay's upper
+/// (`root/upper`) is created at the first activation with the decoy root's
+/// own mode and owner, because an overlay's root directory takes its
+/// attributes from the upper.
+const COMMON_SUBDIRS: &[&str] = &["logs", "config", "root", "root/work"];
 
 /// Subdirectories the NixOS declarative config layer needs.
 ///
 /// Created only when the hidden NixOS layout is bootstrapped (a NixOS host, or an
 /// explicit `--hardware-config`). On a host without a config layer (FHS / Debian)
-/// these are never written, so init leaves no NixOS paths on such a host. Listed
-/// after their [`COMMON_SUBDIRS`] parents (`config`, `etc`, `.work`) so the parent
-/// always exists first.
-const NIXOS_SUBDIRS: &[&str] = &["config/nixos", "etc/nixos", "nix", ".work/nix"];
+/// these are never written, so init leaves no NixOS paths on such a host. The
+/// hidden `/etc/nixos` inside the root upper is created with the hardware
+/// configuration below.
+const NIXOS_SUBDIRS: &[&str] = &["config/nixos"];
 
 /// Default base hardware configuration consulted on a NixOS host.
 const DEFAULT_HARDWARE_CONFIG: &str = "/etc/nixos/hardware-configuration.nix";
@@ -420,8 +415,9 @@ fn apply<F: Filesystem>(fs: &F, base: &Path, plan: InitPlan) -> Result<InitRepor
     match plan.bootstrap {
         HardwareBootstrap::From(hardware) => {
             let hidden_config = base.join("config/nixos/configuration.nix");
-            let hidden_hardware = base.join("etc/nixos/hardware-configuration.nix");
-            let staged_symlink = base.join("etc/nixos/nails/configuration.nix");
+            let etc_nixos = nails_core::nixos::config::hidden_etc_nixos(base);
+            let hidden_hardware = etc_nixos.join("hardware-configuration.nix");
+            let staged_symlink = etc_nixos.join("nails/configuration.nix");
             let config_existed = fs.path_exists(&hidden_config)?;
             let hardware_existed = fs.path_exists(&hidden_hardware)?;
             let symlink_existed = fs.path_exists(&staged_symlink)?;

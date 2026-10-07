@@ -3,197 +3,100 @@
 
 //! Recover command handler
 //!
-//! `recover` reconciles the recorded state against the live kernel mount table
-//! and finishes an interrupted, degraded, or corrupt-state teardown. It never
-//! requires an Active state and never reboots, so it is the right tool for a
-//! system left stuck after a crash, a killed activation, or a state file that can
-//! no longer be trusted — the cases where `deactivate` refuses and a reboot alone
-//! would not clean up the live overlays.
+//! An activation that dies after building `/run/nextroot` (a crash, a kill, a
+//! failed `systemctl`) leaves a populated next root, its runtime directory and
+//! the transition drop-in behind. A later plain `reboot` would then turn into a
+//! soft-reboot into that tree (systemd 255 and newer); the transition step
+//! refuses an unarmed tree anyway, but `recover` removes it outright: it
+//! detaches `/run/nextroot`, removes the runtime pieces, reloads the service
+//! manager and resets the state. It never reboots. In the hidden session it
+//! refuses and points at `deactivate`.
 
 use std::path::Path;
 
+use nails_core::manager::SessionRecovery;
 use nails_core::output::Mark;
 use serde::Serialize;
 
 use crate::cli::args::RecoverArgs;
 use crate::cli::output::deactivate::deactivate_error_body;
-use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
+use crate::cli::output::envelope::{Envelope, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
+
+#[derive(Debug, Serialize)]
+struct RecoverData {
+    /// `clean` (nothing to do) or `rolled_back`.
+    outcome: &'static str,
+    /// Mounts still below `/run/nextroot`.
+    remaining_mounts: Vec<String>,
+}
 
 /// Execute the recover command.
 ///
-/// A missing or invalid config is logged as a warning and defaults are used, so
-/// recovery is never blocked by an unreadable configuration — the teardown only
-/// touches what the live mount table shows NAILS created.
-///
 /// # Returns
 ///
-/// - [`ExitStatus::Ok`] once the system is inactive (including when it already
-///   was)
-/// - [`ExitStatus::DegradedReboot`] when some NAILS mount could not be removed
-/// - [`ExitStatus::Failed`] on any other failure
+/// - [`ExitStatus::Ok`] once nothing of an interrupted entry is left
+/// - [`ExitStatus::DegradedReboot`] when a mount below `/run/nextroot` stayed
+/// - [`ExitStatus::InvalidState`] in the hidden session or during an entry
 pub fn execute(
     settings: &OutputSettings,
     env: &nails_core::RuntimeEnv,
     _args: &RecoverArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
-    use nails_core::{NailsError, NailsManager, RealFilesystem};
+    use nails_core::{NailsManager, RealFilesystem};
 
     let json = settings.is_json();
-    let verbosity = settings.verbosity;
-
-    // A broken or missing config must never block recovery of a stuck system.
-    // When the hidden volume is gone the config comes from the RAM-backed copy
-    // under /run; report which source was used.
     let (config, config_source) = super::load_config_for_teardown(config_override);
-    if !json {
-        tracing::info!("Recovery using the {}", config_source.describe());
-    }
-
+    tracing::info!("Recovery using the {}", config_source.describe());
     let state_path = config.state_file_path.clone();
-    let lock_state_path = state_path.clone();
-
-    let filesystem = RealFilesystem;
     let mut manager =
-        NailsManager::new(filesystem, config, state_path).with_runtime_env(env.clone());
-    manager.set_verbosity(verbosity);
+        NailsManager::new(RealFilesystem, config, state_path.clone()).with_runtime_env(env.clone());
+    let _state_lock = super::acquire_state_lock_for_emergency(&state_path);
 
-    // Take the state lock when free, but never let a crashed holder block a
-    // recovery: proceed without it after a short timeout, as emergency does.
-    let _state_lock = super::acquire_state_lock_for_emergency(&lock_state_path);
-
-    match manager.recover() {
+    match manager.recover_session(&nails_core::session::RealEntryHost) {
         Ok(outcome) => {
+            let (name, remaining) = match &outcome {
+                SessionRecovery::Clean => ("clean", Vec::new()),
+                SessionRecovery::RolledBack(remaining) => ("rolled_back", remaining.clone()),
+            };
+            let remaining: Vec<String> =
+                remaining.iter().map(|p| p.display().to_string()).collect();
             if json {
-                print_recover_json(&outcome);
-            } else {
-                render_recover_success(settings, &outcome);
-            }
-            ExitStatus::Ok
-        }
-        Err(NailsError::DeactivationIncomplete { remaining_mounts }) => {
-            let remaining = remaining_mounts
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            report_error(
-                json,
-                "recover",
-                ExitStatus::DegradedReboot,
-                ErrorBody::new(
-                    "recovery_incomplete",
-                    format!("recovery could not remove every NAILS mount: {remaining}"),
+                Envelope::success(
+                    "recover",
+                    RecoverData {
+                        outcome: name,
+                        remaining_mounts: remaining.clone(),
+                    },
                 )
-                .with_hint(
-                    "identify the processes holding the mounts and reboot to finish teardown",
-                ),
-            )
+                .print();
+            } else {
+                let style = settings.stdout_style();
+                let line = match outcome {
+                    SessionRecovery::Clean => "Nothing to recover: no interrupted activation",
+                    SessionRecovery::RolledBack(_) => {
+                        "Removed the interrupted activation's next root and runtime files"
+                    }
+                };
+                crate::cli::output::println_tolerating_broken_pipe(&style.marked(Mark::Pass, line));
+                for mount in &remaining {
+                    crate::cli::output::println_tolerating_broken_pipe(&format!(
+                        "  ! still mounted: {mount} (a reboot clears it)"
+                    ));
+                }
+            }
+            if remaining.is_empty() {
+                ExitStatus::Ok
+            } else {
+                ExitStatus::DegradedReboot
+            }
         }
         Err(e) => report_error(
             json,
             "recover",
-            ExitStatus::Failed,
+            ExitStatus::InvalidState,
             deactivate_error_body(&e),
         ),
-    }
-}
-
-/// The `data` payload for a successful `recover --json`.
-#[derive(Debug, Serialize)]
-struct RecoverData {
-    /// `already_inactive` when there was nothing to do, otherwise `recovered`.
-    status: &'static str,
-    /// Where a corrupt state file was backed up, if one was found.
-    state_backed_up: Option<String>,
-}
-
-/// Print the success envelope for a completed recovery.
-fn print_recover_json(outcome: &nails_core::RecoverOutcome) {
-    let data = RecoverData {
-        status: if outcome.was_already_inactive {
-            "already_inactive"
-        } else {
-            "recovered"
-        },
-        state_backed_up: outcome
-            .state_backed_up
-            .as_ref()
-            .map(|path| path.display().to_string()),
-    };
-    Envelope::success("recover", data).print();
-}
-
-/// Render the human-readable success output for a completed recovery.
-fn render_recover_success(settings: &OutputSettings, outcome: &nails_core::RecoverOutcome) {
-    use crate::cli::output::println_tolerating_broken_pipe;
-    let style = settings.stdout_style();
-    if outcome.was_already_inactive {
-        println_tolerating_broken_pipe(
-            &style.marked(Mark::Pass, "Nothing to recover: system is already inactive"),
-        );
-        return;
-    }
-
-    println_tolerating_broken_pipe(&style.marked(
-        Mark::Pass,
-        "Recovery complete: remaining NAILS mounts torn down",
-    ));
-    if let Some(path) = &outcome.state_backed_up {
-        println_tolerating_broken_pipe(&format!(
-            "  Corrupt state file backed up to {}",
-            path.display()
-        ));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{RecoverData, print_recover_json, render_recover_success};
-    use crate::cli::output::OutputSettings;
-    use nails_core::RecoverOutcome;
-    use std::path::PathBuf;
-
-    #[test]
-    fn recover_data_status_reflects_the_outcome() {
-        let data = RecoverData {
-            status: "recovered",
-            state_backed_up: Some("/mnt/hidden/state.json.bad".to_string()),
-        };
-        let json = serde_json::to_string(&data).unwrap();
-        assert!(json.contains("\"status\":\"recovered\""), "{json}");
-        assert!(json.contains("state.json.bad"), "{json}");
-    }
-
-    #[test]
-    fn already_inactive_renders_a_no_op_line() {
-        // Smoke test: the renderer must not panic for either outcome shape.
-        render_recover_success(
-            &OutputSettings::default(),
-            &RecoverOutcome {
-                state_backed_up: None,
-                was_already_inactive: true,
-            },
-        );
-        render_recover_success(
-            &OutputSettings::default(),
-            &RecoverOutcome {
-                state_backed_up: Some(PathBuf::from("/mnt/hidden/state.json.bad")),
-                was_already_inactive: false,
-            },
-        );
-    }
-
-    #[test]
-    fn recover_json_serializes_for_both_outcomes() {
-        print_recover_json(&RecoverOutcome {
-            state_backed_up: None,
-            was_already_inactive: true,
-        });
-        print_recover_json(&RecoverOutcome {
-            state_backed_up: Some(PathBuf::from("/mnt/hidden/state.json.bad")),
-            was_already_inactive: false,
-        });
     }
 }

@@ -4,8 +4,9 @@
 //! The strict recogniser never runs the hot path for a command line clap would
 //! refuse or parse as something else.
 
-use super::{EarlyArgs, recognise};
+use super::{EarlyArgs, is_transition, recognise};
 use crate::cli::args::{Cli, Commands};
+use nails_teardown::whole_root::emergency::Finish;
 use std::ffi::OsString;
 
 fn argv(words: &[&str]) -> Vec<OsString> {
@@ -25,7 +26,7 @@ fn corpus() -> Vec<Vec<&'static str>> {
         &["--countdown", "x"],
         &["--poweroff"],
         &["--reboot"],
-        &["--lock-backend"],
+        &["transition"],
         &["--json"],
         &["-q"],
         &["--quiet"],
@@ -70,10 +71,20 @@ fn whatever_the_recogniser_accepts_clap_parses_as_the_same_emergency() {
         let cli = Cli::try_parse_checked_from(argv(&words))
             .unwrap_or_else(|e| panic!("clap refuses {words:?} the early path accepted: {e}"));
         match cli.command {
-            Commands::Emergency(args) => assert_eq!(
-                args.countdown, early.countdown,
-                "countdown differs for {words:?}"
-            ),
+            Commands::Emergency(args) => {
+                assert_eq!(
+                    args.countdown, early.countdown,
+                    "countdown differs for {words:?}"
+                );
+                let finish = if args.poweroff {
+                    Finish::Poweroff
+                } else if args.reboot {
+                    Finish::Reboot
+                } else {
+                    Finish::Return
+                };
+                assert_eq!(finish, early.finish, "finish differs for {words:?}");
+            }
             other => panic!("{words:?} parsed as {other:?}"),
         }
     }
@@ -85,16 +96,28 @@ fn whatever_the_recogniser_accepts_clap_parses_as_the_same_emergency() {
 
 #[test]
 fn the_common_emergency_command_lines_are_recognised() {
-    for (words, countdown) in [
-        (vec!["emergency"], None),
-        (vec!["--config", "/c.toml", "emergency", "--json"], None),
-        (vec!["emergency", "--countdown", "3"], Some(3)),
-        (vec!["emergency", "--poweroff", "-vv"], None),
-        (vec!["emergency", "--lock-backend"], None),
+    for (words, countdown, finish) in [
+        (vec!["emergency"], None, Finish::Return),
+        (
+            vec!["--config", "/c.toml", "emergency", "--json"],
+            None,
+            Finish::Return,
+        ),
+        (
+            vec!["emergency", "--countdown", "3"],
+            Some(3),
+            Finish::Return,
+        ),
+        (
+            vec!["emergency", "--poweroff", "-vv"],
+            None,
+            Finish::Poweroff,
+        ),
+        (vec!["emergency", "--reboot"], None, Finish::Reboot),
     ] {
         assert_eq!(
             recognise(&argv(&words)),
-            Some(EarlyArgs { countdown }),
+            Some(EarlyArgs { countdown, finish }),
             "{words:?}"
         );
     }
@@ -111,8 +134,23 @@ fn help_conflicts_and_other_commands_are_left_to_clap() {
         vec!["--poweroff", "emergency"],
         vec!["status"],
         vec!["emergency", "emergency"],
+        vec!["emergency", "--lock-backend"],
+        vec!["transition"],
     ] {
         assert_eq!(recognise(&argv(&words)), None, "{words:?}");
+    }
+}
+
+#[test]
+fn only_the_bare_transition_word_is_the_transition_step() {
+    assert!(is_transition(&argv(&["transition"])));
+    for words in [
+        vec![],
+        vec!["transition", "-v"],
+        vec!["--json", "transition"],
+        vec!["emergency"],
+    ] {
+        assert!(!is_transition(&argv(&words)), "{words:?}");
     }
 }
 
@@ -148,7 +186,14 @@ fn the_early_module_reaches_for_no_cli_config_or_tracing() {
         .filter(|line| !line.trim_start().starts_with("//"))
         .collect::<Vec<_>>()
         .join("\n");
-    for forbidden in ["clap", "nails_core", "tracing::", "Config"] {
+    for forbidden in [
+        "clap",
+        "nails_core",
+        "tracing::",
+        "Config",
+        "println",
+        "eprintln",
+    ] {
         assert!(!code.contains(forbidden), "early.rs uses {forbidden}");
     }
 }

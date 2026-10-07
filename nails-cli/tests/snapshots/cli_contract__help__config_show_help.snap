@@ -27,9 +27,6 @@ Options:
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
 
-      --no-clear-history
-          Preview the effect of `deactivate --no-clear-history`
-
   -q, --quiet
           Print only errors and the final result
 

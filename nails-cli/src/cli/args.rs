@@ -17,18 +17,21 @@ use std::path::PathBuf;
 const ROOT_LONG_ABOUT: &str = "\
 Overlay environment manager.
 
-NAILS layers a hidden environment over a decoy system using OverlayFS. The
-binary and its configuration live on the hidden volume, so you run it by its
-full path from the mounted volume (e.g. `sudo /mnt/data/nails status`), never
-from a copy on the decoy disk.
+NAILS runs a hidden session on a decoy system: one OverlayFS over the whole
+decoy root, with every change kept on the hidden volume, entered and left with
+`systemctl soft-reboot` (systemd 254 or newer). The binary and its
+configuration live on the hidden volume, so you run it by its
+full path from the mounted volume (e.g. `sudo /mnt/data/nails status`),
+never from a copy on the decoy disk.
 
 The workflow has four steps:
   1. Open and mount the hidden backend (e.g. unlock the LUKS/VeraCrypt volume).
   2. `init <root>` once, to lay out the hidden volume.
-  3. `activate` to mount the overlays and apply the platform layer.
-  4. `deactivate` to return to the decoy and reboot, or `emergency` to tear
-     everything down now. If a run is interrupted and the system is stuck,
-     `recover` reconciles the state and finishes the teardown.";
+  3. `activate` to soft-reboot into the hidden session. You are logged out;
+     the hidden session starts at its own login screen.
+  4. `deactivate` to soft-reboot back to the plain decoy, or `emergency` to
+     kill the hidden session at once and return (or power off). If an
+     activation was interrupted, `recover` removes what it left behind.";
 
 /// The EXAMPLES and EXIT STATUS sections shown at the foot of `nails --help`.
 ///
@@ -42,10 +45,10 @@ const EXIT_STATUS_HELP: &str = "\
 EXAMPLES:
   # Run by full path from the mounted backend, never from a decoy copy.
   sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
-  sudo /mnt/data/nails activate         Mount the overlays and apply the layer
+  sudo /mnt/data/nails activate         Soft-reboot into the hidden session
   /mnt/data/nails status --json         Machine-readable state and uptime
-  sudo /mnt/data/nails deactivate       Restore the decoy and reboot
-  sudo /mnt/data/nails emergency        Tear everything down immediately
+  sudo /mnt/data/nails deactivate       Soft-reboot back to the decoy
+  sudo /mnt/data/nails emergency        Kill the hidden session and return now
   source <(/mnt/data/nails completions bash)   Load completions in the session
 
 EXIT STATUS:
@@ -104,49 +107,6 @@ impl Cli {
     }
 }
 
-/// What to do with the graphical session during activation.
-#[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum SessionPolicy {
-    /// Terminate the graphical session before mounting (the secure default).
-    ///
-    /// Activation detaches to a background service, closes the display manager
-    /// and user session, mounts the overlays and restarts the session.
-    #[default]
-    Kill,
-    /// Keep the current session running (mounts only what can be overlaid live).
-    Keep,
-}
-
-/// How to handle a volume that can only be mounted with a pivot overlay.
-#[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum PivotPolicy {
-    /// Abort rather than fall back to a pivot mount (the secure default).
-    #[default]
-    Refuse,
-    /// Fall back to a pivot mount without asking (degraded security).
-    Allow,
-    /// Prompt on a terminal before falling back to a pivot mount; refuse without one.
-    Ask,
-}
-
-/// What to do with risky services still referencing a target at activation.
-#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RiskyServicesArg {
-    /// Restart them so they no longer reference the decoy.
-    Restart,
-    /// Leave them running; they are reported as surviving writers.
-    Skip,
-}
-
-impl From<RiskyServicesArg> for nails_core::RiskyServicePolicy {
-    fn from(arg: RiskyServicesArg) -> Self {
-        match arg {
-            RiskyServicesArg::Restart => nails_core::RiskyServicePolicy::Restart,
-            RiskyServicesArg::Skip => nails_core::RiskyServicePolicy::Skip,
-        }
-    }
-}
-
 /// When to emit ANSI colour.
 #[derive(ValueEnum, Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ColorChoice {
@@ -200,15 +160,13 @@ pub struct GlobalArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Activate the hidden environment (mount overlays and apply the platform layer)
+    /// Soft-reboot into the hidden session (whole-root overlay on the hidden volume)
     Activate(ActivateArgs),
-    /// Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
+    /// Soft-reboot from the hidden session back to the plain decoy
     Deactivate(DeactivateArgs),
-    /// Reapply the hidden configuration layer while active (platforms with a layer only)
-    Reapply(ReapplyArgs),
-    /// Emergency teardown: detach overlays immediately, nothing written to the decoy
+    /// Kill the hidden session at once and soft-reboot back to the decoy (or power off)
     Emergency(EmergencyArgs),
-    /// Reconcile a stuck state and finish an interrupted or degraded teardown
+    /// Remove what an interrupted activation left in /run
     Recover(RecoverArgs),
     /// Show current status and uptime
     Status(StatusArgs),
@@ -221,7 +179,7 @@ pub enum Commands {
     Check(CheckArgs),
     /// Initialize NAILS directory structure on a hidden volume
     Init(InitArgs),
-    /// Delete a target's persistent overlay upper on the hidden volume
+    /// Delete a path's hidden copy from the hidden root's upper
     #[command(name = "reset-upper")]
     ResetUpper(ResetUpperArgs),
     /// Inspect and check the configuration file (nails.toml)
@@ -229,50 +187,48 @@ pub enum Commands {
     Config(ConfigCommand),
     /// Print a shell completion script on stdout (for `source <(...)`)
     Completions(CompletionsArgs),
-    /// Dispatch pending desktop notifications (called by XDG autostart on login)
-    #[command(name = "notify-dispatch", hide = true)]
-    NotifyDispatch,
-    /// In-session backend watcher (started at activation as a transient unit)
+    /// In-session backend watcher (a runtime unit of the hidden session)
     #[command(hide = true)]
     Watch,
-    /// Sleep guard holding a logind inhibitor (started at activation as a transient unit)
+    /// Sleep guard holding a logind inhibitor (a runtime unit of the hidden session)
     #[command(name = "sleep-guard", hide = true)]
     SleepGuard,
+    /// The last step before each soft-reboot switch (run by systemd, not by hand)
+    #[command(hide = true)]
+    Transition,
 }
 
 /// `nails activate` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(after_long_help = "\
+WHAT HAPPENS:
+  Activation builds one overlay over the whole decoy root at /run/nextroot,
+  with every change stored on the hidden volume, and soft-reboots into it
+  (systemd 254 or newer). Every program is closed and you are logged out; the
+  hidden session starts at its own login screen. Nothing of the hidden session
+  can reach the decoy disk: the ESP is read-only, other decoy filesystems are
+  overlaid, and decoy swap is never used.
+
 EXAMPLES:
-  nails activate                      Mount the overlays and apply the layer
-  nails activate --session keep       Keep the current graphical session
-  nails activate --overlay-only       Mount overlays, skip the platform layer
+  nails activate                      Enter the hidden session
+  nails activate --overlay-only       Enter with the decoy's own system (NixOS)
   nails activate --dry-run            Preview without changing anything")]
 pub struct ActivateArgs {
     /// Skip pre-flight checks (DANGEROUS - expert use only)
     #[arg(long)]
     pub no_preflight: bool,
 
-    /// What to do with the graphical session (default: kill)
-    #[arg(long, value_enum, value_name = "POLICY", default_value_t = SessionPolicy::Kill)]
-    pub session: SessionPolicy,
-
-    /// How to handle a volume that needs a pivot mount (default: refuse)
-    #[arg(long, value_enum, value_name = "POLICY", default_value_t = PivotPolicy::Refuse)]
-    pub pivot: PivotPolicy,
-
-    /// Proceed without confirmation prompts
+    /// Proceed without the confirmation prompt
     ///
     /// Without this flag activation prompts on a terminal and refuses to run
-    /// without one, so it never ends a graphical session unattended.
+    /// without one, because it logs you out.
     #[arg(short = 'y', long)]
     pub yes: bool,
 
-    /// NixOS layer: flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
+    /// NixOS: the hidden configuration as a flake reference <path>#<host>
     ///
-    /// Only applies on NixOS. When set, this value is passed directly to
-    /// `nixos-rebuild --flake` instead of auto-detecting the flake path. Supports
-    /// attribute selection after the `#`.
+    /// The hidden system is built from it into the hidden root's store before
+    /// the soft-reboot. Supports attribute selection after the `#`.
     #[arg(
         long = "nixos-flake",
         value_name = "FLAKE_REF",
@@ -284,159 +240,100 @@ pub struct ActivateArgs {
     #[arg(long)]
     pub dry_run: bool,
 
-    /// Mount overlays only, skip the platform configuration layer
+    /// NixOS: enter with the decoy's own system, without building the hidden
+    /// configuration (the hidden /etc and home still apply)
     #[arg(long)]
     pub overlay_only: bool,
-
-    /// What to do with risky services still referencing a target (overrides the
-    /// `risky_services` config key)
-    ///
-    /// Unset: restart when the session is killed, prompt on a terminal
-    /// otherwise, and refuse a non-interactive run that keeps the session.
-    #[arg(long = "risky-services", value_enum, value_name = "POLICY")]
-    pub risky_services: Option<RiskyServicesArg>,
-
-    /// Signal non-service processes (shells, editors, scripts) holding a target
-    /// instead of aborting
-    ///
-    /// Off by default: a process with no systemd unit can only be stopped by
-    /// signal, so activation never signals one and aborts before mounting,
-    /// listing them. This flag ends them anyway.
-    #[arg(long)]
-    pub terminate_processes: bool,
 
     /// Accept a persistent decoy posture instead of refusing activation
     ///
     /// By default activation refuses a host that keeps forensic traces on the
     /// decoy disk: a persistent systemd-journald journal, or an active
-    /// rsyslog/syslog-ng/auditd. Records those sinks write before the overlays
-    /// are mounted survive deactivation and reboot. This flag accepts that risk
-    /// (and overrides `accept_persistent_decoy` in `nails.toml`).
+    /// rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for
+    /// the soft-reboot, and while it starts again afterwards, would survive on
+    /// the decoy disk. This flag accepts that risk (and overrides
+    /// `accept_persistent_decoy` in `nails.toml`).
     #[arg(long)]
     pub accept_persistent_decoy: bool,
-}
-
-impl ActivateArgs {
-    /// Map the parsed activation flags onto the core [`nails_core::ActivateOptions`].
-    ///
-    /// Only the policy and mode flags are set here; the output fields
-    /// (`quiet`, `verbosity`, `json`, `no_color`) and the confirmation state
-    /// are left at their defaults and filled in by the handler from the
-    /// resolved output settings and the terminal. Mapping the default
-    /// arguments therefore yields [`nails_core::ActivateOptions::default()`].
-    pub fn to_activate_options(&self) -> nails_core::ActivateOptions {
-        nails_core::ActivateOptions {
-            kill_session: self.session == SessionPolicy::Kill,
-            accept_pivot_risks: self.pivot == PivotPolicy::Allow,
-            no_pivot: self.pivot == PivotPolicy::Refuse,
-            yes: self.yes,
-            overlay_only: self.overlay_only,
-            risky_services: self.risky_services.map(Into::into),
-            terminate_processes: self.terminate_processes,
-            accept_persistent_decoy: self.accept_persistent_decoy,
-            ..nails_core::ActivateOptions::default()
-        }
-    }
 }
 
 /// `nails deactivate` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(after_long_help = "\
+WHAT HAPPENS:
+  In the hidden session, deactivation mounts the decoy root at /run/nextroot,
+  marks the hidden volume for closing and soft-reboots: every hidden program
+  is stopped in order, /run is scrubbed of the hidden session, and the decoy
+  starts again at its own login screen. The hidden volume is unmounted and
+  its encryption mapping closed by the switch itself.
+
 EXAMPLES:
-  nails deactivate                    Restore the decoy and reboot
-  nails deactivate --poweroff         Restore the decoy and power off
+  nails deactivate                    Soft-reboot back to the decoy
+  nails deactivate --poweroff         Power off instead
   nails deactivate -y                 Skip the confirmation prompt")]
 pub struct DeactivateArgs {
-    /// Skip shell history cleanup
-    ///
-    /// By default, deactivation removes all 'nails' commands from shell history.
-    /// Use this flag to preserve history (not recommended for forensic safety).
-    #[arg(long)]
-    pub no_clear_history: bool,
-
     /// Proceed without the confirmation prompt
     ///
-    /// Deactivation restores the decoy configuration and reboots. Without this
-    /// flag it prompts on a terminal and refuses to run without one.
+    /// Deactivation ends the hidden session. Without this flag it prompts on
+    /// a terminal and refuses to run without one.
     #[arg(short = 'y', long)]
     pub yes: bool,
 
-    /// Power the machine off instead of rebooting once the decoy is restored.
+    /// Power the machine off instead of returning to the decoy.
     ///
-    /// A warm reboot does not clear RAM: DRAM keeps its contents across a reset
-    /// unless the firmware honours the TCG memory-overwrite request (MOR), and
-    /// setting MOR writes EFI NVRAM. Powering off lets the memory decay; leave
-    /// the machine off for a few minutes before handing it over.
+    /// Powering off lets RAM decay; leave the machine off for a few minutes
+    /// before handing it over.
     #[arg(long)]
     pub poweroff: bool,
 }
-
-/// `nails reapply` arguments
-///
-/// Reapply takes no options of its own: it rebuilds and switches to the current
-/// hidden configuration while the system is active, reporting the same
-/// [`nails_core::ActivationOutcome`] activation does.
-#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
-#[command(after_long_help = "\
-EXAMPLES:
-  nails reapply                       Rebuild and switch the hidden config")]
-pub struct ReapplyArgs {}
 
 /// `nails emergency` arguments
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(after_long_help = "\
+WHAT HAPPENS:
+  In the hidden session: the decoy root is mounted at /run/nextroot, the
+  hidden volume is marked for closing, the soft-reboot is enqueued and every
+  hidden program is killed at once. The machine returns to the plain decoy,
+  which shows its normal login screen; log in with the decoy password. With
+  --poweroff the machine powers off instead. On the decoy, emergency removes
+  what an interrupted activation left in /run.
+
 EXAMPLES:
-  nails emergency                     Tear everything down immediately
-  nails emergency --countdown 5       Wait 5s (Ctrl+C to abort), then tear down
-  nails emergency --poweroff          Tear down, then power the machine off
-  nails emergency --reboot            Tear down, then reboot into the decoy")]
+  nails emergency                     Kill the hidden session and return now
+  nails emergency --countdown 5       Wait 5s (Ctrl+C to abort), then act
+  nails emergency --poweroff          Kill the hidden session and power off
+  nails emergency --reboot            Kill the hidden session and reboot fully")]
 pub struct EmergencyArgs {
-    /// Wait this many seconds before tearing down, printing a Ctrl+C abort hint.
+    /// Wait this many seconds before acting, printing a Ctrl+C abort hint.
     ///
-    /// Omitted (the default) tears down immediately. The wait is never affected
-    /// by `--quiet` or `--json`, so output flags never change the timing.
+    /// Omitted (the default) acts immediately. The wait is never affected by
+    /// `--quiet` or `--json`, so output flags never change the timing.
     #[arg(long, value_name = "SECS")]
     pub countdown: Option<u64>,
 
-    /// Power the machine off after the teardown attempt, whatever its outcome.
-    ///
-    /// Powering off lets RAM decay, the only complete remedy for residue the
-    /// teardown cannot remove; it runs even when a mount could not be removed.
-    /// Leave the machine off for a few minutes. Mutually exclusive with
-    /// `--reboot`.
+    /// Power the machine off instead of returning to the decoy, whatever the
+    /// outcome. RAM decays: the strongest answer to a seizure. Leave the
+    /// machine off for a few minutes. Mutually exclusive with `--reboot`.
     #[arg(long, conflicts_with = "reboot")]
     pub poweroff: bool,
 
-    /// Reboot into the decoy after the teardown attempt, whatever its outcome.
+    /// Reboot fully (firmware and bootloader) instead of the soft-reboot back.
     ///
-    /// A warm reboot does not clear RAM: DRAM keeps its contents across a reset
-    /// unless the firmware honours the TCG memory-overwrite request (MOR), and
-    /// setting MOR writes EFI NVRAM. Prefer `--poweroff` when RAM residue
+    /// A warm reboot does not clear RAM. Prefer `--poweroff` when RAM residue
     /// matters. Mutually exclusive with `--poweroff`.
     #[arg(long)]
     pub reboot: bool,
-
-    /// Close the encrypted backend after the teardown attempt: lazy-unmount the hidden
-    /// root and mark its device-mapper stack for deferred removal, wiping the
-    /// master key from kernel memory when the last reference drops.
-    ///
-    /// Forces the close for this run regardless of the `[emergency] lock_backend`
-    /// config key. Without it (and without the key) the hidden filesystem stays
-    /// mounted and readable after the emergency, and the printed sequence closes
-    /// it by hand.
-    #[arg(long)]
-    pub lock_backend: bool,
 }
 
 /// `nails recover` arguments
 ///
-/// Recover takes no options of its own: it always reconciles the recorded state
-/// against the live mount table and tears down whatever NAILS mounts remain,
-/// resetting the state to the decoy.
+/// Recover takes no options of its own: on the decoy it detaches a next root
+/// an interrupted activation left at `/run/nextroot`, removes its runtime files
+/// and resets the state, so a later reboot never enters the leftover tree.
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(after_long_help = "\
 EXAMPLES:
-  nails recover                       Reconcile a stuck state and finish teardown")]
+  nails recover                       Remove an interrupted activation's leftovers")]
 pub struct RecoverArgs {}
 
 /// `nails status` arguments
@@ -493,7 +390,7 @@ pub struct VerifyArgs {
 #[command(after_long_help = "\
 STEPS:
   1. In an active hidden session:     nails rehearse plant
-  2. Deactivate as usual (it reboots), then unlock and mount the hidden volume
+  2. Deactivate as usual, then on the decoy unlock and mount the hidden volume
   3. From the decoy, or a later session: nails rehearse scan
   Then `nails rehearse reset` removes the rehearsal from the hidden volume.
 
@@ -571,9 +468,9 @@ pub struct RehearseScanArgs {
 EXAMPLES:
   nails check                         Report readiness to activate
   nails doctor                        Same, via the alias
-  nails check --overlay-only          Skip the platform-layer checks")]
+  nails check --overlay-only          Skip the hidden NixOS build checks")]
 pub struct CheckArgs {
-    /// Check as for an overlay-only activation (skip the platform-layer checks)
+    /// Check as for `activate --overlay-only` (skip the hidden NixOS build checks)
     #[arg(long)]
     pub overlay_only: bool,
 
@@ -617,10 +514,6 @@ pub enum ConfigCommand {
             conflicts_with = "example"
         )]
         nixos_flake: Option<String>,
-
-        /// Preview the effect of `deactivate --no-clear-history`
-        #[arg(long, conflicts_with = "example")]
-        no_clear_history: bool,
     },
     /// Check a configuration file strictly (syntax, types, unknown keys)
     Validate {
@@ -666,10 +559,11 @@ pub struct InitArgs {
 #[derive(Args, Debug, Clone, PartialEq, Eq)]
 #[command(after_long_help = "\
 EXAMPLES:
-  nails reset-upper /home             Delete the persistent /home upper
-  nails reset-upper /nix -y           Delete the /nix upper without prompting")]
+  nails reset-upper /home             Delete the hidden copy of /home
+  nails reset-upper /nix -y           Delete the hidden /nix without prompting")]
 pub struct ResetUpperArgs {
-    /// Overlay target whose persistent upper to delete (e.g. /home, /etc, /nix)
+    /// Path whose hidden copy to delete (e.g. /home, /etc, /nix); the decoy's
+    /// own files show through again
     #[arg(value_hint = ValueHint::DirPath)]
     pub target: PathBuf,
 
@@ -744,16 +638,15 @@ mod tests {
     }
 
     #[test]
-    fn notify_dispatch_is_hidden_from_help() {
+    fn internal_subcommands_are_hidden_from_help() {
         let command = Cli::command();
-        let notify = command
-            .get_subcommands()
-            .find(|cmd| cmd.get_name() == "notify-dispatch")
-            .expect("notify-dispatch subcommand exists");
-        assert!(
-            notify.is_hide_set(),
-            "notify-dispatch must be hidden from help"
-        );
+        for name in ["watch", "sleep-guard", "transition"] {
+            let sub = command
+                .get_subcommands()
+                .find(|cmd| cmd.get_name() == name)
+                .expect("the subcommand exists");
+            assert!(sub.is_hide_set(), "{name} must be hidden from help");
+        }
     }
 
     #[test]

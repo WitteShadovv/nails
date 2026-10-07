@@ -78,13 +78,9 @@ fn run(config_override: Option<&Path>, command: &ConfigCommand, json: bool) -> O
             ..Outcome::default()
         },
         ConfigCommand::Show { example: true, .. } => Outcome::ok(Config::example_config()),
-        ConfigCommand::Show {
-            nixos_flake,
-            no_clear_history,
-            ..
-        } => {
+        ConfigCommand::Show { nixos_flake, .. } => {
             let overrides = CliOverrides {
-                clear_history: no_clear_history.then_some(false),
+                clear_history: None,
                 nixos_flake: nixos_flake.clone(),
             };
             show(config_override, json, &overrides)
@@ -175,7 +171,6 @@ mod tests {
         ConfigCommand::Show {
             example: false,
             nixos_flake: None,
-            no_clear_history: false,
         }
     }
 
@@ -239,7 +234,6 @@ mod tests {
             &ConfigCommand::Show {
                 example: false,
                 nixos_flake: Some("/c#d".to_string()),
-                no_clear_history: true,
             },
             true,
         );
@@ -247,8 +241,6 @@ mod tests {
 
         assert_eq!(value["config"]["nixos_flake"], "/c#d");
         assert_eq!(value["sources"]["nixos_flake"], "cli");
-        assert_eq!(value["config"]["clear_history"], false);
-        assert_eq!(value["sources"]["clear_history"], "cli");
         assert_eq!(value["sources"]["minimum_space_mb"], "default");
         assert_eq!(value["exists"], true);
     }
@@ -260,7 +252,6 @@ mod tests {
             &ConfigCommand::Show {
                 example: true,
                 nixos_flake: None,
-                no_clear_history: false,
             },
             false,
         );
@@ -375,7 +366,6 @@ mod tests {
             &ConfigCommand::Show {
                 example: true,
                 nixos_flake: None,
-                no_clear_history: false,
             },
             true,
         );

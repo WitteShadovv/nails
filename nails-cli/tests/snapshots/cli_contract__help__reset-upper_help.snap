@@ -9,13 +9,13 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Delete a target's persistent overlay upper on the hidden volume
+Delete a path's hidden copy from the hidden root's upper
 
 Usage: nails reset-upper [OPTIONS] <TARGET>
 
 Arguments:
   <TARGET>
-          Overlay target whose persistent upper to delete (e.g. /home, /etc, /nix)
+          Path whose hidden copy to delete (e.g. /home, /etc, /nix); the decoy's own files show through again
 
 Options:
   -c, --config <PATH>
@@ -55,7 +55,7 @@ Options:
           Print help (see a summary with '-h')
 
 EXAMPLES:
-  nails reset-upper /home             Delete the persistent /home upper
-  nails reset-upper /nix -y           Delete the /nix upper without prompting
+  nails reset-upper /home             Delete the hidden copy of /home
+  nails reset-upper /nix -y           Delete the hidden /nix without prompting
 
 ----- stderr -----

@@ -3,31 +3,11 @@
 
 use super::*;
 use nails_core::filesystem::PathKind;
-use nails_core::{
-    Config, Filesystem, MockFilesystem, NailsManager, StateFile, SystemState,
-    stage_hidden_nixos_config,
-};
+use nails_core::{Config, Filesystem, MockFilesystem, SystemState};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use tempfile::TempDir;
-
-/// Opt the calling test into test-runtime mode until the guard is dropped.
-///
-/// `nails-core` is linked here as a plain dependency, so its `cfg(test)` is not
-/// active and the runtime-safety skip is keyed solely on `NAILS_TEST_RUNTIME` in
-/// the startup snapshot. Tests that drive a real activation (and therefore the
-/// host preflight checks) set it so those checks are bypassed, exactly as the
-/// E2E harness does. The snapshot is scoped to the test's own thread, so no
-/// other test's behaviour depends on whether an init test happened to run first.
-fn test_runtime_env() -> nails_core::runtime_env::ScopedRuntimeEnv {
-    nails_core::runtime_env::ScopedRuntimeEnv::new(nails_core::RuntimeEnv::empty().with_test_hooks(
-        nails_core::runtime_env::TestHooks {
-            test_runtime: Some("1".into()),
-            ..Default::default()
-        },
-    ))
-}
 
 fn write_test_base_hardware_config(tmp: &TempDir) -> PathBuf {
     let path = tmp
@@ -91,64 +71,6 @@ fn mark_host_debian(fs: &MockFilesystem) {
         "ID=debian\nID_LIKE=debian\nVERSION_ID=\"12\"\n",
     );
     fs.mock_set_file_content("/proc/1/comm", "systemd\n");
-}
-
-/// Load the config `nails init` generated under `root`.
-///
-/// The template leaves `hidden_volume_root` unset so it is derived from the
-/// binary location. A test binary does not live on the volume, so pin the
-/// root (and the paths derived from it) to `root` as the installed binary would.
-fn load_generated_config(root: &Path) -> Config {
-    let generated = Config::load(&root.join("config").join(CONFIG_FILE_NAME)).unwrap();
-    Config {
-        hidden_volume_root: root.to_path_buf(),
-        state_file_path: root.join("state.json"),
-        log_path: root.join("logs"),
-        ..generated
-    }
-}
-
-fn mock_init_layout(fs: &MockFilesystem, hidden_root: &Path) {
-    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
-    fs.mock_set_path_type(hidden_root.to_str().unwrap(), PathKind::Dir);
-    fs.mock_set_mounted(hidden_root, true);
-    fs.mock_set_readable(hidden_root.to_str().unwrap(), true);
-    fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
-    fs.mock_set_supports_symlinks(hidden_root, true);
-
-    for rel in COMMON_SUBDIRS.iter().chain(NIXOS_SUBDIRS) {
-        let path = hidden_root.join(rel);
-        fs.mock_set_path_exists(path.to_str().unwrap(), true);
-        fs.mock_set_path_type(path.to_str().unwrap(), PathKind::Dir);
-        fs.mock_set_readable(path.to_str().unwrap(), true);
-        fs.mock_set_writable(path.to_str().unwrap(), true);
-    }
-}
-
-fn mock_minimal_activation_prereqs(fs: &MockFilesystem) {
-    fs.mock_set_path_exists("/", true);
-    fs.mock_set_path_type("/", PathKind::Dir);
-
-    for dir in ["/etc", "/etc/nixos", "/home", "/nix", "/nix/store"] {
-        fs.mock_set_path_exists(dir, true);
-        fs.mock_set_path_type(dir, PathKind::Dir);
-        fs.mock_set_readable(dir, true);
-        fs.mock_set_writable(dir, true);
-    }
-
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{\n  imports = [ ];\n}\n",
-    );
-
-    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
-    fs.mock_set_file_content("/etc/nixos/configuration.nix", "{ }\n");
-
-    fs.mock_set_root_directories(vec!["/etc".into(), "/home".into(), "/nix".into()]);
-    fs.mock_set_swap_enabled(false);
 }
 
 #[test]
@@ -218,7 +140,9 @@ fn test_init_creates_directory_structure() {
     let hidden_config_contents = fs::read_to_string(&hidden_config).unwrap();
     assert!(hidden_config_contents.contains("Hidden-session configuration"));
 
-    let hidden_hardware = tmp.path().join("etc/nixos/hardware-configuration.nix");
+    let hidden_hardware = tmp
+        .path()
+        .join("root/upper/etc/nixos/hardware-configuration.nix");
     assert!(hidden_hardware.is_file());
     let hidden_hardware_meta = fs::metadata(&hidden_hardware).unwrap();
     assert_eq!(hidden_hardware_meta.permissions().mode() & 0o777, 0o600);
@@ -228,18 +152,22 @@ fn test_init_creates_directory_structure() {
     assert!(hidden_hardware_contents.contains("./nails/configuration.nix"));
     assert!(hidden_hardware_contents.contains("./hardware-configuration.base.nix"));
 
-    let hidden_base = tmp.path().join("etc/nixos/hardware-configuration.base.nix");
+    let hidden_base = tmp
+        .path()
+        .join("root/upper/etc/nixos/hardware-configuration.base.nix");
     assert!(hidden_base.is_file());
     let hidden_base_meta = fs::metadata(&hidden_base).unwrap();
     assert_eq!(hidden_base_meta.permissions().mode() & 0o777, 0o600);
     let hidden_base_contents = fs::read_to_string(&hidden_base).unwrap();
     assert!(hidden_base_contents.contains("modulesPath + \"/installer/scan/not-detected.nix\""));
 
-    let staged_dir = tmp.path().join("etc/nixos/nails");
+    let staged_dir = tmp.path().join("root/upper/etc/nixos/nails");
     let staged_dir_meta = fs::metadata(&staged_dir).unwrap();
     assert_eq!(staged_dir_meta.permissions().mode() & 0o777, 0o700);
 
-    let staged_symlink = tmp.path().join("etc/nixos/nails/configuration.nix");
+    let staged_symlink = tmp
+        .path()
+        .join("root/upper/etc/nixos/nails/configuration.nix");
     assert!(staged_symlink.is_symlink());
     assert_eq!(fs::read_link(&staged_symlink).unwrap(), hidden_config);
 }
@@ -543,7 +471,7 @@ fn debian_host_init_creates_no_nixos_paths() {
         );
     }
     assert!(
-        fs.mock_get_symlink_target(&root.join("etc/nixos/nails/configuration.nix"))
+        fs.mock_get_symlink_target(&root.join("root/upper/etc/nixos/nails/configuration.nix"))
             .is_none(),
         "the hidden NixOS symlink must not be staged on a Debian host"
     );
@@ -624,11 +552,11 @@ fn no_hardware_config_skips_bootstrap_on_a_real_volume() {
     assert!(tmp.path().join("state.json").is_file());
     assert!(
         !tmp.path()
-            .join("etc/nixos/hardware-configuration.nix")
+            .join("root/upper/etc/nixos/hardware-configuration.nix")
             .exists()
     );
     assert!(!tmp.path().join("config/nixos/configuration.nix").exists());
-    assert!(!tmp.path().join("etc/nixos/nails").exists());
+    assert!(!tmp.path().join("root/upper/etc/nixos/nails").exists());
 }
 
 #[test]
@@ -722,161 +650,4 @@ fn human_output_ends_with_the_numbered_next_steps() {
     // Errors and statuses are rendered with Display, never Debug.
     assert!(!text.contains("NixOSError("), "{text}");
     assert!(!text.contains("AlreadyPresent"), "{text}");
-}
-
-#[test]
-fn test_init_generated_config_is_preflight_ready_for_activation() {
-    let _env = test_runtime_env();
-    let tmp = TempDir::new().unwrap();
-    let base_hardware_config = write_test_base_hardware_config(&tmp);
-    init_real(&tmp, &base_hardware_config);
-
-    let config = load_generated_config(tmp.path());
-
-    let fs = MockFilesystem::new();
-    let hidden_root = config.hidden_volume_root.clone();
-
-    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
-    fs.mock_set_mounted(&hidden_root, true);
-    fs.mock_set_writable(hidden_root.to_str().unwrap(), true);
-
-    for rel in [
-        "config",
-        "config/nixos",
-        "etc",
-        "etc/nixos",
-        "home",
-        "nix",
-        ".work",
-        ".work/etc",
-        ".work/home",
-        ".work/nix",
-    ] {
-        let path = hidden_root.join(rel);
-        fs.mock_set_path_exists(path.to_str().unwrap(), true);
-        fs.mock_set_path_type(path.to_str().unwrap(), PathKind::Dir);
-        fs.mock_set_writable(path.to_str().unwrap(), true);
-        fs.mock_set_readable(path.to_str().unwrap(), true);
-    }
-
-    fs.mock_set_path_exists("/etc/nixos/hardware-configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/hardware-configuration.nix", PathKind::File);
-    fs.mock_set_file_content(
-        "/etc/nixos/hardware-configuration.nix",
-        "{ config, lib, pkgs, ... }:\n{ }",
-    );
-    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
-    fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
-    for lower in ["/etc", "/home", "/nix"] {
-        fs.mock_set_path_exists(lower, true);
-        fs.mock_set_path_type(lower, PathKind::Dir);
-        fs.mock_set_readable(lower, true);
-    }
-    fs.mock_set_root_directories(vec!["/etc".into(), "/home".into(), "/nix".into()]);
-    fs.mock_set_swap_enabled(false);
-
-    // Activation stages the full hidden NixOS layout (module symlink plus the
-    // hardware wrapper) before the read-only pre-flight checks run.
-    stage_hidden_nixos_config(&fs, &hidden_root, false).unwrap();
-
-    let manager = NailsManager::new(fs.clone(), config.clone(), config.state_file_path.clone());
-    manager.run_preflight_checks(false, false).unwrap();
-
-    let work_nix = hidden_root.join(".work/nix");
-    assert_eq!(fs.mock_get_permissions(&work_nix), Some(0o700));
-
-    let symlink_path = hidden_root.join("etc/nixos/nails/configuration.nix");
-    assert_eq!(
-        fs.mock_get_symlink_target(&symlink_path),
-        Some(hidden_root.join("config/nixos/configuration.nix"))
-    );
-    assert!(
-        fs.path_exists(&hidden_root.join("config/nixos/configuration.nix"))
-            .unwrap()
-    );
-}
-
-#[test]
-fn test_init_generated_config_activates_with_minimal_mock_filesystem_setup() {
-    let _env = test_runtime_env();
-    let tmp = TempDir::new().unwrap();
-    let base_hardware_config = write_test_base_hardware_config(&tmp);
-    init_real(&tmp, &base_hardware_config);
-
-    let config = load_generated_config(tmp.path());
-
-    let fs = MockFilesystem::new();
-    let hidden_root = config.hidden_volume_root.clone();
-
-    mock_init_layout(&fs, &hidden_root);
-    mock_minimal_activation_prereqs(&fs);
-
-    let mut manager = NailsManager::new(fs.clone(), config.clone(), config.state_file_path.clone());
-
-    manager.activate(false).unwrap();
-
-    let state = manager.current_state().unwrap();
-    match state {
-        SystemState::Active { overlays, .. } => {
-            assert_eq!(
-                overlays,
-                vec![
-                    Path::new("/etc").to_path_buf(),
-                    Path::new("/home").to_path_buf(),
-                    Path::new("/nix").to_path_buf(),
-                ]
-            );
-        }
-        other => panic!("expected active state after init+activate, got {other:?}"),
-    }
-
-    for target in ["/etc", "/home", "/nix"] {
-        assert!(
-            fs.is_mounted(Path::new(target)).unwrap(),
-            "{target} should be mounted"
-        );
-    }
-
-    let hidden_config = hidden_root.join("config/nixos/configuration.nix");
-    assert!(fs.path_exists(&hidden_config).unwrap());
-    assert!(
-        !fs.read_file_content(&hidden_config)
-            .unwrap()
-            .trim()
-            .is_empty()
-    );
-
-    let hidden_hardware = hidden_root.join("etc/nixos/hardware-configuration.nix");
-    assert!(fs.path_exists(&hidden_hardware).unwrap());
-    assert!(
-        fs.read_file_content(&hidden_hardware)
-            .unwrap()
-            .contains("./nails/configuration.nix")
-    );
-
-    let staged_symlink = hidden_root.join("etc/nixos/nails/configuration.nix");
-    assert_eq!(
-        fs.mock_get_symlink_target(&staged_symlink),
-        Some(hidden_root.join("config/nixos/configuration.nix"))
-    );
-
-    let overlayed_hardware = fs
-        .get_written_content(Path::new("/etc/nixos/hardware-configuration.nix"))
-        .expect("activation should inject import into overlayed hardware config");
-    assert!(overlayed_hardware.contains("./nails/configuration.nix"));
-
-    for rel in [".work/etc", ".work/home", ".work/nix"] {
-        assert_eq!(fs.mock_get_permissions(&hidden_root.join(rel)), Some(0o700));
-    }
-
-    let persisted = StateFile::load(&config.state_file_path).unwrap();
-    assert!(matches!(persisted.state, SystemState::Active { .. }));
-    assert_eq!(persisted.overlay_status.len(), 3);
-    for target in ["/etc", "/home", "/nix"] {
-        assert!(
-            persisted
-                .overlay_status
-                .contains_key(&Path::new(target).to_path_buf())
-        );
-    }
 }

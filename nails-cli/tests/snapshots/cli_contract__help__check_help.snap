@@ -18,7 +18,7 @@ Options:
           Path to the configuration file (overrides binary-relative discovery)
 
       --overlay-only
-          Check as for an overlay-only activation (skip the platform-layer checks)
+          Check as for `activate --overlay-only` (skip the hidden NixOS build checks)
 
       --nixos-flake <FLAKE_REF>
           NixOS layer: check a specific flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
@@ -59,6 +59,6 @@ Options:
 EXAMPLES:
   nails check                         Report readiness to activate
   nails doctor                        Same, via the alias
-  nails check --overlay-only          Skip the platform-layer checks
+  nails check --overlay-only          Skip the hidden NixOS build checks
 
 ----- stderr -----

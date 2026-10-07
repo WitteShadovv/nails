@@ -23,8 +23,6 @@ pub mod config;
 pub mod deactivate;
 pub mod emergency;
 pub mod init;
-pub mod notify_dispatch;
-pub mod reapply;
 pub mod recover;
 pub mod rehearse;
 pub mod reset_upper;

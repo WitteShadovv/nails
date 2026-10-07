@@ -14,14 +14,12 @@
 use std::io::Write;
 use std::path::Path;
 
-use nails_core::{
-    CliOverrides, Config, Filesystem, OverlayMode, SessionKind, build_overlay_targets,
-};
+use nails_core::{CliOverrides, Config, Filesystem};
 
 use crate::cli::args::CheckArgs;
 use crate::cli::output::check::{
-    CheckReport, CheckRow, ConfigSummary, InheritedSummary, ProfileSummary, SessionSummary,
-    print_check_human, print_check_json,
+    CheckReport, CheckRow, ConfigSummary, InheritedSummary, ProfileSummary, print_check_human,
+    print_check_json,
 };
 use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
@@ -89,24 +87,11 @@ pub fn execute(
         hidden_volume_root: config.hidden_volume_root.display().to_string(),
         state_file: config.state_file_path.display().to_string(),
         log_path: config.log_path.display().to_string(),
-        overlay_mode: match config.overlay_mode {
-            OverlayMode::Auto => "auto",
-            OverlayMode::Explicit => "explicit",
-        },
         persona_mode: config.persona.mode.as_str(),
         minimum_space_mb: config.minimum_space_mb,
     };
 
-    let overlay_targets = build_overlay_targets(manager.filesystem(), config)
-        .map(|targets| {
-            targets
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let session = session_summary(env);
+    let filesystems = decoy_filesystems(&config.hidden_volume_root);
     let profile = profile_summary(
         manager
             .discover_host_target(overlay_only)
@@ -114,14 +99,7 @@ pub fn execute(
     );
     let inherited = inherited_summary(config, manager.filesystem(), env);
 
-    let report = CheckReport::finalize(
-        checks,
-        config_summary,
-        overlay_targets,
-        session,
-        profile,
-        inherited,
-    );
+    let report = CheckReport::finalize(checks, config_summary, filesystems, profile, inherited);
 
     if json {
         print_check_json(&report);
@@ -141,41 +119,21 @@ pub fn execute(
 ///
 /// The check runs non-interactively and without privileges, so a session it
 /// cannot classify is reported as `unknown` rather than surfaced as an error.
-fn session_summary(env: &nails_core::RuntimeEnv) -> SessionSummary {
-    match nails_core::detect_session_context(&nails_core::RealSessionCommandExecutor, env) {
-        Ok(ctx) => {
-            let kind = match ctx.kind {
-                SessionKind::Tty => "tty",
-                SessionKind::GraphicalUser => "graphical-user",
-                SessionKind::GraphicalRoot => "graphical-root",
-                SessionKind::Ssh => "ssh",
-                SessionKind::Unknown => "unknown",
-            };
-            SessionSummary {
-                kind,
-                display_manager: ctx.display_manager,
-                // Activation's default session policy ends a graphical user
-                // session before mounting; other kinds are left running.
-                would_terminate: ctx.kind == SessionKind::GraphicalUser,
-            }
-        }
-        Err(_) => SessionSummary {
-            kind: "unknown",
-            display_manager: None,
-            would_terminate: false,
-        },
-    }
+/// What the fstab policy would do with each decoy filesystem.
+fn decoy_filesystems(hidden_root: &Path) -> Vec<String> {
+    use nails_core::session::{fstab, policy};
+    let text =
+        nails_teardown::whole_root::nextroot::read_in_root(Path::new("/"), Path::new("/etc/fstab"))
+            .unwrap_or_default();
+    let entries = fstab::parse_fstab(&String::from_utf8_lossy(&text));
+    let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
+    policy::decide_all(&entries, &mounts, hidden_root)
+        .iter()
+        .filter(|d| !matches!(d, policy::Decision::Leave { .. }))
+        .map(policy::Decision::describe)
+        .collect()
 }
 
-/// Describe which NixOS profile activation would build.
-///
-/// `target` comes from the manager's
-/// [`discover_host_target`](nails_core::NailsManager::discover_host_target), the
-/// same platform-driven discovery [`super::build_nixos_manager`] and the
-/// `nixos-build-target` pre-flight check use, so `--dry-run` can never report a
-/// different target than activation would pick. In particular a lone system
-/// profile is reported as a legacy build here, matching activation, rather than
-/// as "no profile switch".
 fn profile_summary(target: nails_core::HostTarget) -> ProfileSummary {
     use nails_core::HostTarget;
 

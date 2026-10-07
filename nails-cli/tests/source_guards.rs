@@ -38,15 +38,15 @@ fn rel(path: &Path) -> String {
 }
 
 #[test]
-fn process_exit_lives_only_in_the_detach_chokepoint() {
+fn process_exit_lives_only_in_the_exit_chokepoint() {
     for path in all_sources() {
         let text = std::fs::read_to_string(&path).unwrap();
         for (line_no, line) in text.lines().enumerate() {
             if line.contains("process::exit") {
-                let is_detach = path.ends_with("cli/detach.rs");
+                let is_detach = path.ends_with("cli/chokepoint.rs");
                 assert!(
                     is_detach,
-                    "{}:{} uses process::exit outside the detach chokepoint: {}",
+                    "{}:{} uses process::exit outside the exit chokepoint: {}",
                     rel(&path),
                     line_no + 1,
                     line.trim()

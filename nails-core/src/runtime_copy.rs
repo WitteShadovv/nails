@@ -93,28 +93,13 @@ pub struct RuntimeManifest {
 }
 
 impl RuntimeManifest {
-    /// The watcher's view of a teardown plan: the hidden root and every overlay
-    /// target outside the runtime scaffolding root, once each.
-    pub fn from_plan(plan: &nails_teardown::Plan) -> Self {
-        let mut overlay_targets: Vec<PathBuf> = Vec::new();
-        for step in &plan.steps {
-            if let nails_teardown::Undo::Unmount {
-                target,
-                kind: nails_teardown::MountKind::Overlay,
-                ..
-            } = &step.undo
-                && !plan
-                    .runtime_root
-                    .as_ref()
-                    .is_some_and(|r| target.starts_with(r))
-                && !overlay_targets.contains(target)
-            {
-                overlay_targets.push(target.clone());
-            }
-        }
+    /// The watcher's view of a session plan: the hidden root. The whole-root
+    /// session has no per-target overlays to probe; the hidden volume is the
+    /// one thing that can fail.
+    pub fn from_plan(plan: &nails_teardown::whole_root::plan::Plan) -> Self {
         Self {
             hidden_root: plan.hidden_root.clone(),
-            overlay_targets,
+            overlay_targets: Vec::new(),
         }
     }
 }
@@ -192,7 +177,7 @@ pub fn read_manifest<F: Filesystem>(filesystem: &F) -> Result<Option<RuntimeMani
         return Ok(None);
     }
     let content = filesystem.read_file_content(&path)?;
-    let plan = nails_teardown::Plan::from_json(&content)
+    let plan = nails_teardown::whole_root::plan::Plan::from_json(&content)
         .map_err(|e| NailsError::io(&path, std::io::Error::other(e.to_string())))?;
     Ok(Some(RuntimeManifest::from_plan(&plan)))
 }
@@ -346,27 +331,35 @@ mod tests {
     }
 
     #[test]
-    fn the_manifest_is_read_from_the_plan_without_the_scaffolding() {
-        use nails_teardown::{MountKind, Plan, Undo};
+    fn the_manifest_is_read_from_the_session_plan() {
         let fs = MockFilesystem::new();
         fs.mock_set_directory_creatable("/run/overlay-runtime", true);
         let config = test_config();
-        let mut plan = Plan::new(config.hidden_volume_root.clone());
-        plan.runtime_root = Some(PathBuf::from("/run/0123456789abcdef"));
-        for (target, kind) in [
-            ("/run/0123456789abcdef", MountKind::RuntimeRoot),
-            ("/run/0123456789abcdef/etc", MountKind::Overlay),
-            ("/home", MountKind::Overlay),
-            ("/etc", MountKind::Overlay),
-            ("/etc", MountKind::Overlay),
-            ("/home/data", MountKind::Attachment),
-        ] {
-            plan.push(Undo::Unmount {
-                target: PathBuf::from(target),
-                kind,
-                mount_id: None,
-            });
-        }
+        let side = nails_teardown::whole_root::plan::RootSide {
+            init: PathBuf::from("/usr/lib/systemd/systemd"),
+            system: None,
+        };
+        let plan = nails_teardown::whole_root::plan::Plan {
+            version: nails_teardown::whole_root::plan::PLAN_VERSION,
+            hidden_root: config.hidden_volume_root.clone(),
+            upper: config.hidden_volume_root.join("root/upper"),
+            work: config.hidden_volume_root.join("root/work"),
+            owner: None,
+            decoy_root: nails_teardown::whole_root::plan::DecoyRoot {
+                source: PathBuf::from("/dev/vda2"),
+                fstype: "ext4".to_string(),
+                data: None,
+            },
+            decoy: side.clone(),
+            hidden: side,
+            policy_mounts: Vec::new(),
+            masks: Vec::new(),
+            session_units: Vec::new(),
+            backend: Vec::new(),
+            tools: nails_teardown::whole_root::plan::Tools::default(),
+            armed: None,
+            entered_at: Some(1),
+        };
         fs.create_directory(&runtime_copy_dir()).unwrap();
         fs.write_file_content(&plan_path(), &plan.to_json())
             .unwrap();
@@ -374,10 +367,7 @@ mod tests {
 
         let manifest = read_manifest(&fs).unwrap().expect("plan present");
         assert_eq!(manifest.hidden_root, config.hidden_volume_root);
-        assert_eq!(
-            manifest.overlay_targets,
-            vec![PathBuf::from("/home"), PathBuf::from("/etc")]
-        );
+        assert!(manifest.overlay_targets.is_empty());
     }
 
     #[test]

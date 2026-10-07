@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Deactivate and reboot into the decoy state (unmount + cleanup + reboot)
+Soft-reboot from the hidden session back to the plain decoy
 
 Usage: nails deactivate [OPTIONS]
 
@@ -17,23 +17,18 @@ Options:
   -c, --config <PATH>
           Path to the configuration file (overrides binary-relative discovery)
 
-      --no-clear-history
-          Skip shell history cleanup
-
-          By default, deactivation removes all 'nails' commands from shell history. Use this flag to preserve history (not recommended for forensic safety).
-
-  -v, --verbose...
-          More diagnostics on stderr: -v for debug, -vv for trace
-
   -y, --yes
           Proceed without the confirmation prompt
 
-          Deactivation restores the decoy configuration and reboots. Without this flag it prompts on a terminal and refuses to run without one.
+          Deactivation ends the hidden session. Without this flag it prompts on a terminal and refuses to run without one.
 
       --poweroff
-          Power the machine off instead of rebooting once the decoy is restored.
+          Power the machine off instead of returning to the decoy.
 
-          A warm reboot does not clear RAM: DRAM keeps its contents across a reset unless the firmware honours the TCG memory-overwrite request (MOR), and setting MOR writes EFI NVRAM. Powering off lets the memory decay; leave the machine off for a few minutes before handing it over.
+          Powering off lets RAM decay; leave the machine off for a few minutes before handing it over.
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
 
   -q, --quiet
           Print only errors and the final result
@@ -60,9 +55,16 @@ Options:
   -h, --help
           Print help (see a summary with '-h')
 
+WHAT HAPPENS:
+  In the hidden session, deactivation mounts the decoy root at /run/nextroot,
+  marks the hidden volume for closing and soft-reboots: every hidden program
+  is stopped in order, /run is scrubbed of the hidden session, and the decoy
+  starts again at its own login screen. The hidden volume is unmounted and
+  its encryption mapping closed by the switch itself.
+
 EXAMPLES:
-  nails deactivate                    Restore the decoy and reboot
-  nails deactivate --poweroff         Restore the decoy and power off
+  nails deactivate                    Soft-reboot back to the decoy
+  nails deactivate --poweroff         Power off instead
   nails deactivate -y                 Skip the confirmation prompt
 
 ----- stderr -----

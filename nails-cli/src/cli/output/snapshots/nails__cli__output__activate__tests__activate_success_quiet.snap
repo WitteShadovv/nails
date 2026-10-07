@@ -1,5 +1,0 @@
----
-source: nails-cli/src/cli/output/activate.rs
-expression: "render_activate_success(1.5, Some(&setup), &settings_at(verbosity))"
----
-[PASS] Activation complete in 1.5s

@@ -64,11 +64,18 @@ fn config_show_annotates_sources_in_toml_and_json() {
     let path = file.path().to_str().unwrap();
 
     nails()
-        .args(["--config", path, "config", "show", "--no-clear-history"])
+        .args([
+            "--config",
+            path,
+            "config",
+            "show",
+            "--nixos-flake",
+            "/etc/nixos#host",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("minimum_space_mb = 750  # file"))
-        .stdout(predicate::str::contains("clear_history = false  # cli"))
+        .stdout(predicate::str::contains("# cli"))
         .stdout(predicate::str::contains(
             "show_opsec_reminders = true  # default",
         ))
@@ -157,8 +164,6 @@ fn activate_exits_3_on_unknown_key_before_any_operation() {
             bad.path().to_str().unwrap(),
             "activate",
             "--dry-run",
-            "--session",
-            "keep",
         ])
         .assert()
         .code(3)
@@ -219,13 +224,7 @@ fn unknown_nested_key_fixture_is_refused_by_a_dry_run_with_a_hint() {
     let file = vm_fixture("unknown-nested-key.toml");
     nails()
         .args(["--config", file.path().to_str().unwrap()])
-        .args([
-            "activate",
-            "--dry-run",
-            "--overlay-only",
-            "--session",
-            "keep",
-        ])
+        .args(["activate", "--dry-run", "--overlay-only"])
         .assert()
         .code(3)
         .stderr(predicate::str::contains("did you mean `enabled`?"));

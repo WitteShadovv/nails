@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::{DEACTIVATE_RECOVERY_GUIDANCE, deactivate_error_body, print_deactivate_json};
+use super::{deactivate_error_body, print_deactivate_json};
 use nails_core::NailsError;
 use std::path::PathBuf;
 
@@ -10,13 +10,6 @@ fn success_json_prints_one_parseable_envelope() {
     // Smoke test: the renderer prints to stdout without panicking and the shape
     // is exercised by the envelope's own serialization tests.
     print_deactivate_json(false);
-}
-
-#[test]
-fn recovery_guidance_lists_the_dismount_and_poweroff_steps() {
-    let combined = DEACTIVATE_RECOVERY_GUIDANCE.join("\n");
-    assert!(combined.contains("dismounted"), "{combined}");
-    assert!(combined.contains("powered off"), "{combined}");
 }
 
 #[test]

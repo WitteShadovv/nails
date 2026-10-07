@@ -13,16 +13,12 @@ use std::path::PathBuf;
 
 /// Required directories in hidden storage (design.tex Section 4.3.5)
 const REQUIRED_DIRS: &[&str] = &[
-    "etc",        // Upper layer for /etc overlay
-    "home",       // Upper layer for /home overlay
-    "config",     // NAILS configuration (nails.toml)
-    "nix",        // Hidden environment Nix configuration
-    ".work/etc",  // OverlayFS work directory for /etc
-    ".work/home", // OverlayFS work directory for /home
-    ".work/nix",  // OverlayFS work directory for /nix
+    "root/upper", // Upper layer of the root overlay: the hidden system
+    "root/work",  // Its overlayfs work directory
 ];
 
-// Note: Additional work directories for overlays (e.g., .work/nix) are auto-created as needed
+// Note: the layers of other overlaid decoy filesystems (root/mounts/…) are
+// created at entry, once the fstab policy has decided which there are.
 
 /// Unified pre-flight check that validates hidden storage directory structure
 /// AND overlay directory accessibility in a single pass.
