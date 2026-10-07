@@ -1,4 +1,4 @@
-# 6. Emergency teardown architecture
+# 7. Emergency teardown architecture
 
 - Status: proposed
 - Date: 2026-10-06

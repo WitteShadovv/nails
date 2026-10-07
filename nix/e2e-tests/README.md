@@ -261,6 +261,13 @@ starting with `FINDING:` are research output, not assertions.
 - `research-soft-reboot-whole-root`: enters a whole-root overlay with
   `systemctl soft-reboot` and returns, checking the vital paths and the decoy
   disk ([ADR 0008](../../docs/adr/0008-whole-root-soft-reboot.md)).
+- `research-dual-root-vt-emergency`: runs a hidden display and session on their
+  own VT inside a whole-root overlay while the decoy desktop keeps running, and
+  makes emergency a cgroup kill plus a VT switch
+  ([ADR 0009](../../docs/adr/0009-dual-root-emergency.md)).
+- `research-dual-root-risks`: probes the dual-root design's risks (mount
+  namespace copies, display and VT handling, shared-daemon writes)
+  ([ADR 0009](../../docs/adr/0009-dual-root-emergency.md#risk-assessment)).
 
 ## Adding a fixture
 
