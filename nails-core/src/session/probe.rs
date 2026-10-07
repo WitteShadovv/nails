@@ -155,4 +155,22 @@ mod tests {
             }
         );
     }
+
+    /// The mount table of a live hidden session, captured as root in the
+    /// decoy-journal-leak VM test (fixture README): `/` is the overlay whose
+    /// upper is on the hidden volume at `/mnt/data`.
+    #[test]
+    fn the_captured_hidden_session_has_a_hidden_overlay_root() {
+        let Some(mountinfo) = crate::kernel_fixtures::vm("mountinfo-host.txt") else {
+            return;
+        };
+        let entries = parse_mountinfo(&mountinfo);
+        let upper = root_is_hidden_overlay(&entries, Path::new("/mnt/data"))
+            .expect("the captured root is the hidden overlay");
+        assert!(upper.starts_with("/mnt/data/"), "{upper}");
+        assert_eq!(
+            root_is_hidden_overlay(&entries, Path::new("/mnt/other")),
+            None
+        );
+    }
 }

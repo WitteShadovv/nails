@@ -175,6 +175,26 @@ mod tests {
         );
     }
 
+    /// journald's `/proc/<pid>/cgroup` as captured in a NixOS VM, when that
+    /// capture exists (nails-core's fixture README).
+    #[test]
+    fn the_captured_journald_cgroup_names_its_unit() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../nails-core/tests/fixtures/kernel/vm/proc-cgroup-journald.txt");
+        let Ok(content) = std::fs::read_to_string(path) else {
+            eprintln!("the VM capture is not taken yet (nails-core fixture README)");
+            return;
+        };
+        assert_eq!(
+            service_unit_from_cgroup(&content).as_deref(),
+            Some("systemd-journald.service")
+        );
+        assert_eq!(
+            v2_path(&content).as_deref(),
+            Some("/system.slice/systemd-journald.service")
+        );
+    }
+
     /// A unit with `DelegateSubgroup=` runs its process one cgroup below its
     /// own: systemd-udevd.service sets `DelegateSubgroup=udev`.
     #[test]

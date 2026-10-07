@@ -8,20 +8,19 @@
 #
 #   capture-kernel-fixtures.sh userns OUTDIR
 #       Unprivileged. Builds an overlay scene inside a fresh user + mount
-#       namespace (unshare -Urm) and captures its mountinfo and fdinfo, a
-#       hidden-root scene (a tmpfs named after a mapper device, an overlay with
-#       its upper on it and a shadowed overlay pair), the stat and status of a
-#       setsid child with an awkward comm, and /proc/swaps with its file names
+#       namespace (unshare -Urm) and captures its mountinfo, a hidden-root
+#       scene (a tmpfs named after a mapper device, an overlay with its upper
+#       on it and a shadowed overlay pair), the stat and status of a setsid
+#       child with an awkward comm, and /proc/swaps with its file names
 #       neutralised. The scratch prefix is rewritten to /fixture, so no host
 #       path is recorded.
 #
 #   capture-kernel-fixtures.sh vm OUTDIR
-#       Run as root inside a NixOS test VM with an active NAILS session that
-#       overlays /var (for example the decoy-journal-leak test, right after
-#       `nails activate`). Captures the host's mountinfo, journald's mountinfo,
-#       its journal fds and fdinfo, logind's session records, and the systemctl
-#       and loginctl output the parsers consume, in exactly the invocations the
-#       code uses.
+#       Run as root inside a NixOS test VM, in the hidden root of an active
+#       NAILS session (the decoy-journal-leak test, right after `nails
+#       activate`). Captures the session's mountinfo, /proc/swaps, journald's
+#       stat, status and cgroup, and the systemd version in exactly the two
+#       invocations the code uses.
 #
 # Re-run only when a kernel, systemd or NAILS change alters these formats, and
 # review the diff before committing: the VM capture is synthetic, but check it
@@ -44,32 +43,23 @@ capture_userns() {
   unshare -Urm --propagation private "$0" userns-inner "$out"
 }
 
-# Inside the namespace: tmpfs scratch, a base /var-like tmpfs with an fd held on
-# it, an overlay on top with awkward layer names, and an fd through the overlay.
+# Inside the namespace: tmpfs scratch, a base /var-like tmpfs and an overlay on
+# top of it with awkward layer names.
 capture_userns_inner() {
-  local scratch fd_dir
+  local scratch
   scratch=$(mktemp -d)
   mount -t tmpfs -o mode=0755 scratch "$scratch"
-  mkdir -p "$scratch/var/log/journal/m" "$scratch/lower, with:colon" \
+  mkdir -p "$scratch/var" "$scratch/lower, with:colon" \
     "$scratch/upper\\dir" "$scratch/work dir"
   mount -t tmpfs -o mode=0755 basevar "$scratch/var"
-  mkdir -p "$scratch/var/log/journal/m"
-  exec 7>>"$scratch/var/log/journal/m/system.journal" # stale fd, base /var
   # The production overlay options, escaped as escape_overlay_path does.
   mount -t overlay overlay -o nosuid,nodev \
     -o "lowerdir=$scratch/lower\\, with\\:colon,upperdir=$scratch/upper\\\\dir,workdir=$scratch/work dir,index=off,metacopy=off,redirect_dir=nofollow" \
     "$scratch/var"
-  mkdir -p "$scratch/var/log/journal/m"
-  exec 8>>"$scratch/var/log/journal/m/system.journal" # re-homed fd, overlay
-  exec 9<"$scratch/var/log/journal/m/system.journal"  # read-only fd, overlay
 
   # Only the scene's own mounts, with the random scratch path made stable.
   grep -F " $scratch" /proc/self/mountinfo | sed "s|$scratch|/fixture|g" \
     >"$out/mountinfo-overlay-scene.txt"
-  fd_dir=/proc/self/fdinfo
-  cat "$fd_dir/7" >"$out/fdinfo-append-base.txt"
-  cat "$fd_dir/8" >"$out/fdinfo-append-overlay.txt"
-  cat "$fd_dir/9" >"$out/fdinfo-readonly-overlay.txt"
   uname -sr >"$out/kernel.txt"
 
   capture_hidden_root_scene
@@ -135,59 +125,18 @@ capture_swaps() {
 }
 
 capture_vm() {
-  local pid fd target name
+  local pid
   uname -sr >"$out/kernel.txt"
+  # The two invocations session/systemd.rs reads the version through.
   systemctl --version | head -1 >"$out/systemd-version.txt"
+  systemctl show -p Version --value >"$out/systemd-show-version.txt"
   cat /proc/self/mountinfo >"$out/mountinfo-host.txt"
   cat /proc/swaps >"$out/proc-swaps.txt"
 
   pid=$(pgrep -x systemd-journal | head -1)
-  cat "/proc/$pid/mountinfo" >"$out/mountinfo-journald.txt"
   cat "/proc/$pid/stat" >"$out/proc-stat-journald.txt"
   cat "/proc/$pid/status" >"$out/proc-status-journald.txt"
   cat "/proc/$pid/cgroup" >"$out/proc-cgroup-journald.txt"
-  : >"$out/journald-fds.txt"
-  for fd in "/proc/$pid/fd/"*; do
-    target=$(readlink "$fd") || continue
-    case $target in
-    /var/log/journal/* | /run/log/journal/*)
-      name=$(basename "$fd")
-      printf '%s %s\n' "$name" "$target" >>"$out/journald-fds.txt"
-      cat "/proc/$pid/fdinfo/$name" >"$out/fdinfo-journald-$name.txt"
-      ;;
-    esac
-  done
-
-  # The exact invocations in manager/helpers/service_controller.rs,
-  # overlay_mount/journald_fd.rs and target_user.rs.
-  systemctl list-units --type=service --all --no-legend --plain --no-pager \
-    >"$out/systemctl-list-units-all.txt"
-  systemctl list-units --type=service --state=active --no-legend --plain --no-pager \
-    >"$out/systemctl-list-units-active.txt"
-  systemctl is-active systemd-journald.service nails-absent.service \
-    >"$out/systemctl-is-active.txt" || true
-  systemctl show -p MainPID --value systemd-journald.service \
-    >"$out/systemctl-show-journald-mainpid.txt"
-  local session
-  session=$(loginctl show-seat seat0 -p ActiveSession --value 2>/dev/null) || true
-  printf '%s\n' "$session" >"$out/loginctl-seat0-active-session.txt"
-  if [ -n "$session" ]; then
-    loginctl show-session "$session" -p User --value \
-      >"$out/loginctl-show-session-user.txt" || true
-    # The cgroup of a process of that session, which the emergency kill spares.
-    local leader
-    leader=$(loginctl show-session "$session" -p Leader --value) || leader=
-    [ -z "$leader" ] || cat "/proc/$leader/cgroup" >"$out/proc-cgroup-session-leader.txt"
-  fi
-
-  # logind's own session records, which nails-teardown/src/session.rs reads
-  # (the .ref FIFOs are skipped).
-  mkdir -p "$out/logind-sessions"
-  local record
-  for record in /run/systemd/sessions/*; do
-    [ -f "$record" ] || continue
-    cp "$record" "$out/logind-sessions/"
-  done
 }
 
 case $mode in

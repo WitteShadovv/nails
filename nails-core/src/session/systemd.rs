@@ -115,6 +115,21 @@ mod tests {
         assert_eq!(parse_version("unknown"), None);
     }
 
+    /// The version as the two probes print it in a NixOS VM (fixture README):
+    /// the first line of `systemctl --version`, and `systemctl show -p Version
+    /// --value` when that capture exists.
+    #[test]
+    fn the_captured_systemd_versions_parse() {
+        let Some(line) = crate::kernel_fixtures::vm("systemd-version.txt") else {
+            return;
+        };
+        let version = parse_version(&line).expect("the captured --version line parses");
+        assert!(version >= MIN_SYSTEMD, "{line}");
+        if let Some(show) = crate::kernel_fixtures::vm("systemd-show-version.txt") {
+            assert_eq!(parse_version(&show), Some(version), "{show}");
+        }
+    }
+
     #[test]
     fn units_are_found_in_any_unit_directory_of_the_root() {
         let root = tempfile::tempdir().unwrap();
