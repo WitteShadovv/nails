@@ -91,6 +91,21 @@ pub fn run_bounded(program: &Path, args: &[&str], budget: Duration) -> bool {
     run(program, args, budget) == Outcome::Done
 }
 
+/// Ignore SIGTERM, SIGINT and SIGHUP in this process from now on. The
+/// emergency hot path kills the shell it was started from and enqueues a stop
+/// of every session, its own included; neither may end it halfway.
+#[allow(unsafe_code)]
+pub fn survive_session_stop() {
+    for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        // SAFETY: `signal(2)` with SIG_IGN installs no handler; it only
+        // changes this process's disposition, which nothing else relies on
+        // once the hot path has begun.
+        unsafe {
+            libc::signal(sig, libc::SIG_IGN);
+        }
+    }
+}
+
 /// Set SIGTERM, SIGINT and SIGHUP to ignored in the child. An ignored
 /// disposition survives `exec`.
 #[allow(unsafe_code)]

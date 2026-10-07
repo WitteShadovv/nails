@@ -164,6 +164,9 @@ impl HotReport {
 /// Run the hot path. `plan` is the session plan, if one could be read.
 pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
     let start = Instant::now();
+    if host.act {
+        tools::survive_session_stop();
+    }
     let entries = read_mountinfo().unwrap_or_default();
     let side = match &plan {
         Some(p) if ret::in_hidden_root(&entries, p) => Side::Hidden,
@@ -237,6 +240,7 @@ fn nextroot_cleanup(host: &Host) {
 
 /// Enqueue `finish`, falling back to a power-off and then to the kernel.
 fn dispatch(plan: &Plan, host: &Host, finish: Finish, report: &mut HotReport) {
+    kill_shells(host, report);
     report.timed("enqueue", |report| {
         if !host.act {
             report.dispatched = Some(finish);
@@ -247,7 +251,20 @@ fn dispatch(plan: &Plan, host: &Host, finish: Finish, report: &mut HotReport) {
     });
 }
 
+/// Stopping the login sessions sends their shells SIGHUP, on which bash
+/// writes its history (on the decoy: to the decoy disk). SIGKILL every
+/// interactive shell, the invocation's own included, before anything is
+/// enqueued.
+fn kill_shells(host: &Host, report: &mut HotReport) {
+    report.timed("kill-shells", |_| {
+        if host.act {
+            crate::shells::kill_all_interactive_shells(&[]);
+        }
+    });
+}
+
 fn dispatch_without_plan(host: &Host, finish: Finish, report: &mut HotReport) {
+    kill_shells(host, report);
     report.timed("enqueue", |report| {
         if !host.act {
             report.dispatched = Some(finish);
@@ -376,7 +393,7 @@ mod tests {
     }
 
     #[test]
-    fn the_hidden_side_prepares_arms_enqueues_then_kills_in_that_order() {
+    fn the_hidden_side_prepares_arms_kills_shells_enqueues_then_kills_in_that_order() {
         let dir = tempfile::tempdir().unwrap();
         let h = host(dir.path());
         std::fs::create_dir_all(&h.runtime_dir).unwrap();
@@ -387,7 +404,14 @@ mod tests {
         let names: Vec<_> = report.phases.iter().map(|(n, _)| *n).collect();
         assert_eq!(
             names,
-            ["prepare-return", "close-backend", "arm", "enqueue", "kill"]
+            [
+                "prepare-return",
+                "close-backend",
+                "arm",
+                "kill-shells",
+                "enqueue",
+                "kill"
+            ]
         );
         assert_eq!(report.dispatched, Some(Finish::Return));
         let written = Plan::load(&h.plan_path()).unwrap();
@@ -417,7 +441,7 @@ mod tests {
         let mut report = HotReport::new(Side::Hidden, Finish::Poweroff);
         hidden(&mut plan, &h, &mut report);
         let names: Vec<_> = report.phases.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, ["enqueue", "kill"]);
+        assert_eq!(names, ["kill-shells", "enqueue", "kill"]);
         assert_eq!(report.dispatched, Some(Finish::Poweroff));
     }
 }

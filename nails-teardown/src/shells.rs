@@ -127,6 +127,15 @@ pub fn kill_invoking_shells(spared_units: &[String]) -> Vec<u32> {
     killed
 }
 
+/// SIGKILL every interactive shell, the invocation's own last. Called just
+/// before a soft-reboot or power action is enqueued: stopping a login session
+/// sends its shells SIGHUP, on which bash writes its history.
+pub fn kill_all_interactive_shells(spared_units: &[String]) {
+    let invocation = Invocation::current();
+    let _ = kill_interactive_shells(&invocation, spared_units);
+    let _ = kill_invoking_shells(spared_units);
+}
+
 #[cfg(test)]
 mod tests {
     use super::shell_is_interactive;

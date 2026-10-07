@@ -37,8 +37,10 @@ what you did.
 >   or the tool in any other command.
 > - Type those commands in a shell with history off — see
 >   [History off on the decoy](#history-off-on-the-decoy). Activation also kills
->   the decoy's interactive shells as its last step, so none of them writes the
->   activation command to its history file.
+>   the decoy's interactive shells, yours included, right before it starts the
+>   soft-reboot, so none of them writes the activation command to its history
+>   file. Your terminal closes at that point; what activation printed up to then
+>   is already on it.
 > - Choose neutral names. A mapper called `data0`, a mount at `/mnt/usb` and a
 >   plain filesystem label reveal nothing; `hidden`, `veracrypt`, `tcrypt`,
 >   `decoy` or `nails` do. **Renaming alone is not enough** — the names still
@@ -75,9 +77,12 @@ Two safeguards bracket the session:
   `<hidden-root>/reports/`, then prints a one-line summary. The scan only reads
   the decoy; the report lives on the hidden volume. It is a baseline, so if a
   later examination finds a trace you can tell whether it predated the session.
-- **No shell history reaches the decoy.** As its last step activation SIGKILLs
-  the decoy's interactive shells, so none of them can flush the activation
-  command to a history file. Shells in the hidden session write their history
+- **No shell history reaches the decoy.** Right before it starts the
+  soft-reboot, activation SIGKILLs the decoy's interactive shells: stopping a
+  login session sends its shells SIGHUP, on which bash writes its history, so
+  they must be gone first. None of them can flush the activation command to a
+  history file. `nails emergency` does the same before it starts the way back
+  or the power-off. Shells in the hidden session write their history
   into the hidden home, which is in the upper (see [Shell history](#shell-history)).
 
 Hardening the decoy's *own* shell history (environment, symlinks, boot-time

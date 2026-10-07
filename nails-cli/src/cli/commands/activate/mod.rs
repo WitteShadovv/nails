@@ -248,6 +248,13 @@ pub fn execute(
     print_result(settings, &ActivateResult::Entering(&entry), duration);
     crate::cli::output::flush_stdio();
 
+    // The decoy's shells write their history when they exit, bash on the
+    // SIGHUP that stopping their login session sends: the soft-reboot would
+    // do that the moment it is enqueued. SIGKILL them first, ours last, so
+    // the activation command never reaches a history file on the decoy disk.
+    // Everything above is already on the terminal; a failure below still
+    // reaches the log.
+    nails_teardown::shells::kill_all_interactive_shells(&[]);
     let host = RealTargetHost::for_plan(Some(&entry.plan));
     if let Err(error) = manager.trigger_entry(&host, &RealEntryHost) {
         return report_error(
@@ -259,12 +266,6 @@ pub fn execute(
         );
     }
     drop(_state_lock);
-    // The decoy's shells write their history when they exit (bash on SIGHUP):
-    // kill them now, ours last, so the activation command never reaches a
-    // history file on the decoy disk. The soft-reboot ends them anyway.
-    let invocation = nails_teardown::proc::Invocation::current();
-    let _ = nails_teardown::shells::kill_interactive_shells(&invocation, &[]);
-    let _ = nails_teardown::shells::kill_invoking_shells(&[]);
     if entry.warnings.is_empty() {
         ExitStatus::Ok
     } else {
