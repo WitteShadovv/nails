@@ -81,12 +81,25 @@ in
     with subtest("capture the kernel and systemd fixtures of a live session"):
         # T-139: the parser tests read these (nails-core/tests/fixtures/kernel/
         # README.md). Read-only, written under /run, never on the decoy disk.
-        machine.copy_from_host(
-            "${../../../../scripts/capture-kernel-fixtures.sh}", "/run/capture-kernel-fixtures.sh"
-        )
+        # In the hidden root the host share is an overlay with its upper on
+        # the hidden volume, so copy_from_host/copy_from_vm cannot reach the
+        # host: the script goes in and the capture comes out through the
+        # backdoor shell.
+        import base64
+        import io
+        import tarfile
+
+        with open("${../../../../scripts/capture-kernel-fixtures.sh}") as script:
+            machine.succeed(
+                "cat > /run/capture-kernel-fixtures.sh <<'NAILS_CAPTURE_EOF'\n"
+                + script.read()
+                + "NAILS_CAPTURE_EOF"
+            )
         machine.succeed("bash /run/capture-kernel-fixtures.sh vm /run/kernel-fixtures")
-        machine.copy_from_vm("/run/kernel-fixtures", "kernel-fixtures")
+        archive = machine.succeed("tar -C /run/kernel-fixtures -cz . | base64 -w0")
         machine.succeed("rm -rf /run/kernel-fixtures /run/capture-kernel-fixtures.sh")
+        with tarfile.open(fileobj=io.BytesIO(base64.b64decode(archive)), mode="r:gz") as tar:
+            tar.extractall(machine.out_dir / "kernel-fixtures", filter="data")
 
     with subtest("plant a unit that writes to /dev/kmsg after journald stopped"):
         machine.succeed(
