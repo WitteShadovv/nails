@@ -1,9 +1,10 @@
 # 8. Whole-root overlay entered by soft-reboot
 
-- Status: proposed (the spike passes; the decision waits on the remaining go/no-go criteria)
-- Date: 2026-10-06
+- Status: accepted (2026-10-07): the whole-root soft-reboot is the only session
+  mode. The hardware go/no-go criteria remain open (see "Decision").
+- Date: 2026-10-06 (proposed), 2026-10-07 (accepted)
 - Backlog: T-132 (whole-root / soft-reboot design), T-131 (alternatives matrix)
-- Related: [ADR 0005](0005-live-overlay-vs-boot-time-overlay.md), [ADR 0009](0009-dual-root-emergency.md), [threat model](../threat-model.md)
+- Related: [ADR 0005](0005-live-overlay-vs-boot-time-overlay.md) (superseded by this record), [ADR 0009](0009-dual-root-emergency.md), [threat model](../threat-model.md)
 
 ## Context
 
@@ -49,9 +50,10 @@ Each claim is tagged with how solid it is:
   the evidence, and this record must be updated with the results.
 - **[I]** inferred from the source or from experience, not yet observed.
 
-The spike is
-`nix/e2e-tests/tests/research/soft-reboot-whole-root.nix`; build it with
-`nix build .#legacyPackages.x86_64-linux.e2e.research-soft-reboot-whole-root -L`.
+The spike was
+`nix/e2e-tests/tests/research/soft-reboot-whole-root.nix`. It is now the regular
+test `nix/e2e-tests/tests/session/soft-reboot-mechanics.nix`; build it with
+`nix build .#legacyPackages.x86_64-linux.e2e.soft-reboot-mechanics -L`.
 **First run (commit `ea39acb`, 2026-10-06, KVM host):** both cycles ran, and
 every vital check passed in the hidden root and on the decoy: units, network,
 getty and a password login, `modprobe`, ESP and EFI entries, the Nix store and
@@ -543,6 +545,15 @@ emergency.
 [ADR 0009](0009-dual-root-emergency.md) evaluates a whole-root design that
 leaves the decoy desktop running on its own VT and so meets the ruling.
 
+**Resolution (2026-10-07).** The operator revised the ruling for this mode:
+the emergency may end at a login screen. NAILS implements E1 with the kill of
+E2's speed: the soft-reboot is enqueued first (its pending stop jobs keep
+`Restart=` from reviving anything), then every hidden cgroup is killed with
+`cgroup.kill`, so the orderly shutdown has nothing left to wait for and the
+`/run` scrub still runs as the last step. `--poweroff` is E4. The decoy shows
+its normal greeter; an automatic login into the decoy desktop was considered
+and dropped.
+
 ## 7. Forensic comparison
 
 | Transition | Today (live overlays) | Whole-root soft-reboot |
@@ -573,44 +584,91 @@ inferred unless noted.
 | Multi-distro portability | − heuristics per distro | + systemd ≥ 254 (bookworm and jammy excluded); fstab handling per distro | − initrd per distro | − bootloader per distro | + |
 | Implementation effort | (exists) | XL | XL | L | L (but no longer "a hidden session on the decoy OS") |
 
-## Decision (proposed)
+## Decision
 
-Do **not** replace the live overlays yet. Pursue the whole-root soft-reboot as a
-second, opt-in **session mode** and decide after the spike.
+**Accepted on 2026-10-07: the whole-root soft-reboot replaces the live
+per-directory overlays and is the only session mode.** The live overlays, their
+process detection, classification, restart and kill machinery, the
+`--terminate-processes` gate, the journald re-homing, the display-manager
+restart, the writer rescans and the graphical-session spare logic are removed.
 
-Reasons for pursuing it:
+What decided it:
 
 - It removes the entire process-detection, restart and kill machinery, the
-  journald re-homing and the display-manager restart. Above all it removes the
-  silent missed-writer leak class, which no amount of heuristics closes (T-132).
-- Today's standard deactivation already reboots, so a soft-reboot back is *better*
-  UX than today's exit (no firmware, no bootloader) and leaves fewer ESP and NVRAM
-  writes.
+  journald re-homing and the display-manager restart, and with them the silent
+  missed-writer leak class, which no amount of heuristics closes (T-132).
+- Deactivation is a soft-reboot back (no firmware, no bootloader), lighter than
+  the full reboot the live mode used.
 - It adds no enabler to the decoy, has a persistent upper and needs no initrd
-  work. That answers the three objections of ADR 0005 against boot-time overlays.
+  work, which answers the three objections of ADR 0005 against boot-time
+  overlays.
 
-Reasons it cannot simply replace today's design:
+**The emergency ruling was revisited** (§6): the operator accepts that the
+emergency ends the session. In this mode `nails emergency` kills every hidden
+process and soft-reboots back to the plain decoy, which ends at the decoy's own
+login screen (the operator logs in with the decoy password), or powers off with
+`--poweroff`. A one-shot automatic login into the decoy desktop after the
+emergency was considered and dropped: nothing logs in on the operator's behalf.
 
-- Emergency cannot keep the desktop (§6). This conflicts with the operator's
-  ruling, which must be revisited for this mode, or this mode must stay optional.
-- NixOS support upstream is immature: units are missing in the pinned nixpkgs, the
-  init-check workaround is needed, and there is no stage-2 activation (§3).
-- Each distro needs fstab-aware overlay setup, and the hidden `/run` residue needs
-  a scrubber (§5).
+Systemd 254 or newer is required. Debian 12 and Ubuntu 22.04 are refused with a
+clear message; NixOS (current), Debian 13 and Ubuntu 24.04 and newer are
+supported.
 
-**Go/no-go criteria** (all must hold before implementation starts):
+### Go/no-go criteria, as of the decision
 
-1. The spike passes: both cycles, every vital check, the raw decoy disk free of
-   hidden tokens, the LUKS mapping closed in both close modes, and no hidden
-   `/run` or kmsg residue in the decoy. **Met in the fourth run** (commit
-   `688eea6`), apart from a test-side login race that has since been fixed.
-2. On real hardware: trigger to usable greeter ≤ 15 s in both directions on a
-   GNOME or KDE decoy, and the GPU and Wi-Fi come back without intervention.
-3. A hidden NixOS toplevel can be entered with variant B (or C) without touching
-   the bootloader.
-4. A Debian trixie / Ubuntu noble variant of the spike passes on the nix-vm-test
-   tier, including a decoy with a separate `/home` partition.
-5. The operator accepts the §6 emergency semantics for this mode.
+1. The spike passes. **Met** (fourth run, `688eea6`; the login race is fixed).
+2. On real hardware: trigger to a usable greeter within 15 s in both
+   directions on a GNOME or KDE decoy, GPU and Wi-Fi back without intervention.
+   **Open**: to be measured on hardware; the VM suite records in-guest timings
+   of every transition (`TIMING:` lines).
+3. A hidden NixOS toplevel can be entered with variant B without touching the
+   bootloader. **Implemented** (see "Implementation"); the VM test
+   `session-nixos-hidden-system` must confirm it.
+4. A Debian trixie / Ubuntu noble variant passes on the nix-vm-test tier,
+   including a decoy with a separate filesystem. **Implemented as tests**: the
+   distro smoke tests run the session on both, `session-fstab-policy` covers a
+   separate filesystem, the ESP and swap on NixOS; a separate `/home` on the
+   distro images is still to be added.
+5. The operator accepts the §6 emergency semantics. **Met** (see above).
+
+### Implementation
+
+- `nails-teardown::whole_root` holds everything the panic path and the
+  transition need, with no configuration and no logging: the session plan on
+  `/run` (format 2), the mount primitives and the pre-switch init check
+  (`openat2` with `RESOLVE_IN_ROOT`, the way PID 1 resolves its init), the
+  transition step, the `/run` snapshot and scrub, the kmsg cursor, the way
+  back, the runtime units and masks, the kill of all userspace and the
+  emergency hot path.
+- The **transition step** is the `ExecStart=` of `systemd-soft-reboot.service`
+  through a runtime drop-in that activation installs (and reloads) before it
+  mounts anything at `/run/nextroot`. It runs the RAM copy of the binary
+  (`nails transition`, dispatched before clap, no output). It acts only on an
+  **armed** plan: entering repoints `/run/current-system` (NixOS), masks the
+  decoy units and installs the session's runtime units; leaving repoints back,
+  scrubs `/run`, restores `utab` and writes the kmsg cursor last. Before either
+  it checks the next root's init and disarms on failure. An unarmed populated
+  `/run/nextroot` (an activation that died) is detached, so a later plain
+  `reboot`, which systemd >= 255 turns into a soft-reboot, never enters it.
+- `nails_core::session` adds the parts that need the configuration: the fstab
+  policy (§2: boot filesystems read-only, mounted decoy filesystems overlaid
+  with an upper on the hidden volume, swap, unmounted disks, network
+  filesystems and disk-backed overlay entries masked), the entry, the way back,
+  the probes `status` uses, and the new pre-flight checks (`systemd-version`,
+  `soft-reboot-units`, `decoy-root`, `session-state`, `fstab-policy`).
+- **NixOS, variant B**: the hidden toplevel is built into the next root's
+  store (`nix build --store /run/nextroot`, the evaluation cache on the hidden
+  volume), its `activate` runs chrooted with a private `/run`, and the
+  transition repoints `/run/current-system` after every decoy unit has
+  stopped. One grey-out; the greeter is the hidden configuration's.
+  `activate --overlay-only` enters with the decoy's own system and the hidden
+  `/etc` and home. The hidden `/etc/nixos` lives in the upper.
+- **Emergency**: the hot path prepares the way back, marks the backend for
+  deferred removal, arms the plan, enqueues `soft-reboot.target` directly with
+  PID 1 and then `cgroup.kill`s every cgroup except `init.scope` and the
+  invocation's own, with timed phases in its report and log. A way back that
+  cannot be prepared powers off instead; a power action that cannot be enqueued
+  asks the kernel directly.
 
 ## Risks
 
@@ -638,7 +696,8 @@ Reasons it cannot simply replace today's design:
   reuse.
 - **Overlay copy-up versus a decoy that keeps changing** (§2), especially the Nix
   DB and `/etc` after a decoy rebuild between sessions.
-- **The emergency ruling conflict** (§6).
+- **The emergency ruling conflict** (§6), resolved by the decision: the
+  emergency ends at the decoy's login screen.
 
 ### What the VM cannot show
 

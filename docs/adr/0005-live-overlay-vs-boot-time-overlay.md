@@ -1,7 +1,17 @@
 # 5. Live overlay vs boot-time overlay mechanisms
 
-- Status: accepted
+- Status: superseded by [ADR 0008](0008-whole-root-soft-reboot.md) (2026-10-07)
 - Date: 2026-10-04
+
+> **Superseded.** The first revisit condition below was met: the per-directory
+> live overlay needs process detection, restarts and kills that can never be
+> complete, and a writer the heuristics miss is a silent leak (T-132). NAILS now
+> enters a whole-root overlay with `systemctl soft-reboot` instead (ADR 0008).
+> That design keeps the three properties this record chose the live overlay
+> for (no enabler on the decoy, a persistent externally backed upper, no full
+> reboot through firmware and bootloader) and drops the live-mount leak classes
+> this record accepted. The boot-time mechanisms compared below remain rejected
+> for the reasons given here. The text is kept as written.
 
 ## Context
 
@@ -91,6 +101,10 @@ that does not betray the hidden mode, a persistent upper taken at boot) and is
 tracked as its own backlog item rather than folded into the multi-distro port.
 
 ## Consequences
+
+The consequences as recorded in 2026-10; see the note at the top for what
+ADR 0008 changed: the process-detection, session-kill and journald defences are
+gone, together with the live overlay they defended.
 
 - The multi-distro port can proceed on the live-overlay model: a new platform
   backend has to make a live full-root overlay work, not integrate with an

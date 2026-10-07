@@ -1,7 +1,18 @@
 # 7. Emergency teardown architecture
 
-- Status: accepted, implemented (T-135, T-136)
+- Status: accepted, implemented (T-135, T-136); amended by
+  [ADR 0008](0008-whole-root-soft-reboot.md)
 - Date: 2026-10-06, implemented 2026-10-07
+
+> **Amended by ADR 0008.** What still holds: the early dispatch before clap,
+> the configuration and tracing; the crate boundary (`nails-teardown` with
+> `rustix`, `libc` and `serde` only); the plan on the decoy's `/run`; stop jobs
+> before kills; `cgroup.kill`; power actions on every outcome; broken-pipe
+> tolerant output. What changed: there are no per-directory overlays to undo
+> and no graphical session to spare. In the whole-root session the hot path
+> (`nails_teardown::whole_root::emergency`) prepares the way back, enqueues the
+> soft-reboot and kills every hidden cgroup; the plan format is version 2. The
+> sections below describe the live-overlay hot path as it was built.
 
 ## Context
 
