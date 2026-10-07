@@ -154,11 +154,11 @@ fn unknown_reason(id: Option<&str>) -> String {
     match id {
         Some(id) => format!(
             "host '{id}' is not a supported platform. NAILS supports NixOS and \
-             the Debian family (Debian 12+, Ubuntu 24.04+); other distributions \
+             the Debian family (Debian 13+, Ubuntu 24.04+); other distributions \
              are not yet validated."
         ),
         None => "this host declares no os-release ID; NAILS supports NixOS and \
-             the Debian family (Debian 12+, Ubuntu 24.04+) and refuses hosts it \
+             the Debian family (Debian 13+, Ubuntu 24.04+) and refuses hosts it \
              cannot identify."
             .to_string(),
     }
@@ -174,7 +174,7 @@ fn unknown_reason(id: Option<&str>) -> String {
 pub(crate) const USR_MERGE_REFUSAL: &str = "this Debian-family host is not usr-merged (/bin, /sbin or /lib is a real \
      directory rather than a symlink into /usr). NAILS keeps /usr read-only as \
      its leak guard, which only holds on a merged layout. Convert the host with \
-     usrmerge, or use a release that ships the merged layout (Debian 12+, \
+     usrmerge, or use a release that ships the merged layout (Debian 13+, \
      Ubuntu 24.04+).";
 
 #[cfg(test)]

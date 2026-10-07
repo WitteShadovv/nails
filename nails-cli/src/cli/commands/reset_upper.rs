@@ -15,7 +15,7 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// The `data` payload for `reset-upper --json`.
 #[derive(Debug, serde::Serialize)]
 struct ResetUpperData {
-    /// The overlay target whose upper was reset.
+    /// The path whose hidden copy was deleted.
     target: String,
     /// The directories that were removed (empty when there was nothing to do).
     removed: Vec<String>,
@@ -23,17 +23,18 @@ struct ResetUpperData {
 
 /// Execute the reset-upper command.
 ///
-/// Deletes a target's persistent overlay upper and work directories on the
-/// hidden volume so the target falls back to its decoy lower on the next
-/// activation. It refuses unless the system is Inactive and the target is not
-/// mounted, lists what it will delete, and confirms on a terminal (`-y` skips
-/// the prompt).
+/// Deletes a path's hidden copy from the root upper on the hidden volume
+/// (`<upper>/<path>`), and the layers of a separate decoy filesystem mounted
+/// at that path (`root/mounts/<path>`), so the decoy's own files show through
+/// again at the next entry. It refuses in the hidden session (the upper is the
+/// live root there), lists what it will delete, and confirms on a terminal
+/// (`-y` skips the prompt).
 ///
 /// # Returns
 ///
 /// - [`ExitStatus::Ok`] once the upper was removed (or there was nothing to do)
 /// - [`ExitStatus::Config`] when the configuration file could not be loaded
-/// - [`ExitStatus::InvalidState`] when the system is Active or the target is mounted
+/// - [`ExitStatus::InvalidState`] in the hidden session
 /// - [`ExitStatus::Usage`] when confirmation is needed but stdin is not a terminal
 /// - [`ExitStatus::Failed`] when the operator declines, or on a lock or removal failure
 pub fn execute(

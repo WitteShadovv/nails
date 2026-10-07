@@ -126,6 +126,8 @@ pub struct EntryInputs<'a> {
     /// The operator (from `SUDO_UID`/`SUDO_USER`), whose home the persona
     /// applies to.
     pub operator: Option<crate::target_user::TargetUser>,
+    /// The free space a hidden NixOS build needs on the hidden volume, in MB.
+    pub rebuild_space_mb: u64,
 }
 
 /// The prepared entry.
@@ -345,6 +347,7 @@ fn build(
 
     let mut warnings = Vec::new();
     if let Some(builder) = inputs.builder {
+        ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
         let system = host.build_hidden_system(builder, &nextroot, &layout.cache())?;
         host.activate_hidden_system(&nextroot, &system)?;
         if let Some(decoy) = &plan.decoy.system
@@ -406,6 +409,20 @@ fn build(
         decisions,
         warnings,
     })
+}
+
+/// Refuse a hidden NixOS build when the hidden volume holding `upper` has less
+/// than `floor_mb` free: the store delta of a full build is often several GB.
+fn ensure_build_space(upper: &Path, floor_mb: u64) -> Result<()> {
+    let stat = rustix::fs::statvfs(upper).map_err(|e| io(upper, e.into()))?;
+    let available_mb = stat.f_bavail.saturating_mul(stat.f_frsize) / (1024 * 1024);
+    if available_mb < floor_mb {
+        return Err(NailsError::InvalidState(format!(
+            "the hidden volume has {available_mb} MB free; the hidden NixOS build needs \
+             {floor_mb} MB (rebuild_space_mb)"
+        )));
+    }
+    Ok(())
 }
 
 /// Fresh-home: the operator's home becomes an opaque directory in the upper
@@ -541,6 +558,14 @@ mod tests {
                 .as_deref(),
             Some("subvol=/@")
         );
+    }
+
+    #[test]
+    fn a_build_is_refused_below_the_space_floor() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(ensure_build_space(dir.path(), 0).is_ok());
+        let error = ensure_build_space(dir.path(), u64::MAX).unwrap_err();
+        assert!(error.to_string().contains("rebuild_space_mb"), "{error}");
     }
 
     #[test]

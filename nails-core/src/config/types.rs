@@ -213,10 +213,10 @@ pub struct Config {
 
     /// Free-space floor applied when a hidden NixOS build is expected, in MB.
     ///
-    /// A full rebuild (no cached hidden toplevel, or the fingerprint changed)
-    /// writes the store delta into the overlaid `/nix` upper, often several GB.
-    /// After the overlays are mounted and before the build runs, free space is
-    /// re-checked against this floor and activation is rolled back if short.
+    /// A hidden NixOS build writes its store delta into the root upper on the
+    /// hidden volume, often several GB. Right before the build runs, the entry
+    /// checks the hidden volume's free space against this floor and is rolled
+    /// back if it is short.
     #[serde(default = "super::defaults::default_rebuild_space_mb")]
     pub rebuild_space_mb: u64,
 

@@ -536,6 +536,7 @@ mod entry_kernel_tests {
                 backend: vec!["data".into()],
                 persona: Default::default(),
                 operator: None,
+                rebuild_space_mb: 0,
             }
         }
     }

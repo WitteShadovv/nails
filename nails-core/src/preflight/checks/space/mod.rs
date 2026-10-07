@@ -25,11 +25,10 @@ use std::path::PathBuf;
 /// - **Pass** (>= `minimum_space_mb`): safe to proceed
 /// - **Fail** (< `minimum_space_mb`): blocked, insufficient space
 ///
-/// This is the base floor for an overlay-only activation. A full NixOS rebuild
-/// writes a much larger store delta after the overlays are mounted; that is
-/// enforced separately against `rebuild_space_mb` during activation, since
-/// estimating it in pre-flight would mean evaluating the hidden flake before the
-/// overlays exist.
+/// This is the base floor for an overlay-only activation. A hidden NixOS build
+/// writes a much larger store delta into the root upper; the entry checks that
+/// separately against `rebuild_space_mb` right before the build, since
+/// estimating it in pre-flight would mean evaluating the hidden flake first.
 ///
 /// # Default Threshold
 ///
@@ -140,7 +139,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SpaceCheck {
         let minimum_mb = self.minimum_space_mb;
 
         // Single hard floor, no warn band: a larger NixOS rebuild delta is
-        // enforced separately against `rebuild_space_mb` during activation.
+        // checked separately against `rebuild_space_mb` before the build.
         if available_mb >= minimum_mb {
             let ratio = ((available_mb as f64) / (minimum_mb as f64)).min(9999.9);
             Ok(CheckResult::Pass(format!(
