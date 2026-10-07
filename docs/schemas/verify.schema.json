@@ -56,6 +56,47 @@
           "type": "array",
           "items": { "type": "string", "minLength": 1 }
         },
+        "examiner": {
+          "description": "Present only for verify --offline --examiner: setup traces grouped by what an examiner would conclude. Report only; never changes status.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["groups", "not_checked"],
+          "properties": {
+            "groups": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["conclusion", "findings"],
+                "properties": {
+                  "conclusion": { "type": "string", "minLength": 1 },
+                  "findings": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": ["catalog_id", "severity", "location", "evidence"],
+                      "properties": {
+                        "catalog_id": { "type": "string", "minLength": 1 },
+                        "severity": {
+                          "type": "string",
+                          "enum": ["info", "warn", "critical"]
+                        },
+                        "location": { "type": "string", "minLength": 1 },
+                        "evidence": { "type": "string", "minLength": 1 }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "not_checked": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
         "state_file_status": {
           "oneOf": [
             {

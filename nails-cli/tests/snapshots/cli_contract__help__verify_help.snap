@@ -42,8 +42,14 @@ Options:
 
           [default: auto]
 
+      --examiner
+          Also report setup traces an examiner looks for (encryption headers, containers, crypttab, LVM archives, tooling and history), grouped by what they suggest. Reports only; changes nothing. Needs `--offline`
+
       --ascii
           Use ASCII markers instead of Unicode symbols and box drawing
+
+      --disk <DEVICE>
+          The raw disk or disk image behind `--root`, read-only, for the partition-level examiner checks (LUKS headers, random-looking space)
 
       --json
           Print machine-readable JSON on stdout
@@ -58,5 +64,7 @@ EXAMPLES:
   nails verify                        Scan the live host for NAILS artifacts
   nails verify --deep                 Slower, more thorough scan
   nails verify --offline --root /mnt  Scan a mounted decoy image
+  nails verify --offline --root /mnt --examiner --disk /dev/sdb
+                                      Add the examiner's view of setup traces
 
 ----- stderr -----

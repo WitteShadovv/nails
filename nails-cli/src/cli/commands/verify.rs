@@ -83,6 +83,12 @@ pub fn execute(
         && let Some(ref root) = args.root
     {
         verifier = verifier.offline_under(root.clone());
+        if args.examiner {
+            verifier = verifier.with_examiner(nails_core::ExaminerOptions {
+                disk: args.disk.clone(),
+                ..nails_core::ExaminerOptions::default()
+            });
+        }
     }
 
     let result = match verifier.run(args.deep) {

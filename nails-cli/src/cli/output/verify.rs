@@ -4,7 +4,9 @@
 //! Output formatting for the verify command
 
 use nails_core::output::{Mark, Style, Tone};
-use nails_core::{ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
+use nails_core::{
+    ExaminerReport, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus,
+};
 use serde::Serialize;
 
 use crate::cli::output::envelope::Envelope;
@@ -25,6 +27,62 @@ pub struct VerifyData {
     checks_run: usize,
     areas_not_checked: Vec<String>,
     state_file_status: StateFileStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    examiner: Option<ExaminerJson>,
+}
+
+/// The examiner audit on the wire: setup traces grouped by conclusion.
+#[derive(Debug, Serialize)]
+struct ExaminerJson {
+    groups: Vec<ExaminerGroupJson>,
+    not_checked: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExaminerGroupJson {
+    conclusion: String,
+    findings: Vec<ExaminerFindingJson>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExaminerFindingJson {
+    catalog_id: String,
+    severity: SeverityJson,
+    location: String,
+    evidence: String,
+}
+
+fn severity_json(severity: Severity) -> SeverityJson {
+    match severity {
+        Severity::Info => SeverityJson::Info,
+        Severity::Warn => SeverityJson::Warn,
+        Severity::Critical => SeverityJson::Critical,
+    }
+}
+
+impl ExaminerJson {
+    fn from_report(report: &ExaminerReport) -> Self {
+        Self {
+            groups: report
+                .groups
+                .iter()
+                .map(|group| ExaminerGroupJson {
+                    conclusion: group.conclusion.to_string(),
+                    findings: group
+                        .findings
+                        .iter()
+                        .map(|finding| ExaminerFindingJson {
+                            catalog_id: finding.catalog_id.to_string(),
+                            severity: severity_json(finding.severity),
+                            location: finding.location.clone(),
+                            evidence: finding.evidence.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            not_checked: report.not_checked.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -72,11 +130,7 @@ impl VerifyData {
                 .findings
                 .iter()
                 .map(|finding| FindingJson {
-                    severity: match finding.severity {
-                        Severity::Info => SeverityJson::Info,
-                        Severity::Warn => SeverityJson::Warn,
-                        Severity::Critical => SeverityJson::Critical,
-                    },
+                    severity: severity_json(finding.severity),
                     category: finding.category.clone(),
                     message: finding.message.clone(),
                     fix_guidance: finding.fix_guidance.clone(),
@@ -91,6 +145,7 @@ impl VerifyData {
             checks_run: result.checks_run,
             areas_not_checked: result.areas_not_checked.clone(),
             state_file_status: result.state_file_status.clone(),
+            examiner: result.examiner.as_ref().map(ExaminerJson::from_report),
         }
     }
 }
@@ -185,6 +240,10 @@ pub fn print_verify_result(result: &VerifyResult, style: Style) {
         }
     }
 
+    if let Some(report) = &result.examiner {
+        print_examiner_report(report, style);
+    }
+
     if !result.areas_not_checked.is_empty() {
         println!();
         println!("{}", style.paint("Not checked by this run:", Tone::Dim));
@@ -193,6 +252,43 @@ pub fn print_verify_result(result: &VerifyResult, style: Style) {
                 "  {} {}",
                 style.glyph(Mark::Arrow),
                 style.paint(area, Tone::Dim)
+            );
+        }
+    }
+}
+
+/// Print the examiner audit: one heading per conclusion, then its traces.
+fn print_examiner_report(report: &ExaminerReport, style: Style) {
+    println!();
+    if report.groups.is_empty() {
+        println!(
+            "{}",
+            style.marked(
+                Mark::Pass,
+                "Examiner's view: no setup traces found (report only; nothing was changed)"
+            )
+        );
+        return;
+    }
+    println!(
+        "{}",
+        style.paint_bold(
+            format_args!(
+                "Examiner's view: {} setup trace(s) (report only; nothing was changed)",
+                report.finding_count()
+            ),
+            Tone::Yellow,
+        )
+    );
+    for group in &report.groups {
+        println!("  {} {}", style.glyph(Mark::Warn), group.conclusion);
+        for finding in &group.findings {
+            println!(
+                "    {} {}: {} [{}]",
+                style.glyph(Mark::Arrow),
+                finding.location,
+                finding.evidence,
+                finding.catalog_id
             );
         }
     }

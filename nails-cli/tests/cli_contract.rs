@@ -644,6 +644,39 @@ fn verify_json_matches_schema_and_snapshot() {
     insta::assert_json_snapshot!("verify_json_envelope", projection);
 }
 
+#[test]
+fn verify_offline_examiner_json_matches_schema_and_groups_traces() {
+    let harness = Harness::new();
+    let image = tempfile::tempdir().unwrap();
+    let lvm = image.path().join("etc/lvm/archive");
+    std::fs::create_dir_all(&lvm).unwrap();
+    std::fs::write(
+        lvm.join("vg_00001.vg"),
+        "description = \"Created *before* executing 'vgcreate vg /dev/sdb'\"\nvg {\n}\n",
+    )
+    .unwrap();
+    let root = image.path().to_str().unwrap();
+
+    let (code, value) = run_json(
+        &harness.config,
+        &["verify", "--offline", "--root", root, "--examiner"],
+    );
+
+    // Setup traces never change the session-residue exit status.
+    assert_eq!(code, 0, "{value:#}");
+    assert_matches_schema(&load_schema("verify"), &value);
+    let groups = value["data"]["examiner"]["groups"].as_array().unwrap();
+    assert_eq!(groups.len(), 1, "{value:#}");
+    assert_eq!(
+        groups[0]["findings"][0]["catalog_id"],
+        "lvm-metadata-archive"
+    );
+
+    // A plain offline scan carries no examiner section.
+    let (_, plain) = run_json(&harness.config, &["verify", "--offline", "--root", root]);
+    assert!(plain["data"].get("examiner").is_none(), "{plain:#}");
+}
+
 // ---------------------------------------------------------------------------
 // activate / deactivate / emergency schemas: representative-document round-trip
 //

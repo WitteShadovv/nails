@@ -269,12 +269,16 @@ EXAMPLES:
   nails verify                        Scan the live host for NAILS artifacts
   nails verify --deep                 Slower, more thorough scan
   nails verify --offline --root /mnt  Scan a mounted decoy image
+  nails verify --offline --root /mnt --examiner --disk /dev/sdb
+                                      Add the examiner's view of setup traces
 
 ###### **Options:**
 
 * `--deep` — Perform deep scan (slower, more thorough)
 * `--offline` — Scan a read-only mounted decoy image or partition instead of the live host. Requires `--root`; live checks (processes, mounts, block devices) are skipped and every path is read from under the image root
 * `--root <MOUNT>` — Root of the mounted decoy image to scan in `--offline` mode
+* `--examiner` — Also report setup traces an examiner looks for (encryption headers, containers, crypttab, LVM archives, tooling and history), grouped by what they suggest. Reports only; changes nothing. Needs `--offline`
+* `--disk <DEVICE>` — The raw disk or disk image behind `--root`, read-only, for the partition-level examiner checks (LUKS headers, random-looking space)
 
 
 

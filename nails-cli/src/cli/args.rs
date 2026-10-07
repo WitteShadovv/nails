@@ -456,7 +456,9 @@ pub struct StatusArgs {
 EXAMPLES:
   nails verify                        Scan the live host for NAILS artifacts
   nails verify --deep                 Slower, more thorough scan
-  nails verify --offline --root /mnt  Scan a mounted decoy image")]
+  nails verify --offline --root /mnt  Scan a mounted decoy image
+  nails verify --offline --root /mnt --examiner --disk /dev/sdb
+                                      Add the examiner's view of setup traces")]
 pub struct VerifyArgs {
     /// Perform deep scan (slower, more thorough)
     #[arg(long)]
@@ -471,6 +473,17 @@ pub struct VerifyArgs {
     /// Root of the mounted decoy image to scan in `--offline` mode.
     #[arg(long, value_name = "MOUNT", value_hint = ValueHint::DirPath, requires = "offline")]
     pub root: Option<std::path::PathBuf>,
+
+    /// Also report setup traces an examiner looks for (encryption headers,
+    /// containers, crypttab, LVM archives, tooling and history), grouped by
+    /// what they suggest. Reports only; changes nothing. Needs `--offline`.
+    #[arg(long, requires = "offline")]
+    pub examiner: bool,
+
+    /// The raw disk or disk image behind `--root`, read-only, for the
+    /// partition-level examiner checks (LUKS headers, random-looking space).
+    #[arg(long, value_name = "DEVICE", value_hint = ValueHint::FilePath, requires = "examiner")]
+    pub disk: Option<std::path::PathBuf>,
 }
 
 /// `nails check` (alias `doctor`) arguments

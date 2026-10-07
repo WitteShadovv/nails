@@ -205,9 +205,9 @@ pub use reporter::{Diagnostic, remediation_steps};
 
 // Forensic validation exports
 pub use verify::{
-    Finding, RESIDUE_REPORT_DIR, RESIDUE_REPORT_SCHEMA_VERSION, ResidueReport,
-    ResidueReportSummary, ScanDepth, Severity, StateFileStatus, Verifier, VerifyResult,
-    VerifyStatus, write_activation_residue_report,
+    ExaminerFinding, ExaminerGroup, ExaminerOptions, ExaminerReport, Finding, RESIDUE_REPORT_DIR,
+    RESIDUE_REPORT_SCHEMA_VERSION, ResidueReport, ResidueReportSummary, ScanDepth, Severity,
+    StateFileStatus, Verifier, VerifyResult, VerifyStatus, write_activation_residue_report,
 };
 
 // NixOS profile builder exports

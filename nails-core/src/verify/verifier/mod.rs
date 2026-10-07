@@ -80,6 +80,8 @@ pub struct Verifier<F: Filesystem> {
     /// snapshot), whose real home a live scan also covers. `None` when the scan
     /// was not given a snapshot or ran without `sudo`.
     invoking_user: Option<String>,
+    /// Run the examiner audit of setup traces as well (offline scans only).
+    examiner: Option<super::ExaminerOptions>,
 }
 
 impl<F: Filesystem> Verifier<F> {
@@ -94,6 +96,7 @@ impl<F: Filesystem> Verifier<F> {
             scope_to_decoy: false,
             journal: Box::new(super::journal::JournalctlReader),
             invoking_user: None,
+            examiner: None,
         }
     }
 
@@ -113,6 +116,7 @@ impl<F: Filesystem> Verifier<F> {
             scope_to_decoy: false,
             journal: Box::new(super::journal::JournalctlReader),
             invoking_user: None,
+            examiner: None,
         }
     }
 
@@ -161,6 +165,15 @@ impl<F: Filesystem> Verifier<F> {
     /// describe the machine running `verify`, not the image under inspection.
     pub fn offline_under(mut self, root: PathBuf) -> Self {
         self.context = VerifyContext::Offline { root };
+        self
+    }
+
+    /// Also run the examiner audit of setup traces (see
+    /// [`super::examiner`]). It needs an offline root and is ignored on a live
+    /// scan, whose root is the running host rather than a decoy image.
+    #[must_use]
+    pub fn with_examiner(mut self, options: super::ExaminerOptions) -> Self {
+        self.examiner = Some(options);
         self
     }
 
@@ -321,9 +334,23 @@ impl<F: Filesystem> Verifier<F> {
             ScanDepth::Standard
         };
 
+        // 8. The examiner audit of setup traces, offline only. Its findings are
+        //    reported apart and never change the status computed above.
+        let examiner = match (&self.context, &self.examiner) {
+            (VerifyContext::Offline { root }, Some(options)) => {
+                let report = super::examiner::examine(root, options);
+                ran.extend(report.checks_run.iter().copied());
+                Some(report)
+            }
+            _ => None,
+        };
+
         let mut areas_not_checked = self.areas_not_checked(deep, journal_searched);
         areas_not_checked.extend(scanner_not_checked);
-        areas_not_checked.extend(self.catalog_areas_not_checked(&ran, false));
+        areas_not_checked.extend(self.catalog_areas_not_checked(&ran, examiner.is_some()));
+        if let Some(report) = &examiner {
+            areas_not_checked.extend(report.not_checked.iter().cloned());
+        }
 
         let mut result = if self.config.is_some() {
             VerifyResult::new_config_aware(
@@ -338,6 +365,7 @@ impl<F: Filesystem> Verifier<F> {
         };
         result.checks_run = ran.len();
         result.areas_not_checked = areas_not_checked;
+        result.examiner = examiner;
         Ok(result)
     }
 

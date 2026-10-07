@@ -365,6 +365,24 @@ In offline mode every path is read under `--root`, and the live-only checks
 (running processes, the kernel mount table, open block devices, platform package
 drift) are skipped.
 
+To see the decoy the way an examiner would, add `--examiner`, and `--disk` with
+the raw disk or image behind the mounted root:
+
+```bash
+sudo /mnt/usb/nails verify --offline --root /mnt/decoy --examiner --disk /dev/sda
+```
+
+The examiner's view lists setup traces rather than session residue: LUKS headers
+on partitions and in gaps, random-looking unpartitioned space, files that look
+like encrypted containers, crypttab and fstab entries, LVM metadata archives,
+udisks2 state, encryption tools and their access times, and recent-files or
+history entries that name a container. Each trace is grouped under what an
+examiner would conclude from it. It reports only, reads the disk read-only and
+never changes the exit status; a LUKS header for the decoy's own full-disk
+encryption is expected, and only you can tell which traces are explained.
+[Setup traces an examiner looks for](decoy-requirements.md#setup-traces-an-examiner-looks-for)
+says how to avoid each one.
+
 `verify` reports only what the verify engine actually checks: leftover overlays
 by upperdir, known artifact paths, running NAILS processes by binary identity,
 open crypt mappers and loop devices, swap/memory warnings, platform package

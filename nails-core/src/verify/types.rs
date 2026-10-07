@@ -112,6 +112,10 @@ pub struct VerifyResult {
     /// found", not proof the system is untouched; this names what was skipped so
     /// the headline never overclaims.
     pub areas_not_checked: Vec<String>,
+    /// The examiner audit of setup traces (`verify --offline --examiner`),
+    /// reported apart from the session findings and never changing `status`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub examiner: Option<super::ExaminerReport>,
 }
 
 impl VerifyResult {
@@ -126,6 +130,7 @@ impl VerifyResult {
             state_file_status: StateFileStatus::NotChecked,
             checks_run: 0,
             areas_not_checked: Vec::new(),
+            examiner: None,
         }
     }
 
@@ -146,6 +151,7 @@ impl VerifyResult {
             state_file_status,
             checks_run: 0,
             areas_not_checked: Vec::new(),
+            examiner: None,
         }
     }
 
@@ -160,6 +166,7 @@ impl VerifyResult {
             state_file_status: StateFileStatus::NotChecked,
             checks_run: 0,
             areas_not_checked: Vec::new(),
+            examiner: None,
         }
     }
 }

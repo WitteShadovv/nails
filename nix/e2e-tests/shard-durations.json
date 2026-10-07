@@ -22,6 +22,7 @@
   "emergency-graphical": 300,
   "emergency-overlay-writers": 180,
   "emergency-while-inactive": 86,
+  "examiner-audit": 150,
   "faults-backend-watch-alert": 150,
   "faults-emergency-dead-backend-untrusted": 160,
   "faults-emergency-poweroff-incomplete": 150,
