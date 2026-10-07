@@ -324,7 +324,7 @@ fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) {
             for unit in &plan.masks {
                 let _ = std::fs::remove_file(host.run.join("systemd/system").join(unit));
             }
-            let _ = std::fs::remove_dir_all(&host.runtime_dir);
+            nextroot::remove_runtime_dir(&host.runtime_dir);
         }
     });
 }

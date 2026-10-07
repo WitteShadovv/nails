@@ -222,7 +222,7 @@ pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
     let run_noexec = Plan::load(&paths.plan()).is_ok_and(|plan| plan.run_noexec);
     let remaining = nextroot::detach_tree(&paths.nextroot());
     transition::remove_dropin(&paths.run);
-    let _ = std::fs::remove_dir_all(paths.runtime());
+    nextroot::remove_runtime_dir(&paths.runtime());
     if run_noexec {
         let _ = nextroot::set_noexec(&paths.run, true);
     }

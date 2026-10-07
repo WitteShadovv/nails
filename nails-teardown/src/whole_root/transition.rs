@@ -173,7 +173,7 @@ fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
     nextroot::detach_tree(&env.nextroot);
     if plan.entered_at.is_none() {
         remove_dropin(&env.run);
-        let _ = std::fs::remove_dir_all(&env.runtime_dir);
+        nextroot::remove_runtime_dir(&env.runtime_dir);
         if plan.run_noexec {
             let _ = nextroot::set_noexec(&env.run, true);
         }

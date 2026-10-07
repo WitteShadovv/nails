@@ -240,6 +240,17 @@ pub fn detach_tree(path: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
+/// Remove the runtime directory `dir`, detaching every mount below it first.
+/// An activation killed between its lower bind and that bind's read-only
+/// remount leaves a writable bind of a decoy filesystem there (the root
+/// itself, for the root overlay), and a recursive removal would walk into it.
+/// Nothing is removed while anything stays mounted below `dir`.
+pub fn remove_runtime_dir(dir: &Path) {
+    if detach_tree(dir).is_empty() {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
 /// Open `path` as if `root` were `/`: absolute symlinks and `..` stay inside
 /// `root`, the way PID 1 resolves the init in the next root.
 fn open_in_root(root: &Path, path: &Path) -> io::Result<std::os::fd::OwnedFd> {

@@ -235,6 +235,32 @@ mod kernel_tests {
     }
 
     #[test]
+    fn a_killed_entry_s_writable_lower_bind_is_detached_before_the_runtime_dir_goes() {
+        // An activation killed between its lower bind and the read-only
+        // remount leaves a writable bind of the decoy root in the runtime
+        // directory: removing the directory must never walk into it.
+        let _ = Rerun::new(test_path!(
+            a_killed_entry_s_writable_lower_bind_is_detached_before_the_runtime_dir_goes
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            let decoy = world.decoy.path();
+            std::fs::write(decoy.join("precious"), "decoy").unwrap();
+            let runtime = world.run.path().join("overlay-runtime");
+            let lower = runtime.join("lower");
+            std::fs::create_dir_all(&lower).unwrap();
+            nextroot::bind(decoy, &lower, false).unwrap();
+            nextroot::remove_runtime_dir(&runtime);
+            assert_eq!(
+                std::fs::read_to_string(decoy.join("precious")).unwrap(),
+                "decoy"
+            );
+            assert!(!runtime.exists());
+        });
+    }
+
+    #[test]
     fn the_way_back_detaches_mounts_the_hidden_shutdown_made_under_run() {
         // The spike's third run: NixOS mounts a tmpfs at /run/initramfs during
         // every shutdown. The scrub must unmount it before removing its
