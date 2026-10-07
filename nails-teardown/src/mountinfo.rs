@@ -323,19 +323,19 @@ pub fn escape_overlay_path(path: &Path) -> Option<String> {
 }
 
 /// Whether a read-only self-bind is stacked at `target`: a read-only mount at
-/// `target` whose parent is another mount at the same point on the same device.
-/// That is the shape of a read-only guard; a decoy mount that merely sits at
-/// `target` (a separate `/usr` partition, the root filesystem) has a parent at a
-/// different point and does not match.
+/// `target` on the same device as the mount it sits on. That is the shape of a
+/// read-only guard, whether `target` is its own partition (the guard's parent is
+/// that partition, at the same point) or a plain directory (the guard is a bind
+/// of a subtree of the filesystem it sits on). A decoy mount that merely sits at
+/// `target` (a separate `/usr` partition, the root filesystem) sits on another
+/// device's mount and does not match.
 pub fn is_read_only_self_bind(entries: &[MountEntry], target: &Path) -> bool {
     entries.iter().any(|guard| {
         guard.mount_point == target
             && guard.read_only()
-            && entries.iter().any(|below| {
-                below.mount_id == guard.parent_id
-                    && below.mount_point == target
-                    && below.dev == guard.dev
-            })
+            && entries
+                .iter()
+                .any(|below| below.mount_id == guard.parent_id && below.dev == guard.dev)
     })
 }
 
@@ -830,6 +830,12 @@ this is not a mountinfo line
             "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n2 1 8:2 / /usr rw - ext4 /dev/sda2 rw\n",
         );
         assert!(!is_read_only_self_bind(&bare, Path::new("/usr")));
+        // A guard on a plain directory of the root filesystem: a read-only bind
+        // of that subtree, on the root's own device.
+        let plain = parse_mountinfo(
+            "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n5 1 8:1 /usr /usr ro - ext4 /dev/sda1 rw\n",
+        );
+        assert!(is_read_only_self_bind(&plain, Path::new("/usr")));
     }
 
     #[test]

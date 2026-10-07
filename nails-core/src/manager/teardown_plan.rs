@@ -599,3 +599,7 @@ mod tests {
         assert!(!path.exists());
     }
 }
+
+#[cfg(test)]
+#[path = "teardown_plan_kernel_tests.rs"]
+mod kernel_tests;

@@ -73,8 +73,14 @@ pub enum Outcome {
 pub struct Rerun<'a> {
     test_path: &'a str,
     user_mount_ns: bool,
+    cgroup_ns: bool,
+    pid_ns: bool,
     stderr: Option<Stdio>,
 }
+
+/// Set in the PID-namespace child (see [`Rerun::in_pid_ns`]) so it runs the
+/// body instead of spawning another.
+const PID1_ENV: &str = "NAILS_TEST_PID1";
 
 impl<'a> Rerun<'a> {
     /// Re-run the test named `test_path` (use [`test_path!`]).
@@ -82,6 +88,8 @@ impl<'a> Rerun<'a> {
         Self {
             test_path,
             user_mount_ns: false,
+            cgroup_ns: false,
+            pid_ns: false,
             stderr: None,
         }
     }
@@ -89,6 +97,24 @@ impl<'a> Rerun<'a> {
     /// Run the child in a fresh user + mount namespace, as uid 0 inside it.
     pub fn in_user_mount_ns(mut self) -> Self {
         self.user_mount_ns = true;
+        self
+    }
+
+    /// Also give the child its own cgroup namespace, rooted at the caller's
+    /// cgroup, so a cgroup2 mounted inside sees (and may create cgroups in) only
+    /// the caller's delegated subtree. Implies [`in_user_mount_ns`](Self::in_user_mount_ns).
+    pub fn in_cgroup_ns(mut self) -> Self {
+        self.user_mount_ns = true;
+        self.cgroup_ns = true;
+        self
+    }
+
+    /// Run the body as PID 1 of a new PID namespace with its own `/proc`, so
+    /// it sees (and can signal) no process outside the test. Implies
+    /// [`in_user_mount_ns`](Self::in_user_mount_ns).
+    pub fn in_pid_ns(mut self) -> Self {
+        self.user_mount_ns = true;
+        self.pid_ns = true;
         self
     }
 
@@ -112,6 +138,9 @@ impl<'a> Rerun<'a> {
         if std::env::var_os(CHILD_ENV).is_some_and(|name| name == self.test_path) {
             if self.user_mount_ns {
                 make_mounts_private_or_skip();
+            }
+            if self.pid_ns && std::env::var_os(PID1_ENV).is_none() {
+                std::process::exit(run_as_pid1());
             }
             body();
             return Outcome::Ran;
@@ -144,7 +173,7 @@ impl<'a> Rerun<'a> {
         let captures_stderr = self.stderr.is_none();
         cmd.stderr(self.stderr.unwrap_or_else(Stdio::piped));
         if self.user_mount_ns {
-            enter_user_mount_ns_before_exec(&mut cmd);
+            enter_user_mount_ns_before_exec(&mut cmd, self.cgroup_ns);
         }
 
         let mut child = match cmd.spawn() {
@@ -220,7 +249,7 @@ fn is_namespace_refusal(err: &std::io::Error) -> bool {
 
 /// Arrange for `cmd`'s child to unshare a user and a mount namespace and map the
 /// caller's ids to root, between `fork` and `exec`.
-fn enter_user_mount_ns_before_exec(cmd: &mut Command) {
+fn enter_user_mount_ns_before_exec(cmd: &mut Command, cgroup_ns: bool) {
     use std::os::unix::process::CommandExt;
 
     // Formatted here, in the parent: the pre-exec hook must not allocate.
@@ -228,7 +257,11 @@ fn enter_user_mount_ns_before_exec(cmd: &mut Command) {
     let gid_map = format!("0 {} 1\n", nix::unistd::getgid());
     let hook = move || -> std::io::Result<()> {
         use nix::sched::{CloneFlags, unshare};
-        unshare(CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS)?;
+        let mut flags = CloneFlags::CLONE_NEWUSER | CloneFlags::CLONE_NEWNS;
+        if cgroup_ns {
+            flags |= CloneFlags::CLONE_NEWCGROUP;
+        }
+        unshare(flags)?;
         // setgroups must be denied before an unprivileged gid_map write. Kernels
         // older than 3.19 lack the file and need no denial.
         match write_proc(c"/proc/self/setgroups", b"deny") {
@@ -256,6 +289,85 @@ fn write_proc(path: &std::ffi::CStr, data: &[u8]) -> std::io::Result<()> {
         Ok(())
     } else {
         Err(std::io::Error::from(std::io::ErrorKind::WriteZero))
+    }
+}
+
+/// End the namespaced child as skipped, with `reason` on stderr: for a
+/// prerequisite only the body can probe (a delegated cgroup, say).
+pub fn skip(reason: &str) -> ! {
+    eprintln!("{SKIP_MARKER}{reason}");
+    std::process::exit(SKIP_EXIT);
+}
+
+/// In the namespaced child: re-execute this test binary, with the same
+/// arguments, as PID 1 of a new PID and mount namespace whose `/proc` is
+/// mounted first, and return its exit status.
+#[allow(unsafe_code)]
+fn run_as_pid1() -> i32 {
+    use nix::sched::CloneFlags;
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let exe = CString::new(
+        std::env::current_exe()
+            .expect("locate the test binary")
+            .as_os_str()
+            .as_bytes(),
+    )
+    .expect("a test binary path without NUL");
+    let args: Vec<CString> = std::env::args_os()
+        .map(|a| CString::new(a.as_bytes()).expect("an argument without NUL"))
+        .collect();
+    let env: Vec<CString> = std::env::vars_os()
+        .map(|(k, v)| {
+            let mut pair = k.as_bytes().to_vec();
+            pair.push(b'=');
+            pair.extend_from_slice(v.as_bytes());
+            CString::new(pair).expect("an environment entry without NUL")
+        })
+        .chain(std::iter::once(
+            CString::new(format!("{PID1_ENV}=1")).expect("a literal"),
+        ))
+        .collect();
+    let mut argv: Vec<*const nix::libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
+    argv.push(std::ptr::null());
+    let mut envp: Vec<*const nix::libc::c_char> = env.iter().map(|e| e.as_ptr()).collect();
+    envp.push(std::ptr::null());
+    let mut stack = vec![0u8; 256 * 1024];
+    let child = move || -> isize {
+        // SAFETY: raw syscalls on data prepared before the clone, then exec or
+        // exit; nothing that takes a lock or allocates.
+        unsafe {
+            if nix::libc::mount(
+                c"proc".as_ptr(),
+                c"/proc".as_ptr(),
+                c"proc".as_ptr(),
+                0,
+                std::ptr::null(),
+            ) != 0
+            {
+                nix::libc::_exit(SKIP_EXIT);
+            }
+            nix::libc::execve(exe.as_ptr(), argv.as_ptr(), envp.as_ptr());
+            nix::libc::_exit(127)
+        }
+    };
+    // SAFETY: the callback only makes async-signal-safe calls (see above), and
+    // the stack outlives it: the child execs or exits at once.
+    let pid = match unsafe {
+        nix::sched::clone(
+            Box::new(child),
+            &mut stack,
+            CloneFlags::CLONE_NEWPID | CloneFlags::CLONE_NEWNS,
+            Some(nix::libc::SIGCHLD),
+        )
+    } {
+        Ok(pid) => pid,
+        Err(errno) => skip(&format!("cannot create a PID namespace ({errno})")),
+    };
+    match nix::sys::wait::waitpid(pid, None) {
+        Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => code,
+        _ => 1,
     }
 }
 
