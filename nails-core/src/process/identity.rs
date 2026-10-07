@@ -20,6 +20,14 @@ pub(crate) fn proc_start_time(pid: u32) -> Option<u64> {
         .and_then(parse_stat_start_time)
 }
 
+/// The parent pid of `pid`, from `/proc/<pid>/status`.
+pub(crate) fn parent_pid(pid: u32) -> Option<u32> {
+    std::fs::read_to_string(format!("/proc/{pid}/status"))
+        .ok()?
+        .lines()
+        .find_map(|line| line.strip_prefix("PPid:")?.trim().parse().ok())
+}
+
 /// A handle on one live process that signals it and only it.
 ///
 /// It holds a pidfd (`pidfd_open`), so a signal can never reach a different
@@ -83,6 +91,18 @@ impl ProcessHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_child_reports_this_process_as_its_parent() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("5")
+            .spawn()
+            .unwrap();
+        let parent = parent_pid(child.id());
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert_eq!(parent, Some(std::process::id()));
+    }
 
     #[test]
     fn a_handle_signals_its_process_and_nothing_after_it_is_gone() {

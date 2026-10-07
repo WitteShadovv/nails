@@ -5,6 +5,7 @@
 //! `/var` overlay after the restart, so a hidden session's records cannot
 //! leak onto the decoy journal.
 
+use crate::process::mount_refs::parse_fdinfo_mnt_id;
 use std::path::{Path, PathBuf};
 
 /// Outcome of inspecting systemd-journald's open journal file descriptors after
@@ -76,7 +77,7 @@ struct JournalFdSite {
 
 /// Inspect systemd-journald's open persistent-journal fds on a real host.
 ///
-/// Finds journald by its process name, resolves the mount id of the `/var` overlay
+/// Finds the system journald (see [`find_journald_pid`]), resolves the mount id of the `/var` overlay
 /// from journald's *own* mount namespace (`/proc/<pid>/mountinfo`), then compares
 /// the mount id of each writable `/var/log/journal/...` fd (from
 /// `/proc/<pid>/fdinfo/<n>`) against it. A fd journald opened under the overlay
@@ -91,7 +92,7 @@ struct JournalFdSite {
 fn inspect_journald_journal_fds(upper_dir: &Path) -> (JournaldFdCheck, Option<String>) {
     use std::os::unix::fs::MetadataExt;
 
-    let Some(pid) = find_pid_by_comm("systemd-journal") else {
+    let Some(pid) = find_journald_pid() else {
         return (JournaldFdCheck::Indeterminate, None);
     };
 
@@ -212,19 +213,6 @@ fn classify_journald_fd_mounts(
     )
 }
 
-/// Parse the `mnt_id:` value out of an fdinfo file's contents.
-///
-/// A missing or unparsable `mnt_id:` line reads as `None`, so an fd whose mount id
-/// cannot be determined is never, on its own, treated as a leak.
-fn parse_fdinfo_mnt_id(content: &str) -> Option<i32> {
-    for line in content.lines() {
-        if let Some(rest) = line.strip_prefix("mnt_id:") {
-            return rest.trim().parse().ok();
-        }
-    }
-    None
-}
-
 /// Whether a `/proc/<pid>/fdinfo/<n>` body describes a writable fd: the octal
 /// `flags:` line has a non-zero access mode (`O_WRONLY`/`O_RDWR`) or `O_APPEND`.
 /// A missing or unparsable `flags:` reads as not-writable, so an unreadable fd is
@@ -234,33 +222,56 @@ fn fdinfo_is_writable(content: &str) -> bool {
         .is_some_and(|flags| flags & 0o3 != 0 || flags & 0o2000 != 0)
 }
 
-/// Find the PID of the first process whose `comm` matches `name`.
+/// The pid of the system journald: the `MainPID` systemd reports for
+/// `systemd-journald.service`.
 ///
-/// `comm` is truncated by the kernel to 15 bytes, so callers pass the truncated
-/// form (journald's is `systemd-journal`). Returns `None` when no match is found
-/// or `/proc` cannot be read.
-fn find_pid_by_comm(name: &str) -> Option<u32> {
-    let entries = std::fs::read_dir("/proc").ok()?;
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let Some(pid) = file_name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
-            continue;
-        };
-        let comm_path = format!("/proc/{pid}/comm");
-        if let Ok(comm) = std::fs::read_to_string(&comm_path)
-            && comm.trim_end() == name
-        {
-            return Some(pid);
-        }
+/// Matching on the process name alone picked whichever `systemd-journal` came
+/// first in `/proc` — a journald of a container, or of a nested systemd, in
+/// another mount namespace whose fds say nothing about the host's `/var`. When
+/// `systemctl` cannot answer, the fallback still requires the name, PID 1 as the
+/// parent and this process's own mount namespace.
+fn find_journald_pid() -> Option<u32> {
+    use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
+    let command = ProcessCommand::tool("systemctl")
+        .args([
+            "show",
+            "-p",
+            "MainPID",
+            "--value",
+            "systemd-journald.service",
+        ])
+        .deadline(crate::process::run::SYSTEMCTL_PROBE_BUDGET);
+    if let Ok((true, stdout, _)) = RealProcessRunner.run_text(&command)
+        && let Some(pid) = parse_main_pid(&stdout)
+    {
+        return Some(pid);
     }
-    None
+    let entries = std::fs::read_dir("/proc").ok()?;
+    entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().to_str()?.parse::<u32>().ok())
+        .find(|&pid| is_host_journald(pid))
+}
+
+/// The pid in `systemctl show -p MainPID --value` output; `None` for `0` (the
+/// unit is not running) or anything unparsable.
+fn parse_main_pid(stdout: &str) -> Option<u32> {
+    stdout.trim().parse::<u32>().ok().filter(|pid| *pid != 0)
+}
+
+/// Whether `pid` is a journald started by PID 1 in this mount namespace.
+fn is_host_journald(pid: u32) -> bool {
+    let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+    comm.trim_end() == "systemd-journal"
+        && crate::process::identity::parent_pid(pid) == Some(1)
+        && crate::process::mount_refs::same_mount_namespace(pid)
 }
 
 #[cfg(test)]
 mod fdinfo_tests {
     use super::{
         JournalFdSite, JournaldFdCheck, classify_journald_fd_mounts, fdinfo_is_writable,
-        parse_fdinfo_mnt_id,
+        parse_fdinfo_mnt_id, parse_main_pid,
     };
     use std::path::PathBuf;
 
@@ -341,6 +352,14 @@ mod fdinfo_tests {
             .0,
             JournaldFdCheck::InOverlay
         );
+    }
+
+    #[test]
+    fn main_pid_is_parsed_and_zero_means_not_running() {
+        assert_eq!(parse_main_pid("412\n"), Some(412));
+        assert_eq!(parse_main_pid("0\n"), None);
+        assert_eq!(parse_main_pid(""), None);
+        assert_eq!(parse_main_pid("n/a"), None);
     }
 
     #[test]
