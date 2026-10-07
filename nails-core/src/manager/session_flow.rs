@@ -109,6 +109,8 @@ impl<F: Filesystem> NailsManager<F> {
             config_toml,
             session_units: crate::session::units::session_units(&self.config),
             backend,
+            persona: self.config.persona.clone(),
+            operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
         };
         let prepared = entry::prepare(&Paths::system(), &inputs, host)?;
         if let Err(e) = self.record_entry(&prepared, started.elapsed()) {

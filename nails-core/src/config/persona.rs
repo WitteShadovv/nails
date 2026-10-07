@@ -4,19 +4,18 @@
 //! Persona mode: how the hidden session relates to the decoy account.
 //!
 //! By default NAILS runs the hidden session as the decoy user, in the decoy
-//! home: the `/home` overlay merges the decoy home read-write, so every account,
+//! home: the root overlay merges the decoy home read-write, so every account,
 //! credential store and application profile configured there is live in the
 //! hidden session. That shared-account model is the legacy behaviour; it is kept
 //! as the explicit, opt-in [`PersonaMode::SharedHome`] because deployments that
 //! rely on the decoy's existing login still need it, and activation warns when it
 //! is in effect.
 //!
-//! [`PersonaMode::FreshHome`] is the opt-in separation: once the `/home` overlay
-//! is mounted, a fresh, empty directory on the hidden volume is bind-mounted over
-//! the operator's home, so the hidden session starts from a clean home and the
-//! decoy home contents are not visible. The bind source lives at
-//! [`persona_home_source`] under the hidden volume root, so it is torn down with
-//! the rest of the hidden mounts on deactivation.
+//! [`PersonaMode::FreshHome`] is the opt-in separation: at the first entry the
+//! operator's home becomes an opaque directory in the upper on the hidden
+//! volume (see [`crate::session::persona`]), so the hidden session starts from
+//! a clean home and the decoy home contents are not visible. It stays the
+//! hidden home at every later entry.
 //!
 //! A third model, a separate fixed-UID hidden account, is reserved as
 //! `separate-user` for a later phase: it needs the hidden NixOS generation
@@ -30,14 +29,14 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum PersonaMode {
     /// Legacy shared-account model: the hidden session runs in the decoy home,
-    /// merged read-write through the `/home` overlay. Opt-in, and warned about at
+    /// merged read-write through the root overlay. Opt-in, and warned about at
     /// activation, because the decoy's accounts and secrets are live.
     #[default]
     SharedHome,
 
-    /// Opt-in separation: a fresh, empty home on the hidden volume is bind-mounted
-    /// over the operator's home, so the decoy home contents are not visible in the
-    /// hidden session.
+    /// Opt-in separation: the operator's home is an opaque directory in the
+    /// upper on the hidden volume, so the decoy home contents are not visible in
+    /// the hidden session.
     FreshHome,
 }
 
@@ -70,11 +69,11 @@ pub struct PersonaConfig {
     /// Each value is an entry name as the persona inventory reports it: the
     /// `.desktop` stem for an autostart entry, or the full unit name (with its
     /// suffix) for a user unit. The single element `"*"` masks every maskable
-    /// inherited entry. Masking happens after the overlays are mounted and before
-    /// the session restarts: a `Hidden=true` autostart override or a `/dev/null`
-    /// user-unit mask is written through the merged home, so it lands only in the
-    /// hidden overlay and is gone when the overlay is torn down. Lingering and
-    /// autologin are reported but cannot be masked this way. Empty by default.
+    /// inherited entry. Masking happens at entry, before the soft-reboot: a
+    /// `Hidden=true` autostart override or a `/dev/null` user-unit mask is
+    /// written through the next root's home, so it lands only in the upper on
+    /// the hidden volume and never on the decoy. Lingering and autologin are
+    /// reported but cannot be masked this way. Empty by default.
     #[serde(default)]
     pub mask_inherited: Vec<String>,
 }

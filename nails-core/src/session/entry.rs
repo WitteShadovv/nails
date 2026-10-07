@@ -121,6 +121,11 @@ pub struct EntryInputs<'a> {
     pub session_units: Vec<RuntimeUnit>,
     /// The hidden backend's device-mapper names, top first.
     pub backend: Vec<String>,
+    /// The persona: fresh home and masks of inherited entries.
+    pub persona: crate::config::PersonaConfig,
+    /// The operator (from `SUDO_UID`/`SUDO_USER`), whose home the persona
+    /// applies to.
+    pub operator: Option<crate::target_user::TargetUser>,
 }
 
 /// The prepared entry.
@@ -323,6 +328,10 @@ fn build(
     }
     install_transition(paths, host, dropin)?;
 
+    let decoy_mounts = relative_mounts(&mounts, &paths.root);
+    if inputs.persona.mode == crate::config::PersonaMode::FreshHome {
+        fresh_home(paths, inputs, &layout, &decoy_mounts)?;
+    }
     make_layer(&layout.upper(), &layout.work(), &paths.root)?;
     std::fs::create_dir_all(&nextroot).map_err(|e| io(&nextroot, e))?;
     nextroot::overlay_over(
@@ -357,11 +366,7 @@ fn build(
 
     let fstab = nextroot::read_in_root(&nextroot, Path::new("/etc/fstab")).unwrap_or_default();
     let entries = super::fstab::parse_fstab(&String::from_utf8_lossy(&fstab));
-    let decisions = policy::decide_all(
-        &entries,
-        &relative_mounts(&mounts, &paths.root),
-        inputs.hidden_root,
-    );
+    let decisions = policy::decide_all(&entries, &decoy_mounts, inputs.hidden_root);
     if let Some(Decision::Refuse { target, reason }) = decisions
         .iter()
         .find(|d| matches!(d, Decision::Refuse { .. }))
@@ -373,6 +378,10 @@ fn build(
     }
     plan.policy_mounts = apply_mounts(paths, &layout, &decisions, inputs.hidden_root)?;
     plan.masks = policy::masked_units(&decisions);
+    if let Some(operator) = &inputs.operator {
+        let home = paths.in_nextroot(operator.passwd_home());
+        super::persona::write_masks(&home, &inputs.persona, operator);
+    }
 
     nextroot::bind(&paths.run, &paths.in_nextroot(Path::new("/run")), false)
         .map_err(|e| io(&nextroot, e))?;
@@ -397,6 +406,36 @@ fn build(
         decisions,
         warnings,
     })
+}
+
+/// Fresh-home: the operator's home becomes an opaque directory in the upper
+/// that covers it (the root upper, or the upper of the decoy filesystem it
+/// lives on), created at the first entry.
+fn fresh_home(
+    paths: &Paths,
+    inputs: &EntryInputs<'_>,
+    layout: &Layout,
+    decoy_mounts: &[MountEntry],
+) -> Result<()> {
+    let operator = inputs.operator.as_ref().ok_or_else(|| {
+        NailsError::InvalidState(
+            "persona mode fresh-home needs the operator (run through sudo)".to_string(),
+        )
+    })?;
+    let home = operator.passwd_home();
+    let mount = decoy_mounts
+        .iter()
+        .filter(|m| home.starts_with(&m.mount_point))
+        .max_by_key(|m| m.mount_point.components().count())
+        .map_or(Path::new("/"), |m| m.mount_point.as_path());
+    let upper_home = if mount == Path::new("/") {
+        layout.in_upper(home)
+    } else {
+        let rest = home.strip_prefix(mount).unwrap_or(home);
+        layout.mount_layers(mount).0.join(rest)
+    };
+    super::persona::prepare_fresh_home(&upper_home, &paths.decoy(home), operator)?;
+    Ok(())
 }
 
 /// Install the transition drop-in and reload the service manager.

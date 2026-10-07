@@ -18,6 +18,7 @@ pub mod fstab;
 pub mod layout;
 pub mod leave;
 pub mod nixos;
+pub mod persona;
 pub mod policy;
 pub mod probe;
 pub mod systemd;

@@ -488,6 +488,13 @@ mod entry_kernel_tests {
             .unwrap();
             let home = ScratchTmpfs::new("");
             std::fs::write(home.path().join("decoy-file"), "decoy").unwrap();
+            let autostart = home.path().join("alice/.config/autostart");
+            std::fs::create_dir_all(&autostart).unwrap();
+            std::fs::write(
+                autostart.join("dropbox.desktop"),
+                "[Desktop Entry]\nName=Dropbox\nExec=dropbox\n",
+            )
+            .unwrap();
             nix::mount::mount(
                 Some(home.path()),
                 &decoy.path().join("home"),
@@ -527,6 +534,8 @@ mod entry_kernel_tests {
                 config_toml: Some("hidden_volume_root = \"/x\"\n".into()),
                 session_units: Vec::new(),
                 backend: vec!["data".into()],
+                persona: Default::default(),
+                operator: None,
             }
         }
     }
@@ -549,7 +558,16 @@ mod entry_kernel_tests {
                 nextroot: Some(paths.nextroot()),
                 ..FakeHost::default()
             };
-            let entry = entry::prepare(&paths, &world.inputs(), &host).expect("the entry");
+            let mut inputs = world.inputs();
+            inputs.persona.mask_inherited = vec!["dropbox".into()];
+            inputs.operator = Some(nails_core::TargetUser::for_test(
+                nix::unistd::getuid().as_raw(),
+                nix::unistd::getgid().as_raw(),
+                "alice",
+                "/home/alice",
+                "/bin/sh",
+            ));
+            let entry = entry::prepare(&paths, &inputs, &host).expect("the entry");
             let nextroot = paths.nextroot();
             // The drop-in is live before anything is mounted at the next root,
             // so an activation killed during the build leaves nothing a later
@@ -565,6 +583,22 @@ mod entry_kernel_tests {
                 Some("overlay")
             );
             std::fs::write(nextroot.join("home/hidden-file"), "hidden").unwrap();
+            // The persona mask is in the hidden /home's upper, not on the decoy.
+            let mask = std::fs::read_to_string(
+                nextroot.join("home/alice/.config/autostart/dropbox.desktop"),
+            )
+            .unwrap();
+            assert!(mask.contains("Hidden=true"), "{mask}");
+            assert!(
+                !std::fs::read_to_string(
+                    world
+                        .decoy
+                        .path()
+                        .join("home/alice/.config/autostart/dropbox.desktop")
+                )
+                .unwrap()
+                .contains("Hidden=true")
+            );
             assert!(!world.decoy.path().join("home/hidden-file").exists());
             assert!(
                 world

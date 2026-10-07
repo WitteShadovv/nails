@@ -273,55 +273,6 @@ fn logind_owner_without_passwd_entry_errors() {
 }
 
 #[test]
-fn home_prefers_persona_home_when_set() {
-    let user = TargetUser::from_entry(PasswdEntry {
-        uid: 1000,
-        gid: 100,
-        name: "operator".to_string(),
-        dir: PathBuf::from("/home/operator"),
-        shell: PathBuf::from("/bin/bash"),
-    });
-
-    assert_eq!(user.home(), Path::new("/home/operator"));
-    assert_eq!(user.passwd_home(), Path::new("/home/operator"));
-
-    let persona = user.with_persona_home(PathBuf::from("/run/nails/persona"));
-    assert_eq!(persona.home(), Path::new("/run/nails/persona"));
-    // The passwd home is still available underneath the persona override.
-    assert_eq!(persona.passwd_home(), Path::new("/home/operator"));
-}
-
-#[test]
-fn cleanup_homes_covers_operator_home_and_root() {
-    let user = TargetUser::from_entry(PasswdEntry {
-        uid: 1000,
-        gid: 100,
-        name: "operator".to_string(),
-        dir: PathBuf::from("/home/operator"),
-        shell: PathBuf::from("/bin/bash"),
-    });
-
-    let homes = user.cleanup_homes();
-    assert_eq!(
-        homes,
-        vec![PathBuf::from("/home/operator"), PathBuf::from("/root")]
-    );
-}
-
-#[test]
-fn cleanup_homes_dedups_when_operator_home_is_root() {
-    let user = TargetUser::from_entry(PasswdEntry {
-        uid: 0,
-        gid: 0,
-        name: "root".to_string(),
-        dir: PathBuf::from("/root"),
-        shell: PathBuf::from("/bin/bash"),
-    });
-
-    assert_eq!(user.cleanup_homes(), vec![PathBuf::from("/root")]);
-}
-
-#[test]
 fn resolve_from_is_reachable_through_the_public_wrapper() {
     let env = FakeEnv::default().with(ENV_SUDO_UID, "1000");
     let passwd = operator_passwd();

@@ -41,10 +41,6 @@ use crate::constants::{ENV_TARGET_UID, ENV_TARGET_USER};
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
 
-/// Root's home directory, always cleaned alongside the operator's own home: a
-/// `sudo` invocation leaves residue there regardless of who the operator is.
-const ROOT_HOME: &str = "/root";
-
 // Environment variables consulted during resolution. Keeping the literals here
 // — and nowhere else in the crate — is what lets every other module drop its
 // bespoke lookup and defer to this one resolver.
@@ -77,8 +73,7 @@ pub const PRIVILEGE_ENV_VARS: &[&str] = &[
 ///
 /// Construct one with [`TargetUser::resolve_with`] in production, or
 /// [`TargetUser::resolve_from`] with injected sources in tests. The fields are
-/// taken verbatim from the passwd entry, except [`TargetUser::home`], which can
-/// be overridden by an opt-in persona home (see [`TargetUser::with_persona_home`]).
+/// taken verbatim from the passwd entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TargetUser {
     /// Numeric user id.
@@ -91,40 +86,17 @@ pub struct TargetUser {
     home: PathBuf,
     /// Login shell.
     pub shell: PathBuf,
-    /// Optional alternative home for the opt-in fresh-home persona mode. When
-    /// set it shadows [`Self::home`] everywhere [`Self::home`] is consulted, so
-    /// callers never special-case persona mode.
-    persona_home: Option<PathBuf>,
 }
 
 impl TargetUser {
-    /// The home directory to operate on: the persona home when one is set,
-    /// otherwise the passwd home.
+    /// The home directory.
     pub fn home(&self) -> &Path {
-        self.persona_home.as_deref().unwrap_or(self.home.as_path())
-    }
-
-    /// The passwd home directory, ignoring any persona override.
-    pub fn passwd_home(&self) -> &Path {
         self.home.as_path()
     }
 
-    /// Override the home directory with a persona home (fresh-home mode).
-    pub fn with_persona_home(mut self, persona_home: PathBuf) -> Self {
-        self.persona_home = Some(persona_home);
-        self
-    }
-
-    /// Homes that history and artifact cleanup must cover: the operator's home
-    /// plus `/root`, deduplicated. `/root` is always included because a `sudo`
-    /// run leaves residue there whoever the operator is.
-    pub fn cleanup_homes(&self) -> Vec<PathBuf> {
-        let mut homes = vec![self.home().to_path_buf()];
-        let root = PathBuf::from(ROOT_HOME);
-        if !homes.contains(&root) {
-            homes.push(root);
-        }
-        homes
+    /// The passwd home directory (the same as [`Self::home`]).
+    pub fn passwd_home(&self) -> &Path {
+        self.home.as_path()
     }
 
     fn from_entry(entry: PasswdEntry) -> Self {
@@ -134,7 +106,6 @@ impl TargetUser {
             name: entry.name,
             home: entry.dir,
             shell: entry.shell,
-            persona_home: None,
         }
     }
 
@@ -166,8 +137,8 @@ impl TargetUser {
     /// code must go through [`TargetUser::resolve_with`] so resolution stays in one
     /// place. Lets tests in other modules (filesystem, shell, notification)
     /// exercise owner-aware writes without a real passwd entry.
-    #[cfg(test)]
-    pub(crate) fn for_test(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn for_test(
         uid: u32,
         gid: u32,
         name: &str,
@@ -180,7 +151,6 @@ impl TargetUser {
             name: name.to_string(),
             home: home.into(),
             shell: shell.into(),
-            persona_home: None,
         }
     }
 }
