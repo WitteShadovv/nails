@@ -17,12 +17,13 @@
 //! mount-query contract (mount point, filesystem type, read-only flag and
 //! source, the queries the session code reads) runs the real filesystem as
 //! root of an unprivileged user and mount namespace
-//! (`nails_core::test_support::Rerun`), so it needs no root either. The mock's own helpers are tested in `filesystem/mock/tests_*.rs`.
+//! (`nails_core::test_support::Rerun`), so it needs no root either. The
+//! mock's own helpers are tested in `filesystem/mock/tests_*.rs`.
 
 use nails_core::filesystem::{Filesystem, MockFilesystem, MountSource, PathKind, RealFilesystem};
-use nix::mount::MsFlags;
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs};
+use nix::mount::MsFlags;
 use std::path::Path;
 
 // ============================================================================
@@ -313,11 +314,7 @@ fn mount_query_contract<F: Filesystem>(fs: &F, root: &Path, mount_tmpfs: MountTm
             Some("tmpfs"),
             "{name}"
         );
-        assert_eq!(
-            fs.is_mount_read_only(&target).unwrap(),
-            read_only,
-            "{name}"
-        );
+        assert_eq!(fs.is_mount_read_only(&target).unwrap(), read_only, "{name}");
         let source = fs
             .mount_source(&target)
             .unwrap()
