@@ -263,6 +263,110 @@ fn help_and_version_carry_no_blocked_substrings() {
     }
 }
 
+/// Internal commands that run but are marked `hide = true`: the watcher and the
+/// notification dispatcher are started by the tool itself. No help or version
+/// text a user can reach may name them.
+const HIDDEN_COMMANDS: &[&str] = &["notify-dispatch", "watch"];
+
+/// Every command the public help promises; each one's long help renders an
+/// EXAMPLES section.
+const PUBLIC_COMMANDS: &[&str] = &[
+    "init",
+    "check",
+    "activate",
+    "deactivate",
+    "emergency",
+    "recover",
+    "status",
+    "verify",
+    "reapply",
+    "reset-upper",
+    "config",
+];
+
+/// Run a help or version invocation, require exit 0, and return stdout and
+/// stderr together after checking that no hidden command leaked onto either.
+fn public_help_text(args: &[&str]) -> String {
+    let output = nails().args(args).output().expect("run help");
+    assert!(output.status.success(), "{args:?} should exit 0");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for hidden in HIDDEN_COMMANDS {
+        assert!(
+            !text.contains(hidden),
+            "{args:?}: internal command token {hidden:?} leaked into public output:\n{text}"
+        );
+    }
+    text
+}
+
+// The help and version surface never names an internal command. The snapshots
+// above pin the wording; these assert the property as a whole, so dropping a
+// `hide = true` fails even after the snapshots are regenerated. They replace the
+// help-version-no-leak VM test: none of it needs a kernel, root or a boot.
+
+#[test]
+fn root_help_lists_public_commands_and_no_internal_one() {
+    for flag in ["--help", "-h"] {
+        let root = public_help_text(&[flag]);
+        for command in PUBLIC_COMMANDS {
+            assert!(root.contains(command), "{flag}: {command} missing:\n{root}");
+        }
+    }
+    let long_help = public_help_text(&["--help"]);
+    for section in [
+        "full path from the mounted volume",
+        "The workflow has four steps",
+        "EXIT STATUS:",
+    ] {
+        assert!(
+            long_help.contains(section),
+            "{section:?} missing:\n{long_help}"
+        );
+    }
+}
+
+#[test]
+fn version_prints_only_the_name_and_semver() {
+    let version = public_help_text(&["--version"]);
+    let version = version.trim();
+    assert!(version.starts_with("nails "), "{version:?}");
+    // A leaked install path or hostname would carry a separator; the version
+    // line is just "nails X.Y.Z".
+    assert!(!version.contains('/'), "{version:?}");
+    assert!(!version.contains('\n'), "{version:?}");
+    let host = std::fs::read_to_string("/proc/sys/kernel/hostname").unwrap_or_default();
+    let host = host.trim();
+    if !host.is_empty() {
+        assert!(!version.contains(host), "{host:?} in {version:?}");
+    }
+}
+
+#[test]
+fn every_public_command_long_help_renders_examples() {
+    for command in PUBLIC_COMMANDS {
+        let help = public_help_text(&[command, "--help"]);
+        assert!(help.contains("EXAMPLES:"), "{command}:\n{help}");
+    }
+}
+
+#[test]
+fn hidden_commands_still_run_they_are_only_absent_from_help() {
+    // Being hidden is a help-surface property, not a removal: each internal
+    // command's own --help still resolves.
+    for hidden in HIDDEN_COMMANDS {
+        let status = nails()
+            .args([hidden, "--help"])
+            .output()
+            .expect("run hidden help")
+            .status;
+        assert!(status.success(), "{hidden} --help should exit 0");
+    }
+}
+
 #[test]
 fn completions_print_to_stdout_and_write_no_files() {
     for shell in ["bash", "zsh", "fish"] {
