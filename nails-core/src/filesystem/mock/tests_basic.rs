@@ -197,3 +197,43 @@ fn canonicalize_refuses_a_link_loop() {
 
     assert!(fs.canonicalize(Path::new("/a/x")).is_err());
 }
+
+#[test]
+fn mock_filesystem_default_matches_new() {
+    let fs = MockFilesystem::default();
+    assert!(fs.get_mounted_paths().is_empty());
+}
+
+#[test]
+fn mock_filesystem_is_shared_across_threads() {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<MockFilesystem>();
+
+    let fs = MockFilesystem::new();
+    let other = fs.clone();
+    std::thread::spawn(move || other.mock_set_mounted(Path::new("/home"), true))
+        .join()
+        .unwrap();
+    assert!(fs.is_mounted(Path::new("/home")).unwrap());
+}
+
+#[test]
+fn mock_disk_usage_reports_the_seeded_sizes() {
+    let fs = MockFilesystem::new();
+    let path = Path::new("/mnt/hidden-volume");
+    fs.mock_set_disk_usage(path, 4 << 30, 1 << 30);
+
+    let usage = fs.disk_usage(path).unwrap();
+    assert_eq!((usage.total, usage.available), (4 << 30, 1 << 30));
+    assert_eq!(usage.used(), 3 << 30);
+}
+
+#[test]
+fn mock_writable_and_readable_follow_the_seeds() {
+    let fs = MockFilesystem::new();
+    assert!(!fs.is_readable(Path::new("/untracked")).unwrap());
+    fs.mock_set_writable("/mnt/hidden-volume", true);
+    assert!(fs.is_writable(Path::new("/mnt/hidden-volume")).unwrap());
+    fs.mock_set_writable("/mnt/hidden-volume", false);
+    assert!(!fs.is_writable(Path::new("/mnt/hidden-volume")).unwrap());
+}

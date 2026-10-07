@@ -141,6 +141,7 @@ fn test_explicit_nix_overlay_restores_nix_store_bind_mount() {
             PathBuf::from("/persist/nix/store"),
         )],
     );
+    fs.mock_set_path_exists("/persist/nix", true);
     fs.mock_set_path_exists("/persist/nix/store", true);
     fs.mock_set_path_exists(upper_dir.to_str().expect("upper str"), true);
     fs.mock_set_path_exists(work_dir.to_str().expect("work str"), true);

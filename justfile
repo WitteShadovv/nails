@@ -110,7 +110,7 @@ coverage:
 # too, where a host without user namespaces skips them; here a skip fails.
 kernel-tests:
     NAILS_REQUIRE_USERNS=1 cargo nextest run --workspace --all-features --locked \
-        -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe)'
+        -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract)'
 
 # The root-only privileged_mounts suite, rootless in a user + mount namespace.
 # The whiteout test needs trusted.* xattrs, which a user namespace cannot set,

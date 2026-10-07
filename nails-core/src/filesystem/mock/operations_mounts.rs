@@ -36,6 +36,21 @@ impl MockFilesystem {
 
         verify_mount_preconditions(self, lower[0], upper, work, target)?;
 
+        // The preconditions accept an upper or work directory that "can be
+        // created", but nothing creates it: the kernel then fails the mount
+        // with ENOENT, as it does for a missing extra lower. (The target is
+        // not checked: the orchestration suites mount over paths they never
+        // seed.)
+        let layers = lower.iter().copied().chain([upper, work]);
+        for layer in layers {
+            if !self.path_exists_impl(layer)? {
+                return Err(NailsError::Mount {
+                    target: target.to_path_buf(),
+                    errno: nix::errno::Errno::ENOENT,
+                });
+            }
+        }
+
         let mount_info = MountInfo {
             lowers: lower.iter().map(|p| p.to_path_buf()).collect(),
             upper: upper.to_path_buf(),
@@ -99,12 +114,15 @@ impl MockFilesystem {
 
         // Ownership gate: refuse to unmount a mount NAILS does not own, mirroring
         // the real filesystem's protection against force-detaching a host mount.
-        if !self
+        // A mount seeded as owned passes; a tracked tmpfs or bind passes only
+        // when the mount-table classifier owns it, exactly as the kernel side
+        // decides (a tmpfs or bind outside the runtime root is not NAILS's).
+        let seeded_owned = self
             .nails_owned_mounts
             .lock()
             .expect("MockFilesystem mutex poisoned")
-            .contains(target)
-        {
+            .contains(target);
+        if !seeded_owned && !self.discover_nails_mounts_impl(None)?.is_owned(target) {
             return Err(NailsError::RefusedUnmanagedUnmount {
                 path: target.to_path_buf(),
             });
@@ -161,13 +179,27 @@ impl MockFilesystem {
             .contains(target))
     }
 
+    /// A seeded type wins; otherwise a tracked overlay or tmpfs reports its own
+    /// type, as the kernel's mount table does, and anything else is no mount.
     pub(super) fn get_filesystem_type_impl(&self, target: &Path) -> Result<Option<String>> {
-        Ok(self
+        if let Some(seeded) = self
             .filesystem_types
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .get(target)
-            .cloned())
+            .cloned()
+        {
+            return Ok(Some(seeded));
+        }
+        if self.is_overlay_mounted_impl(target)? {
+            return Ok(Some("overlay".to_string()));
+        }
+        let tmpfs = self
+            .tmpfs_mounts
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .contains(target);
+        Ok(tmpfs.then(|| "tmpfs".to_string()))
     }
 
     pub(super) fn mount_source_impl(&self, mount_point: &Path) -> Result<Option<MountSource>> {
@@ -324,10 +356,6 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .insert(target.to_path_buf());
-        self.nails_owned_mounts
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .insert(target.to_path_buf());
 
         self.op_log
             .lock()
@@ -414,10 +442,6 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .insert(target.to_path_buf(), source.to_path_buf());
         self.mounted
-            .lock()
-            .expect("MockFilesystem mutex poisoned")
-            .insert(target.to_path_buf());
-        self.nails_owned_mounts
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .insert(target.to_path_buf());
