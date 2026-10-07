@@ -14,12 +14,20 @@ Most of the suite is unprivileged and runs with a plain `cargo test
 --workspace`: it drives the mount and overlay logic through `MockFilesystem` and
 temporary directories, so it needs neither root nor an overlayfs-capable kernel.
 
-A second, privileged tier exercises the real mount path — `RealFilesystem`
-against a live overlayfs, with bind and tmpfs submounts, force-unmount, and
-reverse-order teardown. Those tests live in
-`nails-core/tests/privileged_mounts.rs`, are every one `#[ignore]`d, and are
-skipped by the normal run. CI runs them in the dedicated `privileged-mounts`
-job of `ci.yml` on every PR, which `gate` aggregates.
+A second tier exercises the real mount path — `RealFilesystem` against a live
+overlayfs, with bind and tmpfs submounts, force-unmount, and reverse-order
+teardown — without root: each test re-runs itself as root of an unprivileged
+user + mount namespace (`nails_core::test_support::Rerun`). The mount contract
+(`nails-core/tests/filesystem_contract.rs`), `privileged_mounts.rs`,
+`kernel_semantics.rs` and the `kernel_tests` modules run this way in the normal
+`cargo test`; `just kernel-tests` runs only them and fails, instead of
+skipping, on a host without user namespaces (see
+[testing-strategy.md](testing-strategy.md)).
+
+One test needs real root: the whiteout and opaque-directory test in
+`privileged_mounts.rs` needs `trusted.*` xattrs, which a user namespace cannot
+set. It is `#[ignore]`d and CI runs it in the dedicated `privileged-mounts` job
+of `ci.yml` on every PR, which `gate` aggregates.
 
 ## Tests and the process environment
 
@@ -63,10 +71,11 @@ stable toolchain; the seed it prints reproduces a failing order with
 RUSTC_BOOTSTRAP=1 cargo test --workspace -- -Z unstable-options --shuffle
 ```
 
-## Running the privileged mount tests
+## Running the root-only mount test
 
-The tests mount and unmount real filesystems, so they need `CAP_SYS_ADMIN`. They
-are run inside a private mount namespace, which keeps every mount invisible to
+The whiteout test mounts and unmounts real filesystems with `trusted.*` xattrs,
+so it needs `CAP_SYS_ADMIN` in the initial user namespace. It is run inside a
+private mount namespace, which keeps every mount invisible to
 the host and discards all of them when the process exits — a failing test cannot
 leave a mount behind on your machine.
 
@@ -97,12 +106,12 @@ for line in sys.stdin:
         print(msg["executable"])
 ')
 
-# 2. Run the ignored tests in a fresh private mount namespace, serially.
+# 2. Run the ignored test in a fresh private mount namespace.
 sudo unshare --mount --propagation private "$bin" --ignored --test-threads=1
 ```
 
-`--ignored` selects exactly the privileged tests, and `--test-threads=1` keeps
-them serial so each one owns its mount namespace state without racing another.
+`--ignored` selects exactly the root-only test; the other tests of the binary
+run rootless in the normal test run.
 
 This is the same command the CI `privileged-mounts` job runs; it is part of the
-required `gate` check, so these tests must pass before a PR can merge.
+required `gate` check, so the test must pass before a PR can merge.

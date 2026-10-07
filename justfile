@@ -106,18 +106,12 @@ coverage:
 
 # The tests that ask the kernel directly from an unprivileged user + mount
 # namespace (overlay mount ids and st_dev, live mountinfo, fdinfo, strictatime,
-# a real broken pipe; see docs/testing-strategy.md). They run in `just test`
+# a real broken pipe, the mount contract and the rootless privileged_mounts
+# tests; see docs/testing-strategy.md). They run in `just test`
 # too, where a host without user namespaces skips them; here a skip fails.
 kernel-tests:
     NAILS_REQUIRE_USERNS=1 cargo nextest run --workspace --all-features --locked \
-        -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract)'
-
-# The root-only privileged_mounts suite, rootless in a user + mount namespace.
-# The whiteout test needs trusted.* xattrs, which a user namespace cannot set,
-# so it stays with the privileged-mounts CI job.
-privileged-rootless:
-    unshare -Urm --propagation private cargo test -p nails-core --locked \
-        --test privileged_mounts -- --ignored --skip whiteout
+        -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract) | binary(privileged_mounts)'
 
 # The pre-push gate: formatting, lints, file sizes and the test suite.
 check: fmt-check lint line-count test

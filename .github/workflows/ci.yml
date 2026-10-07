@@ -281,8 +281,10 @@ jobs:
         if: needs.changes.outputs.deps == 'true'
         run: python3 ci/deny_ignores.py
 
-  # Real overlayfs in a private mount namespace. The suite is #[ignore]'d, so
-  # the rust job never runs it; it is built unprivileged and run as root.
+  # Real overlayfs as real root in a private mount namespace, for the one
+  # #[ignore]'d privileged_mounts test a user namespace cannot run (directory
+  # whiteouts need trusted.* xattrs); the rust job runs the rest rootless. It
+  # is built unprivileged and run as root.
   privileged-mounts:
     name: privileged-mounts
     needs: changes
