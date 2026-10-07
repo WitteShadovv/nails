@@ -33,7 +33,7 @@
                 _nails_qemu.wait(timeout=180)
             except __import__("subprocess").TimeoutExpired:
                 raise AssertionError(
-                    f"reboot_after_emergency: VM did not power off within 180s\n"
+                    "reboot_after_emergency: VM did not power off within 180s\n"
                     + "--- serial console tail ---\n"
                     + "\n".join(machine.get_console_log().splitlines()[-100:])
                 ) from None
