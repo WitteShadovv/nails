@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use nails_core::output::{Mark, Style};
 use nails_core::rehearse::{self, ChannelRecord, Phase, RehearsalState, ScanReport};
-use nails_core::{Config, RealFilesystem, StateFile, SystemState};
+use nails_core::{Config, RealFilesystem};
 use serde::Serialize;
 
 use crate::cli::args::{RehearseArgs, RehearsePlantArgs, RehearseScanArgs, RehearseStep};
@@ -69,10 +69,13 @@ fn fail(
 }
 
 /// Whether the recorded system state is an active hidden session.
+/// Whether this runs in the hidden root, from the live mount table and plan.
 fn session_active(config: &Config) -> bool {
-    StateFile::load(&config.state_file_path)
-        .map(|file| matches!(file.state, SystemState::Active { .. }))
-        .unwrap_or(false)
+    nails_core::session::probe(
+        &nails_core::session::Paths::system(),
+        &config.hidden_volume_root,
+    )
+    .is_hidden()
 }
 
 fn load(config: &Config) -> Result<Option<RehearsalState>, String> {
@@ -90,14 +93,17 @@ fn phase_name(state: Option<&RehearsalState>) -> &'static str {
 /// The guided next step for where the rehearsal stands.
 fn next_step(state: Option<&RehearsalState>, active: bool) -> String {
     let same_boot = |s: &RehearsalState| {
-        s.planted_boot_id.is_some() && s.planted_boot_id == rehearse::current_boot_id()
+        s.planted_in_this_session(
+            rehearse::current_boot_id().as_deref(),
+            rehearse::current_soft_reboots(),
+        )
     };
     match state {
         None if active => "Step 1 of 3: run `nails rehearse plant` in this hidden session.".into(),
         None => "Step 1 of 3: activate a hidden session, then run `nails rehearse plant`.".into(),
         Some(s) if s.phase == Phase::Planted && same_boot(s) => {
-            "Step 2 of 3: deactivate as usual (`nails deactivate`, which reboots), then unlock and \
-             mount the hidden volume again and run `nails rehearse scan`."
+            "Step 2 of 3: deactivate as usual (`nails deactivate`, it soft-reboots back to the \
+             decoy), then unlock and mount the hidden volume again and run `nails rehearse scan`."
                 .into()
         }
         Some(s) if s.phase == Phase::Planted => "Step 3 of 3: run `nails rehearse scan`.".into(),
@@ -257,6 +263,7 @@ fn plant(
         phase: Phase::Planted,
         planted_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
         planted_boot_id: rehearse::current_boot_id(),
+        planted_soft_reboots: Some(rehearse::current_soft_reboots()),
         channels,
         scans: Vec::new(),
     };
@@ -333,15 +340,18 @@ fn scan(settings: &OutputSettings, config: &Config, args: &RehearseScanArgs) -> 
     if let Some(s) = &state
         && !args.offline
         && !args.allow_same_boot
-        && s.planted_boot_id.is_some()
-        && s.planted_boot_id == rehearse::current_boot_id()
+        && s.planted_in_this_session(
+            rehearse::current_boot_id().as_deref(),
+            rehearse::current_soft_reboots(),
+        )
     {
         return fail(
             json,
             ExitStatus::InvalidState,
             "same_boot",
-            "the canary was planted in this boot, so the session's writes may not have reached \
-             the disk; deactivate first (it reboots), or pass --allow-same-boot",
+            "the canary was planted in this session, so its writes may not have reached the \
+             disk; deactivate first (it soft-reboots back to the decoy), or pass \
+             --allow-same-boot",
         );
     }
     let devices = match scan_devices(config, args) {

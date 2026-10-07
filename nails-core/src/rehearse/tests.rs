@@ -20,6 +20,7 @@ fn state(token: &str) -> RehearsalState {
         phase: Phase::Planted,
         planted_at: "2026-10-07T10:00:00Z".to_string(),
         planted_boot_id: Some("boot-a".to_string()),
+        planted_soft_reboots: Some(2),
         channels: Vec::new(),
         scans: Vec::new(),
     }
@@ -277,4 +278,14 @@ fn planting_writes_only_into_the_overlay_upper() {
 
 fn plant_file_for_test(ctx: &PlantContext<'_>, dir: &Path) -> ChannelRecord {
     super::plant::tests_support::plant_file(ctx, dir)
+}
+
+#[test]
+fn the_planting_session_is_the_same_boot_and_soft_reboot_count() {
+    let state = state(TOKEN);
+    assert!(state.planted_in_this_session(Some("boot-a"), 2));
+    // A soft-reboot keeps the boot ID: the count tells the sessions apart.
+    assert!(!state.planted_in_this_session(Some("boot-a"), 3));
+    assert!(!state.planted_in_this_session(Some("boot-b"), 2));
+    assert!(!state.planted_in_this_session(None, 2));
 }

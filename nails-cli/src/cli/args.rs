@@ -452,7 +452,7 @@ pub struct RehearseScanArgs {
     #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath, requires = "offline")]
     pub token_file: Option<std::path::PathBuf>,
 
-    /// Scan even in the boot the canary was planted in (proves little: the
+    /// Scan even in the session the canary was planted in (proves little: the
     /// session's writes may not have reached the disk yet)
     #[arg(long)]
     pub allow_same_boot: bool,

@@ -8,12 +8,13 @@
 //!
 //! 1. **Plant** ([`plant`]), inside an active hidden session: a random token
 //!    goes into the channels a session most often leaks through: file contents
-//!    and names under every overlaid tree and in the operator's home, a line in
-//!    the system log, a process command line, a `recently-used.xbel` entry and
-//!    a desktop notification. Every file write is checked first to land in an
-//!    overlay upper or on the hidden volume; nothing is written to the decoy.
-//! 2. **Deactivate** with the normal teardown and reboot.
-//! 3. **Scan** ([`scan`]), after the reboot or in a later session, or offline
+//!    and names in the hidden root (the root upper and every overlaid decoy
+//!    filesystem) and in the operator's home, a line in the system log, a
+//!    process command line, a `recently-used.xbel` entry and a desktop
+//!    notification. Every file write is checked first to land in an overlay
+//!    upper or on the hidden volume; nothing is written to the decoy.
+//! 2. **Deactivate** as usual: it soft-reboots back to the decoy.
+//! 3. **Scan** ([`scan`]), back on the decoy or in a later session, or offline
 //!    against an image: the raw, decrypted decoy block devices are read
 //!    `O_RDONLY | O_NOATIME`, never mounted, and searched for the token in
 //!    ASCII and UTF-16LE, allocated and unallocated space alike.
@@ -139,6 +140,11 @@ pub struct RehearsalState {
     /// The boot the canary was planted in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planted_boot_id: Option<String>,
+    /// systemd's soft-reboot count when the canary was planted. A soft-reboot
+    /// keeps the boot ID, so the boot ID and this count together tell the
+    /// planting session from a later one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planted_soft_reboots: Option<u64>,
     /// The channels, planted or skipped.
     pub channels: Vec<ChannelRecord>,
     /// Scans run so far.
@@ -147,6 +153,14 @@ pub struct RehearsalState {
 }
 
 impl RehearsalState {
+    /// Whether this runs in the session the canary was planted in: the same
+    /// boot ID and the same soft-reboot count.
+    pub fn planted_in_this_session(&self, boot_id: Option<&str>, soft_reboots: u64) -> bool {
+        self.planted_boot_id.is_some()
+            && self.planted_boot_id.as_deref() == boot_id
+            && self.planted_soft_reboots.unwrap_or(0) == soft_reboots
+    }
+
     /// A short, safe-to-print stand-in for the token.
     pub fn fingerprint(&self) -> String {
         fingerprint(&self.token)
@@ -286,8 +300,22 @@ pub(crate) fn now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-/// The running boot's id, to tell a scan in the planting boot from one after
-/// the reboot.
+/// The running boot's id. With [`current_soft_reboots`] it tells the planting
+/// session from a later one.
 pub fn current_boot_id() -> Option<String> {
     crate::state::read_boot_id()
+}
+
+/// systemd's count of soft-reboots in this boot (`SoftRebootsCount`), `0` when
+/// the service manager does not report it.
+pub fn current_soft_reboots() -> u64 {
+    use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
+    let command = ProcessCommand::tool("systemctl")
+        .args(["show", "-p", "SoftRebootsCount", "--value"])
+        .deadline(crate::process::run::SYSTEMCTL_PROBE_BUDGET);
+    RealProcessRunner
+        .run_text(&command)
+        .ok()
+        .and_then(|(ok, out, _)| ok.then(|| out.trim().parse().ok()).flatten())
+        .unwrap_or(0)
 }
