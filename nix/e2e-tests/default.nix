@@ -18,7 +18,10 @@ let
   applyBaseNode =
     spec:
     let
-      stripped = builtins.removeAttrs spec [ "baseNode" ];
+      stripped = builtins.removeAttrs spec [
+        "baseNode"
+        "replaces"
+      ];
     in
     if spec ? nodes then
       stripped
@@ -92,6 +95,29 @@ let
       true
     else
       throw "Duplicate E2E test name detected under nix/e2e-tests/tests";
+
+  # A test that runs several former tests as scenarios of one VM boot (see
+  # lib/batch.nix) lists their names in a top-level `replaces`. Each old name
+  # stays an alias of the merged test: `e2e.<old>` builds it, the runner and
+  # `ci.e2e resolve` accept the old name, and the `ci` group keeps a merged
+  # member. An alias never names a live test or group, and belongs to one test.
+  aliasPairs = lib.concatMap (
+    spec:
+    map (old: {
+      name = old;
+      value = spec.name;
+    }) (spec.replaces or [ ])
+  ) rawSpecs;
+  aliases = builtins.listToAttrs aliasPairs;
+  aliasNames = map (pair: pair.name) aliasPairs;
+
+  _assertAliases =
+    lib.assertMsg (
+      builtins.length aliasNames == builtins.length (lib.unique aliasNames)
+    ) "An E2E alias (`replaces`) is claimed by more than one test"
+    &&
+      lib.assertMsg (lib.intersectLists aliasNames rawNames == [ ])
+        "E2E aliases must not name a live test: ${lib.concatStringsSep ", " (lib.intersectLists aliasNames rawNames)}";
 
   # The driver's default globalTimeout is one hour, so a hung test held its
   # shard for an hour and the hang was then recorded as a shard weight. A test
@@ -218,18 +244,26 @@ let
 
   namesWithTag = tag: lib.filter (name: lib.elem tag (metadata.${name}.tags or [ ])) testNames;
 
-  ciNames = lib.filter (name: builtins.elem name testNames) [
-    "basic-workflow"
-    "verify"
-    "emergency"
-    "forensic-clean"
-    "config-handling"
-    "status-verify"
-    "preflight-nixos-build-target"
-    "session-kill-graphical"
-    "notify-autostart-lifecycle"
-    "activate-auto-lifecycle"
-  ];
+  # Members are resolved through the aliases, so a merged smoke test stays in
+  # the PR lane under its new name.
+  resolveAlias = name: aliases.${name} or name;
+
+  ciNames = lib.unique (
+    lib.filter (name: builtins.elem name testNames) (
+      map resolveAlias [
+        "basic-workflow"
+        "verify"
+        "emergency"
+        "forensic-clean"
+        "config-handling"
+        "status-verify"
+        "preflight-nixos-build-target"
+        "session-kill-graphical"
+        "notify-autostart-lifecycle"
+        "activate-auto-lifecycle"
+      ]
+    )
+  );
 
   groupMembers = {
     smoke = namesWithTag "smoke";
@@ -258,22 +292,28 @@ let
 
   # Tests and groups share one attribute set, and the runner resolves a name
   # as a test before a group, so a shared name would hide one of them.
-  shadowedGroups = lib.intersectLists rawNames (builtins.attrNames groups);
-  _assertNoShadowedGroups = lib.assertMsg (
-    shadowedGroups == [ ]
-  ) "E2E test names must differ from group names: ${lib.concatStringsSep ", " shadowedGroups}";
+  shadowedGroups = lib.intersectLists (rawNames ++ aliasNames) (builtins.attrNames groups);
+  _assertNoShadowedGroups =
+    lib.assertMsg (shadowedGroups == [ ])
+      "E2E test and alias names must differ from group names: ${lib.concatStringsSep ", " shadowedGroups}";
+
+  aliasTests = lib.mapAttrs (_: target: tests.${target}) aliases;
 in
 builtins.seq _assertUniqueNames (
   builtins.seq _assertResearchLayout (
-    builtins.seq _assertNoShadowedGroups (
-      tests
-      // groups
-      // {
-        _groups = groupMembers;
-        _meta = metadata;
-        _testNames = testNames;
-        _researchTargets = researchNames ++ [ researchTag ];
-      }
+    builtins.seq _assertAliases (
+      builtins.seq _assertNoShadowedGroups (
+        tests
+        // aliasTests
+        // groups
+        // {
+          _groups = groupMembers;
+          _meta = metadata;
+          _testNames = testNames;
+          _aliases = aliases;
+          _researchTargets = researchNames ++ [ researchTag ];
+        }
+      )
     )
   )
 )

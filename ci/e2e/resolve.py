@@ -33,6 +33,8 @@ def resolve_targets(metadata: Metadata, requested: Sequence[str]) -> list[str]:
 
     A name resolves as a leaf test before a group, matching the flake, where a
     shared name would hide one of them (the suite asserts they never clash).
+    The old name of a test that now runs as a scenario of a merged test
+    resolves to that merged test.
     """
     leaf_set = metadata.leaf_set
     seen: set[str] = set()
@@ -42,6 +44,8 @@ def resolve_targets(metadata: Metadata, requested: Sequence[str]) -> list[str]:
             members = [name]
         elif name in metadata.groups:
             members = metadata.groups[name]
+        elif name in metadata.aliases:
+            members = [metadata.aliases[name]]
         else:
             raise ResolveError(f"unknown E2E target: {name}")
         for member in members:

@@ -96,7 +96,12 @@ def _command_list(args: argparse.Namespace) -> int:
     metadata = _metadata()
     leaf_set = metadata.leaf_set
     for name in metadata.available_targets:
-        kind = "test" if name in leaf_set else "group"
+        if name in leaf_set:
+            kind = "test"
+        elif name in metadata.aliases:
+            kind = f"alias of {metadata.aliases[name]}"
+        else:
+            kind = "group"
         print(f"{name}\t{kind}")
     return 0
 

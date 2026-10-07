@@ -1,7 +1,8 @@
 """The E2E metadata: the single source of targets, groups and timeouts.
 
 The flake exposes ``.#legacyPackages.<system>.e2e-metadata`` as plain data:
-``availableTargets``, ``leafTests``, ``groups`` and ``timeouts``. Evaluating it
+``availableTargets``, ``leafTests``, ``groups``, ``timeouts`` and ``aliases``
+(former test names that now run as scenarios of a merged test). Evaluating it
 runs the suite's own assertions without building a single VM. Nix is invoked
 lazily, so a subcommand that needs no metadata (``--help``, ``interactive``
 argument parsing) never shells out.
@@ -12,7 +13,7 @@ from __future__ import annotations
 import json
 import subprocess
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 # The flake builds its VM tests for x86_64-linux only. The full attribute path
 # also works from other hosts that have an x86_64-linux builder.
@@ -31,6 +32,9 @@ class Metadata:
     leaf_tests: list[str]
     groups: dict[str, list[str]]
     timeouts: dict[str, int]
+    # Old name -> merged leaf test. Optional in the payload, so metadata from
+    # before the first merge still parses.
+    aliases: dict[str, str] = field(default_factory=dict)
 
     @property
     def leaf_set(self) -> frozenset[str]:
@@ -52,13 +56,18 @@ def parse_metadata(payload: object) -> Metadata:
         raise MetadataError("E2E metadata groups must map a name to its tests")
     if not isinstance(raw_timeouts, Mapping):
         raise MetadataError("E2E metadata timeouts must map a test to its seconds")
+    raw_aliases = payload.get("aliases", {})
+    if not isinstance(raw_aliases, Mapping):
+        raise MetadataError("E2E metadata aliases must map an old name to its test")
     groups = {str(name): list(members) for name, members in raw_groups.items()}
     timeouts = {str(name): int(value) for name, value in raw_timeouts.items()}
+    aliases = {str(name): str(target) for name, target in raw_aliases.items()}
     return Metadata(
         available_targets=[str(name) for name in available],
         leaf_tests=[str(name) for name in leaf_tests],
         groups=groups,
         timeouts=timeouts,
+        aliases=aliases,
     )
 
 

@@ -259,6 +259,8 @@
         availableTargets = lib.subtractLists rawE2eTests._researchTargets (builtins.attrNames e2eTests);
         leafTests = rawE2eTests._testNames;
         groups = rawE2eTests._groups;
+        # Former test names that now run as scenarios of a merged test.
+        aliases = rawE2eTests._aliases;
         timeouts = lib.mapAttrs (_: meta: meta.timeout) rawE2eTests._meta;
       };
     in

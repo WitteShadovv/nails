@@ -38,6 +38,51 @@ class ResolveTargetsTest(unittest.TestCase):
         )
         self.assertEqual(resolve.resolve_targets(metadata, ["shared"]), ["shared"])
 
+    def test_an_alias_resolves_to_its_merged_test(self) -> None:
+        metadata = parse_metadata(
+            {
+                "availableTargets": ["batch", "old-a", "old-b", "all"],
+                "leafTests": ["batch"],
+                "groups": {"all": ["batch"]},
+                "timeouts": {"batch": 900},
+                "aliases": {"old-a": "batch", "old-b": "batch"},
+            }
+        )
+        self.assertEqual(metadata.aliases, {"old-a": "batch", "old-b": "batch"})
+        # Two old names of one merged test select it once.
+        self.assertEqual(
+            resolve.resolve_targets(metadata, ["old-a", "old-b"]), ["batch"]
+        )
+        self.assertEqual(resolve.resolve_targets(metadata, ["old-b", "all"]), ["batch"])
+
+    def test_an_alias_to_an_unknown_test_is_an_error(self) -> None:
+        broken = Metadata(
+            available_targets=["old"],
+            leaf_tests=["a"],
+            groups={},
+            timeouts={"a": 900},
+            aliases={"old": "ghost"},
+        )
+        with self.assertRaisesRegex(resolve.ResolveError, "unknown leaf test ghost"):
+            resolve.resolve_targets(broken, ["old"])
+
+    def test_metadata_without_aliases_still_parses(self) -> None:
+        self.assertEqual(METADATA.aliases, {})
+
+    def test_malformed_aliases_are_rejected(self) -> None:
+        from ci.e2e.metadata import MetadataError
+
+        with self.assertRaisesRegex(MetadataError, "aliases"):
+            parse_metadata(
+                {
+                    "availableTargets": [],
+                    "leafTests": [],
+                    "groups": {},
+                    "timeouts": {},
+                    "aliases": ["old"],
+                }
+            )
+
     def test_unknown_target_is_an_error(self) -> None:
         with self.assertRaisesRegex(resolve.ResolveError, "unknown E2E target: nope"):
             resolve.resolve_targets(METADATA, ["nope"])
