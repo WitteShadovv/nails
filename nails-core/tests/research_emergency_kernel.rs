@@ -343,8 +343,12 @@ fn mount_cgroup_root(fx: &Fixture) -> Option<PathBuf> {
 }
 
 impl Cgroup {
+    /// A child cgroup named after `name` and this process. Every scenario runs
+    /// in its own namespaced child process, but all of them share the caller's
+    /// delegated cgroup, so a bare name collides when the harness runs them in
+    /// parallel.
     fn create(root: &Path, name: &str) -> Self {
-        let path = root.join(name);
+        let path = root.join(format!("{name}-{}", std::process::id()));
         std::fs::create_dir(&path).expect("create cgroup");
         Self { path }
     }
