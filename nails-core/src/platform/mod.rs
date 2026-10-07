@@ -9,22 +9,21 @@
 //! Host facts are gathered once by [`detect`] into a [`HostProfile`] (reading
 //! `/etc/os-release`, `/run/current-system`, `/run/ostree-booted` and PID 1),
 //! and the matching backend is chosen once by [`platform_for`]. Each backend
-//! implements the [`Platform`] trait, which collects every decision that used to
-//! be scattered across the CLI, the manager, the mount loop and the pre-flight
-//! checks:
+//! implements the [`Platform`] trait, which collects the decisions the CLI, the
+//! manager and the pre-flight checks need:
 //!
-//! - [`Platform::overlay_policy`] — the trees this host overlays, never overlays
-//!   or keeps read-only, plus which mount hooks the loop runs (the NixOS
-//!   `/nix` + `/var` + `/etc` handling, a plain FHS overlay, or nothing).
 //! - [`Platform::host_command_dirs`] — where host tools are found.
+//! - [`Platform::config_layer`] — the host's declarative configuration layer
+//!   (the hidden NixOS configuration), if it has one.
 //! - [`Platform::discover_build_target`] — which declarative build target
 //!   activation, `check`/`--dry-run` and the build-target pre-flight check use.
-//! - [`Platform::restore_base_system`] — the decoy-restore step on deactivation.
+//! - [`Platform::artifact_scanners`] — the platform's read-only drift scanners
+//!   for `verify`.
 //!
 //! ## Backends
 //!
 //! - [`NixOsPlatform`] carries the current, first-class NixOS behaviour.
-//! - [`FhsPlatform`] is the overlay-only backend for systemd FHS hosts; its
+//! - [`FhsPlatform`] is the backend for systemd FHS hosts (no hidden build); its
 //!   first validated target is Debian/Ubuntu, with other FHS families treated as
 //!   provisional until they get their own specialisation.
 //! - [`UnsupportedPlatform`] refuses ostree / image-based hosts and non-systemd

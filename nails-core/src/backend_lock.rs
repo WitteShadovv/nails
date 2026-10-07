@@ -1,43 +1,18 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Closing the encrypted backend after an emergency teardown.
+//! The device stack behind the hidden root.
 //!
-//! Overlay teardown is the one step the emergency panic button always runs. It
-//! deliberately leaves the hidden backend open: the binary and `state.json` live
-//! on the hidden root, so a plain `umount` plus `cryptsetup close` fails with
-//! `EBUSY` while this process is still running from it. Closing the backend —
-//! wiping the master key from kernel memory — is therefore an opt-in, deferred
-//! operation ([`EmergencyConfig::lock_backend`](crate::config::EmergencyConfig)):
-//!
-//! 1. `sync`, so nothing the teardown wrote is still only in the page cache.
-//! 2. A *lazy* unmount of the hidden root (`MNT_DETACH`): the mount is detached
-//!    from the namespace immediately but the superblock stays alive until this
-//!    process's last reference to it drops at exit.
-//! 3. Each device-mapper device behind the mount is marked for *deferred* removal
-//!    (`dmsetup remove --deferred`, the userspace equivalent of
-//!    `cryptsetup close --deferred` / `DM_DEFERRED_REMOVE`). The kernel removes
-//!    the device — and wipes the key — once the last opener drops, and a loop
-//!    device set up with autoclear detaches with it.
-//! 4. An optional, non-device-mapper `close_command` runs through the shared
-//!    journal-free detached path.
-//!
-//! Nothing here is suppressed: every failure is collected into the returned
-//! [`BackendLockReport`] so the caller can report it loudly and still tell the
-//! operator the manual close sequence.
-//!
-//! Resolving which devices back the hidden root — walking
-//! `/proc/self/mountinfo` to the mount's source and then the `/sys/block`
-//! device-mapper/loop stack — is a pure function over the [`Filesystem`] trait
-//! ([`resolve_backend_chain`]), so it is exercised against `MockFilesystem`
-//! without touching the host. The real syscalls (`sync`, the lazy unmount) and
-//! the `dmsetup` calls are gated on the runtime-safety skip, so a bare
-//! `cargo test` never acts on a real mount.
+//! The entry records the device-mapper names behind the hidden volume in the
+//! session plan, so the way back and the emergency path can mark them for
+//! deferred removal without reading anything from the volume. Resolving them
+//! (the mount's source in `/proc/self/mountinfo`, then the `/sys/block`
+//! device-mapper and loop stack) is a pure function over the [`Filesystem`]
+//! trait ([`resolve_backend_chain`]), exercised against `MockFilesystem`.
 
 use std::path::{Path, PathBuf};
 
 use crate::filesystem::{Filesystem, parse_mountinfo};
-use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
 
 /// The kernel mount table.
 const SELF_MOUNTINFO: &str = "/proc/self/mountinfo";
@@ -67,27 +42,10 @@ pub struct BackendChain {
 impl BackendChain {
     /// Whether this backend is device-mapper based (has at least one dm device to
     /// remove). A `false` means the mount is a plain block device and only the
-    /// lazy unmount (and any `close_command`) applies.
+    /// way back's lazy unmount applies.
     pub fn is_device_mapper(&self) -> bool {
         !self.dm_names.is_empty()
     }
-}
-
-/// The outcome of a [`lock_backend`] attempt, for loud reporting.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BackendLockReport {
-    /// The resolved chain, when the hidden root was still mounted.
-    pub chain: Option<BackendChain>,
-    /// Whether the lazy unmount of the hidden root was issued successfully.
-    pub unmounted: bool,
-    /// Device-mapper names successfully marked for deferred removal.
-    pub dm_deferred: Vec<String>,
-    /// Whether an explicit `close_command` was dispatched.
-    pub close_command_dispatched: bool,
-    /// Whether the hidden root is still mounted after the attempt.
-    pub still_mounted: bool,
-    /// Every failure encountered, verbatim. Nothing is suppressed.
-    pub errors: Vec<String>,
 }
 
 /// Resolve the device-mapper / loop chain behind the hidden-root mount.
@@ -207,96 +165,6 @@ fn walk_dm_stack<F: Filesystem>(fs: &F, block_name: &str, chain: &mut BackendCha
     }
 }
 
-/// The exact manual commands to close the backend, derived from a resolved
-/// chain, for the operator to run by hand when the lock is not opted in.
-///
-/// Best-effort: an empty chain yields only the unmount line.
-pub fn manual_close_sequence(chain: &BackendChain) -> Vec<String> {
-    let mut lines = vec![format!("umount {}", chain.mount_point.display())];
-    for name in &chain.dm_names {
-        lines.push(format!("cryptsetup close {name}"));
-    }
-    for loop_dev in &chain.loop_devices {
-        lines.push(format!("losetup -d {}", loop_dev.display()));
-    }
-    lines
-}
-
-/// Close the hidden backend after overlay teardown: lazy-unmount the hidden root
-/// and mark its device-mapper stack for deferred removal.
-///
-/// Returns a [`BackendLockReport`] describing exactly what happened. The real
-/// syscalls and `dmsetup` calls are skipped in a test/test-like runtime (the
-/// resolution still runs), so the caller's reporting path is exercised without
-/// acting on a real mount.
-pub fn lock_backend<F: Filesystem>(fs: &F, hidden_root: &Path) -> BackendLockReport {
-    let mut report = BackendLockReport::default();
-
-    let chain = match resolve_backend_chain(fs, hidden_root) {
-        Ok(Some(chain)) => chain,
-        Ok(None) => {
-            // Already unmounted: nothing to close, and the key is already gone
-            // (or never was ours). A clean, quiet success.
-            report.still_mounted = false;
-            return report;
-        }
-        Err(e) => {
-            report
-                .errors
-                .push(format!("could not resolve the hidden-root backend: {e}"));
-            report.still_mounted = fs.is_mounted(hidden_root).unwrap_or(true);
-            return report;
-        }
-    };
-
-    report.chain = Some(chain.clone());
-
-    if crate::runtime_safety::should_skip_host_interaction() {
-        // In a test/test-like runtime the resolution above is the observable
-        // behaviour; the real close is not performed.
-        report.still_mounted = fs.is_mounted(hidden_root).unwrap_or(false);
-        return report;
-    }
-
-    // 1. Flush dirty pages so the deferred device removal cannot drop a cache
-    //    still holding the teardown's writes.
-    nix::unistd::sync();
-
-    // 2. Lazy-unmount the hidden root: detach it from the namespace now; the
-    //    superblock lives until this process exits and releases its last
-    //    reference.
-    match nix::mount::umount2(&chain.mount_point, nix::mount::MntFlags::MNT_DETACH) {
-        Ok(()) => report.unmounted = true,
-        Err(errno) => report.errors.push(format!(
-            "lazy unmount of {} failed: {errno}",
-            chain.mount_point.display()
-        )),
-    }
-
-    // 3. Mark each device-mapper device for deferred removal. The kernel removes
-    //    it and wipes the key once the last opener (this process) drops.
-    for name in &chain.dm_names {
-        match RealProcessRunner.run(
-            &ProcessCommand::tool("dmsetup")
-                .arg("remove")
-                .arg("--deferred")
-                .arg(name),
-        ) {
-            Ok(output) if output.status.success() => report.dm_deferred.push(name.clone()),
-            Ok(output) => report.errors.push(format!(
-                "dmsetup remove --deferred {name} failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            )),
-            Err(e) => report.errors.push(format!(
-                "dmsetup remove --deferred {name} could not run: {e}"
-            )),
-        }
-    }
-
-    report.still_mounted = fs.is_mounted(hidden_root).unwrap_or(false);
-    report
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -344,8 +212,6 @@ mod tests {
         assert_eq!(chain.source_device, PathBuf::from("/dev/sdb1"));
         assert!(chain.dm_names.is_empty());
         assert!(chain.loop_devices.is_empty());
-        // The manual sequence still covers the unmount.
-        assert_eq!(manual_close_sequence(&chain), vec!["umount /mnt/data"]);
     }
 
     #[test]
@@ -382,14 +248,6 @@ mod tests {
         assert!(chain.is_device_mapper());
         assert_eq!(chain.dm_names, vec!["data0".to_string()]);
         assert_eq!(chain.loop_devices, vec![PathBuf::from("/dev/loop0")]);
-        assert_eq!(
-            manual_close_sequence(&chain),
-            vec![
-                "umount /mnt/data".to_string(),
-                "cryptsetup close data0".to_string(),
-                "losetup -d /dev/loop0".to_string(),
-            ]
-        );
     }
 
     #[test]
@@ -438,42 +296,5 @@ mod tests {
             vec!["crypt0".to_string(), "linear0".to_string()]
         );
         assert_eq!(chain.loop_devices, vec![PathBuf::from("/dev/loop1")]);
-    }
-
-    #[test]
-    fn lock_backend_in_test_runtime_resolves_without_acting() {
-        // The test runtime skips the real close, so this exercises the reporting
-        // path: the chain is resolved but no host syscall runs.
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(
-            "/proc/self/mountinfo",
-            &mountinfo_line("/mnt/data", "ext4", "/dev/dm-2"),
-        );
-        fs.mock_add_file("/sys/block/dm-2/dm/name", "data0\n");
-        fs.mock_set_directory_contents(Path::new("/sys/block/dm-2/slaves"), Vec::new());
-        fs.mock_set_mounted(Path::new("/mnt/data"), true);
-
-        let report = lock_backend(&fs, Path::new("/mnt/data"));
-        assert!(report.chain.is_some());
-        assert!(
-            !report.unmounted,
-            "the real unmount is skipped in test runtime"
-        );
-        assert!(report.dm_deferred.is_empty());
-        assert!(report.errors.is_empty());
-    }
-
-    #[test]
-    fn lock_backend_on_unmounted_root_is_a_quiet_success() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(
-            "/proc/self/mountinfo",
-            &mountinfo_line("/other", "ext4", "/dev/sda1"),
-        );
-
-        let report = lock_backend(&fs, Path::new("/mnt/data"));
-        assert!(report.chain.is_none());
-        assert!(!report.still_mounted);
-        assert!(report.errors.is_empty());
     }
 }

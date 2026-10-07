@@ -35,7 +35,6 @@
 // coverage figure, so the headline measures production code alone.
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
-pub mod mount_info;
 pub mod mountinfo;
 pub mod real;
 pub mod safe_path;
@@ -44,7 +43,6 @@ mod traits;
 // Re-exports
 #[cfg(any(test, feature = "test-support"))]
 pub use mock::{MockFilesystem, MockOp, PathKind};
-pub use mount_info::MountInfo;
 pub use mountinfo::{
     MountEntry, OverlayOpts, escape_overlay_path, parse_mountinfo, parse_overlay_opts,
     read_mountinfo,

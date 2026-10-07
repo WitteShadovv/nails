@@ -22,8 +22,7 @@
 //! - [`JsonReporter`]: typed progress events in the `activate --json` NDJSON
 //!   stream.
 //! - [`SilentReporter`]: a detached worker. Nothing reaches stdout or stderr;
-//!   steps go to the hidden-root log at debug level only. The hidden-volume
-//!   progress record (see [`crate::progress`]) is what `nails status` shows.
+//!   steps go to the hidden-root log at debug level only.
 //! - [`TracingReporter`]: the library default, reporting as tracing events, so
 //!   an embedding without a configured reporter keeps the previous behaviour.
 //!

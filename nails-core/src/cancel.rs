@@ -3,14 +3,10 @@
 
 //! Cooperative cancellation and signal survival for mutating operations.
 //!
-//! A mutating command (activate, deactivate, reapply, emergency, reset-upper)
-//! tears the system down and back up through a chain of RAII guards —
-//! [`StateGuard`](crate::StateGuard), the overlay mount rollback, the
-//! session-restart and nix-daemon guards. Those guards only run on a normal
-//! return or an unwind; a signal's *default* action terminates the process
-//! outright and skips every one of them, which can leave overlays half-mounted,
-//! the nix-daemon stopped, the session not restarted and the state file still
-//! reading `Activating`.
+//! A mutating command (activate, reset-upper) undoes a failed step on a normal
+//! return or an unwind, such as the entry's rollback of a half-built next root.
+//! A signal's *default* action terminates the process outright and skips that,
+//! which can leave a populated `/run/nextroot` behind.
 //!
 //! This module replaces those default actions with handlers that keep the
 //! process alive long enough to roll back cleanly:
