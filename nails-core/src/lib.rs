@@ -40,6 +40,9 @@ pub mod artifacts;
 // The residue catalog: every trace class, its probes, docs and VM test.
 pub mod residue_catalog;
 
+// `nails rehearse`: the canary self-test.
+pub mod rehearse;
+
 // Filesystem operations module
 pub mod filesystem;
 
