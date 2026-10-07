@@ -589,6 +589,29 @@ The adversary, assumptions and out-of-scope list are defined in
 [threat-model.md](threat-model.md). This section covers the operational side of
 the limits operators most often miss.
 
+### Compelled disclosure
+
+NAILS is built for one coercion case: you are made to unlock the **decoy**
+once, and the decoy is then examined offline. For that case to hold:
+
+- The decoy's credentials must open the decoy and nothing else. Use a deniable
+  backend for the hidden volume and never reuse a passphrase between the two.
+- The decoy must be amnesic, the last session must have ended with a clean
+  `deactivate` or `emergency`, and the machine must have been powered off.
+- Check before you rely on it: `nails rehearse` on the real machine, and
+  `verify --offline --examiner` against an image of the decoy. Remove, or be
+  ready to explain, every setup trace it lists: encryption tooling, headers,
+  random-looking space, crypttab entries, history.
+- Use the decoy normally between sessions, so its logs account for the hours
+  the machine ran.
+
+NAILS does not help if you are made to disclose the **hidden** volume's
+credentials, if coercion continues after the decoy is unlocked, if the disk is
+imaged more than once and compared, or against an examiner who concludes a
+hidden volume exists from the setup traces even without proof. The
+[threat model](threat-model.md#compelled-disclosure-of-the-decoy) states the
+line precisely.
+
 ### Shared decoy account and persona modes
 
 By default NAILS runs the hidden session **as the decoy user, in the decoy

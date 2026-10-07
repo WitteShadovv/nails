@@ -18,15 +18,22 @@ Anything that survives a session and reveals that a hidden mode existed is
 evidence, even when the hidden data itself stays encrypted. The adversary does
 not need the hidden data; a single trace of its use is enough.
 
+The adversary may also make the operator unlock the decoy once, by legal
+order or by demand, and then examine the unlocked decoy offline. That is the
+case NAILS is built for: see
+[Compelled disclosure of the decoy](#compelled-disclosure-of-the-decoy) for
+what it covers there and where it stops.
+
 ## Assumptions
 
 The claims below hold only when all of these are true:
 
 - **Outer encryption.** The decoy's disk is protected by full-disk encryption
-  the operator can unlock for the adversary without revealing the hidden
-  volume, and the hidden volume sits inside a deniable backend (for example a
-  VeraCrypt hidden volume). Encryption is not provided by NAILS; see
-  [backends.md](backends.md).
+  whose credentials unlock the decoy and nothing else, so disclosing them (see
+  [Compelled disclosure of the decoy](#compelled-disclosure-of-the-decoy))
+  does not open the hidden volume, and the hidden volume sits inside a
+  deniable backend (for example a VeraCrypt hidden volume). Encryption is not
+  provided by NAILS; see [backends.md](backends.md).
 - **Amnesic decoy.** The base system keeps no durable record of the hidden
   session: volatile journald, no classic syslog or audit daemon, no persistent
   crash dumps. NAILS enforces the load-bearing parts at pre-flight and fails
@@ -53,7 +60,12 @@ NAILS does not defend against:
 - hardware implants, firmware compromise, or physical surveillance and
   keylogging;
 - side channels such as timing, power or electromagnetic analysis;
-- coercion and other threats outside the software boundary;
+- coercion beyond a single disclosure of the decoy credentials: compelled
+  disclosure of the hidden volume's credentials, physical coercion, and
+  repeated or sustained coercion (see
+  [Compelled disclosure of the decoy](#compelled-disclosure-of-the-decoy) for
+  the line between what is in scope and what is not);
+- an adversary who images the disk more than once and compares the images;
 - **network-provider logs**: anything an ISP, Wi-Fi operator, VPN provider or
   other network observer records about the host's traffic;
 - **remote-service records**: anything a server, cloud service or peer device
@@ -63,6 +75,75 @@ NAILS does not defend against:
   the decoy (see the next section);
 - operator mistakes such as skipping deactivation or leaving the backend
   mounted.
+
+## Compelled disclosure of the decoy
+
+**In scope.** The adversary obtains the decoy's credentials once (the disk
+passphrase, the login password) and examines the unlocked decoy offline, with
+the operator absent or uncooperative from then on. This is the dead-disk
+adversary above with the outer encryption removed, and it is the case the
+forensic claims are made for. What NAILS offers there:
+
+- **No session residue on the decoy, except the residual channels.** After a
+  clean teardown the overlays leave nothing of the hidden session on the decoy
+  disk beyond the channels in [Residual channels](#residual-channels), each of
+  which an amnesic decoy bounds. `verify` and `nails rehearse` let the operator
+  check this on their own machine before relying on it.
+- **No enabler on the decoy.** The binary, configuration and hidden NixOS
+  module live on the hidden volume, and nothing on the decoy knows about them
+  (see the [Invariant](#invariant)).
+- **A way to see the setup traces.** The decoy unlocked is still a machine
+  with encryption tooling, encryption headers and history. NAILS does not hide
+  these; `verify --offline --examiner` lists them on a decoy image, grouped by
+  what an examiner would conclude, so the operator can remove or explain each
+  one before it matters. The classes are in the
+  [residue catalog](decoy-requirements.md#setup-traces-an-examiner-looks-for).
+
+What it does not offer:
+
+- **Deniability of the hidden volume itself.** Whether a hidden volume can be
+  told apart from random data or an outer volume's free space depends on the
+  backend, not on NAILS. A LUKS volume next to the decoy is visibly an
+  encrypted volume; a VeraCrypt hidden volume is indistinguishable from its
+  outer volume's free space, but the outer volume is visible. NAILS adds
+  nothing to the backend's own claim.
+- **Compelled disclosure of the hidden volume.** Whoever obtains the hidden
+  volume's credentials sees everything: the hidden data, NAILS itself and its
+  configuration. Out of scope.
+- **Physical coercion.** Deniability does not end coercion: an adversary who
+  believes a hidden volume exists can keep demanding credentials whatever the
+  operator says, and an operator known to be capable of running a hidden
+  volume may not be believed when there is none. Out of scope.
+- **Repeated coercion and repeated imaging.** An adversary who images the disk
+  twice, before and after further use, can see which encrypted regions
+  changed. A hidden volume inside an outer volume that changed while the outer
+  volume's files did not is the classic way such volumes are found. Changes on
+  the decoy that its own logs do not explain (the
+  [session-time records](decoy-requirements.md#session-time-records): the
+  timesyncd stamp, timer stamps, SMART power-on hours) also accumulate across
+  sessions. Out of scope.
+- **An examiner who knows NAILS.** NAILS is public, and nothing here relies on
+  the examiner not knowing it. A knowledgeable examiner looks for its artifact
+  registry, a sudo record naming a binary on another volume, encryption
+  tooling with recent access times and random-looking disk space. NAILS keeps
+  the first off the decoy and reports the others; whether the remaining
+  traces have a plausible explanation is the operator's to establish, and the
+  examiner may still believe a hidden volume exists without being able to
+  prove it.
+
+What the operator must do for the in-scope case to hold:
+
+- Use a deniable backend, and keep the decoy credentials separate from the
+  hidden volume's, so disclosing one never opens the other.
+- Run an amnesic decoy ([decoy-requirements.md](decoy-requirements.md)),
+  deactivate cleanly and power off before the machine can be taken.
+- Before relying on the setup, run `nails rehearse` on the real machine and
+  `verify --offline --examiner` against an image of the decoy, and remove or
+  be ready to explain every trace they report.
+- Keep the decoy in plausible, regular use, so its logs account for the time
+  the machine ran.
+- Assume that a second examination, or coercion that goes beyond handing over
+  the decoy once, is not something NAILS can help with.
 
 ## What the hidden environment shares with the decoy
 
