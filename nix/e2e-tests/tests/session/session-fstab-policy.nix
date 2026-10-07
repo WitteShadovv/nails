@@ -30,7 +30,7 @@ in
   globalTimeout = 1200;
 
   nodes.machine =
-    { lib, ... }:
+    { ... }:
     {
       imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [
