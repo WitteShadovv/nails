@@ -1,15 +1,19 @@
 # Test 52: State Corruption
 #
-# The one home of the tampered-state refusal: a stale integrity digest over a
-# changed `last_modified` while a session is active, and over a changed
-# `version` once it is inactive again.
+# The one home of the tampered-state handling in the whole-root session:
+#   1. In the hidden session, a changed `last_modified` under the stale
+#      integrity digest does not hide the session: status reads the live
+#      facts, still reports the active posture and exits 0.
+#   2. Emergency does not refuse a corrupt state: it kills the session and
+#      soft-reboots back to the plain decoy, and the backend closes.
+#   3. On the decoy, a changed `version` under the stale digest refuses the
+#      next activation with the invalid-state exit 6 before anything is
+#      prepared, and status fails closed with the same exit code.
 
 _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
-  stateHelpers = import ./../../lib/state-helpers.nix;
 in
 {
   name = "state-corruption";
@@ -18,145 +22,79 @@ in
   testScript = _: ''
     import json
 
-    ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.runDetachedCommandFn}
+    from nails_e2e import run_command_capture, session
+
     ${testHelpers.readStatusJsonFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
-    ${stateHelpers.captureCommandFns}
+    ${testHelpers.canonicalActivateFn}
+
+    CONFIG = "/mnt/data/config/nails.toml"
+    STATE = "/mnt/data/state.json"
+
+
+    def write_state(payload):
+        machine.succeed(
+            """cat > %s <<'EOF'
+    %s
+    EOF"""
+            % (STATE, json.dumps(payload, indent=2, sort_keys=True))
+        )
+
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-
-    headless_config = "/tmp/nails-headless.toml"
-    state_path = "/mnt/data/state.json"
-
-    write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    machine.succeed("nails init /mnt/data")
+    machine.succeed(
+        f"cat > {CONFIG} <<'EOF'\n"
+        "hidden_volume_root = \"/mnt/data\"\n"
+        "minimum_space_mb = 100\n"
+        "EOF"
+    )
 
-    with subtest("activate and capture pristine state file"):
-        machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --session keep -y"
-        )
-        assert_status_state("Active", config_path=headless_config)
-        assert_overlay_mounted("/home")
-        machine.succeed(f"test -f {state_path}")
-
-        original_state = json.loads(machine.succeed(f"cat {state_path}"))
-        assert original_state.get("integrity_sha256"), (
-            f"Expected integrity digest in persisted state: {original_state}"
-        )
-
-    with subtest("corrupt state file without updating the integrity digest"):
-        corrupt_state = json.loads(machine.succeed(f"cat {state_path}"))
-        stale_digest = corrupt_state["integrity_sha256"]
-        corrupt_state["last_modified"] = "1970-01-01T00:00:00Z"
-        corrupt_state["integrity_sha256"] = stale_digest
-        machine.succeed(
-            """cat > %s <<'EOF'
-    %s
-    EOF"""
-            % (state_path, json.dumps(corrupt_state, indent=2, sort_keys=True))
+    with subtest("activate and capture the pristine state file"):
+        canonical_activate(CONFIG, "--overlay-only", "state-corruption-activate")
+        machine.succeed(f"test -f {STATE}")
+        pristine = json.loads(machine.succeed(f"cat {STATE}"))
+        assert pristine.get("integrity_sha256"), (
+            f"Expected an integrity digest in the persisted state: {pristine}"
         )
 
-        # An unknown state fails closed: status still emits its JSON payload
-        # but exits with the invalid-state code (6) so scripts cannot mistake
-        # the corrupt file for a trustworthy posture.
-        rc, corrupt_payload = read_status_json_with_rc(config_path=headless_config)
-        assert rc == 6, (
-            f"Expected invalid-state exit 6 on a corrupt state, got rc={rc}: "
-            f"{corrupt_payload}"
-        )
-        assert_status_state("Unknown", payload=corrupt_payload)
-        assert corrupt_payload.get("posture") == "unknown", corrupt_payload
-        # status reports corruption through the typed payload, not an `error` key:
-        # state_source is "corrupt" and the Unknown state carries the reason.
-        assert corrupt_payload.get("state_source") == "corrupt", corrupt_payload
-        reason = corrupt_payload.get("state", {}).get("reason", "")
-        assert "corrupt" in reason.lower(), (
-            f"Expected a corruption reason, got: {corrupt_payload}"
-        )
+    with subtest("a corrupt state does not hide the live hidden session"):
+        corrupt = dict(pristine)
+        corrupt["last_modified"] = "1970-01-01T00:00:00Z"
+        write_state(corrupt)
+        rc, status = read_status_json_with_rc(config_path=CONFIG)
+        assert rc == 0, f"status must report the live session, got rc={rc}: {status}"
+        assert status["posture"] == "active", status
 
-    with subtest("next activation refuses the corrupt state and leaves mounts unchanged"):
-        rc, stdout, stderr = capture_command(
-            "state-corruption-activate",
-            f"nails --config {headless_config} activate --overlay-only --session keep -y",
+    with subtest("emergency still runs on a corrupt state and returns to the decoy"):
+        session.follow_soft_reboot(
+            machine, f"nails --config {CONFIG} emergency", "state-corruption-emergency"
         )
-        assert rc != 0, (
-            f"Expected activation failure on corrupt state, got rc={rc}, "
-            f"stdout={stdout!r}, stderr={stderr!r}"
-        )
-        combined = (stdout + stderr).lower()
-        assert "corrupt" in combined, (
-            f"Expected corruption refusal, got stdout={stdout!r}, stderr={stderr!r}"
-        )
-        assert_overlay_mounted("/home")
-        assert_overlay_mounted("/etc")
-
-    with subtest("emergency still runs on a corrupt state and tears down the overlays"):
-        # Emergency must not refuse a corrupt state: with the recorded overlay
-        # list unreadable it falls back to the live mount table and detaches the
-        # NAILS overlays anyway. It does not reboot, so the teardown is observable
-        # in the same boot.
-        rc, stdout, stderr = capture_command(
-            "state-corruption-emergency",
-            f"nails --config {headless_config} emergency",
-        )
-        assert rc == 0, (
-            f"Emergency must succeed on a corrupt state, got rc={rc}, "
-            f"stdout={stdout!r}, stderr={stderr!r}"
-        )
-
-        # The mount-table fallback detached the overlays despite the unknown state.
-        assert_no_overlays(["/home", "/etc"])
-
-        # Emergency rewrote the corrupt file with a valid state, so status is
-        # trustworthy again and reports the completed teardown.
-        assert_status_state("Inactive", config_path=headless_config)
+        session.assert_decoy_root(machine)
+        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
 
     with subtest("a tampered version field blocks the next activation"):
-        # The second corruption vector, and the only place the pre-flight
-        # refusal of a tampered state is tested from a clean Inactive state: the
-        # `version` field changes under the stale digest, so the next activation
-        # must be refused before anything is mounted. (This used to be a subtest
-        # of preflight-state-check.)
-        if machine.execute("mountpoint -q /mnt/data")[0] != 0:
-            if machine.execute("test -e /dev/mapper/data")[0] == 0:
-                machine.succeed("mount /dev/mapper/data /mnt/data")
-            else:
-                machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-        machine.succeed(f"test -f {state_path}")
-        tampered_state = json.loads(machine.succeed(f"cat {state_path}"))
-        assert tampered_state.get("integrity_sha256"), (
-            f"Expected an integrity digest in the rewritten state: {tampered_state}"
-        )
-        tampered_state["version"] = tampered_state["version"] + "-tampered"
-        machine.succeed(
-            """cat > %s <<'EOF'
-    %s
-    EOF"""
-            % (state_path, json.dumps(tampered_state, indent=2))
-        )
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        tampered = dict(pristine)
+        tampered["version"] = tampered["version"] + "-tampered"
+        write_state(tampered)
 
-        rc, stdout, stderr = capture_command(
+        result = run_command_capture(
+            machine,
             "state-corruption-version-activate",
-            f"nails --config {headless_config} activate --overlay-only --session keep -y",
+            f"nails --config {CONFIG} activate --overlay-only -y",
         )
-        assert rc != 0, (
-            f"Expected activation failure on a tampered version, got rc={rc}, "
-            f"stdout={stdout!r}, stderr={stderr!r}"
+        assert result["rc"] == 6, f"Expected the invalid-state exit 6, got {result}"
+        assert "corrupt" in result["combined"].lower(), (
+            f"Expected a corruption refusal, got {result['combined']!r}"
         )
-        combined = (stdout + stderr).lower()
-        assert "checksum" in combined or "corrupt" in combined, (
-            f"Expected checksum/corruption refusal, got stdout={stdout!r}, stderr={stderr!r}"
-        )
-        # The tampered file leaves the state unknown, which status reports in
-        # its JSON payload while failing closed with the invalid-state exit 6.
-        rc, status = read_status_json_with_rc(config_path=headless_config)
-        assert rc == 6, f"Expected invalid-state exit 6, got rc={rc}: {status}"
-        assert_status_state("unknown", payload=status)
-        assert status.get("posture") == "unknown", status
-        assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
+        session.assert_decoy_root(machine)
+        machine.fail("test -e /run/nextroot/etc")
+        assert machine.succeed("systemctl show -p SoftRebootsCount --value").strip() == "2"
+
+        # Without a session, the unknown record makes status fail closed.
+        rc, status = read_status_json_with_rc(config_path=CONFIG)
+        assert rc == 6, f"Expected the invalid-state exit 6, got rc={rc}: {status}"
   '';
 }

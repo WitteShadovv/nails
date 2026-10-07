@@ -5,7 +5,7 @@
 # decoy VM plus nails; their node derivations were identical). Each runs as a
 # scenario (lib/batch.nix): it starts from a guest as clean as it booted and the
 # guest is reset before the next one. config-unknown-key runs last because it
-# runs a real emergency teardown. The old test names stay aliases of this test.
+# runs `nails emergency`. The old test names stay aliases of this test.
 
 args@{ pkgs, ... }:
 let

@@ -2,8 +2,7 @@
 #   tests/preflight/19-preflight-checks.nix
 # Formerly the stand-alone test
 #   tests/preflight/24-preflight-upper-fs-capability.nix
-# It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
-# its subtests and assertions are unchanged.
+# It now shares one VM boot with the batch's other scenarios (lib/batch.nix).
 #
 # Test 24: Preflight Upper-Filesystem Capability
 #
@@ -11,8 +10,8 @@
 # yet still cannot back an overlayfs *upper* layer: NFS, CIFS/SMB, 9p, most FUSE
 # mounts, and — the case this test exercises — a filesystem that is itself an
 # overlay, which the kernel refuses to stack as another overlay's upperdir. The
-# upper-fs-capability check must probe this and refuse activation before anything
-# is mounted, naming the backend, and must leave no probe scratch directory
+# upper-fs-capability check must probe this and refuse activation before the
+# root overlay is prepared, naming the backend, and must leave no probe scratch directory
 # behind.
 #
 # FAT is deliberately NOT used here: FAT lacks symlink support, so it is caught
@@ -21,7 +20,6 @@
 _:
 let
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
-  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "preflight-upper-fs-capability";
@@ -40,15 +38,7 @@ in
         def write_overlay_hidden_config(path):
             write_text_file(path, """
     hidden_volume_root = "/mnt/overlay-hidden"
-    overlay_mode = "explicit"
-
-    ${baseOs.tomlFor "/mnt/overlay-hidden"}
-    [[overlays]]
-    name = "home"
-    lower = "/home"
-    upper = "/mnt/overlay-hidden/home"
-    work = "/mnt/overlay-hidden/.work/home"
-    target = "/home"
+    minimum_space_mb = 10
     """.strip() + "\n")
 
         machine.wait_for_unit("multi-user.target")
@@ -75,7 +65,7 @@ in
             write_overlay_hidden_config("/tmp/preflight-upper-fs-capability.toml")
             result = run_command_capture(
                 "preflight-upper-fs-capability",
-                "nails --config /tmp/preflight-upper-fs-capability.toml activate --overlay-only --session keep -y",
+                "nails --config /tmp/preflight-upper-fs-capability.toml activate --overlay-only -y",
             )
             assert_command_failed(result)
             assert_result_contains(
@@ -85,11 +75,12 @@ in
             )
 
         with subtest("refusal mounts no overlay and leaves no probe scratch dir"):
-            # Preflight runs before any activation mount, so no overlay backed by the
-            # hidden root's own upper may exist: neither an activation overlay nor a
-            # leftover trial-probe mount. Matching on an upperdir under the hidden
+            # Pre-flight runs before the next root is prepared, so no overlay backed
+            # by the hidden root's own upper may exist: neither the root overlay nor
+            # a leftover trial-probe mount. Matching on an upperdir under the hidden
             # root avoids a false positive from the base overlay that backs it.
             machine.fail("grep -q 'upperdir=/mnt/overlay-hidden' /proc/mounts")
+            machine.fail("grep -q ' /run/nextroot' /proc/self/mountinfo")
             # The probe removes its .probe-<unique> scratch dir on every path.
             machine.fail("bash -lc 'ls -d /mnt/overlay-hidden/.probe-* 2>/dev/null'")
             machine.succeed("umount /mnt/overlay-hidden")

@@ -3,9 +3,12 @@
 # Formerly the stand-alone test
 #   tests/init/46-init-idempotency.nix
 # It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
-# its subtests and assertions are unchanged.
 #
 # Test 46: Init Idempotency
+# A second `nails init` on an initialised hidden volume changes nothing: the
+# operator's edited config is kept byte for byte, the hidden hardware wrapper
+# in the root upper imports the hidden module exactly once, the staged symlink
+# still points at the hidden module, and the layout keeps its 0700 modes.
 
 _:
 let
@@ -54,20 +57,21 @@ in
             assert "# SENTINEL_KEEP" in config_text, config_text
             machine.succeed("nails config validate /mnt/data/config/nails.toml")
 
-            hardware_text = machine.succeed("cat /mnt/data/etc/nixos/hardware-configuration.nix")
+            hardware_text = machine.succeed("cat /mnt/data/root/upper/etc/nixos/hardware-configuration.nix")
             import_count = hardware_text.count("./nails/configuration.nix")
             assert import_count == 1, f"Expected one hidden import, saw {import_count}: {hardware_text}"
 
-            machine.succeed("test -L /mnt/data/etc/nixos/nails/configuration.nix")
-            target = machine.succeed("readlink /mnt/data/etc/nixos/nails/configuration.nix").strip()
+            machine.succeed("test -L /mnt/data/root/upper/etc/nixos/nails/configuration.nix")
+            target = machine.succeed("readlink /mnt/data/root/upper/etc/nixos/nails/configuration.nix").strip()
             assert target == "/mnt/data/config/nixos/configuration.nix", target
 
             for path in [
                 "/mnt/data/config",
                 "/mnt/data/config/nixos",
-                "/mnt/data/etc/nixos",
-                "/mnt/data/etc/nixos/nails",
-                "/mnt/data/.work",
+                "/mnt/data/root/upper/etc/nixos",
+                "/mnt/data/root/upper/etc/nixos/nails",
+                "/mnt/data/root",
+                "/mnt/data/root/work",
             ]:
                 perms = machine.succeed(f"stat -c %a {path}").strip()
                 assert perms == "700", f"Expected 0700 on {path}, got {perms}"

@@ -1,4 +1,11 @@
-# Test 31: Verify Base Config Clean
+# Test 31: A base /etc/nixos that references the hidden module is refused
+#
+# The decoy's hardware-configuration.nix imports ./nails/configuration.nix, the
+# trace a leaked hidden configuration would leave on the decoy. `nails check`
+# reports the suspicious-nails-reference check as failing, and `nails activate`
+# refuses (exit 4) before preparing anything: no next root at /run/nextroot, no
+# soft-reboot, no runtime drop-in, no hidden module in /etc/nixos, and the machine
+# stays on the plain decoy root.
 
 { self, ... }:
 let
@@ -25,88 +32,64 @@ in
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.readStatusJsonFn}
 
-    import json
-    import shlex
-    import uuid
-
-    def run_command_capture(label, command):
-        stem = f"/tmp/{label}-{uuid.uuid4().hex}"
-        machine.succeed(
-            "bash -lc "
-            + shlex.quote(
-                "set +e; "
-                + command
-                + f" > {stem}.stdout 2> {stem}.stderr; "
-                + f"printf '%s' \"$?\" > {stem}.rc"
-            )
-        )
-        return (
-            int(machine.succeed(f"cat {stem}.rc")),
-            machine.succeed(f"cat {stem}.stdout"),
-            machine.succeed(f"cat {stem}.stderr"),
-        )
-
-    def install_nixos_rebuild_wrapper(log_path):
-        real_nixos_rebuild = machine.succeed("bash -lc 'command -v nixos-rebuild'").strip()
-        machine.succeed(
-            f"""mkdir -p /tmp/nails-wrapper/bin
-    rm -f {log_path}
-    cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
-    #!/bin/sh
-    printf '%s\\n' "$*" >> {log_path}
-    exec {real_nixos_rebuild} "$@"
-    EOF
-    chmod 755 /tmp/nails-wrapper/bin/nixos-rebuild"""
-        )
-        return "PATH=/tmp/nails-wrapper/bin:$PATH"
-
-    def assert_inactive_status_local(config_path):
-        payload = json.loads(machine.succeed(f"nails --config {config_path} status --json"))["data"]
-        assert str(payload["state"]["kind"]) == "inactive", f"Expected inactive state, got: {payload}"
-
-    def assert_no_overlays_local(paths):
-        for path in paths:
-            machine.fail(f"/bin/sh -lc 'mountpoint -q {path} && [ \"$(findmnt -n -o FSTYPE {path})\" = overlay ]'")
+    from nails_e2e import run_command_capture, session
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.toml"
+    headless_config = "/run/nails-headless.toml"
     write_headless_config(headless_config)
 
     with subtest("prepare hidden volume and dirty decoy nixos tree"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("mkdir -p /tmp/dirty-etc-nixos")
-        machine.succeed("cp -L /etc/nixos/configuration.nix /tmp/dirty-etc-nixos/configuration.nix")
-        machine.succeed("""cat > /tmp/dirty-etc-nixos/hardware-configuration.nix <<'EOF'
+        machine.succeed("mkdir -p /run/dirty-etc-nixos")
+        machine.succeed("cp -L /etc/nixos/configuration.nix /run/dirty-etc-nixos/configuration.nix")
+        machine.succeed("""cat > /run/dirty-etc-nixos/hardware-configuration.nix <<'EOF'
     { ... }: {
       imports = [
         ./nails/configuration.nix
       ];
     }
     EOF""")
-        machine.succeed("mount --bind /tmp/dirty-etc-nixos /etc/nixos")
-        wrapper_env = install_nixos_rebuild_wrapper("/tmp/nixos-rebuild-clean-check.log")
+        machine.succeed("mount --bind /run/dirty-etc-nixos /etc/nixos")
 
-    with subtest("activation refuses dirty base config before overlay mount"):
-        rc, stdout, stderr = run_command_capture(
-            "verify-base-config-clean",
-            f"{wrapper_env} nails --config {headless_config} activate --session keep -y",
+    with subtest("check reports the dirty base config"):
+        check = run_command_capture(
+            machine, "check-dirty-base", f"nails --config {headless_config} check"
         )
-        assert rc != 0, f"Expected activation refusal, got rc=0 stdout={stdout!r} stderr={stderr!r}"
-        combined_output = stdout + stderr
-        lowered = combined_output.lower()
-        assert (
-          "not forensically clean" in lowered
-          or "suspicious-nails-reference" in lowered
-          or "suspicious hidden or nails references" in lowered
-        ), f"Expected forensic cleanliness diagnostic, got: {combined_output!r}"
-        machine.fail("test -s /tmp/nixos-rebuild-clean-check.log")
+        assert check["rc"] == 4, f"check must refuse (rc=4): {check}"
+        rows = [
+            line
+            for line in check["stdout"].splitlines()
+            if "suspicious-nails-reference:" in line
+        ]
+        assert rows and "suspicious hidden or nails references" in rows[0].lower(), (
+            f"expected the base-config row to fail: {check['stdout']!r}"
+        )
 
-    with subtest("refusal leaves system inactive and unmounted"):
-        assert_inactive_status_local(headless_config)
-        assert_no_overlays_local(["/etc", "/home", "/root", "/srv", "/tmp"])
+    with subtest("activation refuses before preparing the next root"):
+        activate = run_command_capture(
+            machine,
+            "activate-dirty-base",
+            f"nails --config {headless_config} activate -y --overlay-only",
+        )
+        assert activate["rc"] == 4, f"expected a pre-flight refusal (rc=4): {activate}"
+        lowered = activate["combined"].lower()
+        assert (
+            "suspicious-nails-reference" in lowered
+            or "suspicious hidden or nails references" in lowered
+        ), f"expected the base-config diagnostic, got: {activate['combined']!r}"
+
+    with subtest("refusal leaves the plain decoy untouched"):
+        session.assert_decoy_root(machine)
+        machine.fail("test -e /run/nextroot/etc")
+        machine.fail("test -e /run/systemd/system/systemd-soft-reboot.service.d")
+        assert machine.succeed("systemctl show -p SoftRebootsCount --value").strip() == "0"
+        status = read_status_json(config_path=headless_config)
+        assert status["posture"] == "decoy", status
+        machine.succeed("umount /etc/nixos")
         machine.fail("test -e /etc/nixos/nails/configuration.nix")
   '';
 }

@@ -2,18 +2,22 @@
 #
 # README and docs/backends.md document opening the hidden storage with
 #   cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden <device> data
-# but no test ever exercised a VeraCrypt volume: every positive path used LUKS2.
-# This test opens a real VeraCrypt hidden volume under a neutral mapper name,
-# runs a full activate/deactivate cycle over it, and then images the decoy root
-# (via the T-075 host-side forensic harness) to prove the hidden-session canaries
-# never reach the decoy disk when the backend is tcrypt rather than LUKS.
+# This test opens a real VeraCrypt hidden volume under the neutral mapper name,
+# runs a whole-root session over it (a soft-reboot into the root overlay with
+# its upper on the tcrypt volume, and a soft-reboot back), checks that the way
+# back closed the tcrypt mapping like a LUKS one, and then images the decoy
+# root (with the host-side forensic harness) to prove the hidden-session
+# canaries never reach the decoy disk when the backend is tcrypt rather than
+# LUKS.
 #
 # The ciphertext lives on the secondary test disk (/dev/disk/by-id/virtio-data),
-# which the forensic harness never images -- only the decoy root qcow2 is converted and scanned, so
-# the hidden container is out of frame exactly as it would be post-seizure.
+# which the forensic harness never images -- only the decoy root qcow2 is
+# converted and scanned, so the hidden container is out of frame exactly as it
+# would be post-seizure.
 #
-# As in forensic/06, the images are also compared by MAC times and content
-# hashes against a plain-reboot control run, so a decoy file modified in place
+# As in forensic/05, the images are also compared by MAC times and content
+# hashes against a control run (one plain reboot: the session spans the boot
+# after the baseline and two soft-reboots), so a decoy file modified in place
 # fails the test even when it carries no token.
 #
 # This is a nightly/manual backend test, not part of the PR smoke lane (it is not
@@ -23,9 +27,7 @@
 
 { self, pkgs, ... }:
 let
-  backends = import ./../../lib/backends.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
 
   # VeraCrypt ships under an unfree licence, and the suite's shared nixpkgs
@@ -42,8 +44,9 @@ in
   name = "tcrypt-veracrypt-hidden";
   meta.tags = [ "forensic" ];
 
-  # VeraCrypt container creation (outer + hidden) plus the imaging lineage and an
-  # activate/deactivate cycle; generous margin for the slow volume formatting.
+  # VeraCrypt container creation (outer + hidden) plus the imaging lineage, a
+  # control reboot and two soft-reboots; generous margin for the slow volume
+  # formatting.
   globalTimeout = 3300;
 
   nodes = {
@@ -63,9 +66,11 @@ in
     import json
 
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
-    ${assertions.assertNoOverlaysFn}
     ${diskForensics.pythonSetup}
+
+    from nails_e2e import session
 
     # Distinctive, run-unique canary tokens planted inside the hidden session.
     canary_file_token = "NAILS_CANARY_FILE_TCRYPT_2026a"
@@ -82,8 +87,10 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.toml"
-    write_headless_config(headless_config, overlay_var=True)
+    # Keep the config file name free of "nails": it is written to the decoy
+    # /tmp before the baseline and stays there for the whole lineage.
+    headless_config = "/tmp/tcrypt-headless.toml"
+    write_headless_config(headless_config)
 
     with subtest("capture the decoy baseline image"):
         # The hidden-volume mount point is a permanent part of the decoy; create
@@ -92,13 +99,19 @@ in
         baseline = disk_forensics.snapshot(machine, "baseline")
         baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline))
         registry_tokens = load_registry_tokens()
-        baseline_registry_hits = disk_forensics.run_strings_scan(baseline, registry_tokens)
+        # Scan the decoy's files, journal excluded (as forensic/05 does): nails'
+        # own diagnostics in the journal are not a trace on the decoy files, and
+        # the journal is scanned for the canaries below.
+        baseline_registry_hits = disk_forensics.run_decoy_file_scan(
+            baseline, registry_tokens, offset=disk_forensics.partition_offset(baseline)
+        )
         baseline_state = disk_forensics.image_state(baseline, "baseline", machine)
 
-    with subtest("control run: plain reboots with no hidden session"):
-        # The session below spans two boots (the one after this snapshot and the
-        # one after the teardown reboots), so the control spans two plain boots.
-        # Whatever changes here is boot noise, not the hidden session.
+    with subtest("control run: a plain reboot with no hidden session"):
+        # The session below spans the boot after this snapshot and two
+        # soft-reboots (the decoy's shutdown and its start again), so the
+        # control is one plain reboot. Whatever changes here is boot noise, not
+        # the hidden session.
         machine.shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")
@@ -144,14 +157,13 @@ in
         )
         machine.succeed("mkfs.ext4 -F -L data /dev/mapper/data")
         machine.succeed("mkdir -p /mnt/data", "mount /dev/mapper/data /mnt/data")
-        machine.succeed("""${backends.nailsDirStructure "/mnt/data"}""")
+        machine.succeed("mkdir -p /mnt/data/root/work /mnt/data/config/nixos")
 
     with subtest("activate and plant hidden canaries"):
-        machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --session keep --accept-persistent-decoy -y"
+        canonical_activate(
+            headless_config, "--overlay-only --accept-persistent-decoy", "activate-tcrypt"
         )
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
-        machine.succeed("mount | grep 'overlay on /home'")
 
         machine.succeed(
             f"su - testuser -c 'echo {canary_file_token} > ~/secret-notes.txt'"
@@ -161,14 +173,20 @@ in
         )
         machine.succeed(f"logger -t session {canary_jrnl_token}")
         machine.succeed("journalctl --sync 2>/dev/null || journalctl --flush || true")
-
-    with subtest("standard deactivation"):
-        canonical_deactivate(
-            headless_config, unit_name="nails-deactivate-tcrypt-veracrypt-hidden"
+        # The hidden file is in the upper on the tcrypt volume.
+        machine.succeed(
+            f"grep -q {canary_file_token} /mnt/data/root/upper/home/testuser/secret-notes.txt"
         )
-        status = json.loads(machine.succeed("nails status --json"))["data"]
-        assert status["state"]["kind"] == "inactive", f"expected inactive, got {status}"
-        assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp", "/var"])
+
+    with subtest("deactivation returns to the plain decoy and closes the tcrypt mapping"):
+        # canonical_deactivate also waits for /dev/mapper/data to go away: the
+        # deferred close must release a tcrypt mapping like a LUKS one.
+        canonical_deactivate(headless_config, "deactivate-tcrypt")
+        status = json.loads(
+            machine.succeed(f"nails --config {headless_config} status --json")
+        )["data"]
+        assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
+        session.assert_decoy_root(machine)
 
     with subtest("the decoy disk image is clean of every canary and registry token"):
         post = disk_forensics.snapshot(machine, "post-standard", restart=False)
@@ -187,7 +205,9 @@ in
         journal_hits = disk_forensics.run_journal_scan(post, hidden_tokens, offset=offset)
         assert not journal_hits, f"journal retained a canary line: {sorted(journal_hits)}"
 
-        post_registry_hits = disk_forensics.run_strings_scan(post, registry_tokens)
+        post_registry_hits = disk_forensics.run_decoy_file_scan(
+            post, registry_tokens, offset=offset
+        )
         new_registry = post_registry_hits - baseline_registry_hits
         assert not new_registry, (
             f"activate/deactivate introduced registry tokens onto the decoy "

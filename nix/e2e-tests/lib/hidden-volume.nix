@@ -99,21 +99,11 @@ in
     mkdir -p /mnt/data
     mount /dev/mapper/data /mnt/data
 
-    # Create NAILS directory structure (matching what nails expects)
-    # Upper directories for overlays
-    mkdir -p /mnt/data/home
-    mkdir -p /mnt/data/etc
-    mkdir -p /mnt/data/var
-    mkdir -p /mnt/data/nix
-    # Work directories for overlays
-    mkdir -p /mnt/data/.work/home
-    mkdir -p /mnt/data/.work/etc
-    mkdir -p /mnt/data/.work/var
-    mkdir -p /mnt/data/.work/nix
-    # Additional required directories
-    mkdir -p /mnt/data/config
+    # The whole-root layout NAILS expects: the root overlay's work directory
+    # (its upper is created at the first activation, with the decoy root's own
+    # mode and owner) and the configuration directory.
+    mkdir -p /mnt/data/root/work
     mkdir -p /mnt/data/config/nixos
-    mkdir -p /mnt/data/nixos
 
     echo 'Data volume setup complete!'
     echo 'Volume mounted at: /mnt/data'

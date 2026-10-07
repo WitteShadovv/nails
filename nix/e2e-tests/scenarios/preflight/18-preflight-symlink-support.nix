@@ -2,15 +2,16 @@
 #   tests/preflight/17-preflight-vfat-targets.nix
 # Formerly the stand-alone test
 #   tests/preflight/18-preflight-symlink-support.nix
-# It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
-# its subtests and assertions are unchanged.
+# It now shares one VM boot with the batch's other scenarios (lib/batch.nix).
 #
 # Test 18: Preflight Symlink Support
+# A FAT hidden volume cannot hold symlinks or the root overlay's upper:
+# activation refuses it with a message naming the problem, before any next
+# root is prepared.
 
 _:
 let
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
-  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "preflight-symlink-support";
@@ -30,15 +31,7 @@ in
         def write_fat_hidden_config(path):
             write_text_file(path, """
     hidden_volume_root = "/mnt/fat-hidden"
-    overlay_mode = "explicit"
-
-    ${baseOs.tomlFor "/mnt/fat-hidden"}
-    [[overlays]]
-    name = "home"
-    lower = "/home"
-    upper = "/mnt/fat-hidden/home"
-    work = "/mnt/fat-hidden/.work/home"
-    target = "/home"
+    minimum_space_mb = 10
     """.strip() + "\n")
 
         machine.wait_for_unit("multi-user.target")
@@ -50,7 +43,7 @@ in
             write_fat_hidden_config("/tmp/preflight-symlink-support.toml")
             result = run_command_capture(
                 "preflight-symlink-support",
-                "nails --config /tmp/preflight-symlink-support.toml activate --overlay-only --session keep -y",
+                "nails --config /tmp/preflight-symlink-support.toml activate --overlay-only -y",
             )
             assert_command_failed(result)
             assert_result_contains(

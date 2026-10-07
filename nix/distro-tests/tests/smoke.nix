@@ -2,9 +2,11 @@
 #
 # nix/distro-tests/default.nix maps this function over the image table, so every
 # distribution runs the same lifecycle on the NixOS test driver through
-# nix-vm-test. The scenario proves the overlay-only backend end to end on a
-# non-NixOS host and -- the point of a VM tier over a container one -- that a
-# hidden-session write cannot reach the decoy's read-only system trees.
+# nix-vm-test. The scenario proves the whole-root session end to end on a
+# non-NixOS host (systemd >= 254): activation soft-reboots the stock cloud image
+# into an overlay of its own root, every hidden write (including /usr) lands on
+# the hidden root, the ESP stays read-only, and deactivation and emergency
+# soft-reboot back to the plain decoy without a trace on the decoy disk.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -14,14 +16,14 @@
 #
 #   - The machine is `vm`.
 #   - The disk is the store image under QEMU `-snapshot`: guest writes vanish
-#     when QEMU exits. The lifecycle therefore runs in one QEMU process started
-#     with `allow_reboot=True`, so the deactivation reboot keeps the disk, and
-#     each forensic image is taken by first mirroring the live disk into
-#     `<state_dir>/vm.qcow2` -- where `disk_forensics.root_image` looks -- and
-#     then letting `disk_forensics.snapshot` shut down and convert it as usual.
-#   - The 9p share with the binary is mounted only once before the script runs,
-#     and /run (config, hidden-root backing) is wiped by every reboot, so every
-#     boot goes through `prepare_boot()`.
+#     when QEMU exits. The lifecycle runs in one QEMU process (a soft-reboot
+#     keeps the kernel and QEMU), and each forensic image is taken by first
+#     mirroring the live disk into `<state_dir>/vm.qcow2` -- where
+#     `disk_forensics.root_image` looks -- and then letting
+#     `disk_forensics.snapshot` shut down and convert it as usual.
+#   - The 9p share with the binary is mounted only once before the script runs.
+#     A soft-reboot carries /run (the config file survives) but not the mounts
+#     below it, so after every switch `prepare_boot()` mounts the share again.
 {
   self,
   pkgs,
@@ -62,46 +64,37 @@ distroVm.buildVmTest {
     import json
     import os
     import shlex
+    import sys
+
+    # The NixOS suite's in-VM helper package, for following a soft-reboot.
+    sys.path.insert(0, "${../../e2e-tests/py}")
+    from nails_e2e import session  # noqa: E402
     import subprocess
-    import threading
     import time
     from typing import Any
 
     ${diskForensics.pythonSetup}
 
     nails = "${binShare.target}/nails"
-    # On the /run tmpfs: never on the decoy disk, and gone after every reboot,
-    # so prepare_boot() rewrites it.
+    # On the /run tmpfs: never on the decoy disk; carried across soft-reboots.
     config = "/run/nails-smoke.toml"
     nails_cmd = f"{nails} --config {shlex.quote(config)}"
+    # The RAM copy of the binary the session keeps in /run: the 9p share is
+    # not mounted in the hidden root until prepare_boot() mounts it again.
+    ram_nails_cmd = f"/run/overlay-runtime/control --config {shlex.quote(config)}"
 
-    # The trees the FHS backend overlays. /usr is deliberately absent: on a
-    # Debian-family host /usr (and the other core binary roots) is never
-    # overlaid -- activation refuses it -- but kept read-only by a bind-remount
-    # for the whole session, which the /usr subtest below asserts.
-    overlay_trees = ("home", "etc", "srv", "opt", "var", "tmp")
+    # Trees a hidden write goes to. /usr is included: the whole root is
+    # overlaid, so a hidden write there lands on the hidden root as well.
+    canary_trees = ("home", "etc", "srv", "opt", "var", "usr", "root")
 
 
     def write_config():
-        overlays = "".join(
-            f"""
-    [[overlays]]
-    name = "{tree}"
-    lower = "/{tree}"
-    upper = "/mnt/data/{tree}"
-    work = "/mnt/data/.work/{tree}"
-    target = "/{tree}"
-    """
-            for tree in overlay_trees
-        )
         vm.succeed(
             """cat > %s <<'EOF'
     hidden_volume_root = "/mnt/data"
-    overlay_mode = "explicit"
-    risky_services = "skip"
-    %s
+    minimum_space_mb = 100
     EOF"""
-            % (shlex.quote(config), overlays)
+            % shlex.quote(config)
         )
 
 
@@ -187,44 +180,10 @@ distroVm.buildVmTest {
         return disk_forensics.snapshot(vm, label, restart=False)
 
 
-    def wait_for_guest_reboot(start_index, unit, timeout=300):
-        # The guest reboots inside the same QEMU process (allow_reboot), so
-        # there is no process exit to wait on: watch the kernel's final console
-        # line, then drop the stale shell so the next command reconnects to the
-        # backdoor of the new boot.
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if "reboot: Restarting system" in vm.get_console_log()[start_index:]:
-                vm.connected = False
-                return
-            time.sleep(1)
-
-        diagnostics: list[str] = []
-
-        def collect():
-            # The shell may be gone mid-shutdown and a read from it would block
-            # forever, so this runs on a daemon thread with a bounded join.
-            _, out = vm.execute(
-                f"systemctl status {unit} --no-pager --full 2>&1; "
-                + f"journalctl -u {unit} -b --no-pager -n 100 2>&1; "
-                + "findmnt -rn -t overlay 2>&1 || true",
-                check_return=False,
-            )
-            diagnostics.append(out)
-
-        collector = threading.Thread(target=collect, daemon=True)
-        collector.start()
-        collector.join(60)
-        raise AssertionError(
-            f"the guest did not reboot within {timeout}s after {unit} started\n"
-            + "".join(diagnostics)
-            + "\n--- serial console tail ---\n"
-            + "\n".join(vm.get_console_log().splitlines()[-80:])
-        )
-
-
-    def overlay_mounted(tree):
-        return f"overlay on /{tree} type overlay" in vm.succeed("mount")
+    def follow(trigger, label):
+        timings = session.follow_soft_reboot(vm, trigger, label)
+        print(f"{label}: {timings}")
+        prepare_boot()
 
 
     # Each probe is bounded on its own, so a wedged PID 1 or journald still lets
@@ -234,7 +193,7 @@ distroVm.buildVmTest {
         ("system state", "timeout 30 systemctl is-system-running"),
         ("queued jobs", "timeout 30 systemctl list-jobs --no-pager"),
         ("failed units", "timeout 30 systemctl --failed --no-pager"),
-        ("watcher unit", "timeout 30 systemctl status overlay-runtime-monitor --no-pager --full"),
+        ("soft-reboots", "timeout 30 systemctl show -p SoftRebootsCount"),
         ("PID 1 sockets", "ls -l /run/systemd/private /run/systemd/notify"),
         ("root and /usr mounts", "grep -E ' / (/|/usr|/run) ' /proc/self/mountinfo"),
         (
@@ -282,13 +241,13 @@ distroVm.buildVmTest {
         # A stock image legitimately contains some registry tokens (generic words
         # such as "reports"), so the leak check below diffs against this set,
         # exactly as the NixOS forensic tests do. Imaging ends this QEMU process;
-        # the lifecycle restarts with allow_reboot so the deactivation reboot
-        # keeps the disk (a fresh start boots the pristine image again).
+        # the lifecycle restarts in a fresh one, which boots the pristine image
+        # again: the same decoy. A soft-reboot never restarts QEMU.
         registry_tokens = load_registry_tokens()
         baseline = image_decoy("baseline")
         baseline_registry_hits = disk_forensics.run_strings_scan(baseline, registry_tokens)
         os.remove(baseline)
-        vm.start(allow_reboot=True)
+        vm.start()
         prepare_boot()
 
     with subtest("decoy-persistence preflight refuses a persistent journal"):
@@ -310,119 +269,47 @@ distroVm.buildVmTest {
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         vm.succeed(f"{nails_cmd} check --overlay-only")
 
-    with subtest("overlay-only activation isolates the writable trees"):
-        vm.succeed(f"{nails_cmd} activate --overlay-only --session keep -y")
+    with subtest("activation soft-reboots into the whole-root overlay"):
+        follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
+        print(vm.succeed("cat /mnt/data/activate.log || true"))
         pid1_health("after the first activation")
-
-        for tree in overlay_trees:
-            assert overlay_mounted(tree), f"/{tree} is not overlaid"
-
-        # The guard covers the whole decoy root, in place: a write outside every
-        # overlay is refused, and the root's own mount is the only one at `/`.
-        root_err = vm.fail("touch /rw-probe-root 2>&1")
-        assert "read-only" in root_err.lower(), (
-            f"a write to the decoy root was not refused: {root_err}"
-        )
-        root_mounts = vm.succeed("awk '$5 == \"/\"' /proc/self/mountinfo").splitlines()
-        assert len(root_mounts) == 1, f"a mount is stacked on /: {root_mounts}"
-
-        # /usr is kept read-only instead of overlaid.
-        usr_options = vm.succeed("findmnt -rn -o OPTIONS /usr").split()
-        assert usr_options and "ro" in usr_options[-1].split(","), (
-            f"/usr is not mounted read-only: {usr_options}"
-        )
-
+        session.assert_hidden_root(vm)
         status = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]
-        assert status["state"]["kind"] == "active", f"expected active, got {status}"
-
-        # Canaries written through the overlay land on the hidden root, never the
-        # decoy disk; the forensic scan below proves they do not leak.
-        for tree in overlay_trees:
+        assert status["posture"] == "active", f"expected the hidden session, got {status}"
+        # Every hidden write, /usr included, lands on the hidden root.
+        for tree in canary_trees:
             vm.succeed(f"echo NAILS_CANARY_{tree} > /{tree}/nails-canary-{tree}")
+            vm.succeed(f"test -s /mnt/data/root/upper/{tree}/nails-canary-{tree}")
+        vm.succeed("sync")
 
-    with subtest("writes under /usr and /usr/local fail on the read-only system"):
-        # The core binary roots are isolated: a hidden-session write there must
-        # fail, or it would reach the decoy disk. EROFS is the expected errno.
-        usr_err = vm.fail("touch /usr/nails-should-fail 2>&1")
-        local_err = vm.fail("touch /usr/local/nails-should-fail 2>&1")
-        for err in (usr_err, local_err):
-            assert "read-only" in err.lower() or "erofs" in err.lower(), (
-                f"expected a read-only-filesystem error, got: {err}"
-            )
+    with subtest("the ESP is read-only in the hidden root"):
+        esp = vm.succeed("findmnt -rn -o TARGET /boot/efi || true").strip()
+        if esp:
+            err = vm.fail("touch /boot/efi/nails-should-fail 2>&1")
+            assert "read-only" in err.lower(), f"the ESP took a hidden write: {err}"
+        else:
+            print("this image mounts no ESP at /boot/efi")
 
-    with subtest("status, verify and emergency operate on the active session"):
-        vm.succeed(f"{nails_cmd} status")
-
-        # verify inspects the live host for NAILS artifacts; on an active session
-        # it must report them (the active state and the mounted overlays) and
-        # exit with the critical-findings code, 11.
-        verify_rc, verify_out = vm.execute(f"{nails_cmd} verify --json")
-        verify = json.loads(verify_out)["data"]
-        assert verify_rc == 11 and verify["status"] == "critical", (
-            f"expected verify to flag the active session, got rc={verify_rc}: {verify}"
-        )
-        messages = " ".join(finding["message"] for finding in verify["findings"])
-        assert "ACTIVE" in messages or "overlay" in messages.lower(), (
-            f"verify did not name the active session: {verify['findings']}"
-        )
-
-        # Emergency starts immediately; a countdown is opt-in. It detaches every
-        # overlay and lifts the read-only guard but leaves the hidden root
-        # mounted (no --lock-backend).
-        emergency = json.loads(vm.succeed(f"{nails_cmd} emergency --json"))["data"]
+    with subtest("emergency soft-reboots back to the plain decoy"):
+        follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
         pid1_health("after emergency")
-        assert emergency["status"] == "complete", f"emergency did not complete: {emergency}"
-        # Emergency lifts the guard: the decoy root and /usr are writable again.
-        vm.succeed("touch /rw-probe-root && rm -f /rw-probe-root")
-        vm.succeed("touch /usr/rw-probe && rm -f /usr/rw-probe")
-        for tree in overlay_trees:
-            assert not overlay_mounted(tree), f"/{tree} is still overlaid after emergency"
-        status = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]
-        assert status["state"]["kind"] == "inactive", (
-            f"expected inactive after emergency, got {status}"
-        )
-
-    with subtest("deactivation with a reboot restores the decoy"):
-        # Re-activate so deactivate has a session to restore (the hidden root is
-        # still mounted after the emergency, so setup reuses it), then deactivate
-        # and let it reboot. Deactivation ends the session and reboots the
-        # guest, so it runs as its own unit, not through the backdoor shell it
-        # would take down mid-command. After the reboot no overlay is mounted.
-        write_config()
-        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
-        vm.succeed(f"{nails_cmd} activate --overlay-only --session keep -y")
-        pid1_health("after the re-activation")
-        assert overlay_mounted("home"), "re-activation did not overlay /home"
-        console_mark = len(vm.get_console_log())
-        teardown_rc, teardown_out = vm.execute(
-            "systemd-run --unit smoke-teardown --no-block --service-type=exec "
-            + f"{nails_cmd} deactivate -y 2>&1",
-            check_return=False,
-        )
-        # The deactivation reboots the guest right away, which can cut the
-        # backdoor shell before systemd-run returns (rc -1); the unit line shows
-        # the teardown was started all the same.
-        started = teardown_rc == 0 or "Running as unit: smoke-teardown" in teardown_out
-        if not started:
-            pid1_health("systemd-run refused the teardown unit")
-            raise AssertionError(
-                f"systemd-run could not start the teardown unit (rc={teardown_rc}): "
-                + teardown_out
-            )
-        wait_for_guest_reboot(console_mark, "smoke-teardown")
-        prepare_boot()
-        for tree in overlay_trees:
-            assert not overlay_mounted(tree), f"an overlay on /{tree} survived the reboot"
+        session.assert_decoy_root(vm)
         vm.fail("mountpoint -q /mnt/data")
-
-    with subtest("negative control: a writable /usr is caught"):
-        # Proves the /usr assertion above is real: with no read-only guard a write
-        # succeeds, so the assertion would have failed had isolation failed. The
-        # probe name is neutral, since it lands on the imaged decoy disk.
+        for tree in canary_trees:
+            vm.fail(f"test -e /{tree}/nails-canary-{tree}")
         vm.succeed("touch /usr/rw-probe && rm -f /usr/rw-probe")
+
+    with subtest("a second session ends with deactivate"):
+        vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        follow(f"{nails_cmd} activate -y > /mnt/data/activate-2.log 2>&1", "activate-2")
+        session.assert_hidden_root(vm)
+        follow(f"{nails_cmd} deactivate -y", "deactivate")
+        session.assert_decoy_root(vm)
+        vm.fail("mountpoint -q /mnt/data")
+        vm.fail("test -e /run/overlay-runtime")
 
     with subtest("decoy disk-image leak check: no hidden canaries, positive control caught"):
-        canary_tokens = [f"NAILS_CANARY_{tree}" for tree in overlay_trees]
+        canary_tokens = [f"NAILS_CANARY_{tree}" for tree in canary_trees]
 
         # Null control: image the decoy root after the whole lifecycle and prove
         # no canary leaked onto it, and no registry token appeared that the

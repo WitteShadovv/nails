@@ -1,10 +1,15 @@
 # Test 22: Preflight Bypass Flag
+#
+# A file-backed swap makes the swap check refuse activation (nothing is
+# prepared, the machine stays on the plain decoy). `--no-preflight` skips every
+# pre-flight check: the same activation then enters the hidden session anyway
+# (a soft-reboot into the root overlay), and deactivation returns to the plain
+# decoy.
 
 _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
 in
 {
@@ -16,13 +21,13 @@ in
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
     ${testHelpers.readStatusJsonFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
     ${preflightHelpers.runCommandCaptureFn}
     ${preflightHelpers.commandAssertionsFn}
+
+    from nails_e2e import session
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -38,7 +43,7 @@ in
         machine.succeed("swapon /swapfile")
         blocked = run_command_capture(
             "preflight-bypass-blocked",
-            f"nails --config {config_path} activate --overlay-only --session keep -y",
+            f"nails --config {config_path} activate --overlay-only -y",
         )
         assert_command_failed(blocked)
         assert_result_contains(
@@ -46,24 +51,16 @@ in
             ["swap can leak memory to persistent storage", "/swapfile"],
             stream="stderr",
         )
-        assert_status_state("inactive", config_path=config_path)
+        session.assert_decoy_root(machine)
+        assert read_status_json(config_path=config_path)["posture"] == "decoy"
 
-    with subtest("no-preflight bypasses the swap guard and emits a danger warning"):
-        bypassed = run_command_capture(
-            "preflight-bypass-active",
-            f"nails --config {config_path} activate --overlay-only --session keep --no-preflight -y",
-        )
-        assert_command_succeeded(bypassed)
-        combined = bypassed["stdout"] + "\n" + bypassed["stderr"]
-        assert_text_contains(combined, ["Skipping pre-flight checks", "DANGER"])
-        assert_status_state("active", config_path=config_path)
-        assert_overlay_mounted("/home")
+    with subtest("no-preflight bypasses the swap guard and enters the hidden session"):
+        canonical_activate(config_path, "--overlay-only --no-preflight", "preflight-bypass")
+        assert read_status_json(config_path=config_path)["posture"] == "active"
 
-    with subtest("cleanup restores decoy state after bypassed activation"):
-        canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-bypass")
-        machine.succeed("sh -lc 'swapoff /swapfile || true'")
+    with subtest("deactivation returns to the plain decoy after a bypassed activation"):
+        canonical_deactivate(config_path, "preflight-bypass-deactivate")
+        machine.succeed("swapoff /swapfile 2>/dev/null || true")
         machine.succeed("rm -f /swapfile")
-        assert_status_state("inactive", config_path=config_path)
-        assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
   '';
 }

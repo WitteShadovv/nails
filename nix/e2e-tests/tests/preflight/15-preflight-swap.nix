@@ -1,10 +1,15 @@
 # Test 15: Preflight Swap Checks
+#
+# A disk-backed (file) swap is refused by the swap check with the exact
+# `swapoff` remediation, and nothing is prepared: the machine stays on the
+# plain decoy. A RAM-only zram swap is permitted: the same configuration then
+# enters the hidden session (a soft-reboot into the root overlay) and leaves
+# it again.
 
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
 in
 {
@@ -26,12 +31,12 @@ in
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.readStatusJsonFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
     ${preflightHelpers.runCommandCaptureFn}
     ${preflightHelpers.commandAssertionsFn}
+
+    from nails_e2e import session
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -49,11 +54,12 @@ in
 
         result = run_command_capture(
             "preflight-swap-fail",
-            f"nails --config {config_path} activate --overlay-only --session keep -y",
+            f"nails --config {config_path} activate --overlay-only -y",
         )
         assert_command_failed(result)
         assert_result_contains(result, ["swap", "leak memory", "swapoff /swapfile"], stream="stderr")
-        assert_status_state("inactive", config_path=config_path)
+        session.assert_decoy_root(machine)
+        assert read_status_json(config_path=config_path)["posture"] == "decoy"
 
     with subtest("RAM-only zram swap is permitted"):
         # Tear down the file swap and bring up a RAM-only zram device, which the
@@ -67,26 +73,8 @@ in
         machine.succeed("grep -q '^/dev/zram0' /proc/swaps")
         machine.succeed("test \"$(cat /sys/block/zram0/backing_dev)\" = none")
 
-        machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
-        assert_status_state("active", config_path=config_path)
-        assert_overlay_mounted("/home")
-        canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-swap-zram")
-        assert_status_state("inactive", config_path=config_path)
-        assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
-        # canonical_deactivate reboots, so the RAM-only zram swap is gone with the
-        # old boot; confirm it rather than running swapoff on a device that is no
-        # longer a swap area (which would fail with EINVAL).
-        machine.fail("grep -q '^/dev/zram0' /proc/swaps")
-
-    with subtest("disabling swap restores a successful activation"):
-        # The reboot in the previous subtest also closed the hidden volume; reopen
-        # it before activating again.
-        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-        machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
-        assert_status_state("active", config_path=config_path)
-        assert_overlay_mounted("/home")
-        canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-swap")
-        assert_status_state("inactive", config_path=config_path)
-        assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
+        canonical_activate(config_path, "--overlay-only", "preflight-swap-zram")
+        assert read_status_json(config_path=config_path)["posture"] == "active"
+        canonical_deactivate(config_path, "preflight-swap-zram-deactivate")
   '';
 }

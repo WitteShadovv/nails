@@ -4,6 +4,9 @@
 
 { lib, pkgs, ... }:
 {
+  # NAILS enters and leaves the hidden session with `systemctl soft-reboot`.
+  imports = [ ./soft-reboot-units.nix ];
+
   # Virtual hardware configuration
   virtualisation = {
     # Fixed rather than sized to the host, so that a test's derivation, and

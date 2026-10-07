@@ -1,12 +1,9 @@
-# Preflight checks against FAT filesystems, one VM boot for both.
-#
-# preflight-overlay-compat (a small VFAT overlay target) and
-# preflight-symlink-support (a FAT hidden volume) were single-boot tests with
-# the same node: the standard decoy VM plus nails and dosfstools for mkfs.vfat.
-# Their node derivations were identical, and this test declares that node
-# unchanged. Each runs as a scenario (lib/batch.nix): it starts from a guest as
-# clean as it booted and the guest is reset before the next one. The old test
-# names stay aliases of this test.
+# Preflight checks against FAT filesystems: a FAT hidden volume cannot hold
+# symlinks or an overlay upper and is refused (preflight-symlink-support). The
+# former preflight-overlay-compat scenario (a small VFAT overlay target pivoted
+# through a RAM snapshot) is gone with the per-directory overlays: a FAT
+# filesystem in the decoy's fstab is now bound read-only into the hidden root
+# (see session-fstab-policy). It runs as a scenario (lib/batch.nix).
 
 args@{ self, pkgs, ... }:
 let
@@ -31,7 +28,6 @@ batch.mkBatch {
     };
 
   scenarios = map scenario [
-    ./../../scenarios/preflight/17-preflight-overlay-compat.nix
     ./../../scenarios/preflight/18-preflight-symlink-support.nix
   ];
 }

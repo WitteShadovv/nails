@@ -17,10 +17,10 @@ let
   # used only for diagnostics.
   entry = distro: image: release: { inherit distro image release; };
 in
+# Every entry must ship systemd 254 or newer: the hidden session is entered and
+# left with `systemctl soft-reboot`. Debian 12 "bookworm" (systemd 252) and
+# Ubuntu 22.04 "jammy" (249) are refused by `nails check` and are not run.
 {
-  # Debian 12 "bookworm".
-  "debian-12" = entry "debian" "12" "12";
-
   # Debian 13 "trixie".
   "debian-13" = entry "debian" "13" "13";
 

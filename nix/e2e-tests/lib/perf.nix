@@ -20,35 +20,4 @@
         )
         return int(machine.succeed("bash -c " + shlex.quote(script)).strip().splitlines()[-1])
   '';
-
-  # nails times its own operations and logs the result as duration_ms:
-  # `activate --json` streams an activation_complete event carrying it, and
-  # every completed teardown logs a "Deactivation complete" line with it.
-  nailsDurationFns = ''
-    def activation_duration_ms(ndjson):
-        import json
-
-        for line in ndjson.splitlines():
-            line = line.strip()
-            if not line.startswith("{"):
-                continue
-            event = json.loads(line)
-            if event.get("event") == "activation_complete" and "duration_ms" in event:
-                return int(event["duration_ms"])
-        raise AssertionError(
-            "activate --json streamed no activation_complete event with duration_ms:\n" + ndjson
-        )
-
-    def deactivation_duration_ms(log_text):
-        import re
-
-        plain = re.sub(r"\x1b\[[0-9;]*m", "", log_text)
-        for line in plain.splitlines():
-            if "Deactivation complete" not in line:
-                continue
-            match = re.search(r"\bduration_ms=(\d+)", line)
-            if match:
-                return int(match.group(1))
-        return None
-  '';
 }

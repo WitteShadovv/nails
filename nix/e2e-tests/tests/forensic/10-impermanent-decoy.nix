@@ -1,26 +1,20 @@
-# Test 10 (forensic): the impermanent decoy profile holds its invariants and a
-# hidden session leaves nothing on the persisted decoy state.
+# Test 10 (forensic): an impermanent decoy is refused and nothing is left behind
 #
-# This is the forensic consumer of lib/impermanent-decoy.nix. It proves two
-# things the profile is meant to guarantee, so the heavier drift and canary work
-# (T-092) can rely on them:
+# The whole-root session leaves the decoy by mounting its root device again at
+# /run/nextroot, which a volatile tmpfs root (lib/impermanent-decoy.nix: a tmpfs
+# `/` over an on-disk Nix store, with only /var/lib/nixos persisted on
+# /persist) does not have. So:
 #
-#   1. The decoy root is a volatile tmpfs and only /nix (the on-disk store image)
-#      and /var/lib/nixos are persisted — everything else a hidden session touches
-#      on the decoy root is gone on power-off.
-#   2. An auto-mode hidden session writes to its overlay uppers on the hidden
-#      volume, not to the persisted /persist trees, so a disk image of the decoy
-#      shows no hidden residue there after an emergency teardown.
-#
-# NOTE (evaluate under nix): the tmpfs-root override, the /persist disk and its
-# binds, and offline closure completeness can only be confirmed by
-# `nix build .#checks.x86_64-linux.impermanent-decoy` on a Nix host.
-
+#   1. `nails check` fails its `decoy-root` check on this host (exit 4);
+#   2. `nails activate` is refused by the same pre-flight (exit 4) before it
+#      changes anything: no next root, no runtime directory, no overlay, no
+#      soft-reboot, the decoy root is still the tmpfs, status still reports
+#      the plain decoy, the hidden root's upper holds nothing, and the
+#      persisted decoy state on /persist is byte-identical.
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
 in
 {
   name = "impermanent-decoy";
@@ -29,8 +23,7 @@ in
     "slow"
   ];
 
-  # A store-image boot plus an activate/teardown cycle needs more than the
-  # default budget.
+  # A store-image boot needs more than the default budget.
   globalTimeout = 1800;
 
   nodes.machine =
@@ -41,11 +34,39 @@ in
     };
 
   testScript = _: ''
-    ${testHelpers.writeAutoConfigFn}
+    import json
+
+    ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.readStatusJsonFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
+
+    CONFIG = "/mnt/data/config/nails.toml"
+
+
+    def persisted_state():
+        return machine.succeed(
+            "find /persist -xdev -printf '%p %y %m %s %T@\\n' | LC_ALL=C sort; "
+            "find /persist -xdev -type f -exec sha256sum {} + | LC_ALL=C sort"
+        )
+
+
+    def nothing_left_behind():
+        assert machine.succeed("findmnt -no FSTYPE /").strip() == "tmpfs"
+        machine.fail("grep -q ' /run/nextroot' /proc/self/mountinfo")
+        machine.fail("test -e /run/overlay-runtime")
+        machine.fail("grep -q 'upperdir=/mnt/data' /proc/self/mountinfo")
+        machine.fail("test -e /run/systemd/system/systemd-soft-reboot.service.d")
+        count = machine.succeed("systemctl show -p SoftRebootsCount --value").strip()
+        assert count == "0", f"SoftRebootsCount={count}"
+        upper = machine.succeed(
+            "find /mnt/data/root/upper -mindepth 1 2>/dev/null | head -20"
+        ).strip()
+        assert upper == "", f"activation wrote into the hidden upper: {upper}"
+        status = read_status_json(config_path=CONFIG)
+        assert status["posture"] == "decoy", status
+        assert persisted_state() == persisted_before, (
+            "the persisted decoy state changed"
+        )
+
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -57,36 +78,27 @@ in
         machine.succeed("mountpoint -q /persist")
         machine.succeed("mountpoint -q /var/lib/nixos")
 
-    config_path = "/tmp/nails-impermanent.toml"
-    write_auto_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    # Auto mode overlays /nix, and the overlay-targets pre-flight check refuses a
-    # binary that lives under an overlay target, so activate with a copy on the
-    # hidden volume.
-    hidden_nails = "/mnt/data/nails"
-    machine.succeed(f"install -m 0755 ${self.packages.x86_64-linux.nails}/bin/nails {hidden_nails}")
+    write_headless_config(CONFIG)
+    persisted_before = persisted_state()
 
-    with subtest("an auto-mode session overlays /var and /nix and writes to the hidden upper"):
-        machine.succeed(
-            f"{hidden_nails} --config {config_path} activate --overlay-only --session keep -y"
+    with subtest("check fails the decoy-root check"):
+        rc, out = machine.execute(
+            f"nails --config {CONFIG} --json check --overlay-only 2>/dev/null"
         )
-        assert_status_state("active", config_path=config_path)
-        for path in ["/etc", "/var", "/nix"]:
-            assert_overlay_mounted(path)
+        assert rc == 4, f"check exited {rc}: {out}"
+        checks = {row["name"]: row for row in json.loads(out)["data"]["checks"]}
+        assert checks["decoy-root"]["status"] == "fail", checks.get("decoy-root")
+        machine.log(f"decoy-root: {checks['decoy-root']['message']}")
+        nothing_left_behind()
 
-        # A write to an overlaid decoy tree lands on the hidden volume's upper,
-        # never on the persisted decoy state.
-        machine.succeed("printf %s hidden > /etc/nails-session-marker")
-        machine.succeed("test -f /mnt/data/etc/nails-session-marker")
-        machine.fail("test -e /persist/nails-session-marker")
-
-    with subtest("emergency teardown leaves no hidden residue on the persisted state"):
-        machine.succeed(f"nails --config {config_path} emergency")
-        assert_no_overlays(["/etc", "/var", "/nix"])
-        machine.fail("test -e /etc/nails-session-marker")
-        residue = machine.succeed(
-            "find /persist -name 'nails-*' -printf '%p\\n' || true"
-        ).strip()
-        assert residue == "", f"hidden residue persisted on the decoy state: {residue!r}"
+    with subtest("activate is refused by the same check and changes nothing"):
+        rc, out = machine.execute(
+            f"nails --config {CONFIG} activate -y --overlay-only 2>&1"
+        )
+        machine.log(out)
+        assert rc == 4, f"activate exited {rc} on an impermanent decoy: {out}"
+        assert "decoy-root" in out or "decoy root" in out.lower(), out
+        nothing_left_behind()
   '';
 }

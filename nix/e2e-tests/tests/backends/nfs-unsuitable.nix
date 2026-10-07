@@ -1,21 +1,19 @@
 # Backend refusal: NFS cannot host an overlayfs upper layer
 #
 # A network filesystem exports no trusted xattrs and no reliable readdir d_type,
-# so the kernel cannot use it as an overlayfs upper. The real overlays mount only
-# after the decoy session is killed, so an unusable backend discovered then is
-# discovered too late. The upper-fs-capability preflight check must therefore
-# refuse activation up front, before anything is mounted, naming the backend.
+# so the kernel cannot use it as the upper of the root overlay. An unusable
+# backend found while building /run/nextroot, or after the soft-reboot, is found
+# too late, so the upper-fs-capability pre-flight check must refuse activation
+# up front, naming the cause, and leave the machine on the plain decoy with no
+# next root and no overlay.
 #
 # Two nodes: `server` exports a share, `client` mounts it at the hidden root and
-# attempts to activate. The activation must fail with the capability error.
-# Companion to tests/preflight/24, which proves the same probe on a single node
-# against an overlay-backed upper (a FAT upper lacks symlinks and is caught by
-# the earlier symlink-support gate, so it never reaches this check).
+# attempts to activate. Companion to the preflight upper-fs-capability scenario,
+# which proves the same probe on a single node.
 
 { self, pkgs, ... }:
 let
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
-  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "backend-nfs-unsuitable";
@@ -55,6 +53,8 @@ in
   };
 
   testScript = _: ''
+    from nails_e2e import session
+
     ${preflightHelpers.writeTextFileFn}
     ${preflightHelpers.runCommandCaptureFn}
     ${preflightHelpers.commandAssertionsFn}
@@ -67,20 +67,6 @@ in
     # The preflight helpers operate on a `machine` global; point it at the client.
     machine = client
 
-    def write_nfs_hidden_config(path):
-        write_text_file(path, """
-    hidden_volume_root = "/mnt/data"
-    overlay_mode = "explicit"
-
-    ${baseOs.toml}
-    [[overlays]]
-    name = "home"
-    lower = "/home"
-    upper = "/mnt/data/home"
-    work = "/mnt/data/.work/home"
-    target = "/home"
-    """.strip() + "\n")
-
     with subtest("mount the NFS share at the hidden root"):
         client.succeed("mkdir -p /mnt/data")
         client.wait_until_succeeds("mount -t nfs4 server:/ /mnt/data", timeout=60)
@@ -88,13 +74,16 @@ in
         # backend and not an unrelated setup failure.
         fstype = client.succeed("findmnt -n -o FSTYPE /mnt/data").strip()
         assert fstype.startswith("nfs"), f"hidden root is {fstype!r}, expected nfs"
-        client.succeed("mkdir -p /mnt/data/home /mnt/data/.work/home")
+        client.succeed("mkdir -p /mnt/data/root/work /mnt/data/config")
 
     with subtest("activation is refused with the upper-fs capability error"):
-        write_nfs_hidden_config("/tmp/backend-nfs-unsuitable.toml")
+        write_text_file(
+            "/run/backend-nfs-unsuitable.toml",
+            'hidden_volume_root = "/mnt/data"\nminimum_space_mb = 100\n',
+        )
         result = run_command_capture(
             "backend-nfs-unsuitable",
-            "nails --config /tmp/backend-nfs-unsuitable.toml activate --overlay-only --session keep -y",
+            "nails --config /run/backend-nfs-unsuitable.toml activate -y --overlay-only",
         )
         assert_command_failed(result)
         assert_result_contains(
@@ -103,11 +92,12 @@ in
             stream="stderr",
         )
 
-    with subtest("the refusal mounted no overlay"):
-        # Preflight runs before any mount, so no overlay backed by the hidden root
-        # may exist. Match on the upperdir to avoid a false positive if the VM's
-        # own root is itself an overlay.
+    with subtest("the refusal built no next root and left the plain decoy"):
+        # Pre-flight runs before /run/nextroot is built; the backdoor answering
+        # here already shows no soft-reboot was started.
+        session.assert_decoy_root(client)
         client.fail("grep -q 'upperdir=/mnt/data' /proc/mounts")
+        client.fail("test -e /run/overlay-runtime")
         client.succeed("umount /mnt/data")
   '';
 }

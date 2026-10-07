@@ -1,13 +1,14 @@
 # Test 80: UEFI ESP / EFI NVRAM invariant
 #
-# Enforces the bootloader/ESP/NVRAM invariant from docs/threat-model.md:
-# activating and then deactivating the hidden environment must not change any
-# boot entry, ESP file or EFI NVRAM variable beyond what a plain reboot already
-# does. A boot entry, bootloader config file or NVRAM variable that enables the
-# hidden mode is itself evidence, and none of it is captured by the overlay, so
-# it cannot be rolled back by unmounting. Only a `switch-to-configuration switch`
-# (or `boot`) would rewrite the ESP and EFI variables; activation and
-# deactivation must stay on `test`.
+# Enforces the bootloader/ESP/NVRAM invariant from docs/threat-model.md: a
+# hidden session (a soft-reboot into the whole-root overlay and a soft-reboot
+# back) must not change any boot entry, ESP file or EFI NVRAM variable beyond
+# what a plain reboot already does. A boot entry, bootloader config file or
+# NVRAM variable that enables the hidden mode is itself evidence, and none of it
+# is captured by the root overlay. In the hidden session the ESP is a read-only
+# bind of the decoy mount (the fstab policy), so a write to /boot must fail
+# there, and neither NAILS nor the hidden systemd (systemd-boot's random seed)
+# may rewrite it.
 #
 # The test needs a real firmware surface, so it boots the VM through OVMF with a
 # persistent EFI variable store and systemd-boot on a mounted ESP - unlike the
@@ -17,9 +18,7 @@
 # EFI variables legitimately churn across any reboot (systemd-boot rewrites
 # loader/random-seed, firmware bumps runtime variables, the boot-time activation
 # may restat /var/lib/nixos). The control captures exactly that churn, and the
-# NAILS activate/deactivate cycle is then required to change nothing a plain
-# reboot would not - which is both robust to that churn and a true test that a
-# hidden `switch` never ran.
+# hidden session is then required to change nothing a plain reboot would not.
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -27,7 +26,7 @@ let
 in
 {
   name = "uefi-esp-nvram-invariant";
-  # OVMF boot plus two full reboots (control and deactivation) and a LUKS setup
+  # OVMF boot plus a full reboot (control), two soft-reboots and a LUKS setup
   # run well over a direct-boot test; this is a nightly-only forensic check.
   # Twice the estimated shard weight (300 s) until the nightly run refreshes it.
   globalTimeout = 1200;
@@ -66,29 +65,21 @@ in
     import json
 
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
 
-    def plain_reboot(unit_name="nails-plain-reboot-control"):
-        # Mirror canonical_deactivate's robust shutdown wait, but trigger an
-        # ordinary reboot (no NAILS involved) so we can measure the ESP/NVRAM
-        # churn a plain reboot alone produces.
-        import shlex
-        import subprocess
+    from nails_e2e import session
 
-        machine.succeed(
-            "systemd-run --unit "
-            + shlex.quote(unit_name)
-            + " --no-block --service-type=exec /bin/sh -lc "
-            + shlex.quote("systemctl reboot")
+    def plain_reboot():
+        # An ordinary reboot (no NAILS involved), to measure the ESP/NVRAM
+        # churn a plain reboot alone produces. The VM runs with -no-reboot, so
+        # QEMU exits; start it again on the same disks and variable store.
+        machine.execute(
+            "(systemctl reboot) </dev/null >/dev/null 2>&1 &",
+            check_return=False,
+            check_output=False,
         )
-        process = machine.process
-        if process is not None:
-            with machine.nested("waiting for the control plain reboot to power the VM off"):
-                try:
-                    process.wait(timeout=300)
-                except subprocess.TimeoutExpired:
-                    raise AssertionError("control plain reboot did not power off the VM within 300s")
-        machine.wait_for_shutdown()
+        session.wait_for_power_off(machine, 300)
         machine.start()
         machine.wait_for_unit("multi-user.target")
 
@@ -209,19 +200,23 @@ in
     # the deactivated state must match.
     pre_activation = snapshot()
 
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --session keep -y")
-    machine.succeed("mount | grep 'overlay on /home'")
-    print("✓ NAILS activated with overlays")
+    canonical_activate(headless_config, "--overlay-only", "activate")
+    print("✓ Entered the hidden session")
 
-    canonical_deactivate(headless_config, unit_name="nails-deactivate-uefi-invariant")
-    print("✓ Deactivated and rebooted to the decoy")
+    # The ESP is a read-only bind in the hidden root: neither the hidden
+    # session nor its systemd can write it.
+    assert "ro" in machine.succeed("findmnt -no OPTIONS /boot").strip().split(","), \
+        machine.succeed("findmnt /boot")
+    machine.fail("touch /boot/hidden-write")
+    print("✓ The ESP is read-only in the hidden session")
 
-    status = json.loads(machine.succeed("nails status --json"))["data"]
-    assert status["state"]["kind"] == "inactive", f"Expected inactive after reboot, got: {status}"
-    print("✓ NAILS status reports Inactive")
+    canonical_deactivate(headless_config, "deactivate")
+    print("✓ Deactivated: soft-rebooted back to the decoy")
 
-    machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
-    print("✓ Hidden volume unmounted")
+    status = json.loads(machine.succeed(f"nails --config {headless_config} status --json"))["data"]
+    assert status["posture"] == "decoy", f"Expected the plain decoy, got: {status}"
+    machine.fail("test -e /boot/hidden-write")
+    print("✓ NAILS status reports the plain decoy")
 
     post_deactivation = snapshot()
 
@@ -243,12 +238,12 @@ in
     print("UEFI ESP/NVRAM INVARIANT HOLDS")
     print("=" * 70)
     print("""
-    Verified that an activate/deactivate cycle changed:
+    Verified that a hidden session changed:
       ✓ no ESP file beyond a plain reboot
       ✓ no EFI boot entry or boot order beyond a plain reboot
       ✓ no EFI variable beyond a plain reboot
       ✓ no /var/lib/nixos identity file beyond a plain reboot
-    i.e. deactivation never ran switch-to-configuration switch/boot.
+    i.e. nothing in the session rewrote the boot surface.
     """)
   '';
 }

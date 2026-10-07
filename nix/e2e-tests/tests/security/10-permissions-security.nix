@@ -1,12 +1,18 @@
-# Test 10: Permission and Path Security
-# Tests that unsafe config paths are refused and that the activity log is
-# never group- or world-accessible.
-
+# Test 10: Permission and path security
+#
+# The hidden volume root ends up in the root overlay's mount options, so an
+# unsafe one must be refused before anything is prepared:
+#   - a root that passes through a symlink, a relative root that climbs with
+#     `..`, and a root containing an overlay option separator (`:`) are each
+#     refused by `nails activate` with the offending setting named; the
+#     machine stays on the plain decoy, nothing is left at /run/nextroot and no
+#     root upper is created on the hidden volume;
+#   - after a real activation (a soft-reboot into the hidden root) the activity
+#     log on the hidden volume is never group- or world-accessible.
 _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   symlinkFixture = ./../../fixtures/configs/symlink-target.toml;
   traversalFixture = ./../../fixtures/configs/path-traversal.toml;
 in
@@ -15,65 +21,83 @@ in
   meta.tags = [ "security" ];
 
   testScript = _: ''
+    import shlex
+
+    from nails_e2e import session
+
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.readStatusJsonFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertNoOverlaysFn}
+    ${testHelpers.canonicalActivateFn}
+
+    CONFIG = "/mnt/data/config/nails.toml"
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-
-    headless_config = "/tmp/nails-headless.toml"
-    overlay_targets = ["/home", "/etc", "/root", "/srv", "/tmp"]
-    write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    write_headless_config(CONFIG)
 
-    def assert_config_refused(config_fixture, config_path, description):
-        machine.succeed(f"cp {config_fixture} {config_path}")
-        # Activation must exit non-zero: the config loader rejects the unsafe
-        # path before anything is mounted. A zero exit would mean the guard is
-        # gone, so this is the whole point of the test.
-        machine.fail(
-            f"nails --config {config_path} activate --overlay-only --session keep -y"
+
+    def assert_config_refused(config_path, problem, description):
+        rc, out = machine.execute(
+            f"nails --config {shlex.quote(config_path)} activate -y --overlay-only 2>&1"
         )
-        # A refusal must leave no trace: no overlay mounted and the tracked
-        # state still inactive.
-        assert_no_overlays(overlay_targets)
-        assert_status_state("inactive", config_path=headless_config)
-        print(f"✓ {description} is refused with no overlay left behind")
+        # The config loader rejects the unsafe path before anything is
+        # prepared. A zero exit would mean the guard is gone.
+        assert rc != 0, f"{description}: activation was not refused: {out}"
+        assert "hidden_volume_root" in out, out
+        assert problem in out, f"{description}: expected {problem!r} in: {out}"
+        # A refusal leaves no trace: the plain decoy root, no next root and no
+        # root upper on the hidden volume.
+        session.assert_decoy_root(machine)
+        machine.succeed("test ! -e /run/nextroot || test -z \"$(ls -A /run/nextroot)\"")
+        machine.succeed("test ! -e /mnt/data/root/upper")
+        status = read_status_json(config_path=CONFIG)
+        assert status["posture"] == "decoy", status
+        print(f"✓ {description} is refused with nothing left behind")
 
-    with subtest("symlinked hidden-volume root is refused"):
+
+    with subtest("a hidden volume root through a symlink is refused"):
         machine.succeed("ln -sfn /mnt/data /tmp/symlink-to-hidden")
+        machine.succeed("cp ${symlinkFixture} /tmp/symlink-config.toml")
         assert_config_refused(
-            "${symlinkFixture}",
             "/tmp/symlink-config.toml",
-            "Symlinked hidden-volume root",
+            "must not pass through a symlink",
+            "symlinked hidden volume root",
         )
         machine.succeed("rm -f /tmp/symlink-to-hidden /tmp/symlink-config.toml")
 
-    with subtest("relative path-traversal root is refused"):
+    with subtest("a relative path-traversal root is refused"):
+        machine.succeed("cp ${traversalFixture} /tmp/traversal-config.toml")
         assert_config_refused(
-            "${traversalFixture}",
             "/tmp/traversal-config.toml",
-            "Path traversal in config",
+            "must be an absolute path",
+            "relative path-traversal root",
         )
         machine.succeed("rm -f /tmp/traversal-config.toml")
 
-    with subtest("activity log is owner-only"):
-        # Default logging writes to the hidden-volume log. It records operator
-        # activity, so it must exist after a real activation and must not be
-        # readable or writable by group or other.
+    with subtest("a root with an overlay option separator is refused"):
         machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --session keep -y"
+            "printf 'hidden_volume_root = \"/mnt/da:ta\"\\n' > /tmp/separator-config.toml"
         )
-        assert_status_state("active", config_path=headless_config)
+        assert_config_refused(
+            "/tmp/separator-config.toml",
+            "must not contain ':'",
+            "root with a ':' separator",
+        )
+        machine.succeed("rm -f /tmp/separator-config.toml")
 
-        log_file = "/mnt/data/logs/nails.log"
-        machine.succeed(f"test -f {log_file}")
-        perms = machine.succeed(f"stat -c %a {log_file}").strip()
-        mode = int(perms, 8)
-        assert (mode & 0o077) == 0, \
-            f"Log file {log_file} is accessible by group/other (perms={perms})"
-        print(f"✓ Log file {log_file} is owner-only ({perms})")
+    with subtest("the activity log is owner-only in the hidden session"):
+        canonical_activate(CONFIG, "--overlay-only", "activate")
+        status = read_status_json(config_path=CONFIG)
+        assert status["posture"] == "active", status
+        logs = machine.succeed("find /mnt/data/logs -type f").split()
+        assert logs, "activation wrote no log file under /mnt/data/logs"
+        for log_file in logs:
+            perms = machine.succeed(f"stat -c %a {shlex.quote(log_file)}").strip()
+            mode = int(perms, 8)
+            assert (mode & 0o077) == 0, (
+                f"log file {log_file} is accessible by group/other (perms={perms})"
+            )
+            print(f"✓ log file {log_file} is owner-only ({perms})")
   '';
 }

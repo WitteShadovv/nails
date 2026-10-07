@@ -2,8 +2,7 @@
 #   tests/contract/58-contract-json-schema.nix
 # Formerly the stand-alone test
 #   tests/contract/58-contract-active-session.nix
-# It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
-# its subtests and assertions are unchanged.
+# It now shares one VM boot with the batch's other scenarios (lib/batch.nix).
 #
 # Contract: the active-session CLI surface that genuinely needs a real VM.
 #
@@ -11,9 +10,11 @@
 # tampered and hand-written active states, the error envelope, the colour toggle
 # in a non-TTY harness, the exit-code table and log-file suppression are all
 # covered without a VM by nails-cli/tests/cli_contract.rs. This single VM test
-# keeps only what needs a real overlay activation and a real terminal: the active
-# status and verify JSON against the committed schemas, the ASCII/plain rendering
-# of an active status, and colour auto-detection on a real TTY.
+# keeps only what needs a real hidden session and a real terminal: colour
+# auto-detection on a real TTY, then (after `nails activate` soft-rebooted into
+# the whole-root overlay) the status JSON with posture "active" and the verify
+# JSON, both against the committed schemas, and the ASCII/plain rendering of
+# the active status.
 
 _:
 let
@@ -27,7 +28,7 @@ in
 
   helpers = [
     testHelpers.writeHeadlessConfigFn
-    testHelpers.runDetachedCommandFn
+    testHelpers.canonicalActivateFn
     contractHelpers.runCommandCaptureFn
     contractHelpers.runPtyCommandCaptureFn
     contractHelpers.assertJsonSchemaValidFn
@@ -74,10 +75,8 @@ in
             )
             assert_no_ansi(piped["combined"], "piped verify")
 
-        with subtest("activate the hidden session"):
-            machine.succeed(
-                f"nails --config {headless_config} activate --overlay-only --session keep -y"
-            )
+        with subtest("activate soft-reboots into the hidden session"):
+            canonical_activate(headless_config, "--overlay-only", "contract-activate")
 
         with subtest("active status JSON matches the schema"):
             active = run_command_capture(
@@ -87,24 +86,19 @@ in
             assert active["rc"] == 0, active
             assert_json_schema_valid(status_schema, active["stdout_path"], "active status JSON")
             active_payload = json.loads(active["stdout"])["data"]
-            assert active_payload["state"]["kind"] == "active", active_payload
-            active_paths = {overlay["mount_point"] for overlay in active_payload["overlays"]}
-            assert "/etc" in active_paths and "/home" in active_paths, active_payload
+            assert active_payload["posture"] == "active", active_payload
 
         with subtest("active verify JSON matches the schema"):
             verified = run_command_capture(
                 "contract-verify-active",
                 f"nails --config {shlex.quote(headless_config)} verify --deep --json",
             )
-            # Active overlays make verify report findings: warning => 10, critical => 11.
+            # The live hidden root (an overlay whose upper is on the hidden
+            # volume) is a finding: warning => 10, critical => 11.
             assert verified["rc"] in (10, 11), verified
             assert_json_schema_valid(verify_schema, verified["stdout_path"], "active verify JSON")
             verify_payload = json.loads(verified["stdout"])["data"]
             assert verify_payload["findings"], verify_payload
-            assert any(
-                finding["category"] == "mount" or "overlay" in finding["message"].lower()
-                for finding in verify_payload["findings"]
-            ), verify_payload
 
         with subtest("active status renders ASCII-only without escapes"):
             piped_status = run_command_capture(
@@ -123,6 +117,6 @@ in
             assert_no_ansi(ascii_status["combined"], "status --ascii")
             assert_ascii_only(ascii_status["stdout"], "status --ascii")
             assert "NAILS Status Report" in ascii_status["stdout"], ascii_status
-            assert "Details:" in ascii_status["stdout"], ascii_status
+            assert "Security Posture:" in ascii_status["stdout"], ascii_status
   '';
 }

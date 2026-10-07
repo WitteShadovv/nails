@@ -1,18 +1,15 @@
 # Shared test helper functions for E2E tests
 # Provides common Python functions as string snippets that can be interpolated into testScripts
-let
-  baseOs = import ./base-os-overlays.nix;
-in
 {
   # Python function to write the standard headless config file.
   # Usage in testScript: ${testHelpers.writeHeadlessConfigFn}
   # Then call: write_headless_config("/run/nails-tests/nails-headless.toml")
   #
-  # The overlay set covers every base-OS tree that exists as a real directory on
-  # the NixOS test host. The writable-trees pre-flight check refuses activation
-  # when a core binary root (/usr, /bin, /lib64 here) is left neither overlaid nor
-  # read-only, since a hidden-session write there would reach the decoy disk, so
-  # the explicit config must overlay them just as auto mode does.
+  # The whole-root session needs nothing but the hidden root: the root overlay
+  # and the fstab policy are derived from the host. The hidden data disk is only
+  # ~2 GB, below the 4 GB default rebuild floor, so the floor is lowered for the
+  # tiny hidden configurations these tests build. `overlay_var` is accepted for
+  # old call sites and ignored: /var is part of the root overlay.
   writeHeadlessConfigFn = ''
     def write_headless_config(path, overlay_var=False):
         import os
@@ -23,81 +20,12 @@ in
         machine.succeed(
             """cat > %s <<'EOF'
     hidden_volume_root = "/mnt/data"
-    overlay_mode = "explicit"
-    risky_services = "skip"
-    # These VMs have no hidden NixOS closure to build offline (and `nix build`
-    # needs the nix-command feature the decoy leaves disabled), so a full
-    # `activate` cannot complete the hidden switch. The session, overlay and
-    # notification tests that use this config exercise everything around that
-    # switch, so keep its failure non-fatal instead of rolling activation back.
-    nixos_switch_required = false
-    # The hidden data disk is only ~2 GB, below the 4 GB default rebuild floor,
-    # and the hidden configurations these tests build are tiny. Lower the floor
-    # so the post-mount space guard lets the (real or stubbed) rebuild run.
     rebuild_space_mb = 64
-
-    [[overlays]]
-    name = "etc"
-    lower = "/etc"
-    upper = "/mnt/data/etc"
-    work = "/mnt/data/.work/etc"
-    target = "/etc"
-
-    [[overlays]]
-    name = "home"
-    lower = "/home"
-    upper = "/mnt/data/home"
-    work = "/mnt/data/.work/home"
-    target = "/home"
-
-    [[overlays]]
-    name = "root"
-    lower = "/root"
-    upper = "/mnt/data/root"
-    work = "/mnt/data/.work/root"
-    target = "/root"
-
-    [[overlays]]
-    name = "srv"
-    lower = "/srv"
-    upper = "/mnt/data/srv"
-    work = "/mnt/data/.work/srv"
-    target = "/srv"
-
-    [[overlays]]
-    name = "tmp"
-    lower = "/tmp"
-    upper = "/mnt/data/tmp"
-    work = "/mnt/data/.work/tmp"
-    target = "/tmp"
-
-    ${baseOs.toml}
     EOF""" % path
         )
-        # Forensic tests that keep a persistent decoy journal need /var overlaid so
-        # the hidden session's journal does not land on the decoy disk: overlaying
-        # /var makes NAILS relinquish journald to the volatile /run store, which the
-        # teardown then scrubs. Appended as an extra overlay table (table order is
-        # irrelevant in TOML).
-        if overlay_var:
-            machine.succeed(
-                """cat >> %s <<'EOF'
-
-    [[overlays]]
-    name = "var"
-    lower = "/var"
-    upper = "/mnt/data/var"
-    work = "/mnt/data/.work/var"
-    target = "/var"
-    EOF""" % path
-            )
   '';
 
-  # Python function to write an auto-mode config. Auto mode derives the overlay
-  # set from the live base OS itself — every writable base tree, including /var
-  # and /nix — rather than listing overlays explicitly, which is the product
-  # default. Tests that must exercise the real default (not the hand-listed
-  # explicit set) use this instead of write_headless_config.
+  # The same minimal config under the name the auto-mode tests used.
   writeAutoConfigFn = ''
     def write_auto_config(path):
         import os
@@ -108,8 +36,7 @@ in
         machine.succeed(
             """cat > %s <<'EOF'
     hidden_volume_root = "/mnt/data"
-    overlay_mode = "auto"
-    risky_services = "skip"
+    rebuild_space_mb = 64
     EOF""" % path
         )
   '';
@@ -235,213 +162,49 @@ in
   # QEMU without a deadline, so a deactivation that never finished held the
   # test until globalTimeout and reported nothing. This waits on the QEMU
   # process with a deadline and fails with guest diagnostics instead.
+  # The standard way out of a hidden session in a test: `nails deactivate -y`
+  # soft-reboots back to the decoy; follow the switch, reconnect, and check
+  # that the plain decoy root is back and the hidden backend closed itself.
+  # Returns the in-guest timings of the switch.
   canonicalDeactivateFn = ''
-    def canonical_deactivate(
-        config_path,
-        unit_name="nails-deactivate",
-        shutdown_timeout=300,
-        diagnostics_timeout=90,
-        failure_grace=30,
-    ):
+    def canonical_deactivate(config_path, label="deactivate"):
         import shlex
-        import subprocess
-        import threading
-        import time
 
-        def collect_shutdown_diagnostics():
-            quoted_unit = shlex.quote(unit_name)
-            commands = [
-                (
-                    f"systemctl status {unit_name}",
-                    f"systemctl status {quoted_unit} --no-pager --full",
-                ),
-                (
-                    f"journal of {unit_name}",
-                    f"journalctl -u {quoted_unit} -n 100 -o short-precise --no-pager",
-                ),
-                ("journal tail", "journalctl -b -n 200 -o short-precise --no-pager"),
-                ("pending systemd jobs", "systemctl list-jobs --no-pager"),
-                (
-                    "process list",
-                    "ps -eo pid,ppid,stat,etimes,wchan:32,args --forest",
-                ),
-            ]
-            sections = []
+        from nails_e2e import session
 
-            def run_commands():
-                for label, command in commands:
-                    _, output = machine.execute(
-                        f"timeout 10s {command} 2>&1 || true",
-                        check_return=False,
-                        timeout=30,
-                    )
-                    sections.append(f"--- {label} ---\n{output.rstrip()}")
-
-            # Once shutdown has begun the guest's backdoor shell may already be
-            # gone, and execute() then blocks reading from it forever (its
-            # timeout runs inside the guest). Collect on a daemon thread so a
-            # dead shell cannot hang the test a second time.
-            collector = threading.Thread(target=run_commands, daemon=True)
-            collector.start()
-            collector.join(diagnostics_timeout)
-            collected = list(sections)
-            if collector.is_alive():
-                console_tail = machine.get_console_log().splitlines()[-100:]
-                collected.append(
-                    "--- guest shell unresponsive; serial console tail ---\n"
-                    + "\n".join(console_tail)
-                )
-            return "\n".join(collected)
-
-        machine.succeed(
-            "systemd-run --unit "
-            + shlex.quote(unit_name)
-            + " --no-block --service-type=exec /bin/sh -lc "
-            + shlex.quote(
-                "nails --config " + shlex.quote(config_path) + " deactivate -y"
-            )
+        timings = session.follow_soft_reboot(
+            machine,
+            "nails --config " + shlex.quote(config_path) + " deactivate -y",
+            label,
         )
-
-        def unit_failed_while_running(wait_limit):
-            # True only when the deactivate unit has failed and the system is
-            # not shutting down: a unit stopped by the power-off it requested
-            # can also read as failed, and that is the success path. The query
-            # runs on a daemon thread because the guest shell may vanish at any
-            # moment of a power-off, and a read from a dead shell never returns.
-            answer = []
-            quoted_unit = shlex.quote(unit_name)
-
-            def query():
-                try:
-                    _, output = machine.execute(
-                        f"timeout 5s systemctl is-failed --quiet {quoted_unit} "
-                        "&& ! systemctl is-system-running 2>/dev/null "
-                        "| grep -qx stopping && echo FAILED || true",
-                        check_return=False,
-                        timeout=10,
-                    )
-                    answer.append(output.strip() == "FAILED")
-                except Exception:  # noqa: BLE001 - shell gone: shutdown is underway
-                    answer.append(False)
-
-            worker = threading.Thread(target=query, daemon=True)
-            worker.start()
-            worker.join(wait_limit)
-            return bool(answer and answer[0])
-
-        # Wait on QEMU itself rather than polling the guest: the guest shell
-        # goes away during power-off, so only the host process is reliable. The
-        # guest is consulted only to fail fast: a deactivation whose unit has
-        # failed will never power the VM off, and waiting out the whole
-        # shutdown_timeout for it cost 300 s per failure. A failed unit gets a
-        # grace period in case the power-off is in fact already under way.
-        timed_out = False
-        failed_early = False
-        process = machine.process
-        if process is not None:
-            with machine.nested(
-                f"waiting up to {shutdown_timeout}s for the VM to power off"
-            ):
-                deadline = time.monotonic() + shutdown_timeout
-                failed_since = None
-                while True:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        timed_out = True
-                        break
-                    try:
-                        process.wait(timeout=min(5, remaining))
-                        break
-                    except subprocess.TimeoutExpired:
-                        pass
-                    remaining = deadline - time.monotonic()
-                    if failed_since is None:
-                        if remaining > 1 and unit_failed_while_running(
-                            min(15, remaining)
-                        ):
-                            failed_since = time.monotonic()
-                    elif time.monotonic() - failed_since >= failure_grace:
-                        failed_early = True
-                        break
-        if failed_early:
-            raise AssertionError(
-                f"canonical_deactivate: {unit_name} failed and the VM was still "
-                f"running {failure_grace}s later\n" + collect_shutdown_diagnostics()
-            )
-        if timed_out:
-            raise AssertionError(
-                f"canonical_deactivate: VM did not power off within "
-                f"{shutdown_timeout}s after starting {unit_name}\n"
-                + collect_shutdown_diagnostics()
-            )
-
-        # QEMU has exited, so this returns at once; it also resets the driver's
-        # booted/connected state so the machine can be started again.
-        # sync-lint: allow unbounded-shutdown -- QEMU has already exited above
-        machine.wait_for_shutdown()
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
+        session.assert_decoy_root(machine)
+        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        return timings
   '';
 
-  writeExtendedConfigFn = ''
-    def write_extended_config(path):
-        machine.succeed(
-            """cat > %s <<'EOF'
-    hidden_volume_root = "/mnt/data"
-    overlay_mode = "explicit"
-    risky_services = "skip"
+  # Enter the hidden session from a test: `nails activate -y` soft-reboots into
+  # the hidden root. Its output goes to the hidden volume (the decoy shell that
+  # ran it is gone after the switch). Returns the in-guest timings.
+  canonicalActivateFn = ''
+    def canonical_activate(config_path, extra_args="", label="activate"):
+        import shlex
 
-    [[overlays]]
-    name = "etc"
-    lower = "/etc"
-    upper = "/mnt/data/etc"
-    work = "/mnt/data/.work/etc"
-    target = "/etc"
+        from nails_e2e import session
 
-    [[overlays]]
-    name = "home"
-    lower = "/home"
-    upper = "/mnt/data/home"
-    work = "/mnt/data/.work/home"
-    target = "/home"
-
-    [[overlays]]
-    name = "root"
-    lower = "/root"
-    upper = "/mnt/data/root"
-    work = "/mnt/data/.work/root"
-    target = "/root"
-
-    [[overlays]]
-    name = "var"
-    lower = "/var"
-    upper = "/mnt/data/var"
-    work = "/mnt/data/.work/var"
-    target = "/var"
-
-    [[overlays]]
-    name = "tmp"
-    lower = "/tmp"
-    upper = "/mnt/data/tmp"
-    work = "/mnt/data/.work/tmp"
-    target = "/tmp"
-
-    [[overlays]]
-    name = "srv"
-    lower = "/srv"
-    upper = "/mnt/data/srv"
-    work = "/mnt/data/.work/srv"
-    target = "/srv"
-
-    [[overlays]]
-    name = "opt"
-    lower = "/opt"
-    upper = "/mnt/data/opt"
-    work = "/mnt/data/.work/opt"
-    target = "/opt"
-
-    ${baseOs.toml}
-    EOF""" % path
+        log = "/mnt/data/" + label + ".log"
+        timings = session.follow_soft_reboot(
+            machine,
+            "nails --config "
+            + shlex.quote(config_path)
+            + " activate -y "
+            + extra_args
+            + " > "
+            + log
+            + " 2>&1",
+            label,
         )
+        print(machine.succeed("cat " + log + " || true"))
+        session.assert_hidden_root(machine)
+        return timings
   '';
 }

@@ -1,11 +1,14 @@
 # Test 76: Remote-state pull-back through a decoy sync client (known limitation)
 #
-# Deactivation only discards the overlay upper dirs; it never rolls back state a
-# remote already holds. In shared-home mode the decoy's Syncthing is live in the
-# hidden session, so a canary written into the synced folder is pushed to the
-# peer. After deactivation the decoy Syncthing resumes from its pre-activation
-# local state, reconciles with the peer and pulls the canary back onto the decoy
-# disk, where a post-use examiner can find it.
+# Deactivation only leaves the hidden root's upper behind; it never rolls back
+# state a remote already holds. In shared-home mode the soft-reboot into the
+# hidden root starts the decoy's own Syncthing again (its unit and its config
+# come from the decoy lower), so a canary written into the synced folder in the
+# hidden session lands in the upper on the hidden volume and is pushed to the
+# peer. The hidden Syncthing's index changes are copy-ups into the upper too, so
+# after `nails deactivate` the decoy Syncthing starts from its pre-activation
+# index, reconciles with the peer and pulls the canary back onto the decoy disk,
+# where a post-use examiner can find it.
 #
 # This is asserted as the documented known limitation and doubles as a positive
 # control for the fresh-home test (77): it proves the canary really does traverse
@@ -18,7 +21,6 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   persona = import ./../../lib/persona-helpers.nix { inherit self pkgs; };
   diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
 in
@@ -26,8 +28,8 @@ in
   name = "persona-sync-pullback";
   meta.tags = [ "forensic" ];
 
-  # Two Syncthing nodes, a full activation cycle, a deactivation reboot and a
-  # disk image of the decoy root afterwards.
+  # Two Syncthing nodes, a baseline disk image (a power cycle), two
+  # soft-reboots and a disk image of the decoy root afterwards.
   globalTimeout = 2400;
 
   nodes = {
@@ -36,11 +38,9 @@ in
   };
 
   testScript = _: ''
-    ${persona.writePersonaConfigFn}
     ${persona.syncClientHelpersFn}
-    ${testHelpers.readStatusJsonFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
-    ${assertions.assertOverlayMountedFn}
     ${diskForensics.pythonSetup}
 
     CLIENT_CFG = "${persona.clientConfigDir}"
@@ -51,9 +51,12 @@ in
     CANARY = "pullback-canary.txt"
     CANARY_TOKEN = "NAILS_PERSONA_PULLBACK_2026a"
 
-    # The persona tests drive a `client` and a `peer`; the shared helpers and the
-    # canonical-deactivate helper operate on a `machine` global, so point it at
-    # the decoy client.
+    CONFIG = "/mnt/data/config/nails.toml"
+    UPPER = "/mnt/data/root/upper"
+
+    # The persona tests drive a `client` and a `peer`; the canonical
+    # activate/deactivate helpers operate on a `machine` global, so point it
+    # at the decoy client.
     machine = client
 
     start_all()
@@ -94,29 +97,28 @@ in
 
     with subtest("activate the hidden session in shared-home mode"):
         client.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        config_path = "/tmp/nails-persona.toml"
-        write_persona_config(config_path, mode="shared-home")
         client.succeed(
-            f"NAILS_TARGET_USER=testuser nails --config {config_path} "
-            "activate --overlay-only --session keep -y"
+            f"cat > {CONFIG} <<'EOF'\n"
+            "hidden_volume_root = \"/mnt/data\"\n"
+            "minimum_space_mb = 100\n"
+            "\n"
+            "[persona]\n"
+            "mode = \"shared-home\"\n"
+            "EOF"
         )
-        assert_overlay_mounted("/home")
-        # risky_services = "skip" leaves the decoy Syncthing running on the decoy
-        # home, so its index would stay on the decoy lower. Restart it onto the
-        # now-overlaid home: its database then lives in the overlay upper and is
-        # discarded on deactivation, so after the reboot the decoy client starts
-        # from its pre-session index and genuinely pulls the canary back (the
-        # limitation under test) instead of pushing a delete to the peer.
-        client.succeed("systemctl restart syncthing.service")
+        canonical_activate(CONFIG, "--overlay-only", "activate")
+        # The soft-reboot started the decoy Syncthing again inside the hidden
+        # root: its database writes are copy-ups into the upper from now on.
         st_wait_ready(client, CLIENT_CFG)
 
     with subtest("the hidden session writes a canary into the synced folder"):
-        # The new file lands on the overlay upper (the hidden volume), not the
-        # decoy lower; the decoy Syncthing still pushes it to the peer.
+        # The new file lands in the hidden root's upper (the hidden volume), not
+        # on the decoy filesystem; the decoy's Syncthing still pushes it to the
+        # peer.
         client.succeed(
             f"su - testuser -c 'printf %s {CANARY_TOKEN} > {CLIENT_SYNC}/{CANARY}'"
         )
-        client.succeed(f"test -f /mnt/data/home/testuser/Sync/{CANARY}")
+        client.succeed(f"test -f {UPPER}{CLIENT_SYNC}/{CANARY}")
         st_rescan(client, CLIENT_CFG, FOLDER)
 
     with subtest("the canary reaches the peer"):
@@ -124,15 +126,13 @@ in
             f"grep -q {CANARY_TOKEN} {PEER_SYNC}/{CANARY}", timeout=180
         )
 
-    with subtest("deactivate: the overlay upper is discarded"):
-        canonical_deactivate(config_path, unit_name="nails-deactivate-persona-pullback")
-        # The overlay is gone, so the hidden upper that held the canary is detached
-        # — the deterministic teardown fact. Whether the decoy home already shows
-        # the canary again depends on how quickly the decoy Syncthing reconnects to
-        # the peer after the reboot and pulls it back; that reappearance is exactly
-        # the limitation the next subtest asserts, so it is not checked here (the
-        # reboot's autostart makes the transient "still gone" window racy).
-        client.fail("mount | grep 'overlay on /home'")
+    with subtest("deactivate: back on the plain decoy"):
+        # canonical_deactivate asserts the plain decoy root and the closed
+        # backend. Whether the decoy home already shows the canary again
+        # depends on how quickly the decoy Syncthing reconnects to the peer and
+        # pulls it back; that reappearance is exactly the limitation the next
+        # subtest asserts, so it is not checked here.
+        canonical_deactivate(CONFIG, "deactivate")
 
     with subtest("known limitation: the decoy client pulls the canary back"):
         st_wait_ready(client, CLIENT_CFG)

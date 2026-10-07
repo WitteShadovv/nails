@@ -1,26 +1,28 @@
 # Test 06: Decoy filesystem and disk image return to the baseline
 #
 # Two complementary views of the same activate/populate/deactivate workflow on
-# one disk lineage. From inside the booted decoy, the live filesystem is diffed
-# against its baseline so a stray artifact with no telltale keyword still turns
-# the test red. From outside, the powered-off decoy root is imaged and its fls
-# listing (deleted names included) is diffed against the baseline image, catching
-# anything that was unlinked before the live view could see it.
+# one disk lineage. The session is a soft-reboot into the whole-root overlay,
+# work in the hidden root (which must land in the upper on the hidden volume),
+# and a soft-reboot back. From inside the decoy afterwards, the live filesystem
+# is diffed against its baseline, so a stray artifact with no telltale keyword
+# still turns the test red. From outside, the powered-off decoy root is imaged
+# and its fls listing (deleted names included) is diffed against the baseline
+# image, catching anything that was unlinked before the live view could see it.
 #
 # Names alone miss a decoy file that was modified in place, or replaced under the
 # same name. So each image also yields a sleuthkit bodyfile (`fls -r -m /`, kept
 # in the test output under forensics/ and ready for `mactime -b`) and a content
-# hash of every file. A control run -- the same number of plain reboots, no
-# hidden session -- records which (path, field) pairs boot noise changes; the
+# hash of every file. A control run records which (path, field) pairs boot noise
+# changes: the session spans two soft-reboots (the decoy's shutdown and its
+# start again), so the control is one plain reboot, as in forensic/05. The
 # hidden-session run may change nothing beyond that and the volatile allowlist:
-# no inode, mode, owner, size, mtime, ctime or crtime of an existing decoy inode,
-# and no file contents. atime drift is reported, not asserted.
+# no inode, mode, owner, size, mtime, ctime or crtime of an existing decoy
+# inode, and no file contents. atime drift is reported, not asserted.
 
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
 in
 {
@@ -45,16 +47,19 @@ in
 
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.readStatusJsonFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertNoOverlaysFn}
     ${diskForensics.pythonSetup}
 
-    # Paths that legitimately change on their own across a reboot and an
-    # activation cycle. Everything NOT matched here must be byte-identical before
-    # and after. /var is runtime state (journal, systemd, dhcp, nixos) and is not
-    # an overlay target in this config, so it is treated as wholly volatile;
-    # /home and /etc are diffed strictly.
+    from nails_e2e import session
+
+    UPPER = "/mnt/data/root/upper"
+
+    # Paths that legitimately change on their own across a reboot and the two
+    # soft-reboots of a session. Everything NOT matched here must be
+    # byte-identical before and after. /var is the decoy's own runtime state
+    # (journal, systemd, dhcp, nixos) written by its shutdown and start, so it
+    # is treated as wholly volatile; /home and /etc are diffed strictly.
     volatile = re.compile(
         "|".join(
             [
@@ -127,10 +132,10 @@ in
         baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline_image))
         baseline_state = disk_forensics.image_state(baseline_image, "baseline", machine)
 
-    with subtest("control run: plain reboots with no hidden session"):
-        # The workflow below spans two boots (the one after the control snapshot
-        # and the one after deactivation powers the machine off), so the control
-        # spans two plain boots as well. Whatever changes here is boot noise.
+    with subtest("control run: a plain reboot with no hidden session"):
+        # The workflow below spans the boot after the control snapshot and two
+        # soft-reboots (the decoy's shutdown and its start again), so the
+        # control is one plain reboot. Whatever changes here is boot noise.
         machine.shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")
@@ -147,8 +152,8 @@ in
 
     with subtest("run a full activate/populate/deactivate workflow"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --session keep --accept-persistent-decoy -y"
+        canonical_activate(
+            headless_config, "--overlay-only --accept-persistent-decoy", "activate"
         )
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
         machine.succeed("su - testuser -c 'mkdir -p ~/work/project'")
@@ -159,9 +164,14 @@ in
         machine.succeed(
             "su - testuser -c 'printf \"#!/bin/bash\\necho test\\n\" > ~/work/script.sh && chmod +x ~/work/script.sh'"
         )
-        canonical_deactivate(headless_config, unit_name="nails-deactivate-snapshot-diff")
-        assert_status_state("inactive")
-        machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
+        machine.succeed("sync")
+        # The work is in the hidden root's upper on the hidden volume.
+        machine.succeed(f"test -f {UPPER}/home/testuser/work/project/file_50.txt")
+        machine.succeed(f"test -x {UPPER}/home/testuser/work/script.sh")
+        canonical_deactivate(headless_config, "deactivate")
+        status = read_status_json(config_path=headless_config)
+        assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
+        machine.fail("test -e /home/testuser/work")
 
     with subtest("the live decoy filesystem is byte-identical outside volatile paths"):
         final_files = listed("/home /etc /var")
@@ -195,9 +205,10 @@ in
             f"before:\n{initial_os_root[2]}\nafter:\n{final_os_root[2]}"
         )
 
-    with subtest("no overlay or hidden-volume mount remains"):
-        assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp", "/var", "/opt", "/boot"])
-        machine.fail("mount | grep -E '(/mnt/data|/run/nails-pivot|hidden-volume)'")
+    with subtest("no overlay, next root or hidden-volume mount remains"):
+        session.assert_decoy_root(machine)
+        machine.fail("grep -E ' /mnt/data|/dev/mapper/data' /proc/mounts")
+        machine.fail("test -e /dev/mapper/data")
 
     with subtest("the powered-off decoy image gained no non-volatile entries"):
         post_image = disk_forensics.snapshot(machine, "post", restart=False)

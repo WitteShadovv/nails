@@ -10,17 +10,20 @@
 # amnesic property a real hidden volume gets from being detached. LUKS is used
 # on top when cryptsetup ships (Ubuntu), plain ext4 on a loop device otherwise
 # (Debian's generic cloud image has no cryptsetup); the overlay and leak
-# assertions are identical either way. The on-disk directory layout is the one
-# nix/e2e-tests/lib/backends.nix lays down, so one overlay-only activation drives
-# any backend.
+# assertions are identical either way.
+#
+# The backing file's tmpfs is mounted below /run, which a soft-reboot does not
+# carry (only /run itself moves): after the switch the file is reachable only
+# through the open loop device, and once the session ends and the mapping
+# closes, it is gone.
 #
 # Every name is neutral ("data", "blk"): the loop device, the device-mapper name,
 # the ext4 label and the mount points must never hint at hidden storage, because
 # they survive in /dev, /dev/mapper, /proc/mounts and the kernel log.
 {
   # Shell that creates and mounts the hidden root at /mnt/data. Idempotent: when
-  # the root is still mounted (an emergency teardown leaves it mounted unless the
-  # backend lock is requested) it is reused as is, never re-formatted.
+  # the root is still mounted it is reused as is, never re-formatted; after a
+  # session it is gone and a fresh one is made.
   setupHiddenRoot = ''
     set -eu
 
@@ -58,15 +61,10 @@
       fi
     fi
 
-    # The overlay upper/work layout NAILS expects, mirroring
-    # nix/e2e-tests/lib/backends.nix nailsDirStructure.
-    mkdir -p "$mountpoint"/home "$mountpoint"/etc "$mountpoint"/var "$mountpoint"/nix
-    mkdir -p "$mountpoint"/.work/home "$mountpoint"/.work/etc \
-      "$mountpoint"/.work/var "$mountpoint"/.work/nix
-    mkdir -p "$mountpoint"/config "$mountpoint"/config/nixos "$mountpoint"/nixos
-    # The FHS backend overlays more trees than the NixOS one; give each an upper.
-    mkdir -p "$mountpoint"/srv "$mountpoint"/opt "$mountpoint"/tmp
-    mkdir -p "$mountpoint"/.work/srv "$mountpoint"/.work/opt "$mountpoint"/.work/tmp
+    # The whole-root layout: the root overlay's work directory (its upper is
+    # created at activation with the decoy root's mode and owner) and the
+    # configuration directory.
+    mkdir -p "$mountpoint"/root/work "$mountpoint"/config
 
     echo 'Hidden root ready at '"$mountpoint"
   '';

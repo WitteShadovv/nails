@@ -1,25 +1,23 @@
-# Test 82: Decoy-persistence preflight refuses a persistent-journal decoy
+# Test 82: The decoy-persistence pre-flight refuses a persistent-log decoy
 #
-# T-094. A decoy that keeps a persistent systemd journal records a hidden
-# session's pre-overlay metadata (sudo command lines, transient unit names) on
-# its own disk, so activation must fail closed unless the operator explicitly
-# accepts the risk. This node forces journald back to persistent storage (the
-# standard decoy models an amnesic one), so the decoy-persistence check has
-# something to refuse.
+# T-094. A decoy that keeps a persistent journal, or runs rsyslog or auditd,
+# records on its own disk what it logs while it shuts down for the soft-reboot
+# into the hidden session and while it starts again on the way back, so
+# activation must fail closed unless the operator explicitly accepts the risk.
+# This node forces journald back to persistent storage (the standard decoy
+# models an amnesic one) and runs rsyslogd (as syslog.service, the NixOS unit
+# name) and auditd.
 #
-# The node also runs rsyslogd (as syslog.service, the NixOS unit name) and
-# auditd, so the refusal must name each persistent log sink, not only the
-# journal: the residue catalog points its classic-syslog and auditd rows here.
-#
-# Subtests: a plain activation is refused with remediation text that names the
-# override, and the same activation with --accept-persistent-decoy proceeds.
-
+#   1. `nails check` and `nails activate` both refuse, naming each persistent
+#      sink and the override; the refused activation leaves the plain decoy
+#      root, no next root and no root upper on the hidden volume.
+#   2. With --accept-persistent-decoy the activation soft-reboots into the
+#      hidden root, and deactivation returns to the plain decoy.
 { self, pkgs, ... }:
 let
   inherit (pkgs) lib;
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
 in
 {
@@ -35,8 +33,7 @@ in
       imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [ self.packages.x86_64-linux.nails ];
       # vm-config models an amnesic decoy (volatile journald). Force a persistent
-      # journal so this decoy keeps records of the hidden session on disk and the
-      # decoy-persistence check must fail closed.
+      # journal so the decoy-persistence check must fail closed.
       services.journald.storage = lib.mkForce "persistent";
       # Two more persistent log sinks the check must refuse.
       services.rsyslogd.enable = true;
@@ -44,58 +41,68 @@ in
     };
 
   testScript = _: ''
+    from nails_e2e import session
+
     ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.canonicalDeactivateFn}
     ${testHelpers.readStatusJsonFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
+    ${testHelpers.canonicalActivateFn}
+    ${testHelpers.canonicalDeactivateFn}
     ${preflightHelpers.runCommandCaptureFn}
     ${preflightHelpers.commandAssertionsFn}
 
+    CONFIG = "/mnt/data/config/nails.toml"
+    REFUSAL = [
+        "persistent",
+        "Storage=volatile",
+        "syslog.service",
+        "auditd",
+        "--accept-persistent-decoy",
+    ]
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
-
-    config_path = "/tmp/preflight-decoy-persistence.toml"
-    write_headless_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    write_headless_config(CONFIG)
 
-    # Confirm the decoy really presents a persistent journal, so a pass below
-    # would be a genuine override rather than an amnesic decoy slipping through.
+    # The decoy really presents persistent sinks, so a pass below is a genuine
+    # override rather than an amnesic decoy slipping through.
     machine.succeed("grep -qi '^Storage=persistent' /etc/systemd/journald.conf")
     machine.wait_for_unit("syslog.service")
     machine.wait_for_unit("auditd.service")
 
-    with subtest("a persistent-journal decoy is refused with remediation guidance"):
-        result = run_command_capture(
-            "preflight-decoy-persistence-fail",
-            f"nails --config {config_path} activate --overlay-only --session keep -y",
-        )
+
+    def assert_refused(label, command):
+        result = run_command_capture(label, command)
         assert_command_failed(result)
-        assert_result_contains(
-            result,
-            [
-                "persistent",
-                "Storage=volatile",
-                "syslog.service",
-                "auditd",
-                "--accept-persistent-decoy",
-            ],
-            stream="stderr",
+        combined = {"out": result["stdout"] + result["stderr"]}
+        assert_result_contains(combined, REFUSAL, stream="out")
+        session.assert_decoy_root(machine)
+        machine.succeed("test ! -e /mnt/data/root/upper")
+        status = read_status_json(config_path=CONFIG)
+        assert status["posture"] == "decoy", status
+
+
+    with subtest("check refuses the persistent-log decoy"):
+        assert_refused(
+            "preflight-decoy-persistence-check",
+            f"nails --config {CONFIG} check --overlay-only",
         )
-        assert_status_state("inactive", config_path=config_path)
-        assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
+
+    with subtest("activate refuses it with remediation guidance and leaves nothing"):
+        assert_refused(
+            "preflight-decoy-persistence-activate",
+            f"nails --config {CONFIG} activate -y --overlay-only",
+        )
 
     with subtest("--accept-persistent-decoy overrides the refusal"):
-        machine.succeed(
-            f"nails --config {config_path} activate --overlay-only --session keep --accept-persistent-decoy -y"
+        canonical_activate(
+            CONFIG, "--overlay-only --accept-persistent-decoy", "activate-accepted"
         )
-        assert_status_state("active", config_path=config_path)
-        assert_overlay_mounted("/home")
-        canonical_deactivate(
-            config_path, unit_name="nails-deactivate-decoy-persistence"
-        )
-        assert_status_state("inactive", config_path=config_path)
-        assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
+        status = read_status_json(config_path=CONFIG)
+        assert status["posture"] == "active", status
+        canonical_deactivate(CONFIG, "deactivate-accepted")
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        status = read_status_json(config_path=CONFIG)
+        assert status["posture"] == "decoy", status
   '';
 }

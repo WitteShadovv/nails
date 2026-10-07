@@ -3,9 +3,14 @@
 # Formerly the stand-alone test
 #   tests/init/45-init-bootstrap.nix
 # It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
-# its subtests and assertions are unchanged.
 #
 # Test 45: Init Bootstrap
+# `nails init` on a bare, mounted hidden volume lays out the whole-root
+# session: logs, config and the root overlay's work directory (0700), the
+# config file and the state file (0600, state Inactive), and on NixOS the
+# hidden module under config/nixos plus the hidden hardware configuration in
+# the hidden root's upper (root/upper/etc/nixos), a wrapper that imports the
+# decoy's hardware file and the staged hidden module.
 
 _:
 let
@@ -29,22 +34,18 @@ in
             "/mnt/data/logs",
             "/mnt/data/config",
             "/mnt/data/config/nixos",
-            "/mnt/data/etc",
-            "/mnt/data/etc/nixos",
-            "/mnt/data/etc/nixos/nails",
-            "/mnt/data/home",
-            "/mnt/data/nix",
-            "/mnt/data/.work",
-            "/mnt/data/.work/etc",
-            "/mnt/data/.work/home",
-            "/mnt/data/.work/nix",
+            "/mnt/data/root",
+            "/mnt/data/root/work",
+            "/mnt/data/root/upper/etc/nixos",
+            "/mnt/data/root/upper/etc/nixos/nails",
         ]
 
         expected_files = {
             "/mnt/data/config/nails.toml": "600",
             "/mnt/data/state.json": "600",
             "/mnt/data/config/nixos/configuration.nix": "600",
-            "/mnt/data/etc/nixos/hardware-configuration.nix": "600",
+            "/mnt/data/root/upper/etc/nixos/hardware-configuration.nix": "600",
+            "/mnt/data/root/upper/etc/nixos/hardware-configuration.base.nix": "600",
         }
 
         with subtest("prepare bare hidden volume"):
@@ -73,7 +74,9 @@ in
                 perms = machine.succeed(f"stat -c %a {path}").strip()
                 assert perms == "700", f"Expected 0700 on {path}, got {perms}"
             machine.fail("test -e /mnt/data/state")
-            machine.fail("test -e /mnt/data/overlays")
+            # The per-directory overlay layout of the old mode is gone.
+            for old in ["/mnt/data/etc", "/mnt/data/home", "/mnt/data/nix", "/mnt/data/.work", "/mnt/data/overlays"]:
+                machine.fail(f"test -e {old}")
 
         with subtest("assert generated files and symlink staging"):
             for path, expected_perm in expected_files.items():
@@ -81,8 +84,8 @@ in
                 perms = machine.succeed(f"stat -c %a {path}").strip()
                 assert perms == expected_perm, f"Expected {expected_perm} on {path}, got {perms}"
 
-            machine.succeed("test -L /mnt/data/etc/nixos/nails/configuration.nix")
-            target = machine.succeed("readlink /mnt/data/etc/nixos/nails/configuration.nix").strip()
+            machine.succeed("test -L /mnt/data/root/upper/etc/nixos/nails/configuration.nix")
+            target = machine.succeed("readlink /mnt/data/root/upper/etc/nixos/nails/configuration.nix").strip()
             assert target == "/mnt/data/config/nixos/configuration.nix", target
 
         with subtest("assert generated config content"):
@@ -94,8 +97,11 @@ in
             validation = machine.succeed("nails config validate /mnt/data/config/nails.toml")
             assert "valid" in validation, validation
 
-            hardware_text = machine.succeed("cat /mnt/data/etc/nixos/hardware-configuration.nix")
+            hardware_text = machine.succeed("cat /mnt/data/root/upper/etc/nixos/hardware-configuration.nix")
             assert "./nails/configuration.nix" in hardware_text, hardware_text
+            assert "./hardware-configuration.base.nix" in hardware_text, hardware_text
+            base_text = machine.succeed("cat /mnt/data/root/upper/etc/nixos/hardware-configuration.base.nix")
+            assert "not-detected.nix" in base_text, base_text
 
             hidden_config = machine.succeed("cat /mnt/data/config/nixos/configuration.nix")
             assert "Hidden-session configuration" in hidden_config, hidden_config

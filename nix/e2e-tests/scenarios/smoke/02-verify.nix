@@ -2,16 +2,15 @@
 #   tests/smoke/02-smoke-verify-config.nix
 # Formerly the stand-alone test
 #   tests/smoke/02-verify.nix
-# It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
-# its subtests and assertions are unchanged.
+# It now shares one VM boot with the batch's other scenarios (lib/batch.nix).
 #
 # Test 02: Verify Command Contract
-# Tests clean, dirty and active verification states.
+# Tests clean, dirty and leftover-overlay verification states on the decoy.
 #
 # Overlay detection is attributed by upperdir on the configured hidden volume
-# (read from /proc/self/mountinfo), not by probing a fixed list of mount points,
-# so this test runs verify against the headless config and asserts the new
-# "Leftover overlay" finding.
+# (read from /proc/self/mountinfo), not by probing a fixed list of mount points:
+# an overlay left on the decoy whose upper is the hidden root's upper
+# (root/upper) is a critical "Leftover overlay" finding.
 
 _:
 let
@@ -65,11 +64,11 @@ in
         machine.succeed("rm -f /tmp/nails.log")
         print("✓ Verify reports decoy artifacts")
 
-        print("\n=== Verifying active overlay detection ===")
+        print("\n=== Verifying leftover overlay detection ===")
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("mkdir -p /mnt/data/home /mnt/data/.work/home")
+        machine.succeed("mkdir -p /mnt/data/root/upper")
         machine.succeed(
-            "mount -t overlay overlay -o lowerdir=/home,upperdir=/mnt/data/home,workdir=/mnt/data/.work/home /home"
+            "mount -t overlay overlay -o lowerdir=/home,upperdir=/mnt/data/root/upper,workdir=/mnt/data/root/work /home"
         )
 
         status, payload = run_verify("--deep", config_path=headless_config)
@@ -79,7 +78,7 @@ in
         # it is mounted, by upperdir, as a "Leftover overlay".
         assert any("Leftover overlay" in finding["message"] for finding in payload["findings"]), \
             f"Expected leftover-overlay finding, got: {payload}"
-        print("✓ Verify reports active overlays as Critical")
+        print("✓ Verify reports a leftover overlay as Critical")
 
         print("\n=== Verifying post-overlay cleanup ===")
         machine.succeed("umount /home")

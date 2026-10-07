@@ -2,18 +2,18 @@
 #   tests/preflight/19-preflight-checks.nix
 # Formerly the stand-alone test
 #   tests/preflight/21-preflight-nixos-build-target.nix
-# It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
-# its subtests and assertions are unchanged.
+# It now shares one VM boot with the batch's other scenarios (lib/batch.nix).
 #
 # Test 21: Preflight NixOS Build Target Validation
+# The nixos-build-target check refuses a relative flake reference and a local
+# flake directory without a flake.nix before anything is prepared: no next
+# root, no state file, the machine stays on the plain decoy.
 
 _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
-  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "preflight-nixos-build-target";
@@ -24,8 +24,6 @@ in
 
   helpers = [
     testHelpers.readStatusJsonFn
-    assertions.assertStatusStateFn
-    assertions.assertNoOverlaysFn
     preflightHelpers.writeTextFileFn
     preflightHelpers.runCommandCaptureFn
     preflightHelpers.commandAssertionsFn
@@ -33,75 +31,54 @@ in
 
   script = ''
     def scenario_preflight_nixos_build_target() -> None:
-        def write_build_target_config(path):
-            write_text_file(path, """
-    hidden_volume_root = "/mnt/data"
-    nixos_flake = "relative/flake#test-host"
-    overlay_mode = "explicit"
+        from nails_e2e import session
 
-    ${baseOs.toml}
-    [[overlays]]
-    name = "home"
-    lower = "/home"
-    upper = "/mnt/data/home"
-    work = "/mnt/data/.work/home"
-    target = "/home"
+        def write_build_target_config(path, flake):
+            write_text_file(path, f"""
+    hidden_volume_root = "/mnt/data"
+    minimum_space_mb = 100
+    nixos_flake = "{flake}"
     """.strip() + "\n")
+
+        def assert_nothing_prepared(config_path):
+            session.assert_decoy_root(machine)
+            status = read_status_json(config_path=config_path)
+            assert status["posture"] == "decoy", status
+            machine.fail("test -e /mnt/data/state.json")
+            machine.fail("test -e /mnt/data/state")
 
         machine.wait_for_unit("multi-user.target")
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        write_build_target_config("/tmp/preflight-build-target.toml")
+        config_path = "/tmp/preflight-build-target.toml"
 
         with subtest("relative nixos flake references are rejected during preflight"):
+            write_build_target_config(config_path, "relative/flake#test-host")
             result = run_command_capture(
                 "preflight-nixos-build-target",
-                "nails --config /tmp/preflight-build-target.toml activate --session keep -y",
+                f"nails --config {config_path} activate -y",
             )
             assert_command_failed(result)
             assert_result_contains(
                 result,
-              ["nixos-build-target", "relative/flake", "absolute"],
+                ["nixos-build-target", "relative/flake", "absolute"],
                 stream="stderr",
             )
-            assert_status_state("Inactive", config_path="/tmp/preflight-build-target.toml")
-            assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
-            machine.fail("test -e /mnt/data/home/testuser/.config/autostart/nails-notify.desktop")
-            machine.fail("test -e /mnt/data/state.json")
-            machine.fail("test -e /mnt/data/state")
+            assert_nothing_prepared(config_path)
 
-        with subtest("a local flake without a committed flake.lock is rejected before any activation side effects"):
-            # T-067: the pre-overlay flake preflight is static only and never invokes
-            # nix (a nix call would copy the hidden flake onto the decoy store before
-            # the overlays hide it). A local flake that carries no committed
-            # flake.lock is therefore rejected here, before any detach, overlay mount
-            # or state write. The real attribute/eval validation is deferred to the
-            # post-overlay phase, so it can no longer run before side effects.
+        with subtest("a local flake directory without a flake.nix is rejected"):
             machine.succeed("mkdir -p /tmp/flake-target")
-            machine.succeed("cat > /tmp/flake-target/flake.nix <<'EOF'\n{\n  outputs = _: {\n    nixosConfigurations.other-host = { };\n  };\n}\nEOF")
-            write_text_file("/tmp/preflight-build-target.toml", "\n".join([
-                'hidden_volume_root = "/mnt/data"',
-                'nixos_flake = "/tmp/flake-target#test-host"',
-                'overlay_mode = "explicit"',
-                """${baseOs.toml}""",
-                "[[overlays]]",
-                'name = "home"',
-                'lower = "/home"',
-                'upper = "/mnt/data/home"',
-                'work = "/mnt/data/.work/home"',
-                'target = "/home"',
-            ]) + "\n")
+            write_build_target_config(config_path, "/tmp/flake-target#test-host")
             result = run_command_capture(
-                "preflight-build-target-missing-flake-lock",
-                "nails --config /tmp/preflight-build-target.toml activate --session keep -y",
+                "preflight-build-target-missing-flake-nix",
+                f"nails --config {config_path} activate -y",
             )
             assert_command_failed(result)
-            stderr = result["stderr"]
-            assert "nixos-build-target" in stderr, f"Expected 'nixos-build-target' in stderr, got: {stderr!r}"
-            assert "flake.lock not found" in stderr, \
-                f"Expected a committed-flake.lock rejection in stderr, got: {stderr!r}"
-            assert_status_state("Inactive", config_path="/tmp/preflight-build-target.toml")
-            assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
-            machine.fail("test -e /mnt/data/state")
+            assert_result_contains(
+                result,
+                ["nixos-build-target", "flake.nix not found in '/tmp/flake-target'"],
+                stream="stderr",
+            )
+            assert_nothing_prepared(config_path)
 
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';

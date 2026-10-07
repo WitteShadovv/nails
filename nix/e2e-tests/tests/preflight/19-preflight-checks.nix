@@ -5,8 +5,8 @@
 # scenario of this test: it starts with a check that the guest is as clean as it
 # booted, keeps its own subtests and assertions, and the guest is reset before
 # the next one (lib/batch.nix, nails_e2e/batch.py). The old test names stay
-# aliases of this test. preflight-state-check deactivates, which reboots, so it
-# runs last.
+# aliases of this test. preflight-state-check enters and leaves a hidden session
+# (two soft-reboots), so it runs last.
 
 args@{ pkgs, ... }:
 let

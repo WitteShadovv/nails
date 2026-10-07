@@ -251,15 +251,13 @@ let
   ciNames = lib.unique (
     lib.filter (name: builtins.elem name testNames) (
       map resolveAlias [
-        "basic-workflow"
+        "session-lifecycle"
         "smoke-verify-config" # verify, config-handling
-        "emergency"
+        "session-emergency"
         "forensic-clean"
-        "status-verify"
         "preflight-checks" # preflight-nixos-build-target and three more
-        "session-kill-graphical"
-        "notify-autostart-lifecycle"
-        "activate-auto-lifecycle"
+        "session-interrupted-entry"
+        "session-fstab-policy"
       ]
     )
   );

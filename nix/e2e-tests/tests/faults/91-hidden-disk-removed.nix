@@ -1,16 +1,19 @@
-# Fault test (b): the hidden backing device vanishes while a session is active.
+# Fault test (b): the hidden backing device vanishes while the hidden session
+# runs.
 #
 # A pulled USB key, a failed disk, or a yanked device-mapper node makes every
-# read and write to the hidden filesystem return EIO while the overlays above it
-# are still mounted. Emergency is the panic button for exactly this case: it must
-# still detach every overlay within a bound (so the operator is not left staring
-# at a wedged system) and exit with a documented status code.
+# read and write to the hidden filesystem fail while the root overlay above it
+# is still `/`. The binary on the hidden volume may be unreadable then, so the
+# RAM copy at /run/overlay-runtime/control is what still runs `emergency`: it
+# must get the machine out of the hidden session within a bound, back on the
+# plain decoy (with the hidden mapping released and no hidden /run residue) or,
+# as the documented fallback, powered off.
 
 _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
+  backendFault = import ./../../lib/backend-fault.nix;
 in
 {
   name = "faults-hidden-disk-removed";
@@ -18,54 +21,43 @@ in
     "faults"
     "security"
   ];
+  globalTimeout = 1200;
 
   testScript = _: ''
-    ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.readStatusJsonFn}
-    ${testHelpers.waitForStatusStateFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
+    from nails_e2e import session
 
-    overlay_targets = ["/etc", "/home", "/root", "/srv", "/tmp", "/usr", "/bin", "/lib64"]
+    ${testHelpers.canonicalActivateFn}
+    ${backendFault.emergencyOutcomeFn}
+    ${backendFault.assertFaultExitFn}
 
-    # The documented exit codes for emergency: a clean teardown (Ok) or a
-    # degraded teardown that asks for a reboot to finish clearing RAM.
-    documented_codes = {0, 7}
+    CONFIG = "/mnt/data/config/nails.toml"
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-
-    headless_config = "/tmp/nails-headless.toml"
-    write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    machine.succeed(
+        f"cat > {CONFIG} <<'EOF'\n"
+        "hidden_volume_root = \"/mnt/data\"\n"
+        "minimum_space_mb = 100\n"
+        "EOF"
+    )
+    run_before = session.run_entries(machine)
 
     with subtest("activate a hidden session"):
-        machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --session keep -y"
-        )
-        wait_for_status_state("Active", config_path=headless_config)
-        assert_overlay_mounted("/home")
+        canonical_activate(CONFIG, "--overlay-only", "activate")
+        machine.succeed("test -x /run/overlay-runtime/control")
 
-    with subtest("the backing device is yanked out from under the overlays"):
-        # Replacing the dm target with an error target makes the hidden filesystem
-        # return EIO for every access, simulating a removed backing disk while the
-        # overlays above it stay mounted. wipe_table performs exactly that swap in
-        # place: "dmsetup remove" cannot be used here because the backing node is
-        # still held open by the live /mnt/data mount and its overlays, so even
-        # "remove --force" leaves the error target loaded but exits non-zero on the
-        # failed remove ioctl. wipe_table loads the error target and resumes the
-        # device without removing the node, so the fault injection itself succeeds.
+    with subtest("the backing device is yanked out from under the hidden root"):
+        # Replacing the dm table with an error target makes the hidden
+        # filesystem return EIO for every access, simulating a removed backing
+        # disk while the overlay above it stays mounted. `dmsetup remove`
+        # cannot be used: the node is held open by the hidden mounts.
         machine.succeed("dmsetup wipe_table --force data")
 
-    with subtest("emergency detaches every overlay within the time bound"):
-        # timeout caps the whole teardown so a wedge on the dead device is a
-        # failure, not a hang that holds the shard until the global timeout.
-        rc, output = machine.execute(
-            f"timeout 30 nails --config {headless_config} emergency", timeout=60
-        )
-        assert rc in documented_codes, f"emergency exit {rc} is not documented: {output!r}"
-        # The security-critical guarantee: no NAILS overlay survives the yank.
-        assert_no_overlays(overlay_targets)
+    with subtest("emergency from the RAM copy leaves the hidden session within the bound"):
+        wall = session.wall_clock(machine)
+        outcome = emergency_outcome("/run/overlay-runtime/control emergency", "emergency")
+        machine.log(f"emergency on a removed backend ended: {outcome}")
+        assert_fault_exit(outcome, run_before, wall)
   '';
 }

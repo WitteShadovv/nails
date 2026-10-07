@@ -2,15 +2,16 @@
 #   tests/preflight/13-preflight-hidden-root.nix
 # Formerly the stand-alone test
 #   tests/preflight/23-preflight-mount-namespace.nix
-# It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
-# its subtests and assertions are unchanged.
+# It now shares one VM boot with the batch's other scenarios (lib/batch.nix).
 #
 # Test 23: Preflight Mount Namespace
+# PID 1 must see /run/nextroot, so activation from a private mount namespace
+# (`unshare -m`) is refused by the mount-namespace check before any next root
+# is prepared.
 
 _:
 let
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
-  baseOs = import ./../../lib/base-os-overlays.nix;
 in
 {
   name = "preflight-mount-namespace";
@@ -30,15 +31,7 @@ in
         def write_hidden_config(path):
             write_text_file(path, """
     hidden_volume_root = "/mnt/data"
-    overlay_mode = "explicit"
-
-    ${baseOs.toml}
-    [[overlays]]
-    name = "home"
-    lower = "/home"
-    upper = "/mnt/data/home"
-    work = "/mnt/data/.work/home"
-    target = "/home"
+    minimum_space_mb = 10
     """.strip() + "\n")
 
         machine.wait_for_unit("multi-user.target")
@@ -53,7 +46,7 @@ in
 
             result = run_command_capture(
                 "preflight-mount-namespace",
-                "unshare -m nails --config /tmp/preflight-mount-namespace.toml activate --overlay-only --session keep -y",
+                "unshare -m nails --config /tmp/preflight-mount-namespace.toml activate --overlay-only -y",
             )
             assert_command_failed(result)
             assert_result_contains(
@@ -62,8 +55,12 @@ in
                 stream="stderr",
             )
 
-            # Preflight failed, so no overlay was stacked on the decoy /home.
-            machine.fail("findmnt --noheadings --types overlay /home")
+            # Pre-flight failed, so no next root was prepared (in any namespace:
+            # the refused activation's own namespace is gone with it).
+            from nails_e2e import session
+
+            session.assert_decoy_root(machine)
+            machine.succeed("test -z \"$(ls -A /run/nextroot 2>/dev/null)\"")
 
             machine.succeed("umount /mnt/data")
   '';

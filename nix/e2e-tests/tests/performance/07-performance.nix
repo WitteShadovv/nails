@@ -1,23 +1,30 @@
 # Test 07: Performance Validation
-# Holds status, activation, emergency and the systemctl calls of one
-# activation to their time budgets. Every sample
-# is timed inside the guest, by nails' own duration_ms where it reports one,
-# and the slowest of a few samples must stay under the budget. Wall-clock
-# budgets on shared runners cannot gate a merge, so only the nightly E2E run
-# executes this test.
+#
+# Holds the whole-root session to its time budgets, each timed inside the
+# guest:
+#   - `nails status` (on the decoy and in the hidden session) and `nails check`
+#     stay fast: they only read;
+#   - `nails activate` and `nails deactivate`, from the trigger until the new
+#     userspace has settled after the soft-reboot (the `trigger_to_settled`
+#     timing follow_soft_reboot takes from the guest's uptime), stay within a
+#     generous VM budget, over two round trips;
+#   - `nails emergency` in the hidden session gets a shell on the plain decoy
+#     back quickly (`trigger_to_backdoor`): its hot path phases are logged by
+#     the hidden process, which the switch kills, so the user-visible time to
+#     the next userspace is what is measured.
+# The slowest sample must stay under each budget. Wall-clock budgets on shared
+# runners cannot gate a merge, so only the nightly E2E run executes this test.
 
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  emergency = import ./../../lib/emergency.nix;
   perf = import ./../../lib/perf.nix;
 in
 {
   name = "performance-validation";
-  # Twice the recorded shard weight (684 s, shard-durations.json), which was
-  # measured while every sample still rebooted the VM; lower both once the
-  # nightly run has refreshed the weight.
+  # Five soft-reboots at about 15 s each, plus setup; the old weight was
+  # measured while every sample rebooted the VM.
   globalTimeout = 1500;
   meta.tags = [ "performance" ];
 
@@ -27,198 +34,84 @@ in
       {
         imports = [ ./../../lib/vm-config.nix ];
         environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-        services.getty.autologinUser = "root";
-        # The emergency's own duration_ms is read from a file the unit writes
-        # directly (not via journald): the teardown restarts journald, which
-        # can drop lines from the journal+console stream mid-run.
-        systemd.services.nails-emergency-test =
-          let
-            unit = emergency.makeEmergencyUnit self.packages.x86_64-linux.nails "/tmp/nails-headless.toml";
-          in
-          unit
-          // {
-            serviceConfig = unit.serviceConfig // {
-              # append, not truncate: ExecStopPost runs with the same output and
-              # truncate would empty the file the emergency just wrote; the test
-              # removes the file before each start.
-              StandardOutput = "append:/run/nails-emergency-test.out";
-              StandardError = "inherit";
-            };
-          };
       };
   };
 
   testScript = _: ''
-    import json
+    from nails_e2e import session
 
-    ${testHelpers.writeHeadlessConfigFn}
-    ${emergency.prepareTty1ShellFn}
-    ${emergency.waitForEmergencyUnitFn}
-    ${emergency.rebootAfterEmergencyFn}
+    ${testHelpers.canonicalActivateFn}
+    ${testHelpers.canonicalDeactivateFn}
     ${perf.detectTcgThresholdMultiplierFn}
     ${perf.guestElapsedMsFn}
-    ${perf.nailsDurationFns}
 
-    def timed_activation_ms(extra_args="", env_prefix=""):
-        output = machine.succeed(
-            f"{env_prefix} nails --config {headless_config} activate {extra_args} --json --session keep -y"
-        )
-        return activation_duration_ms(output)
+    CONFIG = "/mnt/data/config/nails.toml"
 
-    # The emergency runs from the unit started on tty1 and is followed by a
-    # reboot, as in the emergency test. Completion comes from the unit's result
-    # file and nails' own measurement from the output file the unit writes
-    # directly, both under /run, so a journald restart during the teardown can
-    # lose neither (a console-regex wait here could).
-    def timed_emergency_ms():
-        prepare_tty1_shell()
-        clear_emergency_result()
-        machine.succeed("rm -f /run/nails-emergency-test.out")
-        machine.send_key("alt-f1")
-        machine.send_chars("systemctl reset-failed nails-emergency-test.service\n", delay=0)
-        machine.wait_until_tty_matches("1", r"TTY1_READY#", timeout=30)
-        machine.send_chars("systemctl start --no-block nails-emergency-test.service\n", delay=0)
-        wait_for_emergency_unit(timeout=60)
-        output = machine.succeed("cat /run/nails-emergency-test.out")
-        duration = deactivation_duration_ms(output)
-        assert duration is not None, (
-            f"emergency logged no 'Deactivation complete' duration_ms: {output!r}"
-        )
-        reboot_after_emergency()
-        return duration
 
-    # A reboot closes the hidden volume. Opening it again keeps its contents,
-    # and the state the emergency recorded there has to read Inactive, or the
-    # next activation would only hit the idempotent fast path.
-    def reopen_hidden_volume():
-        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-        status = json.loads(machine.succeed(f"nails --config {headless_config} status --json"))["data"]
-        assert status["state"]["kind"] == "inactive", f"Expected inactive state after emergency, got: {status}"
-
-    # Stands in for the hidden system build: the build time depends on the
-    # store contents and the network, not on nails, so it stays out of the
-    # budget while every other step of a default activation is timed.
-    def install_nixos_rebuild_stub(log_path):
-        machine.succeed(
-            f"""mkdir -p /tmp/nails-perf-wrapper/bin
-    rm -f {log_path}
-    cat > /tmp/nails-perf-wrapper/bin/nixos-rebuild <<'EOF'
-    #!/bin/sh
-    printf '%s\\n' "$*" >> {log_path}
-    exit 0
-    EOF
-    chmod 755 /tmp/nails-perf-wrapper/bin/nixos-rebuild"""
-        )
-        return "PATH=/tmp/nails-perf-wrapper/bin:$PATH"
-
-    # T-139: time every systemctl call nails makes during one activation.
-    # nails resolves systemctl from /run/current-system/sw/bin first, a
-    # symlink into the store, so the wrapper covers the store file itself. A
-    # wrapper bind-mounted over the systemctl binary (for the duration of the
-    # call only) logs each invocation's wall time to /run, then runs the real
-    # binary under its own name, so `reboot` and friends keep working.
-    def start_timing_systemctl():
-        machine.succeed(
-            """real=$(readlink -f /run/current-system/sw/bin/systemctl)
-    cp "$real" /run/systemctl.real
-    rm -f /run/systemctl-calls.log
-    cat > /run/systemctl-timed <<'EOF'
-    #!/bin/sh
-    start=$(date +%s%N)
-    (exec -a "$0" /run/systemctl.real "$@")
-    rc=$?
-    end=$(date +%s%N)
-    echo "$(( (end - start) / 1000000 )) $*" >> /run/systemctl-calls.log
-    exit $rc
-    EOF
-    chmod 755 /run/systemctl-timed
-    mount --bind /run/systemctl-timed "$real"
-    echo "$real" > /run/systemctl-timed.target"""
-        )
-
-    def stop_timing_systemctl():
-        machine.succeed('umount "$(cat /run/systemctl-timed.target)"')
-        calls = []
-        for line in machine.succeed("cat /run/systemctl-calls.log || true").splitlines():
-            ms, _, args = line.partition(" ")
-            calls.append((int(ms), args))
-        return calls
-
-    def assert_systemctl_within_budget(calls, per_call_s, total_s):
-        total_ms = sum(ms for ms, _ in calls)
-        for ms, args in sorted(calls, reverse=True):
-            print(f"systemctl {args}: {ms} ms")
-        print(f"systemctl: {len(calls)} calls, {total_ms} ms in all")
-        if not calls:
-            # nails logs every command it runs with the executable it resolved.
-            ran = machine.succeed("grep -o 'Running systemctl[^\"]*' /mnt/data/logs/nails.log | tail -5 || true")
-            raise AssertionError(f"activation made no systemctl call through the wrapper; nails ran: {ran!r}")
-        slow = [(ms, args) for ms, args in calls if ms > per_call_s * 1000]
-        assert not slow, f"FAIL: systemctl calls over {per_call_s:.1f}s each: {slow}"
-        assert total_ms < total_s * 1000, (
-            f"FAIL: systemctl took {total_ms} ms in one activation, over {total_s:.1f}s"
-        )
-
-    def assert_within_budget(label, samples_ms, budget_s):
-        slowest = max(samples_ms) / 1000.0
-        print(f"{label}: samples {samples_ms} ms, slowest {slowest:.3f}s, budget {budget_s:.1f}s")
+    def assert_within_budget(label, samples_s, budget_s):
+        slowest = max(samples_s)
+        print(f"{label}: samples {samples_s} s, slowest {slowest:.3f}s, budget {budget_s:.1f}s")
         assert slowest < budget_s, f"FAIL: {label} took {slowest:.3f}s, over its {budget_s:.1f}s budget"
+
+
+    def timed_reads(label, command, budget_s, samples=3):
+        assert_within_budget(
+            label, [guest_elapsed_ms(command) / 1000.0 for _ in range(samples)], budget_s
+        )
+
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-    headless_config = "/tmp/nails-headless.toml"
-    write_headless_config(headless_config)
-
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    machine.succeed("nails init /mnt/data")
+    machine.succeed(
+        f"cat > {CONFIG} <<'EOF'\n"
+        "hidden_volume_root = \"/mnt/data\"\n"
+        "minimum_space_mb = 100\n"
+        "EOF"
+    )
 
     is_tcg, threshold_multiplier = detect_tcg_threshold_multiplier()
     status_threshold = 0.5 * threshold_multiplier
-    activation_threshold = 5.0 * threshold_multiplier
-    emergency_threshold = 3.0 * threshold_multiplier
-    # A unit restart (journald, nix-daemon) is the slowest call activation
-    # makes; one probe that stalls PID 1 for tens of seconds must fail here.
-    systemctl_call_threshold = 3.0 * threshold_multiplier
-    systemctl_total_threshold = 4.0 * threshold_multiplier
+    check_threshold = 10.0 * threshold_multiplier
+    # The spike measured 10 to 15 s per transition (about 6 s of it the DHCP
+    # client) on two vCPUs; a misbehaving unit can stall the shutdown far
+    # longer, which is what the budget is there to catch.
+    switch_threshold = 60.0 * threshold_multiplier
+    emergency_threshold = 30.0 * threshold_multiplier
     print(f"TCG mode: {is_tcg}, threshold multiplier: {threshold_multiplier:.1f}x")
 
-    with subtest("status"):
-        status_ms = [guest_elapsed_ms(f"nails --config {headless_config} status") for _ in range(3)]
-        assert_within_budget("Status", status_ms, status_threshold)
+    with subtest("status and check on the decoy"):
+        timed_reads("Status (decoy)", f"nails --config {CONFIG} status", status_threshold)
+        # check exits 0 or 4 by readiness; only its run time matters here.
+        timed_reads(
+            "Check", f"nails --config {CONFIG} check --overlay-only || true", check_threshold
+        )
 
-    with subtest("overlay-only activation and emergency"):
-        activation_ms = []
-        emergency_ms = []
+    with subtest("activate and deactivate round trips"):
+        activate_s = []
+        deactivate_s = []
         for cycle in range(2):
             if cycle > 0:
-                reopen_hidden_volume()
-            activation_ms.append(timed_activation_ms("--overlay-only"))
-            emergency_ms.append(timed_emergency_ms())
-        assert_within_budget("Overlay-only activation", activation_ms, activation_threshold)
-        assert_within_budget("Emergency", emergency_ms, emergency_threshold)
+                machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+            timings = canonical_activate(CONFIG, "--overlay-only", f"perf-activate-{cycle}")
+            activate_s.append(timings["trigger_to_settled"])
+            if cycle == 0:
+                timed_reads("Status (hidden)", f"nails --config {CONFIG} status", status_threshold)
+            timings = canonical_deactivate(CONFIG, f"perf-deactivate-{cycle}")
+            deactivate_s.append(timings["trigger_to_settled"])
+        assert_within_budget("Activate to the settled hidden root", activate_s, switch_threshold)
+        assert_within_budget("Deactivate to the settled decoy", deactivate_s, switch_threshold)
 
-    with subtest("default activation"):
-        reopen_hidden_volume()
-        machine.succeed("""cat > /mnt/data/config/nixos/configuration.nix <<'EOF'
-    { ... }: {
-      documentation.nixos.enable = false;
-    }
-    EOF""")
-        rebuild_log = "/tmp/nixos-rebuild-perf.log"
-        wrapper_env = install_nixos_rebuild_stub(rebuild_log)
-        # The unit snapshots around the hidden switch are where activation
-        # talks to systemd (an overlay-only run without /var makes no
-        # systemctl call), so the systemctl budget is taken here.
-        start_timing_systemctl()
-        default_ms = timed_activation_ms(env_prefix=wrapper_env)
-        systemctl_calls = stop_timing_systemctl()
-        rebuild_calls = machine.succeed(f"cat {rebuild_log}")
-        assert "test" in rebuild_calls, f"Expected the NixOS switch step to run, got: {rebuild_calls!r}"
-        assert_within_budget("Default activation", [default_ms], activation_threshold)
-        assert any(args.startswith("list-units") for _, args in systemctl_calls), (
-            f"the unit snapshots ran no systemctl list-units: {systemctl_calls}"
+    with subtest("emergency returns a decoy shell quickly"):
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        canonical_activate(CONFIG, "--overlay-only", "perf-activate-emergency")
+        timings = session.follow_soft_reboot(
+            machine, f"nails --config {CONFIG} emergency", "perf-emergency"
         )
-        assert_systemctl_within_budget(
-            systemctl_calls, systemctl_call_threshold, systemctl_total_threshold
+        session.assert_decoy_root(machine)
+        assert_within_budget(
+            "Emergency to the decoy backdoor", [timings["trigger_to_backdoor"]], emergency_threshold
         )
   '';
 }

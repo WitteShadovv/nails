@@ -5,13 +5,11 @@
 # `--config`: the hidden-volume root is derived from the binary's own location.
 # Every other smoke test puts `nails` on PATH and passes `--config`, so none of
 # them exercises that documented path. This one does: it copies the binary onto
-# the hidden root, runs `init` and then `activate` as an unprivileged operator
+# the hidden root, runs `init`, `activate` (a soft-reboot into the whole-root
+# overlay, whose upper lands on that hidden root) and `emergency` (a soft-reboot
+# back to the plain decoy, closing the backend) as an unprivileged operator
 # through `su - testuser -c 'sudo /mnt/data/nails ...'`, and never passes
 # `--config`.
-#
-# NOTE (evaluate under nix): the default (auto) overlay set covers /nix, which
-# drives the NixOS-specific nix-store handling, so this can only be confirmed by
-# `nix build .#checks.x86_64-linux.quickstart-zero-config` on a Nix host.
 
 { self, ... }:
 let
@@ -39,6 +37,8 @@ in
 
   testScript = _: ''
     import json
+
+    from nails_e2e import session
 
 
     def hidden_status():
@@ -79,27 +79,23 @@ in
         # from the binary location rather than pinned to this mount point.
         machine.succeed("grep -q '# hidden_volume_root' /mnt/data/config/nails.toml")
 
-    with subtest("status before activation is Inactive, resolved from the binary location"):
+    with subtest("status before activation is the plain decoy, resolved from the binary location"):
         status = hidden_status()
-        assert status["state"]["kind"] == "inactive", f"expected inactive, got {status}"
+        assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
 
-    with subtest("activate with no --config overlays the default set, run by full path under sudo"):
-        machine.succeed(
+    with subtest("activate with no --config enters the hidden root, run by full path under sudo"):
+        session.follow_soft_reboot(
+            machine,
             "su - testuser -c "
-            + f"'sudo {hidden_nails} activate --overlay-only --session keep --risky-services skip -y'"
+            + f"'sudo {hidden_nails} activate --overlay-only -y' "
+            + "> /mnt/data/quickstart-activate.log 2>&1",
+            "quickstart-activate",
         )
-
-        home_mount = machine.succeed("mount | grep 'overlay on /home' || true")
-        etc_mount = machine.succeed("mount | grep 'overlay on /etc' || true")
-        assert "overlay" in home_mount, "no overlay mounted on /home"
-        assert "overlay" in etc_mount, "no overlay mounted on /etc"
-        assert "/mnt/data/home" in home_mount, "the /home overlay upperdir is not on the hidden root"
-        assert "/mnt/data/etc" in etc_mount, "the /etc overlay upperdir is not on the hidden root"
-
+        print(machine.succeed("cat /mnt/data/quickstart-activate.log || true"))
+        # The root overlay's upper is on the hidden root the binary sits on.
+        session.assert_hidden_root(machine, "/mnt/data/root/upper")
         status = hidden_status()
-        assert status["state"]["kind"] == "active", f"expected active, got {status}"
-        active_paths = {overlay["mount_point"] for overlay in status["overlays"]}
-        assert {"/etc", "/home"}.issubset(active_paths), status
+        assert status["posture"] == "active", f"expected active, got {status}"
 
     with subtest("the pre-activation residue report lands on the hidden root"):
         report = (
@@ -109,14 +105,14 @@ in
         )
         machine.succeed(f"grep -q 'schema_version' {report}")
 
-    with subtest("emergency teardown returns the host to Inactive with no overlays"):
-        machine.succeed("su - testuser -c " + f"'sudo {hidden_nails} emergency'")
-        machine.fail("mount | grep 'overlay on /home'")
-        machine.fail("mount | grep 'overlay on /etc'")
-        status = hidden_status()
-        assert status["state"]["kind"] == "inactive", f"expected inactive after teardown, got {status}"
-
-    with subtest("the hidden backend closes cleanly, leaving no master key in RAM"):
-        machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
+    with subtest("emergency by full path returns to the plain decoy and closes the backend"):
+        session.follow_soft_reboot(
+            machine,
+            "su - testuser -c " + f"'sudo {hidden_nails} emergency'",
+            "quickstart-emergency",
+        )
+        session.assert_decoy_root(machine)
+        # The hidden backend closed itself: no master key left in RAM.
+        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
   '';
 }

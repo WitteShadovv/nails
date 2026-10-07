@@ -1,18 +1,17 @@
-# Test 16: A swap device re-enabled after activation is detected and reported.
+# Test 16: A disk swap that appears during the hidden session is reported.
 #
-# switch-to-configuration starts swap.target and can re-enable a swap device the
-# operator turned off to pass pre-flight. The shared per-device classifier backs
-# both the pre-flight check and `verify`, so once a disk/file swap reappears the
-# running system reports it as a critical, memory-leaking posture. This exercises
-# the detection surface without a full hidden NixOS switch; the post-switch
-# re-check that logs and notifies lives in the activation path and is exercised
-# by the NixOS-switch E2E suite under KVM.
+# Pre-flight refuses disk swap before entering, but something in the hidden
+# session (the hidden system's swap.target, or the operator) can still bring a
+# disk-backed swap up afterwards. The shared per-device classifier backs both
+# the pre-flight check and `verify`, so `verify` run in the hidden session
+# reports such a swap as a critical, memory-leaking posture. The swap here is
+# a loop device (a disk-type swap; a swap file cannot live on the root
+# overlay), backed by a file on the hidden volume.
 
 _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
 in
 {
@@ -21,13 +20,9 @@ in
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.readStatusJsonFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
     ${preflightHelpers.runCommandCaptureFn}
-    ${preflightHelpers.commandAssertionsFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -37,31 +32,38 @@ in
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
     with subtest("activation succeeds with no swap active"):
-        machine.succeed("swapoff -a || true")
-        machine.succeed(f"nails --config {config_path} activate --overlay-only --session keep -y")
-        assert_status_state("active", config_path=config_path)
-        assert_overlay_mounted("/home")
+        machine.succeed("swapoff -a")
+        canonical_activate(config_path, "--overlay-only", "swap-reenable-activate")
 
-    with subtest("a swap device re-enabled after activation is reported by verify"):
-        # Simulate swap.target bringing a disk/file swap back during the session.
-        machine.succeed("fallocate -l 256M /swapfile")
-        machine.succeed("chmod 600 /swapfile")
-        machine.succeed("mkswap /swapfile")
-        machine.succeed("swapon /swapfile")
-        machine.succeed("grep -q '^/swapfile' /proc/swaps")
+    def swap_findings(label):
+        import json
 
-        result = run_command_capture(
-            "swap-reenable-verify",
-            f"nails --config {config_path} verify",
-        )
-        combined = result["stdout"] + result["stderr"]
-        assert_text_contains(combined, ["swap", "leak memory"])
-        machine.succeed("swapoff /swapfile")
-        machine.succeed("rm -f /swapfile")
+        result = run_command_capture(label, f"nails --config {config_path} verify --json")
+        findings = json.loads(result["stdout"])["data"]["findings"]
+        return [
+            finding
+            for finding in findings
+            if finding["category"] == "memory" and "leak memory" in finding["message"]
+        ]
 
-    with subtest("teardown is clean once swap is removed"):
-        canonical_deactivate(config_path, unit_name="nails-deactivate-swap-reenable")
-        assert_status_state("inactive", config_path=config_path)
-        assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
+    with subtest("verify in the hidden session reports no swap leak first"):
+        found = swap_findings("swap-reenable-verify-before")
+        assert not found, found
+
+    with subtest("a disk swap brought up in the hidden session is reported by verify"):
+        machine.succeed("fallocate -l 256M /mnt/data/swap.img")
+        loop = machine.succeed("losetup --find --show /mnt/data/swap.img").strip()
+        machine.succeed(f"mkswap {loop} && swapon {loop}")
+        machine.succeed(f"grep -q '^{loop} ' /proc/swaps")
+
+        found = swap_findings("swap-reenable-verify")
+        assert len(found) == 1, found
+        assert found[0]["severity"].lower() == "critical", found
+        assert loop in found[0]["message"], found
+        machine.succeed(f"swapoff {loop} && losetup -d {loop}")
+        machine.succeed("rm -f /mnt/data/swap.img")
+
+    with subtest("the way back is clean once swap is removed"):
+        canonical_deactivate(config_path, "swap-reenable-deactivate")
   '';
 }

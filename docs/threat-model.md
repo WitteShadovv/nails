@@ -274,7 +274,7 @@ evaluation could not say whether NAILS caused it, because there was no control
 run and the comparison was by mtime rather than by contents.
 
 A disk-forensic E2E test on the impermanent decoy profile
-(`nix/e2e-tests/tests/nixos/34-var-lib-nixos-drift.nix`), where only
+(`nix/e2e-tests/tests/nixos/34-session-nixos-hidden-system.nix`), where only
 `/persist/var/lib/nixos` survives a power-off, is designed to settle it. It
 snapshots that tree by content hash and compares three runs:
 
@@ -300,7 +300,7 @@ containment failure to fix in the overlay handling for `/var/lib/nixos`
 (evaluating `userborn`/`systemd-sysusers`), never to document away.
 
 The drift stays "under investigation" until that test has run on a Nix host
-(`nix build .#checks.x86_64-linux.var-lib-nixos-drift`) and its result is
+(`nix build .#checks.x86_64-linux.session-nixos-hidden-system`) and its result is
 recorded here.
 
 ## Evaluation scope

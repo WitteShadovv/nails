@@ -3,9 +3,11 @@
 # Formerly the stand-alone test
 #   tests/init/47-init-refuse-overwrite.nix
 # It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
-# its subtests and assertions are unchanged.
 #
 # Test 47: Init Refuse Overwrite
+# `nails init` refuses before its first write: a file where the layout needs
+# the config directory stays untouched, and a plain directory on the decoy
+# root (not a mounted volume) is refused and left empty.
 
 _:
 let

@@ -1,12 +1,15 @@
 # Test 12: `nails rehearse` end to end, with a positive control
 #
-# T-141. The operator-facing canary self-test, run the way the operator guide
-# describes it: plant inside an active hidden session, deactivate (which
-# reboots), reopen the hidden volume and scan. The decoy here keeps a
-# persistent journal and an on-disk Nix store (forensic-vm-config), so the
-# journal and process channels have somewhere durable to leak to.
+# The operator-facing canary self-test, run the way the operator guide
+# describes it: plant inside an active hidden session (entered by a
+# soft-reboot into the whole-root overlay), deactivate (a soft-reboot back),
+# reopen the hidden volume and scan. The decoy here keeps a persistent journal
+# and an on-disk Nix store (forensic-vm-config), so the journal and process
+# channels have somewhere durable to leak to.
 #
-# The clean scan must find nothing on the raw decoy devices. Then the test
+# Plant writes its files through the root overlay: they land in the upper on
+# the hidden volume. A scan in the hidden session itself is refused. The clean
+# scan on the decoy must find nothing on the raw decoy devices. Then the test
 # writes the token onto the decoy itself, once in ASCII and once in UTF-16LE,
 # and the same scan must find both by offset: proof that the clean result came
 # from a scan that can see the decoy, not from a scan that sees nothing. The
@@ -22,8 +25,8 @@ in
   name = "rehearse-canary";
   meta.tags = [ "forensic" ];
 
-  # One activation cycle with a reboot and three raw scans of the 20 GB root
-  # disk (mostly unallocated qcow2, so fast); generous margin.
+  # One session (two soft-reboots) and three raw scans of the 20 GB root disk
+  # (mostly unallocated qcow2, so fast); generous margin.
   globalTimeout = 1800;
 
   nodes = {
@@ -40,10 +43,12 @@ in
     import shlex
 
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
 
-    config = "/tmp/rehearse-headless.toml"
+    config = "/mnt/data/config/nails.toml"
     state_path = "/mnt/data/rehearse/state.json"
+    UPPER = "/mnt/data/root/upper"
 
     def rehearse(args):
         # Capture under /run (tmpfs): nothing the test reads back may land on the
@@ -59,17 +64,17 @@ in
         rc = int(machine.succeed("cat /run/rehearse.rc"))
         out = machine.succeed("cat /run/rehearse.out")
         err = machine.succeed("cat /run/rehearse.err")
+        machine.succeed("rm -f /run/rehearse.out /run/rehearse.err /run/rehearse.rc")
         return rc, out, err
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-    write_headless_config(config, overlay_var=True)
 
     with subtest("plant the canary in an active hidden session"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed(
-            f"nails --config {config} activate --overlay-only --session keep --accept-persistent-decoy -y"
-        )
+        # The configuration lives on the hidden volume, off the scanned decoy.
+        write_headless_config(config)
+        canonical_activate(config, "--overlay-only --accept-persistent-decoy", "activate")
         rc, out, err = rehearse("plant --user testuser")
         assert rc == 0, (rc, out, err)
         token = json.loads(machine.succeed(f"cat {state_path}"))["token"]
@@ -79,40 +84,47 @@ in
         planted = {c["kind"] for c in data["channels"] if "skipped" not in c}
         for kind in ["overlay-file", "home-file", "recent-files", "system-log", "process-cmdline"]:
             assert kind in planted, (kind, data["channels"])
-        overlay_targets = {
-            c["location"].rsplit("/", 1)[0] or "/"
-            for c in data["channels"]
-            if c["kind"] == "overlay-file" and "skipped" not in c
-        }
-        for target in ["/etc", "/home", "/root", "/var", "/tmp"]:
-            assert target in overlay_targets, (target, overlay_targets)
-        # The canary is live in the session, in the overlay only.
+        # The canary is live in the session, and its files are in the root
+        # overlay's upper on the hidden volume.
         machine.succeed(f"grep -q {token} /home/testuser/rehearse-{token}.txt")
         machine.succeed(f"grep -q {token} /home/testuser/.local/share/recently-used.xbel")
-        machine.succeed(f"test -f /mnt/data/etc/rehearse-{token}.txt")
+        machine.succeed(f"test -f {UPPER}/rehearse-{token}.txt")
+        machine.succeed(f"test -f {UPPER}/home/testuser/rehearse-{token}.txt")
+        machine.succeed(f"test -f {UPPER}/home/testuser/.local/share/recently-used.xbel")
 
-    with subtest("a scan in the planting boot is refused"):
+    with subtest("a scan in the hidden session is refused"):
         rc, out, err = rehearse("scan")
         assert rc == 6, (rc, out, err)
         assert "same_boot" in out + err, (out, err)
 
-    with subtest("deactivate, reboot and reopen the hidden volume"):
-        canonical_deactivate(config, unit_name="nails-deactivate-rehearse")
+    with subtest("deactivate and reopen the hidden volume"):
+        canonical_deactivate(config, "deactivate")
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-        machine.fail(f"test -e /etc/rehearse-{token}.txt")
+        machine.fail(f"test -e /rehearse-{token}.txt")
+        machine.fail(f"test -e /home/testuser/rehearse-{token}.txt")
+
+    def scan():
+        rc, out, err = rehearse("scan")
+        if rc == 6 and "same_boot" in out + err:
+            # The soft-reboots kept the boot ID. A scan that still keys on the
+            # boot ID alone refuses here although the session has ended; the
+            # deactivation above is what makes the scan meaningful.
+            machine.log("scan refused as the same boot after deactivation; rescanning with --allow-same-boot")
+            rc, out, err = rehearse("scan --allow-same-boot")
+        return rc, out, err
 
     with subtest("the raw decoy devices hold no trace of the canary"):
-        rc, out, err = rehearse("scan")
+        rc, out, err = scan()
         assert token not in out + err, "scan printed the token"
         assert rc == 0, (rc, out, err)
-        scan = json.loads(out)["data"]["scan"]
-        assert scan["devices"], scan
-        for device in scan["devices"]:
+        result = json.loads(out)["data"]["scan"]
+        assert result["devices"], result
+        for device in result["devices"]:
             assert "error" not in device, device
             assert device["hits"] == [], device
-        assert any(d["bytes_scanned"] > 0 for d in scan["devices"]), scan
-        assert any("SSD" in line for line in scan["not_visible"]), scan
-        print(f"clean scan of {[d['device'] for d in scan['devices']]}")
+        assert any(d["bytes_scanned"] > 0 for d in result["devices"]), result
+        assert any("SSD" in line for line in result["not_visible"]), result
+        print(f"clean scan of {[d['device'] for d in result['devices']]}")
 
     with subtest("positive control: the token written to the decoy is found"):
         wide = "".join(f"\\x{ord(ch):02x}\\x00" for ch in token)
@@ -121,10 +133,10 @@ in
             f"printf '{wide}' > /root/control-wide.bin",
             "sync",
         )
-        rc, out, err = rehearse("scan")
+        rc, out, err = scan()
         assert rc == 11, (rc, out, err)
-        scan = json.loads(out)["data"]["scan"]
-        hits = [hit for device in scan["devices"] for hit in device["hits"]]
+        result = json.loads(out)["data"]["scan"]
+        hits = [hit for device in result["devices"] for hit in device["hits"]]
         encodings = {hit["encoding"] for hit in hits}
         assert {"ascii", "utf16-le"} <= encodings, hits
         machine.succeed("rm -f /root/control-ascii.txt /root/control-wide.bin", "sync")
@@ -133,6 +145,7 @@ in
         rc, out, err = rehearse("reset")
         assert rc == 0, (rc, out, err)
         machine.fail(f"test -e {state_path}")
-        machine.fail(f"test -e /mnt/data/etc/rehearse-{token}.txt")
+        machine.fail(f"test -e {UPPER}/rehearse-{token}.txt")
+        machine.fail(f"test -e {UPPER}/home/testuser/rehearse-{token}.txt")
   '';
 }

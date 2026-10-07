@@ -1,14 +1,11 @@
 # Impermanent decoy profile: a volatile tmpfs root over an on-disk Nix store,
 # with a /persist volume holding only the state a NixOS host must keep.
 #
-# Rationale: a hidden session is meant to leave nothing on the decoy that a later
-# forensic read of the disk could find. A persistent decoy root makes that hard
-# to test honestly, because ordinary boot noise and NAILS residue look alike. An
-# impermanence layout makes the test sharp: the decoy `/` is a tmpfs that is
-# wiped on every power-off, and only /nix (the store image) and /var/lib/nixos
-# are persisted. Anything NAILS fails to contain on the decoy root is therefore
-# gone after a reboot unless it reached one of the persisted trees, where it
-# stands out as drift against the pre-activation baseline.
+# The whole-root session needs the decoy root as the lower of its overlay, so
+# NAILS refuses a tmpfs root (the decoy-root pre-flight check):
+# tests/forensic/10-impermanent-decoy.nix uses this profile to prove that
+# `nails check` and `nails activate` refuse such a host and leave nothing
+# behind, neither in /run nor on the persisted trees.
 #
 # A real impermanent host would also keep /etc/nixos, but in these VMs /etc/nixos
 # is store-backed (vm-config.nix supplies it through environment.etc) and NixOS

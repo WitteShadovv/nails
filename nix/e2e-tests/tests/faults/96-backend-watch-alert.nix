@@ -1,25 +1,28 @@
-# Fault test (g): the in-session watcher alerts when the backend fails, and the
-# RAM-backed copy stays usable once the hidden volume is gone.
+# Fault test (g): the hidden session's backend watcher alerts when the backend
+# fails and, with auto_emergency, takes the machine out of the hidden session on
+# its own.
 #
-# After a session is active NAILS has one long-running component: the backend
-# watcher, started at activation from the RAM-backed runtime copy under /run as a
-# transient systemd unit with a neutral name. It polls the hidden root every few
-# seconds and, the moment a probe fails, raises a desktop alert on the operator's
-# session so a lazily-detached or failed backend is explained rather than showing
-# up as random application errors. The mirrored binary on tmpfs means the panic
-# button still runs after the hidden volume disappears. This test drives that
-# whole path: activate, confirm the watcher unit and the /run copy, yank the
-# backing device, confirm the alert fires, then run emergency from the /run copy.
+# With `[backend_watch] enabled = true` the entry transition installs
+# overlay-runtime-monitor.service in the hidden root's /run: a runtime unit of
+# the hidden session that runs the RAM copy (/run/overlay-runtime/control
+# watch), so it keeps working once the hidden volume is gone. It polls the
+# hidden root and, the moment a probe fails, raises a neutral desktop alert.
+# With `auto_emergency = true` a failure that outlasts the debounce runs the
+# emergency itself. This test drives that whole path: activate, check the RAM
+# copy and the watcher unit, yank the backing device, check the alert, then
+# wait (bounded) for the watcher's emergency to land the machine on the plain
+# decoy, or powered off, with nothing of the watcher left behind.
 #
 # notify-send is shadowed by a logging stub on the system PATH so the alert is
-# observable headlessly; the stub stands in for the operator's real session bus.
+# observable headlessly; the stub stands in for the operator's real session
+# bus. It logs under /run, because every root-filesystem path is backed by the
+# failed upper in the hidden session.
 
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
-  notificationHelpers = import ./../../lib/notification-helpers.nix;
+  backendFault = import ./../../lib/backend-fault.nix;
 in
 {
   name = "faults-backend-watch-alert";
@@ -27,6 +30,7 @@ in
     "faults"
     "security"
   ];
+  globalTimeout = 1200;
 
   nodes.machine =
     { pkgs, ... }:
@@ -35,11 +39,10 @@ in
       environment.systemPackages = [
         self.packages.x86_64-linux.nails
         # A notify-send that records its arguments instead of talking to a bus,
-        # placed on the system PATH so the watcher's transient unit (started as a
-        # system service) resolves it the same way the real binary would resolve
-        # the operator's notify-send.
+        # on the system PATH so the watcher (a system unit) resolves it the way
+        # it resolves the real one.
         (pkgs.writeShellScriptBin "notify-send" ''
-          log=/var/lib/notify-stub/notify-send.log
+          log=/run/notify-stub/notify-send.log
           mkdir -p "$(dirname "$log")"
           {
             printf '__CALL__\n'
@@ -53,73 +56,76 @@ in
     };
 
   testScript = _: ''
-    ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.readStatusJsonFn}
-    ${testHelpers.waitForStatusStateFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
-    ${notificationHelpers.readStubCallsFn}
+    from nails_e2e import session
 
-    overlay_targets = ["/etc", "/home", "/root", "/srv", "/tmp", "/usr", "/bin", "/lib64"]
+    ${testHelpers.canonicalActivateFn}
+    ${backendFault.emergencyOutcomeFn}
+    ${backendFault.assertFaultExitFn}
 
-    # The documented exit codes for emergency: a clean teardown (Ok) or a
-    # degraded teardown that asks for a reboot to finish clearing RAM.
-    documented_codes = {0, 7}
-
-    # The neutral names the runtime copy and watcher use: nothing here may name
-    # the product on screen or in systemctl.
+    CONFIG = "/mnt/data/config/nails.toml"
+    # The neutral names the runtime copy and the watcher use: nothing here may
+    # name the product on screen or in systemctl.
     runtime_dir = "/run/overlay-runtime"
     watch_unit = "overlay-runtime-monitor.service"
-    stub_log = "/var/lib/notify-stub/notify-send.log"
+    stub_log = "/run/notify-stub/notify-send.log"
+
+
+    def read_stub_calls(path):
+        text = machine.succeed(f"cat {path}")
+        return [
+            [line for line in call.splitlines() if line]
+            for call in text.split("__CALL__\n")
+            if call.strip()
+        ]
+
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-
-    headless_config = "/tmp/nails-headless.toml"
-    write_headless_config(headless_config)
-    # Enable the watcher explicitly and poll fast so the test reacts quickly.
-    # auto_emergency stays off: this exercises the alert-only default, so a
-    # transient probe failure cannot tear the session down on its own.
-    machine.succeed(
-        "printf '\\n[backend_watch]\\nenabled = true\\n"
-        "auto_emergency = false\\npoll_interval_secs = 2\\n' >> " + headless_config
-    )
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    # Poll fast; the debounce leaves time to read the alert before the
+    # watcher's own emergency ends the session.
+    machine.succeed(
+        f"cat > {CONFIG} <<'EOF'\n"
+        "hidden_volume_root = \"/mnt/data\"\n"
+        "minimum_space_mb = 100\n"
+        "\n"
+        "[backend_watch]\n"
+        "enabled = true\n"
+        "auto_emergency = true\n"
+        "poll_interval_secs = 2\n"
+        "debounce_secs = 30\n"
+        "EOF"
+    )
+    run_before = session.run_entries(machine)
 
     with subtest("activate a hidden session"):
-        machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --session keep -y"
-        )
-        wait_for_status_state("Active", config_path=headless_config)
-        assert_overlay_mounted("/home")
+        canonical_activate(CONFIG, "--overlay-only", "activate")
 
-    with subtest("activation mirrored a RAM-backed copy under /run"):
-        # The mirrored binary, config and mount manifest live in a 0700 directory
-        # with a neutral name, so emergency stays runnable once the hidden root is
-        # gone.
+    with subtest("the entry left a private RAM-backed copy under /run"):
         assert machine.succeed(f"stat -c %a {runtime_dir}").strip() == "700", "runtime copy must be 0700"
         machine.succeed(f"test -x {runtime_dir}/control")
-        machine.succeed(f"test -f {runtime_dir}/settings.toml")
-        # The teardown plan activation records step by step (it replaced mounts.json).
         machine.succeed(f"test -f {runtime_dir}/plan.json")
         assert machine.succeed(f"stat -c %a {runtime_dir}/plan.json").strip() == "600", "the plan must be 0600"
         # No mirrored name may reveal the product.
         machine.fail(f"ls -R {runtime_dir} | grep -i nails")
 
-    with subtest("the in-session watcher is running as a neutral transient unit"):
+    with subtest("the watcher runs as a neutral runtime unit of the hidden session"):
         machine.wait_for_unit(watch_unit)
-        assert "nails" not in watch_unit
+        unit_path = machine.succeed(f"systemctl show -p FragmentPath --value {watch_unit}").strip()
+        assert unit_path.startswith("/run/systemd/"), unit_path
+        exec_start = machine.succeed(f"systemctl show -p ExecStart --value {watch_unit}")
+        assert f"{runtime_dir}/control" in exec_start, exec_start
+        assert "nails" not in exec_start.lower(), exec_start
 
-    with subtest("the backing device is yanked out from under the overlays"):
-        # Swap the dm target for an error target in place so the hidden filesystem
-        # returns EIO. "dmsetup remove" cannot remove the node while /mnt/data and
-        # its overlays still hold it open, so wipe_table is used: it loads the error
-        # target and resumes the device without removing it, and so succeeds.
+    with subtest("the backing device is yanked out from under the hidden root"):
+        # Swap the dm table for an error target in place so the hidden
+        # filesystem returns EIO; the node stays because the hidden mounts hold
+        # it open.
+        wall = session.wall_clock(machine)
+        console_mark = len(machine.full_console_log)
         machine.succeed("dmsetup wipe_table --force data")
 
     with subtest("the watcher alerts the operator about the failed backend"):
-        # The poll interval is 2s; give the watcher a generous window to notice.
         machine.wait_until_succeeds(f"test -s {stub_log}", timeout=30)
         calls = read_stub_calls(stub_log)
         assert calls, "watcher raised no desktop alert"
@@ -130,18 +136,14 @@ in
         assert not any("nails" in token.lower() for token in alert), alert
         assert any("Storage unavailable" in token for token in alert), alert
 
-    with subtest("emergency run from the /run copy tears down every overlay"):
-        # Run the mirrored binary, not the one on the (now-gone) hidden root, with
-        # no --config so it falls back to the mirrored settings.toml. timeout caps
-        # the teardown so a wedge on the dead device is a failure, not a hang.
-        rc, output = machine.execute(
-            f"timeout 30 {runtime_dir}/control emergency", timeout=60
-        )
-        assert rc in documented_codes, f"emergency exit {rc} is not documented: {output!r}"
-        assert_no_overlays(overlay_targets)
-
-    with subtest("emergency removed the RAM-backed copy and stopped the watcher"):
-        machine.fail(f"test -e {runtime_dir}")
-        machine.fail(f"systemctl is-active {watch_unit}")
+    with subtest("auto_emergency takes the machine out of the hidden session on its own"):
+        # Nothing is run here: the watcher's emergency fires after the debounce.
+        # Follow the console from before the yank, so a fast switch is not
+        # missed.
+        outcome = emergency_outcome(None, "watcher-emergency", console_index=console_mark)
+        machine.log(f"the watcher's emergency ended: {outcome}")
+        assert_fault_exit(outcome, run_before, wall)
+        if outcome == "decoy":
+            machine.fail(f"systemctl is-active {watch_unit}")
   '';
 }

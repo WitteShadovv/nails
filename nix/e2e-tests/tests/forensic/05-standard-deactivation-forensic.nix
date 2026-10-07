@@ -1,7 +1,10 @@
-# Test 05: Standard deactivation leaves no trace on the decoy disk image
+# Test 05: A whole-root session leaves no trace on the decoy disk image
 #
-# One disk lineage: baseline -> activate and plant canaries -> standard
-# deactivate -> image the decoy root. The hidden canaries (a file, a shell
+# One disk lineage: baseline -> activate (a soft-reboot into the hidden root)
+# and plant canaries -> deactivate (a soft-reboot back) -> image the decoy
+# root. The decoy keeps a persistent journal and an on-disk Nix store, the
+# strict case: the hidden journal and the hidden store writes must land in the
+# upper on the hidden volume, never on this disk. The hidden canaries (a file, a shell
 # history line and a logged journal line) and every artifact-indicator token
 # from the shared registry must be absent from the post-deactivation image,
 # measured against the baseline so decoy-native strings do not raise false
@@ -18,15 +21,14 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
 in
 {
   name = "standard-deactivation-forensic";
   meta.tags = [ "forensic" ];
 
-  # Disk imaging four times (baseline, control, post), an extra reboot for the
-  # control run and three carve-and-hash passes; generous margin.
+  # Disk imaging three times (baseline, control, post), an extra reboot for the
+  # control run, two soft-reboots and three carve-and-hash passes.
   globalTimeout = 2700;
 
   nodes = {
@@ -42,10 +44,12 @@ in
     import json
 
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
     ${testHelpers.runVerifyFn}
-    ${assertions.assertNoOverlaysFn}
     ${diskForensics.pythonSetup}
+
+    from nails_e2e import session
 
     # Distinctive, run-unique canary tokens planted inside the hidden session.
     canary_file_token = "NAILS_CANARY_FILE_2026a"
@@ -61,7 +65,7 @@ in
     # flags nails-named files under /tmp as suspicious leftovers — so a config
     # called nails-*.toml would make verify warn about the test's own artifact.
     headless_config = "/tmp/forensic-headless.toml"
-    write_headless_config(headless_config, overlay_var=True)
+    write_headless_config(headless_config)
 
     with subtest("capture the decoy baseline image"):
         # The hidden-volume mount point is a permanent part of the decoy; create
@@ -84,10 +88,11 @@ in
         )
         baseline_state = disk_forensics.image_state(baseline, "baseline", machine)
 
-    with subtest("control run: plain reboots with no hidden session"):
-        # The session below spans two boots (the one after this snapshot and the
-        # one after the teardown reboots), so the control spans two plain boots.
-        # Whatever changes here is boot noise, not the hidden session.
+    with subtest("control run: a plain reboot with no hidden session"):
+        # The session below spans the boot after this snapshot and two
+        # soft-reboots (the decoy's shutdown and its start again), so the
+        # control is one plain reboot. Whatever changes here is boot noise, not
+        # the hidden session.
         machine.shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")
@@ -96,11 +101,10 @@ in
 
     with subtest("activate and plant hidden canaries"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed(
-            f"nails --config {headless_config} activate --overlay-only --session keep --accept-persistent-decoy -y"
+        canonical_activate(
+            headless_config, "--overlay-only --accept-persistent-decoy", "activate"
         )
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
-        machine.succeed("mount | grep 'overlay on /home'")
 
         machine.succeed(
             f"su - testuser -c 'echo {canary_file_token} > ~/secret-notes.txt'"
@@ -115,36 +119,12 @@ in
             "su - testuser -c 'cat ~/secret-notes.txt'"
         )
 
-    with subtest("standard deactivation and verify"):
-        canonical_deactivate(
-            headless_config, unit_name="nails-deactivate-standard-forensic"
-        )
-        status = json.loads(machine.succeed("nails status --json"))["data"]
-        assert status["state"]["kind"] == "inactive", f"expected inactive, got {status}"
-
-        # The standard deactivation wrote a self-check onto the hidden volume
-        # before it rebooted. The reboot closed the LUKS backend, so reopen it to
-        # confirm the report survived on the hidden filesystem and that `status`
-        # surfaces it while the volume is attached.
-        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-        report_path = "/mnt/data/reports/last-deactivation.json"
-        machine.succeed(f"test -f {report_path}")
-        last = json.loads(machine.succeed(f"cat {report_path}"))
-        assert last["schema_version"] >= 1, last
-        assert last["status"] in ("Secure", "Warning", "Critical"), last
-        assert last["outcome"]["successful"] is True, last
-        assert last["outcome"]["was_already_inactive"] is False, last
-        attached_status = json.loads(
+    with subtest("deactivation and verify"):
+        canonical_deactivate(headless_config)
+        status = json.loads(
             machine.succeed(f"nails --config {headless_config} status --json")
         )["data"]
-        assert "last_deactivation" in attached_status, (
-            f"status did not surface the last-deactivation report: {attached_status}"
-        )
-        assert attached_status["last_deactivation"]["outcome"]["successful"] is True, (
-            attached_status
-        )
-
-        machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
+        assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
 
         verify_status, verify_payload = run_verify("--deep")
         findings_text = json.dumps(verify_payload)
@@ -160,7 +140,7 @@ in
         assert verify_status == 0, (
             f"verify --deep exit code was {verify_status}: {verify_payload}"
         )
-        assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp", "/var"])
+        session.assert_decoy_root(machine)
 
     with subtest("the decoy disk image is clean of every canary and registry token"):
         post = disk_forensics.snapshot(machine, "post-standard", restart=False)
