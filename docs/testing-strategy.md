@@ -260,6 +260,22 @@ method or a test hook brings its real-tier test, or states which tier owes one.
 - `just kernel-tests` and `just privileged-rootless`. The `rust` CI job clears
   the AppArmor sysctl and requires the namespace tests to run.
 
+**Moved out of the VM tier (Wave R, T-140):** checks that need no kernel
+feature, root or boot now run as cargo tests, and the VM keeps one end-to-end
+path where a booted system matters.
+
+- `help-version-no-leak` became four tests in `nails-cli/tests/cli_contract.rs`
+  (the internal commands never appear in public help or version output, every
+  public command renders EXAMPLES, the version line names nothing but the
+  semver); the VM test is gone.
+- The nested-key dry run and `config validate` of `config-unknown-key`, and the
+  invalid-type check of `config-handling`, run in
+  `nails-cli/tests/config_command.rs` against the same fixture files. The VM
+  scenarios keep activation refused with nothing mounted, emergency on a broken
+  config and the status and permission checks on a real hidden volume.
+- Next candidates: the three `nails init` scenarios, in tier (a) with a
+  `ScratchTmpfs` hidden root and `/etc/nixos` bind-mounted in the namespace.
+
 **Next, in this order:**
 
 1. **Mount contract.** Move the mock-only mount section of
