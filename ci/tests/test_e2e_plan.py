@@ -406,15 +406,15 @@ class CheckAndDriftCliTest(TempDirTestCase):
         )
         self.assertEqual(clean.returncode, 0, clean.stderr)
         weights = real_weights()
-        weights["notify-no-notify-send"] = 11
+        # Any live leaf test will do; tests get merged and renamed over time.
+        test = sorted(weights)[0]
+        weights[test] = 11
         stale = self.write_json("weights.json", weights)
         flagged = self.run_module(
             "check", "--weights", str(stale), "--metadata", str(metadata)
         )
         self.assertEqual(flagged.returncode, 1)
-        self.assertIn(
-            "error: notify-no-notify-send: weight 11s is below 30s", flagged.stderr
-        )
+        self.assertIn(f"error: {test}: weight 11s is below 30s", flagged.stderr)
 
     def test_drift_appends_a_summary_and_annotations(self) -> None:
         weights = self.write_json("weights.json", {"a": 100, "b": 100})
