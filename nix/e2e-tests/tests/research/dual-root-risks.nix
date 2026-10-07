@@ -904,8 +904,22 @@ in
                 break
             time.sleep(5)
         finding(f"R3 control (no inhibitor): logind idle action fired = {fired}: {idle_lines(c0)[:2]}")
-        # The control's idle suspend may still be running: logind refuses an
-        # inhibitor for an operation in progress, so take it again until held.
+        # Make the system busy again and let the control's suspend finish
+        # before taking the inhibitor: logind refuses an inhibitor for an
+        # operation in progress, and an idle system re-fires its idle action.
+        machine.succeed(
+            f"busctl call org.freedesktop.login1 /org/freedesktop/login1/session/{decoy_sid} "
+            "org.freedesktop.login1.Session SetIdleHint b false"
+        )
+        login1 = "busctl get-property org.freedesktop.login1 /org/freedesktop/login1 org.freedesktop.login1.Manager"
+
+        def sleep_settled(_last_try: bool) -> bool:
+            return machine.execute(
+                "! systemctl list-jobs --no-legend | grep -qE 'sleep|suspend' && "
+                "! systemctl is-active -q systemd-suspend.service && "
+                f"{login1} PreparingForSleep | grep -q false"
+            )[0] == 0
+
         def inhibitor_held(_last_try: bool) -> bool:
             if machine.execute("systemd-inhibit --list --no-legend | grep -q busy")[0] == 0:
                 return True
@@ -917,7 +931,25 @@ in
             )
             return False
 
-        retry(inhibitor_held, timeout_seconds=120)
+        held = True
+        try:
+            retry(sleep_settled, timeout_seconds=120)
+            retry(inhibitor_held, timeout_seconds=60)
+        except Exception as exc:  # noqa: BLE001 - a finding, not a verdict
+            held = False
+            finding(
+                f"R3: could not take the inhibitor ({exc}); state: "
+                + machine.execute(
+                    f"systemctl list-jobs --no-legend; {login1} PreparingForSleep; "
+                    "systemd-inhibit --list --no-legend; systemctl status aux-inhibit.service "
+                    "--no-pager -l 2>&1 | tail -n 5"
+                )[1].replace("\n", " | ")
+            )
+        # Idle again, now with the inhibitor held.
+        machine.succeed(
+            f"busctl call org.freedesktop.login1 /org/freedesktop/login1/session/{decoy_sid} "
+            "org.freedesktop.login1.Session SetIdleHint b true"
+        )
         machine.succeed("rm -f /run/suspend-probe")
         c1 = cursor()
         # sync-lint: allow sleep -- an observation window: nothing may happen in it
@@ -925,11 +957,14 @@ in
         lines = idle_lines(c1)
         finding(f"R3 with the inhibitor: idle actions in 75 s: {lines}")
         finding("R3: inhibitor state: " + machine.succeed("ls /run/systemd/inhibit; systemd-inhibit --list --no-legend").strip())
-        if fired:
+        if fired and held:
             assert not lines, f"the idle inhibitor did not stop IdleAction: {lines}"
             machine.fail("test -s /run/suspend-probe")
         else:
-            finding("R3: the control never went idle, so the inhibitor result above is not conclusive")
+            finding(
+                "R3: not conclusive: "
+                + ("the control never went idle" if not fired else "the inhibitor was never held")
+            )
         rc, out = machine.execute(
             "su testuser -s /bin/sh -c 'busctl call org.freedesktop.login1 /org/freedesktop/login1 "
             "org.freedesktop.login1.Manager Suspend b false' 2>&1"
