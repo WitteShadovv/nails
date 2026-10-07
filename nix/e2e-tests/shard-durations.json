@@ -12,7 +12,7 @@
   "config-explicit-overlays": 254,
   "config-handling": 63,
   "config-inject-hardware-imports": 143,
-  "contract-active-session": 300,
+  "contract-json-schema": 160,
   "decoy-journal-leak": 420,
   "decoy-persistence-preflight": 160,
   "emergency": 174,
@@ -101,6 +101,5 @@
   "var-lib-nixos-drift": 600,
   "verify": 120,
   "verify-base-config-clean": 64,
-  "verify-json-schema": 90,
   "verify-seeded-artifacts": 120
 }
