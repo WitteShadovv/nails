@@ -253,6 +253,29 @@ fn test_finding_without_fix_guidance_omits_field() {
 // ========================================================================
 
 #[test]
+fn test_overlay_with_its_upper_on_the_hidden_volume_is_critical() {
+    let (_fs, verifier) = overlay_verifier(
+        "30 1 0:50 / /home rw,relatime - overlay overlay \
+         rw,lowerdir=/home,upperdir=/mnt/hidden/root/upper,workdir=/mnt/hidden/root/work\n",
+    );
+    let result = verifier.run(false).unwrap();
+    assert_eq!(
+        result.status,
+        VerifyStatus::Critical,
+        "{:?}",
+        result.findings
+    );
+    assert!(
+        result
+            .findings
+            .iter()
+            .any(|f| f.category == "mount" && f.message.contains("Leftover overlay at /home")),
+        "{:?}",
+        result.findings
+    );
+}
+
+#[test]
 fn test_overlay_with_foreign_upperdir_is_not_flagged() {
     // An overlay whose upper layer is not on the hidden volume is somebody
     // else's overlay and must not be attributed to NAILS.

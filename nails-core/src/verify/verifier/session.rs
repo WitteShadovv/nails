@@ -71,6 +71,7 @@ impl<F: Filesystem> Verifier<F> {
                 "{NEXTROOT} is populated: a later soft-reboot would enter it"
             )));
         }
+        findings.extend(self.leftover_hidden_overlays());
         let runtime = Path::new(RUNTIME_DIR);
         if self.filesystem.path_exists(&runtime.join(PLAN_NAME))? {
             findings.push(critical(format!(
@@ -91,6 +92,37 @@ impl<F: Filesystem> Verifier<F> {
         }
         findings.extend(self.leftover_run_units()?);
         Ok(findings)
+    }
+
+    /// Overlays outside `/run/nextroot` whose upper lies on the hidden volume:
+    /// on the decoy nothing may write into a hidden layer.
+    fn leftover_hidden_overlays(&self) -> Vec<Finding> {
+        let Some(hidden) = self.hidden_root() else {
+            return Vec::new();
+        };
+        self.mount_table()
+            .iter()
+            .filter(|m| m.fstype == "overlay" && !m.mount_point.starts_with(NEXTROOT))
+            .filter(|m| {
+                nails_teardown::mountinfo::parse_overlay_opts(&m.super_opts)
+                    .upperdir
+                    .is_some_and(|upper| upper.starts_with(hidden))
+            })
+            .map(|m| {
+                Finding::new(
+                    Severity::Critical,
+                    "mount",
+                    format!(
+                        "Leftover overlay at {}: its upper layer is on the hidden volume",
+                        m.mount_point.display()
+                    ),
+                )
+                .with_fix_guidance(
+                    "Unmount it before anything writes through it; the decoy must not \
+                     write into a hidden layer",
+                )
+            })
+            .collect()
     }
 
     /// The session's units (by their names) and runtime masks (links to
