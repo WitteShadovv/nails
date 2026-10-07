@@ -281,7 +281,20 @@ fn kill_phase(plan: &Plan, host: &Host, report: &mut HotReport) {
     let own_unit = cgroup::service_of(&own_cgroup).map(|(unit, _)| unit);
     let spare = SpareSet::at_panic(&plan.session.spare_fragments, &host.sessions_dir);
 
-    let hidden = recorded_units(plan, own_unit.as_deref());
+    let mut hidden = recorded_units(plan, own_unit.as_deref());
+    // With /nix overlaid, activation restarted nix-daemon onto the overlay. It
+    // runs in a mount namespace of its own and may hold only read-only
+    // references (its executable, a store path) that the writer scan leaves
+    // alone, yet they pin the overlay and the hidden volume. Stop and kill it
+    // like a unit the hidden configuration added; the bookkeeping starts it
+    // again on the decoy's own /nix.
+    if report.nix_overlaid {
+        for unit in ["nix-daemon.socket", "nix-daemon.service"] {
+            if !hidden.iter().any(|u| u == unit) && own_unit.as_deref() != Some(unit) {
+                hidden.push(unit.to_string());
+            }
+        }
+    }
     let victims = find_victims(plan, host, &invocation, &spare);
     report.session_processes_spared = victims.spared;
 
@@ -299,7 +312,7 @@ fn kill_phase(plan: &Plan, host: &Host, report: &mut HotReport) {
     // nothing by cgroup then (the lone pidfd kills below still run).
     let mut dirs: Vec<PathBuf> = Vec::new();
     for unit in hidden.iter().filter(|_| !own_cgroup.is_empty()) {
-        if host.spared_units.contains(unit) {
+        if host.spared_units.contains(unit) || !unit.ends_with(".service") {
             continue;
         }
         let path = format!("/system.slice/{unit}");
