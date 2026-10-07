@@ -6,6 +6,9 @@
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod kernel_tests;
+
 use crate::{Filesystem, NailsError, Result, output};
 use std::path::{Path, PathBuf};
 

@@ -14,13 +14,21 @@ fn test_home() -> PathBuf {
     PathBuf::from(TEST_HOME)
 }
 
+/// A temporary home on the real filesystem; the guard removes it.
+fn real_home() -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().to_path_buf();
+    (dir, home)
+}
+
 // ============================================================================
 // HistoryCleaner tests (using with_home for explicit path)
 // ============================================================================
 
 #[test]
 fn test_history_cleaner_new() {
-    let fs = MockFilesystem::new();
+    // Configuration only: the filesystem is never touched.
+    let fs = crate::RealFilesystem;
     let cleaner = HistoryCleaner::new(fs);
 
     assert_eq!(cleaner.test_patterns(), ["nails".to_string()]);
@@ -31,7 +39,8 @@ fn test_history_cleaner_new() {
 
 #[test]
 fn test_history_cleaner_with_home() {
-    let fs = MockFilesystem::new();
+    // Configuration only: the filesystem is never touched.
+    let fs = crate::RealFilesystem;
     let cleaner = HistoryCleaner::new(fs).with_home(test_home());
 
     assert_eq!(cleaner.test_home(), Some(&test_home()));
@@ -39,50 +48,39 @@ fn test_history_cleaner_with_home() {
 
 #[test]
 fn test_history_cleaner_with_homes_cleans_operator_home_and_root() {
-    let fs = MockFilesystem::new();
+    // The operator's home plus root's, as produced by TargetUser::cleanup_homes.
+    let (_operator_dir, operator) = real_home();
+    let (_root_dir, root) = real_home();
+    let operator_hist = operator.join(".bash_history");
+    let root_hist = root.join(".bash_history");
+    std::fs::write(&operator_hist, "ls\nnails activate\n").unwrap();
+    std::fs::write(&root_hist, "pwd\nnails status\n").unwrap();
 
-    // The operator's home plus /root, as produced by TargetUser::cleanup_homes.
-    let homes = vec![PathBuf::from("/home/operator"), PathBuf::from("/root")];
-
-    let operator_hist = "/home/operator/.bash_history";
-    let root_hist = "/root/.bash_history";
-    fs.mock_set_file_content(operator_hist, "ls\nnails activate\n");
-    fs.mock_set_path_exists(operator_hist, true);
-    fs.mock_set_file_content(root_hist, "pwd\nnails status\n");
-    fs.mock_set_path_exists(root_hist, true);
-
-    let cleaner = HistoryCleaner::new(fs.clone())
-        .with_homes(homes)
+    let cleaner = HistoryCleaner::new(crate::RealFilesystem)
+        .with_homes(vec![operator.clone(), root.clone()])
         .with_shells(vec![ShellType::Bash]);
 
     let result = cleaner.clean().unwrap();
 
     // One message per (home, shell): both homes were filtered.
     assert_eq!(result.len(), 2);
-    assert!(
-        result
-            .iter()
-            .any(|s| s.contains("Removed 1 entries") && s.contains("/home/operator"))
-    );
-    assert!(
-        result
-            .iter()
-            .any(|s| s.contains("Removed 1 entries") && s.contains("/root"))
-    );
-    assert_eq!(
-        fs.get_written_content(&PathBuf::from(operator_hist))
-            .unwrap(),
-        "ls\n"
-    );
-    assert_eq!(
-        fs.get_written_content(&PathBuf::from(root_hist)).unwrap(),
-        "pwd\n"
-    );
+    for home in [&operator, &root] {
+        assert!(
+            result
+                .iter()
+                .any(|s| s.contains("Removed 1 entries") && s.contains(&*home.to_string_lossy())),
+            "{} was cleaned: {result:?}",
+            home.display()
+        );
+    }
+    assert_eq!(std::fs::read_to_string(&operator_hist).unwrap(), "ls\n");
+    assert_eq!(std::fs::read_to_string(&root_hist).unwrap(), "pwd\n");
 }
 
 #[test]
 fn test_history_cleaner_with_patterns() {
-    let fs = MockFilesystem::new();
+    // Configuration only: the filesystem is never touched.
+    let fs = crate::RealFilesystem;
     let patterns = vec!["test1".to_string(), "test2".to_string()];
     let cleaner = HistoryCleaner::new(fs).with_patterns(patterns.clone());
 
@@ -91,7 +89,8 @@ fn test_history_cleaner_with_patterns() {
 
 #[test]
 fn test_history_cleaner_with_shells() {
-    let fs = MockFilesystem::new();
+    // Configuration only: the filesystem is never touched.
+    let fs = crate::RealFilesystem;
     let shells = vec![ShellType::Bash, ShellType::Fish];
     let cleaner = HistoryCleaner::new(fs).with_shells(shells.clone());
 
@@ -100,7 +99,8 @@ fn test_history_cleaner_with_shells() {
 
 #[test]
 fn test_case_insensitive_pattern_matching() {
-    let fs = MockFilesystem::new();
+    // Configuration only: the filesystem is never touched.
+    let fs = crate::RealFilesystem;
     let cleaner = HistoryCleaner::new(fs);
 
     assert!(cleaner.line_matches_patterns("nails activate"));
@@ -112,7 +112,8 @@ fn test_case_insensitive_pattern_matching() {
 
 #[test]
 fn test_partial_line_removal() {
-    let fs = MockFilesystem::new();
+    // Configuration only: the filesystem is never touched.
+    let fs = crate::RealFilesystem;
     let cleaner = HistoryCleaner::new(fs);
 
     // Lines with nails anywhere should match
@@ -123,17 +124,13 @@ fn test_partial_line_removal() {
 
 #[test]
 fn test_history_file_cleanup() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
+    let (_dir, home) = real_home();
+    let fs = crate::RealFilesystem;
 
-    let bash_history = PathBuf::from("/home/testuser/.bash_history");
-    fs.mock_set_file_content(
-        bash_history.to_str().unwrap(),
-        "ls -la\nnails activate\ncd /tmp\nNAILS status\ngrep nails logfile.txt\nvim nails_config.yaml\n",
-    );
-    fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
+    let bash_history = home.join(".bash_history");
+    std::fs::write(&bash_history, "ls -la\nnails activate\ncd /tmp\nNAILS status\ngrep nails logfile.txt\nvim nails_config.yaml\n").unwrap();
 
-    let cleaner = HistoryCleaner::new(fs.clone())
+    let cleaner = HistoryCleaner::new(fs)
         .with_home(home)
         .with_shells(vec![ShellType::Bash]);
 
@@ -144,14 +141,14 @@ fn test_history_file_cleanup() {
     assert!(result[0].contains("Removed 4 entries"));
 
     // Verify the file was written with filtered content
-    let written_content = fs.get_written_content(&bash_history).unwrap();
+    let written_content = std::fs::read_to_string(&bash_history).unwrap();
     assert_eq!(written_content, "ls -la\ncd /tmp\n");
 }
 
 #[test]
 fn test_missing_history_file() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
+    let (_dir, home) = real_home();
+    let fs = crate::RealFilesystem;
     // Don't set up any history files
 
     let cleaner = HistoryCleaner::new(fs).with_home(home);
@@ -164,14 +161,13 @@ fn test_missing_history_file() {
 
 #[test]
 fn test_empty_history_file() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
+    let (_dir, home) = real_home();
+    let fs = crate::RealFilesystem;
 
-    let bash_history = PathBuf::from("/home/testuser/.bash_history");
-    fs.mock_set_file_content(bash_history.to_str().unwrap(), "");
-    fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
+    let bash_history = home.join(".bash_history");
+    std::fs::write(&bash_history, "").unwrap();
 
-    let cleaner = HistoryCleaner::new(fs.clone())
+    let cleaner = HistoryCleaner::new(fs)
         .with_home(home)
         .with_shells(vec![ShellType::Bash]);
 
@@ -184,14 +180,14 @@ fn test_empty_history_file() {
 
 #[test]
 fn test_history_file_with_no_matches() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
+    let (_dir, home) = real_home();
+    let fs = crate::RealFilesystem;
 
-    let bash_history = PathBuf::from("/home/testuser/.bash_history");
-    fs.mock_set_file_content(bash_history.to_str().unwrap(), "ls -la\ncd /tmp\npwd\n");
-    fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
+    let bash_history = home.join(".bash_history");
+    std::fs::write(&bash_history, "ls -la\ncd /tmp\npwd\n").unwrap();
+    let inode = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&bash_history).unwrap());
 
-    let cleaner = HistoryCleaner::new(fs.clone())
+    let cleaner = HistoryCleaner::new(fs)
         .with_home(home)
         .with_shells(vec![ShellType::Bash]);
 
@@ -201,24 +197,24 @@ fn test_history_file_with_no_matches() {
     assert_eq!(result.len(), 1);
     assert!(result[0].contains("No matching entries"));
 
-    // File should not be modified
-    let written = fs.get_written_content(&bash_history);
-    assert!(written.is_none());
+    // The file is left exactly as it was, not rewritten.
+    use std::os::unix::fs::MetadataExt;
+    assert_eq!(
+        std::fs::read_to_string(&bash_history).unwrap(),
+        "ls -la\ncd /tmp\npwd\n"
+    );
+    assert_eq!(std::fs::metadata(&bash_history).unwrap().ino(), inode);
 }
 
 #[test]
 fn test_history_file_all_matches_removed() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
+    let (_dir, home) = real_home();
+    let fs = crate::RealFilesystem;
 
-    let bash_history = PathBuf::from("/home/testuser/.bash_history");
-    fs.mock_set_file_content(
-        bash_history.to_str().unwrap(),
-        "nails activate\nNAILS status\n",
-    );
-    fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
+    let bash_history = home.join(".bash_history");
+    std::fs::write(&bash_history, "nails activate\nNAILS status\n").unwrap();
 
-    let cleaner = HistoryCleaner::new(fs.clone())
+    let cleaner = HistoryCleaner::new(fs)
         .with_home(home)
         .with_shells(vec![ShellType::Bash]);
 
@@ -229,25 +225,23 @@ fn test_history_file_all_matches_removed() {
     assert!(result[0].contains("Removed 2 entries"));
 
     // File should be empty
-    let written_content = fs.get_written_content(&bash_history).unwrap();
+    let written_content = std::fs::read_to_string(&bash_history).unwrap();
     assert_eq!(written_content, "");
 }
 
 #[test]
 fn test_multiple_shells_cleanup() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
+    let (_dir, home) = real_home();
+    let fs = crate::RealFilesystem;
 
-    let bash_history = PathBuf::from("/home/testuser/.bash_history");
-    let zsh_history = PathBuf::from("/home/testuser/.zsh_history");
+    let bash_history = home.join(".bash_history");
+    let zsh_history = home.join(".zsh_history");
 
-    fs.mock_set_file_content(bash_history.to_str().unwrap(), "ls -la\nnails activate\n");
-    fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
+    std::fs::write(&bash_history, "ls -la\nnails activate\n").unwrap();
 
-    fs.mock_set_file_content(zsh_history.to_str().unwrap(), "pwd\nNAILS status\n");
-    fs.mock_set_path_exists(zsh_history.to_str().unwrap(), true);
+    std::fs::write(&zsh_history, "pwd\nNAILS status\n").unwrap();
 
-    let cleaner = HistoryCleaner::new(fs.clone())
+    let cleaner = HistoryCleaner::new(fs)
         .with_home(home)
         .with_shells(vec![ShellType::Bash, ShellType::Zsh]);
 
@@ -269,17 +263,13 @@ fn test_multiple_shells_cleanup() {
 
 #[test]
 fn test_custom_patterns() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
+    let (_dir, home) = real_home();
+    let fs = crate::RealFilesystem;
 
-    let bash_history = PathBuf::from("/home/testuser/.bash_history");
-    fs.mock_set_file_content(
-        bash_history.to_str().unwrap(),
-        "ls -la\nsecret command\npwd\n",
-    );
-    fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
+    let bash_history = home.join(".bash_history");
+    std::fs::write(&bash_history, "ls -la\nsecret command\npwd\n").unwrap();
 
-    let cleaner = HistoryCleaner::new(fs.clone())
+    let cleaner = HistoryCleaner::new(fs)
         .with_home(home)
         .with_patterns(vec!["secret".to_string()])
         .with_shells(vec![ShellType::Bash]);
@@ -291,23 +281,23 @@ fn test_custom_patterns() {
     assert!(result[0].contains("Removed 1 entries"));
 
     // Verify correct line was removed
-    let written_content = fs.get_written_content(&bash_history).unwrap();
+    let written_content = std::fs::read_to_string(&bash_history).unwrap();
     assert_eq!(written_content, "ls -la\npwd\n");
 }
 
 #[test]
 fn test_multiple_patterns() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
+    let (_dir, home) = real_home();
+    let fs = crate::RealFilesystem;
 
-    let bash_history = PathBuf::from("/home/testuser/.bash_history");
-    fs.mock_set_file_content(
-        bash_history.to_str().unwrap(),
+    let bash_history = home.join(".bash_history");
+    std::fs::write(
+        &bash_history,
         "ls -la\nnails activate\nsecret command\npwd\n",
-    );
-    fs.mock_set_path_exists(bash_history.to_str().unwrap(), true);
+    )
+    .unwrap();
 
-    let cleaner = HistoryCleaner::new(fs.clone())
+    let cleaner = HistoryCleaner::new(fs)
         .with_home(home)
         .with_patterns(vec!["nails".to_string(), "secret".to_string()])
         .with_shells(vec![ShellType::Bash]);
@@ -319,7 +309,7 @@ fn test_multiple_patterns() {
     assert!(result[0].contains("Removed 2 entries"));
 
     // Verify correct lines were removed
-    let written_content = fs.get_written_content(&bash_history).unwrap();
+    let written_content = std::fs::read_to_string(&bash_history).unwrap();
     assert_eq!(written_content, "ls -la\npwd\n");
 }
 
@@ -454,17 +444,14 @@ fn test_filter_fish_history_with_extra_metadata() {
 
 #[test]
 fn test_fish_history_cleaned_via_history_cleaner() {
-    let fs = MockFilesystem::new();
-    let home = test_home();
+    let (_dir, home) = real_home();
+    let fs = crate::RealFilesystem;
 
-    let fish_history = PathBuf::from("/home/testuser/.local/share/fish/fish_history");
-    fs.mock_set_file_content(
-        fish_history.to_str().unwrap(),
-        "- cmd: ls -la\n  when: 1700000001\n- cmd: nails activate\n  when: 1700000002\n- cmd: cd /tmp\n  when: 1700000003\n",
-    );
-    fs.mock_set_path_exists(fish_history.to_str().unwrap(), true);
+    let fish_history = home.join(".local/share/fish/fish_history");
+    std::fs::create_dir_all(fish_history.parent().unwrap()).unwrap();
+    std::fs::write(&fish_history, "- cmd: ls -la\n  when: 1700000001\n- cmd: nails activate\n  when: 1700000002\n- cmd: cd /tmp\n  when: 1700000003\n").unwrap();
 
-    let cleaner = HistoryCleaner::new(fs.clone())
+    let cleaner = HistoryCleaner::new(fs)
         .with_home(home)
         .with_shells(vec![ShellType::Fish]);
 
@@ -472,7 +459,7 @@ fn test_fish_history_cleaned_via_history_cleaner() {
     assert_eq!(result.len(), 1);
     assert!(result[0].contains("Removed 1 entries"));
 
-    let written = fs.get_written_content(&fish_history).unwrap();
+    let written = std::fs::read_to_string(&fish_history).unwrap();
     assert!(!written.contains("nails"));
     assert!(written.contains("ls -la"));
     assert!(written.contains("cd /tmp"));
@@ -527,29 +514,40 @@ fn test_in_place_edit_overwrites_same_inode_not_temp_rename() {
     );
 }
 
+/// Clean a real `.bash_history` in a temporary home and return the inode
+/// before and after, with the content left behind.
+fn clean_real_history(in_place: bool) -> (u64, u64, String) {
+    use std::os::unix::fs::MetadataExt;
+    let home = tempfile::tempdir().unwrap();
+    let hist = home.path().join(".bash_history");
+    std::fs::write(&hist, "ls\nnails activate\npwd\n").unwrap();
+    let before = std::fs::metadata(&hist).unwrap().ino();
+
+    HistoryCleaner::new(crate::RealFilesystem)
+        .with_home(home.path().to_path_buf())
+        .with_shells(vec![ShellType::Bash])
+        .with_in_place(in_place)
+        .clean()
+        .unwrap();
+
+    let after = std::fs::metadata(&hist).unwrap().ino();
+    (before, after, std::fs::read_to_string(&hist).unwrap())
+}
+
 #[test]
-fn test_default_edit_uses_atomic_write_not_in_place() {
-    use crate::filesystem::mock::MockOp;
+fn test_default_edit_replaces_the_file_through_a_new_inode() {
+    // The atomic temp+rename write leaves a new file at the path: a crash
+    // mid-edit can never leave a half-written history.
+    let (before, after, content) = clean_real_history(false);
+    assert_eq!(content, "ls\npwd\n");
+    assert_ne!(before, after, "the cleaned history is a renamed temp file");
+}
 
-    let fs = MockFilesystem::new();
-    let hist = "/home/operator/.bash_history";
-    fs.mock_set_file_content(hist, "ls\nnails activate\n");
-
-    let cleaner = HistoryCleaner::new(fs.clone())
-        .with_home(PathBuf::from("/home/operator"))
-        .with_shells(vec![ShellType::Bash]);
-
-    cleaner.clean().unwrap();
-
-    let ops = fs.mock_ops();
-    assert!(
-        ops.iter()
-            .any(|op| matches!(op, MockOp::WriteFile { path } if path == Path::new(hist))),
-        "default edit should use the atomic temp+rename write"
-    );
-    assert!(
-        !ops.iter()
-            .any(|op| matches!(op, MockOp::OverwriteInPlace { .. })),
-        "default edit must not overwrite in place"
-    );
+#[test]
+fn test_in_place_edit_keeps_the_same_inode() {
+    // In place: the same inode is rewritten, so the old content's blocks are
+    // overwritten instead of being freed with a replaced inode.
+    let (before, after, content) = clean_real_history(true);
+    assert_eq!(content, "ls\npwd\n");
+    assert_eq!(before, after, "the history was overwritten in place");
 }

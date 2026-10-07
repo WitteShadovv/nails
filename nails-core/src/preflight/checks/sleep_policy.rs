@@ -458,6 +458,12 @@ mod tests {
         let before = fs.mock_ops().len();
         let check = SleepPolicyCheck::new(SleepPolicyMode::Warn);
         let _ = check.run(&fs).unwrap();
+        assert!(fs.mock_written_paths().is_empty(), "nothing was written");
+        assert_eq!(
+            fs.read_file_content(Path::new(&drop_in)).unwrap(),
+            "[Login]\nHandleLidSwitch=ignore\n",
+            "the drop-in is left as it was"
+        );
         let after = fs.mock_ops();
         assert_eq!(
             after.len(),

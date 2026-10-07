@@ -672,6 +672,12 @@ mod tests {
         fs.mock_add_file(SYS_POWER_RESUME, "259:2\n");
         let before = fs.mock_ops().len();
         let _ = classify_swap(&fs);
+        assert!(fs.mock_written_paths().is_empty(), "nothing was written");
+        assert_eq!(
+            fs.read_file_content(Path::new(SYS_POWER_RESUME)).unwrap(),
+            "259:2\n",
+            "the resume device is left as it was"
+        );
         assert_eq!(
             fs.mock_ops().len(),
             before,

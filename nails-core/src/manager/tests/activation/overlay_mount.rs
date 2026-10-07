@@ -1361,6 +1361,18 @@ fn test_var_overlay_rehomes_journald_with_restart_flush_and_fd_check() {
     let result = manager.lock().unwrap().activate(true);
     assert!(result.is_ok(), "activation should succeed: {result:?}");
 
+    // The effect: /var is overlaid and the state file records the session.
+    assert!(fs.is_overlay_mounted(Path::new("/var")).unwrap());
+    let saved = crate::StateFile::load_with_outcome(&state_path).unwrap();
+    assert_eq!(saved.outcome, crate::state::LoadOutcome::Loaded);
+    match saved.state_file.state {
+        SystemState::Active { overlays, .. } => assert!(
+            overlays.iter().any(|o| o == Path::new("/var")),
+            "the state file records the /var overlay: {overlays:?}"
+        ),
+        other => panic!("the state file reads Active, not {other:?}"),
+    }
+
     let actions = crate::manager::helpers::drain_recorded_service_actions();
     let idx = |needle: &str| {
         actions

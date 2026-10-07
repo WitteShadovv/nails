@@ -415,6 +415,13 @@ fn check_performs_no_writes() {
     let before = fs.mock_ops().len();
     let check = DecoyPersistenceCheck::new(false, true);
     let _ = check.run(&fs).unwrap();
+    assert!(fs.mock_written_paths().is_empty(), "nothing was written");
+    assert_eq!(
+        fs.read_file_content(Path::new("/etc/systemd/journald.conf"))
+            .unwrap(),
+        "[Journal]\nStorage=persistent\n",
+        "the journald configuration is left as it was"
+    );
     let after = fs.mock_ops();
     assert_eq!(
         after.len(),

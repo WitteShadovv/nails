@@ -658,6 +658,19 @@ fn test_emergency_order_unmount_then_cleanup_then_drop_page_cache() {
             .any(|op| matches!(op, MockOp::SecureDelete { .. })),
         "emergency must not secure-delete hidden-upper files: {ops:?}"
     );
+
+    // The effect, not only the calls: both overlays are off the mount table
+    // and the state file on the hidden root reads Inactive.
+    let fs = guard.filesystem();
+    for target in ["/home", "/etc"] {
+        assert!(
+            !fs.is_mounted(Path::new(target)).unwrap(),
+            "{target} is detached"
+        );
+    }
+    let saved = crate::StateFile::load_with_outcome(&guard.config().state_file_path).unwrap();
+    assert_eq!(saved.outcome, crate::state::LoadOutcome::Loaded);
+    assert_eq!(saved.state_file.state, SystemState::Inactive);
 }
 
 #[test]

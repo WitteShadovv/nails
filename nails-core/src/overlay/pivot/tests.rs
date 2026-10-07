@@ -326,45 +326,6 @@ fn snapshot_tmpfs_bytes_clamps_to_the_ceiling() {
 }
 
 #[test]
-fn snapshot_pivot_sizes_tmpfs_from_measured_content_not_a_fixed_gigabyte() {
-    use crate::filesystem::MockOp;
-
-    let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/boot", true);
-    fs.mock_set_path_exists("/mnt/hidden/boot-upper", true);
-    fs.mock_set_path_exists("/mnt/hidden/boot-work", true);
-    fs.mock_set_path_exists("/run", true);
-    let measured = 120 * 1024 * 1024; // 120 MiB ESP
-    fs.mock_set_directory_size(Path::new("/boot"), measured);
-
-    snapshot_pivot_overlay_mount(
-        &fs,
-        Path::new(TEST_RUNTIME_BASE),
-        &[Path::new("/boot")],
-        Path::new("/mnt/hidden/boot-upper"),
-        Path::new("/mnt/hidden/boot-work"),
-        Path::new("/boot"),
-    )
-    .expect("snapshot pivot should succeed");
-
-    let snapshot = PathBuf::from(TEST_RUNTIME_BASE).join("boot-snapshot");
-    let recorded = fs
-        .mock_ops()
-        .into_iter()
-        .find_map(|op| match op {
-            MockOp::MountTmpfs { target, size } if target == snapshot => Some(size),
-            _ => None,
-        })
-        .expect("snapshot tmpfs should have been mounted");
-
-    let expected = snapshot_tmpfs_bytes(measured).to_string();
-    assert_eq!(recorded, expected);
-    // The old hard-coded "1G" literal is gone.
-    assert_ne!(recorded, "1G");
-    assert!(recorded.parse::<u64>().unwrap() < DEFAULT_MAX_SNAPSHOT_BYTES);
-}
-
-#[test]
 fn pivot_mount_info_round_trips_through_clone() {
     let info = PivotMountInfo {
         target: PathBuf::from("/var"),

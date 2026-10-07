@@ -484,6 +484,16 @@ fn generic_mounts_are_not_overlays<F: Filesystem>(fs: &F, root: &Path) {
     assert!(!fs.is_mounted(&tmpfs).unwrap());
     fs.unmount_tmpfs(&tmpfs)
         .expect("a second tmpfs unmount is a no-op");
+    for size in ["512M", "1024"] {
+        let sized = root.join(format!("generic/tmpfs-{size}"));
+        fs.mount_tmpfs(&sized, size).expect("a valid tmpfs size");
+        assert!(fs.is_mounted(&sized).unwrap());
+        fs.unmount_tmpfs(&sized).unwrap();
+    }
+    let bad = root.join("generic/tmpfs-bad");
+    let err = fs.mount_tmpfs(&bad, "invalid").unwrap_err().to_string();
+    assert!(err.contains("Invalid tmpfs size"), "{err}");
+    assert!(!fs.is_mounted(&bad).unwrap(), "nothing is mounted");
 
     let source = root.join("generic/bind-source");
     let target = root.join("generic/bind-target");

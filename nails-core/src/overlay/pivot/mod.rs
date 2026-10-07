@@ -15,6 +15,9 @@ use super::mount_info::PivotMountInfo;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod kernel_tests;
+
 /// Upper bound on a snapshot tmpfs, so an overlay-incompatible target can never
 /// request an unbounded amount of RAM. Shared with the overlay-compatibility
 /// preflight check, which fails any target measuring larger than this.

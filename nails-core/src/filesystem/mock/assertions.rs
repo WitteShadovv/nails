@@ -18,6 +18,21 @@ impl MockFilesystem {
         written.get(path).cloned()
     }
 
+    /// Every path a file write (`write_file_content`, an in-place overwrite,
+    /// `write_user_file`) has left content at, sorted: the state a read-only
+    /// check must leave empty.
+    pub fn mock_written_paths(&self) -> Vec<PathBuf> {
+        let mut paths: Vec<PathBuf> = self
+            .written_files
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .keys()
+            .cloned()
+            .collect();
+        paths.sort();
+        paths
+    }
+
     /// Get operation log for verifying call ordering in tests
     pub fn mock_ops(&self) -> Vec<MockOp> {
         self.op_log
