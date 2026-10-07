@@ -260,11 +260,13 @@ fn dispatch_without_plan(host: &Host, finish: Finish, report: &mut HotReport) {
 
 fn enqueue(systemctl: Option<&Path>, finish: Finish, report: &mut HotReport) {
     if let Some(systemctl) = systemctl {
-        if tools::start_target(systemctl, finish.target()) {
+        if tools::start_target(systemctl, finish.target()) == tools::Outcome::Done {
             report.dispatched = Some(finish);
             return;
         }
-        if finish != Finish::Poweroff && tools::start_target(systemctl, Finish::Poweroff.target()) {
+        if finish != Finish::Poweroff
+            && tools::start_target(systemctl, Finish::Poweroff.target()) == tools::Outcome::Done
+        {
             report.fallback = Some(format!(
                 "{} could not be enqueued; powering off",
                 finish.target()

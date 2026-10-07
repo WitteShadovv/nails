@@ -39,10 +39,24 @@ pub fn find(recorded: Option<&Path>, name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Run `program args…` and wait at most `budget`. `true` when it exited 0 in
-/// time; a child that overruns is killed.
-pub fn run_bounded(program: &Path, args: &[&str], budget: Duration) -> bool {
-    let child = Command::new(program)
+/// How a bounded tool call ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// It exited 0 in time.
+    Done,
+    /// It could not start, or it exited non-zero: the work was not done.
+    Refused,
+    /// It died by a signal or overran its deadline: whether the work was done
+    /// is unknown.
+    Unknown,
+}
+
+/// Run `program args…` and wait at most `budget`; a child that overruns is
+/// killed. The child ignores SIGTERM, SIGINT and SIGHUP: enqueueing a
+/// shutdown stops the unit it runs in, and the call must outlive that stop.
+pub fn run(program: &Path, args: &[&str], budget: Duration) -> Outcome {
+    let mut command = Command::new(program);
+    command
         .args(args)
         .env_clear()
         .env("PATH", SYSTEM_BIN_DIRS.join(":"))
@@ -51,31 +65,58 @@ pub fn run_bounded(program: &Path, args: &[&str], budget: Duration) -> bool {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        .current_dir("/")
-        .spawn();
-    let Ok(mut child) = child else {
-        return false;
+        .current_dir("/");
+    ignore_stop_signals(&mut command);
+    let Ok(mut child) = command.spawn() else {
+        return Outcome::Refused;
     };
     let deadline = Instant::now() + budget;
     loop {
         match child.try_wait() {
-            Ok(Some(status)) => return status.success(),
+            Ok(Some(status)) if status.success() => return Outcome::Done,
+            Ok(Some(status)) if status.code().is_some() => return Outcome::Refused,
+            Ok(Some(_)) => return Outcome::Unknown,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
             _ => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return false;
+                return Outcome::Unknown;
             }
         }
+    }
+}
+
+/// [`run`], `true` only when the tool is known to have succeeded.
+pub fn run_bounded(program: &Path, args: &[&str], budget: Duration) -> bool {
+    run(program, args, budget) == Outcome::Done
+}
+
+/// Set SIGTERM, SIGINT and SIGHUP to ignored in the child. An ignored
+/// disposition survives `exec`.
+#[allow(unsafe_code)]
+fn ignore_stop_signals(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: the closure only calls `signal(2)`, which is async-signal-safe,
+    // with constant arguments. It allocates nothing and touches no shared
+    // state, so it is safe to run between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            for sig in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+                libc::signal(sig, libc::SIG_IGN);
+            }
+            Ok(())
+        });
     }
 }
 
 /// Enqueue `target` (`soft-reboot.target`, `poweroff.target`,
 /// `reboot.target`) without waiting, replacing every other job irreversibly.
 /// It talks to PID 1 directly, so it works with logind and D-Bus already gone,
-/// and it checks no inhibitors.
-pub fn start_target(systemctl: &Path, target: &str) -> bool {
-    run_bounded(
+/// and it checks no inhibitors. The outcome is [`Outcome::Unknown`] when the
+/// call was cut short, typically because the shutdown it enqueued is already
+/// stopping the caller.
+pub fn start_target(systemctl: &Path, target: &str) -> Outcome {
+    run(
         systemctl,
         &[
             "start",
@@ -124,6 +165,28 @@ mod tests {
             &[],
             TOOL_BUDGET
         ));
+    }
+
+    #[test]
+    fn a_tool_killed_by_a_signal_has_an_unknown_outcome_and_ignores_sigterm() {
+        let sh = find(None, "sh").expect("a shell");
+        assert_eq!(run(&sh, &["-c", "exit 1"], TOOL_BUDGET), Outcome::Refused);
+        assert_eq!(
+            run(&sh, &["-c", "kill -KILL $$"], TOOL_BUDGET),
+            Outcome::Unknown
+        );
+        assert_eq!(
+            run(
+                &sh,
+                &["-c", "kill -TERM $$; kill -HUP $$; kill -INT $$; exit 0"],
+                TOOL_BUDGET
+            ),
+            Outcome::Done
+        );
+        assert_eq!(
+            run(&sh, &["-c", "sleep 5"], Duration::from_millis(100)),
+            Outcome::Unknown
+        );
     }
 
     #[test]

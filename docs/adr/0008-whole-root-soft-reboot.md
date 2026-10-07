@@ -663,6 +663,10 @@ supported.
   stopped. One grey-out; the greeter is the hidden configuration's.
   `activate --overlay-only` enters with the decoy's own system and the hidden
   `/etc` and home. The hidden `/etc/nixos` lives in the upper.
+- Enqueueing `soft-reboot.target` stops the unit the activation runs in, so
+  the `systemctl` child ignores SIGTERM, SIGINT and SIGHUP, and a call cut
+  short by a signal counts as enqueued: undoing the next root then would leave
+  PID 1 switching into an empty `/run/nextroot`.
 - **Emergency**: the hot path prepares the way back, marks the backend for
   deferred removal, arms the plan, enqueues `soft-reboot.target` directly with
   PID 1 and then `cgroup.kill`s every cgroup except `init.scope` and the

@@ -21,7 +21,8 @@ use nails_teardown::whole_root::{ret, tools};
 
 /// Enqueues a systemd target: tests replace it.
 pub trait TargetHost {
-    /// Enqueue `target` with PID 1.
+    /// Enqueue `target` with PID 1. An error means PID 1 is known not to
+    /// have taken it.
     fn start_target(&self, target: &str) -> Result<()>;
 }
 
@@ -46,12 +47,14 @@ impl TargetHost for RealTargetHost {
             .systemctl
             .as_deref()
             .ok_or_else(|| NailsError::InvalidState("systemctl not found".to_string()))?;
-        if tools::start_target(systemctl, target) {
-            Ok(())
-        } else {
-            Err(NailsError::InvalidState(format!(
+        // A call cut short (by the very stop it enqueued, typically) counts
+        // as enqueued: undoing a prepared next root while PID 1 may already
+        // be switching into it would leave it switching into an empty one.
+        match tools::start_target(systemctl, target) {
+            tools::Outcome::Done | tools::Outcome::Unknown => Ok(()),
+            tools::Outcome::Refused => Err(NailsError::InvalidState(format!(
                 "systemctl could not enqueue {target}"
-            )))
+            ))),
         }
     }
 }
