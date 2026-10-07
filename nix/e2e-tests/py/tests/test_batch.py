@@ -105,10 +105,7 @@ class FakeGuest:
         elif command.startswith("cryptsetup close "):
             self.mapper.discard(shlex.split(command)[2])
         elif command.startswith("losetup -d "):
-            loop = shlex.split(command)[2]
-            if loop not in self.loops:
-                raise RuntimeError(f"losetup: {loop}: no such device")
-            self.loops.discard(loop)
+            self.loops.discard(shlex.split(command)[2])
         elif command.startswith("wipefs -a "):
             self.data_disk = ""
         elif command.startswith("swapoff "):
@@ -161,6 +158,7 @@ class ParseStateTest(unittest.TestCase):
     def test_drops_volatile_mounts_and_reads_every_section(self) -> None:
         guest = FakeGuest()
         guest.mounts.add(("/run/user/1000", "tmpfs"))
+        guest.scratch["/tmp"].add("systemd-private-abc-systemd-hostnamed.service-x")
         guest.mounts.add(("/dev/mqueue", "mqueue"))
         state = parse_state(guest.snapshot())
         self.assertIn(("/nix/store", "overlay"), state.mounts)
@@ -168,6 +166,7 @@ class ParseStateTest(unittest.TestCase):
         self.assertNotIn(("/dev/mqueue", "mqueue"), state.mounts)
         self.assertNotIn(("/sys/kernel/debug", "debugfs"), state.mounts)
         self.assertEqual(state.scratch["/home/testuser"], frozenset({".bashrc"}))
+        self.assertEqual(state.scratch["/tmp"], frozenset())
         self.assertEqual(state.etc_nixos, guest.etc_nixos)
 
     def test_classifies_run_entries(self) -> None:

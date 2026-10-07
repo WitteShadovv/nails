@@ -41,6 +41,10 @@ DATA_DISK = "/dev/disk/by-id/virtio-data"
 # Directories scenarios use as scratch space. A new top-level entry in one of
 # them is a leftover: the reset deletes it and the clean check fails on it.
 SCRATCH_DIRS = ("/tmp", "/var/tmp", "/mnt", "/root", "/home/testuser")
+# systemd owns the PrivateTmp directories of services it starts on demand and
+# removes them when the service stops; deleting one under a running service
+# would break it, and it says nothing about a scenario.
+_SYSTEMD_PRIVATE = "systemd-private-"
 
 # Mounts the guest makes or drops on its own (automounts, per-user and
 # per-service runtime mounts), which say nothing about a scenario.
@@ -130,7 +134,11 @@ def parse_state(output: str) -> GuestState:
         mounts.add((target, fstype))
 
     scratch = {
-        directory: frozenset(sections.get(f"scratch {directory}", []))
+        directory: frozenset(
+            name
+            for name in sections.get(f"scratch {directory}", [])
+            if not name.startswith(_SYSTEMD_PRIVATE)
+        )
         for directory in SCRATCH_DIRS
     }
     return GuestState(
@@ -262,10 +270,15 @@ def reset_guest(
     for name in sorted(current.mapper - baseline.mapper):
         actions.append(f"closed /dev/mapper/{name}")
         quoted = shlex.quote(name)
-        run(f"cryptsetup close {quoted} || dmsetup remove {quoted}")
+        run(
+            f"cryptsetup close {quoted} || dmsetup remove {quoted} "
+            f"|| [ ! -e /dev/mapper/{quoted} ]"
+        )
     for loop in sorted(current.loops - baseline.loops):
         actions.append(f"detached {loop}")
-        run(f"losetup -d {shlex.quote(loop)}")
+        quoted = shlex.quote(loop)
+        # An autoclear loop device may detach on its own in the meantime.
+        run(f"losetup -d {quoted} || ! losetup {quoted} >/dev/null 2>&1")
     if current.data_disk_signatures != baseline.data_disk_signatures:
         actions.append(f"wiped the signatures on {DATA_DISK}")
         run(f"wipefs -a {DATA_DISK} && udevadm settle")
