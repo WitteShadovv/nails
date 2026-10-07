@@ -547,6 +547,57 @@ mod entry_kernel_tests {
     }
 
     #[test]
+    fn a_decoy_fstab_in_a_separate_store_is_read_before_the_next_root_needs_it() {
+        // NixOS links /etc/fstab into /nix/store; with the store on its own
+        // filesystem (a separate /nix, a VM's store share) the next root's
+        // store is empty until the policy has overlaid it. The VM run of the
+        // first version found exactly this: no decision, no store, PID 1's
+        // init missing.
+        let _ = Rerun::new(test_path!(
+            a_decoy_fstab_in_a_separate_store_is_read_before_the_next_root_needs_it
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            let decoy = world.decoy.path();
+            let fstab = std::fs::read(decoy.join("etc/fstab")).unwrap();
+            let store = ScratchTmpfs::new("");
+            std::fs::write(
+                store.path().join("etc-fstab"),
+                [fstab.as_slice(), b"store /nix/store ext4 defaults 0 0\n"].concat(),
+            )
+            .unwrap();
+            world.decoy.mkdir("nix/store");
+            nix::mount::mount(
+                Some(store.path()),
+                &decoy.join("nix/store"),
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND,
+                None::<&str>,
+            )
+            .unwrap();
+            std::fs::remove_file(decoy.join("etc/fstab")).unwrap();
+            std::os::unix::fs::symlink("/nix/store/etc-fstab", decoy.join("etc/fstab")).unwrap();
+
+            let paths = world.paths();
+            let entry =
+                entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+            let nextroot = paths.nextroot();
+            assert_eq!(
+                fstype_at(&nextroot.join("nix/store")).as_deref(),
+                Some("overlay")
+            );
+            assert!(nextroot.join("nix/store/etc-fstab").is_file());
+            assert_eq!(
+                fstype_at(&nextroot.join("home")).as_deref(),
+                Some("overlay")
+            );
+            assert!(entry.plan.masks.contains(&"dev-vda4.swap".to_string()));
+            entry::rollback(&paths);
+        });
+    }
+
+    #[test]
     fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
         let _ = Rerun::new(test_path!(
             the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan

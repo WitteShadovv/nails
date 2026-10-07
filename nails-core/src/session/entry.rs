@@ -15,11 +15,15 @@
 //!    later leaves an unarmed next root that any soft-reboot disarms;
 //! 4. the root overlay at `/run/nextroot`: the decoy root as a read-only lower,
 //!    the upper on the hidden volume;
-//! 5. on NixOS with a hidden configuration: the hidden toplevel built into the
-//!    next root's store and activated chrooted (see [`super::nixos`]);
-//! 6. the fstab policy on the next root's own fstab ([`super::policy`]): the
-//!    hidden volume bound at its path, boot filesystems read-only, other decoy
-//!    filesystems overlaid, the rest masked at entry;
+//! 5. the fstab policy on the decoy's fstab ([`super::policy`]): the hidden
+//!    volume bound at its path, boot filesystems read-only, other decoy
+//!    filesystems overlaid, the rest masked at entry. This comes before the
+//!    hidden build, because a separate `/nix` (or a VM's store share) must be
+//!    in place before anything reads the next root's store;
+//! 6. on NixOS with a hidden configuration: the hidden toplevel built into the
+//!    next root's store and activated chrooted (see [`super::nixos`]), then
+//!    the policy applied to the hidden generation's own fstab for what the
+//!    decoy's did not cover;
 //! 7. `/run` bound in and the tree made private; the init checked the way
 //!    PID 1 will, and the soft-reboot units the way back needs found in the
 //!    next root;
@@ -345,6 +349,14 @@ fn build(
     )
     .map_err(|e| io(&nextroot, e))?;
 
+    // The decoy's own fstab first, read the way the decoy resolves it: its
+    // filesystems (a separate /nix, the VM store) must be in place inside the
+    // next root before anything reads the next root's store.
+    let decoy_fstab =
+        nextroot::read_in_root(&paths.root, Path::new("/etc/fstab")).unwrap_or_default();
+    let mut decisions = decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root)?;
+    plan.policy_mounts = apply_mounts(paths, &layout, &decisions, inputs.hidden_root, &[])?;
+
     let mut warnings = Vec::new();
     if let Some(builder) = inputs.builder {
         ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
@@ -363,24 +375,28 @@ fn build(
             init: PathBuf::from(nixos::NIXOS_INIT),
             system: Some(system),
         };
+        // The hidden generation brings its own /etc/fstab: decide its entries
+        // too, and put in place what the decoy's fstab did not already cover.
+        let hidden_fstab =
+            nextroot::read_in_root(&nextroot, Path::new("/etc/fstab")).unwrap_or_default();
+        let hidden = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root)?;
+        let done: Vec<PathBuf> = plan
+            .policy_mounts
+            .iter()
+            .map(|m| m.target.clone())
+            .collect();
+        let added = apply_mounts(paths, &layout, &hidden, inputs.hidden_root, &done)?;
+        plan.policy_mounts.extend(added);
+        for decision in hidden {
+            if !decisions.contains(&decision) {
+                decisions.push(decision);
+            }
+        }
     } else if !inputs.nixos {
         plan.hidden.init = fhs_init(&nextroot);
     }
-
-    let fstab = nextroot::read_in_root(&nextroot, Path::new("/etc/fstab")).unwrap_or_default();
-    let entries = super::fstab::parse_fstab(&String::from_utf8_lossy(&fstab));
-    let decisions = policy::decide_all(&entries, &decoy_mounts, inputs.hidden_root);
-    if let Some(Decision::Refuse { target, reason }) = decisions
-        .iter()
-        .find(|d| matches!(d, Decision::Refuse { .. }))
-    {
-        return Err(NailsError::InvalidState(format!(
-            "fstab entry {}: {reason}",
-            target.display()
-        )));
-    }
-    plan.policy_mounts = apply_mounts(paths, &layout, &decisions, inputs.hidden_root)?;
     plan.masks = policy::masked_units(&decisions);
+    plan.masks.dedup();
     if let Some(operator) = &inputs.operator {
         let home = paths.in_nextroot(operator.passwd_home());
         super::persona::write_masks(&home, &inputs.persona, operator);
@@ -483,13 +499,32 @@ fn relative_mounts(mounts: &[MountEntry], root: &Path) -> Vec<MountEntry> {
         .collect()
 }
 
-/// Put the fstab decisions and the hidden volume in place inside the next
-/// root, parents first.
+/// Parse `fstab` and decide every entry; an entry with no safe decision
+/// refuses the entry.
+fn decide_fstab(fstab: &[u8], mounts: &[MountEntry], hidden_root: &Path) -> Result<Vec<Decision>> {
+    let entries = super::fstab::parse_fstab(&String::from_utf8_lossy(fstab));
+    let decisions = policy::decide_all(&entries, mounts, hidden_root);
+    if let Some(Decision::Refuse { target, reason }) = decisions
+        .iter()
+        .find(|d| matches!(d, Decision::Refuse { .. }))
+    {
+        return Err(NailsError::InvalidState(format!(
+            "fstab entry {}: {reason}",
+            target.display()
+        )));
+    }
+    Ok(decisions)
+}
+
+/// Put the mounts `decisions` call for in place inside the next root, parents
+/// first, skipping the targets in `done`. The hidden volume is bound unless it
+/// is in `done` already.
 fn apply_mounts(
     paths: &Paths,
     layout: &Layout,
     decisions: &[Decision],
     hidden_root: &Path,
+    done: &[PathBuf],
 ) -> Result<Vec<PolicyMount>> {
     let mut wanted: Vec<PolicyMount> = decisions
         .iter()
@@ -509,8 +544,11 @@ fn apply_mounts(
         target: hidden_root.to_path_buf(),
         kind: PolicyMountKind::HiddenVolume,
     });
+    wanted.retain(|m| !done.contains(&m.target));
     wanted.sort_by_key(|m| m.target.components().count());
-    for (index, mount) in wanted.iter().enumerate() {
+    let first = done.len();
+    for (offset, mount) in wanted.iter().enumerate() {
+        let index = first + offset;
         let source = if mount.kind == PolicyMountKind::HiddenVolume {
             mount.target.clone()
         } else {
