@@ -4,6 +4,7 @@
 pub mod args;
 pub mod commands;
 mod detach;
+pub mod early;
 pub mod logging;
 pub mod main_guard;
 pub mod output;

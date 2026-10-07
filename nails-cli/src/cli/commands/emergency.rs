@@ -3,6 +3,12 @@
 
 //! Emergency command handler
 //!
+//! The hot path (stop jobs, the cgroup and shell kills, the plan's undo) runs in
+//! `nails-teardown`, normally from `main` before the CLI is initialised (see
+//! `cli::early`); this handler then finishes the teardown and reports it. When
+//! `main` did not run it (no recorded plan, or not root), the handler runs the
+//! same hot path itself with the configured hidden root.
+//!
 //! Emergency is a fast, best-effort teardown, not a switch back to the decoy
 //! configuration. It detaches the NAILS overlays first — the one step that
 //! matters — then scrubs only RAM-backed state (runtime journal, page cache), so
@@ -51,6 +57,8 @@ pub fn execute(
 
     let json = settings.is_json();
     let verbosity = settings.verbosity;
+    // The hot path `main` already ran before the CLI existed, if it did.
+    let early = crate::cli::early::take_report();
 
     // A broken or missing config must never block an emergency teardown. When the
     // hidden volume that holds the config has failed, fall back to the RAM-backed
@@ -86,7 +94,9 @@ pub fn execute(
     // Opt-in countdown before teardown. Immediate by default. The wait is never
     // skipped or shortened by --quiet or --json: output flags must never change
     // the timing of a panic button.
-    if let Some(secs) = args.countdown {
+    if early.is_none()
+        && let Some(secs) = args.countdown
+    {
         run_countdown(secs);
     }
 
@@ -96,7 +106,10 @@ pub fn execute(
     // the opt-in comes from the `[emergency] lock_backend` config key.
     let lock_requested = args.lock_backend || manager.config().emergency.lock_backend;
 
-    let outcome = manager.emergency_deactivate();
+    let outcome = match early {
+        Some(hot) => manager.finish_emergency(hot),
+        None => manager.emergency_deactivate(),
+    };
     let status = finish_emergency(settings, &manager, outcome, lock_requested, power_action);
 
     // The very last step, once every line of output is flushed: SIGKILL the
@@ -338,7 +351,7 @@ fn dispatch_power_action<F: Filesystem>(
 
 /// Print an abortable countdown to stderr, one line per second, always ending
 /// with a Ctrl+C hint. Never gated by `--quiet`/`--json`.
-fn run_countdown(secs: u64) {
+pub(crate) fn run_countdown(secs: u64) {
     for remaining in (1..=secs).rev() {
         crate::cli::output::eprint_tolerating_broken_pipe(&format!(
             "\r  Emergency deactivation in {remaining}... (Ctrl+C to abort) "

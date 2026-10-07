@@ -1086,6 +1086,7 @@ dependencies = [
  "jsonschema",
  "nails-cli",
  "nails-core",
+ "nails-teardown",
  "nix",
  "predicates",
  "serde",

@@ -48,6 +48,8 @@ chrono = { workspace = true }
 
 # Core library
 nails-core = { path = "../nails-core" }
+# The emergency hot path, dispatched from `main` before clap, config and tracing.
+nails-teardown = { path = "../nails-teardown" }
 
 [dev-dependencies]
 # Workspace testing dependencies

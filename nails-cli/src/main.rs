@@ -42,6 +42,12 @@ fn main() -> std::process::ExitCode {
     // First, before parsing: no crash from here on may dump core onto the decoy.
     let core_dump_error = nails::cli::disable_core_dumps();
 
+    // The emergency hot path runs here, before clap, the environment snapshot,
+    // the configuration and tracing exist (ADR 0007): the overlays are gone
+    // before any of that runs. The emergency command then does the bookkeeping
+    // and prints the result. Any other command line is left untouched.
+    nails::cli::early::dispatch();
+
     let cli = Cli::parse_checked();
 
     // Read the environment exactly once. Every handler receives this snapshot,
