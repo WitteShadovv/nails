@@ -6,10 +6,10 @@ through. It is an orientation document, not a specification — the code and the
 [architecture decision records](adr/README.md) are authoritative where they
 disagree with this page.
 
-## Two crates
+## Three crates
 
-NAILS is a Cargo workspace with a deliberately thin binary and a library that
-holds everything else.
+NAILS is a Cargo workspace with a deliberately thin binary, a library that
+holds everything else, and a small crate for the emergency hot path.
 
 - **`nails-cli`** parses arguments, renders human and JSON output, prompts, and
   turns results into the documented exit codes. It contains no activation logic:
@@ -19,8 +19,15 @@ holds everything else.
   switch, deactivation and verification. It is testable without root because
   every side effect goes through a trait.
 
+- **`nails-teardown`** holds the teardown plan and everything the emergency
+  path runs before the last unmount: the undo executor and its reconcile against
+  the mount table, the mountinfo parser, and the cgroup, pidfd and shell kills.
+  It depends on `rustix`, `libc` and `serde` only, so `main` can run the whole
+  hot path before clap, the configuration or tracing exist.
+
 Keeping the logic in the library (rather than in the binary) is recorded in
-[ADR 0001](adr/0001-core-library-boundary.md).
+[ADR 0001](adr/0001-core-library-boundary.md); the teardown crate and its
+boundary in [ADR 0007](adr/0007-emergency-architecture.md).
 
 ## The platform seam
 
@@ -78,8 +85,15 @@ An activation moves through these layers, all inside `nails-core`:
   [ADR 0005](adr/0005-live-overlay-vs-boot-time-overlay.md).
 - **Config switch** (`nixos`, via the `ConfigLayer`) builds and switches to the
   hidden NixOS configuration on NixOS; a no-op elsewhere.
-- **Deactivation and verification** (`deactivation`, `verify`) unmount in
-  reverse order, restore the decoy, and scan for known residue.
+- **Teardown plan** (`manager::teardown_plan`, on top of `nails-teardown`):
+  every activation step records its fixed undo in a plan on the decoy's `/run`,
+  rewritten after each step. Rollback, deactivation, recovery and emergency all
+  undo that one plan in reverse, reconciled against the live mount table, so a
+  new activation step needs no teardown code elsewhere.
+- **Deactivation and verification** (`deactivation`, `verify`) run the plan's
+  undo around the artifact cleanup, restore the decoy, and scan for known
+  residue. Emergency runs the hot path from `main` first (ADR 0007) and does
+  only the RAM-backed bookkeeping afterwards.
 
 ## Testing without root
 

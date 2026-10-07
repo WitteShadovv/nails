@@ -54,22 +54,25 @@ test files. The other doubles, and what they stand in for:
 | `MockFilesystem` (`filesystem/mock/`) | `Filesystem`: file operations, mounts, overlays, mountinfo, swap, statfs | File operations: yes, in `tests/filesystem_contract.rs`. Mounts: only the 7 `#[ignore]`d `privileged_mounts` tests, which need root. |
 | `set_forced_journald_fd_check`, the `should_skip_host_interaction()` early returns (24 files) | `/proc/<pid>/fd`, `fdinfo`, `mountinfo`, and every host side effect | No, before this change. |
 | `record_service_action` (`manager/helpers/service_controller.rs`) | every systemctl, journalctl and nix-daemon verb | No. |
-| `MockSessionCommandExecutor` and its scripted and recording variants, plus `FakeLoginctl` (`process/session/`, `deactivation/session_guard.rs`) | systemctl `is-active`, loginctl, kill | No. |
+| `MockSessionCommandExecutor` and its scripted and recording variants, (`process/session/`) | systemctl `is-active`, loginctl, kill | No. |
 | `MockCommandExecutor` and `RecordingKillExecutor` (`process/restart/tests.rs`) | service restarts, signals | No. |
 | `FakeJournalReader` (`verify/journal.rs`) | `journalctl --grep` | No. |
 | `reconcile_mounts_override` (`manager/state_management.rs`) | the live mount table | No. |
 | `MockProcessRunner` (`process/run/mock.rs`) | running a child process | Yes: `process/run/tests.rs` runs real `sh`. |
+| `FsMountOps` over `MockFilesystem`, the in-memory table of `nails-teardown`'s `undo_tests.rs` | the teardown plan's mount operations | Yes: `manager::teardown_plan::kernel_tests` runs every kind of recorded step, the derived plan, `cgroup.kill` and the emergency hot path on real mounts in user, mount, cgroup and PID namespaces. |
 | `FakePlatform`, `FakeConfigLayer` (`platform/`) | host backends, config layers | Yes: `platform/contract.rs` runs one contract against every backend. |
 | `FakeEnv`, `FakePasswd`, `ScriptedNotifier`, `RuntimeEnv` | environment, passwd, notifications | These are pure-logic seams. |
 
 Parsers of kernel or tool output, and what their tests use:
 
-- **mountinfo** (`filesystem/mountinfo.rs`): hand-written strings, a proptest
-  over generated strings, and one root-only real check.
+- **mountinfo** (`nails-teardown/src/mountinfo.rs`, re-exported by
+  `filesystem/mountinfo.rs`): hand-written strings, a proptest over generated
+  strings, and the real tables of the teardown plan's kernel tests.
 - **fdinfo flags and `mnt_id`** (`process/detection`, `journald_fd.rs`):
   hand-written strings.
-- **`systemctl list-units --plain`** (`parse_active_units`) and **loginctl**
-  (`parse_session_ids`, `parse_properties`): hand-written strings.
+- **`systemctl list-units --plain`** (`parse_active_units`): hand-written
+  strings. logind's session records (`nails-teardown/src/session.rs`): files
+  written in a temporary directory.
 - **`/proc/swaps`** (`classify_swap`): 21 hand-written cases.
 - **`/proc/<pid>/stat`**: three copies of the same parser (`read_ppid` twice,
   `read_session_and_pgid`), none tested at the parser level.

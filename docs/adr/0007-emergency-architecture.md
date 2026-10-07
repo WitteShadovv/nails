@@ -1,7 +1,7 @@
 # 7. Emergency teardown architecture
 
-- Status: proposed
-- Date: 2026-10-06
+- Status: accepted, implemented (T-135, T-136)
+- Date: 2026-10-06, implemented 2026-10-07
 
 ## Context
 
@@ -391,6 +391,123 @@ private mount namespaces, so the old overlay root is not pinned when the
 userspace switches. The cgroup model is the natural fit there because, in that
 mode, every hidden process is by definition in a cgroup of the hidden boot.
 Mount namespaces add nothing beyond what the soft reboot itself does.
+
+## Implementation (T-135, T-136)
+
+Option F is implemented. What landed, and where it deviates from the shape
+above:
+
+- **The crate.** `nails-teardown` holds the plan types, the undo executor and
+  its reconcile, the plan derivation from mountinfo, the mountinfo parser and
+  classifier (moved out of `nails-core`, which re-exports them), and the cgroup,
+  pidfd, shell, session and bounded-child helpers. Its manifest lists `rustix`,
+  `libc`, `serde` and `serde_json` only, and `tests/boundary.rs` fails when a
+  dependency is added or a source reaches for `nails_core`, tracing or TOML.
+- **Early dispatch.** `main` calls `cli::early::dispatch` before clap, the
+  environment snapshot, the configuration and tracing. A strict recogniser
+  accepts only command lines clap parses as the same `emergency` (a test
+  checks the two agree over a generated corpus). As root, with a recorded
+  plan, it runs the countdown and the whole hot path and parks the report; the
+  emergency command then does the bookkeeping and prints the unchanged output
+  and JSON. `nails-cli/tests/early_dispatch.rs` runs the real binary against a
+  real overlay in a user, mount and PID namespace with `--config` on a FIFO and
+  sees the overlay gone while the binary still blocks on its configuration.
+- **The plan** is `/run/overlay-runtime/plan.json` (mode 0600, directory
+  0700), versioned (`version: 1`; another version is refused, never guessed
+  at), rewritten with a temporary file and a rename after every step. It
+  supersedes `mounts.json`: the backend watcher reads its targets from it.
+  Each mount step records the kernel's mount id, compared at teardown in the
+  same mount namespace, so an undo can never take down the decoy mount that lay
+  beneath an overlay already gone; outside that namespace a structural check
+  stands in.
+- **Activation as do/undo steps (T-136).** Every tracked mount appends its undo
+  through the mount tracker; the `/nix/store` self-binds, the read-only guards,
+  an overlay re-mounted after the NixOS switch and the units the hidden
+  configuration added append theirs where they happen. Rollback, deactivation,
+  recovery and emergency all run `undo::run_plan` on that one plan, through
+  `nails-core`'s filesystem abstraction or through `KernelMountOps` on the hot
+  path. A standard deactivation keeps its thorough order by running the plan's
+  phases at their old points (the store binds before the shell kill, the
+  guards and attachments after it, the rest after the artifact cleanup) and
+  stops no units, since it reboots. With no plan file the plan is rebuilt from
+  the state file (trusted) or the mount table.
+- **The op set** in the file is the undo of a step: `unmount` (with the mount
+  kind: overlay, attachment, nested overlay, store bind, tmpfs, runtime root),
+  `unmount-in-init-namespace`, `remove-read-only-guard` and `stop-unit`. The
+  kill, shell-kill and drain steps are interpreter phases derived from the plan
+  and the live system rather than plan entries; the bookkeeping (state file,
+  `/run/current-system`, journald and nix-daemon restarts, the runtime journal
+  scrub, the page cache, the power action) stays in `nails-core` after the hot
+  path, in an order that keeps every log line in the relinquished runtime
+  journal the scrub removes.
+- **Deviation: the kill set.** Only the units the hidden configuration added
+  are known at activation. A service the operator starts later, a socket- or
+  D-Bus-activated one, and a tty or SSH session opened during the session run
+  from the overlays too, and no activation-time list can name them. So the hot
+  path also finds, at panic time, every process that can still write through a
+  NAILS mount: its cwd or root, a writable or directory fd, or a shared writable
+  mapping on a NAILS mount id. The ids come from fdinfo and from `O_PATH` opens
+  of the `/proc` magic links, so nothing on the overlay or the hidden volume is
+  `stat()`ed, and a process in another mount namespace is judged against that
+  namespace's mountinfo. A victim in a service cgroup gets a stop job and
+  `cgroup.kill` of the unit's cgroup (never one holding the teardown itself);
+  any other victim, and every interactive shell outside the invocation, a
+  pidfd SIGKILL (no SIGTERM first: exit handlers must not flush hidden data).
+- **Deviation: the graphical session.** The display manager and the operator's
+  `user@<uid>.service` are recorded at activation. The session scope cannot
+  be: activation restarts the display manager and the operator logs back into a
+  new session. It is read at panic time from logind's session records under
+  `/run/systemd/sessions` (what `sd_session_get_type(3)` reads), not from
+  `loginctl` or D-Bus; when they cannot be read every user session is spared.
+- **Without a plan** the early path does nothing and the emergency command runs
+  the same hot path once the configuration names the hidden root, with a plan
+  derived from the mount table. The guards and submount attachments a mount
+  table cannot attribute are then handled as before: the platform policy's
+  guards that are still in place, the attachments by the reconcile's lazy
+  detach of their parent overlay.
+- **Tests.** The executor is unit-tested against an in-memory mount table; the
+  kernel tier (`manager::teardown_plan::kernel_tests`) proves each kind of
+  step's undo on real mounts, the derived plan's order, the presence judgement
+  of both backends, `cgroup.kill` in a delegated cgroup namespace and the whole
+  hot path in a PID namespace (unit cgroup killed, lone writer killed, session
+  spared and its overlay detached lazily).
+
+### Later operations (ADR 0008, ADR 0009)
+
+The plan is the place for the whole-root modes' operations: `SoftReboot{root}`
+(ADR 0008) and the VT switch of the dual-root emergency (ADR 0009) become new
+`Undo` variants recorded by the step that makes them necessary, executed by the
+interpreter after the kills and before the power action. A new variant is a new
+format version, so a binary that cannot run it refuses the plan instead of
+skipping the operation.
+
+### Key wipe first: no-go
+
+The spike question was whether to `FIFREEZE` the hidden filesystem, suspend its
+dm mapping and wipe the key (`dmsetup message <dev> 0 key wipe`) before the
+slower teardown, so a seized machine holds no usable key even if the teardown
+stalls. It is not implemented, not even behind a flag, because it cannot be
+combined safely with the rulings:
+
+- **The power action would stop working.** A frozen filesystem blocks every
+  writer in `sb_start_write`, an uninterruptible sleep, and `sync(2)` waits on
+  it. The shutdown `systemctl poweroff` starts syncs and unmounts, so it hangs
+  on the frozen superblock instead of powering off; "power actions on every
+  outcome" would no longer hold. A raw `reboot(2)` without sync would avoid the
+  hang only by leaving the decoy filesystems unclean, which is itself a trace.
+- **The kill would stop working.** Writers frozen in `sb_start_write` (or in
+  I/O on the suspended mapping) cannot die until the filesystem thaws, so the
+  hidden cgroups never drain and every overlay ends lazily detached, the worst
+  outcome the kill exists to avoid. After the key wipe the mapping can never be
+  resumed, so the filesystem never thaws and the hidden root can never be
+  unmounted cleanly.
+- **The observer sees more, not less.** A suspended mapping with a wiped key is
+  visible in `dmsetup info` (state `SUSPENDED`) and every process touching the
+  hidden root hangs in D-state, which is conspicuous at first glance.
+
+The existing opt-in backend lock (lazy unmount and deferred dm removal) already
+wipes the key as the last reference drops, and `--poweroff` clears it from RAM;
+together they cover the goal without freezing anything.
 
 ## Sources
 
