@@ -1,4 +1,8 @@
 # Test 52: State Corruption
+#
+# The one home of the tampered-state refusal: a stale integrity digest over a
+# changed `last_modified` while a session is active, and over a changed
+# `version` once it is inactive again.
 
 _:
 let
@@ -110,5 +114,49 @@ in
         # Emergency rewrote the corrupt file with a valid state, so status is
         # trustworthy again and reports the completed teardown.
         assert_status_state("Inactive", config_path=headless_config)
+
+    with subtest("a tampered version field blocks the next activation"):
+        # The second corruption vector, and the only place the pre-flight
+        # refusal of a tampered state is tested from a clean Inactive state: the
+        # `version` field changes under the stale digest, so the next activation
+        # must be refused before anything is mounted. (This used to be a subtest
+        # of preflight-state-check.)
+        if machine.execute("mountpoint -q /mnt/data")[0] != 0:
+            if machine.execute("test -e /dev/mapper/data")[0] == 0:
+                machine.succeed("mount /dev/mapper/data /mnt/data")
+            else:
+                machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        machine.succeed(f"test -f {state_path}")
+        tampered_state = json.loads(machine.succeed(f"cat {state_path}"))
+        assert tampered_state.get("integrity_sha256"), (
+            f"Expected an integrity digest in the rewritten state: {tampered_state}"
+        )
+        tampered_state["version"] = tampered_state["version"] + "-tampered"
+        machine.succeed(
+            """cat > %s <<'EOF'
+    %s
+    EOF"""
+            % (state_path, json.dumps(tampered_state, indent=2))
+        )
+
+        rc, stdout, stderr = capture_command(
+            "state-corruption-version-activate",
+            f"nails --config {headless_config} activate --overlay-only --session keep -y",
+        )
+        assert rc != 0, (
+            f"Expected activation failure on a tampered version, got rc={rc}, "
+            f"stdout={stdout!r}, stderr={stderr!r}"
+        )
+        combined = (stdout + stderr).lower()
+        assert "checksum" in combined or "corrupt" in combined, (
+            f"Expected checksum/corruption refusal, got stdout={stdout!r}, stderr={stderr!r}"
+        )
+        # The tampered file leaves the state unknown, which status reports in
+        # its JSON payload while failing closed with the invalid-state exit 6.
+        rc, status = read_status_json_with_rc(config_path=headless_config)
+        assert rc == 6, f"Expected invalid-state exit 6, got rc={rc}: {status}"
+        assert_status_state("unknown", payload=status)
+        assert status.get("posture") == "unknown", status
+        assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
   '';
 }

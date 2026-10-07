@@ -1,29 +1,30 @@
 # Test 20: Preflight State Check Integrity
+#
+# A completed activation and deactivation must leave a signed state file
+# behind. Refusing a tampered state file is covered once, in
+# state/52-state-corruption.nix, for both corruption vectors (a stale digest
+# over a changed `last_modified` while active, and over a changed `version`
+# once inactive).
 
 _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
   assertions = import ./../../lib/assertions.nix;
-  preflightHelpers = import ./../../lib/preflight-helpers.nix;
 in
 {
   name = "preflight-state-check";
   meta.tags = [ "preflight" ];
 
-  baseNode = {
-    python3 = true;
-  };
-
   testScript = _: ''
+    import json
+
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.canonicalDeactivateFn}
     ${testHelpers.readStatusJsonFn}
     ${assertions.assertStatusStateFn}
     ${assertions.assertOverlayMountedFn}
     ${assertions.assertNoOverlaysFn}
-    ${preflightHelpers.runCommandCaptureFn}
-    ${preflightHelpers.commandAssertionsFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -38,34 +39,14 @@ in
         assert_overlay_mounted("/home")
         canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-state-initial")
         assert_status_state("inactive", config_path=config_path)
-
-    with subtest("tampered checksum blocks the next activation"):
+        # The deactivation reboot closed the hidden volume; reopen it to read
+        # the state file the session left behind.
         machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-        machine.succeed(
-            "python3 - <<'PY'\n"
-            "import json\n"
-            "from pathlib import Path\n"
-            "path = Path('/mnt/data/state.json')\n"
-            "payload = json.loads(path.read_text())\n"
-            "payload['version'] = payload['version'] + '-tampered'\n"
-            "path.write_text(json.dumps(payload, indent=2))\n"
-            "PY"
+        persisted = json.loads(machine.succeed("cat /mnt/data/state.json"))
+        assert persisted.get("integrity_sha256"), (
+            f"Expected an integrity digest in the persisted state: {persisted}"
         )
-        result = run_command_capture(
-            "preflight-state-checksum",
-            f"nails --config {config_path} activate --overlay-only --session keep -y",
-        )
-        assert_command_failed(result)
-        combined = (result["stdout"] + result["stderr"]).lower()
-        assert (
-            "checksum" in combined or "corrupt" in combined
-        ), f"Expected checksum/corruption refusal, got: {result}"
-        # The tampered file leaves the state unknown, which status reports in
-        # its JSON payload while failing closed with the invalid-state exit 6.
-        rc, status = read_status_json_with_rc(config_path=config_path)
-        assert rc == 6, f"Expected invalid-state exit 6, got rc={rc}: {status}"
-        assert_status_state("unknown", payload=status)
-        assert status.get("posture") == "unknown", status
-        assert_no_overlays(["/home", "/etc", "/tmp", "/srv"])
+        assert_status_state("inactive", config_path=config_path)
+        machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
 }
