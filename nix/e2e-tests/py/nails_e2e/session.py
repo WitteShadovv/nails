@@ -237,12 +237,17 @@ def assert_hidden_root(machine: Machine, upper: str = DEFAULT_UPPER) -> None:
 def leftover_overlays(findmnt_lines: str) -> list[str]:
     """The overlays in ``findmnt -ln -t overlay -o TARGET,OPTIONS`` output that
     are not the VM's own Nix store. The store is an overlay with its upper in
-    ``/nix/.rw-store``; the VM's initrd mounts it twice, so it may be stacked."""
+    ``/nix/.rw-store``; the VM's initrd mounts it twice, so it may be stacked.
+    The initrd mounts it before the switch to the real root, so the kernel
+    may report the layer paths with the initrd's ``/sysroot`` prefix."""
     leftover = []
     for line in findmnt_lines.splitlines():
         target, _, options = line.strip().partition(" ")
         options = options.strip()
-        if target == "/nix/store" and "upperdir=/nix/.rw-store/" in options:
+        if target == "/nix/store" and (
+            "upperdir=/nix/.rw-store/" in options
+            or "upperdir=/sysroot/nix/.rw-store/" in options
+        ):
             continue
         if line.strip():
             leftover.append(line.strip())

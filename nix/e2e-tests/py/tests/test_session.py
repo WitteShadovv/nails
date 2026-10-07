@@ -118,6 +118,14 @@ class PureHelpersTest(unittest.TestCase):
         residue = session.carried_run_residue(machine, {"/run/a"}, "100")
         self.assertEqual(residue, ["/run/b"])
 
+    def test_the_store_mounted_from_the_initrd_is_no_leftover(self) -> None:
+        store = (
+            "ro,nosuid,nodev,relatime,lowerdir=/sysroot/nix/.ro-store,"
+            "upperdir=/sysroot/nix/.rw-store/upper,"
+            "workdir=/sysroot/nix/.rw-store/work,uuid=on"
+        )
+        self.assertEqual(session.leftover_overlays(f"/nix/store {store}\n"), [])
+
     def test_the_stacked_vm_store_is_no_leftover_but_a_hidden_overlay_is(self) -> None:
         store = (
             "rw,lowerdir=/nix/.ro-store,upperdir=/nix/.rw-store/upper,"
