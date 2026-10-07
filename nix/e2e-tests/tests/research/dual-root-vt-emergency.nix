@@ -505,6 +505,7 @@ in
             assert in_hidden_root(um), "the hidden user manager must run in the hidden root"
         else:
             finding(f"user@{UID} not running (no logind session or manager failed)")
+        # sync-lint: allow sleep -- let the hidden display paint before the screenshot artifact
         time.sleep(2)
         machine.screenshot("hidden-session")
 

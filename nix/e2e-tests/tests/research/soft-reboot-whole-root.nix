@@ -389,7 +389,7 @@ in
 
         Before connecting, poll the full console log (appended directly by the
         driver's reader thread, unlike the one-line-per-second queue behind
-        wait_for_console_text()) until the new backdoor announces itself on
+        the driver's console-text wait) until the new backdoor announces itself on
         ttyS0, and fail at once with diagnostics if the new userspace lands in
         emergency mode or PID 1 freezes. connect() itself stays bounded by an
         alarm as a last resort.

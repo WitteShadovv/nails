@@ -415,6 +415,7 @@ in
         before = decoy_state()
         out = in_session(script)
         machine.succeed("sync")
+        # sync-lint: allow sleep -- settle window for late daemon writes before the after-snapshot; a finding, not a wait
         time.sleep(2)
         after = decoy_state()
         return results(out), out, state_diff(before, after), before, after
@@ -586,6 +587,7 @@ in
         cg = start_hidden_display()
         machine.succeed(f"echo 1 > {cg}/cgroup.kill")
         machine.wait_until_succeeds(f"! grep -q '^populated 1' {cg}/cgroup.events", timeout=10)
+        # sync-lint: allow sleep -- let the console repaint before the screenshot; the probe reports what it sees
         time.sleep(1)
         c = screen("r1a-after-kill")
         finding(f"R1a: screen after the hidden X died on its own VT (still {active_vt()}): {c}")

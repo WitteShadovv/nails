@@ -71,10 +71,15 @@ in
         machine.succeed("systemctl start --no-block nails-emergency-test.service")
         wait_for_emergency_unit(timeout=60)
         assert_no_overlays(["/home", "/etc"])
-        # Longer than RestartSec: a revived service would be active again.
-        machine.sleep(3)
-        state = machine.succeed("systemctl is-active overlay-writer.service || true").strip()
-        assert state != "active", f"the Restart=always writer was revived: {state}"
+        # Watch for longer than RestartSec: a revived service would be active
+        # again at some point inside the window.
+        import time
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            state = machine.succeed("systemctl is-active overlay-writer.service || true").strip()
+            assert state != "active", f"the Restart=always writer was revived: {state}"
+            machine.sleep(0.5)
         machine.fail(f"kill -0 {plain_pid}")
 
     with subtest("nothing was written to the decoy"):

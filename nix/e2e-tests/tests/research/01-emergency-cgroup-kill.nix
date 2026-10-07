@@ -94,7 +94,8 @@ _: {
             f"upperdir=/srv/hidden-{tag}/upper,workdir=/srv/hidden-{tag}/probe-work,index=on "
             f"/srv/probe-{tag} && umount /srv/probe-{tag}"
         )[0] == 0
-        machine.sleep(3)  # longer than RestartSec, to see whether systemd restarts it
+        # sync-lint: allow sleep -- an observation window longer than RestartSec, not a wait for a signal
+        machine.sleep(3)
         state = machine.succeed(f"systemctl is-active research-worker-{tag} || true").strip()
         restarts = machine.succeed(f"systemctl show -p NRestarts --value research-worker-{tag}").strip()
         decoy_written = machine.execute(f"test -e /srv/{tag}/decoy/heartbeat")[0] == 0

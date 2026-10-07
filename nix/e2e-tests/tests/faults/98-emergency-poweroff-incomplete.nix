@@ -49,6 +49,18 @@ in
             "systemd-run --no-block --unit=nails-emergency-poweroff "
             f"nails --config {headless_config} emergency --poweroff"
         )
+        # Bounded: the driver's wait_for_shutdown() has no deadline, so a
+        # power-off that never comes would hold the test until globalTimeout.
+        qemu = machine.process
+        if qemu is not None:
+            try:
+                qemu.wait(timeout=300)
+            except __import__("subprocess").TimeoutExpired:
+                raise AssertionError(
+                    "emergency --poweroff did not power the VM off within 300s\n"
+                    + "--- serial console tail ---\n"
+                    + "\n".join(machine.get_console_log().splitlines()[-100:])
+                ) from None
         machine.wait_for_shutdown()
   '';
 }
