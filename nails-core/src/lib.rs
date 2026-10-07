@@ -147,6 +147,10 @@ mod runtime_safety;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 
+// The captured kernel and systemd output the parser tests read. Test-only.
+#[cfg(any(test, feature = "test-support"))]
+pub mod kernel_fixtures;
+
 // The per-activation runtime scaffolding root: one random-named, volatile tmpfs
 // under /run that holds pivot staging, the vfat snapshot tmpfs and the
 // pre-overlay /nix/store bind, recorded in state and torn down as a unit.

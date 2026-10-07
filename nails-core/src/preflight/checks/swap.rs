@@ -680,3 +680,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "swap_fixture_tests.rs"]
+mod fixture_tests;

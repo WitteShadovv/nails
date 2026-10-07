@@ -792,3 +792,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "service_controller_fixture_tests.rs"]
+mod fixture_tests;

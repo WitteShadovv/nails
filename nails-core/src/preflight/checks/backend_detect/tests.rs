@@ -266,6 +266,37 @@ fn btrfs_anonymous_dev_falls_back_to_mapper_name() {
     assert!(result.message().contains("btrfs on LUKS mapping dm-3"));
 }
 
+/// The captured hidden-root scene (fixture README): the kernel prints the
+/// root's space as `\040` and gives the mount an anonymous device, so the root
+/// is found only through the decoded mount point and the device only through
+/// the mapper name in the source column.
+#[test]
+fn captured_mountinfo_resolves_an_escaped_root_through_its_mapper_name() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(
+        MOUNTINFO,
+        &crate::kernel_fixtures::userns("mountinfo-hidden-root.txt"),
+    );
+    fs.mock_set_directory_contents(Path::new(SYS_BLOCK), vec![PathBuf::from("/sys/block/dm-2")]);
+    fs.mock_set_file_content("/sys/block/dm-2/dm/name", "vault\n");
+    add_device(
+        &fs,
+        "/sys/block/dm-2",
+        "dm-2",
+        Some("CRYPT-LUKS2-00112233445566778899aabbccddeeff-vault"),
+        None,
+        "0",
+    );
+
+    let result = assess(&fs, Path::new("/fixture/mnt/hidden root"));
+    assert!(result.is_pass(), "{}", result.message());
+    assert!(
+        result.message().contains("tmpfs on LUKS mapping dm-2"),
+        "{}",
+        result.message()
+    );
+}
+
 #[test]
 fn kernel_name_source_resolves_through_class_block() {
     let fs = MockFilesystem::new();

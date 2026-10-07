@@ -15,7 +15,7 @@
 
 use super::{
     JournalFdSite, JournaldFdCheck, classify_journald_fd_mounts, fdinfo_is_writable,
-    inspect_journal_fds_of, parse_fdinfo_mnt_id,
+    inspect_journal_fds_of, parse_fdinfo_mnt_id, parse_main_pid,
 };
 use crate::filesystem::{Filesystem, RealFilesystem};
 use crate::test_support::{Rerun, ScratchTmpfs};
@@ -157,6 +157,48 @@ fn captured_fdinfo_and_mountinfo_classify_like_the_live_check() {
     );
     assert_eq!(
         classify_journald_fd_mounts(overlay.mount_id, &both[1..]),
+        (JournaldFdCheck::InOverlay, None)
+    );
+}
+
+/// The real daemon, captured as root in the decoy-journal-leak VM test right
+/// after activation (fixture README): `systemctl show -p MainPID` names the
+/// journald whose stat was captured, and its writable journal fds, judged
+/// against the `/var` overlay in its own mountinfo, have been re-homed.
+#[test]
+fn captured_journald_was_rehomed_onto_the_var_overlay() {
+    use crate::kernel_fixtures::vm;
+    let (Some(main_pid), Some(stat), Some(mountinfo), Some(fds)) = (
+        vm("systemctl-show-journald-mainpid.txt"),
+        vm("proc-stat-journald.txt"),
+        vm("mountinfo-journald.txt"),
+        vm("journald-fds.txt"),
+    ) else {
+        return;
+    };
+    let pid = parse_main_pid(&main_pid).expect("journald runs");
+    assert_eq!(stat.split(' ').next(), Some(pid.to_string().as_str()));
+
+    let overlay = crate::filesystem::parse_mountinfo(&mountinfo)
+        .into_iter()
+        .rfind(|e| e.fstype == "overlay" && e.mount_point == Path::new("/var"))
+        .expect("journald sees the /var overlay");
+    let writable: Vec<JournalFdSite> = fds
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .filter(|(_, target)| target.starts_with("/var/log/journal/"))
+        .filter_map(|(fd, target)| {
+            let fdinfo = vm(&format!("fdinfo-journald-{fd}.txt"))?;
+            fdinfo_is_writable(&fdinfo).then(|| JournalFdSite {
+                target: target.into(),
+                mnt_id: parse_fdinfo_mnt_id(&fdinfo),
+                dev: None,
+            })
+        })
+        .collect();
+    assert!(!writable.is_empty(), "journald writes a persistent journal");
+    assert_eq!(
+        classify_journald_fd_mounts(overlay.mount_id, &writable),
         (JournaldFdCheck::InOverlay, None)
     );
 }

@@ -77,6 +77,16 @@ in
             f"journalctl --grep {hidden_jrnl_token} --no-pager -o cat"
         ), "the canary must be visible in the live (overlaid) journal"
 
+    with subtest("capture the kernel and systemd fixtures of a live session"):
+        # T-139: the parser tests read these (nails-core/tests/fixtures/kernel/
+        # README.md). Read-only, written under /run, never on the decoy disk.
+        machine.copy_from_host(
+            "${../../../../scripts/capture-kernel-fixtures.sh}", "/run/capture-kernel-fixtures.sh"
+        )
+        machine.succeed("bash /run/capture-kernel-fixtures.sh vm /run/kernel-fixtures")
+        machine.copy_from_vm("/run/kernel-fixtures", "kernel-fixtures")
+        machine.succeed("rm -rf /run/kernel-fixtures /run/capture-kernel-fixtures.sh")
+
     with subtest("standard deactivation and reboot to the decoy"):
         canonical_deactivate(
             headless_config, unit_name="nails-deactivate-journal-leak"

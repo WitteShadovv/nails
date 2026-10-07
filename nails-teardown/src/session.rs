@@ -162,6 +162,30 @@ mod tests {
         assert!(!spare.covers("0::/system.slice/worker.service\n"));
     }
 
+    /// logind's records and two processes' cgroups as captured in a NixOS VM
+    /// with a graphical autologin session (fixture README in nails-core). The
+    /// capture may not exist yet; the test then says so and returns.
+    #[test]
+    fn captured_logind_records_spare_the_session_and_not_journald() {
+        let vm = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../nails-core/tests/fixtures/kernel/vm-graphical");
+        let read = |name: &str| std::fs::read_to_string(vm.join(name)).ok();
+        let (Some(leader), Some(journald)) = (
+            read("proc-cgroup-session-leader.txt"),
+            read("proc-cgroup-journald.txt"),
+        ) else {
+            eprintln!("the graphical VM capture is not taken yet (nails-core fixture README)");
+            return;
+        };
+        let spare = SpareSet::at_panic(&[], &vm.join("logind-sessions"));
+        assert!(
+            !spare.spares_all_user_sessions(),
+            "the records are readable"
+        );
+        assert!(spare.covers(&leader), "the graphical session: {leader}");
+        assert!(!spare.covers(&journald), "a system service: {journald}");
+    }
+
     #[test]
     fn unreadable_session_records_spare_every_user_session() {
         let spare = SpareSet::at_panic(&[], Path::new("/nonexistent/sessions"));

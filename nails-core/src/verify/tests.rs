@@ -9,13 +9,20 @@ use crate::MockFilesystem;
 use crate::filesystem::PathKind;
 
 /// A `/proc/self/mountinfo` line for an overlay at `mount_point` whose upper
-/// layer lives on the hidden volume `/mnt/hidden`, i.e. one NAILS mounted.
+/// layer lives on the hidden volume `/mnt/hidden`, i.e. one NAILS mounted: the
+/// kernel's own line for the captured `/fixture/home` overlay (fixture README),
+/// moved to these paths, so the fields and options are the ones it prints.
 #[cfg(test)]
 fn hidden_overlay_line(mount_point: &str) -> String {
+    let scene = crate::kernel_fixtures::userns("mountinfo-hidden-root.txt");
+    let line = scene
+        .lines()
+        .find(|l| l.contains(" /fixture/home ") && l.contains(" - overlay "))
+        .expect("the captured /home overlay");
     format!(
-        "30 1 0:50 / {mount_point} rw,relatime - overlay overlay \
-         rw,lowerdir={mount_point},upperdir=/mnt/hidden/overlays/x/upper,\
-         workdir=/mnt/hidden/overlays/x/work\n"
+        "{}\n",
+        line.replace("/fixture/mnt/hidden\\040root", "/mnt/hidden")
+            .replace("/fixture/home", mount_point)
     )
 }
 

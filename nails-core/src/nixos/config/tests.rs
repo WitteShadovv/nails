@@ -307,15 +307,18 @@ fn test_verify_base_config_clean_flags_mapper_device_from_mountinfo() {
     .unwrap();
     fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
 
-    // mountinfo maps the configured hidden root to /dev/mapper/vault.
+    // The captured hidden-root scene (fixture README): the kernel's own line
+    // for a filesystem from /dev/mapper/vault at "/fixture/mnt/hidden root",
+    // printed with the space octal-escaped.
     <MockFilesystem as Filesystem>::write_file_content(
         &fs,
         std::path::Path::new("/proc/self/mountinfo"),
-        "36 35 254:0 / /mnt/vault rw,relatime shared:1 - ext4 /dev/mapper/vault rw\n",
+        &crate::kernel_fixtures::userns("mountinfo-hidden-root.txt"),
     )
     .unwrap();
 
-    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/vault")).unwrap();
+    let is_clean =
+        verify_base_config_clean(&fs, std::path::Path::new("/fixture/mnt/hidden root")).unwrap();
     assert!(
         !is_clean,
         "A reference to the hidden root's backing device must be flagged"
@@ -379,7 +382,7 @@ fn test_verify_base_config_clean_skips_malformed_mountinfo_line() {
 }
 
 #[test]
-fn test_verify_base_config_clean_resolves_escaped_mountpoint() {
+fn test_verify_base_config_clean_ignores_a_device_backing_another_mount() {
     let fs = MockFilesystem::new();
     let base_config = std::path::PathBuf::from("/etc/nixos/hardware-configuration.nix");
 
@@ -390,19 +393,19 @@ fn test_verify_base_config_clean_resolves_escaped_mountpoint() {
     )
     .unwrap();
     fs.mock_set_files_with_pattern("/etc/nixos", ".nix", &[&base_config]);
-
-    // The mount point contains a space, written by the kernel as \040.
     <MockFilesystem as Filesystem>::write_file_content(
         &fs,
         std::path::Path::new("/proc/self/mountinfo"),
-        "36 35 254:0 / /mnt/my\\040vault rw - ext4 /dev/mapper/vault rw\n",
+        &crate::kernel_fixtures::userns("mountinfo-hidden-root.txt"),
     )
     .unwrap();
 
-    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/mnt/my vault")).unwrap();
+    // In the captured scene /fixture/home is an overlay, not /dev/mapper/vault:
+    // the device backs another mount, so it is no trace of this hidden root.
+    let is_clean = verify_base_config_clean(&fs, std::path::Path::new("/fixture/home")).unwrap();
     assert!(
-        !is_clean,
-        "An octal-escaped mount point must resolve to the hidden root and flag its device"
+        is_clean,
+        "A device that does not back the configured hidden root is not flagged"
     );
 }
 

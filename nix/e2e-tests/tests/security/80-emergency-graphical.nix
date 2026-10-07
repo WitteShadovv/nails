@@ -123,6 +123,16 @@ in
         machine.wait_until_succeeds(xorg_pgrep, timeout=60)
         machine.wait_until_succeeds("systemctl is-active user@1000.service", timeout=60)
 
+        # T-139: capture logind's records and the session's cgroups for the
+        # parser tests (nails-core/tests/fixtures/kernel/README.md). Read-only,
+        # under /run; the desktop snapshot below is taken after it.
+        machine.copy_from_host(
+            "${../../../../scripts/capture-kernel-fixtures.sh}", "/run/capture-kernel-fixtures.sh"
+        )
+        machine.succeed("bash /run/capture-kernel-fixtures.sh vm /run/kernel-fixtures")
+        machine.copy_from_vm("/run/kernel-fixtures", "kernel-fixtures-graphical")
+        machine.succeed("rm -rf /run/kernel-fixtures /run/capture-kernel-fixtures.sh")
+
         # Snapshot the live desktop immediately before the teardown.
         dm_active_enter_before = read_systemd_active_enter_monotonic("display-manager.service")
         dm_main_pid_before = machine.succeed(

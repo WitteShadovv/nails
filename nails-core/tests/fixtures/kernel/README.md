@@ -31,36 +31,58 @@ The kernel therefore prints the comma in the lower layer's name as a bare
 back as `\134\054`; that form is pinned in
 `parse_overlay_opts_decodes_the_doubly_escaped_kernel_form`.
 
+It then builds a second scene, `mountinfo-hidden-root.txt`: a tmpfs whose
+source is `/dev/mapper/vault`, mounted at `/fixture/mnt/hidden root` (the kernel
+prints the space as `\040`), a `/fixture/home` overlay whose upper and work
+directories live on it, and a `/fixture/nix/store` overlay shadowed by a later
+`/fixture/nix` overlay. It records the stat and status of a child in its own
+session and process group whose comm is `x) (y z`, and `/proc/swaps`, which is
+not namespaced: each file name is rewritten to `/fixture/swapN` and re-padded
+the way the kernel pads it.
+
 | File | Used by |
 | --- | --- |
 | `mountinfo-overlay-scene.txt` | `filesystem::mountinfo` tests and the journald fd classifier test |
 | `fdinfo-append-base.txt` | journald fd classifier test (the stale fd still on the base `/var`) |
 | `fdinfo-append-overlay.txt` | journald fd classifier test (the fd re-homed onto the overlay) |
 | `fdinfo-readonly-overlay.txt` | journald fd classifier test (a read-only fd, which is never a leak) |
+| `mountinfo-hidden-root.txt` | `nixos::config` backing-device tests, `verify` overlay-line tests, the `backend_detect` escaped-root test |
+| `proc-swaps.txt` | `preflight::checks::swap` fixture tests |
 
-## `vm/`: captured as root inside a NixOS test VM
+## `vm/` and `vm-graphical/`: captured as root inside NixOS test VMs
 
-Not committed yet. The VM capture records the following:
+Two VM tests run `capture-kernel-fixtures.sh vm` and keep the result in their
+output directory:
 
-- the host's and journald's real mountinfo while a session overlays `/var`;
-- journald's journal fds, with their fdinfo;
-- `/proc/<pid>/stat` and `/proc/<pid>/status`, and `/proc/swaps`;
-- the `systemctl list-units`, `is-active` and `show` output, and the
-  `loginctl list-sessions` and `show-session` output, each in exactly the
-  invocation the code uses.
+- `security/83-decoy-journal-leak.nix` (`just e2e decoy-journal-leak`), right
+  after activation with `/var` overlaid and a persistent journal, writes
+  `kernel-fixtures/`. Copy `result/kernel-fixtures/` to `vm/`.
+- `security/80-emergency-graphical.nix` (`just e2e emergency-graphical`), with
+  the lightdm autologin session up after activation, writes
+  `kernel-fixtures-graphical/`. Copy `result/kernel-fixtures-graphical/` to
+  `vm-graphical/`.
 
-To produce it, add these lines to
-`nix/e2e-tests/tests/security/83-decoy-journal-leak.nix` right after the
-`nails ... activate` call and the `logger` line. That test keeps a persistent
-journal and overlays `/var`.
+Each capture holds:
 
-```python
-        machine.copy_from_host("${../../../../scripts/capture-kernel-fixtures.sh}", "/tmp/capture.sh")
-        machine.succeed("bash /tmp/capture.sh vm /tmp/kernel-fixtures")
-        machine.copy_from_vm("/tmp/kernel-fixtures", "kernel-fixtures")
-```
+- the host's and journald's mountinfo, journald's journal fds with their
+  fdinfo, and journald's `stat`, `status` and `cgroup`;
+- `/proc/swaps`;
+- `systemctl list-units` (`--all` and `--state=active`), `systemctl is-active`
+  and `systemctl show -p MainPID --value systemd-journald.service`, each in
+  exactly the invocation the code uses;
+- `loginctl show-seat seat0 -p ActiveSession --value`, the active session's
+  `User`, the cgroup of its leader, and logind's session records from
+  `/run/systemd/sessions`.
 
-Then run `just e2e decoy-journal-leak` and copy
-`result/kernel-fixtures/kernel-fixtures/` (the test's output directory) to
-`nails-core/tests/fixtures/kernel/vm/`. Drop the lines again afterwards. The
-capture is a one-off; it is not part of the suite.
+Until a capture is committed, the tests that read it print that it is missing
+and return (`nails_core::kernel_fixtures::vm`):
+
+| File | Used by |
+| --- | --- |
+| `vm/systemctl-list-units-*.txt` | `parse_active_units` fixture tests (`service_controller`) |
+| `vm/proc-swaps.txt` | `classify_swap` fixture test |
+| `vm/systemctl-show-journald-mainpid.txt`, `vm/proc-stat-journald.txt`, `vm/mountinfo-journald.txt`, `vm/journald-fds.txt`, `vm/fdinfo-journald-*.txt` | the journald re-home fixture test (`journald_fd` kernel tests) |
+| `vm-graphical/logind-sessions/`, `vm-graphical/proc-cgroup-*.txt` | `nails-teardown` session spare-set test |
+
+Review a capture before committing it: the VM is synthetic, but check it anyway
+for anything that should not be published.
