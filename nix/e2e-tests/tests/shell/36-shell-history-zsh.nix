@@ -66,6 +66,9 @@ in
             f"install -m 0600 -o testuser -g users /dev/null {HISTORY}"
             f" && printf 'lower-history-entry\\n' > {HISTORY}"
         )
+        # Without a ~/.zshrc, zsh starts its new-user wizard, which eats what
+        # the test types next.
+        machine.succeed("install -m 0644 -o testuser -g users /dev/null /home/testuser/.zshrc")
         decoy_hash = history_hash()
         canonical_activate(CONFIG, "--overlay-only", "activate")
 

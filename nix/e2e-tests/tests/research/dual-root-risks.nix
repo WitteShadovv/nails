@@ -904,14 +904,23 @@ in
                 break
             time.sleep(5)
         finding(f"R3 control (no inhibitor): logind idle action fired = {fired}: {idle_lines(c0)[:2]}")
-        machine.succeed(
-            f"systemd-run --unit=aux-inhibit --slice={SLICE} --collect "
-            f"{SW}/systemd-inhibit --what=idle:sleep:handle-lid-switch --mode=block "
-            "--who=session --why=busy /run/current-system/sw/bin/sleep infinity"
-        )
-        machine.wait_until_succeeds("systemd-inhibit --list --no-legend | grep -q busy")
+        # The control's idle suspend may still be running: logind refuses an
+        # inhibitor for an operation in progress, so take it again until held.
+        def inhibitor_held(_last_try: bool) -> bool:
+            if machine.execute("systemd-inhibit --list --no-legend | grep -q busy")[0] == 0:
+                return True
+            machine.execute(
+                "systemctl reset-failed aux-inhibit.service 2>/dev/null; "
+                f"systemd-run --unit=aux-inhibit --slice={SLICE} --collect "
+                f"{SW}/systemd-inhibit --what=idle:sleep:handle-lid-switch --mode=block "
+                "--who=session --why=busy /run/current-system/sw/bin/sleep infinity"
+            )
+            return False
+
+        retry(inhibitor_held, timeout_seconds=120)
         machine.succeed("rm -f /run/suspend-probe")
         c1 = cursor()
+        # sync-lint: allow sleep -- an observation window: nothing may happen in it
         time.sleep(75)
         lines = idle_lines(c1)
         finding(f"R3 with the inhibitor: idle actions in 75 s: {lines}")

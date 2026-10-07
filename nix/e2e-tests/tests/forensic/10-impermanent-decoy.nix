@@ -58,7 +58,8 @@ in
         count = machine.succeed("systemctl show -p SoftRebootsCount --value").strip()
         assert count == "0", f"SoftRebootsCount={count}"
         upper = machine.succeed(
-            "find /mnt/data/root/upper -mindepth 1 2>/dev/null | head -20"
+            # No upper at all is the expected case: find fails then.
+            "{ find /mnt/data/root/upper -mindepth 1 2>/dev/null || true; } | head -20"
         ).strip()
         assert upper == "", f"activation wrote into the hidden upper: {upper}"
         status = read_status_json(config_path=CONFIG)

@@ -263,8 +263,12 @@ def assert_decoy_root(machine: Machine) -> None:
     overlays = machine.succeed("findmnt -ln -t overlay -o TARGET,OPTIONS || true")
     leftover = leftover_overlays(overlays)
     assert not leftover, f"overlay mounts left on the decoy: {leftover}"
+    # No overlay layered on a hidden upper, no bind the session carried, and
+    # nothing in the runtime directory. (A test may mount its own scratch
+    # filesystem on the hidden volume; that is not a session leftover.)
     machine.succeed(
-        "! grep -qE '/root/(upper|work|mounts|decoy)|/overlay-runtime/' "
+        "! grep -qE "
+        "'dir=[^ ,]*/root/(upper|work|mounts)|/root/decoy/|/overlay-runtime/' "
         "/proc/self/mountinfo"
     )
 
