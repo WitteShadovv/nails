@@ -5,6 +5,10 @@
 # hidden canaries and every artifact-indicator token must be absent from the
 # post-emergency image, measured against the baseline. (The emergency test lives
 # at 08 rather than 80 because forensic/80 is taken by the ESP/NVRAM invariant.)
+#
+# As in forensic/06, the images are also compared by MAC times and content
+# hashes against a plain-reboot control run, so an emergency teardown that left
+# a decoy file modified in place fails too.
 
 { self, pkgs, ... }:
 let
@@ -18,8 +22,9 @@ in
   name = "post-emergency-image";
   meta.tags = [ "forensic" ];
 
-  # Disk imaging across the lineage plus the emergency teardown; generous margin.
-  globalTimeout = 1800;
+  # Disk imaging three times, an extra reboot for the control run and three
+  # carve-and-hash passes around the emergency teardown; generous margin.
+  globalTimeout = 2700;
 
   nodes = {
     machine =
@@ -53,10 +58,24 @@ in
     write_headless_config(headless_config, overlay_var=True)
 
     with subtest("capture the decoy baseline image"):
+        # The hidden-volume mount point is a permanent part of the decoy; create
+        # it before the baseline so the new /mnt entry is not read as drift.
+        machine.succeed("mkdir -p /mnt/data")
         baseline = disk_forensics.snapshot(machine, "baseline")
         baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline))
         registry_tokens = load_registry_tokens()
         baseline_registry_hits = disk_forensics.run_strings_scan(baseline, registry_tokens)
+        baseline_state = disk_forensics.image_state(baseline, "baseline", machine)
+
+    with subtest("control run: plain reboots with no hidden session"):
+        # The session below spans two boots (the one after this snapshot and the
+        # one after the teardown reboots), so the control spans two plain boots.
+        # Whatever changes here is boot noise, not the hidden session.
+        machine.shutdown()
+        machine.start()
+        machine.wait_for_unit("multi-user.target")
+        control = disk_forensics.snapshot(machine, "control")
+        control_state = disk_forensics.image_state(control, "control", machine)
 
     with subtest("activate and plant hidden canaries"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -103,5 +122,11 @@ in
             f"image: {sorted(new_registry)}"
         )
         print("✓ post-emergency image clean of canaries and registry tokens")
+
+    with subtest("existing decoy inodes keep their MAC times and contents"):
+        post_state = disk_forensics.image_state(post, "post", machine)
+        disk_forensics.assert_mac_unchanged(
+            machine, baseline_state, control_state, post_state
+        )
   '';
 }

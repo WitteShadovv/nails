@@ -7,6 +7,12 @@
 # (the positive control). The old test ran `fls` against the LUKS ciphertext of
 # the hidden volume and could neither see a leak nor fail; this one images the
 # decoy root while the VM is off, the way a seized disk would be read.
+#
+# The same two controls cover the MAC-time and content-hash diff the other image
+# tests assert (forensic/05, 06, 08 and the tcrypt backend test): a decoy file
+# created before the baseline and then modified in place must be the one and
+# only unexplained change between a plain-boot control span and the positive
+# span, so the diff both catches an in-place edit and stays quiet otherwise.
 
 { self, pkgs, ... }:
 let
@@ -17,8 +23,9 @@ in
   meta.tags = [ "forensic" ];
 
   # Imaging the root disk several times (shutdown, qemu-img convert, restart)
-  # takes longer than a single-boot test; measured runtime leaves margin here.
-  globalTimeout = 1800;
+  # and three carve-and-hash passes take longer than a single-boot test;
+  # measured runtime leaves margin here.
+  globalTimeout = 2400;
 
   nodes = {
     machine =
@@ -52,13 +59,19 @@ in
     def kept(paths):
         return sorted(p for p in paths if not allowlist.search(p))
 
+    # An ordinary decoy document outside every volatile path, edited in place in
+    # the positive control below.
+    machine.succeed("mkdir -p /srv && printf 'notes\\n' > /srv/decoy-notes.txt && sync")
+
     with subtest("null control: a plain boot introduces no disk findings"):
         baseline = disk_forensics.snapshot(machine, "baseline")
+        baseline_state = disk_forensics.image_state(baseline, "baseline", machine)
         baseline_paths = disk_forensics.fls_paths(disk_forensics.run_fls(baseline))
 
         # snapshot() already power-cycles the machine, so a second snapshot is a
         # second boot on the same disk lineage: the null control.
         reboot_snap = disk_forensics.snapshot(machine, "reboot")
+        reboot_state = disk_forensics.image_state(reboot_snap, "reboot", machine)
         reboot_paths = disk_forensics.fls_paths(disk_forensics.run_fls(reboot_snap))
 
         introduced = kept(disk_forensics.diff(baseline_paths, reboot_paths))
@@ -88,6 +101,9 @@ in
         # nix-store --add is the stable spelling; `nix store add-file` needs the
         # nix-command experimental feature, which the decoy VM leaves disabled.
         machine.succeed(f"nix-store --add /tmp/{store_token}")
+        # An existing decoy file modified in place: no new name, no token, only
+        # its MAC times and contents change.
+        machine.succeed("printf 'edited\\n' >> /srv/decoy-notes.txt")
         # Force the journal and filesystem to disk before imaging.
         machine.succeed("journalctl --sync 2>/dev/null || journalctl --flush || true")
         machine.succeed("sync")
@@ -113,5 +129,31 @@ in
             "positive control failed: the store scan did not see the added path"
         )
         print("✓ positive control: fls, strings, journal and store all caught the leak")
+
+    with subtest("the MAC-time and content diff catches the in-place edit and nothing else"):
+        positive_state = disk_forensics.image_state(positive, "positive", machine)
+        # baseline -> reboot is one plain boot; reboot -> positive is one boot
+        # plus the writes above, of which only the /srv edit touches an existing
+        # inode outside the volatile paths.
+        # `nix-store --add` legitimately changes the store's directories, so the
+        # whole of /nix is volatile here.
+        volatile = re.compile(
+            r"(^|/)nix/|" + disk_forensics.DEFAULT_IMAGE_VOLATILE.pattern
+        )
+        result = disk_forensics.mac_diff(
+            baseline_state, reboot_state, positive_state, volatile
+        )
+        disk_forensics.write_artifact(machine, "mac-diff.txt", result.report or "(none)")
+        assert "srv/decoy-notes.txt" in result.left, (
+            f"positive control failed: the MAC diff missed the in-place edit:\n{result.report}"
+        )
+        assert {"content", "mtime", "size"} <= set(result.left["srv/decoy-notes.txt"]), (
+            result.report
+        )
+        others = {p: f for p, f in result.left.items() if p != "srv/decoy-notes.txt"}
+        assert not others, (
+            f"null control failed: one plain boot left unexplained changes:\n{result.report}"
+        )
+        print("✓ MAC diff: the in-place edit is the only unexplained change")
   '';
 }

@@ -12,6 +12,10 @@
 # which the forensic harness never images -- only the decoy root qcow2 is converted and scanned, so
 # the hidden container is out of frame exactly as it would be post-seizure.
 #
+# As in forensic/06, the images are also compared by MAC times and content
+# hashes against a plain-reboot control run, so a decoy file modified in place
+# fails the test even when it carries no token.
+#
 # This is a nightly/manual backend test, not part of the PR smoke lane (it is not
 # in `ciNames`). cryptsetup can open a tcrypt volume but not create one, so the
 # container is generated in-VM with the `veracrypt` console tool. See the
@@ -40,7 +44,7 @@ in
 
   # VeraCrypt container creation (outer + hidden) plus the imaging lineage and an
   # activate/deactivate cycle; generous margin for the slow volume formatting.
-  globalTimeout = 2400;
+  globalTimeout = 3300;
 
   nodes = {
     machine =
@@ -82,10 +86,24 @@ in
     write_headless_config(headless_config, overlay_var=True)
 
     with subtest("capture the decoy baseline image"):
+        # The hidden-volume mount point is a permanent part of the decoy; create
+        # it before the baseline so the new /mnt entry is not read as drift.
+        machine.succeed("mkdir -p /mnt/data")
         baseline = disk_forensics.snapshot(machine, "baseline")
         baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline))
         registry_tokens = load_registry_tokens()
         baseline_registry_hits = disk_forensics.run_strings_scan(baseline, registry_tokens)
+        baseline_state = disk_forensics.image_state(baseline, "baseline", machine)
+
+    with subtest("control run: plain reboots with no hidden session"):
+        # The session below spans two boots (the one after this snapshot and the
+        # one after the teardown reboots), so the control spans two plain boots.
+        # Whatever changes here is boot noise, not the hidden session.
+        machine.shutdown()
+        machine.start()
+        machine.wait_for_unit("multi-user.target")
+        control = disk_forensics.snapshot(machine, "control")
+        control_state = disk_forensics.image_state(control, "control", machine)
 
     with subtest("create a VeraCrypt hidden volume on the secondary disk"):
         # VALIDATE ON A NIX HOST: the exact `veracrypt --text --create` flags for
@@ -176,5 +194,11 @@ in
             f"image: {sorted(new_registry)}"
         )
         print("✓ post-standard image clean with a VeraCrypt hidden-volume backend")
+
+    with subtest("existing decoy inodes keep their MAC times and contents"):
+        post_state = disk_forensics.image_state(post, "post", machine)
+        disk_forensics.assert_mac_unchanged(
+            machine, baseline_state, control_state, post_state
+        )
   '';
 }

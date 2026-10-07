@@ -252,6 +252,22 @@ Do not violate:
 - non-root `testuser`
 - no softened assertions (see [Assertions must be able to fail](#assertions-must-be-able-to-fail))
 
+### The disk-image oracle
+
+The forensic image tests read the powered-off decoy root from the host with
+`lib/disk_forensics.py`. Names and tokens (`fls`, the byte scan, the journal
+and store carves) miss a decoy file modified in place, so forensic/05, 06, 08
+and the tcrypt backend test also diff MAC times and content hashes:
+`image_state` takes a sleuthkit bodyfile (kept under `forensics/` in the test
+output, ready for `mactime -b`) and a SHA-256 of every file, and
+`assert_mac_unchanged` fails on any change to an existing inode that a
+control run (the same number of plain reboots, no session) and the volatile
+allowlist do not explain. atime drift is reported, not asserted.
+forensic-clean (04) is the oracle's own null and positive control.
+
+A Plaso (log2timeline) super-timeline lane was considered; Plaso is not
+packaged in nixpkgs, so there is none. The bodyfiles feed `mactime` directly.
+
 ## Assertions must be able to fail
 
 A test earns its keep only when a regression turns it red, so an assertion that

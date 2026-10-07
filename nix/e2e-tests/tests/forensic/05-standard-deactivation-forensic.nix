@@ -7,6 +7,12 @@
 # measured against the baseline so decoy-native strings do not raise false
 # findings. The old test grepped a live filesystem and ran `fls` on the LUKS
 # ciphertext, so it could not observe a leak onto the decoy.
+#
+# Tokens miss a decoy file modified in place. So, as in forensic/06, each image
+# also yields a bodyfile and per-file content hashes, and a control run (the
+# same number of plain reboots, no session) records the boot noise: the hidden
+# session may change no inode, mode, owner, size, mtime, ctime, crtime or file
+# contents beyond it and the volatile allowlist.
 
 { self, pkgs, ... }:
 let
@@ -19,8 +25,9 @@ in
   name = "standard-deactivation-forensic";
   meta.tags = [ "forensic" ];
 
-  # Disk imaging across the lineage plus two activation cycles; generous margin.
-  globalTimeout = 1800;
+  # Disk imaging four times (baseline, control, post), an extra reboot for the
+  # control run and three carve-and-hash passes; generous margin.
+  globalTimeout = 2700;
 
   nodes = {
     machine =
@@ -57,6 +64,9 @@ in
     write_headless_config(headless_config, overlay_var=True)
 
     with subtest("capture the decoy baseline image"):
+        # The hidden-volume mount point is a permanent part of the decoy; create
+        # it before the baseline so the new /mnt entry is not read as drift.
+        machine.succeed("mkdir -p /mnt/data")
         baseline = disk_forensics.snapshot(machine, "baseline")
         baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline))
         registry_tokens = load_registry_tokens()
@@ -72,6 +82,17 @@ in
         baseline_registry_hits = disk_forensics.run_decoy_file_scan(
             baseline, registry_tokens, offset=baseline_offset
         )
+        baseline_state = disk_forensics.image_state(baseline, "baseline", machine)
+
+    with subtest("control run: plain reboots with no hidden session"):
+        # The session below spans two boots (the one after this snapshot and the
+        # one after the teardown reboots), so the control spans two plain boots.
+        # Whatever changes here is boot noise, not the hidden session.
+        machine.shutdown()
+        machine.start()
+        machine.wait_for_unit("multi-user.target")
+        control = disk_forensics.snapshot(machine, "control")
+        control_state = disk_forensics.image_state(control, "control", machine)
 
     with subtest("activate and plant hidden canaries"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
@@ -181,5 +202,11 @@ in
                 f"image: {sorted(new_registry)}\n{detail}"
             )
         print("✓ post-standard image clean of canaries and registry tokens")
+
+    with subtest("existing decoy inodes keep their MAC times and contents"):
+        post_state = disk_forensics.image_state(post, "post", machine)
+        disk_forensics.assert_mac_unchanged(
+            machine, baseline_state, control_state, post_state
+        )
   '';
 }
