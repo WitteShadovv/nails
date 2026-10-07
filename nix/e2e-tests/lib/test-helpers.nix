@@ -170,14 +170,15 @@
     def canonical_deactivate(config_path, label="deactivate"):
         import shlex
 
-        from nails_e2e import session
+        # Aliased, so the test's own `session` import is never shadowed.
+        from nails_e2e import session as _session
 
-        timings = session.follow_soft_reboot(
+        timings = _session.follow_soft_reboot(
             machine,
             "nails --config " + shlex.quote(config_path) + " deactivate -y",
             label,
         )
-        session.assert_decoy_root(machine)
+        _session.assert_decoy_root(machine)
         machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
         return timings
   '';
@@ -191,10 +192,11 @@
     def canonical_activate(config_path, extra_args="", label="activate", env=""):
         import shlex
 
-        from nails_e2e import session
+        # Aliased, so the test's own `session` import is never shadowed.
+        from nails_e2e import session as _session
 
         log = "/mnt/data/" + label + ".log"
-        timings = session.follow_soft_reboot(
+        timings = _session.follow_soft_reboot(
             machine,
             env
             + " nails --config "
@@ -209,7 +211,7 @@
             label,
         )
         print(machine.succeed("cat " + log + " || true"))
-        session.assert_hidden_root(machine)
+        _session.assert_hidden_root(machine)
         return timings
   '';
 }

@@ -152,13 +152,14 @@ in
         assert runs(canary, "overlay") == 0, "a canary run was logged on an overlay"
 
     with subtest("activate: the hidden session starts with the timer masked"):
-        log = "/mnt/data/activate.log"
+        activate_log = "/mnt/data/activate.log"
         session.follow_soft_reboot(
             machine,
-            f"su testuser -c 'sudo nails --config {CONFIG} activate -y --overlay-only' > {log} 2>&1",
+            f"su testuser -c 'sudo nails --config {CONFIG} activate -y --overlay-only' "
+            f"> {activate_log} 2>&1",
             "activate",
         )
-        print(machine.succeed(f"cat {log} || true"))
+        print(machine.succeed(f"cat {activate_log} || true"))
         session.assert_hidden_root(machine)
         link_target = machine.succeed(
             f"readlink {user_unit_dir}/{canary}.timer"

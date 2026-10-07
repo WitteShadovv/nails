@@ -38,7 +38,6 @@ in
   };
 
   testScript = _: ''
-    from nails_e2e import session
 
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.readStatusJsonFn}
