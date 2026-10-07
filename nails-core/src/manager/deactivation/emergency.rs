@@ -166,6 +166,9 @@ impl<F: Filesystem> NailsManager<F> {
     /// state is then `Degraded`), or the decoy-restore error of a trusted
     /// teardown. The RAM-backed scrub runs either way.
     pub fn finish_emergency(&mut self, hot: HotReport) -> Result<DeactivationReport> {
+        // Load the cache: the decoy and hidden systems recorded at activation
+        // are read from it (a corrupt file loads as the safe default).
+        let _ = self.current_state();
         let state = self.current_state_with_outcome();
         let readable = |s: &SystemState| {
             state
