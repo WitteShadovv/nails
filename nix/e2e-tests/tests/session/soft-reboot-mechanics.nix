@@ -566,6 +566,11 @@ in
     for p in /run/user/*; do
         [ -d "$p" ] && rmdir -- "$p" 2>/dev/null
     done
+    # Restore utab first: the utab snapshot is younger than the /run snapshot,
+    # so the sweep below would delete it before it could be used.
+    if [ -f /run/nails-utab-snapshot ] && [ -e /run/mount/utab ]; then
+        cat /run/nails-utab-snapshot > /run/mount/utab
+    fi
     if [ -r "$snap" ]; then
         # The same two levels the snapshot and the residue check cover.
         mapfile -t entries < <(find /run -xdev -mindepth 1 -maxdepth 2 \( -path /run/nextroot \
@@ -574,9 +579,6 @@ in
         for p in "''${entries[@]}"; do
             grep -qxF -- "$p" "$snap" || del "$p"
         done
-    fi
-    if [ -f /run/nails-utab-snapshot ] && [ -e /run/mount/utab ]; then
-        cat /run/nails-utab-snapshot > /run/mount/utab
     fi
     rm -f -- "$snap" /run/nails-utab-snapshot /run/nails-leave-scrub.sh
     last=$(dd if=/dev/kmsg bs=16384 iflag=nonblock 2>/dev/null | grep -av '^ ' | tail -n 1 | cut -d, -f2)
