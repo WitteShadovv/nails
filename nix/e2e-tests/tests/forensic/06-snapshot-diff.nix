@@ -69,14 +69,9 @@ in
         )
     )
 
-    # Image-side allowlist: the same volatile classes, but on fls relative paths
-    # (no leading slash, deleted entries included).
-    image_volatile = re.compile(
-        r"(^|/)("
-        r"var/|run/|tmp/|etc/machine-id|etc/resolv\.conf|etc/ssh/ssh_host_|"
-        r"etc/\.(updated|clean)|nix/var/|nix/store/\.links"
-        r")"
-    )
+    # Image-side allowlist: the same volatile classes, on fls relative paths (no
+    # leading slash, deleted entries included); shared with the other image tests.
+    image_volatile = disk_forensics.DEFAULT_IMAGE_VOLATILE
 
     def listed(scope):
         out = machine.succeed(f"find {scope} -type f 2>/dev/null | sort")
@@ -97,24 +92,6 @@ in
 
     def kept_image(paths):
         return sorted(path for path in paths if not image_volatile.search(path))
-
-    def image_state(image, label):
-        # The bodyfile (kept as a test artifact) and the content hashes of one
-        # image, read from the outside while the machine is off.
-        offset = disk_forensics.partition_offset(image)
-        body_text, body = disk_forensics.run_bodyfile(image, offset)
-        disk_forensics.write_artifact(machine, f"{label}.body", body_text)
-        hashes = disk_forensics.run_content_hashes(image, offset=offset)
-        return disk_forensics.bodyfile_index(body), hashes
-
-    def changes(before, after, fields=disk_forensics.MAC_FIELDS):
-        # (path -> changed fields) between two image states: MAC fields of the
-        # inodes allocated in both, plus content changes.
-        merged = disk_forensics.mac_changes(before[0], after[0], fields)
-        if fields == disk_forensics.MAC_FIELDS:
-            for path, kinds in disk_forensics.hash_changes(before[1], after[1]).items():
-                merged.setdefault(path, set()).update(kinds)
-        return merged
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
@@ -148,7 +125,7 @@ in
         initial_os_root = os_root_fingerprint()
         baseline_image = disk_forensics.snapshot(machine, "baseline")
         baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline_image))
-        baseline_state = image_state(baseline_image, "baseline")
+        baseline_state = disk_forensics.image_state(baseline_image, "baseline", machine)
 
     with subtest("control run: plain reboots with no hidden session"):
         # The workflow below spans two boots (the one after the control snapshot
@@ -158,9 +135,9 @@ in
         machine.start()
         machine.wait_for_unit("multi-user.target")
         control_image = disk_forensics.snapshot(machine, "control")
-        control_state = image_state(control_image, "control")
-        control_changes = changes(baseline_state, control_state)
-        control_atime = changes(
+        control_state = disk_forensics.image_state(control_image, "control", machine)
+        control_changes = disk_forensics.image_changes(baseline_state, control_state)
+        control_atime = disk_forensics.image_changes(
             baseline_state, control_state, disk_forensics.MAC_FIELDS_OBSERVED
         )
         print(
@@ -232,30 +209,9 @@ in
         )
 
     with subtest("existing decoy inodes keep their MAC times and contents"):
-        post_state = image_state(post_image, "post")
-        left = disk_forensics.unexplained(
-            changes(control_state, post_state), control_changes, image_volatile
-        )
-        atime_left = disk_forensics.unexplained(
-            changes(control_state, post_state, disk_forensics.MAC_FIELDS_OBSERVED),
-            control_atime,
-            image_volatile,
-        )
-        report = disk_forensics.format_changes(left, control_state[0], post_state[0])
-        atime_report = disk_forensics.format_changes(
-            atime_left, control_state[0], post_state[0]
-        )
-        disk_forensics.write_artifact(
-            machine,
-            "mac-diff.txt",
-            f"unexplained changes:\n{report or '(none)'}\n\n"
-            f"atime drift (reported only):\n{atime_report or '(none)'}\n",
-        )
-        if atime_left:
-            print(f"atime drift beyond the control run (not asserted):\n{atime_report}")
-        assert not left, (
-            "existing decoy inodes changed beyond boot noise and the volatile "
-            f"allowlist:\n{report}"
+        post_state = disk_forensics.image_state(post_image, "post", machine)
+        disk_forensics.assert_mac_unchanged(
+            machine, baseline_state, control_state, post_state, image_volatile
         )
   '';
 }

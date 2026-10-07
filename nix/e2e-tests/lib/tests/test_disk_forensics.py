@@ -325,6 +325,62 @@ class UnexplainedTest(unittest.TestCase):
         self.assertIn("b: content", text)
 
 
+class MacDiffTest(unittest.TestCase):
+    """The control-run diff the forensic image tests assert."""
+
+    def _state(self, body: dict[str, df.BodyEntry], **hashes: str) -> df.ImageState:
+        return df.ImageState(body=body, hashes=dict(hashes))
+
+    def test_only_changes_the_control_span_did_not_make_are_left(self) -> None:
+        baseline = self._state(
+            {"etc/a": _entry("etc/a"), "home/u/x": _entry("home/u/x")},
+            **{"etc/a": "1", "home/u/x": "1"},
+        )
+        # Boot noise: etc/a's ctime moves on every boot.
+        control = self._state(
+            {"etc/a": _entry("etc/a", ctime=150), "home/u/x": _entry("home/u/x")},
+            **{"etc/a": "1", "home/u/x": "1"},
+        )
+        # The session span repeats the noise and also rewrites home/u/x in place.
+        post = self._state(
+            {
+                "etc/a": _entry("etc/a", ctime=250),
+                "home/u/x": _entry("home/u/x", mtime=300, atime=300),
+            },
+            **{"etc/a": "1", "home/u/x": "2"},
+        )
+        result = df.mac_diff(baseline, control, post)
+        self.assertEqual(result.left, {"home/u/x": ["content", "mtime"]})
+        self.assertEqual(result.atime_left, {"home/u/x": ["atime"]})
+        self.assertIn("home/u/x: content, mtime 100 -> 300", result.report)
+
+    def test_volatile_paths_are_never_left(self) -> None:
+        baseline = self._state({"var/log/x": _entry("var/log/x")})
+        post = self._state({"var/log/x": _entry("var/log/x", mtime=999)})
+        result = df.mac_diff(baseline, baseline, post)
+        self.assertEqual(result.left, {})
+
+    def test_a_clean_session_passes_and_keeps_the_report(self) -> None:
+        state = self._state({"etc/a": _entry("etc/a")}, **{"etc/a": "1"})
+        with tempfile.TemporaryDirectory() as out:
+            machine = mock.Mock(out_dir=out)
+            result = df.assert_mac_unchanged(
+                machine, state, state, state, artifact="t.txt"
+            )
+            self.assertEqual(result.left, {})
+            text = (Path(out) / "forensics" / "t.txt").read_text(encoding="utf-8")
+            self.assertIn("unexplained changes:\n(none)", text)
+
+    def test_an_unexplained_change_fails(self) -> None:
+        baseline = self._state({"etc/a": _entry("etc/a")}, **{"etc/a": "1"})
+        post = self._state({"etc/a": _entry("etc/a")}, **{"etc/a": "2"})
+        with tempfile.TemporaryDirectory() as out:
+            machine = mock.Mock(out_dir=out)
+            with self.assertRaises(AssertionError) as raised:
+                df.assert_mac_unchanged(machine, baseline, baseline, post)
+            self.assertIn("etc/a: content", str(raised.exception))
+
+
 class HashTreeTest(unittest.TestCase):
     def test_hashes_regular_files_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

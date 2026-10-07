@@ -788,6 +788,135 @@ def run_content_hashes(
         shutil.rmtree(work, ignore_errors=True)
 
 
+# --- MAC-time and content diff against a control run --------------------------
+
+# Paths on an image (fls-relative, no leading slash) that change on their own
+# across a reboot: runtime state under /var, /run and /tmp, the per-boot
+# machine id, resolver config and SSH host keys, NixOS's /etc activation stamps
+# and the Nix store's own bookkeeping. A test may pass a wider pattern.
+DEFAULT_IMAGE_VOLATILE = re.compile(
+    r"(^|/)("
+    r"var/|run/|tmp/|etc/machine-id|etc/resolv\.conf|etc/ssh/ssh_host_|"
+    r"etc/\.(updated|clean)|nix/var/|nix/store/\.links"
+    r")"
+)
+
+
+@dataclass(frozen=True)
+class ImageState:
+    """What one image says about its existing inodes: the allocated bodyfile
+    entries by path, and the SHA-256 of every regular file."""
+
+    body: dict[str, BodyEntry]
+    hashes: dict[str, str]
+
+
+def image_changes(
+    before: ImageState,
+    after: ImageState,
+    fields: Iterable[str] = MAC_FIELDS,
+) -> dict[str, set[str]]:
+    """``(path -> changed fields)`` between two image states: the MAC fields of
+    inodes allocated in both, plus ``content`` when asked for the asserted
+    fields and the file's hash changed."""
+    wanted = tuple(fields)
+    merged = mac_changes(before.body, after.body, wanted)
+    if wanted == MAC_FIELDS:
+        for path, kinds in hash_changes(before.hashes, after.hashes).items():
+            merged.setdefault(path, set()).update(kinds)
+    return merged
+
+
+@dataclass(frozen=True)
+class MacDiff:
+    """The hidden-session run's changes that the control run does not explain.
+
+    ``left`` is asserted empty by the tests; ``atime_left`` is reported only,
+    because reads during a session legitimately bump access times under
+    ``relatime``. The two reports are human-readable renderings of both.
+    """
+
+    left: dict[str, list[str]]
+    atime_left: dict[str, list[str]]
+    report: str
+    atime_report: str
+
+
+def mac_diff(
+    baseline: ImageState,
+    control: ImageState,
+    post: ImageState,
+    volatile: re.Pattern[str] = DEFAULT_IMAGE_VOLATILE,
+) -> MacDiff:
+    """Compare ``control -> post`` (the hidden session's span) with
+    ``baseline -> control`` (the same number of plain boots, no session).
+
+    A ``(path, field)`` that the control span also changed is boot noise; a
+    path matching ``volatile`` is allowlisted. Whatever is left changed only
+    because of the hidden session.
+    """
+    control_changes = image_changes(baseline, control)
+    control_atime = image_changes(baseline, control, MAC_FIELDS_OBSERVED)
+    left = unexplained(image_changes(control, post), control_changes, volatile)
+    atime_left = unexplained(
+        image_changes(control, post, MAC_FIELDS_OBSERVED), control_atime, volatile
+    )
+    return MacDiff(
+        left=left,
+        atime_left=atime_left,
+        report=format_changes(left, control.body, post.body),
+        atime_report=format_changes(atime_left, control.body, post.body),
+    )
+
+
+def image_state(
+    image: str | os.PathLike[str],
+    label: str,
+    machine: object | None = None,
+    *,
+    exclude: Iterable[str] = ("var/log/journal", "nix"),
+) -> ImageState:
+    """Read one image from the outside: its bodyfile (kept as the test artifact
+    ``<label>.body``, ``mactime -b`` ready, when ``machine`` is given) and the
+    content hash of every file outside ``exclude``."""
+    offset = partition_offset(image)
+    body_text, body = run_bodyfile(image, offset)
+    if machine is not None:
+        write_artifact(machine, f"{label}.body", body_text)
+    hashes = run_content_hashes(image, offset=offset, exclude=exclude)
+    return ImageState(body=bodyfile_index(body), hashes=hashes)
+
+
+def assert_mac_unchanged(
+    machine: object,
+    baseline: ImageState,
+    control: ImageState,
+    post: ImageState,
+    volatile: re.Pattern[str] = DEFAULT_IMAGE_VOLATILE,
+    *,
+    artifact: str = "mac-diff.txt",
+) -> MacDiff:
+    """Run :func:`mac_diff`, keep both reports as a test artifact, print the
+    atime drift and raise ``AssertionError`` on any unexplained change."""
+    result = mac_diff(baseline, control, post, volatile)
+    write_artifact(
+        machine,
+        artifact,
+        f"unexplained changes:\n{result.report or '(none)'}\n\n"
+        f"atime drift (reported only):\n{result.atime_report or '(none)'}\n",
+    )
+    if result.atime_left:
+        print(
+            f"atime drift beyond the control run (not asserted):\n{result.atime_report}"
+        )
+    if result.left:
+        raise AssertionError(
+            "existing decoy inodes changed beyond boot noise and the volatile "
+            f"allowlist:\n{result.report}"
+        )
+    return result
+
+
 def write_artifact(machine: object, name: str, text: str) -> Path:
     """Write ``text`` into the test's output directory (the derivation output,
     so a failing run keeps it), falling back to a temporary directory."""
