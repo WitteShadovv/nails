@@ -125,7 +125,11 @@ in
         assert machine.succeed("cat /root/hidden-canary").strip() == canary
 
     with subtest("emergency in the hidden session kills it and returns at once"):
-        machine.succeed("systemd-run --unit hidden-writer --property=Type=exec sh -c 'while sleep 1; do date >> /root/w; done'")
+        # A unit gets systemd's default PATH, without coreutils on NixOS.
+        machine.succeed(
+            "systemd-run --unit hidden-writer --property=Type=exec --setenv=PATH=$PATH "
+            "sh -c 'while sleep 1; do date >> /root/w; done'"
+        )
         machine.succeed("systemctl is-active hidden-writer.service")
         timings = session.follow_soft_reboot(
             machine, f"nails --config {CONFIG} emergency --json > /dev/null", "emergency"

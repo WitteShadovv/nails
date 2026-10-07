@@ -44,8 +44,12 @@ in
         ];
         substituters = lib.mkForce [ ];
       };
-      # The slow build's builder must be in the guest store and registered.
-      system.extraDependencies = [ pkgs.bash ];
+      # The slow build's builder and its sleep must be in the guest store and
+      # registered.
+      system.extraDependencies = [
+        pkgs.bash
+        pkgs.coreutils
+      ];
     };
 
   testScript = _: ''
@@ -55,6 +59,7 @@ in
 
     CONFIG = "/mnt/data/config/nails.toml"
     BASH = "${pkgs.bash}"
+    COREUTILS = "${pkgs.coreutils}"
     FLAKE = "/root/slow-hidden"
 
 
@@ -126,7 +131,9 @@ in
         "      name = \"slow-hidden-system\";\n"
         "      system = \"x86_64-linux\";\n"
         f"      builder = builtins.storePath \"{BASH}\" + \"/bin/bash\";\n"
-        "      args = [ \"-c\" \"sleep 6000\" ];\n"
+        # The build sandbox has no PATH: name sleep by its store path, which
+        # also makes coreutils an input of the build.
+        f"      args = [ \"-c\" (\"exec \" + builtins.storePath \"{COREUTILS}\" + \"/bin/sleep 6000\") ];\n"
         "    };\n"
         "  };\n"
         "}\n"
