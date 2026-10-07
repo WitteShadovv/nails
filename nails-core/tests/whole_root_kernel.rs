@@ -125,6 +125,7 @@ mod kernel_tests {
                 nextroot: self.nextroot(),
                 runtime_dir: self.run.path().join("overlay-runtime"),
                 kmsg: self.run.path().join("no-kmsg"),
+                systemctl: None,
                 now: nails_teardown::whole_root::plan::unix_now(),
                 mounts: read_mountinfo().unwrap(),
             }
@@ -800,6 +801,7 @@ mod entry_kernel_tests {
                 nextroot: nextroot.clone(),
                 runtime_dir: paths.runtime(),
                 kmsg: paths.run.join("no-kmsg"),
+                systemctl: None,
                 now: unix_now(),
                 mounts: read_mountinfo().unwrap(),
             };

@@ -656,7 +656,10 @@ supported.
   (`nails transition`, dispatched before clap, no output). It acts only on an
   **armed** plan: entering repoints `/run/current-system` (NixOS), masks the
   decoy units and installs the session's runtime units; leaving repoints back,
-  scrubs `/run`, restores `utab` and writes the kmsg cursor last. Before either
+  scrubs `/run`, restores `utab` and writes the kmsg cursor last, once PID 1
+  runs no job but the soft-reboot's own (a hidden unit not ordered before the
+  shutdown may still be stopping, and logging, when the step starts; the wait
+  is bounded at 10 s). Before either
   it checks the next root's init and disarms on failure. An unarmed populated
   `/run/nextroot` (an activation that died) is detached, so a later plain
   `reboot`, which systemd >= 255 turns into a soft-reboot, never enters it.

@@ -74,6 +74,13 @@ pub fn remove_dropin(run: &Path) {
     let _ = std::fs::remove_dir(dir);
 }
 
+/// The jobs of the soft-reboot itself, which wait for the transition.
+const OWN_JOBS: [&str; 2] = ["soft-reboot.target", "systemd-soft-reboot.service"];
+
+/// How long the way back waits for other units to finish stopping before it
+/// takes the kmsg cursor.
+const OTHER_JOBS_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Where the transition looks.
 #[derive(Debug, Clone)]
 pub struct Env {
@@ -85,6 +92,9 @@ pub struct Env {
     pub runtime_dir: PathBuf,
     /// The kernel log device.
     pub kmsg: PathBuf,
+    /// `systemctl`, to wait for the other units' stop jobs before the kmsg
+    /// cursor is taken; `None` skips the wait.
+    pub systemctl: Option<PathBuf>,
     /// Now, in seconds since the epoch.
     pub now: u64,
     /// The live mount table.
@@ -99,6 +109,7 @@ impl Env {
             nextroot: PathBuf::from(NEXTROOT),
             runtime_dir: PathBuf::from(RUNTIME_DIR),
             kmsg: PathBuf::from("/dev/kmsg"),
+            systemctl: crate::whole_root::tools::find(None, "systemctl"),
             now: unix_now(),
             mounts: read_mountinfo().unwrap_or_default(),
         }
@@ -262,6 +273,14 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         let _ = nextroot::set_noexec(&env.run, true);
     }
     // Last: anything logged after this is imported by the decoy journald.
+    // A hidden unit that is not ordered before the shutdown can still be
+    // stopping now and write to the kernel log after a cursor taken at once
+    // (and PID 1 logs its end): wait, bounded, until only the soft-reboot's
+    // own jobs are left.
+    if let Some(systemctl) = &env.systemctl {
+        let _ =
+            crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
+    }
     if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {
         let _ = run_scrub::write_kernel_seqnum(&env.run, next);
     }

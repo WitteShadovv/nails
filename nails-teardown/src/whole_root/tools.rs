@@ -159,6 +159,79 @@ pub fn remove_deferred(dmsetup: &Path, name: &str) -> bool {
     )
 }
 
+/// Run `program args…` like [`run`] and return its standard output when it
+/// exited 0 in time.
+pub fn run_output(program: &Path, args: &[&str], budget: Duration) -> Option<String> {
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .env_clear()
+        .env("PATH", SYSTEM_BIN_DIRS.join(":"))
+        .env("LC_ALL", "C")
+        .env("SYSTEMD_PAGER", "")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .current_dir("/");
+    ignore_stop_signals(&mut command);
+    let mut child = command.spawn().ok()?;
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = std::io::Read::read_to_string(&mut stdout, &mut text);
+        text
+    });
+    let deadline = Instant::now() + budget;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break None;
+            }
+        }
+    };
+    let text = reader.join().ok()?;
+    status.filter(|s| s.success()).map(|_| text)
+}
+
+/// The units of PID 1's queued jobs in `systemctl list-jobs --plain
+/// --no-legend` output (`ID UNIT TYPE STATE` per line).
+pub fn job_units(list: &str) -> Vec<String> {
+    list.lines()
+        .filter_map(|line| line.split_whitespace().nth(1))
+        .map(str::to_string)
+        .collect()
+}
+
+/// Wait, at most `budget`, until PID 1 runs no job but those for the units in
+/// `ours`. `false` when the deadline passed or `systemctl` could not answer.
+pub fn wait_for_other_jobs(systemctl: &Path, ours: &[&str], budget: Duration) -> bool {
+    let deadline = Instant::now() + budget;
+    loop {
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return false;
+        }
+        let Some(list) = run_output(
+            systemctl,
+            &["list-jobs", "--plain", "--no-legend"],
+            left.min(TOOL_BUDGET),
+        ) else {
+            return false;
+        };
+        if job_units(&list)
+            .iter()
+            .all(|unit| ours.contains(&unit.as_str()))
+        {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
 /// Remove the device-mapper device `name` now. Refused (`false`) while
 /// anything holds it open: a mounted filesystem or a device stacked on it.
 pub fn remove_now(dmsetup: &Path, name: &str) -> bool {
@@ -190,6 +263,44 @@ mod tests {
             &[],
             TOOL_BUDGET
         ));
+    }
+
+    #[test]
+    fn the_wait_ends_once_only_our_jobs_are_left_and_times_out_otherwise() {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            job_units("12 late.service stop running\n7 soft-reboot.target start waiting\n"),
+            ["late.service", "soft-reboot.target"]
+        );
+        let dir = tempfile::tempdir().unwrap();
+        // Busy for the first two calls, then only our own jobs.
+        let count = dir.path().join("calls");
+        let tool = dir.path().join("systemctl");
+        std::fs::write(
+            &tool,
+            format!(
+                "#!/bin/sh\nn=$(cat {c} 2>/dev/null || echo 0); echo $((n + 1)) > {c}\n\
+                 echo '7 soft-reboot.target start waiting'\n\
+                 [ \"$n\" -lt 2 ] && echo '12 late.service stop running'\nexit 0\n",
+                c = count.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let ours = ["soft-reboot.target", "systemd-soft-reboot.service"];
+        assert!(wait_for_other_jobs(&tool, &ours, TOOL_BUDGET));
+        assert_eq!(std::fs::read_to_string(&count).unwrap().trim(), "3");
+
+        let busy = dir.path().join("busy");
+        std::fs::write(&busy, "#!/bin/sh\necho '12 late.service stop running'\n").unwrap();
+        std::fs::set_permissions(&busy, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let start = Instant::now();
+        assert!(!wait_for_other_jobs(
+            &busy,
+            &ours,
+            Duration::from_millis(200)
+        ));
+        assert!(start.elapsed() < Duration::from_secs(2));
     }
 
     #[test]

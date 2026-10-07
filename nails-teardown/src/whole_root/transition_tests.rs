@@ -69,6 +69,7 @@ impl World {
             nextroot: self.nextroot(),
             runtime_dir: self.runtime(),
             kmsg: self.kmsg(),
+            systemctl: None,
             now,
             mounts: parse_mountinfo(&table),
         }
@@ -203,7 +204,30 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     world.init_in_nextroot(&plan.decoy.init);
     world.write_plan(&plan);
 
-    let outcome = run(&world.env(true, 1_000));
+    // A hidden unit not ordered before the shutdown is still stopping when
+    // the transition runs, and logs to the kernel once more on its way out:
+    // the cursor must be taken after it, so the decoy journald skips it.
+    let late = world.dir.path().join("late-stopped");
+    let systemctl = world.dir.path().join("systemctl");
+    fs::write(
+        &systemctl,
+        format!(
+            "#!/bin/sh\necho '7 soft-reboot.target start waiting'\n\
+             if [ ! -e {late} ]; then\n\
+               echo '12 late.service stop running'\n\
+               printf '6,502,3,-;late hidden record\\n' >> {kmsg}\n\
+               : > {late}\n\
+             fi\n",
+            late = late.display(),
+            kmsg = world.kmsg().display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&systemctl, fs::Permissions::from_mode(0o755)).unwrap();
+    let mut env = world.env(true, 1_000);
+    env.systemctl = Some(systemctl);
+
+    let outcome = run(&env);
     assert!(
         matches!(outcome, Outcome::Returned { failed: 0, .. }),
         "{outcome:?}"
@@ -225,7 +249,7 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     );
     assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
     let cursor = fs::read(r.join(run_scrub::KERNEL_SEQNUM)).unwrap();
-    assert_eq!(u64::from_ne_bytes(cursor.try_into().unwrap()), 502);
+    assert_eq!(u64::from_ne_bytes(cursor.try_into().unwrap()), 503);
 }
 
 #[test]
