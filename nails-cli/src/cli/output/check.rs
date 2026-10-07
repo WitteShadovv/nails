@@ -28,21 +28,28 @@ pub struct CheckRow {
     pub status: &'static str,
     /// The check's human-readable message.
     pub message: String,
+    /// What to do about a failure, when the check says.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
 }
 
 impl CheckRow {
     /// Build a row from a registry result.
     pub fn from_result(name: String, result: &CheckResult) -> Self {
-        let (status, message) = match result {
-            CheckResult::Pass(msg) => ("pass", msg.clone()),
-            CheckResult::Warn(msg) => ("warn", msg.clone()),
-            CheckResult::Fail { message, .. } => ("fail", message.clone()),
-            CheckResult::Skipped(reason) => ("skipped", reason.clone()),
+        let (status, message, remediation) = match result {
+            CheckResult::Pass(msg) => ("pass", msg.clone(), None),
+            CheckResult::Warn(msg) => ("warn", msg.clone(), None),
+            CheckResult::Fail {
+                message,
+                remediation,
+            } => ("fail", message.clone(), remediation.clone()),
+            CheckResult::Skipped(reason) => ("skipped", reason.clone(), None),
         };
         Self {
             name,
             status,
             message,
+            remediation,
         }
     }
 
@@ -225,6 +232,9 @@ pub fn print_check_human(report: &CheckReport, style: Style) {
     println!("Pre-flight checks:");
     for row in &report.checks {
         println!("  {} {}: {}", style.mark(row.mark()), row.name, row.message);
+        if let Some(remediation) = &row.remediation {
+            println!("      {}", style.marked(Mark::Arrow, remediation));
+        }
     }
     println!();
 
