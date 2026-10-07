@@ -146,6 +146,27 @@ fn system_unit_from_cgroup_line_maps_only_system_slice() {
 }
 
 #[test]
+fn system_unit_from_cgroup_line_maps_a_delegated_subgroup_to_its_unit() {
+    // systemd-udevd.service sets DelegateSubgroup=udev: its main process lives
+    // one cgroup below the unit's.
+    assert_eq!(
+        system_unit_from_cgroup_line("0::/system.slice/systemd-udevd.service/udev"),
+        Some("systemd-udevd")
+    );
+    assert_eq!(
+        system_unit_from_cgroup_line(
+            "0::/system.slice/system-getty.slice/getty@tty1.service/payload"
+        ),
+        Some("getty@tty1")
+    );
+    assert_eq!(
+        system_unit_from_cgroup_line("0::/system.slice/.service/x"),
+        None
+    );
+    assert_eq!(system_unit_from_cgroup_line("0::/system.slice"), None);
+}
+
+#[test]
 fn test_read_comm() {
     let temp_dir = tempfile::tempdir().unwrap();
     fs::write(temp_dir.path().join("comm"), "firefox\n").unwrap();

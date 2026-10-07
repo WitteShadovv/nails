@@ -659,8 +659,11 @@ fn extract_service_name(proc_path: &Path) -> Result<Option<String>> {
 /// The systemd *system* unit a single cgroup line maps to, if any.
 ///
 /// The cgroup path is the field after the last `:` (cgroup v2 writes `0::/…`,
-/// v1 writes `N:controller:/…`). A unit is returned only when that path is
-/// rooted under a `system.slice` segment and its leaf is a `.service`.
+/// v1 writes `N:controller:/…`). A unit is returned only for a `.service`
+/// segment below a `system.slice` segment. The process may sit in a cgroup
+/// *below* its unit's: a unit with `DelegateSubgroup=` (systemd-udevd runs in
+/// `systemd-udevd.service/udev`) or one that delegates its own subtree, so the
+/// unit is the first `.service` segment after the slice, not the leaf.
 ///
 /// A user unit — anything under `user.slice` / `user@<uid>.service`, e.g.
 /// `pipewire.service` beneath `user@1000.service` — deliberately yields `None`.
@@ -670,13 +673,13 @@ fn extract_service_name(proc_path: &Path) -> Result<Option<String>> {
 /// correct handling for a per-user process.
 pub(crate) fn system_unit_from_cgroup_line(line: &str) -> Option<&str> {
     let path = line.rsplit(':').next().unwrap_or(line);
-    let unit = path.rsplit('/').next()?.strip_suffix(".service")?;
-    if unit.is_empty() {
-        return None;
-    }
-    path.split('/')
-        .any(|segment| segment == "system.slice")
-        .then_some(unit)
+    let mut segments = path.split('/');
+    segments
+        .by_ref()
+        .find(|segment| *segment == "system.slice")?;
+    segments
+        .filter_map(|segment| segment.strip_suffix(".service"))
+        .find(|unit| !unit.is_empty())
 }
 
 #[cfg(test)]
