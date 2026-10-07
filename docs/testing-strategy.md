@@ -46,18 +46,18 @@ Building the prototype for this document found three more such beliefs:
 
 ## How much is mocked
 
-`MockFilesystem` appears 1,735 times, in 143 source files and 4 integration
-test files. The other doubles, and what they stand in for:
+`MockFilesystem` appears 1,706 times in 157 files (1,755 before the T-139
+migration). The other doubles, and what they stand in for:
 
 | Double | Stands in for | Real behaviour tested elsewhere? |
 | --- | --- | --- |
-| `MockFilesystem` (`filesystem/mock/`) | `Filesystem`: file operations, mounts, overlays, mountinfo, swap, statfs | File operations: yes, in `tests/filesystem_contract.rs`. Mounts: only the 7 `#[ignore]`d `privileged_mounts` tests, which need root. |
+| `MockFilesystem` (`filesystem/mock/`) | `Filesystem`: file operations, mounts, overlays, mountinfo, swap, statfs | Yes: `tests/filesystem_contract.rs` runs one file contract and one mount contract against the mock and against `RealFilesystem`, the mount half as root of a user and mount namespace. `privileged_mounts` runs rootless too, except its whiteout test. |
 | `set_forced_journald_fd_check`, the `should_skip_host_interaction()` early returns (24 files) | `/proc/<pid>/fd`, `fdinfo`, `mountinfo`, and every host side effect | No, before this change. |
-| `record_service_action` (`manager/helpers/service_controller.rs`) | every systemctl, journalctl and nix-daemon verb | No. |
-| `MockSessionCommandExecutor` and its scripted and recording variants, (`process/session/`) | systemctl `is-active`, loginctl, kill | No. |
-| `MockCommandExecutor` and `RecordingKillExecutor` (`process/restart/tests.rs`) | service restarts, signals | No. |
+| `record_service_action` (`manager/helpers/service_controller.rs`) | every systemctl, journalctl and nix-daemon verb | Partly: `parse_active_units` reads captured `systemctl list-units` output (VM capture), decoy-journal-leak requires the real journald re-home verdict, and performance-validation holds every systemctl call of an activation to a time budget. |
+| `MockSessionCommandExecutor` and its scripted and recording variants, (`process/session/`) | systemctl `is-active`, loginctl, kill | Signals: yes, `process::session::management::kernel_tests` kills real processes in a PID namespace. systemctl and loginctl: VM session tests only. |
+| `MockCommandExecutor` and `RecordingKillExecutor` (`process/restart/tests.rs`) | service restarts, signals | Signals: yes, `process::restart::kernel_tests` (PID namespace). Restarts: VM only. |
 | `FakeJournalReader` (`verify/journal.rs`) | `journalctl --grep` | No. |
-| `reconcile_mounts_override` (`manager/state_management.rs`) | the live mount table | No. |
+| `reconcile_mounts_override` (`manager/state_management.rs`) | the live mount table | Yes: `manager::state_management::kernel_tests` reconciles against a real table with a live, a missing and a shadowed overlay. |
 | `MockProcessRunner` (`process/run/mock.rs`) | running a child process | Yes: `process/run/tests.rs` runs real `sh`. |
 | `FsMountOps` over `MockFilesystem`, the in-memory table of `nails-teardown`'s `undo_tests.rs` | the teardown plan's mount operations | Yes: `manager::teardown_plan::kernel_tests` runs every kind of recorded step, the derived plan, `cgroup.kill` and the emergency hot path on real mounts in user, mount, cgroup and PID namespaces. |
 | `FakePlatform`, `FakeConfigLayer` (`platform/`) | host backends, config layers | Yes: `platform/contract.rs` runs one contract against every backend. |
@@ -71,12 +71,19 @@ Parsers of kernel or tool output, and what their tests use:
 - **fdinfo flags and `mnt_id`** (`process/detection`, `journald_fd.rs`):
   hand-written strings.
 - **`systemctl list-units --plain`** (`parse_active_units`): hand-written
-  strings. logind's session records (`nails-teardown/src/session.rs`): files
-  written in a temporary directory.
-- **`/proc/swaps`** (`classify_swap`): 21 hand-written cases.
-- **`/proc/<pid>/stat`**: three copies of the same parser (`read_ppid` twice,
-  `read_session_and_pgid`), none tested at the parser level.
-- **`/proc/<pid>/status`** (`read_uid_from_status`): untested.
+  strings, plus the VM capture once it is taken. logind's session records
+  (`nails-teardown/src/session.rs`): files written in a temporary directory,
+  plus the graphical VM capture once it is taken.
+- **`/proc/swaps`** (`classify_swap`): 21 hand-written cases and a captured
+  table (userns now, VM once taken).
+- **`/proc/<pid>/stat`**: one parser, `nails_teardown::proc::stat`, which every
+  caller uses; tested on a live `setsid` child whose comm holds `) (`, on the
+  same scene captured, and on journald's captured stat.
+- **`/proc/<pid>/status`** (`proc::uid`, `parse_status_uid`): the same three
+  ways.
+- **mountinfo read by hand**: `verify`'s overlay and backing-source scans now
+  use the shared parser (this found a bug, see below); `nixos/config/verify.rs`
+  keeps its own reader, fed the captured hidden-root scene.
 
 ## What needs a real kernel
 
@@ -142,8 +149,19 @@ The tests, about 0.2 s together:
 | `kernel_semantics::copy_tree_leaves_source_atimes_untouched_on_a_strictatime_fs`, with a control proving a plain read updates atime | a lost `O_NOATIME`, verified by mutation. The older unit test passes vacuously on a `noatime` host filesystem. |
 | `nails-cli` `broken_pipe::stderr_helpers_survive_a_reader_that_has_gone`: a child whose stderr is a pipe with no reader, with a control asserting that `eprintln!` panics there | the emergency broken-pipe panic, verified by swapping the helper for `eprintln!` |
 
-The root-only `privileged_mounts` suite passes rootless too, 6 of 7, under
-`just privileged-rootless`. The exception is the whiteout test.
+Added by T-139:
+
+| Test | Covers |
+| --- | --- |
+| `filesystem_contract::real_filesystem_satisfies_mount_contract_in_a_user_namespace` | the mount contract the mock also runs: overlay description, layer validation, idempotent and forced unmounts, lazy detach, the ownership gate, tmpfs sizes, binds, the read-only guard |
+| `privileged_mounts` (6 tests) | the former root-only suite, now rootless in `just test` |
+| `manager::state_management::kernel_tests` | `reconcile_state` against a real mount table |
+| `process::restart::kernel_tests`, `process::session::management::kernel_tests` | SIGTERM/SIGKILL escalation, the user-process kill and the interactive-shell kill, as PID 1 of a PID namespace |
+| `overlay::pivot::kernel_tests` | the snapshot pivot's tmpfs size as the kernel reports it |
+| `cleanup::temp_files::kernel_tests` | the temp-file cleaner on a private tmpfs over `/tmp` |
+
+Only the whiteout and opaque-directory test of `privileged_mounts` still needs
+real root.
 
 Cost and fit: about 300 lines of support code, no new dependencies, and
 millisecond tests. CI already has a `rust` job, which now runs the tests with
@@ -154,13 +172,18 @@ exactly one test.
 
 ### (b) Recorded real-world fixtures
 
-**This tier has started.** `scripts/capture-kernel-fixtures.sh userns` captures
-a mountinfo and fdinfo scene unprivileged. The fixtures live in
-`nails-core/tests/fixtures/kernel/userns/`, and the mountinfo and journald
-classifier tests now read them. `... vm` captures, as root in a VM, the host's
-and journald's mountinfo, journald's fds and fdinfo, `/proc/swaps`,
-`stat`/`status`, and every systemctl and loginctl invocation the code makes.
-The fixture README has the three-line VM test snippet.
+**This tier is built; the VM half waits for one VM run.**
+`scripts/capture-kernel-fixtures.sh userns` captures, unprivileged, an overlay
+scene with fdinfo, a hidden-root scene (a mapper-named tmpfs at a root with a
+space, an overlay with its upper on it, a shadowed overlay pair), a `setsid`
+child's `stat` and `status`, and `/proc/swaps`. The fixtures live in
+`nails-core/tests/fixtures/kernel/userns/` and `nails_core::kernel_fixtures`
+reads them. `... vm` captures, as root, the host's and journald's mountinfo,
+journald's fds, fdinfo, `stat`, `status` and `cgroup`, `/proc/swaps`, logind's
+session records and every systemctl and loginctl invocation the code makes.
+decoy-journal-leak and emergency-graphical run it on every VM run; the README
+says where to copy the output (`vm/`, `vm-graphical/`). Until then the tests
+that read it say so and return.
 
 Cost: one VM run per format change. CI fit: perfect, since fixtures are plain
 unit-test inputs. Flakiness: none. What it catches: format drift such as the
@@ -174,8 +197,18 @@ the source.
 These need systemd and journald: journald restarts and fd re-homing with the
 real daemon, `systemctl` call cost, an emergency teardown whose stderr is the
 journal stream, and overlay-only activation against the booted host's real
-mountinfo. A single VM boot can host all four as subtests, about 2 to 3 minutes
-on KVM. Assert the cost directly: wrap activation in a timer and fail when the
+mountinfo. They are covered by existing VM tests rather than a new boot:
+
+- journald re-home: decoy-journal-leak requires the activation's own log to
+  carry the positive verdict of the fd check (an indeterminate one is only a
+  warning), and the VM capture of journald's fds feeds the classifier;
+- systemctl cost: performance-validation times every systemctl call of one
+  overlay-only activation through a wrapper bind-mounted over the binary, and
+  fails on one call over 3 s or more than 4 s in all (times the TCG factor);
+- emergency stderr: every emergency test runs nails from a unit whose stdout
+  and stderr are the journal stream the teardown restarts, and requires exit 0;
+- overlay-only activation: performance-validation, decoy-journal-leak and the
+  overlay group activate with `--overlay-only` on the booted host. Assert the cost directly: wrap activation in a timer and fail when the
 systemctl phase exceeds a budget. That turns the 28 s regression into a red
 test instead of a slow one. CI fit: the existing `e2e.yml` and KVM runners.
 Flakiness: moderate; timing budgets need headroom (for example 5x the
@@ -183,14 +216,17 @@ measured time).
 
 ### (d) Contract tests: one body, mock and real
 
-`tests/filesystem_contract.rs` already does this for file operations. Its mount
-section (lines 230 to 415: overlay validation, unmount idempotence, busy and
-force, `is_mounted`, `is_overlay_mounted`) runs against the mock only. Tier (a)
-removes the obstacle, so those cases can join the shared contract, with
-`RealFilesystem` running inside `Rerun::in_user_mount_ns`. A mount-semantics
-drift in the mock then fails the gate. Where both sides agree only by
-convention (the mock's `unmount(force)` against the kernel's `EBUSY` and
-`MNT_DETACH`), the contract forces a decision.
+**Done.** `tests/filesystem_contract.rs` runs a file contract and a mount
+contract against both backends; `RealFilesystem` runs the mount half inside
+`Rerun::in_user_mount_ns`. Its first run found three drifts, fixed in the mock:
+`get_filesystem_type` reported nothing for an overlay or tmpfs; an overlay
+mounted although its upper or work directory did not exist; and `unmount`
+passed any tmpfs or bind through the ownership gate, which the kernel side
+refuses outside the runtime root. Two known drifts stay outside the contract:
+the mock refuses a second `mount_tmpfs` on one target where the kernel stacks
+it, and the mock's `find_files_with_pattern` returns seeded directories where
+the real walk returns only files (so the temp-file cleaner's directory branch
+never runs on a real host; see the T-139 status in TODO.md).
 
 The other doubles have no cheap real side (systemctl, loginctl, journalctl).
 For them, tier (b) fixtures serve as the contract: the scripted executor
@@ -257,8 +293,9 @@ method or a test hook brings its real-tier test, or states which tier owes one.
 - `filesystem/mountinfo.rs`: decoding fixed, with kernel-form and fixture tests.
 - The overlay options use `redirect_dir=nofollow` (in `mount_ops.rs` and the
   `upper_fs_probe.rs` trial mount).
-- `just kernel-tests` and `just privileged-rootless`. The `rust` CI job clears
-  the AppArmor sysctl and requires the namespace tests to run.
+- `just kernel-tests` (and a `just privileged-rootless` that T-139 later
+  folded into it). The `rust` CI job clears the AppArmor sysctl and requires
+  the namespace tests to run.
 
 **Moved out of the VM tier (Wave R, T-140):** checks that need no kernel
 feature, root or boot now run as cargo tests, and the VM keeps one end-to-end
@@ -276,46 +313,65 @@ path where a booted system matters.
 - Next candidates: the three `nails init` scenarios, in tier (a) with a
   `ScratchTmpfs` hidden root and `/etc/nixos` bind-mounted in the namespace.
 
-**Next, in this order:**
+**Done in T-139** (the eight steps, in order):
 
-1. **Mount contract.** Move the mock-only mount section of
-   `nails-core/tests/filesystem_contract.rs` into the shared contract and run it
-   against `RealFilesystem` in `Rerun::in_user_mount_ns`. Fix whatever the mock
-   gets wrong.
-2. **The rootless `privileged_mounts`.** Run its 6 rootless tests through
-   `Rerun` inside `just test`. Leave only
-   `whiteout_and_opaque_hide_lower_entries_without_deleting_them` in the
-   `sudo unshare` job.
-3. **Capture the VM fixtures** (fixture README). Then feed them to:
-   - `manager/helpers/service_controller.rs` (`parse_active_units`);
-   - `manager/deactivation/session_guard.rs` (`parse_session_ids`,
-     `parse_properties`);
-   - `preflight/checks/swap.rs` (`classify_swap`);
-   - `nixos/config/verify.rs` (its mountinfo reading);
-   - `preflight/checks/backend_detect` (the planted mountinfo there);
-   - `verify/tests.rs` and `nixos/config/tests.rs`, which plant hand-written
-     `/proc/self/mountinfo` in `MockFilesystem`.
-4. **`reconcile_mounts_override`** (`manager/state_management.rs`). Add a tier (a)
-   test that reconciles state against a real mount table holding a live
-   overlay, a missing one and a shadowed one.
-5. **`/proc/<pid>/stat` and `status`.** Merge the three `stat` parsers
-   (`process/detection/mod.rs`, `filesystem/real/system_ops.rs`,
-   `manager/deactivation/process_teardown.rs`) into one. Test it against a real
-   child whose `comm` contains `) (` and that runs in its own session and
-   process group (`setsid`). Test `read_uid_from_status`
-   (`process/session/management/mod.rs`) the same way. No namespace is needed.
-6. **Signals and process trees.** For `process/restart` (`RecordingKillExecutor`)
-   and the teardown kill path, add tier (a) tests in a PID namespace
-   (`CLONE_NEWPID` alongside the user namespace). Real children are signalled
-   there, so no host process can be hit. Assert who survives.
-7. **The tier (c) VM test** "kernel-semantics": journald re-home with the real
-   daemon, a systemctl cost budget, emergency stderr across a journald restart,
-   and overlay-only activation on real mountinfo, all as subtests of one boot.
-8. **Effect assertions.** Audit `manager/tests/activation/*` and
-   `manager/tests/rollback.rs` for tests whose only assertion is the recorded
-   `MockOp` list or `drain_recorded_service_actions()`. Add a state-file or
-   mount-table assertion. The `reapply` test
-   (`manager/tests/activation/nixos_switch.rs`) is the model.
+1. [x] **Mount contract.** The mock-only mount section of
+   `filesystem_contract.rs` is gone; one mount contract runs against the mock
+   and against `RealFilesystem` in `Rerun::in_user_mount_ns`. It found three
+   mock drifts (see tier (d)).
+2. [x] **The rootless `privileged_mounts`.** Its 6 rootless tests run through
+   `Rerun` in `just test` and `just kernel-tests`;
+   `whiteout_and_opaque_hide_lower_entries_without_deleting_them` alone stays
+   `#[ignore]`d for the `sudo unshare` job. `just privileged-rootless` is gone.
+3. [x] **Captured fixtures.** The userns capture feeds `nixos/config` (its own
+   mountinfo reader), the `verify` overlay line and scans, `backend_detect`,
+   `classify_swap` and the stat/status parser. The VM capture runs in
+   decoy-journal-leak and emergency-graphical; `parse_active_units`, the
+   journald re-home classifier, `classify_swap`, the stat parser and the
+   teardown's logind spare set read it once it is committed. Feeding the
+   hidden-root scene to `verify` found a bug: two scans matched raw mountinfo
+   fields against the hidden root, so a root with a space or backslash hid
+   every leftover overlay and made the volume's own mapper look foreign. Fixed.
+   (`parse_session_ids`/`parse_properties` no longer exist: the teardown reads
+   logind's session records, which the graphical capture now includes.)
+4. [x] **`reconcile_mounts_override`.**
+   `manager::state_management::kernel_tests` reconciles against a real table
+   with a live, a missing and a shadowed overlay. The override stays for the
+   orchestration tests.
+5. [x] **`/proc/<pid>/stat` and `status`.** One parser,
+   `nails_teardown::proc::stat` (now with the scheduler state), replaces the
+   copies in `process/detection`, `filesystem/real/system_ops`,
+   `deactivation/process_teardown`, `shell_cleanup` and
+   `ProcessHandle::is_alive`; both `read_uid_from_status` copies use
+   `proc::uid`. Tested on a live `setsid` child with comm `x) (y z`.
+6. [x] **Signals and process trees.** `terminate` (TERM, then KILL for a
+   process that ignores TERM), the session teardown's user-process kill and
+   the interactive-shell kill run on real children as PID 1 of a PID
+   namespace, asserting who survives. The `cgroup.kill` hot path already ran
+   there (`manager::teardown_plan::kernel_tests`).
+7. [x] **The tier (c) checks**, merged into existing VM tests (see tier (c)):
+   the journald re-home verdict in decoy-journal-leak, the systemctl budget in
+   performance-validation; emergency stderr and overlay-only activation were
+   already covered.
+8. [x] **Effect assertions.** No test asserts only on the `MockOp` list or
+   `drain_recorded_service_actions()` any more (6 did). The history-edit and
+   snapshot-pivot tests moved to real files and a real mount table; the
+   emergency-order, journald re-home and read-only preflight tests gained
+   state-file, mount-table or "nothing written" assertions. Tests that check
+   only the calls made to `FakeConfigLayer` or a scripted session executor
+   remain where the decision is the subject (allowed above).
+
+Where a real file tree was practical, the mock also gave way: the history and
+temp-file cleaner tests run on temporary homes and a private `/tmp`, and
+configuration-only tests use `RealFilesystem` as the untouched backend.
+
+**Next:**
+
+- Commit the VM captures after the next VM run (fixture README) and drop the
+  "not captured yet" early returns that then no longer trigger.
+- Feed `classify_nixos_failure_category` captured `nixos-rebuild` errors.
+- The `nails init` scenarios in tier (a), as planned under T-140.
+- Decide the two contract-external drifts (tier (d)).
 
 **Keep as they are** (pure logic or error injection):
 
@@ -334,14 +390,13 @@ path where a booted system matters.
 
 ## What to run
 
-- **Locally or in any sandbox:** `just kernel-tests` (fails rather than skips)
-  and `just privileged-rootless`. Plain `just test` also runs the tier (a)
-  tests.
-- **CI:** the `rust` job now clears
-  `kernel.apparmor_restrict_unprivileged_userns` and sets
-  `NAILS_REQUIRE_USERNS=1`. The first run on GitHub confirms the sysctl is
-  enough there. If it is not, remove the variable to fall back to skipping, and
-  say so in the PR.
-- **VM:** one full e2e run for the `redirect_dir=nofollow` change, with
-  particular attention to the overlay, lifecycle and forensic groups. Separately,
-  the fixture capture in `nails-core/tests/fixtures/kernel/README.md`.
+- **Locally or in any sandbox:** `just kernel-tests` (fails rather than skips;
+  it now includes the mount contract and `privileged_mounts`). Plain
+  `just test` runs the same tests and skips them without user namespaces.
+- **CI:** the `rust` job clears `kernel.apparmor_restrict_unprivileged_userns`
+  and sets `NAILS_REQUIRE_USERNS=1`; the `privileged-mounts` job runs only the
+  whiteout test as root.
+- **VM:** decoy-journal-leak (journald re-home verdict, writes
+  `kernel-fixtures/`), emergency-graphical (writes
+  `kernel-fixtures-graphical/`) and performance-validation (the systemctl
+  budget). Copy the two capture directories as the fixture README says.
