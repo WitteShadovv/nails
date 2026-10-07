@@ -147,25 +147,13 @@ impl<F: Filesystem> Verifier<F> {
             return Vec::new();
         };
 
-        let mut sources = Vec::new();
-        for line in mountinfo.lines() {
-            let Some((pre, post)) = line.split_once(" - ") else {
-                continue;
-            };
-            // mountinfo pre-separator field 5 (index 4) is the mount point.
-            let Some(mount_point) = pre.split(' ').nth(4) else {
-                continue;
-            };
-            if Path::new(mount_point) != root {
-                continue;
-            }
-            // Post-separator fields: fstype, source, super_opts.
-            if let Some(source) = post.split(' ').nth(1) {
-                sources.push(source.to_string());
-            }
-        }
-
-        sources
+        // The shared parser decodes the kernel's octal escapes, so a hidden root
+        // whose path holds a space or a backslash still finds its own entry.
+        crate::filesystem::parse_mountinfo(&mountinfo)
+            .into_iter()
+            .filter(|entry| entry.mount_point == root)
+            .map(|entry| entry.source.to_string_lossy().into_owned())
+            .collect()
     }
 
     /// Check for nails-related processes, distinguishing the real binary from an

@@ -28,32 +28,18 @@ impl<F: Filesystem> Verifier<F> {
             return Ok(findings);
         };
 
-        for line in mountinfo.lines() {
-            let Some((pre, post)) = line.split_once(" - ") else {
-                continue;
-            };
-            // Pre-separator fields: id parent maj:min root mountpoint options ...
-            let Some(mount_point) = pre.split(' ').nth(4) else {
-                continue;
-            };
-            // Post-separator fields: fstype source super_opts.
-            let post_fields: Vec<&str> = post.split(' ').collect();
-            let Some(fstype) = post_fields.first() else {
-                continue;
-            };
-            if *fstype != "overlay" {
+        // The shared parser decodes the kernel's octal escapes in the mount
+        // point and in the overlay options, so a hidden root whose path holds a
+        // space, a comma or a backslash still matches its overlays' upper dirs.
+        for entry in crate::filesystem::parse_mountinfo(&mountinfo) {
+            if entry.fstype != "overlay" {
                 continue;
             }
-            let Some(super_opts) = post_fields.get(2) else {
-                continue;
-            };
-            let Some(upperdir) = super_opts
-                .split(',')
-                .find_map(|opt| opt.strip_prefix("upperdir="))
+            let Some(upperdir) = crate::filesystem::parse_overlay_opts(&entry.super_opts).upperdir
             else {
                 continue;
             };
-            if !Path::new(upperdir).starts_with(hidden_root) {
+            if !upperdir.starts_with(hidden_root) {
                 continue;
             }
             findings.push(
@@ -61,7 +47,9 @@ impl<F: Filesystem> Verifier<F> {
                     Severity::Critical,
                     "mount",
                     format!(
-                        "Leftover overlay at {mount_point} (upper layer {upperdir} on the hidden volume)"
+                        "Leftover overlay at {} (upper layer {} on the hidden volume)",
+                        entry.mount_point.display(),
+                        upperdir.display()
                     ),
                 )
                 .with_fix_guidance("Run 'nails deactivate' to unmount overlays"),

@@ -40,6 +40,73 @@ fn overlay_verifier(mountinfo: &str) -> (MockFilesystem, Verifier<MockFilesystem
     (fs, verifier)
 }
 
+/// The whole captured hidden-root scene, unedited: every overlay whose upper
+/// lies on the hidden root is a leftover, including the `/nix/store` one a
+/// later `/nix` overlay shadows.
+#[test]
+fn captured_hidden_root_overlays_are_all_reported() {
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/proc/self/mountinfo",
+        &crate::kernel_fixtures::userns("mountinfo-hidden-root.txt"),
+    );
+    let config = crate::config::Config {
+        hidden_volume_root: std::path::PathBuf::from("/fixture/mnt/hidden root"),
+        ..crate::config::Config::default()
+    };
+    let result = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked)
+        .run(false)
+        .unwrap();
+
+    let mounts: Vec<&str> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "mount" && f.severity == Severity::Critical)
+        .map(|f| f.message.as_str())
+        .collect();
+    for target in ["/fixture/home ", "/fixture/nix/store ", "/fixture/nix "] {
+        assert!(
+            mounts.iter().any(|m| m.contains(target.trim_end())),
+            "{target} is reported: {mounts:?}"
+        );
+    }
+    assert_eq!(mounts.len(), 3, "one finding per overlay: {mounts:?}");
+}
+
+/// The captured scene's hidden root (`/fixture/mnt/hidden root`, printed with
+/// `\040`) is backed by `/dev/mapper/vault`: that open mapper is the hidden
+/// volume's own, reported at Info, not as a foreign second volume.
+#[test]
+fn captured_hidden_root_mapper_is_recognised_as_its_own() {
+    use std::path::{Path, PathBuf};
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/proc/self/mountinfo",
+        &crate::kernel_fixtures::userns("mountinfo-hidden-root.txt"),
+    );
+    fs.mock_set_directory_contents(
+        Path::new("/sys/block"),
+        vec![PathBuf::from("/sys/block/dm-2")],
+    );
+    fs.mock_set_file_content("/sys/block/dm-2/dm/uuid", "CRYPT-LUKS2-abc-vault\n");
+    fs.mock_set_file_content("/sys/block/dm-2/dm/name", "vault\n");
+    let config = crate::config::Config {
+        hidden_volume_root: PathBuf::from("/fixture/mnt/hidden root"),
+        ..crate::config::Config::default()
+    };
+    let result = Verifier::with_config(fs, config, None, StateFileStatus::NotChecked)
+        .run(false)
+        .unwrap();
+
+    let vault = result
+        .findings
+        .iter()
+        .find(|f| f.category == "block-device")
+        .expect("the open mapper is reported");
+    assert_eq!(vault.severity, Severity::Info, "{}", vault.message);
+    assert!(vault.message.contains("backing the hidden volume"));
+}
+
 // ========================================================================
 // Data Structure Tests
 // ========================================================================
