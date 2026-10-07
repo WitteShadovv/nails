@@ -1,8 +1,8 @@
 # Storage backends
 
 NAILS never unlocks, mounts or encrypts storage. It needs a filesystem that is
-already mounted and writable at `hidden_volume_root`, and it layers the hidden
-environment over the decoy from there. Which backend provides that filesystem
+already mounted and writable at `hidden_volume_root`, and it keeps the upper of
+the hidden root (one overlay over the whole decoy root) there. Which backend provides that filesystem
 changes what an adversary with one or more disk images can learn, so this page
 lists what has been tested, what every backend must provide, and the
 deniability trade-offs of each supported backend.
@@ -18,7 +18,7 @@ filesystem label free of anything that hints at hidden storage: they surface in
 |---|---|---|
 | **Tested** | LUKS2 + ext4 on a whole block device | Every E2E run: `nix/e2e-tests/lib/hidden-volume.nix` formats a dedicated virtual disk with `cryptsetup luksFormat`, opens it and creates ext4 inside. |
 | **Evaluated once** | VeraCrypt hidden volume, opened with `cryptsetup open --type tcrypt --tcrypt-hidden`, ext4 inside | One manual forensic evaluation. Not exercised in CI. |
-| **Expected to work** | Any local Linux filesystem that passes the preflight probes (ext4, xfs, btrfs, f2fs) on any kernel block device, including iSCSI and NBD devices | Untested. The preflight probes decide. Network traffic to a remote block device is outside the host-side threat model, and the connection must outlive the login session. |
+| **Expected to work** | Any local Linux filesystem that passes the preflight probes (ext4, xfs, btrfs, f2fs) on any kernel block device, including iSCSI and NBD devices | Untested. The preflight probes decide. Network traffic to a remote block device is outside the host-side threat model, and the connection must survive the soft-reboots, which stop every userspace daemon (an iSCSI or NBD client among them). |
 | **Unsupported** | NFS, CIFS/SMB, sshfs, 9p and most FUSE filesystems as the hidden root; FAT, exFAT, NTFS | Cannot host an overlayfs upper layer. Refused by the `upper-fs-capability` preflight check. |
 | **Not evaluated** | Shufflecake; volumes mounted by the VeraCrypt application itself | No claims. `backend-detect` names a Shufflecake (`sflc_<dev>_<vol>`) volume in its summary, but no Shufflecake-specific hazards are checked. A cross-backend E2E matrix is not part of the suite yet. |
 
@@ -38,13 +38,15 @@ Whatever the backend, the filesystem at the hidden root must:
   filesystem type;
 - **keep every overlay upper and its work directory on one filesystem**.
   overlayfs refuses an upper and work directory on different filesystems.
-  NAILS keeps both under the hidden root (`<root>/<name>` and
-  `<root>/.work/<name>`), so do not mount another filesystem inside the hidden
+  NAILS keeps both under the hidden root (`<root>/root/upper` and
+  `<root>/root/work`, and `<root>/root/mounts/<path>/` for each other decoy
+  filesystem it overlays), so do not mount another filesystem inside the hidden
   root;
-- **stay mounted independently of the login session**. By default
-  `nails activate` ends the graphical session before it mounts anything, so the
-  mount must be kernel-managed (dm-crypt, a loop device), not a FUSE process
-  started inside that session.
+- **be kernel-managed** (dm-crypt, a loop device). Activation soft-reboots:
+  every userspace process stops, so a FUSE mount backed by a process dies at the
+  switch. A kernel mount survives it: the decoy's shutdown unmounts the hidden
+  volume's own mount unit, but the bind NAILS places inside the next root keeps
+  it alive, and it appears at the same path in the hidden session.
 
 `sudo nails activate --dry-run` previews activation and prints every preflight
 result, including the backend detection below.
@@ -84,7 +86,7 @@ mount point is skipped; the `hidden-volume` check fails it.
 
 Prefer cryptsetup over the VeraCrypt application for both VeraCrypt layouts:
 cryptsetup creates a plain kernel dm-crypt mapping with no userspace process
-behind it, which is what the session requirement above needs.
+behind it, which is what the kernel-managed requirement above needs.
 
 ### VeraCrypt hidden volume in a file container
 
@@ -183,14 +185,18 @@ Every backend leaves the same traces on the decoy side while you unlock it:
   `/etc/crypttab`, `/etc/fstab` or the decoy NixOS configuration
   (`boot.initrd.luks.devices`, `fileSystems`).
 
-`nails deactivate` ends with a reboot, which removes every mapping and loop
-device. The reboot does not clear the keys from RAM: dm-crypt wipes the master
-key when a mapping is removed, but other copies (page cache, freed pages,
-process memory) survive a warm reboot unless the firmware honours the TCG
-memory-overwrite request, and setting that request writes EFI NVRAM. Use
-`nails deactivate --poweroff` to power off instead and let RAM decay. After
-`nails emergency`, which neither reboots nor powers off by default, run the lock
-sequence yourself.
+`nails deactivate` and `nails emergency` close the hidden backend themselves:
+before the soft-reboot back they mark its device-mapper stack for deferred
+removal, and the switch releases the last reference (the overlay that held the
+hidden volume), so the kernel removes the mapping, and a loop device set up with
+autoclear, at that moment. You do not run the lock sequence after a session; you
+run it only when you unlocked the volume on the decoy without activating, or for
+a backend that is not device-mapper based. Closing the mapping does not clear
+the key from RAM: dm-crypt wipes the master key when a mapping is removed, but
+other copies (page cache, freed pages, process memory) survive a soft-reboot and
+a warm reboot, unless the firmware honours the TCG memory-overwrite request, and
+setting that request writes EFI NVRAM. Use `nails deactivate --poweroff` or
+`nails emergency --poweroff` to power off instead and let RAM decay.
 
 ## Deniability hazards
 

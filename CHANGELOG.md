@@ -19,11 +19,18 @@ Upgrade only while NAILS is inactive: run `nails deactivate` (or `nails recover`
 state) with the old binary before replacing it. This release breaks compatibility with earlier
 state, config and CLI surfaces; there are no compatibility shims.
 
+- The whole-root session is the only session mode (ADR 0008). It needs systemd 254 or newer, so
+  Debian 12 and Ubuntu 22.04 are no longer supported. The hidden root lives under
+  `<hidden-root>/root/` (`upper`, `work`, `mounts`, `cache`); the uppers of the per-directory
+  overlays (`<hidden-root>/<name>`, `<hidden-root>/.work`) are not read. Move what you need into a
+  hidden session and delete them. On NixOS the hidden hardware configuration now lives in
+  `<hidden-root>/root/upper/etc/nixos/`; run `nails init` again to place it. Remove the deleted
+  configuration keys listed under "Removed" from `nails.toml`: they are rejected as unknown keys.
 - Configuration moves from `nails.yaml` (YAML) to strict `config/nails.toml` (TOML): convert each
   key by hand, unknown keys are now rejected, and `nails init` regenerates a documented template.
 - Invoke the binary from the hidden volume by full path (`sudo "$ROOT/nails" …`); nails is never on
-  the decoy `PATH`. Several `activate`/`deactivate` flags were renamed or removed (for example
-  `--no-kill-session` is now `--session keep`).
+  the decoy `PATH`. Several `activate`/`deactivate` flags were removed (for example
+  `--no-kill-session`, and the `--session` flag that briefly replaced it); see "Removed".
 - Exit codes and the JSON envelope changed (`schema_version = 1`); scripts that parsed the old
   output must be updated against the new exit-code table and envelope.
 - The on-disk state schema changed (adds `boot_id`, removes the `Emergency` state). Delete any
@@ -32,6 +39,43 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Added
 
+- The whole-root session (ADR 0008). `nails activate` builds one overlay over the whole decoy root at
+  `/run/nextroot` (the decoy root read-only as the lower, `<hidden-root>/root/upper` as the upper),
+  applies a fixed fstab policy to every other decoy filesystem (the ESP and `/boot` bound
+  read-only, other mounted local filesystems overlaid with an upper under
+  `<hidden-root>/root/mounts/`, swap, unmounted disks, network filesystems and disk-backed overlay
+  entries masked), binds `/run` and the hidden volume into it, checks the init the way PID 1 will,
+  writes the session plan with a RAM copy of the binary and config to `/run/overlay-runtime`,
+  installs the transition drop-in and soft-reboots (`systemctl soft-reboot`). Every process of the
+  hidden session starts inside the overlay; no userspace process can reach the decoy filesystem.
+  As its last step activation SIGKILLs the decoy's interactive shells, so the activation command
+  never reaches a history file.
+- On NixOS the hidden system is built into the next root's store (`nix build --store
+  /run/nextroot`, the evaluation cache on the hidden volume), activated chrooted with a private
+  `/run`, and entered by repointing `/run/current-system` after every decoy unit has stopped: one
+  soft-reboot, no bootloader install, no system profile change. Inside the hidden session
+  `/etc/nixos` is the hidden configuration and `nixos-rebuild test` applies changes.
+  `--overlay-only` enters with the decoy's own system plus the hidden `/etc` and home. Debian 13
+  and Ubuntu 24.04+ run the same session with the hidden configuration in the upper's `/etc`.
+- The transition step (`ExecStart=` of `systemd-soft-reboot.service`, run from the RAM copy) acts
+  only on an armed plan. On the way back it scrubs `/run` of what the hidden session added (an
+  allowlist that never touches sockets, `/run/udev`, credentials or the current/booted system
+  links), restores libmount's `utab` and writes journald's kmsg cursor, so the decoy journal
+  imports no hidden kernel record. An unarmed populated `/run/nextroot` is detached, so a later
+  plain `reboot` (a soft-reboot on systemd 255+) never enters a leftover tree.
+- Pre-flight checks `systemd-version` (254 or newer; Debian 12 and Ubuntu 22.04 refused),
+  `soft-reboot-units` (prints the module a pinned nixpkgs needs), `decoy-root` (refuses a tmpfs,
+  ZFS or overlay decoy root), `session-state` and `fstab-policy` (lists the decision for every
+  decoy filesystem).
+- `nails status` reports the live session (hidden root, entry under way, interrupted entry, plain
+  decoy) from the mount table and the session plan, since a soft-reboot keeps the boot ID; an
+  interrupted entry exits 7 with "run `nails recover`".
+- Session VM tests under `nix/e2e-tests/tests/session/` (`session-lifecycle`, `session-emergency`,
+  `session-interrupted-entry`, `session-fstab-policy`, `session-nixos-hidden-system`, and the
+  promoted soft-reboot spike as `soft-reboot-mechanics`), soft-reboot helpers in
+  `nix/e2e-tests/py/nails_e2e/session.py`, and `nix/e2e-tests/lib/soft-reboot-units.nix` for the
+  units the pinned nixpkgs lacks. The distribution smoke tests run the session on Debian 13 and
+  Ubuntu 24.04.
 - Activation results reach the operator reliably. A committed activation pushes its queued
   result notifications straight into the operator's graphical session (`systemd-run --user
   --machine=<user>@.host`, falling back to `runuser`), removing each one delivered; with no
@@ -224,6 +268,30 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Changed
 
+- `nails deactivate` runs in the hidden session and soft-reboots back to the plain decoy: it mounts
+  the decoy root at `/run/nextroot`, marks the hidden backend's device-mapper stack for deferred
+  removal and records the state as inactive; the orderly shutdown stops every hidden program and
+  the switch unmounts the hidden volume and closes its mapping. `--poweroff` powers off instead.
+- `nails emergency` runs before argument parsing, the configuration and logging. In the hidden
+  session it prepares the way back, marks the backend for deferred removal, enqueues the
+  soft-reboot directly with PID 1 and kills every hidden cgroup at once (`cgroup.kill`); the
+  machine returns to the decoy's normal login screen, and nothing logs in automatically.
+  `--poweroff` powers off; a way back that cannot be prepared powers off instead, and a power
+  action that cannot be enqueued asks the kernel. The backend is always closed. On the decoy it
+  removes what an interrupted activation left. Its timed phases go to the hidden-volume log.
+- `nails recover` runs on the decoy and removes an interrupted activation's leftovers: it detaches
+  `/run/nextroot`, removes `/run/overlay-runtime` and the transition drop-in, reloads the service
+  manager and resets the state.
+- `nails reset-upper <PATH>` deletes a path's hidden copy from the hidden root's upper (and a
+  separately overlaid filesystem's upper), so the decoy's own files show through again, for
+  example after a decoy update that an earlier copy-up shadows. It is refused in the hidden
+  session.
+- The backend watcher (`[backend_watch]`) and the sleep guard (`[sleep_policy]`) run as runtime
+  units of the hidden session from the RAM copy; the watcher's automatic emergency returns to the
+  decoy, and the sleep guard's `teardown` mode powers off before the machine sleeps.
+- The state machine has three states (`Inactive`, `Active`, `Degraded`).
+- The README, operator guide, configuration reference, architecture overview and E2E harness
+  guide describe the whole-root session; ADR 0008 is accepted and supersedes ADR 0005.
 - Every I/O error names the path it concerns: `NailsError::IoError` is now a struct variant
   carrying the path (for a process that failed to start, the program) and renders as
   `<path>: <error>`, or the error alone when it already names the path. The implicit conversion
@@ -439,6 +507,20 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Removed
 
+- The per-directory live overlays (`/etc`, `/home`, `/var`, … on the running decoy) and everything
+  that served them: process detection, classification, restart and kill, the journald re-homing,
+  the display-manager restart, the writer rescans, the graphical-session spare logic, the
+  read-only `/usr` guard, the RAM snapshot of VFAT targets, the shell-history cleaner and the
+  desktop notifications after activation (the backend watcher's immediate alert stays).
+- The `activate` flags `--session`, `--pivot`, `--risky-services` and `--terminate-processes`,
+  `deactivate --no-clear-history`, `emergency --lock-backend`, and the `reapply` and
+  `notify-dispatch` commands.
+- The configuration keys `overlays`, `overlay_mode`, `overlay_exclusions`,
+  `overlay_exclusions_remove`, `allow_leaky_exclusions`, `risky_services`,
+  `nixos_switch_required`, `clear_history`, `prompt_label`, the `[color_scheme]` table and the
+  `[emergency]` table (`lock_backend`, `close_command`), and the ephemeral overlay directories.
+- Debian 12 and Ubuntu 22.04 support (systemd too old for a soft-reboot), and Debian 12 in the
+  distribution smoke tests.
 - The XOR string-obfuscation module and its indistinguishability claims; the obfuscated literals
   are inlined and the binary is now described honestly as identifiable.
 - The non-functional in-memory shell-history clear (a `bash -c` subprocess that could never

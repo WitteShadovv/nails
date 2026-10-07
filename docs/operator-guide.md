@@ -22,18 +22,23 @@ what you did.
 
 1. **A separate machine** — building, verifying and copying the release onto the
    hidden volume. The decoy never sees this work.
-2. **Inside the hidden session** — everything you do while the overlays are
-   mounted. Writes land on the hidden volume, not the decoy.
-3. **The decoy shell** — the plain decoy system, before activation and after
-   teardown. This is the surface a forensic examiner images.
+2. **Inside the hidden session** — everything after activation's soft-reboot and
+   before the way back. The whole root is an overlay whose upper is on the hidden
+   volume, so every write lands there, not on the decoy.
+3. **The decoy shell** — the plain decoy system, before activation and after the
+   way back. This is the surface a forensic examiner images.
 
-> **Never type on the decoy.**
+> **Type as little as possible on the decoy.**
 >
-> - Do not run `nails`, read `state.json`, or name the hidden volume, its mapper,
->   its mount point or the tool from a decoy shell.
-> - The unlock and mount commands you must type on the decoy (NAILS runs *after*
->   them) go in a shell with history off — see
->   [History off on the decoy](#history-off-on-the-decoy).
+> - On the decoy you unlock and mount the hidden volume and run `nails check`
+>   and `nails activate` (and, when needed, `nails recover` or
+>   `nails reset-upper`). Do nothing else with the tool there: do not read
+>   `state.json`, and do not name the hidden volume, its mapper, its mount point
+>   or the tool in any other command.
+> - Type those commands in a shell with history off — see
+>   [History off on the decoy](#history-off-on-the-decoy). Activation also kills
+>   the decoy's interactive shells as its last step, so none of them writes the
+>   activation command to its history file.
 > - Choose neutral names. A mapper called `data0`, a mount at `/mnt/usb` and a
 >   plain filesystem label reveal nothing; `hidden`, `veracrypt`, `tcrypt`,
 >   `decoy` or `nails` do. **Renaming alone is not enough** — the names still
@@ -48,25 +53,32 @@ invoke it by its absolute path.
 
 ## What NAILS does
 
-NAILS layers a hidden environment over the decoy with OverlayFS: writes made in
-the session land on a writable *upper* on the hidden volume, and the decoy's own
-files underneath are never modified. The overlay separates *writes*, not
-processes or identity: hidden services run on the same kernel and init as the
-decoy's, next to whatever the decoy keeps running, and share its network
-identity (see
-[What the hidden environment shares with the decoy](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
-Two cleanups bracket the session:
+NAILS runs the hidden session in one OverlayFS over the whole decoy root. The
+decoy root is the read-only lower; the writable upper is on the hidden volume.
+Activation builds that overlay at `/run/nextroot` and enters it with
+`systemctl soft-reboot` (systemd 254 or newer): systemd stops every decoy
+program, switches root into the overlay and starts a fresh userspace there. The
+hidden desktop, its applications and its services all start inside the overlay,
+and after the switch no userspace process can reach the decoy filesystem by any
+path. Deactivation soft-reboots back into the plain decoy root.
 
-- **Pre-activation residue baseline.** Before it mounts any overlay, `nails
+The overlay separates *files*, not the machine: the hidden session runs on the
+decoy's kernel and shares its network identity (see
+[What the hidden environment shares with the decoy](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
+Both transitions log you out: every program closes, and the hidden session and,
+afterwards, the decoy start at their own login screens.
+
+Two safeguards bracket the session:
+
+- **Pre-activation residue baseline.** Before it builds anything, `nails
   activate` runs the read-only decoy residue scan and writes the result to
   `<hidden-root>/reports/`, then prints a one-line summary. The scan only reads
-  the decoy; the report lives on the hidden volume and is torn down with the
-  session. It is a baseline, so if a later examination finds a trace you can tell
-  whether it predated the session.
-- **History truncation on deactivate.** Before unmounting, teardown SIGKILLs
-  every interactive shell (including root's) so none is left to flush its
-  in-memory history to the decoy. Teardown makes **no** write to (and no read
-  of) the decoy after unmount (see [Shell history](#shell-history)).
+  the decoy; the report lives on the hidden volume. It is a baseline, so if a
+  later examination finds a trace you can tell whether it predated the session.
+- **No shell history reaches the decoy.** As its last step activation SIGKILLs
+  the decoy's interactive shells, so none of them can flush the activation
+  command to a history file. Shells in the hidden session write their history
+  into the hidden home, which is in the upper (see [Shell history](#shell-history)).
 
 Hardening the decoy's *own* shell history (environment, symlinks, boot-time
 enforcement) is decoy configuration, not something NAILS does at runtime; it is
@@ -76,20 +88,114 @@ covered in [decoy-requirements.md](decoy-requirements.md).
 
 ## How it works
 
-**Hidden-root layout.** The hidden volume holds the `nails` binary, its
-configuration (`nails.toml`), the hidden Nix flake and `configuration.nix`, the
-overlay uppers, `state.json`, and the `reports/` directory. Keep all of it
-`root`-owned on the hidden volume.
+The design record is [ADR 0008](adr/0008-whole-root-soft-reboot.md); this is
+the operator's view of it.
 
-**The `hardware-configuration.nix` import.** On NixOS, the hidden configuration
-imports the decoy's `hardware-configuration.nix` so the hidden generation boots
-on the same hardware without duplicating that file.
+**Hidden-root layout.** The hidden volume holds:
 
-**The auto overlay set and activation order.** Activation mounts the overlay set
-derived from the configuration, deepest paths last so a child overlay is never
-hidden by its parent, then switches `/run/current-system` to the hidden
-generation. On a non-NixOS host the config layer is skipped and only the
-overlays are mounted.
+| Path | Content |
+|---|---|
+| `<hidden-root>/nails` | the binary |
+| `<hidden-root>/config/` | `nails.toml` and, on NixOS, the hidden module `config/nixos/configuration.nix` |
+| `<hidden-root>/root/upper`, `root/work` | the hidden root's upper and its overlayfs work directory |
+| `<hidden-root>/root/mounts/<path>/upper` | the upper of each other decoy filesystem that is overlaid (a separate `/home`), named by its systemd path escape |
+| `<hidden-root>/root/cache` | the Nix evaluation cache used while the hidden system is built |
+| `<hidden-root>/logs/`, `state.json`, `reports/` | the log, the recorded state and the residue reports |
+
+Keep all of it `root`-owned on the hidden volume.
+
+**Activation, step by step.** `nails activate` runs on the decoy:
+
+1. It runs the pre-flight checks, among them `systemd-version` (254 or newer),
+   `soft-reboot-units` (the units that implement `systemctl soft-reboot` are
+   installed), `decoy-root` (the decoy root can be mounted again by device for
+   the way back), `session-state` (no session and no leftovers of an
+   interrupted one), `fstab-policy`, `hidden-volume`, `upper-fs-capability`,
+   `backend-detect`, `storage-readiness`, `swap`, `memory-wipe`,
+   `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
+   `incremental-history-flush` and `space`. `nails check` runs the same checks
+   and changes nothing.
+2. It snapshots `/run` and writes the session plan to `/run/overlay-runtime`,
+   together with a RAM copy of the binary and the configuration.
+3. It mounts the root overlay at `/run/nextroot`: the decoy root, read-only, as
+   the lower; `<hidden-root>/root/upper` as the upper.
+4. On NixOS with a hidden configuration it builds and activates the hidden
+   system (see below).
+5. It applies the **fstab policy** to every filesystem the hidden systemd would
+   mount from the decoy's fstab:
+   - the ESP and `/boot` filesystems are bound read-only, so nothing in the
+     hidden session rewrites `loader/random-seed`, `grubenv` or a boot entry;
+   - a filesystem mounted read-only in the decoy is bound read-only;
+   - every other mounted local filesystem (a separate `/home`, `/var` or
+     `/nix`) gets an overlay of its own, with its upper under
+     `<hidden-root>/root/mounts/`;
+   - swap, local filesystems that are not mounted now, network filesystems and
+     overlay entries whose upper is on a disk are masked in `/run`, so the hidden
+     systemd never activates them.
+
+   `nails check` lists the decision for each entry.
+6. It binds `/run` and the hidden volume into the next root (the hidden volume
+   appears at the same path in the hidden session) and checks the init the way
+   PID 1 will, so a broken tree is refused before the switch instead of freezing
+   the machine.
+7. It installs the transition step (a runtime drop-in for
+   `systemd-soft-reboot.service`), prints its result, kills the decoy's
+   interactive shells and soft-reboots.
+
+**The hidden NixOS system.** With a hidden configuration — a flake given with
+`--nixos-flake` or `nixos_flake`, or otherwise the legacy configuration, which
+is the decoy's `/etc/nixos` plus the hidden hardware configuration `init` placed
+in `<hidden-root>/root/upper/etc/nixos/` (it imports
+`<hidden-root>/config/nixos/configuration.nix`) — activation builds the hidden
+toplevel into the next root's store (`nix build --store /run/nextroot`). The
+build reads the decoy store through the lower and writes every new path, the
+Nix database included, into the upper; nothing reaches the decoy `/nix`. It
+then runs the toplevel's activation chrooted into the next root with a private
+`/run`, and the transition step repoints `/run/current-system` only after every
+decoy unit has stopped, so PID 1 executes the hidden systemd against the hidden
+`/etc`. No bootloader is installed and no system profile changes. The hidden
+toplevel must run on the decoy's kernel: the kernel modules come from
+`/run/booted-system`. `--overlay-only` skips the build and enters with the
+decoy's own system plus the hidden `/etc` and home.
+
+**Debian and Ubuntu.** The same root overlay, with no build step: the hidden
+configuration is whatever the upper's `/etc` holds. Change it from inside the
+hidden session like any system configuration.
+
+**The way back.** `nails deactivate`, in the hidden session, mounts the decoy
+root at `/run/nextroot` (the same filesystem the overlay reads as its lower, so
+mounting it writes nothing), marks the hidden backend's device-mapper stack for
+deferred removal, records the state as inactive and soft-reboots. The orderly
+shutdown stops every hidden program. The last step before the switch:
+
+- scrubs `/run` of what the hidden session added. It deletes from an allowlist
+  (the hidden runtime journal, logind's session state, runtime units, `utmp`,
+  and entries that were not there when the session was entered) and never
+  touches sockets, `/run/udev`, credentials or the current/booted system links,
+  which the decoy's next userspace is built to inherit;
+- restores libmount's `utab` to the copy taken at entry;
+- writes journald's kernel-message cursor, so the decoy journal imports no
+  kernel record of the hidden session.
+
+PID 1 then switches back into the plain decoy root, and the decoy starts at its
+own login screen. The hidden volume is unmounted and its mapping closed by the
+switch itself, once the overlay that held it is released.
+
+**What a soft-reboot leaves.** Nothing of the hidden session's files, but some
+kernel state, all of it in RAM and gone at power-off:
+
+- the kernel ring buffer (`dmesg`), with the hidden session's kernel messages;
+- `SoftRebootsCount`, two per session, readable with `systemctl show`;
+- the same boot ID and continuous uptime across both transitions.
+
+On a persistent decoy journal (which the decoy requirements forbid), the decoy's
+own shutdown and start lines appear under one boot ID, together with the kernel's
+`EXT4-fs … unmounting filesystem` line for the hidden filesystem. The decoy's
+shutdown before entry and its start after the way back write what an ordinary
+shutdown and boot write: the random seed, a wtmp record, the journal if it is
+persistent. With the ESP read-only in the hidden session, `loader/random-seed`
+changes only when the decoy itself starts. **Power off after a session when RAM
+residue matters.**
 
 **Swap the binary only while inactive.** Replace the binary, flake or config on
 the hidden volume only when no session is active. Never stage any of them on the
@@ -97,11 +203,11 @@ decoy, even briefly — see [Keeping NAILS off the decoy](#keeping-nails-off-the
 
 ### Trusted computing base
 
-NAILS runs as `root` and reconfigures the running system, so everything it loads
+NAILS runs as `root` and replaces the running userspace, so everything it loads
 at activation is part of root's trusted computing base (TCB): the binary, its
-config, and the hidden flake and `configuration.nix` it builds and switches to.
-Keep all of these on the hidden volume, `root`-owned, and treat their integrity
-as a precondition for every run.
+config, and the hidden flake and `configuration.nix` it builds and enters. Keep
+all of these on the hidden volume, `root`-owned, and treat their integrity as a
+precondition for every run.
 
 - **Root integrity is assumed.** NAILS performs no runtime self-integrity check
   and cannot detect a modified binary, config or flake while it runs. A root
@@ -110,8 +216,8 @@ as a precondition for every run.
   confidentiality and integrity at rest (strong passphrase, trusted hardware, no
   shared write access).
 - **No unauthenticated or remote backends.** The flake, configuration and binary
-  must come from storage you control and have verified. Building or switching to
-  a configuration fetched from an unauthenticated source or a remote builder you
+  must come from storage you control and have verified. Building a
+  configuration fetched from an unauthenticated source or a remote builder you
   do not trust is unsupported. NAILS gives root child processes a fixed,
   root-owned tool search path and a cleared environment so the caller's `PATH`
   and Nix settings cannot redirect which binaries run; do not reintroduce that
@@ -121,96 +227,88 @@ as a precondition for every run.
 
 ## Standard vs emergency vs recover
 
-NAILS has three teardown paths. All of them unmount the overlays **explicitly**
-from inside the process — none relies on a reboot to do the unmounting.
+NAILS has three ways to end or clean up a session. `deactivate` and `emergency`
+run in the hidden session and end it with a soft-reboot back to the decoy;
+`recover` runs on the decoy and removes what an interrupted activation left.
 
 | Action | `deactivate` (standard) | `emergency` | `recover` |
 |--------|-------------------------|-------------|-----------|
-| Overlay list taken from | recorded state (verified Active) | live mount table when state is untrusted, else recorded state | always the live mount table |
-| Kill shells before unmount | Yes | Yes | Yes (reconcile) |
-| Stop hidden-added service units | Yes | Yes | Yes |
-| Unmount overlays explicitly | Yes | Yes | Yes |
-| Restore `/run/current-system` to the decoy (symlink swap) | Yes | Yes | Yes |
-| Restart nix-daemon / journald after unmount (if overlaid) | Yes | Yes | Yes |
-| Touch the display manager / X server / graphical session | No | No | No |
-| Scrub the volatile runtime journal | Yes | Yes | Yes |
-| Reboot into the decoy | **Yes** | No (recommended; `--reboot`/`--poweroff`) | No |
-| Close the encrypted backend | cleared by the reboot | Opt-in (`[emergency] lock_backend`, `--lock-backend`) | No |
-| Write to or read the decoy after unmount | No | No | No |
-| Kill the invoking interactive shell | cleared by the reboot | Yes, as the very last step | No |
-
-The decoy restore is a symlink swap of `/run/current-system`, not a
-`switch-to-configuration switch`: settings the hidden generation applied
-imperatively (for example the hostname) are not reverted until a reboot. Standard
-deactivation reboots, so it ends on a clean decoy generation; emergency and
-recover do not, which is why both recommend a reboot and emergency offers
-`--poweroff`/`--reboot`.
+| Runs in | the hidden session | the hidden session (or the decoy, see below) | the decoy |
+| Prepares the way back (decoy root at `/run/nextroot`) | Yes | Yes | — |
+| Hidden programs | stopped in order by the shutdown | killed at once (`cgroup.kill` on every cgroup but PID 1's and its own) | — |
+| Hidden backend | marked for deferred removal; closed by the switch | marked for deferred removal; closed by the switch | — |
+| `/run` scrub, `utab` restore, kmsg cursor | Yes | Yes | — |
+| Ends at | the decoy's login screen (`--poweroff`: off) | the decoy's login screen (`--poweroff`: off; `--reboot`: a full reboot) | the decoy, unchanged |
+| Detaches a leftover `/run/nextroot` and removes `/run/overlay-runtime` and the drop-in | — | on the decoy: Yes | Yes |
+| Reads the configuration first | Yes (falls back to defaults) | No: it runs before argument parsing, the configuration and logging | Yes |
 
 ### When to use each
 
-- **`deactivate`** — the normal end of a session, when you have time to reboot.
-  Pass `--poweroff` to power off instead of rebooting, which is what clears RAM.
-- **`emergency`** — an imminent threat, or you cannot reboot right now. Teardown
-  starts immediately; pass `--countdown <SECS>` for an abortable wait and
-  `--poweroff` (clears RAM) or `--reboot` (does not) afterwards.
-- **`recover`** — a system left inconsistent by a crash, a killed process or an
-  interrupted teardown. It reads the live mount table, unmounts any NAILS overlay
-  it finds, restores the decoy symlink and resets the state to Inactive.
+- **`deactivate`** — the normal end of a session. Every hidden program gets an
+  orderly stop, so applications can save. Pass `--poweroff` to power off instead
+  of returning to the decoy, which is what clears RAM.
+- **`emergency`** — an imminent threat. It acts immediately; pass
+  `--countdown <SECS>` for an abortable wait, and `--poweroff` to power off
+  (RAM decays: the strongest choice) or `--reboot` for a full reboot (which does
+  not clear RAM).
+- **`recover`** — on the decoy, after an activation that died part-way (a crash,
+  a killed process, a failed `systemctl`). It detaches `/run/nextroot`, removes
+  `/run/overlay-runtime` and the transition drop-in, reloads the service manager
+  and resets the state. It never reboots. In the hidden session it refuses and
+  points at `deactivate`.
 
-### Emergency leaves more running
+### What emergency does
 
-Emergency is a fast, partial teardown, not a switch back to the decoy
-configuration:
+In the hidden session, emergency:
 
-- Hidden settings applied by the switch are not reverted until a reboot.
-- **The encrypted backend is left open by default.** Overlay teardown always
-  runs, but closing the backend is opt-in. Without the opt-in the hidden
-  filesystem stays **mounted and readable** and the master key stays in kernel
-  memory until you close it or power off. `nails status` and `nails verify`
-  report this loudly as **Critical — hidden root still mounted**.
-- Processes the hidden session started that do not hold an overlay keep running.
-- **The terminal you ran it from closes.** As its very last step, after its
-  output is flushed, emergency SIGKILLs the interactive shell it was started
-  from (and any other interactive shell in its session). That shell began in the
-  hidden session; left alive it would append the session's commands to the decoy
-  history file when it exits, and a SIGKILLed shell writes nothing. `sudo` and
-  pipe readers are not killed, so the output still reaches them.
-- `--lock-backend` and `--poweroff`/`--reboot` run after the teardown attempt
-  whatever its outcome, including an incomplete teardown, where powering off is
-  the only remaining way to clear RAM.
-- **The desktop is left running.** Emergency never stops or restarts the display
-  manager or X server and never logs the operator out, so nothing on screen hints
-  at the teardown. Before the overlays come down, emergency signals processes that
-  can still write to the decoy *through an overlay* (a cwd/root, writable or
-  directory fd, or shared-writable mapping inside an overlay), but it **spares
-  every process in your graphical session** — the display manager, the X server,
-  the session leader and its clients (window/session manager, terminals), and your
-  `systemd --user` manager — identified by cgroup membership, not by name. The
-  trade-off: a spared process can hold an overlay busy, so that overlay is detached
-  **lazily** (it leaves the mount table but stays alive for the process that holds
-  it), and a spared process that later opens an *absolute* path onto the exposed
-  decoy could write to it. This is why emergency recommends a reboot or
-  `--poweroff` and reports the backend as still mounted until you finish.
+1. prepares the way back (the decoy root at `/run/nextroot`, `/run` bound into
+   it, the init checked);
+2. marks the hidden backend's device-mapper stack for deferred removal (the
+   backend is always closed; there is no option to leave it open);
+3. enqueues the soft-reboot directly with PID 1, so the pending stop jobs keep
+   `Restart=` from reviving anything;
+4. kills every hidden cgroup at once with `cgroup.kill`. Only PID 1 and its own
+   invocation survive until the switch.
 
-To let NAILS close the backend, set `[emergency] lock_backend = true` in
-`nails.toml` or pass `nails emergency --lock-backend`: after the overlays are
-down it syncs, lazy-unmounts the hidden root and marks its device-mapper stack
-for deferred removal, so the key is wiped once the NAILS process exits. For a
-non-device-mapper backend, set `[emergency] close_command` to the argv that
-closes it. Otherwise close it by hand once no overlay remains — see
-[The teardown sequence](#the-teardown-sequence).
+The orderly shutdown then has nothing left to wait for, the `/run` scrub still
+runs as the last step, and the machine returns to the plain decoy, which shows
+its normal display-manager greeter (or a getty). **Log in normally, with the
+decoy password; nothing logs in automatically.** The screen goes to a text
+console for a few seconds in between: to an observer this is a logout, not a
+crash.
+
+- With `--poweroff` the machine powers off instead. RAM decays: the strongest
+  answer to a seizure. Leave it off for a few minutes.
+- If the way back cannot be prepared, emergency powers off instead: a
+  soft-reboot without a prepared decoy root would restart the hidden userspace
+  in place. If even the power-off cannot be enqueued, it asks the kernel to
+  power off directly.
+- Emergency runs before argument parsing, the configuration and logging, and
+  reads nothing on the hidden volume to act. It logs its timed phases to the
+  hidden-volume log afterwards, while it still can.
+- If the hidden volume itself has failed, run the RAM copy that activation left
+  in `/run`: `sudo /run/overlay-runtime/control emergency`.
+- On the decoy, emergency removes what an interrupted activation left (it
+  detaches `/run/nextroot` and removes `/run/overlay-runtime` and the drop-in),
+  like `recover`.
+
+The backend watcher (`[backend_watch]`) and the sleep guard (`[sleep_policy]`)
+run as runtime units of the hidden session from the RAM copy. The watcher's
+opt-in automatic emergency returns to the decoy the same way; the sleep guard's
+`teardown` mode powers off before the machine sleeps.
 
 ### Panic switch
 
-Because emergency teardown runs immediately, a single key that starts it is the
-fastest panic button. The hazard is privilege escalation: the binary lives on the
-hidden volume and is runnable by your account, so **never give it a passwordless
+Because emergency acts immediately, a single key that starts it is the fastest
+panic button. The hazard is privilege escalation: the binary lives on the hidden
+volume and is runnable by your account, so **never give it a passwordless
 `sudo` rule**. Drive the panic switch through a root-owned systemd unit and a
-polkit rule scoped to that one unit, and define both **only in the hidden NixOS
-generation** so the decoy carries no unit and nothing that names the tool:
+polkit rule scoped to that one unit, and define both **only in the hidden
+configuration** (the hidden NixOS generation, or the upper's `/etc` on Debian
+and Ubuntu) so the decoy carries no unit and nothing that names the tool:
 
 ```nix
-# Root-owned one-shot teardown. Immediate emergency, then power off to clear RAM.
+# Root-owned one-shot emergency. Kill the hidden session, then power off to clear RAM.
 systemd.services.panic = {
   description = "Session teardown";
   serviceConfig = {
@@ -232,9 +330,10 @@ security.polkit.extraConfig = ''
 '';
 ```
 
-Bind a key to `systemctl start panic.service`. Keep `<hidden-root>/nails`
-root-owned and not writable by any other account, or a root-run `ExecStart` is
-the same escalation the passwordless-sudo warning is about.
+Bind a key to `systemctl start panic.service`. Drop `--poweroff` to return to
+the decoy's login screen instead. Keep `<hidden-root>/nails` root-owned and not
+writable by any other account, or a root-run `ExecStart` is the same escalation
+the passwordless-sudo warning is about.
 
 ---
 
@@ -243,10 +342,10 @@ the same escalation the passwordless-sudo warning is about.
 ### Keeping NAILS off the decoy
 
 The `nails` binary contains identifiable strings (path references, status
-messages, environment-variable names, process-detection strings). A raw string
-scan of a decoy disk that ever held the binary will reveal them, and deletion
-does not help: the data can survive in filesystem journals, unallocated blocks,
-SSD reserved areas and backups.
+messages, environment-variable names). A raw string scan of a decoy disk that
+ever held the binary will reveal them, and deletion does not help: the data can
+survive in filesystem journals, unallocated blocks, SSD reserved areas and
+backups.
 
 - Build and verify the release on a separate machine, then copy it onto the
   hidden volume only. Never download or stage the binary on the decoy.
@@ -277,8 +376,8 @@ onto the decoy:
 ### History off on the decoy
 
 Unlocking and mounting the hidden volume happens *before* NAILS runs, so the
-unlock and mount commands you type are on the decoy. Run them in a shell with
-history off:
+unlock and mount commands you type are on the decoy. Run them, and `nails
+activate`, in a shell with history off:
 
 ```bash
 set +o history        # this session records nothing more to the history file
@@ -295,58 +394,62 @@ yourself:
 
 - **sudo command logging** records a `COMMAND=` line for every privileged
   command, including the full unlock and mount lines with the mapper name, label
-  and container or device path.
+  and container or device path, and the activation command itself.
 - **Kernel ring-buffer messages** from opening the dm-crypt mapping and mounting
   the filesystem name the mapping and device, and reach the journal.
 - **Generated systemd units**: systemd synthesises `.device` and `.mount` units
   named after the mapper and mount point, visible in `systemctl list-units`.
 - **by-label / by-uuid symlinks**: udev creates `/dev/disk/by-label/<label>` and
   `/dev/mapper/<name>` while the volume is open.
+- **The decoy's shutdown for the soft-reboot** writes what an ordinary shutdown
+  writes (the random seed, a wtmp record, the journal if it is persistent).
 - **Shell history**: covered above.
 
 For the journal and kernel-message residue, the fix is to keep the journal off
 persistent disk rather than to scrub it afterwards: configure journald with
 `Storage=volatile` (or put the journal on impermanent storage) so these lines
 never land on the decoy. See the "Common host traces" guidance in
-[backends.md](backends.md). NAILS deactivation does not touch pre-activation
-journal entries.
+[backends.md](backends.md). NAILS never touches pre-activation journal entries.
 
 ### Pre-activation checklist
 
 ```
-[ ] Hidden volume mounted and writable at its own mount point under /mnt or
-    /run/media (an overlay of /media would hide a volume mounted there)
+[ ] Hidden volume mounted and writable at its own mount point (e.g. under /mnt)
 [ ] Neither the outer nor the hidden volume opened with --allow-discards
 [ ] Hidden backend is a local Linux filesystem that can host an overlayfs upper
     (ext4/xfs/btrfs/f2fs; NOT NFS/SMB/9p/FUSE or FAT/exFAT/NTFS)
-[ ] Hidden volume mount survives session termination (kernel-managed, not
-    session-scoped FUSE)
+[ ] Hidden backend is kernel-managed (dm-crypt, loop), not a FUSE process that
+    the soft-reboot would kill
+[ ] `nails check` passes: systemd 254 or newer, the soft-reboot units, a decoy
+    root that can be mounted again by device
+[ ] Reviewed the fstab-policy decisions in `nails check`: the ESP read-only,
+    other decoy filesystems overlaid, swap and unmounted disks masked
 [ ] backend-detect preflight warnings resolved or accepted (see backends.md)
-[ ] Other disks (a second drive, a Windows partition, /run/media automounts)
-    unmounted or remounted read-only; the stray-mounts check lists any left
-    read-write, because the session can write to them directly
 [ ] nails binary exists ONLY on the hidden volume; no copies on the decoy
 [ ] Reviewed inherited decoy state in `nails check` (autostart, user services,
-    lingering, autologin); masked or accepted remote-linked clients
+    lingering, autologin)
 [ ] Accepted that shared accounts and network identifiers are not isolated by the
     overlay, or applied the hidden network-identity snippet
 [ ] Decoy has plausible recent activity (generated with sync/account clients
-    disconnected, or in fresh-home mode — see "Remote state and sync clients")
-[ ] All unsaved work saved (activation may end the session)
-[ ] Emergency teardown practiced
+    disconnected — see "Remote state and sync clients")
+[ ] All unsaved work saved: activation logs you out
+[ ] Emergency practiced
 ```
 
 ---
 
 ## Inside the hidden session
 
+Everything in this section runs after activation's soft-reboot, logged in at the
+hidden session's own login screen. The hidden volume is at the same path as on
+the decoy.
+
 ### Verifying the decoy
 
 The `nails` binary lives on the hidden volume, so run `verify` from the hidden
-side, while the session is mounted. A verify run never claims the system is
-clean; a run with no findings prints "no known artifacts found" plus the list of
-areas it did not inspect. Exit codes: `0` clean, `10` warnings, `11` critical,
-`2` the scan could not run.
+side. A verify run never claims the system is clean; a run with no findings
+prints "no known artifacts found" plus the list of areas it did not inspect.
+Exit codes: `0` clean, `10` warnings, `11` critical, `2` the scan could not run.
 
 ```bash
 sudo /mnt/usb/nails verify            # standard
@@ -363,7 +466,9 @@ sudo /mnt/usb/nails verify --offline --root /mnt/decoy
 
 In offline mode every path is read under `--root`, and the live-only checks
 (running processes, the kernel mount table, open block devices, platform package
-drift) are skipped.
+drift) are skipped. A decoy partition you mount by hand in the hidden session is
+outside the fstab policy and is written directly, so mount it read-only
+(`mount -o ro`).
 
 To see the decoy the way an examiner would, add `--examiner`, and `--disk` with
 the raw disk or image behind the mounted root:
@@ -383,12 +488,12 @@ encryption is expected, and only you can tell which traces are explained.
 [Setup traces an examiner looks for](decoy-requirements.md#setup-traces-an-examiner-looks-for)
 says how to avoid each one.
 
-`verify` reports only what the verify engine actually checks: leftover overlays
-by upperdir, known artifact paths, running NAILS processes by binary identity,
-open crypt mappers and loop devices, swap/memory warnings, platform package
-drift, and — with `--deep` — shell history files, temp and log directories, and
-`recently-used.xbel`/VeraCrypt config naming the hidden root. A clean result is
-evidence against *known* artifacts, not proof the decoy is untouched.
+`verify` reports only what the verify engine actually checks: known artifact
+paths, running NAILS processes by binary identity, open crypt mappers and loop
+devices, swap/memory warnings, platform package drift, and — with `--deep` —
+shell history files, temp and log directories, and `recently-used.xbel`/VeraCrypt
+config naming the hidden root. A clean result is evidence against *known*
+artifacts, not proof the decoy is untouched.
 
 ### Rehearsing before you rely on it
 
@@ -397,27 +502,28 @@ The forensic E2E tests prove the leak claims on CI's virtual machines.
 desktop, before you rely on them:
 
 ```bash
-sudo /mnt/usb/nails rehearse plant      # 1. inside an active hidden session
-sudo /mnt/usb/nails deactivate          # 2. the normal teardown; it reboots
-# unlock and mount the hidden volume again, then:
-sudo /mnt/usb/nails rehearse scan       # 3. from the decoy, or a later session
-sudo /mnt/usb/nails rehearse reset      # remove the rehearsal when done
+sudo /mnt/usb/nails rehearse plant         # 1. inside an active hidden session
+sudo /mnt/usb/nails deactivate --poweroff  # 2. end the session and power off
+# boot the decoy, unlock and mount the hidden volume again, then:
+sudo /mnt/usb/nails rehearse scan          # 3. from the decoy, or a later session
+sudo /mnt/usb/nails rehearse reset         # remove the rehearsal when done
 ```
 
 `plant` puts a random token where a session most often leaks: a file named after
-it in every overlaid tree and in your home, a `recently-used.xbel` bookmark, a
+it in the hidden root and in your home, a `recently-used.xbel` bookmark, a
 system-log line, a process command line and a desktop notification. Every file
-write is checked first to land in an overlay upper on the hidden volume;
-nothing is written to the decoy. The token stays on the hidden volume
+write is checked first to land in the upper on the hidden volume; nothing is
+written to the decoy. The token stays on the hidden volume
 (`rehearse/state.json`) and is never printed, only a six-character fingerprint.
 
 `scan` reads every mounted decoy block device (and active swap) raw and
 read-only, without mounting anything, and searches allocated and unallocated
 space for the token in ASCII and UTF-16LE. It refuses to run in the boot the
-canary was planted in. Exit `0` means the token was not found, `11` that it was
-(with the device and byte offset of each hit), `9` that a device could not be
-scanned completely. `nails rehearse` alone shows where you are and the next
-step.
+canary was planted in, and a soft-reboot keeps the boot, so power off between
+`plant` and `scan` (`--allow-same-boot` overrides this, but proves little).
+Exit `0` means the token was not found, `11` that it was (with the device and
+byte offset of each hit), `9` that a device could not be scanned completely.
+`nails rehearse` alone shows where you are and the next step.
 
 A clean scan covers only what a host can read. It cannot see SSD cells the
 drive has remapped or keeps in reserve, blocks discarded with TRIM, disks that
@@ -427,64 +533,84 @@ image instead, use `nails rehearse scan --offline --image <file>`.
 
 ### Shell history
 
-NAILS keeps hidden-session shell history off the decoy by killing shells before
-the unmount, not by scrubbing afterwards:
+NAILS keeps shell history off the decoy by where shells run, not by scrubbing
+afterwards:
 
-- Both standard and emergency teardown SIGKILL every interactive shell (including
-  root's) before unmounting, so none runs an exit trap or flushes its in-memory
-  buffer. A reboot (standard) then terminates everything else.
-- Teardown makes no post-unmount write to, or read of, the decoy, because such
-  an access is itself a deactivation-time artifact. Your protection is that the
+- Every shell of the hidden session runs inside the overlay. Its history file is
+  in the hidden home, so it lands in the upper on the hidden volume, and the
+  shell is stopped (or, in an emergency, killed) before the way back. Nothing of
+  it reaches the decoy.
+- As its last step activation SIGKILLs the decoy's interactive shells, including
+  the one you ran it from, so none runs an exit trap or flushes its in-memory
+  history with the activation command in it. A SIGKILLed shell writes nothing.
+- NAILS makes no write to, and no read of, the decoy history after the fact,
+  because such an access is itself an artifact. Your protection is that the
   history never reaches the decoy in the first place, backed by an amnesic decoy.
-  Decoy-history hygiene happens in the pre-activation cleanup.
-- A **preflight** warns when the shell you run NAILS from flushes history after
-  every command (`INC_APPEND_HISTORY`/`SHARE_HISTORY`, or `history -a` in bash
-  `PROMPT_COMMAND`): such a shell writes the unlock/mount commands to disk before
-  teardown can help. Clear that warning before activating.
+- The `incremental-history-flush` **preflight** warns when the shell you run
+  NAILS from flushes history after every command (`INC_APPEND_HISTORY`/
+  `SHARE_HISTORY`, or `history -a` in bash `PROMPT_COMMAND`): such a shell has
+  already written the unlock and mount commands to disk before activation can
+  help. Clear that warning before activating.
 
 See [bash-history-forensics.md](bash-history-forensics.md) for the mechanics, and
 [decoy-requirements.md](decoy-requirements.md) for the decoy-side history
 hardening you configure yourself.
 
-### Overlay copy-up cost and upper growth
+### Changing the hidden configuration
 
-Each overlaid directory gets a writable upper on the hidden volume. OverlayFS
-copies a lower file into that upper **in full** the first time you open it for
-writing, truncate it or change its mode or owner — even a one-byte edit of a
-multi-gigabyte file copies the whole file. On a slow or encrypted backend this
-can stall for seconds or minutes.
+On NixOS, `/etc/nixos` inside the hidden session is the hidden configuration
+(the decoy's files plus the hidden hardware configuration in the upper), and
+`sudo nixos-rebuild test` applies a change to the running hidden session. Do not
+use `switch` or `boot`: they try to install a bootloader into the read-only ESP
+and fail. The change persists in the upper; the next activation builds the
+hidden configuration again from `<hidden-root>/config/nixos/` or your flake, so
+keep that source in step with what you test.
 
-- The first write to a large file (Nix database, browser profiles, VM images) is
-  slow; later writes are fast.
-- The upper only grows: copied-up files and whiteouts persist across sessions and
-  deactivation does not reclaim them. Watch space with `nails status`.
-- Exclude bulky directories you do not need hidden via `overlay_exclusions`; put
-  caches on tmpfs via `extended_overlays`; run `nix-collect-garbage -d` and clear
-  caches inside the session.
-- To reset a target's upper, do it **while deactivated**:
-  `sudo /mnt/usb/nails reset-upper /home` (it confirms before deleting; resetting
-  `/nix` drops the hidden Nix store and warns first).
+On Debian and Ubuntu, change the hidden system like any other: `apt`, edits in
+`/etc`, `systemctl enable`. Every change lands in the upper and is the hidden
+configuration from then on.
+
+### Copy-up cost and shadowed decoy updates
+
+The hidden root's upper persists across sessions. OverlayFS copies a lower file
+into the upper **in full** the first time you open it for writing, truncate it
+or change its mode or owner — even a one-byte edit of a multi-gigabyte file
+copies the whole file. On a slow or encrypted backend this can stall for
+seconds or minutes.
+
+- The first write to a large file (the Nix database, browser profiles, VM images)
+  is slow; later writes are fast.
+- The upper only grows: copied-up files and whiteouts persist across sessions.
+  Watch space with `nails status`; run `nix-collect-garbage -d` and clear caches
+  inside the session.
+- **A copied-up file shadows later decoy updates.** Once a file is in the upper,
+  the hidden session sees that copy, whatever the decoy does to its own file
+  afterwards. After the decoy updates itself between sessions, the hidden session
+  can see an outdated mix: the Nix database copied up in one session hides store
+  paths the decoy built or garbage-collected later, and a hidden `/etc` keeps its
+  old files after a decoy rebuild or package upgrade.
+- To drop a path's hidden copy so the decoy's own files show through again, run
+  `reset-upper` **on the decoy**, with the hidden volume mounted:
+  `sudo /mnt/usb/nails reset-upper /etc/nixos` (it lists what it deletes and
+  confirms first; resetting `/nix` drops the hidden Nix store and warns first).
+  For a separately overlaid filesystem it also removes that filesystem's upper.
+  It is refused in the hidden session, where the upper is the live root.
 
 ### On-screen visibility
 
 Any on-screen tell that you are in the hidden environment is a shoulder-surfing
-and screen-recording liability. Both are off by default:
-
-- `prompt_label`: empty by default. A non-empty value prepends a label to the
-  prompt — convenient, but visible to anyone watching.
-- `color_scheme.enabled`: when on, repaints the terminal background so you can
-  tell the environments apart — itself a visual tell.
-
-Neither is written to the decoy: both live on the hidden volume and in the
-overlaid home, and disappear on unmount.
+and screen-recording liability. NAILS adds none: it changes no prompt and no
+terminal colours. What the hidden session looks like is up to its configuration;
+a hidden desktop that looks different from the decoy's, or a login screen that
+does, is itself a tell.
 
 ### During the session
 
 ```
-[ ] Work only with files on the hidden volume
-[ ] Avoid /tmp on the decoy; use the hidden volume's temp
-[ ] Do not copy files to decoy locations
-[ ] Avoid installing packages to the decoy Nix store
+[ ] Work only inside the hidden session; every write lands on the hidden volume
+[ ] Do not mount decoy partitions by hand except read-only: the fstab policy
+    covers only what the hidden systemd mounts
+[ ] On NixOS, apply changes with `nixos-rebuild test`, never `switch` or `boot`
 [ ] Keep the emergency command ready: sudo /mnt/usb/nails emergency
 [ ] Know your physical emergency procedure
 ```
@@ -493,93 +619,85 @@ overlaid home, and disappear on unmount.
 
 ## When things go wrong
 
-Every recovery here follows the same shape. Run it from a shell with **history
-off** (`set +o history`), take the overlay list from the **live mount table**,
-unmount the **overlays before the backend**, and never lazy-unmount. Where you
-must reference the NAILS process, use the **PID NAILS recorded** (or the absolute
-binary path), never a name match.
+Every recovery here follows the same shape. In the hidden session, the way out
+is `deactivate`, then `emergency`, then a power-off; a power-off is always safe,
+because nothing of the session is installed on the decoy. On the decoy, the
+cleanup is `nails recover`, run from a shell with **history off**
+(`set +o history`).
 
-### The teardown sequence
+### Cleaning up by hand
+
+If `nails recover` cannot run on the decoy (the hidden volume is gone, the binary
+does not start), remove an interrupted activation's leftovers yourself:
 
 ```bash
 set +o history
 
-# 1. List live overlays, deepest first. These are your unmount targets.
-findmnt -rn -t overlay -o TARGET | sort -r
+# 1. Detach the next root and everything below it.
+umount -R /run/nextroot
 
-# 2. If /nix is among them, stop nix-daemon before unmounting it.
-systemctl stop nix-daemon.service nix-daemon.socket
+# 2. Remove the session plan and RAM copy, and the transition drop-in.
+rm -rf /run/overlay-runtime
+rm -rf /run/systemd/system/systemd-soft-reboot.service.d
+systemctl daemon-reload
 
-# 3. Unmount each overlay target from step 1, deepest first. No -l / --lazy:
-#    a lazy unmount detaches a still-busy mount and hides it from findmnt.
-umount <target>        # repeat for each, deepest to shallowest
-
-# 4. Only once no overlay remains, unmount and close the backend.
-umount <hidden-root>
-cryptsetup close data0            # for a dm-crypt/LUKS/VeraCrypt mapper
-
-# 5. Confirm nothing is left.
-findmnt -t overlay                # prints no rows
-dmsetup ls                        # no hidden mapper
-losetup -a                        # no unexpected backing file
-
-# 6. Reset the recorded state to the decoy.
-sudo <hidden-root>/nails recover
+# 3. Confirm nothing is left.
+findmnt -R /run/nextroot          # prints no rows
+ls /run/overlay-runtime           # no such file or directory
 ```
 
-`nails recover` reads the live mount table, unmounts any NAILS overlay it still
-finds, restores the decoy symlink and resets the state to Inactive. **Do not edit
-or delete `state.json` by hand** — that hides live mounts from `status` instead
-of removing them. Only if `recover` is unavailable, and only after `findmnt -t
-overlay` is already empty, may you remove `state.json`.
+Then close the backend as usual (`umount <hidden-root>`, `cryptsetup close
+<mapper>`). Powering off instead does the same: everything above lives in `/run`
+and is gone at power-off. **Do not edit or delete `state.json` by hand** —
+`recover` resets it once the hidden volume is back.
 
-Expected residue after a by-hand teardown: device-removal kernel messages may
-reach the journal, and only a power-off clears all kernel and RAM residue (a
-warm reboot leaves RAM contents in place). Prefer `nails emergency --poweroff` where you can.
+A plain `reboot` with a leftover populated `/run/nextroot` would be turned into a
+soft-reboot into that tree by systemd 255 and newer. The transition step refuses
+any tree the plan did not arm and detaches it, so this cannot enter the hidden
+root; clean up anyway.
 
 ### Specific situations
 
-**Interrupted activation** (process died mid-switch). You see a partial overlay
-set and `status` reporting Activating or Degraded. Run the teardown sequence
-above, then `nails recover`. Residue: whatever was copied up stays on the hidden
-volume; the decoy is untouched.
+**Interrupted activation** (the activation was killed, crashed or failed after it
+built `/run/nextroot`). `nails status` reports an interrupted entry and exits 7
+with "run `nails recover`". Run it. Residue: whatever the build wrote stays in the
+upper on the hidden volume; the decoy is untouched. Ctrl+C during activation
+rolls the entry back by itself.
 
-**Stuck deactivating** (`status` reports Deactivating, or "already
-deactivating"). Run `nails recover`; it reconciles from the live mount table and
-finishes the teardown. If `recover` cannot run, use the teardown sequence by
-hand.
+**Deactivation refuses or fails** in the hidden session. Use `nails emergency`.
+If the way back cannot be prepared, emergency powers off instead.
 
-**Emergency state — backend still mounted.** After an emergency without the
-lock-backend opt-in, `status`/`verify` report Critical. Run steps 4–5 of the
-sequence to unmount `<hidden-root>` and close the mapper, then power off to clear
-the key from RAM.
+**The hidden session hangs.** Switch to a text console (Ctrl+Alt+F2), log in and
+run `nails emergency`; if nothing responds, power off. A stuck user service can
+delay an orderly `deactivate` by up to `DefaultTimeoutStopSec` (90 s by
+default); `emergency` does not wait for it.
 
-**Suspend / resume.** Suspend keeps the whole session — overlays, the open
-mapper and the master key — resident behind the decoy lock screen, so the decoy
-login unlocks a live hidden session. Do not suspend while active. Set the decoy's
+**Suspend / resume.** Suspend keeps the whole hidden session — the overlay, the
+open mapper and the master key — resident behind the hidden lock screen, and the
+decoy is not running at all. Do not suspend during a session. Set the decoy's
 logind lid switch to `ignore` or `lock`
 ([decoy-requirements.md](decoy-requirements.md)), and set `sleep_policy.mode` in
-`nails.toml`: `block` holds a sleep inhibitor for the session, `teardown` runs
-the emergency teardown when the host is about to sleep.
+`nails.toml`: `block` holds a sleep inhibitor for the session, `teardown` powers
+off when the host is about to sleep.
 
-**Power loss / crash / hang.** On the next boot the decoy comes up normally (the
-hidden generation was never persisted as the boot default). Run `nails recover`
-once if `status` is not Inactive. Residue: copied-up data on the hidden volume
-only.
+**Power loss / crash / hang.** On the next boot the decoy comes up normally:
+nothing of the session is installed on the decoy, and `/run` is gone. If
+`nails status` reports a recorded state that does not match, run `nails recover`
+once. Residue: the upper on the hidden volume only.
 
-**Backend loss** (USB pulled, I/O errors). The overlays' upper is gone, so
-processes writing to them will error. Run the teardown sequence; unmounts of a
-vanished backend may need the I/O to time out. After the overlays are down,
-confirm with `findmnt -t overlay` and `dmsetup ls`, then `nails recover`.
+**Backend loss** (USB pulled, I/O errors) in the hidden session. The hidden
+root's upper is on the backend, so the session itself starts failing. The backend
+watcher alerts you. Run emergency from the RAM copy: `sudo
+/run/overlay-runtime/control emergency`; it needs nothing from the hidden volume.
+Power off if that does not respond.
 
 **Volume full (ENOSPC).** Copy-up or a session write fails. Free space from
 inside the session (`nix-collect-garbage -d`, clear caches) or deactivate
-normally and `reset-upper` a bloated target while inactive. Do not delete files
+normally and `reset-upper` a bloated path from the decoy. Do not delete files
 directly out of an upper or work directory by hand.
 
-**OOM.** If the kernel killed the NAILS process mid-operation, treat it as an
-interrupted activation or stuck deactivation above: run the teardown sequence
-using the recorded PID or binary path, then `nails recover`.
+**OOM.** If the kernel killed the NAILS process during activation, treat it as
+an interrupted activation above.
 
 ---
 
@@ -614,72 +732,67 @@ line precisely.
 
 ### Shared decoy account and persona modes
 
-By default NAILS runs the hidden session **as the decoy user, in the decoy
-home**. The `/home` overlay merges the decoy home read-write, so every account,
-credential store and application profile in the decoy home is live inside the
-hidden session: browser profiles and cookies, SSH/GPG keys and agents,
-password-manager databases, shell/editor/application history and caches.
+The hidden root's lower is the decoy root, so the hidden session starts with the
+decoy's users and **the decoy's homes**: every account, credential store and
+application profile in the decoy home is visible and usable inside the hidden
+session — browser profiles and cookies, SSH/GPG keys and agents, password-manager
+databases, shell/editor/application history and caches. Changes made in the
+hidden session go to the upper, so the decoy home on disk stays as it was.
 
-`persona.mode` in `nails.toml` controls this:
-
-| Mode | Behaviour | Use when |
-|------|-----------|----------|
-| `shared-home` (default) | Hidden session uses the decoy home; the decoy's accounts and secrets are live. Activation warns; `status`/`check` report the mode. | You deliberately want the decoy's login and accept the overlap. |
-| `fresh-home` | A clean, empty home from the hidden volume is bind-mounted over your home after the `/home` overlay mounts, so the decoy home is not visible. The persona keeps its own state on the hidden volume. | You want the hidden session isolated from the decoy's credentials. |
-
-For sensitive work, set `persona.mode = "fresh-home"` and sign in to the hidden
-session's accounts from the clean home. Treat `shared-home` as an informed
-choice.
+`[persona]` in `nails.toml` is the setting for how the hidden session relates to
+the decoy account. Its effect in the whole-root session is being reworked; see
+[configuration.md](configuration.md#persona-modes) for what the keys accept
+today. Until then, for sensitive work, sign in to the hidden session's own
+accounts rather than the decoy's, and treat using the decoy's logins in the
+hidden session as an informed choice.
 
 #### Inherited autostart, services and autologin
 
-In `shared-home` mode the hidden session inherits what the decoy account starts
-automatically: `~/.config/autostart` and `/etc/xdg/autostart` entries, enabled
-user services and timers, lingering, and display-manager autologin. Sync, cloud
-and messaging clients therefore run under the decoy identity and can contact
-remote servers and your other devices. `nails check` and the activation
-confirmation list this and flag names that look like remote-linked clients (a
-name-only heuristic). Mask entries you do not want:
+The hidden session inherits what the decoy starts automatically: enabled system
+services, `~/.config/autostart` and `/etc/xdg/autostart` entries, enabled user
+services and timers, lingering, and display-manager autologin. Sync, cloud and
+messaging clients therefore run under the decoy identity and can contact remote
+servers and your other devices. `nails check` and the activation confirmation
+list this inherited state and flag names that look like remote-linked clients (a
+name-only heuristic).
 
-```toml
-[persona]
-mask_inherited = ["dropbox", "syncthing.service"]   # or ["*"] to mask all
-```
-
-Autostart entries are masked with `Hidden=true` and user services with a
-`/dev/null` mask, written through the merged home so they take effect only in the
-hidden session. **Lingering and autologin are reported but not masked** — disable
-those on the decoy itself. Masking changes what *runs*; it does not roll back
-remote or account state.
+Disable what you do not want **inside the hidden session**: mask the unit
+(`systemctl --user mask syncthing.service`), remove or override the autostart
+entry, or, on NixOS, leave it out of the hidden configuration. The change lands
+in the upper, so it takes effect for the hidden session only and the decoy is
+unchanged. **Lingering and autologin are decoy settings** — disable those on the
+decoy itself. Disabling changes what *runs*; it does not roll back remote or
+account state.
 
 #### Remote state and sync clients
 
-Deactivation discards the overlay uppers and nothing else. It cannot reach state
-a remote server or another device already holds. For two-way sync and
-account-bound clients (Syncthing, Nextcloud/Dropbox, an IMAP Sent folder, browser
-sync, messaging apps) running under the decoy identity in `shared-home`:
+Ending a session keeps the hidden changes in the upper, out of the decoy's view.
+It cannot reach state a remote server or another device already holds. For
+two-way sync and account-bound clients (Syncthing, Nextcloud/Dropbox, an IMAP
+Sent folder, browser sync, messaging apps) running under the decoy identity:
 
-1. The hidden session writes to a synced folder (invisible on the decoy while
-   active).
-2. The live client pushes that data to the server or peer before deactivation.
-3. On deactivation the upper is discarded, but the remote still has the data. The
-   client reconciles and **pulls it back onto the decoy disk**, where an examiner
-   can recover it.
+1. The hidden session writes to a synced folder (in the upper, invisible on the
+   decoy).
+2. The live client pushes that data to the server or peer before the session
+   ends.
+3. Back on the decoy, the client reconciles and **pulls it back onto the decoy
+   disk**, where an examiner can recover it.
 
-The overlay cannot prevent this. **Deactivation is not a rollback of your online
-accounts.** Mitigations, strongest first: use `fresh-home` and do not start the
-decoy's account-bound clients in the session; if you must use `shared-home`, quit
-or disconnect every sync/cloud/mail/messaging client before sensitive work and
-treat anything they touched as already on the remote.
+The overlay cannot prevent this. **Ending the session is not a rollback of your
+online accounts.** Mitigations, strongest first: do not start the decoy's
+account-bound clients in the hidden session (mask them as above), and quit or
+disconnect every sync/cloud/mail/messaging client before sensitive work; treat
+anything they touched as already on the remote.
 
 #### Shared network identifiers
 
-The overlay shares the host's network identity. `clean_stale_network_config`
-preserves only DNS; it does not change the machine-id, hostname, MAC addresses or
-NetworkManager profiles (including VPN autoconnect). Correlation through these is
-out of scope for the overlay. To present a different identity, apply it in the
-hidden NixOS generation or as a NetworkManager drop-in; NAILS ships optional
-snippets (`nix/modules/hidden-network-identity.nix`,
+The hidden session shares the host's network identity. It also starts with the
+decoy's machine-id, hostname, MAC addresses and NetworkManager profiles
+(including VPN autoconnect), because they come from the decoy root; NAILS changes
+none of them. Correlation through these is out of scope for the overlay. To
+present a different identity, apply it in the hidden configuration (the hidden
+NixOS generation, or the upper's `/etc`); NAILS ships optional snippets
+(`nix/modules/hidden-network-identity.nix`,
 `nix/modules/network-identity/00-hidden-identity.conf`). NetworkManager has no
 global VPN-autoconnect switch, so disable it per profile with `nmcli connection
 modify <vpn> connection.autoconnect no`.
@@ -720,23 +833,41 @@ it again.
 
 ### Cold-boot and running-memory attacks
 
-DRAM retains data briefly after power-off (longer when cold). Emergency drops the
-page cache after unmount (`echo 3 > /proc/sys/vm/drop_caches`), which frees only
-*clean* pages and does not zero RAM. A warm reboot does not clear RAM either:
-the memory stays powered across the reset, and the firmware wipes it only if it
-honours the TCG Platform Reset Attack Mitigation request (the MOR bit). Setting
-MOR writes an EFI variable, that is NVRAM on the decoy machine, so NAILS does not
-set it. Only a power-off, followed by a few minutes without power, lets the
-contents decay:
+DRAM retains data briefly after power-off (longer when cold). A soft-reboot back
+to the decoy keeps the kernel running and frees the hidden session's memory
+without zeroing it. A warm reboot does not clear RAM either: the memory stays
+powered across the reset, and the firmware wipes it only if it honours the TCG
+Platform Reset Attack Mitigation request (the MOR bit). Setting MOR writes an EFI
+variable, that is NVRAM on the decoy machine, so NAILS does not set it. Only a
+power-off, followed by a few minutes without power, lets the contents decay:
 
 - Power off completely (not suspend) in threat situations — `nails emergency
   --poweroff` — and end a normal session with `nails deactivate --poweroff`
   before handing the machine over.
 - Harden the decoy kernel so freed memory is wiped: add `init_on_free=1
-  page_poison=1` to the decoy kernel command line. The `memory-wipe` pre-flight
-  check reports whether the booted command line sets `init_on_free=1`.
+  page_poison=1` to the decoy kernel command line. The hidden session runs on the
+  same kernel, so this covers it too. The `memory-wipe` pre-flight check reports
+  whether the booted command line sets `init_on_free=1`.
 - There is no complete software defense against a memory dump of a running
   system; the protection is preventing access while it runs.
+
+### What has not been validated on hardware
+
+The session is validated in virtual machines. These are open until measured on
+real hardware:
+
+- the time from trigger to the login screen on a real desktop (in the test VM:
+  about 3 s to a shell, 9 to 15 s until the system has settled);
+- GPU, Wi-Fi, VPN and Bluetooth coming back after each transition, NVIDIA's
+  proprietary driver, docks and external displays;
+- decoy roots unlocked with a TPM-sealed key (the mapping survives the
+  soft-reboot, but anything in the hidden session that measures into PCRs changes
+  them for the rest of the uptime);
+- GRUB's `grubenv` (keep `/boot` read-only, as the fstab policy does);
+- user services that do not stop promptly, delaying an orderly transition up to
+  `DefaultTimeoutStopSec`.
+
+Rehearse on your own machine before relying on it.
 
 ---
 
@@ -746,6 +877,8 @@ contents decay:
 - [decoy-requirements.md](decoy-requirements.md) — amnesic decoy setup and
   decoy-side history hardening
 - [backends.md](backends.md) — storage backend matrix and deniability notes
+- [ADR 0008](adr/0008-whole-root-soft-reboot.md) — the whole-root soft-reboot
+  design and its evidence
 - [bash-history-forensics.md](bash-history-forensics.md) — history-protection
   mechanics
 - [SECURITY.md](../SECURITY.md) — vulnerability reporting policy

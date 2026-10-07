@@ -29,6 +29,16 @@ One test needs real root: the whiteout and opaque-directory test in
 set. It is `#[ignore]`d and CI runs it in the dedicated `privileged-mounts` job
 of `ci.yml` on every PR, which `gate` aggregates.
 
+The whole-root session's mechanics have a rootless real-kernel tier of their
+own, `nails-core/tests/whole_root_kernel.rs`. Each test re-runs itself in a
+private user and mount namespace and builds a decoy root with its own ESP, a
+hidden volume and a `/run` with a next root on scratch tmpfs, then drives the
+production mount primitives, the transition step and the cgroup kill against
+them. It runs in the normal `cargo test` and skips, with a message, where user
+namespaces or a delegated cgroup are not available. Only the soft-reboot itself
+and the device mount of the way back need a VM; those are the session tests
+under `nix/e2e-tests/tests/session/`.
+
 ## Tests and the process environment
 
 All tests in a test binary share one process environment and run on parallel
@@ -42,13 +52,13 @@ needs and injects it:
 
 ```rust
 let env = RuntimeEnv::empty()
-    .with_sudo_uid("1000")
-    .with_display(":0");
-let ctx = detect_session_context(&executor, &env)?;
+    .with_sudo_user("alice")
+    .with_sudo_uid("1000");
+let user = TargetUser::resolve_with(&env)?;
 
 // Managers carry their own snapshot.
 let manager = NailsManager::new(fs, config, state_path)
-    .with_runtime_env(RuntimeEnv::empty().with_system_profile_path(&profile));
+    .with_runtime_env(env.clone());
 ```
 
 The test-only knobs (`NAILS_TEST_*`, the fake `systemctl`/`reboot`/`systemd-run`

@@ -4,7 +4,8 @@
 
 - `lib/`: shared Nix/Python helper snippets and VM profiles
 - `py/`: the `nails_e2e` package every driver imports (command capture, the
-  scenario batch runner, the store image cache), with host-side unit tests
+  scenario batch runner, the store image cache, and `session.py`, which follows
+  a whole-root session across its soft-reboots), with host-side unit tests
 - `fixtures/`: reusable config files and captured forensic tool output
 - `tests/**`: auto-discovered NixOS tests
 - `scenarios/**`: bodies of former single-boot tests that now run as scenarios
@@ -25,7 +26,6 @@ _:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
 in {
   name = "example";
   meta.tags = [ "smoke" "security" ];
@@ -35,17 +35,23 @@ in {
   #   baseNode = { python3 = true; };
 
   testScript = _: ''
+    from nails_e2e import session
+
     ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.runDetachedCommandFn}
     ${testHelpers.readStatusJsonFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
-    ${assertions.assertStatusStateFn}
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
+    machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    write_headless_config("/mnt/data/config/nails.toml")
 
-    with subtest("phase 1"):
-        ...
+    with subtest("enter and leave the hidden session"):
+        canonical_activate("/mnt/data/config/nails.toml", "--overlay-only")
+        assert read_status_json("/mnt/data/config/nails.toml")["posture"] == "active"
+        canonical_deactivate("/mnt/data/config/nails.toml")
+        session.assert_decoy_root(machine)
   '';
 }
 ```
@@ -58,48 +64,52 @@ or `nodes` keeps `{ self, ... }:` or `{ self, pkgs, ... }:`.
 
 ### `lib/test-helpers.nix`
 
-- `writeHeadlessConfigFn` → `write_headless_config(path)` (writes a `nails.toml` with explicit overlays)
-- `writeExtendedConfigFn` → `write_extended_config(path)`
+- `writeHeadlessConfigFn` → `write_headless_config(path)` (a minimal `nails.toml`: `hidden_volume_root` and a lowered `rebuild_space_mb`)
 - `runDetachedCommandFn` → `run_detached_command(unit_name, command)`
 - `readStatusJsonFn` → `read_status_json(config_path=None)` (requires exit 0) and `read_status_json_with_rc(config_path=None)` → `(rc, data)` for fail-closed postures (exit 6 unknown, 7 degraded/inconsistent)
 - `runVerifyFn` → `run_verify(args="", config_path=None)`
-- `canonicalDeactivateFn` → `canonical_deactivate(config_path, unit_name="nails-deactivate", shutdown_timeout=300, diagnostics_timeout=90)`
+- `canonicalActivateFn` → `canonical_activate(config_path, extra_args="", label="activate")`: soft-reboots into the hidden root, follows the switch and asserts the hidden root; activate's output is in `/mnt/data/<label>.log`
+- `canonicalDeactivateFn` → `canonical_deactivate(config_path, label="deactivate")`: soft-reboots back, asserts the plain decoy and waits for the hidden mapping to close
 
-### `lib/base-os-overlays.nix`
+The soft-reboot helpers themselves (`follow_soft_reboot`, `assert_hidden_root`,
+`assert_decoy_root`, `carried_run_residue`, `wait_for_power_off`, ...) live in
+`py/nails_e2e/session.py`.
 
-The writable-trees pre-flight check refuses activation while a base-OS tree
-(`/usr`, `/bin`, `/lib64` on the NixOS test VMs) is neither overlaid nor kept
-read-only, so every hand-written explicit config must overlay them as well as
-the subset the test is about.
+### `py/nails_e2e/session.py`
 
-- `toml` → the base-OS `[[overlays]]` stanzas for `/mnt/data`; interpolate it on
-  its own line inside the config text
-- `tomlFor root` → the same stanzas for another hidden root (also a Python
-  f-string placeholder such as `"{hidden_root}"`)
-- `targets` / `pythonTargets` → the base-OS targets, as a Nix list or a Python
-  list literal for exact mount-set assertions
+`nails activate`, `deactivate` and `emergency` end by enqueueing
+`soft-reboot.target`: PID 1 stops every userspace process (the driver's backdoor
+shell included), switches root and starts a fresh userspace, which starts the
+backdoor again. `follow_soft_reboot(machine, trigger, label, deadline_s=600.0,
+start=None)` runs `trigger` in the background and polls the driver's full
+console log (not `wait_for_console_text`, which reads one queued line per
+second while a soft-reboot prints hundreds). It fails at once if the new
+userspace lands in emergency mode or PID 1 freezes, reconnects to the new
+backdoor, and returns PID 1's own timings of the switch, logged as `TIMING:`
+lines. A trigger's output is lost with the old userspace unless the trigger
+redirects it to the hidden volume.
 
-### `lib/assertions.nix`
+### `lib/backend-fault.nix`
 
-- `assert_status_state(expected, payload=None, config_path=None)`
-- `assert_overlay_mounted(path)`
-- `assert_no_overlays(paths)`
-- `assert_hidden_volume_has(path)`
-- `assert_verify_clean(config_path=None, deep=False)`
+- `emergencyOutcomeFn` → `emergency_outcome(trigger, label, deadline_s=600, console_index=None)`: follows a teardown with a failed backend to `"decoy"` or `"off"`
+- `assertFaultExitFn` → `assert_fault_exit(outcome, run_before, wall)`
 
-### `lib/emergency.nix`
+### `lib/base-os-overlays.nix` and `lib/assertions.nix`
 
-- `prepare_tty1_shell()`
-- `wait_for_console_log(regex, timeout, start_index=0)`
-- `reboot_after_emergency()`
-- `run_emergency_command()`
-- `makeEmergencyUnit nailsPackage configPath`
+Live-overlay helpers kept only for the tests that still wait for their port
+(`tests/overlay/74`, `tests/overlay/75`, `tests/persona/77`): the base-OS
+`[[overlays]]` stanzas, `assert_status_state`, `assert_overlay_mounted` and
+`assert_no_overlays`. New tests use `session.assert_hidden_root` /
+`session.assert_decoy_root` instead.
 
 ### VM profiles
 
-- `vm-config.nix`: base forensic-safe profile
+- `vm-config.nix`: base forensic-safe profile. It imports `soft-reboot-units.nix`,
+  which declares `soft-reboot.target` and `systemd-soft-reboot.service` (the
+  upstream v259 unit text): the pinned nixpkgs ships systemd 259 without them,
+  and every decoy and hidden NixOS configuration needs them. It is also the
+  module an operator on such a nixpkgs adds, as `nails check` prints it.
 - `graphical-vm-config.nix`: LightDM + autologin + shell/notification tooling
-- `vfat-boot-vm-config.nix`: base profile plus VFAT `/boot`
 - `forensic-vm-config.nix` and `impermanent-decoy.nix`: an on-disk Nix store
   image (`useNixStoreImage`). The VM start script packs the whole closure into
   an erofs image on every start; `default.nix` gives every machine a copy of
@@ -120,24 +130,24 @@ Use only:
 - `performance`
 - `preflight`
 - `nixos`
-- `session`
+- `session` (the whole-root session, `tests/session/`)
 - `shell`
-- `notification`
 - `overlay`
+- `faults`
 - `state`
 - `contract`
 - `research` (design-decision spikes under `tests/research/`: in no other group and not in `all`; see [Research spikes](#research-spikes-testsresearch))
 
 ## Running tests
 
-- One test directly: `nix build .#e2e.basic-workflow --no-link -L`
+- One test directly: `nix build .#e2e.session-lifecycle --no-link -L`
 - A former test that now runs as a scenario, by its old name: `nix build .#e2e.verify --no-link -L` builds its batch (`smoke-verify-config`); the runner and `python3 -m ci.e2e resolve` accept old names too, and `python3 -m ci.e2e list` shows each alias with its batch
 - One group directly: `nix build .#e2e.smoke --no-link -L`
 - Runner, the `ci` group: `./scripts/run-e2e-tests.sh`
-- Runner, one test or group: `./scripts/run-e2e-tests.sh basic-workflow`, `./scripts/run-e2e-tests.sh smoke`
+- Runner, one test or group: `./scripts/run-e2e-tests.sh session-lifecycle`, `./scripts/run-e2e-tests.sh smoke`
 - Runner, all tests: `./scripts/run-e2e-tests.sh all`
 - Resolve only: `python3 -m ci.e2e resolve ci`, or `python3 -m ci.e2e resolve --affected origin/main`
-- Interactive driver: `nix run .#e2e.basic-workflow.driverInteractive`, or `./scripts/run-e2e-tests.sh -i basic-workflow`
+- Interactive driver: `nix run .#e2e.session-lifecycle.driverInteractive`, or `./scripts/run-e2e-tests.sh -i session-lifecycle`
 - Local full or group run with bounded memory and parallel VMs: `just e2e-local [target] [jobs]` (see [docs/e2e-performance.md](../../docs/e2e-performance.md))
 - Where a run's time went: `scripts/e2e-log-profile.py LOG...` (`nix build -L` logs or `nix log` output)
 
@@ -161,7 +171,7 @@ The interactive driver opens a Python prompt instead of running the test: `start
 ## Timeouts and shard weights
 
 - Every test runs with a driver `globalTimeout` of 900 s (`defaultGlobalTimeout` in `default.nix`). A test that needs longer sets a top-level `globalTimeout` next to its `name`, with a comment giving its measured runtime (see `tests/performance/07-performance.nix`). `meta.timeout` is derived as `globalTimeout + 60` and must not be set by a test. The effective value of each test is published as `timeouts` in the E2E metadata.
-- `canonical_deactivate` waits at most `shutdown_timeout` seconds (300 by default) for the VM to power off. On timeout it fails with the unit status, the unit and boot journals, pending systemd jobs and the process list, or with the serial console tail if the guest shell no longer answers.
+- `session.follow_soft_reboot` (and so `canonical_activate` and `canonical_deactivate`) waits at most `deadline_s` seconds (600 by default) for the new userspace's backdoor, and fails within seconds, printing the console's timeouts and failed dependencies, when the new userspace reaches emergency mode or PID 1 freezes. A soft-reboot takes about 10 to 15 s in the VM, so a test with several round trips sets its own `globalTimeout` (see `tests/session/session-lifecycle.nix`). `session.wait_for_power_off` bounds a power-off the same way.
 - `shard-durations.json` holds one weight in seconds per leaf test, and every weight must satisfy `30 <= weight <= timeout / 2`. A weight at or above the test's timeout is a recorded hang: the planner refuses to use it. The remaining rules are enforced by `nix eval --json .#legacyPackages.x86_64-linux.e2e-metadata | python3 -m ci.e2e check --metadata -` and by the unit tests in `ci/tests/` (`python3 -m unittest discover -s ci/tests -t .`), which CI runs on every PR.
 - Each E2E shard uploads its per-test durations as the `e2e-durations-shard-N` artifact and adds a drift report to its step summary: tests more than 25% off their weight after allowing for the runner's overall speed. The report never fails the job.
 
@@ -199,7 +209,7 @@ time and uploads the log:
 ```yaml
       - run: |
           nix build --no-link -L --max-jobs 1 \
-            .#legacyPackages.x86_64-linux.e2e.{preflight-checks,init-config,notify-dispatch,state-corruption,basic-workflow} \
+            .#legacyPackages.x86_64-linux.e2e.{preflight-checks,init-config,smoke-verify-config,state-corruption,session-lifecycle} \
             2>&1 | tee e2e-hosted.log
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with: { name: e2e-hosted-log, path: e2e-hosted.log }
@@ -228,14 +238,19 @@ cost (evaluation, driver build, VM start) is the gap between a test's
 `ci/e2e_sync_lint.py` (run by CI's `lint-misc` job and `just e2e-sync-lint`)
 enforces what the suite's past races taught:
 
-- wait on the real completion signal (a result file under `/run`, the unit's
-  state, a mountpoint, `nails status`), never a fixed sleep;
-- never wait on a console regex: the emergency teardown restarts journald and
-  can drop lines;
-- capture command output under `/run`, never `/tmp` (activation overlays it and
-  the forensic tests image the disk under it);
+- wait on the real completion signal (a result file, the unit's state, a
+  mountpoint, `nails status`), never a fixed sleep;
+- never wait on a console regex with `wait_for_console_text`: it reads one
+  queued console line per second, and a soft-reboot prints hundreds. Follow a
+  soft-reboot with `session.follow_soft_reboot`, which polls the full console
+  log;
+- capture command output under `/run`, never `/tmp` (`/tmp` is part of the root
+  overlay in a session, and the forensic tests image the disk under it). The
+  output of a command that triggers a soft-reboot goes to the hidden volume: the
+  shell that ran it dies at the switch, and the way back scrubs what the hidden
+  session added to `/run`;
 - every wait has a bounded timeout and a power-off wait goes through the QEMU
-  process with a deadline (`canonical_deactivate`), not a bare
+  process with a deadline (`session.wait_for_power_off`), not a bare
   `wait_for_shutdown()`.
 
 A justified exception carries `sync-lint: allow <rule> -- <reason>` on the line
@@ -303,13 +318,15 @@ by `lib/batch.nix` (`mkBatch`); its scenarios live in
 - every scenario starts with a `<name>: starts from a clean guest` subtest
   that compares the guest with that baseline: no mount, device-mapper node,
   loop device or swap area that was not there at boot, no NAILS runtime entry
-  (`/run/<16 hex digits>`, `/run/nails*`) or harness capture in `/run`, no
+  (`/run/overlay-runtime`, `/run/<16 hex digits>`, `/run/nails*`) or harness
+  capture in `/run`, no
   NAILS state file, no new entry in `/tmp`, `/var/tmp`, `/mnt`, `/root` or
   `/home/testuser`, an unchanged `/etc/nixos`, a blank hidden-volume disk and
   no `nails` process or unit;
 - between scenarios (`<name>: reset the guest`) the guest is brought back to
   that baseline. A scenario that left a NAILS session behind (an overlay, the
-  runtime root, a live `nails` process) is reset by power-cycling the VM, so the
+  runtime directory, a live `nails` process) is
+  reset by power-cycling the VM, so the
   harness never runs the teardown code under test; everything else is
   unmounted, closed, wiped and deleted in place. A guest that cannot be reset
   stops the batch and names the scenarios that did not run;
@@ -345,11 +362,10 @@ Rules for adding a scenario to a batch:
 | Batch | Former tests (aliases) | Node |
 | --- | --- | --- |
 | `preflight-checks` | preflight-nixos-config, preflight-nixos-build-target, preflight-upper-fs-capability, preflight-state-check | base node |
-| `preflight-vfat-targets` | preflight-overlay-compat, preflight-symlink-support | vm-config, nails, dosfstools |
+| `preflight-vfat-targets` | preflight-symlink-support | vm-config, nails, dosfstools |
 | `preflight-hidden-root` | preflight-hidden-volume, preflight-mount-namespace | vm-config, nails, e2fsprogs |
 | `init-config` | init-bootstrap, init-idempotency, init-refuse-overwrite, config-unknown-key | base node |
 | `contract-json-schema` | verify-json-schema, contract-active-session | vm-config, nails, Python with jsonschema |
-| `notify-dispatch` | notify-malformed-signal, notify-no-notify-send, notify-dispatch-signal-flow | base node |
 | `smoke-verify-config` | verify, config-handling | base node |
 
 Checks that need no VM move to the cargo tests instead of a batch:
@@ -385,10 +401,8 @@ starting with `FINDING:` are research output, not assertions.
 
 - `research-emergency-cgroup-kill`: shows that systemd restarts a killed
   `Restart=always` unit onto the decoy unless a stop job is enqueued first
-  ([ADR 0007](../../docs/adr/0007-emergency-architecture.md)).
-- `research-soft-reboot-whole-root`: enters a whole-root overlay with
-  `systemctl soft-reboot` and returns, checking the vital paths and the decoy
-  disk ([ADR 0008](../../docs/adr/0008-whole-root-soft-reboot.md)).
+  ([ADR 0007](../../docs/adr/0007-emergency-architecture.md)); the emergency
+  enqueues the soft-reboot before its `cgroup.kill` for this reason.
 - `research-dual-root-vt-emergency`: runs a hidden display and session on their
   own VT inside a whole-root overlay while the decoy desktop keeps running, and
   makes emergency a cgroup kill plus a VT switch
@@ -396,6 +410,37 @@ starting with `FINDING:` are research output, not assertions.
 - `research-dual-root-risks`: probes the dual-root design's risks (mount
   namespace copies, display and VT handling, shared-daemon writes)
   ([ADR 0009](../../docs/adr/0009-dual-root-emergency.md#risk-assessment)).
+
+The spike that proved the whole-root soft-reboot, formerly
+`research-soft-reboot-whole-root`, is now the regular test
+`soft-reboot-mechanics` in `tests/session/`: it enters a whole-root overlay with
+`systemctl soft-reboot` and returns twice, checks the vital paths, the `/run`
+scrub and the decoy journal, then power-cycles through the firmware and scans
+the raw decoy disk ([ADR 0008](../../docs/adr/0008-whole-root-soft-reboot.md)).
+
+## Session tests (`tests/session/`)
+
+The `session` tag groups the tests of the whole-root session. Each follows real
+soft-reboots with `py/nails_e2e/session.py`:
+
+- `session-lifecycle`: `init` and `check`, activation into the hidden root, a
+  hidden write that lands only in the upper, deactivation without hidden `/run`
+  residue, the upper persisting into the next session, an emergency and its
+  timed log, and `recover`/`emergency` on the plain decoy changing nothing;
+- `session-emergency`: the activation command typed on a decoy tty never reaches
+  its history, emergency from a hidden login shell, `--poweroff`, and the next
+  cold boot on the plain decoy with the backend closed;
+- `session-interrupted-entry`: a killed activation that `status` reports as an
+  interrupted entry, a plain reboot that never enters the leftover next root,
+  `recover`, Ctrl+C during the build, and emergency during an entry;
+- `session-fstab-policy`: the decision `check` reports for every decoy
+  filesystem, the read-only ESP, a separate decoy filesystem overlaid with a
+  hidden upper, masked swap, and no hidden write on any decoy disk afterwards;
+- `session-nixos-hidden-system`: a hidden NixOS toplevel entered in one
+  soft-reboot, the way back to the decoy toplevel, re-entry, a configuration
+  that does not evaluate refusing the entry, and no bootloader or system
+  profile change;
+- `soft-reboot-mechanics`: the mechanism itself, described above.
 
 ## Adding a fixture
 
@@ -405,13 +450,14 @@ Add files under `fixtures/configs/` and reference them from tests via `${./../..
 
 The suite above runs on `pkgs.testers.runNixOSTest`, whose driver backdoor only
 exists in NixOS guests, so it cannot catch a regression on another distribution.
-The distribution tier under `nix/distro-tests/` boots real Debian and Ubuntu
-cloud images on the same NixOS test driver through
+The distribution tier under `nix/distro-tests/` boots real Debian 13 and Ubuntu
+24.04 cloud images on the same NixOS test driver through
 [`numtide/nix-vm-test`](https://github.com/numtide/nix-vm-test), so the
-overlay-only backend, platform detection, the read-only `/usr` guard and the
-decoy-persistence preflight are exercised on a non-NixOS host. A container tier
-cannot do this: a privileged container cannot host an overlay upper on an
-overlay2 rootfs and cannot exercise journald or a reboot.
+whole-root session, platform detection, the read-only ESP and the
+decoy-persistence preflight are exercised on a non-NixOS host. Debian 12 is not
+in the table: its systemd is too old for a soft-reboot. A container tier cannot
+do this: a privileged container cannot host an overlay upper on an overlay2
+rootfs and cannot exercise journald or a soft-reboot.
 
 Layout:
 
@@ -425,31 +471,33 @@ Layout:
 - `lib/hidden-root.nix`: the hidden root (ext4 on a loop device, or LUKS when
   `cryptsetup` ships) backed by an image file on a dedicated tmpfs, so it never
   touches the single decoy disk the forensic check images, with the layout of
-  `e2e-tests/lib/backends.nix`; and the switch to a volatile journal (plus
-  masking an active rsyslog) that the decoy-persistence preflight needs.
+  `e2e-tests/lib/hidden-volume.nix`. The tmpfs is below `/run`, which a
+  soft-reboot does not carry, so after the switch the file is reachable only
+  through the open loop device and is gone once the session ends. It also
+  switches to a volatile journal (plus masking an active rsyslog), which the
+  decoy-persistence preflight needs.
 - `tests/smoke.nix`: the smoke scenario, generated once per image-table entry.
 - `default.nix`: maps the scenario over the table and exposes the metadata.
 
 Each smoke scenario shares the static musl `nails` binary into the guest over
 9p (on `/run`, off the decoy disk); asserts platform detection selects the
-overlay-only Debian-family backend; images the decoy as booted for a baseline;
-runs the decoy-persistence preflight (a stock persistent journal is refused, and
-passes once the decoy is amnesic); activates overlay-only over `/home`, `/etc`,
-`/srv`, `/opt`, `/var` and `/tmp`, writing canaries, with `/usr` kept read-only
-by the FHS guard rather than overlaid; asserts a write under `/usr`/`/usr/local`
-fails read-only (checked against a negative control that leaves `/usr`
-writable); runs `status`, `verify` (which must flag the active session),
-`emergency` and `deactivate` with a reboot; and runs the host-side decoy
-disk-image check (`lib/disk_forensics.py`, shared with the NixOS suite) with
-null and positive controls.
+Debian-family backend; images the decoy as booted for a baseline; runs the
+decoy-persistence preflight (a stock persistent journal is refused, and passes
+once the decoy is amnesic); activates, soft-rebooting into the whole-root
+overlay and writing canaries, including under `/usr`, that must land in the
+upper; asserts the ESP is read-only in the hidden root; runs `emergency`, which
+soft-reboots back to the plain decoy; runs a second session that ends with
+`deactivate`; and runs the host-side decoy disk-image check
+(`lib/disk_forensics.py`, shared with the NixOS suite) with null and positive
+controls.
 
 `nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
 guest writes vanish when QEMU exits and there is no root qcow2 for the forensic
-helpers. The scenario therefore runs its lifecycle in one QEMU process started
-with `allow_reboot=True` (the deactivation reboot keeps the disk) and, before
-each image, mirrors the live disk into `<state_dir>/vm.qcow2` over QMP, where
-`disk_forensics.snapshot` picks it up. The 9p share is mounted only once by
-`nix-vm-test`, so the scenario remounts it after every boot.
+helpers. The scenario therefore runs its lifecycle in one QEMU process (a
+soft-reboot keeps the kernel and QEMU) and, before each image, mirrors the live
+disk into `<state_dir>/vm.qcow2` over QMP, where `disk_forensics.snapshot` picks
+it up. A soft-reboot carries `/run` but not the mounts below it, so the scenario
+mounts the 9p share again after every switch.
 
 ### Adding a distribution
 
@@ -478,7 +526,7 @@ is unchanged and stays NixOS-only.
 Build one scenario directly:
 
 ```sh
-nix build -L .#legacyPackages.x86_64-linux.e2e-distro.debian-12-smoke
+nix build -L .#legacyPackages.x86_64-linux.e2e-distro.debian-13-smoke
 ```
 
 ### Moving to newer images
