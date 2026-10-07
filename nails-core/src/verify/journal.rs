@@ -49,7 +49,16 @@ impl JournalReader for JournalctlReader {
         // returned.
         let pattern = format!("--grep={}", escape_pcre(needle));
         let command = ProcessCommand::tool("journalctl")
-            .args(["--no-pager", "-q", "--output=cat", pattern.as_str()])
+            // Case-sensitive: journalctl's smart case would otherwise match a
+            // lowercase needle case-insensitively, and every boot's systemd
+            // banner lists `+LIBCRYPTSETUP`, a feature flag, not a session trace.
+            .args([
+                "--no-pager",
+                "-q",
+                "--output=cat",
+                "--case-sensitive=true",
+                pattern.as_str(),
+            ])
             .deadline(JOURNAL_GREP_DEADLINE);
 
         let (success, stdout, stderr) = RealProcessRunner.run_text(&command)?;
