@@ -13,7 +13,13 @@ from unittest import mock
 
 from ci import changes
 
-NOTHING = {"rust": False, "deps": False, "nix": False, "workflows": False, "docs": False}
+NOTHING = {
+    "rust": False,
+    "deps": False,
+    "nix": False,
+    "workflows": False,
+    "docs": False,
+}
 EVERYTHING = {"rust": True, "deps": True, "nix": True, "workflows": True, "docs": True}
 
 
@@ -190,7 +196,13 @@ class MainTest(unittest.TestCase):
         with mock.patch.object(changes, "changed_paths", return_value=["deny.toml"]):
             self.assertEqual(
                 self.run_main("--base", "HEAD^1"),
-                ["rust=false", "deps=true", "nix=false", "workflows=false", "docs=false"],
+                [
+                    "rust=false",
+                    "deps=true",
+                    "nix=false",
+                    "workflows=false",
+                    "docs=false",
+                ],
             )
 
 
