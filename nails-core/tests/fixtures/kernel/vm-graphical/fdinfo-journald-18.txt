@@ -1,0 +1,4 @@
+pos:	0
+flags:	02500002
+mnt_id:	68
+ino:	1584

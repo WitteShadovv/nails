@@ -181,9 +181,9 @@ child's `stat` and `status`, and `/proc/swaps`. The fixtures live in
 reads them. `... vm` captures, as root, the host's and journald's mountinfo,
 journald's fds, fdinfo, `stat`, `status` and `cgroup`, `/proc/swaps`, logind's
 session records and every systemctl and loginctl invocation the code makes.
-decoy-journal-leak and emergency-graphical run it on every VM run; the README
-says where to copy the output (`vm/`, `vm-graphical/`). Until then the tests
-that read it say so and return.
+decoy-journal-leak and emergency-graphical run it on every VM run; the
+captures from the run at `27090f96` are committed in `vm/` and `vm-graphical/`,
+and every test that reads them passes against them.
 
 Cost: one VM run per format change. CI fit: perfect, since fixtures are plain
 unit-test inputs. Flakiness: none. What it catches: format drift such as the
@@ -203,8 +203,10 @@ mountinfo. They are covered by existing VM tests rather than a new boot:
   carry the positive verdict of the fd check (an indeterminate one is only a
   warning), and the VM capture of journald's fds feeds the classifier;
 - systemctl cost: performance-validation times every systemctl call of one
-  overlay-only activation through a wrapper bind-mounted over the binary, and
-  fails on one call over 3 s or more than 4 s in all (times the TCG factor);
+  activation through a wrapper bind-mounted over the binary, and
+  fails on one call over 3 s or more than 4 s in all (times the TCG factor).
+  It times the default activation: an overlay-only run without `/var` makes
+  no systemctl call;
 - emergency stderr: every emergency test runs nails from a unit whose stdout
   and stderr are the journal stream the teardown restarts, and requires exit 0;
 - overlay-only activation: performance-validation, decoy-journal-leak and the
@@ -367,8 +369,6 @@ configuration-only tests use `RealFilesystem` as the untouched backend.
 
 **Next:**
 
-- Commit the VM captures after the next VM run (fixture README) and drop the
-  "not captured yet" early returns that then no longer trigger.
 - Feed `classify_nixos_failure_category` captured `nixos-rebuild` errors.
 - The `nails init` scenarios in tier (a), as planned under T-140.
 - Decide the two contract-external drifts (tier (d)).
@@ -396,7 +396,7 @@ configuration-only tests use `RealFilesystem` as the untouched backend.
 - **CI:** the `rust` job clears `kernel.apparmor_restrict_unprivileged_userns`
   and sets `NAILS_REQUIRE_USERNS=1`; the `privileged-mounts` job runs only the
   whiteout test as root.
-- **VM:** decoy-journal-leak (journald re-home verdict, writes
-  `kernel-fixtures/`), emergency-graphical (writes
-  `kernel-fixtures-graphical/`) and performance-validation (the systemctl
-  budget). Copy the two capture directories as the fixture README says.
+- **VM:** decoy-journal-leak (journald re-home verdict), emergency-graphical
+  and performance-validation (the systemctl budget, on the default
+  activation). The first two also write fresh captures; copy them as the
+  fixture README says when a format changes.

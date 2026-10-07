@@ -75,8 +75,11 @@ Each capture holds:
   `User`, the cgroup of its leader, and logind's session records from
   `/run/systemd/sessions`.
 
-Until a capture is committed, the tests that read it print that it is missing
-and return (`nails_core::kernel_fixtures::vm`):
+The committed captures come from the full VM run at `27090f96` (NixOS VM,
+systemd and kernel in each directory's `systemd-version.txt` and `kernel.txt`).
+Re-copy them when a VM run changes a format; a test that finds its capture
+missing prints so and returns (`nails_core::kernel_fixtures::vm`). Each output
+directory holds a `kernel-fixtures/` subdirectory; copy its contents:
 
 | File | Used by |
 | --- | --- |

@@ -1,0 +1,34 @@
+backdoor.service                         loaded active running backdoor.service
+dbus.service                             loaded active running D-Bus System Message Bus
+dhcpcd.service                           loaded active running DHCP Client
+getty@tty1.service                       loaded active running Getty on tty1
+kmod-static-nodes.service                loaded active exited  Create List of Static Device Nodes
+lastlog2-import.service                  loaded active exited  Import lastlog data into lastlog2 database
+network-addresses-eth1.service           loaded active exited  Address configuration of eth1
+network-setup.service                    loaded active exited  Networking Setup
+nscd.service                             loaded active running Name Service Cache Daemon (nsncd)
+overlay-runtime-monitor.service          loaded active running [systemd-run] /run/overlay-runtime/control watch
+post-boot.service                        loaded active exited  Post-Boot Actions
+register-nix-paths.service               loaded active exited  register-nix-paths.service
+reload-systemd-vconsole-setup.service    loaded active exited  Reset console on configuration changes
+resolvconf.service                       loaded active exited  resolvconf update
+systemd-fsck-root.service                loaded active exited  File System Check on Root Device
+systemd-journal-catalog-update.service   loaded active exited  Rebuild Journal Catalog
+systemd-journal-flush.service            loaded active exited  Flush Journal to Persistent Storage
+systemd-journald.service                 loaded active running Journal Service
+systemd-logind.service                   loaded active running User Login Management
+systemd-machine-id-commit.service        loaded active exited  Save Transient machine-id to Disk
+systemd-modules-load.service             loaded active exited  Load Kernel Modules
+systemd-oomd.service                     loaded active running Userspace Out-Of-Memory (OOM) Killer
+systemd-random-seed.service              loaded active exited  Load/Save OS Random Seed
+systemd-remount-fs.service               loaded active exited  Remount Root and Kernel File Systems
+systemd-sysctl.service                   loaded active exited  Apply Kernel Variables
+systemd-tmpfiles-setup-dev-early.service loaded active exited  Create Static Device Nodes in /dev gracefully
+systemd-tmpfiles-setup-dev.service       loaded active exited  Create Static Device Nodes in /dev
+systemd-tmpfiles-setup.service           loaded active exited  Create System Files and Directories
+systemd-udev-trigger.service             loaded active exited  Coldplug All udev Devices
+systemd-udevd.service                    loaded active running Rule-based Manager for Device Events and Files
+systemd-update-done.service              loaded active exited  Update is Completed
+systemd-update-utmp.service              loaded active exited  Record System Boot/Shutdown in UTMP
+systemd-user-sessions.service            loaded active exited  Permit User Sessions
+systemd-vconsole-setup.service           loaded active exited  Virtual Console Setup
