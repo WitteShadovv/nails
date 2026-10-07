@@ -6,11 +6,14 @@
 //! In a whole-root session every userspace process is a hidden process: the
 //! desktop, its applications, every service. The emergency path enqueues the
 //! soft-reboot first (a pending stop job keeps `Restart=` from reviving a unit,
-//! ADR 0007) and then kills everything with `cgroup.kill`, so the orderly
-//! shutdown has nothing left to wait for. The only cgroups spared are
-//! `init.scope` (PID 1) and the branch holding this invocation, where every
-//! other process is killed one by one through a pidfd. The invocation itself
-//! dies with the soft-reboot moments later.
+//! ADR 0007) and then kills every unit that can hold a hidden program with
+//! `cgroup.kill`, so the orderly shutdown has little left to wait for. Spared
+//! are `init.scope` (PID 1), the service manager's own machinery (mount, swap
+//! and socket units, `systemd-*` services and the bus; see
+//! [`left_to_the_shutdown`]), which the shutdown stops itself, and the branch
+//! holding this invocation, where every other process is killed one by one
+//! through a pidfd. The invocation itself dies with the soft-reboot moments
+//! later.
 
 use crate::cgroup;
 use crate::proc::{self, Invocation, ProcessHandle};
@@ -71,6 +74,22 @@ pub fn kill_below(cgroup_root: &Path, subtree: &str, invocation: &Invocation) ->
     report
 }
 
+/// Units the emergency leaves to the orderly shutdown it enqueued: the service
+/// manager's own machinery. A mount, swap or automount unit's cgroup holds only
+/// PID 1's `mount`/`umount`/`swapon` helpers, and killing one mid-way leaves a
+/// half-done mount for the way back; `systemd-*` services (journald, udevd,
+/// logind, oomd) and the bus hold no hidden application, and killing journald
+/// leaves the hidden service manager's last messages queued in the journal
+/// socket that the decoy's journald reads after the switch. The shutdown stops
+/// them within moments.
+fn left_to_the_shutdown(unit: &str) -> bool {
+    [".mount", ".swap", ".automount", ".socket", ".device"]
+        .iter()
+        .any(|suffix| unit.ends_with(suffix))
+        || (unit.starts_with("systemd-") && unit.ends_with(".service"))
+        || matches!(unit, "dbus.service" | "dbus-broker.service")
+}
+
 fn visit(
     dir: &Path,
     relative: &str,
@@ -91,7 +110,14 @@ fn visit(
         .collect();
     subdirs.sort();
     for (path, child) in subdirs {
-        if child == "/init.scope" {
+        let name = child.rsplit('/').next().unwrap_or("");
+        if child == "/init.scope" || left_to_the_shutdown(name) {
+            continue;
+        }
+        if name.ends_with(".slice") && !protected.contains(&child) {
+            // A slice is descended into, not killed whole, so the units the
+            // shutdown must stop itself survive inside it.
+            visit(&path, &child, protected, spare, report);
             continue;
         }
         if protected.iter().any(|own| cgroup::contains(&child, own)) {

@@ -356,10 +356,14 @@ mod kernel_tests {
             let desktop = tree.join("user.slice/session-2.scope");
             let service = tree.join("system.slice/writer.service");
             let own = tree.join("system.slice/emergency.scope");
-            for dir in [&desktop, &service, &own] {
+            // The service manager's machinery is left to the shutdown.
+            let journald = tree.join("system.slice/systemd-journald.service");
+            let mount_unit = tree.join("system.slice/nix-.rw\\x2dstore.mount");
+            for dir in [&desktop, &service, &own, &journald, &mount_unit] {
                 std::fs::create_dir_all(dir).unwrap();
             }
             let mut victims = [spawn_sleeper_in(&desktop), spawn_sleeper_in(&service)];
+            let mut spared = [spawn_sleeper_in(&journald), spawn_sleeper_in(&mount_unit)];
             std::fs::write(own.join("cgroup.procs"), std::process::id().to_string()).unwrap();
 
             let invocation = nails_teardown::proc::Invocation::current();
@@ -381,6 +385,15 @@ mod kernel_tests {
                 let status = victim.wait().unwrap();
                 assert!(!status.success(), "the victim was killed");
             }
+            for survivor in &mut spared {
+                assert_eq!(survivor.try_wait().unwrap(), None, "{report:?}");
+                survivor.kill().unwrap();
+                survivor.wait().unwrap();
+            }
+            assert!(
+                !report.cgroups.iter().any(|c| journald.starts_with(c)),
+                "{report:?}"
+            );
         });
     }
 }

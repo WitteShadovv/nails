@@ -9,10 +9,13 @@
 //!    it, the init checked ([`crate::whole_root::ret`]);
 //! 2. mark the hidden backend for deferred removal;
 //! 3. arm the plan for the way back;
-//! 4. enqueue `soft-reboot.target` (or the requested power action) directly
+//! 4. SIGKILL every interactive shell, so none writes its history on the
+//!    session stop;
+//! 5. enqueue `soft-reboot.target` (or the requested power action) directly
 //!    with PID 1, with every other job replaced;
-//! 5. `cgroup.kill` every cgroup but `init.scope` and this invocation's
-//!    ([`crate::whole_root::kill`]), so the orderly shutdown finds nothing left
+//! 6. `cgroup.kill` every unit that can hold a hidden program, sparing
+//!    `init.scope`, this invocation's and the service manager's own machinery
+//!    ([`crate::whole_root::kill`]), so the orderly shutdown has little left
 //!    to stop.
 //!
 //! When the way back cannot be prepared, it powers off instead: a soft-reboot

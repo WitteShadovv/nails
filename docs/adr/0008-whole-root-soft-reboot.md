@@ -678,9 +678,17 @@ supported.
   short by a signal counts as enqueued: undoing the next root then would leave
   PID 1 switching into an empty `/run/nextroot`.
 - **Emergency**: the hot path prepares the way back, marks the backend for
-  deferred removal, arms the plan, enqueues `soft-reboot.target` directly with
-  PID 1 and then `cgroup.kill`s every cgroup except `init.scope` and the
-  invocation's own, with timed phases in its report and log. A way back that
+  deferred removal, arms the plan, SIGKILLs every interactive shell, enqueues
+  `soft-reboot.target` directly with PID 1 and then `cgroup.kill`s every unit
+  that can hold a hidden program, with timed phases in its report and log.
+  Spared are `init.scope`, the invocation's own cgroup and the service
+  manager's machinery: mount, swap, automount and socket units, `systemd-*`
+  services and the bus. The orderly shutdown stops those itself within
+  moments. With everything killed, the VM runs ended the way back in the
+  decoy's emergency mode (its `mount` helpers died with SIGKILL), and the
+  hidden service manager's last messages, queued in the journal socket after
+  journald was killed, were read by the decoy's journald. [I: the cause of the
+  emergency mode is inferred from the console, not isolated] A way back that
   cannot be prepared powers off instead; a power action that cannot be enqueued
   asks the kernel directly.
 
