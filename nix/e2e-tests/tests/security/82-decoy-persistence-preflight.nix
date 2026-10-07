@@ -39,6 +39,7 @@ in
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.canonicalDeactivateFn}
+    ${testHelpers.readStatusJsonFn}
     ${assertions.assertStatusStateFn}
     ${assertions.assertOverlayMountedFn}
     ${assertions.assertNoOverlaysFn}

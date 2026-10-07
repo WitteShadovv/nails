@@ -79,7 +79,7 @@ in
         while time.monotonic() < deadline:
             state = machine.succeed("systemctl is-active overlay-writer.service || true").strip()
             assert state != "active", f"the Restart=always writer was revived: {state}"
-            machine.sleep(0.5)
+            time.sleep(0.5)
         machine.fail(f"kill -0 {plain_pid}")
 
     with subtest("nothing was written to the decoy"):
