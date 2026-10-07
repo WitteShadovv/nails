@@ -3,12 +3,15 @@
 # Formerly the stand-alone test
 #   tests/config/23-config-unknown-key.nix
 # It now shares one VM boot with the batch's other scenarios (lib/batch.nix);
-# its subtests and assertions are unchanged.
+# its subtests and assertions are unchanged, except the two that need no VM.
 #
 # Test 23: Config Unknown Key
 # A misspelt key must fail loudly instead of silently falling back to a
-# default: activate and `config validate` exit 3 with a did-you-mean hint,
-# while emergency still proceeds.
+# default: activate exits 3 with a did-you-mean hint and mounts nothing, while
+# emergency still proceeds. The nested-key dry run and `config validate` on the
+# same fixtures need no VM; they run in nails-cli/tests/config_command.rs
+# (`unknown_nested_key_fixture_is_refused_by_a_dry_run_with_a_hint`,
+# `unknown_key_fixture_fails_config_validate_with_the_hint`).
 
 _:
 let
@@ -17,7 +20,6 @@ let
   assertions = import ./../../lib/assertions.nix;
   securityHelpers = import ./../../lib/security-helpers.nix;
   unknownKeyFixture = ./../../fixtures/configs/unknown-key.toml;
-  unknownNestedKeyFixture = ./../../fixtures/configs/unknown-nested-key.toml;
 in
 {
   name = "config-unknown-key";
@@ -38,7 +40,6 @@ in
     def scenario_config_unknown_key() -> None:
         machine.wait_for_unit("multi-user.target")
         machine.succeed("cp ${unknownKeyFixture} /tmp/unknown-key.toml")
-        machine.succeed("cp ${unknownNestedKeyFixture} /tmp/unknown-nested-key.toml")
 
         with subtest("activate refuses an unknown top-level key with a hint"):
             result = run_command_capture(
@@ -52,22 +53,6 @@ in
                 stream="stderr",
             )
             assert_no_overlays(["/home", "/etc", "/root", "/srv", "/tmp"])
-
-        with subtest("activate refuses an unknown nested key with a hint"):
-            result = run_command_capture(
-                "config-unknown-nested-key-activate",
-                "nails --config /tmp/unknown-nested-key.toml activate --dry-run --overlay-only --session keep",
-            )
-            assert_exit_code(result, 3)
-            assert_result_contains(result, ["did you mean `enabled`?"], stream="stderr")
-
-        with subtest("config validate exits 3 with the same hint"):
-            result = run_command_capture(
-                "config-unknown-key-validate",
-                "nails config validate /tmp/unknown-key.toml",
-            )
-            assert_exit_code(result, 3)
-            assert_result_contains(result, ["did you mean `nixos_flake`?"], stream="stderr")
 
         with subtest("emergency warns once and proceeds with defaults"):
             # No hidden volume is set up, so the binary-derived defaults find no

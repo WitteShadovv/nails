@@ -199,3 +199,57 @@ fn missing_explicit_config_prints_one_line_and_exits_3() {
         assert!(output.stdout.is_empty(), "{command:?}");
     }
 }
+
+/// A copy of one of the config fixtures the VM tests use
+/// (`nix/e2e-tests/fixtures/configs/`). The checks on them that need no VM (the
+/// exit code, the did-you-mean hint, the reported line) run here; the VM keeps
+/// only what needs a booted system: activation refused with nothing mounted, and
+/// emergency proceeding on a broken config.
+fn vm_fixture(name: &str) -> tempfile::NamedTempFile {
+    let path = format!(
+        "{}/../nix/e2e-tests/fixtures/configs/{name}",
+        env!("CARGO_MANIFEST_DIR")
+    );
+    let contents = std::fs::read_to_string(&path).unwrap_or_else(|err| panic!("{path}: {err}"));
+    write_config(&contents)
+}
+
+#[test]
+fn unknown_nested_key_fixture_is_refused_by_a_dry_run_with_a_hint() {
+    let file = vm_fixture("unknown-nested-key.toml");
+    nails()
+        .args(["--config", file.path().to_str().unwrap()])
+        .args([
+            "activate",
+            "--dry-run",
+            "--overlay-only",
+            "--session",
+            "keep",
+        ])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("did you mean `enabled`?"));
+}
+
+#[test]
+fn unknown_key_fixture_fails_config_validate_with_the_hint() {
+    let file = vm_fixture("unknown-key.toml");
+    nails()
+        .args(["config", "validate", file.path().to_str().unwrap()])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains("did you mean `nixos_flake`?"));
+}
+
+#[test]
+fn invalid_type_fixture_exits_3_and_names_the_line() {
+    let file = vm_fixture("invalid-type.toml");
+    let path = file.path().to_str().unwrap();
+    nails()
+        .args(["--config", path, "status"])
+        .assert()
+        .code(3)
+        .stderr(predicate::str::contains(format!(
+            "invalid config {path}: line 3"
+        )));
+}
