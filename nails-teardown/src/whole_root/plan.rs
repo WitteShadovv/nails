@@ -357,7 +357,7 @@ pub(crate) fn sample() -> Plan {
         }],
         masks: vec!["dev-vda3.swap".to_string()],
         session_units: Vec::new(),
-        backend: vec!["data".to_string()],
+        backend: vec!["sample-backend-unmapped".to_string()],
         tools: Tools::default(),
         armed: Some(Arm {
             direction: Direction::Enter,

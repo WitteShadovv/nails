@@ -259,8 +259,14 @@ run in the hidden session and end it with a soft-reboot back to the decoy;
 - **`recover`** — on the decoy, after an activation that died part-way (a crash,
   a killed process, a failed `systemctl`). It detaches `/run/nextroot`, removes
   `/run/overlay-runtime` and the transition drop-in, reloads the service manager
-  and resets the state. It never reboots. In the hidden session it refuses and
-  points at `deactivate`.
+  and resets the state. It also closes the hidden volume's device-mapper
+  devices when nothing uses them, so the key leaves RAM; if the hidden volume
+  is still mounted (for example because the configuration lives on it), it
+  leaves the devices open and says so: unmount and close the volume yourself
+  when you are done. It never reboots. In the hidden session it refuses and
+  points at `deactivate`. A plain `reboot` after an interrupted activation
+  needs no `recover`: the leftover next root is detached during it and the
+  hidden volume's devices are closed, as a full reboot would.
 
 ### What emergency does
 

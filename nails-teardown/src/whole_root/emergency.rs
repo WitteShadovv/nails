@@ -320,6 +320,9 @@ fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) {
     });
     report.timed("remove-runtime", |_| {
         if host.act {
+            // Nothing hidden runs on the decoy: the backend goes with the
+            // last close, as the way back would close it.
+            let _ = ret::close_backend_deferred(plan);
             transition::remove_dropin(&host.run);
             for unit in &plan.masks {
                 let _ = std::fs::remove_file(host.run.join("systemd/system").join(unit));

@@ -162,6 +162,8 @@ in
         machine.log(f"stray reboot timings: {timings}")
         session.assert_decoy_root(machine)
         assert leftovers() == {"nextroot": False, "plan": False, "dropin": False}, leftovers()
+        # The guard closes the hidden backend too, as a real reboot would.
+        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
 
     with subtest("recover removes an interrupted entry"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -169,6 +171,9 @@ in
         kill_activation()
         out = machine.succeed(f"nails --config {CONFIG} recover")
         assert "Removed" in out, out
+        # The volume holding the configuration is mounted: recover leaves the
+        # backend open and says so.
+        assert "still open and in use" in out, out
         assert leftovers() == {"nextroot": False, "plan": False, "dropin": False}, leftovers()
         session.assert_decoy_root(machine)
         machine.succeed(f"nails --config {CONFIG} status")

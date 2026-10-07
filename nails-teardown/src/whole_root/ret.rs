@@ -113,6 +113,45 @@ pub fn close_backend_deferred(plan: &Plan) -> Vec<(String, bool)> {
         .collect()
 }
 
+/// What became of one backend device when the decoy side closed it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendClose {
+    /// It is closed: its key has left kernel memory.
+    Closed,
+    /// It is still open, in use (mounted, or a device stacked on it).
+    InUse,
+}
+
+/// On the decoy side, close the plan's device-mapper stack, top first, where
+/// nothing uses it any more. A device in use is left open and reported: the
+/// operator may have the hidden volume mounted on purpose. Devices that are
+/// already gone are not listed.
+pub fn close_idle_backend(plan: &Plan, mapper_dir: &Path) -> Vec<(String, BackendClose)> {
+    let present: Vec<&String> = plan
+        .backend
+        .iter()
+        .filter(|name| mapper_dir.join(name).exists())
+        .collect();
+    if present.is_empty() {
+        return Vec::new();
+    }
+    let dmsetup = tools::find(plan.tools.dmsetup.as_deref(), "dmsetup");
+    present
+        .into_iter()
+        .map(|name| {
+            let closed = dmsetup
+                .as_deref()
+                .is_some_and(|dmsetup| tools::remove_now(dmsetup, name));
+            let state = if closed {
+                BackendClose::Closed
+            } else {
+                BackendClose::InUse
+            };
+            (name.clone(), state)
+        })
+        .collect()
+}
+
 /// Arm `plan` for the way back and write it to `path`.
 pub fn arm_leave(plan: &mut Plan, path: &Path) -> Result<(), ReturnError> {
     plan.armed = Some(Arm::now(Direction::Leave));
@@ -159,5 +198,28 @@ mod tests {
             init_before_repoint(&fhs),
             Path::new("/usr/lib/systemd/systemd")
         );
+    }
+
+    #[test]
+    fn an_idle_backend_is_closed_and_one_in_use_reported() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let mapper = dir.path().join("mapper");
+        std::fs::create_dir(&mapper).unwrap();
+        let mut plan = sample();
+        plan.backend = vec!["top".to_string(), "gone".to_string()];
+        assert!(close_idle_backend(&plan, &mapper).is_empty());
+
+        std::fs::write(mapper.join("top"), "").unwrap();
+        for (exit, expected) in [(0, BackendClose::Closed), (1, BackendClose::InUse)] {
+            let tool = dir.path().join(format!("dmsetup-{exit}"));
+            std::fs::write(&tool, format!("#!/bin/sh\nexit {exit}\n")).unwrap();
+            std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).unwrap();
+            plan.tools.dmsetup = Some(tool);
+            assert_eq!(
+                close_idle_backend(&plan, &mapper),
+                vec![("top".to_string(), expected)]
+            );
+        }
     }
 }

@@ -159,6 +159,16 @@ pub fn remove_deferred(dmsetup: &Path, name: &str) -> bool {
     )
 }
 
+/// Remove the device-mapper device `name` now. Refused (`false`) while
+/// anything holds it open: a mounted filesystem or a device stacked on it.
+pub fn remove_now(dmsetup: &Path, name: &str) -> bool {
+    run_bounded(
+        dmsetup,
+        &["remove", "--noudevsync", "--", name],
+        TOOL_BUDGET,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

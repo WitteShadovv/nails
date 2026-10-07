@@ -167,11 +167,15 @@ pub fn run(env: &Env) -> Outcome {
 }
 
 /// Detach a `/run/nextroot` the plan did not arm. On the decoy side (never
-/// entered) the runtime pieces go too, so nothing of the failed activation is
-/// left; in the hidden session the plan stays for a later deactivation.
+/// entered) the runtime pieces go too and the hidden backend is marked for
+/// deferred removal, so nothing of the failed activation is left, its key
+/// included; in the hidden session the plan stays for a later deactivation.
 fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
     nextroot::detach_tree(&env.nextroot);
     if plan.entered_at.is_none() {
+        // A reboot that met the leftover tree: the volume was unmounted by
+        // the shutdown, and a real reboot would have closed it too.
+        let _ = crate::whole_root::ret::close_backend_deferred(plan);
         remove_dropin(&env.run);
         nextroot::remove_runtime_dir(&env.runtime_dir);
         if plan.run_noexec {

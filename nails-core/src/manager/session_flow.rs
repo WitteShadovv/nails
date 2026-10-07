@@ -47,9 +47,14 @@ pub enum EnterOutcome {
 pub enum SessionRecovery {
     /// Nothing was left to recover.
     Clean,
-    /// An interrupted entry was rolled back; these mounts are still below
-    /// `/run/nextroot` (empty when everything came off).
-    RolledBack(Vec<PathBuf>),
+    /// An interrupted entry was rolled back.
+    RolledBack {
+        /// Mounts still below `/run/nextroot` (empty when everything came off).
+        remaining: Vec<PathBuf>,
+        /// The hidden backend's device-mapper devices that were still open,
+        /// and whether they are closed now or still in use.
+        backend: Vec<(String, nails_teardown::whole_root::ret::BackendClose)>,
+    },
 }
 
 impl<F: Filesystem> NailsManager<F> {
@@ -209,10 +214,23 @@ impl<F: Filesystem> NailsManager<F> {
                 Ok(SessionRecovery::Clean)
             }
             SessionView::Interrupted { .. } => {
-                let remaining = entry::rollback(&Paths::system());
+                let paths = Paths::system();
+                let plan = nails_teardown::whole_root::plan::Plan::load(&paths.plan()).ok();
+                let remaining = entry::rollback(&paths);
                 let _ = host.daemon_reload();
                 let _ = self.force_state(SystemState::Inactive);
-                Ok(SessionRecovery::RolledBack(remaining))
+                // Nothing hidden runs on the decoy: close the hidden backend
+                // where nothing uses it, so its key leaves RAM, and report it
+                // where something does.
+                let backend = plan
+                    .map(|plan| {
+                        nails_teardown::whole_root::ret::close_idle_backend(
+                            &plan,
+                            std::path::Path::new("/dev/mapper"),
+                        )
+                    })
+                    .unwrap_or_default();
+                Ok(SessionRecovery::RolledBack { remaining, backend })
             }
             SessionView::Entering(_) => Err(NailsError::InvalidState(
                 "an activation is entering the hidden root right now".to_string(),
