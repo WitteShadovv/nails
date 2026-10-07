@@ -69,8 +69,10 @@ in
             )
             + " </dev/null >/dev/null 2>&1 &"
         )
-        machine.wait_until_succeeds("pgrep -f 'sleep 6000'", timeout=180)
-        machine.succeed("mountpoint -q /run/nextroot")
+        # `[6]` keeps the pattern from matching the shell that runs pgrep.
+        machine.wait_until_succeeds(
+            "pgrep -f 'sleep [6]000' && mountpoint -q /run/nextroot", timeout=180
+        )
         machine.succeed("test -s /run/overlay-runtime/plan.json")
         machine.succeed(
             "test -s /run/systemd/system/systemd-soft-reboot.service.d/50-overlay-runtime.conf"
@@ -79,7 +81,7 @@ in
 
     def kill_activation():
         machine.succeed("pkill -9 -x nails")
-        machine.execute("pkill -9 -f 'sleep 6000'; pkill -9 -x nix")
+        machine.execute("pkill -9 -f 'sleep [6]000'; pkill -9 -x nix")
         machine.wait_until_fails("pgrep -x nails", timeout=30)
 
 
@@ -152,7 +154,7 @@ in
         pgid = machine.succeed("ps -o pgid= -p $(pgrep -x nails)").strip()
         machine.succeed(f"kill -INT -- -{pgid}")
         machine.wait_until_fails("pgrep -x nails", timeout=60)
-        machine.execute("pkill -9 -f 'sleep 6000'")
+        machine.execute("pkill -9 -f 'sleep [6]000'")
         assert leftovers() == {"nextroot": False, "plan": False, "dropin": False}, leftovers()
 
     with subtest("emergency during an entry detaches it"):

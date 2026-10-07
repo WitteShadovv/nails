@@ -64,15 +64,6 @@ in
           autoFormat = true;
         };
       };
-      # In the decoy's fstab, never activated by the decoy itself (the swap
-      # pre-flight check refuses active swap); the hidden systemd must not
-      # activate it either.
-      swapDevices = lib.mkForce [
-        {
-          device = "/dev/disk/by-id/virtio-swap";
-          options = [ "noauto" ];
-        }
-      ];
     };
 
   testScript = _: ''
@@ -94,6 +85,16 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
     machine.succeed("mountpoint -q /boot && mountpoint -q /srv/data")
+    # A swap partition in the decoy's fstab, never activated by the decoy
+    # itself (the swap pre-flight check refuses active swap); the hidden
+    # systemd must not activate it either. The VM profile overrides
+    # swapDevices, so the line is added to the decoy's fstab directly.
+    machine.succeed("mkswap /dev/disk/by-id/virtio-swap")
+    machine.succeed(
+        "cp --remove-destination \"$(readlink -f /etc/fstab)\" /etc/fstab && "
+        "echo '/dev/disk/by-id/virtio-swap none swap defaults,noauto 0 0' >> /etc/fstab && "
+        "systemctl daemon-reload"
+    )
     machine.succeed("echo decoy > /boot/decoy-file && echo decoy > /srv/data/decoy-file && sync")
     esp_before = esp_hashes()
 

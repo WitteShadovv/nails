@@ -137,9 +137,9 @@ in
 
     with subtest("the emergency logged its timed phases on the hidden volume"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-        log = machine.succeed("cat /mnt/data/logs/*.log 2>/dev/null || true")
-        assert "emergency hot path finished" in log, log[-3000:]
-        assert "phases=" in log, log[-3000:]
+        hidden_log = machine.succeed("cat /mnt/data/logs/*.log 2>/dev/null || true")
+        assert "emergency hot path finished" in hidden_log, hidden_log[-3000:]
+        assert "phases=" in hidden_log, hidden_log[-3000:]
 
     with subtest("recover and emergency on the plain decoy change nothing"):
         out = machine.succeed(f"nails --config {CONFIG} recover")

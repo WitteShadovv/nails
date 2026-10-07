@@ -89,6 +89,19 @@ class FollowSoftRebootTest(unittest.TestCase):
         self.assertEqual(machine.connects, 0)
 
 
+class TriggerFailureTest(unittest.TestCase):
+    def test_a_failed_trigger_stops_the_wait_at_once(self) -> None:
+        machine = FakeMachine(["activation failed", "nails-trigger-exit=1"])
+        with self.assertRaises(AssertionError) as raised:
+            session.follow_soft_reboot(
+                machine, "nails activate -y", "enter", deadline_s=5
+            )
+        self.assertIn("exit status 1", str(raised.exception))
+
+    def test_a_zero_exit_is_not_a_failure(self) -> None:
+        self.assertIsNone(session.trigger_failure(["nails-trigger-exit=0"]))
+
+
 class PureHelpersTest(unittest.TestCase):
     def test_pid1_timestamps_are_read_in_seconds(self) -> None:
         values = session.parse_pid1_timestamps("A=1500000\nB=\nC=x\n")

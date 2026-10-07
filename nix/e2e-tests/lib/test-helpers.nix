@@ -203,7 +203,9 @@
             + extra_args
             + " > "
             + log
-            + " 2>&1",
+            + " 2>&1 || { rc=$?; cat "
+            + log
+            + " > /dev/console; exit $rc; }",
             label,
         )
         print(machine.succeed("cat " + log + " || true"))

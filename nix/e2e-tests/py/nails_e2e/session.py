@@ -31,6 +31,9 @@ STUCK_MARKERS = (
 #: The new backdoor's announcement on the console.
 BACKDOOR_MARKER = "connecting to host"
 
+#: Written to the console with the trigger's exit status when it returns.
+TRIGGER_EXIT_MARKER = "nails-trigger-exit="
+
 #: Where the hidden root's upper lives with the suite's hidden volume.
 DEFAULT_UPPER = "/mnt/data/root/upper"
 
@@ -94,6 +97,16 @@ def stuck_lines(lines: list[str]) -> list[str]:
     return [line for line in lines if any(marker in line for marker in STUCK_MARKERS)]
 
 
+def trigger_failure(lines: list[str]) -> str | None:
+    """The trigger's non-zero exit status from the console, if it reported one."""
+    for line in lines:
+        _, marker, status = line.partition(TRIGGER_EXIT_MARKER)
+        status = status.strip()
+        if marker and status and status != "0":
+            return f"exit status {status}"
+    return None
+
+
 def parse_pid1_timestamps(text: str) -> dict[str, float]:
     """``systemctl show`` output of monotonic timestamps, in seconds."""
     values: dict[str, float] = {}
@@ -123,8 +136,12 @@ def follow_soft_reboot(
     trigger_uptime = guest_uptime(machine)
     console_index = len(machine.full_console_log)
     if start is None:
+        # The exit status goes to the console: a trigger that fails (an
+        # activation refused or rolled back) never soft-reboots, and the wait
+        # below stops at once instead of running out its deadline.
         machine.execute(
-            f"({trigger}) </dev/null >/dev/null 2>&1 &",
+            f"(({trigger}) </dev/null >/dev/null 2>&1; "
+            f'echo "{TRIGGER_EXIT_MARKER}$?" > /dev/console) &',
             check_return=False,
             check_output=False,
         )
@@ -153,6 +170,12 @@ def follow_soft_reboot(
             machine.log(f"{label}: causes on the console:\n" + "\n".join(causes[-60:]))
             machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
             raise AssertionError(f"{label}: the new userspace is stuck: {stuck[0]}")
+        failed = trigger_failure(lines)
+        if failed is not None:
+            machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
+            raise AssertionError(
+                f"{label}: the trigger failed ({failed}) and never soft-rebooted"
+            )
         if any(BACKDOOR_MARKER in line for line in lines):
             break
         if time.monotonic() > deadline:
