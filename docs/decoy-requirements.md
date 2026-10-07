@@ -193,7 +193,9 @@ writes directly:
 - **Other disks.** A second disk, a Windows partition or an automounted USB drive
   stays read-write on real storage for the whole session. The `stray-mounts`
   check warns about the ones present at activation; unmount them first, or mount
-  them read-only. `verify` cannot tell what a session wrote there.
+  them read-only. `verify` cannot tell what a session wrote there, but
+  [`nails rehearse`](operator-guide.md#rehearsing-before-you-rely-on-it) scans
+  every mounted disk for its canary.
 
 ## Session-time records
 
@@ -302,7 +304,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
 | [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Send core dumps nowhere persistent and disarm kdump on the decoy. | `examiner-audit` |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `shell-history-real-sudo` |
-| [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the /home overlay | `deep-scan-recent-files` | Keep /home overlaid; never open hidden files from a decoy session. | none: no VM test plants it yet |
+| [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the /home overlay | `deep-scan-recent-files` | Keep /home overlaid; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-core/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
 | [NixOS account bookkeeping](threat-model.md#known-residual-changes) (`var-lib-nixos`) | `/var/lib/nixos` | NixOS | none: the decoy rewrites these files on every boot; only a control run tells noise from a leak | `platform-scanners` | Overlay /var; the drift test compares against a plain-reboot control. | `var-lib-nixos-drift` |
 | [Package database drift](#writes-that-bypass-the-overlays) (`package-database-drift`) | `/var/lib/dpkg`, `/var/log/apt`, `/var/log/dpkg.log` | Debian, Ubuntu | `writable-trees` (refuses) | `platform-scanners` | Overlay /var and keep /usr read-only or overlaid. | none: the NixOS VM suite has no dpkg; the Debian and Ubuntu smoke runs (scripts/distro-smoke) cover FHS hosts |
@@ -314,7 +316,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [timesyncd clock stamp](#session-time-records) (`timesync-clock`) | `/var/lib/systemd/timesync/clock` | all | path probe (info) | path probe (info) | Keep /var overlaid; on a persistent decoy, use the decoy normally after a session so its own activity follows the stamp. | `examiner-audit` |
 | [Persistent timer stamps](#session-time-records) (`timer-stamps`) | `/var/lib/systemd/timers` | all | path probe (info) | path probe (info) | Keep /var overlaid so session stamps land in the upper; expect catch-up runs at the next decoy boot. | `examiner-audit` |
 | [SMART power-on hours](#session-time-records) (`smart-power-on-hours`) | the drive's own power-on-hours and power-cycle counters | all | none: not filesystem state, so nothing on the decoy root shows it | none: a disk image does not carry SMART counters | None in software; use the decoy normally so its logged uptime is plausible. | none: virtual disks have no SMART log |
-| [SSD flash-translation-layer remnants](operator-guide.md#ssd-wear-levelling) (`ssd-ftl-remnants`) | remapped and over-provisioned flash blocks | all | none: not filesystem state, so nothing on the decoy root shows it | none: no host-side read reaches remapped flash cells | Full-disk encryption on the decoy, so remnants are ciphertext; no TRIM on a volume that holds a hidden volume. | none: virtual disks have no flash translation layer |
+| [SSD flash-translation-layer remnants](operator-guide.md#ssd-wear-levelling) (`ssd-ftl-remnants`) | remapped and over-provisioned flash blocks | all | none: not filesystem state, so nothing on the decoy root shows it | none: no host-side read reaches remapped flash cells, so `nails rehearse` cannot see them either | Full-disk encryption on the decoy, so remnants are ciphertext; no TRIM on a volume that holds a hidden volume. | none: virtual disks have no flash translation layer |
 <!-- residue-catalog:end session -->
 
 ### Setup traces

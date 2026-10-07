@@ -91,6 +91,7 @@ pub fn execute_command(
         Commands::Recover(args) => commands::recover::execute(settings, env, &args, config),
         Commands::Status(args) => commands::status::execute(settings, &args, config),
         Commands::Verify(args) => commands::verify::execute(settings, env, &args, config),
+        Commands::Rehearse(args) => commands::rehearse::execute(settings, env, &args, config),
         Commands::Check(args) => commands::check::execute(settings, env, &args, config),
         Commands::Init(args) => commands::init::execute(settings, &args, config),
         Commands::ResetUpper(args) => commands::reset_upper::execute(settings, env, &args, config),

@@ -58,6 +58,7 @@ const HELP_INVOCATIONS: &[&[&str]] = &[
     &["check", "--help"],
     &["init", "--help"],
     &["reset-upper", "--help"],
+    &["rehearse", "--help"],
     &["config", "--help"],
     &["config", "path", "--help"],
     &["config", "show", "--help"],

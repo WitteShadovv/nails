@@ -60,7 +60,7 @@ EXIT STATUS:
   8    the host is not one NAILS can operate on
   9    completed, but with a warning the caller should act on
   10   verify found warnings
-  11   verify found critical artifacts
+  11   verify found critical artifacts, or rehearse scan found its canary
   130  cancelled by a signal (SIGINT/SIGTERM)";
 
 /// Overlay environment manager
@@ -214,6 +214,8 @@ pub enum Commands {
     Status(StatusArgs),
     /// Verify system is clean of NAILS artifacts
     Verify(VerifyArgs),
+    /// Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
+    Rehearse(RehearseArgs),
     /// Check readiness to activate without making any changes (alias: doctor)
     #[command(alias = "doctor")]
     Check(CheckArgs),
@@ -484,6 +486,83 @@ pub struct VerifyArgs {
     /// partition-level examiner checks (LUKS headers, random-looking space).
     #[arg(long, value_name = "DEVICE", value_hint = ValueHint::FilePath, requires = "examiner")]
     pub disk: Option<std::path::PathBuf>,
+}
+
+/// `nails rehearse` arguments
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+#[command(after_long_help = "\
+STEPS:
+  1. In an active hidden session:     nails rehearse plant
+  2. Deactivate as usual (it reboots), then unlock and mount the hidden volume
+  3. From the decoy, or a later session: nails rehearse scan
+  Then `nails rehearse reset` removes the rehearsal from the hidden volume.
+
+EXAMPLES:
+  nails rehearse                      Show where the rehearsal stands
+  nails rehearse plant --user alice   Plant the canary for alice's session
+  nails rehearse scan                 Scan the mounted decoy devices
+  nails rehearse scan --offline --image decoy.raw
+                                      Scan a disk image instead
+
+The scan exits 0 when no canary is found, 11 when one is, and 9 when a device
+could not be scanned completely.")]
+pub struct RehearseArgs {
+    /// The step to run; without one, show the status and the next step
+    #[command(subcommand)]
+    pub step: Option<RehearseStep>,
+}
+
+/// One step of a rehearsal.
+#[derive(Subcommand, Debug, Clone, PartialEq, Eq)]
+pub enum RehearseStep {
+    /// Step 1, in an active hidden session: plant a random canary in the
+    /// session's files, log, a process, recent files and a notification
+    Plant(RehearsePlantArgs),
+    /// Step 3, after deactivating: scan the raw decoy devices for the canary
+    Scan(RehearseScanArgs),
+    /// Show where the rehearsal stands and the next step
+    Status,
+    /// Remove the rehearsal state and its planted files from the hidden volume
+    Reset,
+}
+
+/// `nails rehearse plant` arguments
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct RehearsePlantArgs {
+    /// The operator whose home, recent files and notifications are used
+    /// (default: the user who ran sudo)
+    #[arg(long, value_name = "NAME")]
+    pub user: Option<String>,
+}
+
+/// `nails rehearse scan` arguments
+#[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct RehearseScanArgs {
+    /// Scan this block device instead of the mounted decoy devices (repeatable)
+    #[arg(long = "device", value_name = "DEVICE", value_hint = ValueHint::FilePath, conflicts_with = "offline")]
+    pub devices: Vec<std::path::PathBuf>,
+
+    /// Scan disk images or devices given with --image, not this machine's mounts
+    #[arg(long, requires = "images")]
+    pub offline: bool,
+
+    /// An image or device to scan in --offline mode (repeatable)
+    #[arg(long = "image", value_name = "IMAGE", value_hint = ValueHint::FilePath, requires = "offline")]
+    pub images: Vec<std::path::PathBuf>,
+
+    /// Read the canary token from this file instead of the hidden volume's
+    /// rehearsal state (--offline only)
+    #[arg(long, value_name = "FILE", value_hint = ValueHint::FilePath, requires = "offline")]
+    pub token_file: Option<std::path::PathBuf>,
+
+    /// Scan even in the boot the canary was planted in (proves little: the
+    /// session's writes may not have reached the disk yet)
+    #[arg(long)]
+    pub allow_same_boot: bool,
+
+    /// Stop each device after this many bytes
+    #[arg(long, value_name = "BYTES")]
+    pub max_bytes: Option<u64>,
 }
 
 /// `nails check` (alias `doctor`) arguments

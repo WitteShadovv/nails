@@ -12,6 +12,11 @@ This document contains the help content for the `nails` command-line program.
 * [`nails recover`↴](#nails-recover)
 * [`nails status`↴](#nails-status)
 * [`nails verify`↴](#nails-verify)
+* [`nails rehearse`↴](#nails-rehearse)
+* [`nails rehearse plant`↴](#nails-rehearse-plant)
+* [`nails rehearse scan`↴](#nails-rehearse-scan)
+* [`nails rehearse status`↴](#nails-rehearse-status)
+* [`nails rehearse reset`↴](#nails-rehearse-reset)
 * [`nails check`↴](#nails-check)
 * [`nails init`↴](#nails-init)
 * [`nails reset-upper`↴](#nails-reset-upper)
@@ -61,7 +66,7 @@ EXIT STATUS:
   8    the host is not one NAILS can operate on
   9    completed, but with a warning the caller should act on
   10   verify found warnings
-  11   verify found critical artifacts
+  11   verify found critical artifacts, or rehearse scan found its canary
   130  cancelled by a signal (SIGINT/SIGTERM)
 
 ###### **Subcommands:**
@@ -73,6 +78,7 @@ EXIT STATUS:
 * `recover` — Reconcile a stuck state and finish an interrupted or degraded teardown
 * `status` — Show current status and uptime
 * `verify` — Verify system is clean of NAILS artifacts
+* `rehearse` — Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
 * `check` — Check readiness to activate without making any changes (alias: doctor)
 * `init` — Initialize NAILS directory structure on a hidden volume
 * `reset-upper` — Delete a target's persistent overlay upper on the hidden volume
@@ -282,6 +288,82 @@ EXAMPLES:
 
 
 
+## `nails rehearse`
+
+Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
+
+**Usage:** `nails rehearse [COMMAND]`
+
+STEPS:
+  1. In an active hidden session:     nails rehearse plant
+  2. Deactivate as usual (it reboots), then unlock and mount the hidden volume
+  3. From the decoy, or a later session: nails rehearse scan
+  Then `nails rehearse reset` removes the rehearsal from the hidden volume.
+
+EXAMPLES:
+  nails rehearse                      Show where the rehearsal stands
+  nails rehearse plant --user alice   Plant the canary for alice's session
+  nails rehearse scan                 Scan the mounted decoy devices
+  nails rehearse scan --offline --image decoy.raw
+                                      Scan a disk image instead
+
+The scan exits 0 when no canary is found, 11 when one is, and 9 when a device
+could not be scanned completely.
+
+###### **Subcommands:**
+
+* `plant` — Step 1, in an active hidden session: plant a random canary in the session's files, log, a process, recent files and a notification
+* `scan` — Step 3, after deactivating: scan the raw decoy devices for the canary
+* `status` — Show where the rehearsal stands and the next step
+* `reset` — Remove the rehearsal state and its planted files from the hidden volume
+
+
+
+## `nails rehearse plant`
+
+Step 1, in an active hidden session: plant a random canary in the session's files, log, a process, recent files and a notification
+
+**Usage:** `nails rehearse plant [OPTIONS]`
+
+###### **Options:**
+
+* `--user <NAME>` — The operator whose home, recent files and notifications are used (default: the user who ran sudo)
+
+
+
+## `nails rehearse scan`
+
+Step 3, after deactivating: scan the raw decoy devices for the canary
+
+**Usage:** `nails rehearse scan [OPTIONS]`
+
+###### **Options:**
+
+* `--device <DEVICE>` — Scan this block device instead of the mounted decoy devices (repeatable)
+* `--offline` — Scan disk images or devices given with --image, not this machine's mounts
+* `--image <IMAGE>` — An image or device to scan in --offline mode (repeatable)
+* `--token-file <FILE>` — Read the canary token from this file instead of the hidden volume's rehearsal state (--offline only)
+* `--allow-same-boot` — Scan even in the boot the canary was planted in (proves little: the session's writes may not have reached the disk yet)
+* `--max-bytes <BYTES>` — Stop each device after this many bytes
+
+
+
+## `nails rehearse status`
+
+Show where the rehearsal stands and the next step
+
+**Usage:** `nails rehearse status`
+
+
+
+## `nails rehearse reset`
+
+Remove the rehearsal state and its planted files from the hidden volume
+
+**Usage:** `nails rehearse reset`
+
+
+
 ## `nails check`
 
 Check readiness to activate without making any changes (alias: doctor)
@@ -451,9 +533,11 @@ Every command shares one set of exit codes.
 | 8 | The host is not one NAILS can operate on |
 | 9 | Completed, but with a warning the caller should act on |
 | 10 | `verify` found warnings |
-| 11 | `verify` found critical artifacts |
+| 11 | `verify` found critical artifacts, or `rehearse scan` found its canary |
 | 130 | Cancelled by a signal (SIGINT/SIGTERM) |
 
 Notable per-command codes: `verify` returns 0/10/11 for secure/warning/critical;
+`rehearse scan` returns 0 when the canary is not found, 11 when it is, and 9
+when a device could not be scanned completely;
 `status` returns 7 on a degraded posture and 6 on an untrusted state file; every
 mutating command returns 5 when run without root.

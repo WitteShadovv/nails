@@ -1,0 +1,71 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - rehearse
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
+
+Usage: nails rehearse [OPTIONS] [COMMAND]
+
+Commands:
+  plant   Step 1, in an active hidden session: plant a random canary in the session's files, log, a process, recent files and a notification
+  scan    Step 3, after deactivating: scan the raw decoy devices for the canary
+  status  Show where the rehearsal stands and the next step
+  reset   Remove the rehearsal state and its planted files from the hidden volume
+  help    Print this message or the help of the given subcommand(s)
+
+Options:
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+STEPS:
+  1. In an active hidden session:     nails rehearse plant
+  2. Deactivate as usual (it reboots), then unlock and mount the hidden volume
+  3. From the decoy, or a later session: nails rehearse scan
+  Then `nails rehearse reset` removes the rehearsal from the hidden volume.
+
+EXAMPLES:
+  nails rehearse                      Show where the rehearsal stands
+  nails rehearse plant --user alice   Plant the canary for alice's session
+  nails rehearse scan                 Scan the mounted decoy devices
+  nails rehearse scan --offline --image decoy.raw
+                                      Scan a disk image instead
+
+The scan exits 0 when no canary is found, 11 when one is, and 9 when a device
+could not be scanned completely.
+
+----- stderr -----

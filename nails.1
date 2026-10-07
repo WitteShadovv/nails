@@ -83,6 +83,9 @@ Show current status and uptime
 nails\-verify(1)
 Verify system is clean of NAILS artifacts
 .TP
+nails\-rehearse(1)
+Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
+.TP
 nails\-check(1)
 Check readiness to activate without making any changes (alias: doctor)
 .TP
@@ -122,7 +125,7 @@ EXIT STATUS:
   8    the host is not one NAILS can operate on
   9    completed, but with a warning the caller should act on
   10   verify found warnings
-  11   verify found critical artifacts
+  11   verify found critical artifacts, or rehearse scan found its canary
   130  cancelled by a signal (SIGINT/SIGTERM)
 .SH VERSION
 v0.2.0

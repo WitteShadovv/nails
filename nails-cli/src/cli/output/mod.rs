@@ -70,6 +70,7 @@ pub mod deactivate;
 pub mod dto;
 pub mod envelope;
 pub mod exit;
+pub mod rehearse;
 pub mod settings;
 pub mod status;
 pub mod verify;

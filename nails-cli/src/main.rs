@@ -28,14 +28,20 @@ fn stdout_format_for(command: &Commands, settings: &OutputSettings) -> StdoutFor
 /// leaves nothing behind there. The attach gate is still the backstop: even a
 /// writing command logs to a file only when the hidden volume is really mounted.
 fn command_writes_logs(command: &Commands) -> bool {
-    matches!(
-        command,
+    match command {
         Commands::Activate(_)
-            | Commands::Deactivate(_)
-            | Commands::Reapply(_)
-            | Commands::Emergency(_)
-            | Commands::ResetUpper(_)
-    )
+        | Commands::Deactivate(_)
+        | Commands::Reapply(_)
+        | Commands::Emergency(_)
+        | Commands::ResetUpper(_) => true,
+        // The rehearsal steps act on the attached hidden volume; the status view
+        // only reads.
+        Commands::Rehearse(args) => !matches!(
+            args.step,
+            None | Some(nails::cli::args::RehearseStep::Status)
+        ),
+        _ => false,
+    }
 }
 
 fn main() -> std::process::ExitCode {

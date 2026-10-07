@@ -18,7 +18,7 @@
 //! exit-5 behaviour — the hundreds of other integration tests that drive the
 //! real write paths unprivileged are never affected.
 
-use crate::cli::args::Commands;
+use crate::cli::args::{Commands, RehearseStep};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Whether `command` must run as root.
@@ -33,6 +33,14 @@ pub fn requires_root(command: &Commands) -> bool {
         | Commands::Emergency(_)
         | Commands::Recover(_)
         | Commands::Reapply(_) => true,
+        // Planting writes into the overlays, a live scan reads raw block devices
+        // and reset deletes from the hidden volume. An offline scan of image
+        // files and the status view need no privileges.
+        Commands::Rehearse(args) => match &args.step {
+            Some(RehearseStep::Plant(_) | RehearseStep::Reset) => true,
+            Some(RehearseStep::Scan(scan)) => !scan.offline,
+            Some(RehearseStep::Status) | None => false,
+        },
         _ => false,
     }
 }
@@ -47,6 +55,7 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::Recover(_) => "recover",
         Commands::Status(_) => "status",
         Commands::Verify(_) => "verify",
+        Commands::Rehearse(_) => "rehearse",
         Commands::Check(_) => "check",
         Commands::Init(_) => "init",
         Commands::ResetUpper(_) => "reset-upper",

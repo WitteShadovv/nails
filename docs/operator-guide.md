@@ -390,6 +390,41 @@ drift, and — with `--deep` — shell history files, temp and log directories, 
 `recently-used.xbel`/VeraCrypt config naming the hidden root. A clean result is
 evidence against *known* artifacts, not proof the decoy is untouched.
 
+### Rehearsing before you rely on it
+
+The forensic E2E tests prove the leak claims on CI's virtual machines.
+`nails rehearse` proves them on your machine, with your decoy, backend and
+desktop, before you rely on them:
+
+```bash
+sudo /mnt/usb/nails rehearse plant      # 1. inside an active hidden session
+sudo /mnt/usb/nails deactivate          # 2. the normal teardown; it reboots
+# unlock and mount the hidden volume again, then:
+sudo /mnt/usb/nails rehearse scan       # 3. from the decoy, or a later session
+sudo /mnt/usb/nails rehearse reset      # remove the rehearsal when done
+```
+
+`plant` puts a random token where a session most often leaks: a file named after
+it in every overlaid tree and in your home, a `recently-used.xbel` bookmark, a
+system-log line, a process command line and a desktop notification. Every file
+write is checked first to land in an overlay upper on the hidden volume;
+nothing is written to the decoy. The token stays on the hidden volume
+(`rehearse/state.json`) and is never printed, only a six-character fingerprint.
+
+`scan` reads every mounted decoy block device (and active swap) raw and
+read-only, without mounting anything, and searches allocated and unallocated
+space for the token in ASCII and UTF-16LE. It refuses to run in the boot the
+canary was planted in. Exit `0` means the token was not found, `11` that it was
+(with the device and byte offset of each hit), `9` that a device could not be
+scanned completely. `nails rehearse` alone shows where you are and the next
+step.
+
+A clean scan covers only what a host can read. It cannot see SSD cells the
+drive has remapped or keeps in reserve, blocks discarded with TRIM, disks that
+are not mounted (name them with `--device`), the encryption header area or
+firmware storage; the scan prints this list with every result. To scan a disk
+image instead, use `nails rehearse scan --offline --image <file>`.
+
 ### Shell history
 
 NAILS keeps hidden-session shell history off the decoy by killing shells before

@@ -70,10 +70,12 @@ Every command shares one set of exit codes.
 | 8 | The host is not one NAILS can operate on |
 | 9 | Completed, but with a warning the caller should act on |
 | 10 | `verify` found warnings |
-| 11 | `verify` found critical artifacts |
+| 11 | `verify` found critical artifacts, or `rehearse scan` found its canary |
 | 130 | Cancelled by a signal (SIGINT/SIGTERM) |
 
 Notable per-command codes: `verify` returns 0/10/11 for secure/warning/critical;
+`rehearse scan` returns 0 when the canary is not found, 11 when it is, and 9
+when a device could not be scanned completely;
 `status` returns 7 on a degraded posture and 6 on an untrusted state file; every
 mutating command returns 5 when run without root.
 ";

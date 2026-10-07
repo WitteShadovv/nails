@@ -69,6 +69,7 @@
   "quickstart-zero-config": 180,
   "reactivation": 170,
   "rebuild-failure-rollback": 81,
+  "rehearse-canary": 360,
   "session-detection": 213,
   "session-kill-graphical": 157,
   "session-kill-headless": 109,
