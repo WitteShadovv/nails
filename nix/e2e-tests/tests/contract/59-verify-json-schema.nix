@@ -80,7 +80,7 @@ in
         offline = run_command_capture(
             "contract-verify-offline",
             f"nails --no-log-file --config {shlex.quote(headless_config)} "
-            f"verify --offline --root /mnt/decoy --json",
+            "verify --offline --root /mnt/decoy --json",
         )
         assert offline["rc"] in (0, 10, 11), offline
         assert_json_schema_valid(verify_schema, offline["stdout_path"], "offline verify JSON")

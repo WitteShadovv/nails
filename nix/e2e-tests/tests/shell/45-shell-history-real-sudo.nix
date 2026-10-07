@@ -89,7 +89,7 @@ in
                 _nails_qemu.wait(timeout=300)
             except __import__("subprocess").TimeoutExpired:
                 raise AssertionError(
-                    f"real sudo deactivate: VM did not power off within 300s\n"
+                    "real sudo deactivate: VM did not power off within 300s\n"
                     + "--- serial console tail ---\n"
                     + "\n".join(machine.get_console_log().splitlines()[-100:])
                 ) from None
