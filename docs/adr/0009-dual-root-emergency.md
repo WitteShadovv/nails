@@ -1,6 +1,7 @@
 # 9. Dual root on one seat: whole-root isolation with a non-disruptive emergency
 
-- Status: proposed (research; a decision waits on the spike and the hardware matrix)
+- Status: not adopted; kept as research (2026-10-08). The whole-root soft-reboot
+  of [ADR 0008](0008-whole-root-soft-reboot.md) is the only session mode.
 - Date: 2026-10-06 (risk assessment added 2026-10-07)
 - Related: [ADR 0005](0005-live-overlay-vs-boot-time-overlay.md),
   [ADR 0008](0008-whole-root-soft-reboot.md), [threat model](../threat-model.md),

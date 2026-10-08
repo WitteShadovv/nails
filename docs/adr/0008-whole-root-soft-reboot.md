@@ -1,7 +1,7 @@
 # 8. Whole-root overlay entered by soft-reboot
 
-- Status: accepted (2026-10-07): the whole-root soft-reboot is the only session
-  mode. The hardware go/no-go criteria remain open (see "Decision").
+- Status: accepted, implemented (2026-10-07): the whole-root soft-reboot is the
+  only session mode. The hardware go/no-go criteria remain open (see "Decision").
 - Date: 2026-10-06 (proposed), 2026-10-07 (accepted)
 - Backlog: T-132 (whole-root / soft-reboot design), T-131 (alternatives matrix)
 - Related: [ADR 0005](0005-live-overlay-vs-boot-time-overlay.md) (superseded by this record), [ADR 0009](0009-dual-root-emergency.md), [threat model](../threat-model.md)
