@@ -1,0 +1,24 @@
+<!-- SPDX-FileCopyrightText: 2025-2026 WitteShadovv -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- NAILS mark: a nail through a snowflake. The lower part fades out: what lies
+     beneath the visible surface. The colours follow the viewer's colour scheme. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="NAILS logo">
+  <style>
+    .top { stop-color: #2c4a6e; } .low { stop-color: #aab6c6; }
+    @media (prefers-color-scheme: dark) { .top { stop-color: #c7d4e5; } .low { stop-color: #55657b; } }
+  </style>
+  <defs>
+    <linearGradient id="logo-fade" x1="0" y1="34" x2="0" y2="46" gradientUnits="userSpaceOnUse">
+      <stop offset="0" class="top"/>
+      <stop offset="1" class="low"/>
+    </linearGradient>
+  </defs>
+  <g fill="none" stroke="url(#logo-fade)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M32 30H47M41.5 30L45.7 34.2M41.5 30L45.7 25.8M32 30L39.5 17M36.8 21.8L42.5 20.2M36.8 21.8L35.2 16M32 30L24.5 17M27.2 21.8L28.8 16M27.2 21.8L21.5 20.2M32 30H17M22.5 30L18.3 25.8M22.5 30L18.3 34.2M32 30L24.5 43M27.2 38.2L21.5 39.8M27.2 38.2L28.8 44M32 30L39.5 43M36.8 38.2L35.2 44M36.8 38.2L42.5 39.8"/>
+  </g>
+  <g fill="url(#logo-fade)">
+    <rect x="23" y="5" width="18" height="5" rx="2"/>
+    <rect x="30.5" y="9" width="3" height="44"/>
+    <path d="M30.5 52.5h3L32 60z"/>
+  </g>
+</svg>
