@@ -1,0 +1,207 @@
+# The hidden NixOS system survives a decoy garbage collection and rebuild
+# between two sessions (T-137, ADR 0008 §3), and the hidden sessions leave the
+# decoy store unchanged.
+#
+# The hidden store is an overlay over the decoy's: a path the hidden closure
+# shares with the decoy is read from the lower, and the hidden store database
+# (copied up at the first build) keeps listing it. Activation therefore copies
+# the hidden toplevel's closure up into the store upper on the hidden volume
+# before it activates it.
+#
+# The hidden system here is the VM's own configuration plus
+# fixtures/hidden-config/module.nix, built on the host like the
+# `session-nixos-hidden-system` specialisation, but registered in the guest
+# store without any GC root (`virtualisation.additionalPaths`), so the decoy's
+# garbage collection deletes its own paths (the toplevel, its /etc, its units).
+#
+#   1. Session 1 builds (realises) the hidden toplevel, keeps its closure on
+#      the hidden volume and enters it. Back on the decoy, the decoy store
+#      (its database, its writable store layer, its profiles and roots) is
+#      exactly as before.
+#   2. The decoy rebuilds (a new rooted build) and garbage-collects: the hidden
+#      toplevel is gone from the decoy store.
+#   3. Session 2 enters the same hidden toplevel again: it still starts, from
+#      the copy on the hidden volume, and copies nothing new. The decoy store
+#      is again unchanged by the session.
+{ self, pkgs, ... }:
+let
+  hiddenVolume = import ./../../lib/hidden-volume.nix;
+  testHelpers = import ./../../lib/test-helpers.nix;
+  fixtureDir = ./../../fixtures/hidden-config;
+in
+{
+  name = "session-nixos-store-gc";
+  meta.tags = [
+    "nixos"
+    "session"
+    "slow"
+  ];
+  # Two hidden builds, a copy of the whole system closure onto the hidden
+  # volume, a decoy garbage collection and four soft-reboots.
+  globalTimeout = 2400;
+
+  nodes.machine =
+    {
+      lib,
+      extendModules,
+      ...
+    }:
+    let
+      hidden = extendModules { modules = [ ./../../fixtures/hidden-config/module.nix ]; };
+    in
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+
+      options.nailsTest.hiddenSystem = lib.mkOption {
+        type = lib.types.package;
+        description = "The hidden toplevel, in the guest store without a GC root.";
+      };
+
+      config = {
+        nailsTest.hiddenSystem = hidden.config.system.build.toplevel;
+        virtualisation.additionalPaths = [ hidden.config.system.build.toplevel ];
+        # The whole hidden closure is copied onto the hidden volume.
+        virtualisation.emptyDiskImages = lib.mkForce [
+          {
+            size = 8192;
+            driveConfig.deviceExtraOpts.serial = "data";
+          }
+        ];
+        environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.nails ];
+        nix.settings = {
+          experimental-features = [
+            "nix-command"
+            "flakes"
+          ];
+          substituters = lib.mkForce [ ];
+          # The decoy rebuild below runs /bin/sh as its builder.
+          sandbox = false;
+        };
+      };
+    };
+
+  testScript =
+    { nodes, ... }:
+    ''
+      import secrets
+      import shlex
+
+      ${testHelpers.canonicalActivateFn}
+      ${testHelpers.canonicalDeactivateFn}
+
+      CONFIG = "/mnt/data/config/nails.toml"
+      FLAKE = "/mnt/data/nixos#nails-e2e"
+      MARKER = "/etc/nails-hidden-marker"
+      HIDDEN_SYSTEM = "${nodes.machine.nailsTest.hiddenSystem}"
+      HIDDEN_BASE = HIDDEN_SYSTEM.rsplit("/", 1)[-1]
+      RECORD = "/mnt/data/root/store-kept"
+      # Where a kept path lives on the hidden volume: the overlay over a
+      # separate decoy store (this VM's store share), or the root upper.
+      STORE_UPPERS = [
+          "/mnt/data/root/mounts/nix-store/upper",
+          "/mnt/data/root/upper/nix/store",
+      ]
+
+
+      def decoy_store_state():
+          # The decoy's store as far as anything can change it: its database
+          # (content, not the sqlite file, which a reader may checkpoint), its
+          # writable store layer byte for byte, and its profiles and roots.
+          # The read-only store share is the host's store and is left out.
+          return machine.succeed(
+              "nix-store --dump-db | sha256sum; "
+              "cd /nix/.rw-store && find . -xdev -printf '%y %m %U %G %s %T@ %p %l\\n' "
+              "| LC_ALL=C sort | sha256sum; "
+              "cd /nix/.rw-store && find . -xdev -type f -print0 | LC_ALL=C sort -z "
+              "| xargs -0 -r sha256sum | sha256sum; "
+              "find /nix/var/nix/profiles /nix/var/nix/gcroots -xdev -printf '%y %p %l\\n' "
+              "| LC_ALL=C sort | sha256sum"
+          )
+
+
+      def kept_in():
+          for upper in STORE_UPPERS:
+              if machine.execute(f"test -d {upper}/{HIDDEN_BASE}")[0] == 0:
+                  return upper
+          return None
+
+
+      def assert_hidden_system():
+          current = machine.succeed("readlink -f /run/current-system").strip()
+          assert current == HIDDEN_SYSTEM, f"current-system is {current}, not {HIDDEN_SYSTEM}"
+          machine.succeed(f"grep -Fx hidden-rebuild-active {MARKER}")
+          machine.wait_for_unit("nails-hidden-canary.service")
+          machine.succeed("getent passwd hiddencanary")
+
+
+      machine.start()
+      machine.wait_for_unit("multi-user.target")
+      decoy_system = machine.succeed("readlink -f /run/current-system").strip()
+      machine.succeed(f"nix-store --check-validity {HIDDEN_SYSTEM}")
+      machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+      machine.succeed("nails init /mnt/data")
+      machine.succeed(
+          f"cat > {CONFIG} <<'EOF'\n"
+          "hidden_volume_root = \"/mnt/data\"\n"
+          "minimum_space_mb = 100\n"
+          "rebuild_space_mb = 64\n"
+          "EOF"
+      )
+      machine.succeed("mkdir -p /mnt/data/nixos && cp -rT ${fixtureDir} /mnt/data/nixos")
+      machine.succeed("chmod -R u+w /mnt/data/nixos")
+      machine.succeed(
+          "sed -i " + shlex.quote(f"s|@toplevel@|{HIDDEN_SYSTEM}|") + " /mnt/data/nixos/flake.nix"
+      )
+
+      with subtest("session 1 keeps the hidden closure on the hidden volume"):
+          store_before = decoy_store_state()
+          canonical_activate(CONFIG, f"--nixos-flake {FLAKE}", "activate-1")
+          assert_hidden_system()
+          upper = kept_in()
+          assert upper is not None, (
+              "the hidden toplevel was not copied onto the hidden volume: "
+              + machine.succeed("ls -d /mnt/data/root/upper/nix/store /mnt/data/root/mounts/* 2>&1 || true")
+          )
+          machine.log(f"the hidden closure is kept in {upper}")
+          machine.succeed(f"grep -Fx {HIDDEN_BASE} {RECORD}")
+          # Every path of the closure is in the record.
+          closure = machine.succeed(f"nix-store --query --requisites {HIDDEN_SYSTEM}").split()
+          kept = set(machine.succeed(f"cat {RECORD}").split())
+          missing = [p for p in closure if p.rsplit("/", 1)[-1] not in kept]
+          assert not missing, f"closure paths not kept: {missing[:10]}"
+
+      with subtest("the way back leaves the decoy store unchanged"):
+          canonical_deactivate(CONFIG, "deactivate-1")
+          current = machine.succeed("readlink -f /run/current-system").strip()
+          assert current == decoy_system, current
+          assert decoy_store_state() == store_before, "session 1 changed the decoy store"
+
+      with subtest("the decoy rebuilds and garbage-collects its store"):
+          nonce = secrets.token_hex(8)
+          expr = (
+              f'derivation {{ name = "decoy-rebuild-{nonce}"; system = builtins.currentSystem; '
+              f'builder = "/bin/sh"; args = [ "-c" "echo {nonce} > $out" ]; }}'
+          )
+          rebuilt = machine.succeed(
+              f"nix-build -o /root/decoy-rebuild -E {shlex.quote(expr)}"
+          ).strip()
+          machine.succeed(f"grep -Fx {nonce} {rebuilt}")
+          machine.succeed("nix-collect-garbage >&2")
+          machine.fail(f"test -e {HIDDEN_SYSTEM}")
+          machine.fail(f"nix-store --check-validity {HIDDEN_SYSTEM}")
+          machine.succeed(f"test -e {rebuilt}")
+          store_before = decoy_store_state()
+
+      with subtest("session 2 still starts the hidden toplevel"):
+          machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+          canonical_activate(CONFIG, f"--nixos-flake {FLAKE}", "activate-2")
+          assert_hidden_system()
+          machine.succeed("modprobe dummy && rmmod dummy")
+          machine.succeed(f"test -x {HIDDEN_SYSTEM}/activate")
+
+      with subtest("session 2 leaves the decoy store unchanged"):
+          canonical_deactivate(CONFIG, "deactivate-2")
+          assert decoy_store_state() == store_before, "session 2 changed the decoy store"
+          machine.fail(f"test -e {HIDDEN_SYSTEM}")
+    '';
+}

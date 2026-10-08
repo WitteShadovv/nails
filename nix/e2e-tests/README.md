@@ -432,6 +432,11 @@ soft-reboots with `py/nails_e2e/session.py`:
   soft-reboot, the way back to the decoy toplevel, re-entry, a configuration
   that does not evaluate refusing the entry, and no bootloader or system
   profile change;
+- `session-nixos-store-gc`: the hidden NixOS closure copied onto the hidden
+  volume at entry, a decoy rebuild and garbage collection between two hidden
+  sessions that deletes the hidden toplevel from the decoy store, the second
+  session still starting it, and the decoy store (database, writable store
+  layer, profiles and roots) unchanged by each session;
 - `soft-reboot-mechanics`: the mechanism itself, described above.
 
 ## Adding a fixture

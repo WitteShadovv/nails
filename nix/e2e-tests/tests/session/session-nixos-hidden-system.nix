@@ -40,6 +40,13 @@ in
     {
       imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.nails ];
+      # The hidden system's closure is copied onto the hidden volume (T-137).
+      virtualisation.emptyDiskImages = lib.mkForce [
+        {
+          size = 8192;
+          driveConfig.deviceExtraOpts.serial = "data";
+        }
+      ];
       nix.settings = {
         experimental-features = [
           "nix-command"
