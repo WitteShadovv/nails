@@ -13,6 +13,10 @@
 //! can run the emergency path and the transition before it initialises any of
 //! those, and a review of the panic path is a review of this crate.
 
+// Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
+// may use it freely; production code opts in per site with a scoped allow.
+#![cfg_attr(test, allow(unsafe_code))]
+
 pub mod cgroup;
 pub mod mountinfo;
 pub mod proc;
