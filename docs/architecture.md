@@ -53,9 +53,9 @@ the code never branches on "is this NixOS?" directly.
    - `UnsupportedPlatform` — refuses ostree / image-based hosts and non-systemd
      init with a typed error. For those hosts the refusal *is* the behaviour.
 3. **Policy.** The trait collects the host-specific decisions: where host tools
-   live (`host_command_dirs`), which declarative build target activation and
-   `check` use (`discover_build_target`), and which artifact scanners `verify`
-   runs (`artifact_scanners`).
+   live (`host_command_dirs`) and which declarative build target activation and
+   `check` use (`discover_build_target`). `verify` picks its read-only drift
+   scanners from the detected platform kind.
 
 The declarative part of a host is expressed through a separate `ConfigLayer`.
 NixOS supplies one (`NixOsConfigLayer`), whose hidden system is built into the

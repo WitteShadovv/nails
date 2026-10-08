@@ -30,6 +30,7 @@
 pub mod examiner;
 mod journal;
 mod residue_report;
+pub mod scanners;
 mod types;
 mod verifier;
 
@@ -42,6 +43,10 @@ pub use journal::{JournalReader, JournalctlReader};
 pub use residue_report::{
     RESIDUE_REPORT_DIR, RESIDUE_REPORT_SCHEMA_VERSION, ResidueReport, ResidueReportSummary,
     write_activation_residue_report,
+};
+pub use scanners::{
+    ArtifactScan, ArtifactScanner, DebianPackageDriftScanner, NixOsStateNoteScanner,
+    PACKAGE_BASELINE_DIR,
 };
 pub use types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
 pub use verifier::{VERIFY_CHECK_IDS, Verifier};

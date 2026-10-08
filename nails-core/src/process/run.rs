@@ -78,7 +78,7 @@ use std::time::{Duration, Instant};
 /// Debian, Ubuntu and most other distributions. All of them are root-owned on
 /// a sane host.
 pub const SYSTEM_TOOL_DIRS: &[&str] = &[
-    crate::platform::NIXOS_SYSTEM_PROFILE_BIN,
+    crate::constants::NIXOS_SYSTEM_PROFILE_BIN,
     "/usr/sbin",
     "/usr/bin",
     "/sbin",
@@ -767,13 +767,11 @@ fn resolve(program: &Program, search_path: Option<&OsStr>) -> Result<PathBuf> {
 ///
 /// A candidate must be a regular file with an execute bit set; when nails runs as
 /// root the candidate must additionally pass the root-trust check
-/// ([`is_trusted_executable`](crate::platform::host_commands::is_trusted_executable)),
+/// ([`is_trusted_executable`](super::host_commands::is_trusted_executable)),
 /// so a tampered binary on the search path is never spawned with full privilege.
-/// The trust check shares one implementation with [`HostCommands`](crate::platform::HostCommands).
+/// The trust check shares one implementation with [`HostCommands`](super::host_commands::HostCommands).
 fn find_executable<'a>(name: &str, dirs: impl IntoIterator<Item = &'a Path>) -> Option<PathBuf> {
-    use crate::platform::host_commands::{
-        is_executable_file, is_trusted_executable, running_as_root,
-    };
+    use super::host_commands::{is_executable_file, is_trusted_executable, running_as_root};
 
     let enforce_trust = running_as_root();
     dirs.into_iter()

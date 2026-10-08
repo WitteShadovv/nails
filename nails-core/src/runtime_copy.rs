@@ -18,7 +18,8 @@ use crate::session::entry::CONFIG_COPY_NAME;
 use crate::{NailsError, Result};
 use nails_teardown::whole_root::plan::{BINARY_NAME, PLAN_NAME, RUNTIME_DIR};
 
-/// The runtime directory on the decoy's `/run` tmpfs. Neutral.
+/// The runtime directory on the decoy's `/run` tmpfs. Neutral. The artifact
+/// registry names the same directory (`runtime-copy-dir`).
 pub const RUNTIME_COPY_DIR: &str = RUNTIME_DIR;
 
 /// Path of the mirrored executable.

@@ -385,9 +385,8 @@ impl<F: Filesystem> Verifier<F> {
     /// than through a boxed trait object so this stays free of a `'static` bound
     /// on the verifier.
     fn run_platform_scanners(&self) -> (Vec<Finding>, Vec<String>) {
-        use crate::platform::{
-            ArtifactScanner, DebianPackageDriftScanner, NixOsStateNoteScanner, PlatformKind,
-        };
+        use super::scanners::{ArtifactScanner, DebianPackageDriftScanner, NixOsStateNoteScanner};
+        use crate::platform::PlatformKind;
 
         let Ok(profile) = crate::platform::detect(&self.filesystem) else {
             return (Vec::new(), Vec::new());

@@ -8,11 +8,9 @@
 
 use std::path::{Path, PathBuf};
 
-use super::{
-    ArtifactScanner, ConfigLayer, HostTarget, NixOsConfigLayer, NixOsStateNoteScanner, Platform,
-    PlatformKind,
-};
+use super::{ConfigLayer, HostTarget, NixOsConfigLayer, Platform, PlatformKind};
 use crate::Result;
+use crate::constants::NIXOS_SYSTEM_PROFILE_BIN;
 use crate::filesystem::Filesystem;
 
 /// Legacy NixOS configuration, probed when no flake is found.
@@ -21,13 +19,6 @@ const LEGACY_CONFIG: &str = "/etc/nixos/configuration.nix";
 const ETC_FLAKE_DIR: &str = "/etc/nixos";
 /// Newest-generation system profile; its mere presence means the host is NixOS.
 const SYSTEM_PROFILE: &str = "/nix/var/nix/profiles/system";
-
-/// The NixOS system profile's binary directory.
-///
-/// The one place this store path is written as a literal; every other site that
-/// needs it (the process runner's search list, the runtime-command cache) refers
-/// to this constant.
-pub(crate) const NIXOS_SYSTEM_PROFILE_BIN: &str = "/run/current-system/sw/bin";
 
 /// Directories NixOS exposes host tools under.
 pub(crate) const NIXOS_COMMAND_DIRS: &[&str] = &[NIXOS_SYSTEM_PROFILE_BIN, "/run/wrappers/bin"];
@@ -90,15 +81,6 @@ impl<F: Filesystem> Platform<F> for NixOsPlatform {
 
     fn discover_build_target(&self, fs: &F, hidden_volume_root: &Path) -> Result<HostTarget> {
         discover_nixos_target(fs, hidden_volume_root)
-    }
-
-    fn artifact_scanners(&self) -> Vec<Box<dyn ArtifactScanner<F>>>
-    where
-        F: 'static,
-    {
-        // NixOS has no package-database baseline to diff; it only records that
-        // the expected /var/lib/nixos drift is deliberately not treated as a leak.
-        vec![Box::new(NixOsStateNoteScanner)]
     }
 }
 

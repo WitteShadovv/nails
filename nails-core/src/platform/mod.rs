@@ -17,8 +17,6 @@
 //!   (the hidden NixOS configuration), if it has one.
 //! - [`Platform::discover_build_target`] — which declarative build target
 //!   activation, `check`/`--dry-run` and the build-target pre-flight check use.
-//! - [`Platform::artifact_scanners`] — the platform's read-only drift scanners
-//!   for `verify`.
 //!
 //! ## Backends
 //!
@@ -44,9 +42,7 @@ mod debian;
 mod detect;
 mod discover;
 mod fhs;
-pub mod host_commands;
 mod nixos;
-mod scanners;
 mod unsupported;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -55,23 +51,13 @@ mod fake;
 #[cfg(test)]
 mod contract;
 
+pub use crate::process::host_commands::{self, HostCommands};
 pub use config_layer::{ConfigLayer, NixOsConfigLayer};
 pub use detect::detect;
 pub use discover::{HostTarget, discover_host_target, discover_with_platform};
 pub use fhs::FhsPlatform;
-pub use host_commands::HostCommands;
 pub use nixos::NixOsPlatform;
-pub use scanners::{
-    ArtifactScan, ArtifactScanner, DebianPackageDriftScanner, NixOsStateNoteScanner,
-    PACKAGE_BASELINE_DIR,
-};
 pub use unsupported::UnsupportedPlatform;
-
-/// The single literal for the NixOS system-profile binary directory, and the
-/// NixOS host-command search list built from it. Re-exported so the process
-/// runner and the manager's runtime-command cache reference them instead of
-/// re-spelling the store path.
-pub(crate) use nixos::NIXOS_SYSTEM_PROFILE_BIN;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use fake::FakePlatform;
@@ -198,21 +184,6 @@ pub trait Platform<F: Filesystem>: std::fmt::Debug + Send + Sync {
     ) -> Result<HostTarget> {
         let _ = (fs, hidden_volume_root);
         Ok(HostTarget::None)
-    }
-
-    /// The read-only drift scanners this platform contributes to `verify`.
-    ///
-    /// A generic artifact-path check only finds the files NAILS writes; it
-    /// cannot tell that a hidden session changed the host's package set, because
-    /// the package manager's databases are not NAILS files. Each backend returns
-    /// the scanners that cover its own system state (see [`ArtifactScanner`]).
-    /// The default is none, so a platform only lights up the scans it actually
-    /// has.
-    fn artifact_scanners(&self) -> Vec<Box<dyn ArtifactScanner<F>>>
-    where
-        F: 'static,
-    {
-        Vec::new()
     }
 }
 

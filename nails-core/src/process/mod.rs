@@ -4,6 +4,7 @@
 //! Running external programs, and process hardening.
 
 pub mod hardening;
+pub mod host_commands;
 pub mod run;
 
 pub use run::{ProcessCommand, ProcessRunner, Program, RealProcessRunner, SYSTEM_TOOL_DIRS};

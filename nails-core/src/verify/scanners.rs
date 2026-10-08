@@ -7,15 +7,15 @@
 //! A clean `verify` over the shared artifact registry proves only that none of
 //! the *known* files are present. It cannot, on its own, tell that a hidden
 //! session installed a package, because the package manager's own databases are
-//! not NAILS files. Each platform therefore contributes an
-//! [`ArtifactScanner`]: on Debian/Ubuntu it diffs the apt/dpkg databases against
+//! not NAILS files. Each platform kind therefore has an [`ArtifactScanner`],
+//! chosen by the verifier from the detected platform: on Debian/Ubuntu it diffs the apt/dpkg databases against
 //! a baseline captured on the hidden root at activation; on NixOS it records
 //! that the expected `/var/lib/nixos` drift is deliberately not treated as a
 //! leak. Every scanner is read-only — it opens files, it never writes one.
 
+use super::{Finding, Severity};
 use crate::Result;
 use crate::filesystem::Filesystem;
-use crate::verify::{Finding, Severity};
 use std::path::{Path, PathBuf};
 
 /// Directory on the hidden root under which an activation stores the package

@@ -7,8 +7,8 @@
 //! `loginctl`, `cp`, `nixos-rebuild`, …). Those must never be resolved from the
 //! caller's `PATH`, which a lower-privileged invoker can point into a profile it
 //! controls. [`HostCommands`] resolves a tool to an absolute path from a fixed,
-//! ordered search list — the one a [`Platform`](super::Platform) exposes through
-//! [`host_command_dirs`](super::Platform::host_command_dirs) — and, when running
+//! ordered search list — the one a platform backend exposes through
+//! `Platform::host_command_dirs` — and, when running
 //! as root, rejects a candidate that is not trusted to be run as root.
 //!
 //! # Trust
@@ -102,7 +102,7 @@ pub(crate) fn is_trusted_executable(path: &Path) -> bool {
 
 /// Resolves host tools from a fixed, ordered search list.
 ///
-/// Build one from a platform's [`host_command_dirs`](super::Platform::host_command_dirs)
+/// Build one from a platform's `Platform::host_command_dirs`
 /// before any mount and resolve each tool by name; resolved paths are cached.
 #[derive(Debug)]
 pub struct HostCommands {
