@@ -393,7 +393,9 @@ fn build(
         tracing::info!(
             paths = kept.paths,
             copied = kept.copied,
+            files = kept.files,
             bytes = kept.bytes,
+            seconds = kept.elapsed.as_secs_f64(),
             "hidden system kept on the hidden volume"
         );
         host.activate_hidden_system(&nextroot, &system)?;

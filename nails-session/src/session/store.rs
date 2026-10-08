@@ -59,8 +59,12 @@ pub struct KeepReport {
     pub paths: usize,
     /// Paths that had to be copied up this time.
     pub copied: usize,
+    /// Entries (files, directories, symlinks) copied up.
+    pub files: usize,
     /// Bytes copied up (file sizes, rounded up to 4 KiB).
     pub bytes: u64,
+    /// How long the check and the copy took.
+    pub elapsed: Duration,
 }
 
 fn nix_store(store_root: &Path) -> ProcessCommand {
@@ -78,7 +82,14 @@ pub fn forget_vanished(runner: &dyn ProcessRunner, store_root: &Path) -> bool {
     let command = nix_store(store_root)
         .arg("--verify")
         .deadline(VERIFY_BUDGET);
-    match runner.run_text(&command) {
+    crate::reporter::progress::detail("nixos_build", "checking the hidden store database");
+    let started = Instant::now();
+    let result = runner.run_text(&command);
+    tracing::info!(
+        seconds = started.elapsed().as_secs_f64(),
+        "hidden store database checked"
+    );
+    match result {
         Ok((true, _, _)) => true,
         Ok((false, _, stderr)) => {
             tracing::warn!(
@@ -166,48 +177,127 @@ fn round_up(size: u64) -> u64 {
     size.div_ceil(4096) * 4096
 }
 
-/// Bytes a copy-up of the tree at `merged` would write: everything without a
-/// counterpart at `upper` yet.
-fn pending_bytes(merged: &Path, upper: &Path) -> std::io::Result<u64> {
-    let meta = std::fs::symlink_metadata(merged)?;
-    let own = if std::fs::symlink_metadata(upper).is_ok() {
-        0
-    } else if meta.is_file() {
-        round_up(meta.len())
-    } else {
-        4096
-    };
-    if !meta.is_dir() {
-        return Ok(own);
-    }
-    let mut total = own;
-    for entry in std::fs::read_dir(merged)? {
-        let name = entry?.file_name();
-        total += pending_bytes(&merged.join(&name), &upper.join(&name))?;
-    }
-    Ok(total)
+/// One copy-up: a regular file (with its size), or a directory or symlink.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Item {
+    File(PathBuf, u64),
+    Attributes(PathBuf),
 }
 
-/// Copy the tree at `path` (inside an overlay) up into the overlay's upper.
-fn copy_up(path: &Path) -> std::io::Result<()> {
-    let meta = std::fs::symlink_metadata(path)?;
+impl Item {
+    fn bytes(&self) -> u64 {
+        match self {
+            Item::File(_, size) => round_up(*size),
+            Item::Attributes(_) => 4096,
+        }
+    }
+
+    /// Copy this entry (inside an overlay) up into the overlay's upper.
+    fn copy_up(&self) -> std::io::Result<()> {
+        match self {
+            // Opening for writing copies the data up; nothing is written.
+            Item::File(path, _) => std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc_flags())
+                .open(path)
+                .map(drop),
+            // A directory or symlink is copied up by any attribute change,
+            // and setting the owner it already has changes nothing else.
+            Item::Attributes(path) => {
+                let meta = std::fs::symlink_metadata(path)?;
+                std::os::unix::fs::lchown(path, Some(meta.uid()), Some(meta.gid()))
+            }
+        }
+    }
+}
+
+/// The copy-ups the tree at `merged` still needs: every entry without a
+/// counterpart at `upper` (a directory already in the upper is still walked,
+/// its children may not be).
+fn pending(merged: &Path, upper: &Path, items: &mut Vec<Item>) -> std::io::Result<()> {
+    let meta = std::fs::symlink_metadata(merged)?;
+    let copied = std::fs::symlink_metadata(upper).is_ok();
     if meta.is_file() {
-        // Opening for writing copies the data up; nothing is written.
-        std::fs::OpenOptions::new()
-            .write(true)
-            .custom_flags(libc_flags())
-            .open(path)?;
+        if !copied {
+            items.push(Item::File(merged.to_path_buf(), meta.len()));
+        }
         return Ok(());
     }
-    // A directory or symlink is copied up by any attribute change, and
-    // setting the owner it already has changes nothing else.
-    std::os::unix::fs::lchown(path, Some(meta.uid()), Some(meta.gid()))?;
+    if !copied {
+        items.push(Item::Attributes(merged.to_path_buf()));
+    }
     if meta.is_dir() {
-        for entry in std::fs::read_dir(path)? {
-            copy_up(&path.join(entry?.file_name()))?;
+        for entry in std::fs::read_dir(merged)? {
+            let name = entry?.file_name();
+            pending(&merged.join(&name), &upper.join(&name), items)?;
         }
     }
     Ok(())
+}
+
+/// How many copy-ups run at once. overlayfs syncs every file it copies up, so
+/// one at a time waits on the disk for each file (several ms on an encrypted
+/// SSD, far more in a VM); many at once share the filesystem's journal
+/// commits, about ten times faster.
+const WORKERS: usize = 32;
+
+/// Run every copy-up on [`WORKERS`] threads, reporting progress every
+/// [`HEARTBEAT`]. Stops at the first error.
+fn copy_all(items: &[Item]) -> std::result::Result<(), (PathBuf, std::io::Error)> {
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    let next = AtomicUsize::new(0);
+    let finished = AtomicUsize::new(0);
+    let copied_bytes = AtomicU64::new(0);
+    let failure: Mutex<Option<(PathBuf, std::io::Error)>> = Mutex::new(None);
+    let total_bytes: u64 = items.iter().map(Item::bytes).sum();
+    let started = Instant::now();
+    std::thread::scope(|scope| {
+        for _ in 0..WORKERS.min(items.len()) {
+            scope.spawn(|| {
+                loop {
+                    let failed = failure.lock().map(|f| f.is_some()).unwrap_or(true);
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    if failed || index >= items.len() {
+                        break;
+                    }
+                    let item = &items[index];
+                    if let Err(e) = item.copy_up() {
+                        let path = match item {
+                            Item::File(p, _) | Item::Attributes(p) => p.clone(),
+                        };
+                        if let Ok(mut slot) = failure.lock() {
+                            slot.get_or_insert((path, e));
+                        }
+                    }
+                    copied_bytes.fetch_add(item.bytes(), Ordering::Relaxed);
+                    finished.fetch_add(1, Ordering::Relaxed);
+                }
+            });
+        }
+        let mut beat = Instant::now();
+        while finished.load(Ordering::Relaxed) < items.len()
+            && failure.lock().map(|f| f.is_none()).unwrap_or(false)
+        {
+            std::thread::sleep(Duration::from_millis(200));
+            if beat.elapsed() >= HEARTBEAT {
+                beat = Instant::now();
+                crate::reporter::progress::detail(
+                    "nixos_build",
+                    &format!(
+                        "copied {} of {} MB of the hidden system ({} s)",
+                        copied_bytes.load(Ordering::Relaxed) / (1024 * 1024),
+                        total_bytes.div_ceil(1024 * 1024),
+                        started.elapsed().as_secs()
+                    ),
+                );
+            }
+        }
+    });
+    match failure.into_inner().ok().flatten() {
+        Some(failed) => Err(failed),
+        None => Ok(()),
+    }
 }
 
 /// `O_NOFOLLOW | O_NONBLOCK | O_NOCTTY`: never follow a symlink, never block
@@ -228,6 +318,7 @@ pub fn keep_closure(
     record: &Path,
     mounts: &[MountEntry],
 ) -> Result<KeepReport> {
+    let started = Instant::now();
     let mut report = KeepReport {
         paths: closure.len(),
         ..KeepReport::default()
@@ -249,7 +340,14 @@ pub fn keep_closure(
     if todo.is_empty() {
         return Ok(report);
     }
-    let mut needed = 0u64;
+    crate::reporter::progress::detail(
+        "nixos_build",
+        &format!(
+            "checking {} store paths of the hidden system on the hidden volume",
+            todo.len()
+        ),
+    );
+    let mut items = Vec::new();
     for name in &todo {
         let path = merged.join(name);
         if std::fs::symlink_metadata(&path).is_err() {
@@ -259,8 +357,9 @@ pub fn keep_closure(
                  system with a binary cache, or reset its store with `reset-upper /nix`"
             )));
         }
-        needed += pending_bytes(&path, &upper.join(name)).map_err(|e| NailsError::io(&path, e))?;
+        pending(&path, &upper.join(name), &mut items).map_err(|e| NailsError::io(&path, e))?;
     }
+    let needed: u64 = items.iter().map(Item::bytes).sum();
     let existing = upper
         .ancestors()
         .find(|p| p.exists())
@@ -274,37 +373,38 @@ pub fn keep_closure(
             available / (1024 * 1024)
         )));
     }
+    if !items.is_empty() {
+        crate::reporter::progress::detail(
+            "nixos_build",
+            &format!(
+                "copying {} files ({} MB) of {} store paths onto the hidden volume",
+                items.len(),
+                needed.div_ceil(1024 * 1024),
+                todo.len()
+            ),
+        );
+    }
+    if let Err((path, e)) = copy_all(&items) {
+        return Err(NailsError::InvalidState(format!(
+            "could not copy {} onto the hidden volume: {e}",
+            path.display()
+        )));
+    }
+    kept.extend(todo.iter().map(|n| (*n).clone()));
+    write_record(record, &kept)?;
+    report.copied = todo.len();
+    report.files = items.len();
+    report.bytes = needed;
+    report.elapsed = started.elapsed();
     crate::reporter::progress::detail(
         "nixos_build",
         &format!(
-            "keeping {} store paths ({} MB) on the hidden volume",
-            todo.len(),
-            needed.div_ceil(1024 * 1024)
+            "kept the hidden system on the hidden volume: {} files, {} MB in {} s",
+            report.files,
+            needed.div_ceil(1024 * 1024),
+            report.elapsed.as_secs()
         ),
     );
-    let started = Instant::now();
-    let mut beat = started;
-    for (done, name) in todo.iter().enumerate() {
-        if let Err(e) = copy_up(&merged.join(name)) {
-            let _ = write_record(record, &kept);
-            return Err(NailsError::InvalidState(format!(
-                "could not copy {name} onto the hidden volume: {e}"
-            )));
-        }
-        kept.insert((*name).clone());
-        report.copied += 1;
-        if beat.elapsed() >= HEARTBEAT {
-            beat = Instant::now();
-            let line = format!("{}/{} store paths", done + 1, todo.len());
-            crate::reporter::progress::heartbeat(
-                "keeping the hidden system",
-                started.elapsed(),
-                Some(&line),
-            );
-        }
-    }
-    report.bytes = needed;
-    write_record(record, &kept)?;
     Ok(report)
 }
 
@@ -355,7 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_bytes_count_only_what_the_upper_lacks() {
+    fn pending_copy_ups_cover_only_what_the_upper_lacks() {
         let merged = tempfile::tempdir().unwrap();
         let upper = tempfile::tempdir().unwrap();
         let path = merged.path().join("abc-pkg");
@@ -363,11 +463,18 @@ mod tests {
         std::fs::write(path.join("bin/tool"), vec![0u8; 5000]).unwrap();
         std::fs::write(path.join("small"), "x").unwrap();
         let up = upper.path().join("abc-pkg");
+        let bytes = |items: &[Item]| items.iter().map(Item::bytes).sum::<u64>();
         // Nothing in the upper: two directories and two files (8 KiB + 4 KiB).
-        assert_eq!(pending_bytes(&path, &up).unwrap(), 4096 * 2 + 8192 + 4096);
+        let mut items = Vec::new();
+        pending(&path, &up, &mut items).unwrap();
+        assert_eq!(items.len(), 4);
+        assert_eq!(bytes(&items), 4096 * 2 + 8192 + 4096);
+        // The directories and the tool are in the upper already.
         std::fs::create_dir_all(up.join("bin")).unwrap();
         std::fs::write(up.join("bin/tool"), "").unwrap();
-        assert_eq!(pending_bytes(&path, &up).unwrap(), 4096);
+        let mut items = Vec::new();
+        pending(&path, &up, &mut items).unwrap();
+        assert_eq!(items, vec![Item::File(path.join("small"), 1)]);
     }
 
     #[test]
@@ -393,8 +500,7 @@ mod tests {
             report,
             KeepReport {
                 paths: 1,
-                copied: 0,
-                bytes: 0
+                ..KeepReport::default()
             }
         );
         assert!(!dir.path().join("record").exists());

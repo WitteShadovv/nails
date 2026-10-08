@@ -166,7 +166,8 @@ between sessions without breaking the hidden system: a path it deletes leaves
 the lower only. The copy reads the decoy store through the read-only lower and
 never writes it. It costs space and time once: the first entry copies the whole
 closure (several GB for a desktop, minutes on a slow or encrypted backend; the
-activation shows its progress), later entries copy only the paths that are new
+activation reports the megabytes copied every 15 seconds and the total time at
+the end), later entries copy only the paths that are new
 to the closure, which `<hidden-root>/root/store-kept` records. Activation is
 refused before it copies anything when the hidden volume lacks the space.
 Before the build, `nix-store --verify` also drops from the hidden store

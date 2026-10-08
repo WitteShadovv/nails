@@ -355,6 +355,15 @@ systemctl soft-reboot
     paths that vanished, so a changed configuration realises them again
     rather than trusting them.
 
+  overlayfs syncs every file it copies up, so one copy-up at a time waits on
+  the disk once per file: about 3.6 ms per file on an encrypted NVMe SSD,
+  measured (3142 files in 11.3 s), and far more in a VM: with the serial copy,
+  the first entry of `session-nixos-hidden-system` did not reach the switch
+  within 10 minutes. NAILS runs
+  32 copy-ups at once, which share the filesystem's journal commits (the same
+  3142 files in 1.6 s with 16, 1.0 s with 64), and reports progress every 15
+  s and the total time when done.
+
   Cost: one full copy of the hidden closure at the first entry (several GB
   for a desktop: the copy reads the decoy disk and writes the hidden backend,
   minutes on an encrypted or USB backend), the new paths at later entries,
