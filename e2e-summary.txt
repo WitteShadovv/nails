@@ -1,3 +1,0 @@
-suite exit=0 seconds=2116
-distro+package exit=0
-DONE

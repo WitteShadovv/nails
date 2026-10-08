@@ -119,3 +119,5 @@ temp/
 
 # Local E2E runner output (just e2e-local)
 /e2e-logs/
+/e2e-logs-run.txt
+/e2e-summary.txt
