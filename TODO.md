@@ -13,6 +13,7 @@ Decisions that apply across items:
 - Debian/Ubuntu is the first non-NixOS platform; the platform layer must make Fedora, Arch and others straightforward to add.
 - E2E: smoke suite on GitHub-hosted runners for every PR, full suite on hosted runners nightly and on demand, Hetzner kept as one manual workflow.
 - `nix/forensics-eval` is replaced by disk-image checks inside the E2E suite; the obfuscation module is removed; an opt-in fresh-home persona mode is added.
+- Since 2026-10 the whole-root soft-reboot session (T-134, [ADR 0008](docs/adr/0008-whole-root-soft-reboot.md)) is the only session mode. Ticked items that changed the live per-directory overlays (process detection and restarts, journald re-homing, the runtime tmpfs, the `/nix/store` rebind, the writer rescans) describe removed code and carry a "Superseded" note.
 
 ## Wave 0: Hermetic test suite
 
@@ -150,6 +151,8 @@ Owns: `nails-core/src/error.rs`, `nails-core/src/filesystem/mountinfo.rs`, `nail
   - `cargo test` and `clippy` pass.
 
 - [x] **T-007: Correct the wrong overlay security-model comments and derive the OPTIMAL/DEGRADED label from surviving writers** (low · effort S)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the surviving-writer posture label). The item stays ticked as history; it describes no current code._
 
   **Problem**
   `pivot/mod.rs:31,33` assert that pivot split-view ("existing processes keep seeing original content") is "forensically beneficial" and a "SECURITY FEATURE". Both are wrong: overlay mounts succeed over busy directories, and processes that keep seeing the original content keep *writing to the decoy* — a leak, not a benefit — which directly contradicts `strategy/mod.rs:74-76`, which correctly calls split-view a degradation. The wrong model feeds the label computation in `manager/activation/mod.rs:310-314`, so leaking states can be reported `OPTIMAL`. The Direct/Pivot method carries no security meaning on its own (both affect pre-existing references the same way).
@@ -788,6 +791,8 @@ Owns: `nails-cli/src/cli/args.rs`, `nails-cli/src/cli/commands/`, `nails-cli/src
 
 - [x] **T-030: Non-interactive activation must not silently skip risky service restarts or SIGKILL interactive user processes; always report survivors** (medium · effort S)
 
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (risky service restarts and the interactive-process kill gate). The item stays ticked as history; it describes no current code._
+
   _Status: done (W3-C3 plus wave C3/CC6). `restart_via_signal`/`RestartMethod::Signal` renamed to `terminate`/`Terminate`; `ProcessInfo.is_interactive` detected from `/proc/<pid>/fd`; an explicit `RiskyServicePolicy` (strict TOML `risky_services` plus `--risky-services`/`--terminate-interactive`) replaces `prompt_for_risky`, erroring rather than silently skipping; the strategy refuses to force-terminate an interactive non-service process before any mount or signal; survivor identities are threaded into the activation outcome, the notification and the `nails status` "writers still on the decoy" line. The e2e check `nix/e2e-tests/tests/session/37-activate-refuse-interactive-writer.nix` is authored (tty-attached writer blocks non-interactive activation) and needs a nix host to evaluate — see nix_pending._
 
   **Problem**
@@ -834,6 +839,8 @@ Owns: `.gitignore`, `.github/scripts/package-release.sh`, `docs/bash-history-for
 Owns: `nails-core/src/manager/activation/overlay_mount/restore.rs`, `nails-core/src/manager/activation/overlay_mount/auto_mount.rs`, `nails-core/src/manager/helpers/command_cache.rs`
 
 - [x] **T-033: Fix where hidden-session Nix store writes land, drop the systemd closure copy, and restart nix-daemon/journald on every teardown path** (critical · effort M)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the `/nix/store` self-bind and the nix-daemon and journald restarts). The item stays ticked as history; it describes no current code._
 
   _Status: done (wave 4, C1, completed wave C3/K2). The overlaid `/nix/store` is self-bound read-only so a daemon writable-remount resolves into the overlay upper; the ~186MB systemd closure byte-copy is gone (systemctl runs via the original-store bind through the loader); each `/nix/store` bind is recorded in the state file and undone in reverse on deactivate/emergency after a namespace re-check; nix-daemon and journald are restarted on every teardown path. Remaining is nix-only: VM run of `nix/e2e-tests/tests/shell/44-nix-daemon-restart-on-overlay.nix` and the differing-namespace teardown path. The `/run/nails/original-nix-store` unmount+removal is tracked under T-069 — see nix_pending._
 
@@ -934,6 +941,8 @@ Owns: `nails-core/src/state/guard.rs`, `nails-core/src/deactivation/orchestrator
 
 - [x] **T-039: Deactivation teardown: remove the impossible remount rollback, attempt every target, and end in Degraded instead of going back to Active** (medium · effort S)
 
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the per-target deactivation teardown). The item stays ticked as history; it describes no current code._
+
   _Status: Done in W5-C1. `rollback_unmounts` and the remount promise are deleted; teardown attempts every target (graceful then forced), re-reads the mount table, records `SystemState::Degraded` with the remaining mounts and returns `NailsError::DeactivationIncomplete`. Normal mode returns before the decoy switch and reboot. Normal and Emergency degraded tests cover it._
 
   **Problem**
@@ -953,6 +962,8 @@ Owns: `nails-core/src/state/guard.rs`, `nails-core/src/deactivation/orchestrator
 Owns: `Cargo.toml`, `nails-core/src/overlay/opaque.rs`, `nails-core/src/preflight/checks/overlay_compatibility.rs`
 
 - [x] **T-040: Rewrite opaque-xattr stripping in-process and scoped to NAILS-managed paths, run it once in the mount step, make dry-run read-only, and drop the attr/du/cp shell-outs** (high · effort M)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (opaque-xattr stripping on the overlay targets). The item stays ticked as history; it describes no current code._
 
   _Status: done (code W5-C2, completed wave C3/CC6). Opaque handling is in-process (rustix lgetxattr/lremovexattr), scoped to `/etc/nixos`, run once in the mount step; preflight and `--dry-run` are read-only; no getfattr/setfattr/du/find Command spawns remain (the resolver-routed cp fallback stays), and the host-tools preflight no longer requires attr/du/find. The two E2E nix tests are authored (`nix/e2e-tests/tests/nixos/29-activate-dry-run.nix` opaque-marker-survives-dry-run; `nix/e2e-tests/tests/overlay/67-overlay-opaque-whiteouts.nix` phases 4-6) but still need a nix host to evaluate — see nix_pending._
 
@@ -1240,6 +1251,8 @@ Owns: `Cargo.toml`, `nails-core/src/runtime_safety.rs`, `nails-core/src/deactiva
 Owns: `nails-core/src/config/dynamic.rs`, `nails-core/src/preflight/checks/overlay_targets.rs`, `nails-cli/src/cli/commands/init.rs`
 
 - [x] **T-053: Overlay target safety floor: refuse leaky exclusions, never overlay an ancestor of the hidden root, drop the dead /Downloads exclusion** (high · effort M)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (overlay targets and exclusions). The item stays ticked as history; it describes no current code._
 
   _Status (W7-C2): implementation complete and unit-tested — the `overlay-targets` preflight check refuses any target covering the hidden root, state file, log dir or binary (symlinks resolved via a new `Filesystem::canonicalize`) and any Auto-mode leaky exclusion of a load-bearing directory unless listed in the new `allow_leaky_exclusions` key; `/Downloads` and the "nix store performance" copy are gone. The VM subtests in nix/e2e-tests/tests/config/26-config-exclusions.nix (including the /media refusal) await evaluation on a nix-capable host (see nix_pending)._
 
@@ -1589,6 +1602,8 @@ Owns: `nails-core/src/manager/activation/guards.rs`, `nails-core/src/manager/mou
 
 - [x] **T-063: If activation fails after mounting, unmount the overlays before the state is rolled back (wire in the dead rollback code)** (high · effort M)
 
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the mount tracker's rollback). The item stays ticked as history; it describes no current code._
+
   _Status (W8-C3): done. `mount_overlays` hands its mounts to the caller (`MountTracker::take_mounts`) instead of committing; the new `ActivationMounts` guard in `activation/rollback.rs` (no `allow(dead_code)`) is declared after `StateGuard`, so a later failure unmounts the overlays, then writes the rolled-back state, then restarts the session onto the decoy. Mounts rollback cannot remove make StateGuard persist `Degraded` listing them, and per-mount state saves are hard errors. Unit tests cover the Active-write, session-restart and unmount-failure cases; the masked-display-manager subtest in 53 awaits evaluation (see nix_pending)._
 
   **Problem**
@@ -1630,6 +1645,8 @@ Owns: `nails-core/src/platform/`, `nails-core/src/manager/mod.rs`, `nails-core/s
 
 - [x] **T-065: Move the decoy restore step into a platform hook and skip the NixOS switch when a reboot follows** (low · effort S)
 
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the decoy restore hook and the NixOS switch on deactivation). The item stays ticked as history; it describes no current code._
+
   _Status (W9-C1): `Platform::restore_base_system()` added — the NixOS backend re-points `/run/current-system` and only falls back to `switch-to-configuration test` when a requested reboot fails (never switch/boot, so the ESP/bootloader stay untouched); FHS and Unsupported backends are no-ops. Recording-runner tests cover reboot-skips-switch, failed-reboot-fallback and the FHS no-op. The behaviourally identical inline restore still lives in `manager/deactivation.rs` from an earlier wave; collapsing it onto this hook is left to the deactivation owner (W19-C1)._
 
   **Problem**
@@ -1646,6 +1663,8 @@ Owns: `nails-core/src/platform/`, `nails-core/src/manager/mod.rs`, `nails-core/s
 Owns: `nails-cli/src/cli/detach.rs`, `nails-core/src/manager/activation/preflight.rs`, `nails-cli/src/cli/commands/activate/mod.rs`
 
 - [x] **T-066: Detached activation/deactivation write nothing identifying to the decoy journal (neutral unit, null output, panic hook, volatile-journald check)** (critical · effort M)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the journald re-homing). The item stays ticked as history; the path-free panic hook and the null worker output it added still apply._
 
   _Status (W9-C2 + wave C3/CC6): all Rust-side work landed. Detached workers no longer leak identifying data (neutral auto-named units, null worker stdio with the `NAILS_DETACH_DEBUG_JOURNAL` escape hatch, path-free panic hook, no cleanup pattern list on INFO). Wave C3 added the journald re-home: relinquish the persistent journal before `/var` is overlaid, restart systemd-journald + `journalctl --flush` after, a device-based fd-into-overlay check that rolls the activation back on mismatch, teardown restarts journald back onto the base `/var`; plus a new `journald_storage` preflight (refuses a persistent decoy journal, `--allow-persistent-journal` override) wired through the registry/activate/check CLI, and the E2E session helpers repointed to the neutral unit. Remaining is nix-only: the persistent-journal disk-image VM regression and the live fd-into-overlay assertion under a real journald — see nix_pending._
 
@@ -1719,6 +1738,8 @@ Owns: `Cargo.toml`, `nails-cli/tests/cli_contract.rs`, `nails-cli/tests/snapshot
 Owns: `nails-core/src/overlay/pivot/mod.rs`, `nails-core/src/manager/activation/overlay_mount/mod.rs`, `nails-core/src/manager/mount_tracker.rs`
 
 - [x] **T-069: Put all NAILS runtime scaffolding (pivot staging, snapshots, store bind, command cache) in one neutral per-activation tmpfs that is tracked and torn down, sized from measured content, with atime-safe reads** (high · effort L)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the runtime tmpfs, pivot staging and store bind). The item stays ticked as history; it describes no current code._
 
   _Status (W10-C1 + wave C3/K2): partial. Done: the snapshot tmpfs is sized from measured content plus headroom with a warn-only `snapshot-memory` preflight; wave C3 added the verify mount-table scan (`check_nails_owned_mounts`) that flags leftover NAILS overlays/staging binds at non-standard targets, deferring persistent overlays to the upperdir scan to avoid double-reporting. Wave F1 fixed the headline forensic leak: pivot staging and the vfat `/boot` snapshot moved from `/mnt/nails-pivot` (on the persistent decoy ext4 root) to `/run/nails-pivot` on the always-excluded `/run` tmpfs, with the old `/mnt/nails-pivot` registered as a Critical legacy artifact and indicators.json/e2e fixtures realigned. Remaining (large cross-file work, re-dispatch with VM validation): the per-activation random child tmpfs and removal of the fixed `/run/nails` production constants (a recognizable base was kept deliberately so state-independent emergency/verify still key on it), the typed mount-record enum in `MountTracker`/`overlay_status` with record-driven teardown on rollback/deactivate/emergency, the read-only ESP bind, `O_NOATIME` copy/verify reads, the `/run/nails/original-nix-store` unmount+removal for T-033, and the e2e assertions in `overlay/70`, `faults/94`, `forensic/06`, `forensic/07` — see nix_pending._
 
@@ -2029,6 +2050,8 @@ Owns: `nails-core/src/platform/host_commands.rs`, `nails-core/src/platform/ro_gu
 
 - [x] **T-083: Make the overlay policy platform data and enforce that every writable OS tree is overlaid or read-only, keeping /usr read-only on FHS hosts** (critical · effort L)
 
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the per-directory overlay policy; the fstab policy at entry takes its place). The item stays ticked as history; it describes no current code._
+
   **Problem:** `DEFAULT_OVERLAY_EXCLUSIONS` (`config/types.rs:66-79`) excludes /bin, /usr, /lib, /lib64, /sbin (justified only as "common in NixOS") and a machine-specific /Downloads. `build_overlay_targets` force-removes /bin and /usr even when the user clears the exclusion (`manager/helpers.rs:283-286`, "breaks tests"), and explicit mode refuses them (`explicit_mount.rs:28-36`). On usr-merged FHS distros (Debian 12+, Ubuntu) all software lives in /usr: with /var overlaid but /usr writable, package payloads and /usr/local writes during a session land on the decoy disk while the package DB lands in the hidden upper, leaving unowned files that debsums/rpm -Va detect. On NixOS the hidden activation rewrites /bin/sh and /usr/bin/env on the decoy root, leaving inodes referencing hidden store paths; nothing remounts those trees read-only. There is no enforced invariant that the decoy stays read-only while hidden is active, and forensic test 06 only hashes /home, /etc, /var so the leak is invisible.
 
   **Fix:** Move default exclusions, never-overlay paths and read-only paths into `Platform::overlay_policy()` (new `platform/ro_guard.rs`, data in `platform/nixos.rs` and `platform/debian.rs`). Universal never-overlay: /proc, /sys, /dev, /run and the hidden-root mount. Replace the unconditional /bin,/usr force-retain and the explicit-mode refusal with the policy-driven guard. DebianFamily: overlay /etc, /home, /root, /var, /srv, /opt, /tmp, /media; keep /usr (and real-dir /bin, /sbin, /lib*) read-only for the session by bind-remounting ro in the init mount namespace (reuse the setns helper in `overlay_mount/restore.rs`), undone on deactivate and emergency. NixOS: keep the /bin/sh and /usr/bin/env rewrites off the decoy disk by overlaying those tiny trees or ro-guarding them. After overlays mount, bind-remount every decoy-block-device-backed, non-overlaid mount ro (MS_BIND|MS_REMOUNT|MS_RDONLY), starting with /; on EBUSY abort and roll back (fail-closed). Add a preflight check in `preflight/checks/writable_trees.rs`: refuse activation when any writable OS tree is neither overlaid nor read-only; add an Active-state check in `verify/verifier.rs` that walks /proc/self/mountinfo and fails on a writable non-overlaid decoy mount. Express the policy in the new TOML config without NixOS-only defaults leaking to other platforms; remove /Downloads. (Full /usr overlay on FHS and the boot/kexec whole-root redesign are TODO-only, recorded elsewhere.)
@@ -2041,6 +2064,8 @@ Owns: `nails-core/src/platform/host_commands.rs`, `nails-core/src/platform/ro_gu
 
 - [x] **T-084: Gate the NixOS /nix runtime machinery on a real NixOS host and merge the duplicated mount loops behind platform hooks** (high · effort M)
 
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the `/nix` runtime machinery and the mount loops). The item stays ticked as history; it describes no current code._
+
   **Problem:** The /nix overlay lifecycle (nix-daemon stop, command caching, store re-bind, /run/current-system restore) starts whenever /nix is a target, with no NixOS check (`auto_mount.rs:27-40`, `explicit_mount.rs:38-55`). On Nix-on-Debian/Ubuntu, `resolve_current_system_profile` falls back to /run/current-system (`runtime_cache.rs:85-89`); `replace_symlink(/run/current-system, /run/current-system)` would then create a self-loop and fail activation (`restore.rs:196-208`). This is latent today and becomes live once the hardcoded-path fix lands. `auto_mount.rs` and `explicit_mount.rs` duplicate ~90 lines of nix caching, daemon stop, opaque handling, submount lowers and DNS cleanup, and per-target side effects (/nix, /var, /etc) are hard-coded in `overlay_mount/mod.rs:152-208`. The cached hidden generation's closure is never checked against what decoy GC may have removed.
 
   **Fix:** Merge `auto_mount` and `explicit_mount` into one loop in `overlay_mount/mod.rs` that calls `Platform` pre_overlay/post_mount hooks; auto and explicit mode then differ only in target selection. NixOs hooks (`platform/nixos.rs`) keep current /nix handling but run only when /run/current-system exists and /proc/self/mountinfo shows a read-only bind at /nix/store. Add a Nix-on-foreign hook (`platform/nix_foreign.rs`) that still overlays /nix (never excluded by default) but only stops/starts nix-daemon(.socket) via the resolved service manager, with no /run/current-system handling and no store re-bind. Make `replace_symlink` refuse link == target. On NixOS fast-path activation, verify the cached hidden generation's requisites still exist in the merged /nix and rebuild or warn if not. (Closure-copy size, /run/nails cleanup, the dead rollback fn, and opaque-marker semantics are owned by other items.)
@@ -2048,6 +2073,8 @@ Owns: `nails-core/src/platform/host_commands.rs`, `nails-core/src/platform/ro_gu
   **Done when:** Only one mount loop remains. Unit test: on a Nix-on-foreign HostProfile with /nix as a target, no /run/current-system access or store re-bind happens and only daemon stop/start is issued. `replace_symlink` returns an error for link == target. Existing NixOS /nix E2E tests still pass.
 
 - [x] **T-085: Handle submounts under overlay targets and add per-distro exclusion data** (high · effort M)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (submounts under overlay targets and exclusion data). The item stays ticked as history; it describes no current code._
 
   **Problem:** Device-backed submounts with fs_root '/' are skipped (`filesystem/real/submount.rs:139-143`), and pseudo sources (tmpfs) likewise, so they become empty dirs in the merged view: /boot/efi on Debian/Ubuntu, Ubuntu /snap/<name>/<rev> squashfs (snap apps stop launching), and separate /var/log or /var/tmp partitions. Default exclusions lack /snap, /.snapshots, /sysroot, /ostree and /efi, and include machine-specific /Downloads. /proc/mounts and mountinfo are parsed with `split_whitespace` and no octal unescaping (`mount_ops.rs:91,111,131,150`; `submount.rs:29,103`), so paths with spaces break mount detection.
 
@@ -2128,6 +2155,8 @@ Owns: `nails-core/src/manager/activation/nixos_switch.rs`, `nails-core/src/nixos
   **Done when:** `rg current_system_generation nails-core/src/manager` is empty; the stored value is a `/nix/store/...-nixos-system-*` path; editing `flake.lock` or an imported module changes the fingerprint; a missing cached path falls back to the slow path. A real-rebuild VM test replaces `nix/e2e-tests/tests/nixos/27-activate-full-rebuild.nix`: full-mode activate, deactivate (with reboot), activate again, with a hidden-config marker present after the second activation and the fast path taken. `session/33-session-kill-graphical.nix` asserts switch-before-restart, and a failing hidden config with `switch_required=true` leaves no overlays. `cargo test` and `clippy` pass.
 
 - [x] **T-090: Report activation truthfully: an ActivationOutcome with warnings, consistent already-active handling, and nails reapply** (high · effort M)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (`nails reapply` and the live activation outcome). The item stays ticked as history; it describes no current code._
 
   **Problem:** `activation/mod.rs:396-460` stores a switch/rebuild failure in `nixos_switch_warning`, emits only `tracing::warn` (:510-516) and returns `Ok(())`. The CLI then prints a green '✓ Activation complete in Xs' (`nails-cli/src/cli/output/activate.rs:141-151`), emits JSON status `success` with no warnings field (:4-15, :79-87) and exits 0 (`commands/activate/mod.rs:405-408`). In the default GUI path the worker is detached and its output goes to the journal (`detach.rs:237-238`), so the only signal is a notification that may never arrive. Already-active handling is inconsistent: `--no-kill-session`/`--no-preflight` print 'complete in 0.0s' and exit 0, while the default path fails the CLI state check and exits 2 (`preflight/checks/state.rs:81-83`). A fixed hidden config can only be applied with a full deactivate (which reboots) then activate.
 
@@ -2400,6 +2429,8 @@ Owns: `nails-core/src/cleanup/history/`, `nails-core/src/cleanup/history_files/m
 
 - [x] **T-105: History handling: resolve the real invoking user, no post-unmount decoy writes, no whole-file truncation or secure delete by default** (critical · effort L)
 
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (history cleanup; the entry kills the interactive shells instead). The item stays ticked as history; it describes no current code._
+
   **Problem**
   History operations resolve paths from the process `$HOME` (`cleanup/history/mod.rs:80`, `:190`; `cleaner.rs:164`; `verify/verifier.rs:241-246`). Under `sudo nails`, `env_reset` makes HOME `/root` and in the detached unit it is unset, so the invoking user's `~/.bash_history` — which incremental flushing fills with the `cryptsetup`/mount/`nails activate` commands — is never touched, even though `shell/mod.rs:152` already derives it from SUDO_USER/NAILS_TARGET_USER. Shell cleanup (`process/shell_cleanup.rs:62-75,128`) kills only the non-root target uid and keeps the invoking shell on a protected list, so root's decoy history is SIGHUP-flushed and the invoking shell survives truncation. After unmount, emergency (`manager/deactivation.rs:514`) and normal deactivation (`orchestrator/cleanup.rs:133`; `post_unmount_cleanup` defaults true, `cleanup/types.rs:110-113`) run a 3-pass secure delete then temp+rename re-create — new inode, root owner, fresh timestamps, leftover `.tmp` names — writing to the decoy disk after it is unmounted; line-filtering with temp+rename (`cleaner.rs`, `secure_delete` default off) leaves removed lines in freed blocks. Deep verify only scans `/root` and literal `/home/.bash_history`. `USER-SECURITY-GUIDE.md` describes layers that do not exist in code, and the E2E suite hides all of this by injecting `HOME=/home/testuser` (`nix/e2e-tests/lib/shell-helpers.nix`).
 
@@ -2428,6 +2459,8 @@ Owns: `nails-core/src/cleanup/history/`, `nails-core/src/cleanup/history_files/m
 Owns: `nails-core/src/process/classification/mod.rs`, `nails-core/src/process/detection/mod.rs`, `nails-core/src/overlay/strategy/mod.rs`
 
 - [x] **T-106: Classify blocking processes by write capability, scan /proc once, and restart or report stale writers that survive the overlay mount** (high · effort L)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (process classification and the writer rescans). The item stays ticked as history; it describes no current code._
 
   _Status: partial (wave 18 + later waves + wave F1). Done: the write-capability classification core, risky-service opt-in (`resolve_risky_services`), removal of OPTIMAL-from-pivot-count (the security label now keys off decoy writers), unverifiable-writer detection, and the docs wording fix (USER-SECURITY-GUIDE removed, no `--no-kill-session` wording). Wave F1 added two more: the DE/browser/editor/service process-name tables moved out of the classifier into `platform/process_classes.rs` (exact, non-substring membership, `host_process_classes()` seam) consumed by classify, and the mount phase now captures one `ProcSnapshot` and threads it through so `/proc` is walked once per phase instead of once per target. Remaining: the post-mount stale-lower rescan surfaced into state/status (human/JSON/DTO), `chdir("/")` before the first mount with a decoy-cwd warning, and the writer-survival E2E — see nix_pending._
 
@@ -2508,6 +2541,8 @@ Owns: `nails-core/src/manager/deactivation.rs`, `nails-core/src/emergency.rs`, `
   _Status: Wave 19 landed the `/run/overlay-runtime` copy (binary, effective config, mount manifest; 0700, removed at deactivate/emergency/recover), the `[backend_watch]` config, `watcher.rs` debounce/alert state machine, the hidden `watch` subcommand run as the transient unit `overlay-runtime-monitor`, and emergency/recover falling back to the `/run` config copy; no created name contains "nails" (unit-tested). Remaining: the VM E2E that lazily unmounts the backend mid-session, asserts the user alert, and runs emergency from the `/run` copy (fits the T-111 `faults/` group); live check of the transient unit and notify-send paths._
 
 - [x] **T-109: Emergency ends the hidden graphical session and the services the hidden config added instead of leaving them running until reboot** (high · effort M)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (ending the hidden graphical session on the live decoy). The item stays ticked as history; it describes no current code._
 
   **Problem**
   - Emergency sets `with_switch_script_execution(kind == Normal)` (`nails-core/src/manager/deactivation.rs:492`), so no decoy switch runs, and the orchestrator only restores `/run/current-system` (`deactivation/orchestrator/mod.rs:332-385`).
@@ -2602,6 +2637,8 @@ Owns: `nails-core/src/manager/deactivation.rs`, `nails-core/src/emergency.rs`, `
 Owns: `nails-core/src/cleanup/manager.rs`, `nails-core/src/deactivation/orchestrator/mod.rs`, `nails-core/src/manager/activation/overlay_mount/mod.rs`
 
 - [x] **T-113: Handle the journal explicitly at activation and teardown (flush onto the overlay; volatile runtime journal after emergency)** (high · effort M)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the journal flush onto the `/var` overlay). The item stays ticked as history; it describes no current code._
 
   **Problem:** `/run` is excluded from overlays (`nails-core/src/config/types.rs:70`), and journald's volatile store lives at `/run/log/journal`. On a tmpfs-root decoy (`Storage=volatile`, or `auto` with no `/var/log/journal` — the recommended posture), everything journald records during a hidden session stays in RAM: hidden service lifecycle, sudo commands, user-service stderr. It survives emergency teardown, which does not reboot (`reboots_on_success` matches only `Normal`, `nails-core/src/manager/deactivation.rs:261`), so anyone at the machine can read it with `journalctl`. The only journal handling today is a restart of systemd-journald after the /var overlay (`nails-core/src/manager/activation/overlay_mount/mod.rs:176-183`); cleanup never touches the journal, and forensic test 05 hides the gap by excluding journal dirs from its grep (`nix/e2e-tests/tests/forensic/05-standard-deactivation-forensic.nix:34`).
 
@@ -2717,6 +2754,8 @@ Owns: `README.md`, `docs/USER-SECURITY-GUIDE.md`, `docs/configuration.md`
 Owns: `nails-cli/src/cli/commands/emergency.rs`, `nails-cli/src/cli/commands/status.rs`, `nails-cli/src/cli/detach.rs`
 
 - [x] **T-118: Opt-in backend close/lock after emergency and loud reporting when the hidden root is still mounted** (high · effort M)
+
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (`--lock-backend`; the backend is now always closed). The item stays ticked as history; it describes no current code._
 
   **Problem:** No code path ever unmounts or closes the hidden backend. `run_deactivation` (`nails-core/src/manager/deactivation.rs:394`, emergency wrapper at `:548`) only tears down overlays. After `nails emergency` the hidden filesystem stays mounted and browsable, the dm-crypt mapper stays open, and the master key stays in kernel memory. The user only sees "Dismount the hidden volume when it is safe to do so" (`nails-cli/src/cli/commands/emergency.rs:120-135`, where the JSON is a hardcoded string). Unlocking backends stays out of scope. The state.json write to the hidden root is required and stays. Because the binary and state.json live on the hidden root, a plain `umount` plus `cryptsetup close` fails with EBUSY.
 
@@ -2986,7 +3025,9 @@ Research topics and larger redesigns that are tracked but not scheduled.
 
   **Done when:** A TODO entry exists naming the prerequisite (centralised strings) and the trigger for revisiting (evidence of non-English operators).
 
-- [ ] **T-128: Full /usr overlay strategy and hidden software delivery on FHS distros** (medium · effort L)
+- [x] **T-128: Full /usr overlay strategy and hidden software delivery on FHS distros** (medium · effort L)
+
+  _Status (2026-10): done by the whole-root session. The whole decoy root, `/usr` included, is the lower of one overlay with its upper on the hidden volume, so `apt` and `dpkg` write into the upper and no process heuristics are involved (they were removed). What stays is the drift the problem names: a copied-up package database or `/etc` file shadows the decoy's after a decoy upgrade between sessions (ADR 0008, Risks). It is recorded there, not tracked as an item._
 
   **Problem:** Beyond the read-only `/usr` guard, the hidden environment on FHS distros cannot install software, and overlaying `/usr` has its own problems. The hidden package DB and copied-up files diverge from a lower `/usr` that the decoy keeps upgrading; process detection flags every process that maps the target (`nails-core/src/process/detection/mod.rs:118-126`, via mmap/fd/cwd checks) and only `/nix` has a `Skip` rule (`nails-core/src/process/classification/mod.rs:216-234`), so a `/usr` overlay would try to restart most of userspace. Comparable drift exists on NixOS: the hidden `/nix/var/nix/db` copy can reference store paths that decoy garbage collection later removes.
 
@@ -3010,9 +3051,9 @@ Research topics and larger redesigns that are tracked but not scheduled.
 
   **Done when:** Entries exist in `TODO.md` and link the dependent redesign items (T-129, the hidden-user redesign, and the disk-image evaluation campaign).
 
-- [ ] **T-131: TODO: architecture-alternatives ADR and decision matrix (kexec, boot-from-removable, live-overlay)** (medium · effort L)
+- [x] **T-131: TODO: architecture-alternatives ADR and decision matrix (kexec, boot-from-removable, live-overlay)** (medium · effort L)
 
-  _Status (2026-10): partial. ADR 0008 §8 holds the decision matrix (live overlays, soft-reboot, kexec, a hidden boot entry, removable media) and ADR 0005 the boot-time overlays; kexec and boot-from-removable are not yet written up as time-boxed spikes. The chosen directions are tracked as T-133 and T-134._
+  _Status (2026-10): done. ADR 0008 §8 holds the decision matrix (live overlays, soft-reboot, kexec, a hidden boot entry, removable media) and ADR 0005 the boot-time overlays; the decision picked the whole-root soft-reboot (T-134), so kexec and boot-from-removable are not pursued as spikes. The "no decoy-persisted enabler" invariant holds for the chosen mode: it installs no boot entry, initramfs hook or EFI variable, and the ESP is bound read-only (`forensic/80-uefi-esp-nvram-invariant`). The scope note in "Done when" (live path first on FHS distros) is overtaken: the session is the same on NixOS, Debian and Ubuntu._
 
   **Problem:** No comparison of hidden-environment mechanisms exists in the repo, so the multi-distro decision risks defaulting to bolting a Platform trait onto the live path, the lowest-ceiling option for portability and leak reduction. Alternatives include boot-time overlay classes (`systemd.volatile=overlay`, dracut `rd.overlay`), kexec into a hidden kernel/initrd/UKI, and boot-from-removable. The live path's fragile subsystems (process detection, session kill, journald race, `/nix` rebind, pivot) are exactly what a boot-time design removes.
 
@@ -3020,9 +3061,9 @@ Research topics and larger redesigns that are tracked but not scheduled.
 
   **Done when:** `docs/adr/` holds the alternatives matrix and the "no decoy-persisted enabler" invariant; kexec and boot-from-removable are listed as time-boxed spikes with go/no-go questions, not implementation tasks; and the decision explicitly scopes Phase 1 as the live path in overlay-only mode on FHS distros, keeping the full-root rebind capability NixOS-only.
 
-- [ ] **T-132: TODO: whole-root / soft-reboot design to eliminate live-overlay process heuristics** (high · effort XL)
+- [x] **T-132: TODO: whole-root / soft-reboot design to eliminate live-overlay process heuristics** (high · effort XL)
 
-  _Status (2026-10): the design is recorded in ADR 0008 (whole-root soft-reboot, spike passing) and ADR 0009 (dual root with a non-disruptive emergency). Implementation is tracked as T-134 and T-133; the namespaced-writer E2E test and the minimal-target option are not yet written up as separate steps._
+  _Status (2026-10): done. The design is ADR 0008 and is implemented as the only session mode (T-134); ADR 0009 (dual root) is kept as research. The near-term steps (a namespaced-writer E2E test, a minimal-target option) were for the live overlays and are moot: every service of the hidden session starts inside the overlay root, so there is no pre-existing writer to miss._
 
   **Problem:** Live overlaying of a running system depends on fragile process detection/classification/restart (`nails-core/src/process/restart/mod.rs:217-251`, TERM then 100ms then KILL), a journald restart after `/var` (`nails-core/src/manager/activation/overlay_mount/mod.rs:176-183`), nix-daemon special-casing, and setns-into-PID1 restore (`nails-core/src/manager/activation/overlay_mount/restore.rs:83-142`). Services started in their own mount namespaces (PrivateTmp, StateDirectory, ProtectSystem) keep bind mounts onto the decoy underlying fs, and a periodic writer holding no open fd at scan time is never detected, so a missed writer is a silent leak. Per-distro heuristics will never be complete.
 
@@ -3036,35 +3077,13 @@ Work that came out of the research spikes and ADRs 0006-0009, and out of the E2E
 
 ### WR-C1: Session modes
 
-Owns: `nails-core/src/session_mode/` (new), `nails-core/src/platform/`, `nix/e2e-tests/tests/research/`
+Owns: `nails-core/src/session/`, `nails-teardown/src/whole_root/`, `nails-core/src/platform/`, `nix/e2e-tests/tests/session/`
 
-- [ ] **T-133: Dual-root session mode: the hidden session on its own VT in a whole-root overlay, emergency by VT switch and cgroup.kill** (high · effort XL)
-
-  _Status: VM-proven core, blocked on real hardware. The spike (`research/dual-root-vt-emergency.nix`) returns to the decoy by a VT switch in 62 ms plus `cgroup.kill`; the decoy session is active again after about 156 ms and the decoy disk sees 0 sectors written. The `/run` polkit rule (R2-B) is VM-proven; the pinned mount namespace (R5b) and the idle inhibitor are probed in `research/dual-root-risks.nix`. Needs the hardware matrix and the Ubuntu noble fallbacks before implementation._
-
-  **Problem:** Live overlays need process heuristics, leave a silent missed-writer leak class (T-132) and, on emergency, leave the hidden desktop on screen with the backend still open (`security/80`). Whole-root soft-reboot (T-134) removes the heuristics but logs the user out on emergency. ADR 0009 option D keeps the decoy desktop logged in on its own VT and runs every hidden process in a separate tree rooted in a whole-root overlay, which meets all five emergency rules.
-
-  **Fix:** Implement option D with the risk-assessment changes from `docs/adr/0009-dual-root-emergency.md`:
-  - a runtime polkit rule in `/run/polkit-1/rules.d` denying the hidden uid the shared-daemon writes (NetworkManager keyfiles, AccountsService, linger), plus a D-Bus uid deny for bluez/fwupd and blocked CUPS;
-  - the overlay built inside a mount namespace pinned on a file in `/run`, hidden units started with `nsenter --mount=<pin> systemd-run --root-directory=` (R5), so no decoy service started later holds a copy;
-  - a hidden user from a `/run/userdb` record with a uid in 60706-61183, a shell outside `/etc/shells`, a locked password, no root and no `wheel`, `NoNewPrivileges=` on every hidden unit, `LimitCORE=1`; the hidden `user@<uid>.service` moved into the hidden root by a runtime drop-in with PAM off;
-  - an idle, sleep and `handle-lid-switch` inhibitor held by a host unit for the session;
-  - a RAM scrub at teardown: runtime journal entries naming the hidden user, the `/run/utmp` records left by SIGKILL, `/run/user/<uid>`, the userdb record and the drop-ins;
-  - a logind-managed hidden compositor started from the hidden session on its own VT (the spike uses a rootful X server on a separate VT);
-  - the bounded emergency sequence from risk 1 (VT switch, `cgroup.kill` on the hidden slices, strict unmount, backend close), executed by the teardown interpreter (T-135);
-  - `status` and `activate` print the mode's emergency semantics in one line (ADR 0009 option G).
-
-  Blockers: the real-hardware matrix in ADR 0009 (NVIDIA proprietary and open, Intel/AMD; GNOME and KDE decoys; idle 1 h and 8 h before emergency; Bluetooth pairing and Wi-Fi from the hidden session, then a decoy diff) and Ubuntu noble fallbacks (polkit 124 reads no `/run` rules: a tmpfs over `/etc/polkit-1/rules.d` plus SIGHUP; systemd 255 has no `--root-directory` fd path: an `nsenter --root` wrapper; `libnss-systemd` for the userdb user; no snaps in the hidden root).
-
-  **Done when:**
-  - ADR 0009 go/no-go criteria 1-6 hold, with the hardware results recorded in the ADR.
-  - A regular VM test (not `research`) enters the mode, writes canaries, triggers emergency and asserts: the decoy X server, display manager and logind session are the same objects; no hidden process remains; strict unmount and backend close; no hidden token on the raw decoy disk; the decoy diff after a Wi-Fi and Bluetooth attempt is empty.
-  - The Debian trixie and Ubuntu noble variants pass on the nix-vm-test tier.
-  - The operator guide documents the mode, its residual channels and the lock screen on return.
-
-- [ ] **T-134: Whole-root soft-reboot mode: an opt-in maximum-isolation session entered by soft-reboot into an overlay root** (medium · effort XL)
+- [x] **T-134: Whole-root soft-reboot mode: an opt-in maximum-isolation session entered by soft-reboot into an overlay root** (medium · effort XL)
 
   _Status: VM-proven, needs a spike for NixOS entry and real hardware. The spike (`research/soft-reboot-whole-root.nix`) passes two full cycles plus a UEFI reboot: about 3 s back to a shell, no hidden token on the raw disk, the `/run` scrub as an allowlist, the kmsg cursor and the utab restore. Recommended as an opt-in mode next to T-133 (ADR 0009 recommendation 4)._
+
+  _Status (2026-10): done; it is the only session mode, not an opt-in one ([ADR 0008](docs/adr/0008-whole-root-soft-reboot.md), accepted and implemented). `nails-teardown::whole_root` holds the plan, the transition step, the `/run` scrub, the kmsg cursor and the emergency hot path; `nails_core::session` the fstab policy, the entry, the way back and the checks; the NixOS hidden toplevel is entered with variant B (`nix build --store /run/nextroot`); `activate` and `status` print the emergency semantics. VM-verified: the 57-test suite (session, forensic, faults, persona and backend tests with raw-disk token scans and the `/run` residue check), the Debian 13 and Ubuntu 24.04 smoke tests and the research spikes. Refused: decoy roots that cannot be mounted again for the way back (an impermanent tmpfs root, overlayroot or another overlay, ZFS, squashfs and erofs) and systemd < 254 (Debian 12, Ubuntu 22.04, which are dropped). Open, needs real hardware (ADR 0008 go/no-go 2 and "What the VM cannot show"): GPU and Wi-Fi back without intervention after the switch, trigger to a usable greeter within 15 s on a real GNOME/KDE desktop, NVIDIA proprietary drivers, docks and Bluetooth peripherals, TPM-sealed decoy roots (PCR changes from the hidden root), and GRUB grubenv writes on a real GRUB host; also a separate `/home` on the distro images._
 
   **Problem:** For operators who want the strongest userspace isolation, every hidden process, including the desktop, should start inside the overlay. `docs/adr/0008-whole-root-soft-reboot.md` shows this works with `systemctl soft-reboot` into `/run/nextroot` and adds no enabler to the decoy, but its emergency cannot keep the desktop (ADR 0008 §6).
 
@@ -3097,6 +3116,8 @@ Owns: `nails-core/src/session_mode/` (new), `nails-core/src/platform/`, `nix/e2e
 
 - [x] **T-136: Activation as do/undo steps that share one plan with rollback, deactivate and emergency** (medium · effort L)
 
+  _Superseded (2026-10): the whole-root soft-reboot session (T-134, ADR 0008) replaced the live per-directory overlays and removed the machinery this item changed (the v1 do/undo plan; the session plan in `nails-teardown::whole_root` replaces it). The item stays ticked as history; it describes no current code._
+
   _Status: design only (ADR 0007 option C); no spike needed. Depends on T-135._
 
   _Status (2026-10):_ done. Activation records each completed step with its fixed undo in the T-135 plan (tracked mounts, `/nix/store` self-binds, read-only guards, the post-switch overlay re-mount, added units); rollback, deactivate, recover and emergency undo that one plan through the `nails-teardown` executor, reconciled against mountinfo, and rebuild it from the state file or the mount table when it is missing. The per-path loops are gone; `teardown_plan_kernel_tests.rs` proves every recorded step kind's undo on real mounts. Verified at 5751ec92.
@@ -3110,6 +3131,8 @@ Owns: `nails-core/src/session_mode/` (new), `nails-core/src/platform/`, `nix/e2e
 - [ ] **T-137: Hidden /nix/store on the hidden volume instead of an overlay over the decoy store** (medium · effort M)
 
   _Status: falls out of T-133/T-134; no separate spike._
+
+  _Status (2026-10): narrowed. Placement is done: the NixOS entry (variant B) builds the hidden toplevel with `nix build --store /run/nextroot`, so every new store path and the store database land in the root (or `/nix` mount) overlay's upper on the hidden volume and nothing reaches the decoy store (`forensic/09-nix-store-placement`). The store is still an overlay over the decoy store, though: paths the hidden closure shares with the decoy are read from the lower, while the copied-up `db.sqlite` keeps listing them as valid. A decoy garbage collection between sessions can delete such a path, and the hidden system then fails to start without nix noticing. What is left is that robustness: a store that does not depend on the decoy's (or a check at entry that the hidden closure is complete in the merged store, repairing it into the upper), and the VM test below._
 
   **Problem:** Today the hidden store is a `/nix` overlay over the decoy store. A copied-up `db.sqlite` shadows store paths the decoy builds or garbage-collects between sessions (ADR 0008 §2, T-128), so a decoy GC can break the hidden system.
 
@@ -3187,6 +3210,8 @@ Owns: `nails-core/src/verify/`, `nails-core/src/artifacts.rs`, `nails-cli/src/cl
 
   _Status: the stray-mounts preflight warning is done; the rest needs no spike._
 
+  _Status (2026-10): narrowed to mounts made during the session. The fstab policy at entry (`nails_core::session::policy`, VM test `session-fstab-policy`) already covers every filesystem the decoy knows about: the ESP and boot partitions are bound read-only, mounted decoy filesystems get an overlay with the upper on the hidden volume, and swap, network filesystems, unmounted fstab disks (with their automounts) and disk-backed overlay entries are masked. Mounts the decoy made outside fstab (a udisks automount) do not survive the soft-reboot. What is left is a disk the hidden session itself mounts: a USB drive plugged in and automounted by udisks, a manual `mount` of a decoy partition the policy masked, or a Windows partition. Those are read-write on a real disk. The remaining fix is the watcher alert on a new read-write block-backed mount outside the hidden volume, optionally with a udisks policy in the hidden root that mounts removable media read-only; the read-only remount opt-in below is no longer needed._
+
   **Problem:** A second disk, a Windows partition or an automounted USB drive stays read-write on a real disk for the whole session. Preflight warns about the ones present at activation, but nothing acts on them and a drive mounted during the session goes unnoticed.
 
   **Fix:** An opt-in config key and flag that remounts the warned mounts read-only for the session and restores them at teardown; the watcher alerts on any new read-write block-backed mount that is not under an overlay target or the hidden root.
@@ -3225,15 +3250,19 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
 
   _Status: compared in ADR 0009 (option E); needs a spike. Not the main path while the hidden desktop is GNOME/KDE._
 
+  _Status (2026-10): re-evaluated against the whole-root session, still low priority. The soft-reboot already gives every hidden process a fresh userspace in the overlay root, so nspawn would add only a non-disruptive emergency for a headless hidden system, at the cost of machined registration and journal lines on the decoy. It would reuse the session's overlay root and fstab policy rather than a separate stack. Kept for a headless use case; not planned._
+
   **Problem:** For a headless or wlroots hidden session, a container with its own PID 1, journal, system bus and PID namespace gives the strongest live isolation, but logind inside nspawn has no graphical seat (systemd #35114, #36673).
 
   **Fix:** Spike `systemd-nspawn --boot` on the whole-root overlay for a headless hidden system: own journal in the upper, Wi-Fi moved with its `phy`, emergency by killing the machine scope. Compare decoy-side traces (machined registration, journal lines) with T-133.
 
   **Done when:** the spike result and a go/no-go are recorded in ADR 0009, and a VM test covers the mode if it goes ahead.
 
-- [ ] **T-147: idmapped binds for the fresh-home persona, or a separate hidden account** (low · effort L)
+- [x] **T-147: idmapped binds for the fresh-home persona, or a separate hidden account** (low · effort L)
 
   _Status: needs a spike (kernel support for idmapped layers under overlayfs on the supported LTS kernels)._
+
+  _Status (2026-10): obsolete. In the whole-root session the hidden `/etc` (passwd, shadow, the NixOS users) lives in the upper and every per-uid runtime object (`/run/user/<uid>`, the user manager, logind state) is created after the switch and scrubbed from `/run` on the way back, so the decoy's uid is no longer shared with a running decoy session. A separate hidden account is a user in the hidden configuration and leaves nothing on the decoy disk; no idmapped binds or `/run/userdb` record are needed. The persona tests from T-130 apply to such a user if one is ever documented as the default._
 
   **Problem:** The fresh-home persona (T-046) still runs as the decoy's uid, so per-uid state (`/run/user/<uid>`, user manager, keyring, dconf) is shared with the decoy. ADR 0009 rules out the same uid for a dual-root session.
 
@@ -3260,4 +3289,5 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
 - TPM or FIDO2 unlock of the hidden volume: an enrolled token or sealed key points at the hidden volume and binds it to the machine (see `docs/backends.md`).
 - A TUI: a large new surface and dependency set for no safety gain; the CLI and `status --json` cover it, and the panic path must stay minimal.
 - Overlay `uuid=off` on current LTS kernels: its meaning differs between the supported kernels, and the origin data it would drop sits inside the encrypted backend anyway.
-- CRIU for the decoy session: it cannot checkpoint DRM masters or a compositor's client graph, and the image would need storage on the decoy or the hidden volume (ADR 0009); dual root (T-133) gets the result without stopping the decoy.
+- CRIU for the decoy session: it cannot checkpoint DRM masters or a compositor's client graph, and the image would need storage on the decoy or the hidden volume (ADR 0009).
+- Dual-root session mode (T-133): the hidden session on its own VT in a whole-root overlay, with an emergency by VT switch and `cgroup.kill` that keeps the decoy desktop logged in. Its core was VM-proven (`research/dual-root-vt-emergency.nix`, `research/dual-root-risks.nix`), but it needed a hidden user, runtime polkit and D-Bus denies, a pinned mount namespace and a real-hardware matrix. The whole-root soft-reboot was chosen as the only session mode instead, accepting that the emergency ends at the decoy's login screen. [ADR 0009](docs/adr/0009-dual-root-emergency.md) is kept as research.
