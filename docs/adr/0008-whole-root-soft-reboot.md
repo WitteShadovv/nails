@@ -360,9 +360,16 @@ systemctl soft-reboot
   measured (3142 files in 11.3 s), and far more in a VM: with the serial copy,
   the first entry of `session-nixos-hidden-system` did not reach the switch
   within 10 minutes. NAILS runs
-  32 copy-ups at once, which share the filesystem's journal commits (the same
+  64 copy-ups at once, which share the filesystem's journal commits (the same
   3142 files in 1.6 s with 16, 1.0 s with 64), and reports progress every 15
-  s and the total time when done.
+  s and the total time when done. In the VM the first entry then copies a
+  test system's closure (about 260,000 files, 4.2 GB) in 12 minutes, about
+  370 files and 6 MB per second, bound by the 9p host share and the qcow2
+  disk under LUKS. At the rate measured on the encrypted NVMe SSD (about
+  3,000 files per second) the same closure takes about 1.5 minutes plus the
+  data, a few minutes for a desktop closure. Reflinks do not apply: the
+  hidden volume is never on the decoy's filesystem, and overlayfs already
+  clones or uses `copy_file_range` when the layers share one.
 
   Cost: one full copy of the hidden closure at the first entry (several GB
   for a desktop: the copy reads the decoy disk and writes the hidden backend,

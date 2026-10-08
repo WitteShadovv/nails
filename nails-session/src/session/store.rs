@@ -239,7 +239,7 @@ fn pending(merged: &Path, upper: &Path, items: &mut Vec<Item>) -> std::io::Resul
 /// one at a time waits on the disk for each file (several ms on an encrypted
 /// SSD, far more in a VM); many at once share the filesystem's journal
 /// commits, about ten times faster.
-const WORKERS: usize = 32;
+const WORKERS: usize = 64;
 
 /// Run every copy-up on [`WORKERS`] threads, reporting progress every
 /// [`HEARTBEAT`]. Stops at the first error.
