@@ -3144,9 +3144,11 @@ Owns: `nails-core/src/session/`, `nails-teardown/src/whole_root/`, `nails-core/s
 
 Owns: `Cargo.toml`, `nails-*/Cargo.toml`, `docs/testing-strategy.md`, `docs/e2e-performance.md`, `nix/e2e-tests/`
 
-- [ ] **T-138: Split nails-core into platform, overlay engine, forensics and teardown crates** (low · effort L)
+- [x] **T-138: Split nails-core into platform, overlay engine, forensics and teardown crates** (low · effort L)
 
   _Status: design only; no spike needed. The teardown crate comes first through T-135._
+
+  _Status (2026-10): done, along the boundaries left by the whole-root session ([ADR 0010](docs/adr/0010-library-crate-split.md), superseding ADR 0001's two-crate layout). Bottom-up: `nails-teardown` (unchanged), `nails-base` (error, Filesystem and process seams, configuration, state, artifact registry, attach gate, logging, output, the pre-flight framework), `nails-platform` (detection, backends, NixOS configuration layer and builder, backend chain), `nails-session` (entry, fstab policy, way back, probes, persona, runtime units), `nails-forensics` (verify, examiner, forensic readers, residue catalog, rehearse) and `nails-core` (manager, pre-flight registry and checks, status), which re-exports the others so the CLI and its JSON are unchanged. There is no overlay-engine crate: the live-overlay engine is gone and the whole-root mount primitives are in `nails-teardown`. Configuration and state sit in `nails-base` because the session, the checks and verification all read them. `nails-core/tests/crate_graph.rs` pins the graph, `nails-forensics/tests/boundary.rs` keeps verification read-only, and the teardown boundary test refuses every other NAILS crate. The library crates' unit tests still never reach the host (`nails_base::unit_test_mode!`). The flake source set, the `nails-source` check, the `rust` and E2E path filters and the orphan-module scan list every crate. Not run here: `nix build .#nails` and the VM suite (no Nix daemon in the sandbox)._
 
   **Problem:** `nails-core` holds platform detection, the overlay engine, verify and artifacts, and teardown in one crate, so nothing stops one area from reaching into another, and ADR 0001's boundary only separates the CLI.
 
