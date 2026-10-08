@@ -116,6 +116,7 @@ mod kernel_tests {
                 entered_at: None,
                 run_noexec: false,
                 carried: Vec::new(),
+                read_only_disks: false,
             }
         }
 
@@ -586,6 +587,7 @@ mod entry_kernel_tests {
                 persona: Default::default(),
                 operator: None,
                 rebuild_space_mb: 0,
+                read_only_disks: false,
             }
         }
     }

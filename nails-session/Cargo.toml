@@ -31,7 +31,7 @@ nails-base = { path = "../nails-base" }
 nails-platform = { path = "../nails-platform" }
 # The session plan, the next root, the transition and the hot path.
 nails-teardown = { path = "../nails-teardown" }
-rustix = { workspace = true, features = ["fs", "process"] }
+rustix = { workspace = true, features = ["fs", "mount", "process"] }
 toml = { workspace = true }
 tracing = { workspace = true }
 # The sleep guard's logind inhibitor over D-Bus.

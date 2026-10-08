@@ -4,7 +4,7 @@
 //! The strict recogniser never runs the hot path for a command line clap would
 //! refuse or parse as something else.
 
-use super::{EarlyArgs, is_transition, recognise};
+use super::{EarlyArgs, guarded_device, is_transition, recognise};
 use crate::cli::args::{Cli, Commands};
 use nails_teardown::whole_root::emergency::Finish;
 use std::ffi::OsString;
@@ -152,6 +152,25 @@ fn only_the_bare_transition_word_is_the_transition_step() {
     ] {
         assert!(!is_transition(&argv(&words)), "{words:?}");
     }
+}
+
+#[test]
+fn only_a_device_node_after_the_bare_guard_word_is_the_device_guard() {
+    assert_eq!(
+        guarded_device(&argv(&["guard-device", "/dev/sdb1"])),
+        Some(std::path::Path::new("/dev/sdb1"))
+    );
+    for words in [
+        vec!["guard-device"],
+        vec!["guard-device", "sdb1"],
+        vec!["guard-device", "/dev/sdb1", "-v"],
+        vec!["-v", "guard-device", "/dev/sdb1"],
+        vec!["transition", "/dev/sdb1"],
+    ] {
+        assert_eq!(guarded_device(&argv(&words)), None, "{words:?}");
+    }
+    let cli = Cli::try_parse_checked_from(argv(&["guard-device", "/dev/sdb1"])).unwrap();
+    assert!(matches!(cli.command, Commands::GuardDevice { .. }));
 }
 
 #[test]

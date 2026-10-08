@@ -32,7 +32,8 @@ pub fn requires_root(command: &Commands) -> bool {
         Commands::Deactivate(_)
         | Commands::Emergency(_)
         | Commands::Recover(_)
-        | Commands::Transition => true,
+        | Commands::Transition
+        | Commands::GuardDevice { .. } => true,
         // Planting writes into the overlays, a live scan reads raw block devices
         // and reset deletes from the hidden volume. An offline scan of image
         // files and the status view need no privileges.
@@ -63,6 +64,7 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::Watch => "watch",
         Commands::SleepGuard => "sleep-guard",
         Commands::Transition => "transition",
+        Commands::GuardDevice { .. } => "guard-device",
     }
 }
 

@@ -14,6 +14,10 @@
 //! - **`transition`**, run by systemd as the last step before each soft-reboot
 //!   switch: `nails_teardown::whole_root::transition` runs and the process ends
 //!   at once, with no output and no log.
+//! - **`guard-device <node>`**, run by the hidden session's udev rule for every
+//!   disk that appears (`[session_mounts] read_only`):
+//!   `nails_teardown::whole_root::disk_guard` makes it read-only unless the
+//!   session uses it, and the process ends at once, with no output and no log.
 //!
 //! In every other case `dispatch` does nothing and the normal path runs.
 //!
@@ -175,14 +179,48 @@ pub fn is_transition(argv: &[OsString]) -> bool {
     argv.len() == 2 && argv[1] == nails_teardown::whole_root::transition::TRANSITION_ARG
 }
 
+/// The device node of exactly the read-only guard udev runs.
+pub fn guarded_device(argv: &[OsString]) -> Option<&std::path::Path> {
+    (argv.len() == 3
+        && argv[1] == nails_teardown::whole_root::disk_guard::GUARD_ARG
+        && argv[2].as_encoded_bytes().starts_with(b"/dev/"))
+    .then(|| std::path::Path::new(&argv[2]))
+}
+
+/// Make `node` read-only for the session, from the plan in the runtime
+/// directory. No plan, no session: nothing to do.
+fn guard_device(node: &std::path::Path) {
+    use nails_teardown::whole_root::{disk_guard, plan};
+    let Ok(plan) = plan::Plan::load(&plan::default_plan_path()) else {
+        return;
+    };
+    if !plan.read_only_disks {
+        return;
+    }
+    let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
+    let _ = disk_guard::guard(
+        node,
+        &plan,
+        &mounts,
+        &disk_guard::Sysfs::system(),
+        std::path::Path::new(plan::RUNTIME_DIR),
+    );
+}
+
 /// Run the early paths. See the module docs. Returns whether the emergency hot
-/// path ran; the transition never returns.
+/// path ran; the transition and the device guard never return.
 pub fn dispatch() -> bool {
     let argv: Vec<OsString> = std::env::args_os().collect();
     if is_transition(&argv) && nix::unistd::geteuid().is_root() {
         let _ = nails_teardown::whole_root::transition::run(
             &nails_teardown::whole_root::transition::Env::system(),
         );
+        crate::cli::chokepoint::exit_process(0);
+    }
+    if let Some(node) = guarded_device(&argv)
+        && may_run()
+    {
+        guard_device(node);
         crate::cli::chokepoint::exit_process(0);
     }
     let Some(args) = recognise(&argv) else {

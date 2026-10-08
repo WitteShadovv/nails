@@ -39,6 +39,7 @@ fn plan(root: &Path) -> Plan {
         entered_at: Some(1_700_000_000),
         run_noexec: false,
         carried: Vec::new(),
+        read_only_disks: false,
     }
 }
 

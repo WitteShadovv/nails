@@ -25,6 +25,7 @@
 
 pub mod backend_watch;
 pub mod persona;
+pub mod session_mounts;
 
 // Sub-modules for config implementation
 mod builder;
@@ -44,6 +45,7 @@ mod testing;
 // Re-exports for public API - color types
 pub use backend_watch::BackendWatchConfig;
 pub use persona::{PersonaConfig, PersonaMode};
+pub use session_mounts::SessionMountsConfig;
 
 // Re-exports for public API - core types
 pub use types::{

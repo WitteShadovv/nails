@@ -194,6 +194,14 @@ pub const ARTIFACTS: &[Artifact] = &[
         description: "RAM-backed copy of the binary, config and mount manifest on the decoy /run; removed on deactivation and emergency.",
     },
     Artifact {
+        id: "read-only-disks-rule",
+        kind: ArtifactKind::AbsolutePath,
+        scope: ArtifactScope::Runtime,
+        severity: ArtifactSeverity::Warn,
+        value: "/run/udev/rules.d/60-overlay-runtime.rules",
+        description: "Runtime udev rule that keeps unused disks read-only in the hidden session ([session_mounts] read_only); removed on the way back, so a leftover on the decoy is a teardown failure.",
+    },
+    Artifact {
         id: "pivot-staging-run-legacy",
         kind: ArtifactKind::AbsolutePath,
         scope: ArtifactScope::Runtime,
@@ -443,6 +451,15 @@ mod tests {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(&path, indicators_json()).unwrap();
+    }
+
+    #[test]
+    fn the_read_only_rule_artifact_names_the_rule_the_transition_installs() {
+        use nails_teardown::whole_root::disk_guard::{RULE_DIR, RULE_NAME};
+        assert_eq!(
+            artifact("read-only-disks-rule").unwrap().value,
+            format!("/run/{RULE_DIR}/{RULE_NAME}")
+        );
     }
 
     #[test]

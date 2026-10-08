@@ -280,6 +280,20 @@ fn render_template(root: &Path, title: &str) -> String {
 # poll_interval_secs = 5   # seconds between probes
 # debounce_secs = 15       # seconds a failure must persist before auto_emergency
 
+# Disks mounted during the hidden session (a USB drive udisks automounts, a
+# manual mount of a decoy partition). They are real disks: a read-write mount
+# takes hidden writes.
+#   alert: the session watcher alerts you about every read-write mount of a disk
+#     outside the hidden volume (the watcher runs for this even when
+#     [backend_watch] is disabled).
+#   read_only: opt-in: every disk the session does not use, and every disk
+#     attached during it, is read-only for the session (mounts come up read-only,
+#     writes fail); the way back makes them writable again. A root user can still
+#     set a disk writable on purpose.
+# [session_mounts]
+# alert = true
+# read_only = false
+
 # What to do about system sleep (suspend/hibernate) while the hidden environment
 # is active. Suspending an active session leaves it resident in RAM behind the
 # decoy lock screen, so on resume the decoy login unlocks a still-live session.

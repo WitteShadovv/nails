@@ -226,6 +226,12 @@ pub struct Plan {
     /// [`crate::whole_root::carry`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub carried: Vec<CarriedMount>,
+    /// Whether the disks the session does not use are read-only for the
+    /// session (`[session_mounts] read_only`): the entry transition installs
+    /// the udev rule, the way back makes them writable again (see
+    /// [`crate::whole_root::disk_guard`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub read_only_disks: bool,
 }
 
 /// Why a plan could not be used.
@@ -366,6 +372,7 @@ pub(crate) fn sample() -> Plan {
         entered_at: None,
         run_noexec: false,
         carried: Vec::new(),
+        read_only_disks: false,
     }
 }
 

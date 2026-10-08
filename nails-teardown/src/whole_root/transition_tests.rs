@@ -262,3 +262,51 @@ fn the_dropin_runs_the_ram_copy_with_its_output_discarded() {
     assert!(!text.to_lowercase().contains("nails"));
     assert!(!DROPIN_NAME.contains("nails"));
 }
+
+#[test]
+fn the_read_only_rule_lives_from_the_entry_to_the_way_back_only() {
+    let world = World::new();
+    let rule = world
+        .run()
+        .join(disk_guard::RULE_DIR)
+        .join(disk_guard::RULE_NAME);
+    let mut plan = armed(Direction::Enter);
+    plan.read_only_disks = true;
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    let snapshot = Snapshot::take(&world.run());
+    fs::write(world.runtime().join(SNAPSHOT_NAME), snapshot.to_text()).unwrap();
+
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    let text = fs::read_to_string(&rule).unwrap();
+    let copy = world.runtime().join(BINARY_NAME);
+    assert!(
+        text.contains(&format!(
+            "RUN+=\"{} guard-device $devnode\"",
+            copy.display()
+        )),
+        "{text}"
+    );
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let outcome = run(&world.env(true, 1_030));
+    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+    assert!(!rule.exists(), "the decoy's udevd must never load the rule");
+    assert!(world.run().join("udev/data").is_dir());
+}
+
+#[test]
+fn without_the_opt_in_no_rule_is_installed() {
+    let world = World::new();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    assert!(!world.run().join(disk_guard::RULE_DIR).exists());
+}

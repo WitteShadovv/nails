@@ -14,9 +14,11 @@
 //! - **Enter** (decoy to hidden): repoint `/run/current-system` to the hidden
 //!   NixOS toplevel (PID 1 re-executes `/run/current-system/systemd/...`), mask
 //!   the decoy units the hidden systemd must never start, install the hidden
-//!   session's runtime units, and record the entry.
+//!   session's runtime units (and, opted in, the udev rule that keeps unused
+//!   disks read-only, [`crate::whole_root::disk_guard`]), and record the entry.
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
-//!   decoy, scrub `/run` ([`crate::whole_root::run_scrub`]), restore `utab`,
+//!   decoy, make the disks the session set read-only writable again and remove
+//!   the rule, scrub `/run` ([`crate::whole_root::run_scrub`]), restore `utab`,
 //!   and write the kmsg cursor last.
 //!
 //! Before either it checks the next root's init the way PID 1 will; when the
@@ -33,9 +35,10 @@
 //! name sent to `/dev/kmsg` would reach the decoy's ring buffer.
 
 use crate::mountinfo::{MountEntry, read_mountinfo};
+use crate::whole_root::disk_guard;
 use crate::whole_root::nextroot::{self, NEXTROOT};
 use crate::whole_root::plan::{
-    self, Direction, PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME, UTAB_NAME, unix_now,
+    self, BINARY_NAME, Direction, PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME, UTAB_NAME, unix_now,
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
 use crate::whole_root::runtime_units;
@@ -225,8 +228,12 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
         }
         return disarm(env, plan, &format!("could not mask decoy units: {e}"));
     }
-    // The session's own units (watcher, sleep guard) are best-effort.
+    // The session's own units (watcher, sleep guard) are best-effort, and so
+    // is the read-only rule for unused disks: the watcher sweeps them too.
     let _ = runtime_units::install_units(&env.run, &plan.session_units);
+    if plan.read_only_disks {
+        let _ = disk_guard::install_rule(&env.run, &env.runtime_dir.join(BINARY_NAME));
+    }
     plan.armed = None;
     plan.entered_at = Some(env.now);
     let _ = plan.write_atomic(&env.runtime_dir.join(PLAN_NAME));
@@ -245,6 +252,10 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         }
         return disarm(env, plan, &why);
     }
+    // The disks the session made read-only are the decoy's again, and its
+    // udevd must never load the rule (the scrub leaves /run/udev alone).
+    disk_guard::remove_rule(&env.run);
+    disk_guard::release(&env.runtime_dir);
     let runtime_rel = env
         .runtime_dir
         .strip_prefix(&env.run)

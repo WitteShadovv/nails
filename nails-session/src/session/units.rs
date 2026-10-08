@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The hidden session's own units: the backend watcher and the sleep guard.
+//! The hidden session's own units: the session watcher (the backend, and the
+//! disks mounted during the session) and the sleep guard.
 //!
 //! A transient unit started in the decoy would die with the soft-reboot, so
 //! both are written to `/run/systemd/system` by the entry transition and start
@@ -33,7 +34,8 @@ fn unit(name: String, description: &str, argument: &str) -> RuntimeUnit {
 /// The units the configuration asks for in the hidden session.
 pub fn session_units(config: &Config) -> Vec<RuntimeUnit> {
     let mut units = Vec::new();
-    if config.backend_watch.enabled {
+    // The watcher also alerts on, and guards, disks mounted during the session.
+    if config.backend_watch.enabled || config.session_mounts.needs_watcher() {
         units.push(unit(
             WATCH_UNIT.to_string(),
             "Overlay runtime monitor",
@@ -77,6 +79,14 @@ mod tests {
         }
         config.backend_watch.enabled = false;
         config.sleep_policy.mode = SleepPolicyMode::Warn;
+        assert_eq!(
+            session_units(&config).len(),
+            1,
+            "the mount alert keeps the watcher"
+        );
+        config.session_mounts.alert = false;
         assert!(session_units(&config).is_empty());
+        config.session_mounts.read_only = true;
+        assert_eq!(session_units(&config)[0].name, WATCH_UNIT);
     }
 }

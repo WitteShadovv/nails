@@ -94,8 +94,10 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 | `persona.mode` | `"shared-home"` or `"fresh-home"` | `"shared-home"` | How the hidden session relates to the decoy account. `shared-home` starts it from the decoy home (the root overlay's lower), so the decoy's accounts, keys and app profiles are live; activation warns while it is in effect. `fresh-home` is meant to start the operator's home empty in the hidden session. Being reworked for the whole-root session; see [Persona modes](#persona-modes). |
 | `backend_watch.auto_emergency` | boolean | `false` | Opt into an automatic emergency when the hidden backend fails. When `false` (the default) the watcher is alert-only, so a transient I/O stall can never end the session; when `true`, the emergency runs on its own, returning to the decoy, only after the failure outlasts `backend_watch.debounce_secs`. See [Backend watcher](#backend-watcher). |
 | `backend_watch.debounce_secs` | integer (seconds) | `15` | How long a failure must persist before an opted-in automatic emergency fires. Ignored unless `backend_watch.auto_emergency` is `true`. |
-| `backend_watch.enabled` | boolean | `true` | Run the backend watcher as a runtime unit of the hidden session. The watcher polls the hidden backend and alerts you when it fails. `false` runs no watcher. See [Backend watcher](#backend-watcher). |
+| `backend_watch.enabled` | boolean | `true` | Run the backend watcher as a runtime unit of the hidden session. The watcher polls the hidden backend and alerts you when it fails. With `false` and `session_mounts.alert` and `session_mounts.read_only` both `false`, no watcher runs. See [Backend watcher](#backend-watcher). |
 | `backend_watch.poll_interval_secs` | integer (seconds) | `5` | Seconds between the watcher's probes of the hidden backend. |
+| `session_mounts.alert` | boolean | `true` | Alert when a disk outside the hidden volume is mounted read-write during the hidden session (a USB drive udisks automounts, a manual `mount`). The session watcher raises the alert, and runs for it even with `backend_watch.enabled = false`. See [Disks mounted during the session](#disks-mounted-during-the-session). |
+| `session_mounts.read_only` | boolean | `false` | Opt-in: make every disk the hidden session does not use read-only at the block layer for the session, the disks present at entry and every disk attached during it, so a mount comes up read-only and writes fail. The way back makes them writable again. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) during a session. Suspending keeps the whole session — the overlay, the open dm-crypt mapper and the master key — resident in RAM. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds a sleep/idle inhibitor for the life of the session so the host cannot suspend. `teardown` holds a sleep *delay* inhibitor and powers the machine off when it is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `ignore`/`lock`. See [Sleep policy](#sleep-policy). |
 <!-- END config-keys -->
 
@@ -226,6 +228,49 @@ set `backend_watch.auto_emergency = true` — and even then it fires only after 
 failure has persisted for `backend_watch.debounce_secs`, so a brief hiccup that
 recovers is reported but never acted on. The automatic emergency returns to the
 decoy like `nails emergency`.
+
+## Disks mounted during the session
+
+The fstab policy at entry covers every filesystem the decoy knows about (see
+[What the session covers](#what-the-session-covers)). A disk the hidden session
+mounts itself is not covered: a USB drive udisks automounts, a decoy partition
+the policy masked and you mount by hand, a Windows partition. It is a real disk,
+and a read-write mount of it takes the hidden session's writes.
+
+- **Alert** (`session_mounts.alert`, on by default). The session watcher checks
+  the mount table every `backend_watch.poll_interval_secs` seconds and raises a
+  desktop alert ("Disk mounted with write access") once for every read-write
+  mount of a block device outside the hidden volume. The session's own mounts
+  never alert: the root and the decoy filesystems are overlays, the ESP is a
+  read-only bind, and the carried decoy filesystems are inside the hidden
+  volume. A mount made inside another mount namespace (a service with private
+  mounts) is not in the watcher's table.
+- **Read-only** (`session_mounts.read_only`, opt-in). Every disk the session
+  does not use is made read-only at the block layer for the session. The kernel
+  then refuses a read-write mount: `mount` falls back to read-only with a
+  warning, udisks mounts it read-only, `mount -o rw` fails, and a write through
+  the device node fails. Nothing a mount itself writes (a journal replay, a
+  mount count) reaches the disk either. A udev rule that only the hidden
+  session's udevd loads applies this to every disk and partition the moment it
+  appears, before udisks hears of it, and the hidden boot applies it to the
+  disks present at entry; the watcher checks all disks on every poll as a
+  fallback. The decoy root's disk, the hidden backend and everything it sits
+  on, the ESP and the decoy filesystems the session carries stay writable, as
+  do virtual devices (loop, device mapper, zram). The way back, `deactivate` and
+  `emergency` alike, makes exactly the disks the session set read-only writable
+  again before the switch, so the decoy finds them as it left them.
+- **The way back.** `nails deactivate` unmounts every disk mounted during the
+  session before it soft-reboots (a busy one is detached; the soft-reboot ends
+  its users), so the decoy can mount it again normally. After an emergency, the
+  soft-reboot's own shutdown unmounts them.
+
+**Limits.** A root user in the hidden session can always mount a disk: setting
+it writable again (`blockdev --setrw`) and mounting it is a deliberate act, and
+the alert still fires for the read-write mount. The block-layer flag does not
+stop writes through a filesystem already mounted read-write before the flag was
+set (the watcher's fallback can be a poll late); the udev rule is not, which is
+why it is the first line. A disk that is part of the session (the one the hidden
+volume or the decoy root lives on) stays writable as a whole device.
 
 ## Sleep policy
 

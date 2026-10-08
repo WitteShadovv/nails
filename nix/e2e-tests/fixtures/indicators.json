@@ -66,6 +66,15 @@
       "description": "RAM-backed copy of the binary, config and mount manifest on the decoy /run; removed on deactivation and emergency."
     },
     {
+      "id": "read-only-disks-rule",
+      "kind": "absolute-path",
+      "scope": "runtime",
+      "severity": "warn",
+      "value": "/run/udev/rules.d/60-overlay-runtime.rules",
+      "image_token": "60-overlay-runtime.rules",
+      "description": "Runtime udev rule that keeps unused disks read-only in the hidden session ([session_mounts] read_only); removed on the way back, so a leftover on the decoy is a teardown failure."
+    },
+    {
       "id": "pivot-staging-run-legacy",
       "kind": "absolute-path",
       "scope": "runtime",

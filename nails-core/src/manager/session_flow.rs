@@ -117,6 +117,7 @@ impl<F: Filesystem> NailsManager<F> {
             persona: self.config.persona.clone(),
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
             rebuild_space_mb: self.config.rebuild_space_mb,
+            read_only_disks: self.config.session_mounts.read_only,
         };
         let prepared = entry::prepare(&Paths::system(), &inputs, host)?;
         if let Err(e) = self.record_entry(&prepared, started.elapsed()) {

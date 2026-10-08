@@ -1,12 +1,14 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Hidden `watch` command: the in-session backend watcher.
+//! Hidden `watch` command: the in-session watcher.
 //!
 //! This is not an operator-facing command. It runs from the RAM-backed runtime
 //! copy as a runtime unit of the hidden session (installed in `/run` by the
 //! entry transition) for the life of the session, polling the hidden backend
-//! and alerting the operator the moment it fails. It is marked
+//! and alerting the operator the moment it fails, alerting on every disk
+//! mounted read-write outside the hidden volume (`[session_mounts] alert`), and
+//! sweeping unused disks read-only when that is opted into. It is marked
 //! `hide = true` so it never appears in help, and it keeps all of its state in the
 //! `/run` copy so it keeps working even after the hidden volume is gone.
 
@@ -14,6 +16,8 @@ use std::path::Path;
 
 use nails_core::notification::{Notification, send_immediate};
 use nails_core::{RealFilesystem, runtime_copy, watcher};
+use nails_teardown::mountinfo::MountEntry;
+use nails_teardown::whole_root::disk_guard;
 
 use crate::cli::output::{ExitStatus, OutputSettings};
 
@@ -55,20 +59,35 @@ pub fn execute(
     };
 
     let watch_config = config.backend_watch.clone();
-    if !watch_config.enabled {
-        tracing::debug!("Backend watch disabled in config; watcher exiting");
+    let mounts_config = config.session_mounts.clone();
+    if !watch_config.enabled && !mounts_config.needs_watcher() {
+        tracing::debug!("Nothing to watch in config; watcher exiting");
         return ExitStatus::Ok;
     }
 
     tracing::info!(
         poll_interval_secs = watch_config.poll_interval_secs,
         auto_emergency = watch_config.auto_emergency,
-        "Backend watcher started"
+        backend = watch_config.enabled,
+        mount_alert = mounts_config.alert,
+        read_only_disks = mounts_config.read_only,
+        "Session watcher started"
     );
+
+    // The read-only sweep needs the whole plan; the udev rule is the first
+    // line, this the fallback.
+    let plan = nails_teardown::whole_root::plan::Plan::load(
+        &nails_teardown::whole_root::plan::default_plan_path(),
+    )
+    .ok()
+    .filter(|plan| mounts_config.read_only && plan.read_only_disks);
+    let sysfs = disk_guard::Sysfs::system();
+    let mut mount_watch = watcher::MountWatch::new(&manifest.hidden_root);
+    let is_block = |mount: &MountEntry| disk_guard::mount_device(mount).is_some();
 
     watcher::run_loop(
         &watch_config,
-        || watcher::probe_backend(&filesystem, &manifest),
+        || !watch_config.enabled || watcher::probe_backend(&filesystem, &manifest),
         || {
             if let Err(e) = send_immediate(&backend_alert(), env) {
                 tracing::warn!(error = %e, "Could not deliver the backend-failure alert");
@@ -80,9 +99,50 @@ pub fn execute(
                 nails_teardown::whole_root::emergency::Finish::Return,
             );
         },
+        || {
+            let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
+            if let Some(plan) = &plan {
+                let set = disk_guard::sweep(
+                    plan,
+                    &mounts,
+                    &sysfs,
+                    Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR),
+                );
+                if !set.is_empty() {
+                    tracing::info!(devices = set.len(), "Unused disks set read-only");
+                }
+            }
+            if mounts_config.alert {
+                for mount in mount_watch.observe(&mounts, &is_block) {
+                    tracing::warn!(
+                        mount_point = %mount.mount_point.display(),
+                        "A disk is mounted read-write"
+                    );
+                    if let Err(e) = send_immediate(&mount_alert(&mount), env) {
+                        tracing::warn!(error = %e, "Could not deliver the disk-mount alert");
+                    }
+                }
+            }
+        },
     );
 
     ExitStatus::Ok
+}
+
+/// The neutral desktop alert raised when a disk is mounted read-write during
+/// the session: worded as an ordinary storage notice.
+fn mount_alert(mount: &MountEntry) -> Notification {
+    Notification {
+        title: "Disk mounted with write access".to_string(),
+        body: format!(
+            "{} ({}) is mounted read-write. Files written there stay on that disk.",
+            mount.mount_point.display(),
+            mount.source.display()
+        ),
+        urgency: "critical".to_string(),
+        icon: Some("drive-removable-media".to_string()),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    }
 }
 
 /// The neutral desktop alert raised when the backend stops responding.

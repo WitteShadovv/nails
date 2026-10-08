@@ -100,6 +100,8 @@ pub fn execute_command(
         // The transition step runs in `early::dispatch` as root; reaching clap
         // means it was not run by systemd, so it does nothing.
         Commands::Transition => ExitStatus::Ok,
+        // Likewise the read-only guard, which udev runs as root.
+        Commands::GuardDevice { .. } => ExitStatus::Ok,
     }
 }
 

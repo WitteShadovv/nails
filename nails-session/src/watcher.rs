@@ -23,11 +23,14 @@
 //! check; [`run_loop`] ties them together around a real sleep for the CLI's
 //! hidden `watch` subcommand.
 
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use crate::config::BackendWatchConfig;
 use crate::filesystem::Filesystem;
 use crate::runtime_copy::RuntimeManifest;
+use nails_teardown::mountinfo::MountEntry;
 
 /// What the watcher should do in response to one probe result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,22 +150,85 @@ pub fn probe_backend<F: Filesystem>(filesystem: &F, manifest: &RuntimeManifest) 
         .all(|target| filesystem.is_mounted(target).unwrap_or(false))
 }
 
+/// Whether a mount is a read-write mount of a disk that the session does not
+/// own: read-write, backed by a block device (`is_block` judges its source),
+/// and neither inside the hidden volume nor the decoy root mounted at
+/// `/run/nextroot` on the way back. The session's own mounts never qualify:
+/// the root and the decoy filesystems are overlays, the boot filesystems are
+/// read-only binds, and the carried decoy filesystems are inside the hidden
+/// volume.
+pub fn is_unguarded_mount(
+    mount: &MountEntry,
+    hidden_root: &Path,
+    is_block: &dyn Fn(&MountEntry) -> bool,
+) -> bool {
+    !mount.read_only()
+        && !mount.mount_point.starts_with(hidden_root)
+        && !mount
+            .mount_point
+            .starts_with(nails_teardown::whole_root::nextroot::NEXTROOT)
+        && is_block(mount)
+}
+
+/// The watcher's view of disk mounts made during the session (T-143): each
+/// unguarded read-write mount is reported once, by mount id.
+#[derive(Debug, Default)]
+pub struct MountWatch {
+    hidden_root: PathBuf,
+    seen: BTreeSet<i32>,
+}
+
+impl MountWatch {
+    /// Watch for mounts outside `hidden_root`.
+    pub fn new(hidden_root: &Path) -> Self {
+        Self {
+            hidden_root: hidden_root.to_path_buf(),
+            seen: BTreeSet::new(),
+        }
+    }
+
+    /// The unguarded mounts in `mounts` not reported before. A mount that is
+    /// gone is forgotten, so its id can alert again when it is reused.
+    pub fn observe(
+        &mut self,
+        mounts: &[MountEntry],
+        is_block: &dyn Fn(&MountEntry) -> bool,
+    ) -> Vec<MountEntry> {
+        let current: BTreeSet<i32> = mounts.iter().map(|m| m.mount_id).collect();
+        self.seen.retain(|id| current.contains(id));
+        mounts
+            .iter()
+            .filter(|m| is_unguarded_mount(m, &self.hidden_root, is_block))
+            .filter(|m| self.seen.insert(m.mount_id))
+            .cloned()
+            .collect()
+    }
+}
+
 /// Run the watch loop around a real sleep until an automatic emergency fires.
 ///
 /// The probe, alert and emergency effects are injected so the loop itself stays
 /// free of the host: the CLI's hidden `watch` subcommand supplies a real
 /// backend probe, a desktop notification, and an in-process emergency teardown.
-/// The loop returns once an automatic emergency has run; with alert-only
-/// configuration it runs until the process is stopped (deactivation and
-/// emergency stop the transient unit).
-pub fn run_loop<P, A, E>(config: &BackendWatchConfig, mut probe: P, mut alert: A, mut emergency: E)
-where
+/// `tick` runs at the start of every round, before the sleep (the mount watch
+/// and the read-only sweep). The loop returns once an automatic emergency has
+/// run; with alert-only configuration it runs until the process is stopped
+/// (deactivation and emergency stop the transient unit).
+pub fn run_loop<P, A, E, T>(
+    config: &BackendWatchConfig,
+    mut probe: P,
+    mut alert: A,
+    mut emergency: E,
+    mut tick: T,
+) where
     P: FnMut() -> bool,
     A: FnMut(),
     E: FnMut(),
+    T: FnMut(),
 {
     let mut watch = BackendWatch::new(config);
     loop {
+        tick();
         std::thread::sleep(config.poll_interval());
         let healthy = probe();
         match watch.observe(healthy, Instant::now()) {
@@ -379,13 +445,47 @@ mod tests {
         let mut probes = vec![false, false].into_iter();
         let mut alerts = 0;
         let mut emergencies = 0;
+        let mut ticks = 0;
         run_loop(
             &config,
             || probes.next().unwrap_or(false),
             || alerts += 1,
             || emergencies += 1,
+            || ticks += 1,
         );
         assert_eq!(alerts, 1, "first failure alerts");
         assert_eq!(emergencies, 1, "persistent failure tears down once");
+        assert_eq!(ticks, 2, "every round ticks first");
+    }
+
+    fn block_sources(mount: &MountEntry) -> bool {
+        mount.source.starts_with("/dev/")
+    }
+
+    #[test]
+    fn only_read_write_disk_mounts_outside_the_session_alert_once() {
+        let table = |extra: &str| {
+            nails_teardown::mountinfo::parse_mountinfo(&format!(
+                "1 0 0:30 / / rw - overlay overlay rw,upperdir=/u\n\
+                 2 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+                 3 2 8:2 / /mnt/data/root/decoy/home rw - ext4 /dev/vda3 rw\n\
+                 4 1 8:1 / /boot ro - vfat /dev/vda1 ro\n\
+                 5 1 0:31 / /home rw - overlay overlay rw\n\
+                 6 1 0:32 / /tmp rw - tmpfs tmpfs rw\n\
+                 7 1 8:2 / /run/nextroot rw - ext4 /dev/vda2 rw\n{extra}"
+            ))
+        };
+        let mut watch = MountWatch::new(Path::new("/mnt/data"));
+        assert!(watch.observe(&table(""), &block_sources).is_empty());
+        let usb = "8 1 8:33 / /run/media/user/USB rw - vfat /dev/sdc1 rw\n\
+                   9 1 8:34 / /mnt/ro ro - ext4 /dev/sdc2 ro\n";
+        let found = watch.observe(&table(usb), &block_sources);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].mount_point, Path::new("/run/media/user/USB"));
+        // Reported once while it stays.
+        assert!(watch.observe(&table(usb), &block_sources).is_empty());
+        // Unmounted and mounted again under the same id: reported again.
+        assert!(watch.observe(&table(""), &block_sources).is_empty());
+        assert_eq!(watch.observe(&table(usb), &block_sources).len(), 1);
     }
 }

@@ -8,6 +8,7 @@ use std::path::PathBuf;
 
 use super::backend_watch::BackendWatchConfig;
 use super::persona::PersonaConfig;
+use super::session_mounts::SessionMountsConfig;
 
 /// Neutral placeholder hidden volume root path (single source of truth).
 ///
@@ -255,6 +256,15 @@ pub struct Config {
     #[serde(default)]
     pub backend_watch: BackendWatchConfig,
 
+    /// Disks mounted during the hidden session.
+    ///
+    /// The session watcher alerts on a read-write mount of a disk outside the
+    /// hidden volume (on by default); `read_only` opts into making every disk
+    /// the session does not use read-only for the session. See
+    /// [`SessionMountsConfig`].
+    #[serde(default)]
+    pub session_mounts: SessionMountsConfig,
+
     /// What to do about system sleep (suspend/hibernate) while active.
     ///
     /// Suspending an active session leaves the hidden environment resident in RAM
@@ -313,5 +323,6 @@ pub const CONFIG_KEYS: &[&str] = &[
     "accept_persistent_decoy",
     "persona",
     "backend_watch",
+    "session_mounts",
     "sleep_policy",
 ];

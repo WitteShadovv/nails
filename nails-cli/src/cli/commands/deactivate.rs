@@ -121,6 +121,7 @@ pub fn execute(
         Ok(report) => {
             tracing::info!(
                 backend_closing = ?report.deferred,
+                unmounted = ?report.unmounted,
                 "the way back is enqueued"
             );
             ExitStatus::Ok

@@ -156,6 +156,7 @@ impl Default for Config {
             loaded_config_path: None,
             persona: PersonaConfig::default(),
             backend_watch: super::backend_watch::BackendWatchConfig::default(),
+            session_mounts: super::session_mounts::SessionMountsConfig::default(),
             nixos_flake: None,
             accept_persistent_decoy: false,
             sleep_policy: super::types::SleepPolicyConfig::default(),

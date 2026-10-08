@@ -196,6 +196,12 @@ pub enum Commands {
     /// The last step before each soft-reboot switch (run by systemd, not by hand)
     #[command(hide = true)]
     Transition,
+    /// Make a disk the hidden session does not use read-only (run by udev, not by hand)
+    #[command(name = "guard-device", hide = true)]
+    GuardDevice {
+        /// The device node.
+        device: std::path::PathBuf,
+    },
 }
 
 /// `nails activate` arguments
@@ -640,7 +646,7 @@ mod tests {
     #[test]
     fn internal_subcommands_are_hidden_from_help() {
         let command = Cli::command();
-        for name in ["watch", "sleep-guard", "transition"] {
+        for name in ["watch", "sleep-guard", "transition", "guard-device"] {
             let sub = command
                 .get_subcommands()
                 .find(|cmd| cmd.get_name() == name)

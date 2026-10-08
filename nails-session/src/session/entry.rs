@@ -151,6 +151,9 @@ pub struct EntryInputs<'a> {
     pub operator: Option<crate::target_user::TargetUser>,
     /// The free space a hidden NixOS build needs on the hidden volume, in MB.
     pub rebuild_space_mb: u64,
+    /// Keep the disks the session does not use read-only for the session
+    /// (`[session_mounts] read_only`).
+    pub read_only_disks: bool,
 }
 
 /// The prepared entry.
@@ -325,6 +328,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         entered_at: None,
         run_noexec: false,
         carried: Vec::new(),
+        read_only_disks: inputs.read_only_disks,
     }
 }
 
