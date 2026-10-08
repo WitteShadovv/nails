@@ -93,7 +93,11 @@ in
 
     hidden_token = "hidden-" + secrets.token_hex(6)
     with subtest("emergency from a hidden login shell kills it and returns"):
-        machine.succeed("systemd-run --unit hidden-writer --property=Type=exec sleep infinity")
+        machine.succeed(
+            "systemctl reset-failed hidden-writer.service 2>/dev/null; "
+            + "systemd-run --unit hidden-writer --property=Type=exec "
+            + "--setenv=PATH=$PATH sleep infinity"
+        )
         login_tty1()
         machine.send_chars(f"echo {hidden_token}\n")
         machine.wait_until_tty_matches("1", hidden_token, timeout=30)
