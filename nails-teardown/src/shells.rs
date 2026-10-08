@@ -1,12 +1,15 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Killing interactive shells before the overlays come down.
+//! Killing interactive shells before a soft-reboot.
 //!
 //! An interactive shell keeps its history in memory and writes it out when it
-//! exits. Once the overlays are gone its history file is on the decoy, so every
-//! interactive shell (root's included) is SIGKILLed before the unmount: a
-//! SIGKILLed shell runs no handler and writes nothing. Non-interactive shells
+//! exits, and stopping a login session sends it SIGHUP, on which bash writes.
+//! `activate` therefore SIGKILLs every interactive shell (root's included) on
+//! the decoy right before it starts the soft-reboot, so the activation command
+//! never reaches a decoy history file, and `emergency` does the same before the
+//! way back or the power-off. A SIGKILLed shell runs no handler and writes
+//! nothing. Non-interactive shells
 //! (a service's script, an `sh -c` wrapper, a pipeline subshell) keep no
 //! history and are left alone, as is the teardown's own invocation, whose shell
 //! is killed last, after the output is written ([`kill_invoking_shells`]).

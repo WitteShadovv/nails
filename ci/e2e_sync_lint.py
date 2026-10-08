@@ -8,12 +8,14 @@ Each rule names a pattern that has cost a real failure in the suite's history
   deadline, or a ``for _ in range(...)`` with a give-up branch) is fine and is
   recognised from the lines above it.
 * ``console-wait``: ``wait_for_console_text`` or ``wait_for_console_log``.
-  The emergency teardown restarts journald, which severs a unit's
-  journal+console stream, so a console regex can miss a line that was printed.
+  Every soft-reboot stops and restarts journald with the rest of userspace,
+  which severs a unit's journal+console stream, so a console regex can miss a
+  line that was printed.
   Wait on a result file under ``/run``, the unit's state or a mountpoint.
-* ``tmp-capture``: command output redirected into ``/tmp``. Activation overlays
-  ``/tmp`` and the forensic tests image the disk it lives on, so a capture
-  there lands in the hidden upper or on the decoy image depending on timing.
+* ``tmp-capture``: command output redirected into ``/tmp``. The whole-root
+  session overlays ``/tmp`` and the forensic tests image the disk it lives
+  on, so a capture there lands in the hidden upper or on the decoy image
+  depending on timing.
   Capture under ``/run``.
 * ``unbounded-shutdown``: the driver's ``wait_for_shutdown()`` has no
   deadline; wait on ``machine.process`` with a timeout first (as

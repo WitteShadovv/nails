@@ -196,7 +196,7 @@ pub fn build_registry<F: Filesystem>(
 
     // Reports whether the host would suspend an active session (lid switch, idle
     // auto-suspend), which would strand the hidden environment resident in RAM
-    // behind the decoy lock screen. Warn-only: the runtime sleep_policy modes
+    // behind the hidden session's lock screen (the decoy is not running). Warn-only: the runtime sleep_policy modes
     // (block/teardown) mitigate it, and the message names the configured one. The
     // check only reads logind.conf and its drop-ins; it performs no writes.
     registry.add_check(Box::new(SleepPolicyCheck::new(config.sleep_policy.mode)));
