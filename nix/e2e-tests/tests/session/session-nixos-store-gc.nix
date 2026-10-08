@@ -61,14 +61,19 @@ in
 
       config = {
         nailsTest.hiddenSystem = hidden.config.system.build.toplevel;
-        virtualisation.additionalPaths = [ hidden.config.system.build.toplevel ];
-        # The whole hidden closure is copied onto the hidden volume.
-        virtualisation.emptyDiskImages = lib.mkForce [
-          {
-            size = 8192;
-            driveConfig.deviceExtraOpts.serial = "data";
-          }
-        ];
+        virtualisation = {
+          additionalPaths = [ hidden.config.system.build.toplevel ];
+          # Verifying the whole closure over the 9p store share needs large
+          # contiguous buffers; 2 GB fragments too much for that.
+          memorySize = lib.mkForce 4096;
+          # The whole hidden closure is copied onto the hidden volume.
+          emptyDiskImages = lib.mkForce [
+            {
+              size = 8192;
+              driveConfig.deviceExtraOpts.serial = "data";
+            }
+          ];
+        };
         environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.nails ];
         nix.settings = {
           experimental-features = [
