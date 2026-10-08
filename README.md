@@ -240,9 +240,15 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    /mnt/data/nails config show        # effective values and where each comes from
    ```
 
-   On NixOS, edit the hidden module `/mnt/data/config/nixos/configuration.nix`,
-   or point `nixos_flake` at a flake. [docs/configuration.md](docs/configuration.md)
-   lists every key.
+   Leave `hidden_volume_root` unset to derive it from the binary's location. On
+   NixOS, edit the hidden module `/mnt/data/config/nixos/configuration.nix`, or
+   point `nixos_flake` at a flake:
+
+   ```toml
+   nixos_flake = "/mnt/data/nixos#my-host"
+   ```
+
+   [docs/configuration.md](docs/configuration.md) lists every key.
 
 4. **Check, then activate:**
 
