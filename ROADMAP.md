@@ -12,13 +12,13 @@ is about direction, not dates.
 
 Work in progress for the current release line.
 
-- **Debian/Ubuntu overlay-only support.** Debian and Ubuntu are the first non-NixOS platform. The
+- **Debian/Ubuntu support.** Debian 13 and Ubuntu 24.04+ are the first non-NixOS platform. The
   platform layer detects the host, refuses unsupported layouts (ostree/rpm-ostree,
-  transactional-update and non-systemd init), and drives the overlay-only lifecycle without a NixOS
-  rebuild. Tracked in [#5](https://github.com/WitteShadovv/nails/issues/5) and
+  transactional-update and non-systemd init), and runs the same whole-root session, with the hidden
+  configuration in the upper's `/etc` instead of a NixOS build. Tracked in [#5](https://github.com/WitteShadovv/nails/issues/5) and
   [#6](https://github.com/WitteShadovv/nails/issues/6).
 - **Safer activation, deactivation and recovery.** Reduce partial-failure cases during activation
-  and teardown, tighten handling of mount loss and overlay conflicts, and improve recovery when an
+  and the way back, tighten handling of a lost hidden volume, and improve recovery when an
   operation is interrupted or the operator falls back to `nails emergency` / `nails recover`.
 - **Stronger post-deactivation verification.** Widen `nails verify` coverage for common host-side
   artifacts and keep its output explicit about what was and was not checked, without implying broader
@@ -31,16 +31,13 @@ Work in progress for the current release line.
 
 Planned once the current line is stable.
 
-- **Fedora backend.** A validated backend for the Fedora family, covering its usr-merge layout,
-  session/display-manager handling and dnf/rpm package-drift scanning.
+- **Fedora backend.** A validated backend for the Fedora family, covering its usr-merge layout
+  and dnf/rpm package-drift scanning.
 - **Arch backend.** A validated backend for Arch and close derivatives, with pacman-based drift
   scanning. The platform layer is built so a new distribution is a backend plus a detection-table
   entry, not a rewrite.
 - **aarch64 support.** Build, test and release the binary for 64-bit ARM alongside x86-64, and
   exercise it in the E2E suite.
-- **Full `/usr` overlay mode.** Today `/usr` and the core roots are kept read-only as a leak guard.
-  A future mode would overlay `/usr` safely so package installs inside a hidden session do not leak
-  payloads to the decoy disk.
 
 ## Later / Research
 
@@ -50,8 +47,6 @@ Longer-horizon work and open questions, not yet scheduled.
 - **Cross-backend evaluation.** Extend the disk-image leak checks and the VM/container smoke tiers so
   every supported distribution is exercised end-to-end, with adding a distribution being one
   detection-table entry.
-- **kexec / boot-time redesign.** Revisit activation and deactivation around boot so non-NixOS hosts
-  gain a safer recovery and reduced-reboot path.
 - **OpenRC / ostree support.** Explore whether non-systemd init systems and image-based
   (ostree/rpm-ostree) hosts can be supported safely rather than refused.
 - **Usability study.** Evaluate the operator workflow with real users to find where setup, recovery

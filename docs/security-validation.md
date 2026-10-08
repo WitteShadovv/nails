@@ -1,6 +1,4 @@
-# Security Validation Guide
-
-**Project:** NAILS (overlay environment manager)
+# Security validation
 
 This guide documents the security validation mechanisms that are actually in use in this public repository: SBOM generation, dependency policy checks, deterministic release verification and GitHub artifact attestations.
 

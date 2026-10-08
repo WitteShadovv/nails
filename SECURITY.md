@@ -1,6 +1,6 @@
 # Security Policy
 
-NAILS, an overlay environment manager, is security-sensitive software. This policy explains what qualifies as a security issue, how to report one privately, and how the project handles coordinated disclosure.
+NAILS, a tool that runs a hidden session on a decoy system, is security-sensitive software. This policy explains what qualifies as a security issue, how to report one privately, and how the project handles coordinated disclosure.
 
 ## Scope
 
@@ -114,7 +114,7 @@ We prioritize issues based on impact to user safety, data exposure, isolation fa
 Examples of potentially high-priority reports include:
 
 - exposure of hidden-environment artifacts after documented cleanup
-- bypasses of isolation or rollback guarantees
+- bypasses of the session's isolation, the way back or the rollback of an interrupted entry
 - privilege escalation through NAILS-managed operations
 - release artifact integrity problems
 

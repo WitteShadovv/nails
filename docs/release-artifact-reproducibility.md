@@ -1,4 +1,4 @@
-# Release Artifact Reproducibility
+# Release artifact reproducibility
 
 NAILS verifies deterministic release artifacts for one canonical target:
 

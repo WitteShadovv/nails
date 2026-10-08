@@ -11,7 +11,31 @@ disagree with this page.
 NAILS is a Cargo workspace with a deliberately thin binary, five library crates
 split along the session's boundaries, and a small crate for the emergency hot
 path and the soft-reboot transition. Each crate depends only on the crates
-below it in this list:
+below it in this list. The edges between them, as the manifests declare them
+and `nails-core/tests/crate_graph.rs` pins them:
+
+```mermaid
+flowchart TD
+    cli[nails-cli] --> core[nails-core]
+    cli --> teardown[nails-teardown]
+    core --> forensics[nails-forensics]
+    core --> session[nails-session]
+    core --> platform[nails-platform]
+    core --> base[nails-base]
+    core --> teardown
+    forensics --> session
+    forensics --> platform
+    forensics --> base
+    forensics --> teardown
+    session --> platform
+    session --> base
+    session --> teardown
+    platform --> base
+    base --> teardown
+```
+
+`nails-cli` reaches `nails-teardown` directly because `main` runs the emergency
+and the transition step before anything else is initialised.
 
 - **`nails-cli`** parses arguments, renders human and JSON output, prompts, and
   turns results into the documented exit codes. It contains no activation logic:
@@ -44,7 +68,7 @@ below it in this list:
   snapshot and scrub, the kmsg cursor, the way back, the runtime units and
   masks, the kill of all userspace and the emergency hot path. It also holds the
   mountinfo parser and the cgroup, pidfd and shell kills. It depends on
-  `rustix`, `libc` and `serde` only, so `main` can run the emergency and the
+  `rustix`, `libc`, `serde` and `serde_json` only, so `main` can run the emergency and the
   transition before clap, the configuration or tracing exist.
 
 Keeping the logic in the library (rather than in the binary) is recorded in
@@ -67,11 +91,14 @@ the code never branches on "is this NixOS?" directly.
    the `Platform` trait:
    - `NixOsPlatform` — the first-class backend, with a declarative config layer
      that builds the hidden system into the next root's store.
-   - `FhsPlatform` — the backend for systemd FHS hosts, validated first on
-     Debian/Ubuntu, with other FHS families treated as provisional. The hidden
-     configuration is whatever the upper's `/etc` holds.
-   - `UnsupportedPlatform` — refuses ostree / image-based hosts and non-systemd
-     init with a typed error. For those hosts the refusal *is* the behaviour.
+   - `FhsPlatform` — the backend for Debian-family hosts: Debian 13 and newer,
+     Ubuntu 24.04 and newer, and provisionally derivatives whose `ID_LIKE`
+     names `debian` or `ubuntu`. The hidden configuration is whatever the
+     upper's `/etc` holds. (A Debian 12 host is detected as FHS and then
+     refused by the systemd version check: it cannot soft-reboot.)
+   - `UnsupportedPlatform` — refuses every other host with a typed error:
+     ostree and image-based hosts, non-systemd init, Fedora, Arch and unknown
+     distributions. For those hosts the refusal *is* the behaviour.
 3. **Policy.** The trait collects the host-specific decisions: where host tools
    live (`host_command_dirs`) and which declarative build target activation and
    `check` use (`discover_build_target`). `verify` picks its read-only drift
@@ -143,4 +170,8 @@ library be unit-tested without root or a real mount, and is recorded in
 [ADR 0002](adr/0002-trait-filesystem-testability.md). End-to-end behaviour that
 genuinely needs a booted system — real soft-reboots, the hidden NixOS system,
 the fstab policy, forensic residue — is covered by the NixOS VM tests under
-`nix/e2e-tests` and the Debian/Ubuntu tier under `nix/distro-tests`.
+`nix/e2e-tests` and the Debian/Ubuntu tier under `nix/distro-tests`. Between
+the two, a rootless real-kernel tier (`nails_base::test_support::Rerun`, for
+example `nails-core/tests/whole_root_kernel.rs`) runs the session's mount
+primitives, transition step and cgroup kill on real mounts in a user and mount
+namespace; see [testing-strategy.md](testing-strategy.md).

@@ -1,6 +1,4 @@
-# CI and Release Automation
-
-**Project:** NAILS (overlay environment manager)
+# CI and release automation
 
 This repository is public. The CI and release workflows are written for a public GitHub project while preserving the current supply-chain posture: deterministic Nix builds, SBOM generation, provenance, and release verification.
 
@@ -42,24 +40,26 @@ Every work job runs in parallel. None waits for another; each is gated only on t
 
 | Job | Runs when | What it does |
 |---|---|---|
-| `changes` | always | `python3 -m ci.changes` decides which filters the change matches (`rust`, `deps`, `nix`, `workflows`). The path rules live in `ci/changes.py` and nowhere else. |
+| `changes` | always | `python3 -m ci.changes` decides which filters the change matches (`rust`, `deps`, `nix`, `workflows`, `docs`). The path rules live in `ci/changes.py` and nowhere else. |
 | `lint` | `rust` | Fails on a `Cargo.lock` that does not match the manifests (`cargo metadata --locked`), then `just fmt-check`, `just lint` (clippy with `--locked -D warnings`, which also enforces the [lint policy](#lint-policy)), `just line-count` and the orphan module check. |
 | `rust` | `rust` | `just coverage` (cargo-llvm-cov over nextest with the `ci` profile) and `just doctest`. The production-code line-coverage threshold is defined once, in `.config/coverage.toml`, and the figure goes to the job summary. The tests run against a private `TMPDIR` that must be empty afterwards. The job clears `kernel.apparmor_restrict_unprivileged_userns` and sets `NAILS_REQUIRE_USERNS=1`, so the real-kernel tests (see [testing-strategy.md](testing-strategy.md)) run in their user + mount namespace and cannot skip. |
-| `shuffle` | `rust` | `just shuffle`: both crates' unit tests, threaded and shuffled over twenty seeds, so an order-dependent leak through the shared process environment fails the gate. nextest isolates each test in its own process and cannot catch this, hence libtest here; the weekly `stress` job in `scheduled.yml` covers the same ground more heavily. |
+| `shuffle` | `rust` | `just shuffle`: the unit tests of every workspace crate, threaded and shuffled over twenty seeds, so an order-dependent leak through the shared process environment fails the gate. nextest isolates each test in its own process and cannot catch this, hence libtest here; the weekly `stress` job in `scheduled.yml` covers the same ground more heavily. |
 | `deps` | `rust` or `deps` | `just deny bans licenses sources`; advisories and the `deny.toml` ignore expiry check only when `Cargo.toml`, `Cargo.lock` or `deny.toml` changed. |
 | `privileged-mounts` | `rust` | The one `#[ignore]`d real-overlayfs test that needs real root (directory whiteouts need `trusted.*` xattrs), built unprivileged and run as root in a private mount namespace. The rest of `privileged_mounts.rs` runs rootless in the `rust` job. |
 | `nix-build` | `rust` or `nix` | `nix build .#nails-release` (the release derivation) and a smoke test of the archive: contents, `nails --version` and `checksums.txt`. |
+| `distro-smoke` | `rust` | The container lane of the [portable distribution lanes](#the-portable-distribution-lanes). Informational: not part of `gate`. |
+| `docs-check` | `docs` | Installs lychee and runs `scripts/docs-check.sh`: an offline link check of every tracked Markdown file and the retired-name guard. |
 | `lint-misc` | `nix` or `workflows` | The unit tests of the CI and E2E tooling (`scripts/tests`, `ci/tests`, which includes `just docs-check`) and `nix flake check`: nixfmt, statix, deadnix, shellcheck, actionlint, zizmor and the E2E shard weights. |
 | `gate` | always | The one required status. It fails when any job failed or was cancelled and passes when the path filter skipped one. |
 
 ### Important gate behavior
 
 - **Require `gate`, not the individual jobs.** `gate` replaced the former `CI Success` check; the branch ruleset for `main` must list `gate` as its required check from this workflow (a maintainer setting).
-- **Path filter.** Only pull requests are filtered; a pull request is compared with the first parent of its merge commit. Pushes to `main` and manual runs run every job, and so does a change to `ci.yml` or `ci/changes.py`. A docs-only pull request runs `changes` and `gate` and nothing else.
+- **Path filter.** Only pull requests are filtered; a pull request is compared with the first parent of its merge commit. Pushes to `main` and manual runs run every job, and so does a change to `ci.yml` or `ci/changes.py`. A docs-only pull request runs `changes`, `docs-check` and `gate` and nothing else.
 - **One Rust cache.** Every Rust job uses the rust-cache key `ci`; only the `rust` job saves it, and only on `main`. `scheduled.yml` restores the same key twice a week so it does not expire.
 - **Gate time.** The lean parallel layout targets about 3.5 minutes for a Rust-only pull request on a warm cache (the `rust` job sets the critical path; a docs-only pull request is under a minute). This figure has to be measured on a hosted runner once the `ci` cache is warm on `main` and the confirmed number recorded here; the sandbox used for development cannot time it.
 - **Flaky tests.** The nextest `ci` profile (`.config/nextest.toml`) retries a failed test once and kills a test after three 60-second slow periods. A test that passes on its retry is listed as FLAKY in the job summary and flagged with a warning; a red run uploads `target/nextest/ci/junit.xml` as the `junit` artifact. The weekly `stress` job in `scheduled.yml` runs `just stress`, which hunts order- and timing-dependent tests the gate's single run would miss: the suite threaded, then with `--test-threads=1`, then shuffled with a seed it prints (set `SHUFFLE_SEED` to replay a reported ordering), then repeated through nextest with no retries so any single failure fails the job.
-- **Mutation testing.** The weekly `mutants` job in `scheduled.yml` runs `just mutants`, which has cargo-mutants change each mutable spot in the core teardown, overlay and state-machine modules (`state/`, `overlay/`, `cleanup/`) and re-run the tests. A mutation the suite still passes is a test gap that no coverage percentage would reveal; the full report uploads as the `mutants-report` artifact for triage and a surviving mutant never fails the job.
+- **Mutation testing.** The weekly `mutants` job in `scheduled.yml` runs `just mutants`, which has cargo-mutants change each mutable spot in the state machine (`nails-base/src/state/`) and re-run the tests. A mutation the suite still passes is a test gap that no coverage percentage would reveal; the full report uploads as the `mutants-report` artifact for triage and a surviving mutant never fails the job.
 - **Fork-safe.** No job in `ci.yml` writes to the pull request, so a fork pull request and any other run with a read-only token pass the gate. Only `report-status` has a write permission (`issues: write`), and it runs only on pushes to `main`.
 - **One coverage threshold.** The line-coverage floor is `line_threshold` in `.config/coverage.toml` and nowhere else; `just coverage` reads it and enforces it locally and in CI, and the percentage goes to the job summary. The figure measures production code only: the in-memory filesystem mock, the shared test fixtures and every test file are excluded, so test infrastructure that never ships cannot inflate it. There is no Codecov step: the external upload added a token and a flaky network call without gating anything, so coverage is enforced only by the threshold and kept as the `coverage-report` artifact.
 - **Advisories gate dependency changes only.** A newly published RustSec advisory does not fail unrelated PRs or `main`; the weekly `just deny-full` run in `scheduled.yml` reports it, including advisories for crates that never ship (other targets, dev-dependencies). See [security-validation.md](security-validation.md#dependency-policy).
@@ -70,13 +70,13 @@ Every work job runs in parallel. None waits for another; each is gated only on t
 
 The policy is compiled in, so `cargo build`, clippy and every editor enforce it the same way:
 
-- **Unsafe code is denied.** `[workspace.lints]` in the root `Cargo.toml` sets `unsafe_code = "deny"` for every crate and target, and both members opt in with `[lints] workspace = true`. A production unsafe site carries a scoped `#[allow(unsafe_code)]` on the smallest item around it, and `clippy::undocumented_unsafe_blocks` requires a `// SAFETY:` comment on each block. Test code may use unsafe freely (`#![cfg_attr(test, allow(unsafe_code))]` in each crate root). A new unsafe block anywhere else fails the build, which replaces the former cargo-geiger report.
+- **Unsafe code is denied.** `[workspace.lints]` in the root `Cargo.toml` sets `unsafe_code = "deny"` for every crate and target, and every workspace member opts in with `[lints] workspace = true`. A production unsafe site carries a scoped `#[allow(unsafe_code)]` on the smallest item around it, and `clippy::undocumented_unsafe_blocks` requires a `// SAFETY:` comment on each block. Test code may use unsafe freely (`#![cfg_attr(test, allow(unsafe_code))]` in each crate root). A new unsafe block anywhere else fails the build, which replaces the former cargo-geiger report.
 - **Function size.** `clippy::too_many_lines` and `clippy::cognitive_complexity` warn, so `-D warnings` fails on them. Their thresholds in `clippy.toml` sit at the largest function when the lints were introduced: no function may grow past that, and the limits go down as functions are split. A function far beyond them carries an `#[expect]` with a reason, which turns into a warning once the function is fixed.
 - **File size.** `scripts/check-line-count.sh` counts code lines (neither blank nor a `//` comment) per file. Production files warn above 500 and fail above 850; test files (`tests.rs`, `tests_*.rs`, `*_tests.rs`, anything below `tests/` or `benches/`) only warn, above 1500. It has no exemption list and needs only POSIX tools, and the pre-commit hook, `just check` and the `lint` job run the same script, in well under a second.
 
 ### Benchmarks
 
-`nails-core/benches/performance.rs` holds Criterion micro-benchmarks of the state, config, status, activation fast path and emergency orchestration code. Everything outside the state file runs against `MockFilesystem`, so the numbers track regressions between runs; real switching time is what the E2E performance test measures. Each fixture owns its temporary directory, so a run leaves the temp directory as it found it.
+`nails-core/benches/performance.rs` holds Criterion micro-benchmarks of the config, state, manager construction and status code. Everything outside the state file runs against `MockFilesystem`, so the numbers track regressions between runs; real switching time is what the E2E performance test measures. Each fixture owns its temporary directory, so a run leaves the temp directory as it found it.
 
 - **Where.** The `benchmarks` job of `scheduled.yml`, weekly or dispatched with `task: benchmarks`. The `bench` profile uses thin LTO (`[profile.bench]` in the root `Cargo.toml`) instead of inheriting the release profile's fat LTO.
 - **Baseline.** Each run saves its results as the Criterion baseline `current`, exports them with critcmp and uploads the export as the `benchmark-baseline` artifact (kept 90 days). The next run downloads the newest unexpired one from `main` and writes the critcmp table of both runs to the job summary. The first run, or one without an earlier baseline, only records its own.
@@ -108,7 +108,7 @@ One workflow runs the NixOS VM suite in every lane. A `plan` job decides what ru
 - **One path filter.** The `plan` job of a pull request or push run compares the change with its base; a dispatch or a call runs the mode it asked for. When nothing under `nails-base/`, `nails-core/`, `nails-cli/`, `nails-forensics/`, `nails-platform/`, `nails-session/`, `nails-teardown/`, `nix/`, `ci/e2e/`, the setup-nix action, this workflow, the flake, the Cargo manifests or `rust-toolchain.toml` changed, no VM boots and `e2e-result` passes. A docs-only pull request therefore costs one short job.
 - **No secrets for untrusted code.** There is no `pull_request_target` and no approval environment. Fork and Dependabot pull requests run like any other and read the binary cache without being able to write to it.
 - **Sharding.** `python3 -m ci.e2e plan --max-shards N --format github-matrix` balances the selected tests over as many shards as hold about 900 weighted seconds each (`SHARD_SECONDS` in `ci/e2e/plan.py`), never more than `max-shards` (10 by default) and never an empty one. Each shard's job timeout is 1.5 times its weighted load plus a 15-minute setup allowance (at least 30 minutes).
-- **Performance tests.** Wall-clock budgets on shared runners cannot gate a merge, so the shards of every mode exclude the `performance` group, and the `performance` job runs it on the selected runner in `execute` mode only. `07-performance.nix` times each sample inside the guest, from the `duration_ms` that nails logs for an activation (`activate --json`) or a teardown and with the guest clock for `status`, and holds the slowest of a few samples to its budget. It times status, overlay-only activation, emergency and one default activation, with `nixos-rebuild` stubbed so the external build stays out of the budget.
+- **Performance tests.** Wall-clock budgets on shared runners cannot gate a merge, so the shards of every mode exclude the `performance` group, and the `performance` job runs it on the selected runner in `execute` mode only. `07-performance.nix` times each sample inside the guest and holds the slowest of a few samples to its budget: `status` and `check`, which only read; `activate` and `deactivate` from the trigger until the new userspace has settled after the soft-reboot (`trigger_to_settled`, over two `--overlay-only` round trips); and `emergency` until a shell on the plain decoy is back (`trigger_to_backdoor`).
 - **Runner.** `runner` is the `runs-on` value as JSON and applies to the shards; `plan`, `e2e-result` and the reporting jobs always run on `ubuntu-24.04`. Hosted runners get KVM from setup-nix; a self-hosted runner must provide `/dev/kvm`. A single-use self-hosted runner can serve one job only, so dispatch with `max-shards: 1` for it.
 - **Execution.** Each shard runs its tests with `python3 -m ci.e2e run --retries 1`: one `nix build --keep-going` over all of them (or, in `execute` mode, one driver after another). A test whose output is missing after the build failed. Failed tests run once more; a pass on that retry is listed as FLAKY in the step summary and raises a warning annotation, and the shard stays green. A test that fails twice fails the shard.
 - **Artifacts.** Each shard uploads its per-test durations (`e2e-durations-shard-N`, kept 90 days) and, only when it failed, the logs of its failed tests (`e2e-logs-shard-N`, kept 14 days). No privileged job uploads `**/*.log`, a performance file or metrics; nothing else from the runner leaves it.
@@ -132,17 +132,20 @@ The target is that `mode=all` finishes in at most 10 shards and about 20 minutes
 
 ### The portable distribution lanes
 
-Two lanes exercise the overlay-only backend on a non-NixOS host, so regressions there are caught instead of passing unseen. They are complementary, not redundant: the container lane is cheap and runs per PR; the VM lane is thorough and runs nightly. Both are informational and gate no merge until promoted; the NixOS `e2e.yml` suite is unchanged and stays NixOS-only.
+Two lanes exercise the Debian and Ubuntu backend on a non-NixOS host, so regressions there are caught instead of passing unseen. They are complementary, not redundant: the container lane is cheap and runs per PR; the VM lane is thorough and runs nightly. Both are informational and gate no merge until promoted; the NixOS `e2e.yml` suite is unchanged and stays NixOS-only.
 
 | | Container lane (`distro-smoke` in `ci.yml`) | VM lane (`distro-e2e.yml`) |
 |---|---|---|
 | Test host | Privileged systemd **container** per distro | Real cloud image in a **KVM VM** on the NixOS test driver |
 | KVM needed | No | Yes (`/dev/kvm`) |
 | Runs | Every PR touching a crate directory (`nails-*/`) | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` |
-| Reboot in the lifecycle | No (a container cannot reboot) | Yes |
+| Soft-reboot in the lifecycle | No (a container cannot soft-reboot) | Yes |
 | Decoy leak check | Compares the decoy files in place (weaker) | Host-side `strings` scan of the raw decoy disk image |
 
 #### The container lane (`distro-smoke`)
+
+> [!WARNING]
+> This lane has not been ported to the whole-root session. `scripts/distro-smoke/scenario.sh` still drives the removed live-overlay mode (`activate --overlay-only --session keep`, a read-only `/usr` guard, a reboot at `deactivate`), and the matrix still lists `debian:12`, which the soft-reboot requirement refuses. A container cannot soft-reboot, so the lane can at most cover detection and the pre-flight checks. The description below is the lane as it was built.
 
 `scripts/distro-smoke/run.sh` boots a privileged systemd container for each of `debian:12`, `debian:13` and `ubuntu:24.04` and drives the static musl binary through the full overlay-only lifecycle (`scripts/distro-smoke/scenario.sh`). Because a container needs no KVM, the `distro-smoke` matrix job runs on an ordinary hosted runner on every PR, giving the Debian/Ubuntu backend per-PR regression coverage the KVM VM lane cannot afford.
 
@@ -161,7 +164,7 @@ Two lanes exercise the overlay-only backend on a non-NixOS host, so regressions 
 
 - **Trigger.** A nightly schedule, a pull request that gets the `distro-e2e` label, manual dispatch, and `workflow_call`.
 - **Runner.** Each VM needs KVM, so the `runner` input selects where the jobs run (a hosted `ubuntu-24.04` exposes `/dev/kvm`; a self-hosted KVM runner is a label list). The matrix is planned by `python3 -m ci.e2e distro-plan` and kept at or below eight parallel jobs (distributions times their shards).
-- **Coverage.** One smoke scenario per distribution: platform detection, the decoy-persistence preflight, overlay-only activation with a read-only `/usr` guard, the lifecycle through a reboot, and the host-side decoy disk-image leak check with null and positive controls.
+- **Coverage.** One smoke scenario per distribution (`nix/distro-tests/tests/smoke.nix`): platform detection, the decoy-persistence preflight, activation soft-rebooting the stock cloud image into an overlay of its own root (every hidden write, `/usr` included, lands on the hidden root; the ESP stays read-only), deactivation and emergency soft-rebooting back, and the host-side decoy disk-image leak check with null and positive controls.
 - **Adding a distribution** is one entry in `nix/distro-tests/images.nix`; see `nix/e2e-tests/README.md`. The image hashes and the `nix-vm-test` lock are pinned on a networked KVM host, not in the sandbox.
 
 ### Post-merge contract and the red-main rule
@@ -267,6 +270,8 @@ just deny         # dependency policy over the shipped graph
 just deny-full    # the full-graph policy scan scheduled.yml runs weekly
 just nix-lint     # nixfmt, deadnix and statix over the tracked Nix files
 just docs-check   # docs/ci.md lists every workflow
+just kernel-tests # the real-kernel tests in a user namespace; fails instead of skipping
+just shuffle      # the unit tests threaded and shuffled over twenty seeds
 just stress       # threaded, single-thread and shuffled runs to surface flaky tests
 just e2e ci       # build one E2E target or group
 nix flake check   # what the lint-misc job runs: the Nix, shell and workflow linters

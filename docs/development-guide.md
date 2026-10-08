@@ -1,6 +1,4 @@
-# Development Guide
-
-**Project:** NAILS (overlay environment manager)
+# Development guide
 
 This guide covers the local workflows that are not obvious from `cargo` alone.
 The development shell (`nix develop`) provides the pinned toolchain and every
@@ -15,7 +13,9 @@ The library is split into crates along the session's boundaries
 `nails-teardown`, `nails-base`, `nails-platform`, `nails-session`,
 `nails-forensics` and `nails-core`, with `nails-cli` on top. A crate depends
 only on crates below it; `nails-core/tests/crate_graph.rs` fails on a new edge,
-and `nails-forensics/tests/boundary.rs` keeps verification read-only. Code
+`nails-forensics/tests/boundary.rs` keeps verification read-only, and
+`nails-teardown/tests/boundary.rs` keeps the emergency hot path's dependencies
+to a reviewed list. Code
 outside the library crates uses the `nails_core::` paths: `nails-core`
 re-exports every module of the crates below.
 
@@ -35,7 +35,9 @@ When you add a crate:
 switches (the host-interaction skip, the state attach gate, immediate alerts)
 ask `runtime_safety::in_unit_tests()`, which the macro sets before `main` in
 that crate's unit-test binary. Integration tests and the `nails` binary built
-for them are not marked; they keep the `NAILS_TEST_RUNTIME` rule below.
+for them are not marked: they skip host interaction only when the
+`NAILS_TEST_RUNTIME` variable is set in the environment the binary starts with
+(read once into `RuntimeEnv::test_hooks`, see below).
 
 ## Test tiers
 
@@ -91,16 +93,15 @@ let manager = NailsManager::new(fs, config, state_path)
     .with_runtime_env(env.clone());
 ```
 
-The test-only knobs (`NAILS_TEST_*`, the fake `systemctl`/`reboot`/`systemd-run`
-paths) live in `RuntimeEnv::test_hooks`, compiled only with the `test-hooks`
+The test-only knobs (`NAILS_TEST_RUNTIME`, `NAILS_TEST_FORCE_ATTACHED` and
+`NAILS_TEST_ENFORCE_ROOT`) live in `RuntimeEnv::test_hooks`, compiled only with the `test-hooks`
 feature. A test that exercises a leaf helper scopes a snapshot to its own thread
 with `nails_core::runtime_env::ScopedRuntimeEnv`. A subprocess test sets the
 child's variables on the `Command` and the child reads them once with
 `RuntimeEnv::from_process_env` and installs them, exactly as `main` does. Never
 call `std::env::set_var` or `remove_var`, and never change the working directory
-in a test; for example, the NixOS builder tests give
-`RealCommandExecutor::with_search_path` a stub directory, and the relative-flake
-tests spell their refs relative to the shared working directory.
+in a test; the relative-flake tests, for example, spell their refs relative to
+the shared working directory.
 
 A shuffled run catches a test that depends on another test's leftovers. The
 shuffle flag is unstable in libtest, so it needs `RUSTC_BOOTSTRAP` on the pinned

@@ -4,9 +4,9 @@
 # root (so the flake reference `.#...` resolves) and forwards its arguments.
 #
 #   run-e2e-tests.sh                 # build the default target (the ci group)
-#   run-e2e-tests.sh basic-workflow  # build one test
+#   run-e2e-tests.sh session-lifecycle  # build one test
 #   run-e2e-tests.sh run --shard 1/4 all
-#   run-e2e-tests.sh -i basic-workflow   # open the interactive driver
+#   run-e2e-tests.sh -i session-lifecycle   # open the interactive driver
 #   run-e2e-tests.sh --help          # usage, with no nix required
 set -euo pipefail
 

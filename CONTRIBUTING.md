@@ -77,17 +77,18 @@ The suite runs in tiers, each with its own command, runtime and prerequisites. E
 |---|---|---|---|
 | Format, lint and unit tests (pre-push gate) | `just check` | about 90 s | dev shell |
 | CI parity, with coverage | `just ci-rust` | a few minutes | dev shell |
-| Privileged real-overlay tests | see `docs/development-guide.md` | seconds | root / `CAP_SYS_ADMIN`, an overlayfs-capable kernel |
-| One E2E test | `just e2e basic-workflow` | minutes | KVM (`/dev/kvm`), Nix |
+| Real-kernel tests (rootless) | `just kernel-tests` | seconds | dev shell, unprivileged user namespaces |
+| The one root-only overlay test | see `docs/development-guide.md` | seconds | root, an overlayfs-capable kernel |
+| One E2E test | `just e2e session-lifecycle` | minutes | KVM (`/dev/kvm`), Nix |
 | E2E smoke group | `just e2e smoke` | minutes | KVM, Nix |
 | Full E2E suite | `just e2e all` | long (nightly in CI) | KVM, Nix |
 
-- **Unprivileged by default.** `just test` (and `just check`) drive the mount and overlay logic through `MockFilesystem` and temporary directories, so they need neither root nor an overlayfs kernel.
-- **Ignored and root-gated tests.** The real-overlay tests in `nails-core/tests/privileged_mounts.rs` are every one `#[ignore]`d and run only in a private mount namespace (the `privileged-mounts` CI job, part of `gate`); `docs/development-guide.md` has the exact build-and-run commands. A handful of other `#[ignore]`d tests invoke real process-kill or mount logic and must not run outside an isolated environment.
+- **Unprivileged by default.** `just test` (and `just check`) need no root. Most tests drive the logic through `MockFilesystem` and temporary directories; the real-kernel tests re-run themselves in an unprivileged user and mount namespace and skip, with a message, where user namespaces are unavailable (`just kernel-tests` fails instead).
+- **Ignored tests.** Only one real-overlay test needs root: the whiteout and opaque-directory test in `nails-core/tests/privileged_mounts.rs`. It is `#[ignore]`d and runs in a private mount namespace in the `privileged-mounts` CI job (part of `gate`); `docs/development-guide.md` has the exact build-and-run commands. The other `#[ignore]`d tests regenerate a committed file or need a host state they cannot set up; each says why in its `#[ignore = "..."]` reason.
 - **`NAILS_UNSAFE_REAL_OPS`.** CLI integration tests that would perform real host actions refuse to run unless `NAILS_UNSAFE_REAL_OPS=1` is set, so a normal `cargo test` skips them rather than touching the host. Set it only inside a disposable VM or container.
 - **Environment-sensitive tests.** All tests in a binary share one process environment, so tests never mutate it: product code reads the environment once, in `main`, into a `RuntimeEnv`, and a test builds the `RuntimeEnv` it needs and injects it (see `docs/development-guide.md`). Never call `std::env::set_var`/`remove_var`.
 - **Shared fixtures.** Build managers for a test through `nails_core::TestWorld` rather than re-deriving a `Config` and `NailsManager` by hand; it stages the mock filesystem, roots the config in a temporary directory and (via `.with_nixos`, `.with_state`/`.inactive`, `.with_filesystem`) covers the specialised cases. `Config::test_default()` gives a deterministic config on its own. Both live behind the `test-support` feature, so `nails-cli` and the integration tests share them.
-- **Test-file layout.** A module keeps its tests in a sibling `tests/` directory wired with a single `mod tests;` declaration, not one giant `tests.rs`. `tests/mod.rs` holds the shared fixtures and the `mod <behaviour>;` declarations; each `tests/<behaviour>.rs` groups one behaviour (preflight, overlay mount, rollback, …) and starts with `use super::*;`. Keep each file under about 1,500 lines and split by behaviour when it grows past that.
+- **Test-file layout.** A module keeps its tests in a sibling `tests/` directory wired with a single `mod tests;` declaration, not one giant `tests.rs`. `tests/mod.rs` holds the shared fixtures and the `mod <behaviour>;` declarations; each `tests/<behaviour>.rs` groups one behaviour (a pre-flight check, the entry, the way back, …) and starts with `use super::*;`. Keep each file under about 1,500 lines and split by behaviour when it grows past that.
 
 ## Contribution Guidelines
 
@@ -132,7 +133,7 @@ This repository uses [Conventional Commits](https://www.conventionalcommits.org/
 
 Examples:
 
-- `fix(overlay): handle cleanup failure on deactivation`
+- `fix(session): detach a leftover next root on recover`
 - `docs(security): clarify public vulnerability reporting`
 - `test(state): cover rollback edge case`
 
@@ -150,7 +151,7 @@ per the [Developer Certificate of Origin](https://developercertificate.org/).
 Add the sign-off trailer by committing with `-s`:
 
 ```bash
-git commit -s -m "fix(overlay): handle cleanup failure on deactivation"
+git commit -s -m "fix(session): detach a leftover next root on recover"
 ```
 
 This appends a line to the commit message:
