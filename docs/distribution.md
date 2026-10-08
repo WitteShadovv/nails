@@ -17,10 +17,13 @@ This page lists the channels that respect that and the ones that do not.
   is the only one that can be checked without touching the decoy.
 - **Source or Nix build from inside an active hidden session, for upgrades.**
   Once a hidden session is active, `cargo build` or `nix build` may be used to
-  rebuild NAILS in place. Every build cache (`~/.cargo`, `/nix/store`, the
-  `result` GC root) then lands on the hidden upper layer, not the decoy. Do not
-  use this for a first install: before a session is active there is no hidden
-  upper to catch the caches, so the build pollutes the decoy.
+  build the new version. Every build cache (`~/.cargo`, `/nix/store`, the
+  `result` GC root) then lands on the hidden upper layer, not the decoy. Copy the
+  result next to the old binary on the hidden volume (for example
+  `<hidden-root>/nails.new`) and swap it in only while no session is active
+  (see [Updating NAILS](operator-guide.md#updating-nails)). Do not use this for a
+  first install: before a session is active there is no hidden upper to catch
+  the caches, so the build pollutes the decoy.
 
 ## Unsupported
 

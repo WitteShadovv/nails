@@ -175,24 +175,34 @@ yours neutral too: names surface in `/dev/mapper`, `/dev/disk/by-label`, mount
 unit names and the journal, and NAILS warns when one contains a telling word.
 
 <details>
-<summary><b>Upgrading the binary from inside a hidden session</b></summary>
+<summary><b>Upgrading the binary</b></summary>
 
-These builds are for upgrading an existing install, not for a first install. Run
-them only inside an active hidden session: the build caches (`~/.cargo`,
-`/nix/store`, the `result` GC root) then land on the hidden upper, never on the
-decoy.
+Replace the binary only while no session is active, as the
+[operator guide](docs/operator-guide.md#updating-nails) says. Fetch or build the
+new one inside a hidden session, so the downloads and build caches (`~/.cargo`,
+`/nix/store`, the `result` GC root) land on the hidden upper and never on the
+decoy, and leave it next to the old one on the hidden volume:
 
 ```bash
-# From source
+# Inside a hidden session: a verified release (see docs/verify-release.md) ...
+sudo install -m0755 /path/to/verified/nails /mnt/data/nails.new
+
+# ... or a build from source
 git clone https://github.com/WitteShadovv/nails /mnt/data/src/nails
 cd /mnt/data/src/nails
-cargo build --release
-install -m0755 ./target/release/nails /mnt/data/nails
-
-# With Nix
-nix build .#nails
-install -m0755 ./result/bin/nails /mnt/data/nails
+cargo build --release          # or: nix build .#nails (then use ./result/bin/nails)
+sudo install -m0755 ./target/release/nails /mnt/data/nails.new
 ```
+
+Then end the session. The next time you have mounted the hidden volume on the
+decoy, and before you activate, put the new binary in place:
+
+```bash
+sudo mv /mnt/data/nails.new /mnt/data/nails
+```
+
+Never build or download on the decoy: before a session there is no hidden upper
+to catch the caches.
 
 Zero-config path discovery trusts the binary installed on the hidden volume. If
 you run NAILS from a build directory or `/nix/store`, set `hidden_volume_root`

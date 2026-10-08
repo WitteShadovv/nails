@@ -402,8 +402,11 @@ onto the decoy:
 2. Verify it before trusting it: check the published `checksums.txt`, and prefer
    a build you reproduced yourself. An unverified binary is an untrusted addition
    to root's TCB.
-3. Install on the hidden root only, `root`-owned. Do not stage the new binary on
-   the decoy at any point.
+3. Install on the hidden root only, `root`-owned, and only while no session is
+   active. Download or build the new binary inside a hidden session and leave it
+   on the hidden volume as `<hidden-root>/nails.new`; after the session, with
+   the hidden volume mounted on the decoy and before you activate, move it over
+   `<hidden-root>/nails`. Do not stage the new binary on the decoy at any point.
 4. Re-read this guide after a version change; operational requirements can change
    between releases.
 
