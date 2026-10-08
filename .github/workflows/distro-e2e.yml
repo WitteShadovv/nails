@@ -34,7 +34,7 @@ on:
         default: '"ubuntu-24.04"'
       distros:
         description: >-
-          Space-separated distributions to run (e.g. "debian-12 ubuntu-24.04");
+          Space-separated distributions to run (e.g. "debian-13 ubuntu-24.04");
           empty runs every distribution in the image table.
         type: string
         default: ""

@@ -538,6 +538,9 @@ state, config and CLI surfaces; there are no compatibility shims.
   `[emergency]` table (`lock_backend`, `close_command`), and the ephemeral overlay directories.
 - Debian 12 and Ubuntu 22.04 support (systemd too old for a soft-reboot), and Debian 12 in the
   distribution smoke tests.
+- The per-PR `distro-smoke` container lane (`scripts/distro-smoke/`, the `distro-smoke` job in
+  `ci.yml` and its `distro-runner` input). It drove the live-overlay lifecycle, and a container
+  cannot soft-reboot; the Debian and Ubuntu VM tests in `distro-e2e.yml` cover the session.
 - The XOR string-obfuscation module and its indistinguishability claims; the obfuscated literals
   are inlined and the binary is now described honestly as identifiable.
 - The non-functional in-memory shell-history clear (a `bash -c` subprocess that could never
