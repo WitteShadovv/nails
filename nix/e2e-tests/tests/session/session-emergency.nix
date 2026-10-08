@@ -96,7 +96,7 @@ in
         machine.succeed(
             "systemctl reset-failed hidden-writer.service 2>/dev/null; "
             + "systemd-run --unit hidden-writer --property=Type=exec "
-            + "--setenv=PATH=$PATH sleep infinity"
+            + "sleep infinity"
         )
         login_tty1()
         machine.send_chars(f"echo {hidden_token}\n")

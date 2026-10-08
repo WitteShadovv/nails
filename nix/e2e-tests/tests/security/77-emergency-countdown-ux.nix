@@ -56,7 +56,7 @@ in
         machine.succeed(
             "systemctl reset-failed hidden-writer.service 2>/dev/null; "
             + "systemd-run --unit hidden-writer --property=Type=exec "
-            + "--setenv=PATH=$PATH sleep infinity"
+            + "sleep infinity"
         )
         rc, out = machine.execute(
             f"timeout -s INT -k 5 3 nails --config {CONFIG} emergency --countdown 30 2>&1"
@@ -89,7 +89,7 @@ in
         machine.succeed(
             "systemctl reset-failed hidden-writer.service 2>/dev/null; "
             + "systemd-run --unit hidden-writer --property=Type=exec "
-            + "--setenv=PATH=$PATH sleep infinity"
+            + "sleep infinity"
         )
         immediate_timings, stderr = emergency_back(
             "", "/mnt/data/immediate.err", "emergency-immediate"
