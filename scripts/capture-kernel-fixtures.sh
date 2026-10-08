@@ -4,7 +4,7 @@
 #
 # Capture real kernel and systemd output as parser test fixtures, so the parser
 # tests run against what the kernel and the tools actually print instead of
-# hand-written strings. The output lands in nails-core/tests/fixtures/kernel/.
+# hand-written strings. The output lands in nails-base/tests/fixtures/kernel/.
 #
 #   capture-kernel-fixtures.sh userns OUTDIR
 #       Unprivileged. Builds an overlay scene inside a fresh user + mount

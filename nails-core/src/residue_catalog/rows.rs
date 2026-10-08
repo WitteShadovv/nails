@@ -197,7 +197,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "NAILS's own files and markers",
         kind: ResidueKind::Session,
         channel: Channel::Mechanism(
-            "the paths and content markers listed in the artifact registry (nails-core/src/artifacts.rs)",
+            "the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs)",
         ),
         platforms: Platforms::All,
         risk: "A leftover runtime directory, staged config link or import marker names the tool on the decoy.",

@@ -79,7 +79,7 @@ in
         machine.succeed(f"grep -rqaF {hidden_jrnl_token} {UPPER}/var/log/journal")
 
     with subtest("capture the kernel and systemd fixtures of a live session"):
-        # T-139: the parser tests read these (nails-core/tests/fixtures/kernel/
+        # T-139: the parser tests read these (nails-base/tests/fixtures/kernel/
         # README.md). Read-only, written under /run, never on the decoy disk.
         # In the hidden root the host share is an overlay with its upper on
         # the hidden volume, so copy_from_host/copy_from_vm cannot reach the

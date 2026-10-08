@@ -176,13 +176,13 @@ mod tests {
     }
 
     /// journald's `/proc/<pid>/cgroup` as captured in a NixOS VM, when that
-    /// capture exists (nails-core's fixture README).
+    /// capture exists (nails-base's fixture README).
     #[test]
     fn the_captured_journald_cgroup_names_its_unit() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../nails-core/tests/fixtures/kernel/vm/proc-cgroup-journald.txt");
+            .join("../nails-base/tests/fixtures/kernel/vm/proc-cgroup-journald.txt");
         let Ok(content) = std::fs::read_to_string(path) else {
-            eprintln!("the VM capture is not taken yet (nails-core fixture README)");
+            eprintln!("the VM capture is not taken yet (nails-base fixture README)");
             return;
         };
         assert_eq!(

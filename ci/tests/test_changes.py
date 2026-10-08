@@ -37,6 +37,7 @@ class SelectTest(unittest.TestCase):
 
     def test_rust_source_runs_the_rust_jobs(self) -> None:
         for path in (
+            "nails-base/src/lib.rs",
             "nails-core/src/lib.rs",
             "nails-cli/tests/cli_integration.rs",
             "benches/performance.rs",

@@ -1,0 +1,55 @@
+[package]
+name = "nails-base"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Foundation of the nails libraries: errors, filesystem and process seams, configuration, state and the pre-flight framework"
+homepage.workspace = true
+repository.workspace = true
+readme = "../README.md"
+# Never publish to a registry; see nails-core/Cargo.toml.
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "nails_base"
+path = "src/lib.rs"
+
+[features]
+# The test-only hooks of this crate (the runtime host-interaction skip, the
+# attach-gate device-check bypass, the override environment variables). Off by
+# default; nails-core's `test-hooks` turns it on for the test builds, so none of
+# it reaches a shipped binary. See nails-core/Cargo.toml.
+test-hooks = []
+# Exposes the test fixtures (`Config::test_default`, `MockFilesystem`, the
+# real-kernel test support and the captured kernel fixtures) to the test code
+# of the crates above. Off by default.
+test-support = []
+
+[dependencies]
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+nix = { workspace = true, features = ["mount", "sched", "user", "signal", "process", "fs", "resource"] }
+signal-hook = { workspace = true }
+rustix = { workspace = true, features = ["fs", "process", "mount", "thread"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+chrono = { workspace = true }
+tempfile = { workspace = true }
+colored = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+# The mountinfo parser and the /proc helpers the process runner uses.
+nails-teardown = { path = "../nails-teardown" }
+
+[dev-dependencies]
+proptest = { workspace = true }
+# Self dev-dependency, as in nails-core: the test-only hooks and fixtures for
+# this crate's integration tests and doctests.
+nails-base = { path = ".", features = ["test-hooks", "test-support"] }

@@ -9,8 +9,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_ROOTS=(
+  "$REPO_ROOT/nails-base/src"
   "$REPO_ROOT/nails-core/src"
   "$REPO_ROOT/nails-cli/src"
+  "$REPO_ROOT/nails-teardown/src"
 )
 
 # Resolve a `mod <module_name>;` (optionally carrying a `#[path = "..."]`

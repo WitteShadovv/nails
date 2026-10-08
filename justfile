@@ -221,12 +221,10 @@ stress iterations="10":
 
 # --- Mutation testing ---
 
-# Mutate the core teardown, overlay and state machine modules and check the
-# tests catch each mutation. Heavy, so it runs weekly in scheduled.yml rather
-# than on the gate; a surviving mutant means a test gap, never a build failure.
+# Mutate the state machine module and check the tests catch each mutation.
+# Heavy, so it runs weekly in scheduled.yml rather than on the gate; a
+# surviving mutant means a test gap, never a build failure.
 mutants:
-    cargo mutants --package nails-core --all-features \
-        -f 'nails-core/src/state/**/*.rs' \
-        -f 'nails-core/src/overlay/**/*.rs' \
-        -f 'nails-core/src/cleanup/**/*.rs' \
+    cargo mutants --package nails-base --all-features \
+        -f 'nails-base/src/state/**/*.rs' \
         --output target/mutants

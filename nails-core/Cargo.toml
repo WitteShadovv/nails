@@ -32,11 +32,11 @@ path = "src/lib.rs"
 # environment strings) exist in a shipped binary. This crate's own unit tests get
 # it implicitly through cfg(test); integration tests, nails-cli and the packaged
 # nails-e2e build turn it on through this feature.
-test-hooks = []
+test-hooks = ["nails-base/test-hooks"]
 # Exposes the in-crate test fixtures (`Config::test_default`, `TestWorld`) to
 # downstream test code in `nails-cli` and this crate's integration tests. Off by
 # default; the fixtures also compile for this crate's own tests via `cfg(test)`.
-test-support = []
+test-support = ["nails-base/test-support"]
 
 [dependencies]
 # Use workspace versions for consistency
@@ -54,8 +54,11 @@ tempfile = { workspace = true }
 colored = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
-# The emergency teardown crate: the plan format activation writes, the
-# mountinfo parser and classifier, and the teardown interpreter.
+# The foundation: errors, the filesystem and process seams, configuration,
+# state, the artifact registry and the pre-flight framework.
+nails-base = { path = "../nails-base" }
+# The whole-root session mechanics: the plan format, the mountinfo parser,
+# the transition and the emergency hot path.
 nails-teardown = { path = "../nails-teardown" }
 # Fast substring search for the raw-device canary scan (already in the tree
 # through regex-automata).

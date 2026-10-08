@@ -105,7 +105,7 @@ One workflow runs the NixOS VM suite in every lane. A `plan` job decides what ru
 | Nightly schedule | `execute` | Every test driver runs directly (`run --execute`), so cached results do not count. The performance tests run here only, in an informational job of their own that never fails the run. |
 | Manual dispatch or `workflow_call` | input | `mode` (`affected`, `ci`, `all`, `execute`), `runner` and `max-shards`. `release.yml` calls it with `all` for the tagged commit; `e2e-hetzner.yml` calls it with a provisioned runner. |
 
-- **One path filter.** The `plan` job of a pull request or push run compares the change with its base; a dispatch or a call runs the mode it asked for. When nothing under `nails-core/`, `nails-cli/`, `nails-teardown/`, `nix/`, `ci/e2e/`, the setup-nix action, this workflow, the flake, the Cargo manifests or `rust-toolchain.toml` changed, no VM boots and `e2e-result` passes. A docs-only pull request therefore costs one short job.
+- **One path filter.** The `plan` job of a pull request or push run compares the change with its base; a dispatch or a call runs the mode it asked for. When nothing under `nails-base/`, `nails-core/`, `nails-cli/`, `nails-teardown/`, `nix/`, `ci/e2e/`, the setup-nix action, this workflow, the flake, the Cargo manifests or `rust-toolchain.toml` changed, no VM boots and `e2e-result` passes. A docs-only pull request therefore costs one short job.
 - **No secrets for untrusted code.** There is no `pull_request_target` and no approval environment. Fork and Dependabot pull requests run like any other and read the binary cache without being able to write to it.
 - **Sharding.** `python3 -m ci.e2e plan --max-shards N --format github-matrix` balances the selected tests over as many shards as hold about 900 weighted seconds each (`SHARD_SECONDS` in `ci/e2e/plan.py`), never more than `max-shards` (10 by default) and never an empty one. Each shard's job timeout is 1.5 times its weighted load plus a 15-minute setup allowance (at least 30 minutes).
 - **Performance tests.** Wall-clock budgets on shared runners cannot gate a merge, so the shards of every mode exclude the `performance` group, and the `performance` job runs it on the selected runner in `execute` mode only. `07-performance.nix` times each sample inside the guest, from the `duration_ms` that nails logs for an activation (`activate --json`) or a teardown and with the guest clock for `status`, and holds the slowest of a few samples to its budget. It times status, overlay-only activation, emergency and one default activation, with `nixos-rebuild` stubbed so the external build stays out of the budget.
@@ -138,7 +138,7 @@ Two lanes exercise the overlay-only backend on a non-NixOS host, so regressions 
 |---|---|---|
 | Test host | Privileged systemd **container** per distro | Real cloud image in a **KVM VM** on the NixOS test driver |
 | KVM needed | No | Yes (`/dev/kvm`) |
-| Runs | Every PR touching `nails-core/` or `nails-cli/` | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` |
+| Runs | Every PR touching a crate directory (`nails-*/`) | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` |
 | Reboot in the lifecycle | No (a container cannot reboot) | Yes |
 | Decoy leak check | Compares the decoy files in place (weaker) | Host-side `strings` scan of the raw decoy disk image |
 
@@ -146,7 +146,7 @@ Two lanes exercise the overlay-only backend on a non-NixOS host, so regressions 
 
 `scripts/distro-smoke/run.sh` boots a privileged systemd container for each of `debian:12`, `debian:13` and `ubuntu:24.04` and drives the static musl binary through the full overlay-only lifecycle (`scripts/distro-smoke/scenario.sh`). Because a container needs no KVM, the `distro-smoke` matrix job runs on an ordinary hosted runner on every PR, giving the Debian/Ubuntu backend per-PR regression coverage the KVM VM lane cannot afford.
 
-- **Trigger.** The `distro-smoke` job in `ci.yml`, gated on the `rust` path filter, so it runs whenever a PR (or a push to `main`) changes `nails-core/` or `nails-cli/`. It is **not** part of the `gate` required check: a red `distro-smoke` is informational until the lane is promoted.
+- **Trigger.** The `distro-smoke` job in `ci.yml`, gated on the `rust` path filter, so it runs whenever a PR (or a push to `main`) changes a crate directory (`nails-*/`). It is **not** part of the `gate` required check: a red `distro-smoke` is informational until the lane is promoted.
 - **Runner.** Read from the `distro-runner` workflow input (default `ubuntu-24.04`); override it with a self-hosted label on dispatch. A hosted `ubuntu-24.04` can boot a privileged container, so no KVM is required.
 - **Host requirements.** The driver needs a reachable Docker daemon and root (the CI step runs it under `sudo`). The container runs `--privileged --cgroupns=host` with a cgroup2 host and a `/sys/fs/cgroup` bind so its systemd can manage cgroups and the scenario can `losetup`/`mount`; a self-hosted runner without those cannot host this lane.
 - **Bootstrap.** Stock `debian`/`ubuntu` images ship no init, and NAILS refuses a non-systemd host, so the driver first installs `systemd` plus the loop/ext4/mount tools into the image and commits a local tag before booting `/sbin/init`. `cryptsetup` is optional: the hidden root falls back from LUKS to plain ext4 when it is absent.

@@ -5,7 +5,7 @@
 
 use super::octal_escape;
 use crate::filesystem::MockFilesystem;
-use crate::preflight::checks::{SwapSeverity, classify_swap};
+use crate::preflight::{SwapSeverity, classify_swap};
 use proptest::prelude::*;
 
 /// One active swap area.

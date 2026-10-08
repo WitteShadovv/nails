@@ -29,7 +29,7 @@ from pathlib import Path
 FILTERS: dict[str, re.Pattern[str]] = {
     # Everything cargo reads, plus the files that decide how the Rust jobs run.
     "rust": re.compile(
-        r"^(nails-cli/|nails-core/|nails-teardown/|benches/|\.cargo/|\.config/nextest\.toml$"
+        r"^(nails-base/|nails-cli/|nails-core/|nails-teardown/|benches/|\.cargo/|\.config/nextest\.toml$"
         r"|Cargo\.(toml|lock)$|rust-toolchain\.toml$|(clippy|rustfmt)\.toml$"
         r"|justfile$|scripts/check-[^/]+\.sh$)"
     ),

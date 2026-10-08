@@ -295,14 +295,14 @@ mod tests {
     }
 
     /// A `setsid` child whose comm holds `) (` and spaces, captured by
-    /// `capture-kernel-fixtures.sh userns` (nails-core's fixture README).
+    /// `capture-kernel-fixtures.sh userns` (nails-base's fixture README).
     #[test]
     fn the_captured_odd_comm_child_parses() {
         let stat_line = include_str!(
-            "../../nails-core/tests/fixtures/kernel/userns/proc-stat-setsid-odd-comm.txt"
+            "../../nails-base/tests/fixtures/kernel/userns/proc-stat-setsid-odd-comm.txt"
         );
         let status = include_str!(
-            "../../nails-core/tests/fixtures/kernel/userns/proc-status-setsid-odd-comm.txt"
+            "../../nails-base/tests/fixtures/kernel/userns/proc-status-setsid-odd-comm.txt"
         );
         let pid: u32 = stat_line.split(' ').next().unwrap().parse().unwrap();
         let stat = parse_stat(stat_line).expect("the kernel's own line parses");
@@ -320,16 +320,16 @@ mod tests {
     }
 
     /// journald's stat and status as captured as root in a NixOS VM, when that
-    /// capture exists (nails-core's fixture README).
+    /// capture exists (nails-base's fixture README).
     #[test]
     fn the_captured_journald_parses_when_the_vm_capture_exists() {
         let vm = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../nails-core/tests/fixtures/kernel/vm");
+            .join("../nails-base/tests/fixtures/kernel/vm");
         let (Ok(stat_line), Ok(status)) = (
             std::fs::read_to_string(vm.join("proc-stat-journald.txt")),
             std::fs::read_to_string(vm.join("proc-status-journald.txt")),
         ) else {
-            eprintln!("the VM capture is not taken yet (nails-core fixture README)");
+            eprintln!("the VM capture is not taken yet (nails-base fixture README)");
             return;
         };
         let stat = parse_stat(&stat_line).expect("the kernel's own line parses");

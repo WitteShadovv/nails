@@ -1,6 +1,6 @@
 {
   "schema": "nails-artifact-indicators/v1",
-  "note": "Generated from nails-core/src/artifacts.rs. Do not edit by hand; run `cargo test -p nails-core artifacts -- --ignored regenerate_indicators_json`.",
+  "note": "Generated from nails-base/src/artifacts.rs. Do not edit by hand; run `cargo test -p nails-base artifacts -- --ignored regenerate_indicators_json`.",
   "artifacts": [
     {
       "id": "config-file",

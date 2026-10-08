@@ -69,6 +69,7 @@
           ./Cargo.toml
           ./Cargo.lock
           (lib.fileset.maybeMissing ./.cargo)
+          ./nails-base
           ./nails-cli
           ./nails-core
           ./nails-teardown

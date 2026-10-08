@@ -327,7 +327,7 @@ jobs:
   # The cheap, KVM-free distribution smoke tier: the static musl binary driven
   # through the overlay-only lifecycle inside a privileged systemd container for
   # each supported FHS distribution. It runs on every PR that touches the Rust
-  # crates (the `rust` filter already matches nails-core/ and nails-cli/), but is
+  # crates (the `rust` filter matches every nails-*/ crate directory), but is
   # NOT part of `gate` -- it stays informational until promoted, matching the
   # KVM-based `distro-e2e.yml` VM tier it complements (see docs/ci.md).
   distro-smoke:

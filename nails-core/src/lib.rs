@@ -31,13 +31,29 @@
 // may use it freely; production code opts in per site with a scoped allow.
 #![cfg_attr(test, allow(unsafe_code))]
 
-// Error handling module
-pub mod error;
+// This crate's unit tests never reach the host, like the base crate's own.
+nails_base::unit_test_mode!();
 
-pub mod cancel;
+// The foundation: errors, the filesystem and process seams, configuration,
+// state, the artifact registry, logging, output and the pre-flight framework.
+// Re-exported so `nails_core::<module>` paths keep working for the CLI.
+pub(crate) use nails_base::runtime_safety;
+pub use nails_base::{
+    artifacts, cancel, constants, error, filesystem, hidden_root, logging, notification, output,
+    process, reporter, runtime_env, state, target_user, timing, verbosity,
+};
 
-// Artifact registry: the single source of what an activation can leave behind
-pub mod artifacts;
+// Configuration module: the base crate's, plus the manager-building test
+// fixture that needs the whole stack.
+pub mod config {
+    pub use nails_base::config::*;
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub use crate::test_world::TestWorld;
+}
+
+#[cfg(any(test, feature = "test-support"))]
+mod test_world;
 
 // The residue catalog: every trace class, its probes, docs and VM test.
 pub mod residue_catalog;
@@ -45,26 +61,14 @@ pub mod residue_catalog;
 // `nails rehearse`: the canary self-test.
 pub mod rehearse;
 
-// Filesystem operations module
-pub mod filesystem;
-
 // Read-only raw-device, layout and tree readers for the forensic self-checks
 pub mod forensic;
-
-// State management module
-pub mod state;
-
-// Configuration module
-pub mod config;
 
 // Manager module (core orchestrator)
 pub mod manager;
 
-// Pre-flight validation system
+// Pre-flight validation system: the framework from nails-base and the checks.
 pub mod preflight;
-
-/// Actionable diagnostics rendering (remediation lists, error hints).
-pub mod reporter;
 
 // Forensic validation system
 pub mod verify;
@@ -72,29 +76,11 @@ pub mod verify;
 // NixOS profile builder
 pub mod nixos;
 
-// Timing utilities
-pub mod timing;
-
-// Verbosity configuration
-pub mod verbosity;
-
-// Running external programs, and process hardening.
-pub mod process;
-
 // Status command module (live session view)
 pub mod status;
 
 // Backend chain resolution (the hidden volume's device-mapper stack).
 pub mod backend_lock;
-
-// Logging infrastructure module (Logging with Hidden Volume Validation)
-pub mod logging;
-
-// Shared marks and per-stream styles for CLI output
-pub mod output;
-
-// Immediate desktop alerts for the backend watcher
-pub mod notification;
 
 pub mod runtime_copy;
 
@@ -105,18 +91,6 @@ pub mod session;
 
 pub mod watcher;
 
-// Shared string constants (environment-variable names).
-pub mod constants;
-
-// Startup snapshot of the process environment NAILS reads.
-pub mod runtime_env;
-
-// Target-user resolution (who a privileged run acts on behalf of).
-pub mod target_user;
-
-// Attach gate: write nothing unless the hidden root is positively mounted.
-pub mod hidden_root;
-
 // Platform seam: host detection and per-platform behaviour (NixOS / FHS / refused).
 pub mod platform;
 
@@ -124,16 +98,9 @@ pub mod platform;
 // hidden session would inherit from the decoy account.
 pub mod persona;
 
-mod runtime_safety;
-
-// Real-kernel test support: re-run a test in a child process, optionally inside
-// an unprivileged user + mount namespace. Test-only; never in a shipped binary.
+// Real-kernel test support and the captured kernel fixtures. Test-only.
 #[cfg(any(test, feature = "test-support"))]
-pub mod test_support;
-
-// The captured kernel and systemd output the parser tests read. Test-only.
-#[cfg(any(test, feature = "test-support"))]
-pub mod kernel_fixtures;
+pub use nails_base::{kernel_fixtures, test_path, test_support};
 
 // Property-based parser tests (`just fuzz` runs them with many more cases).
 #[cfg(test)]
@@ -206,10 +173,9 @@ pub use status::{OpSecReminder, Posture, ReminderSeverity, StatusCommand, Status
 // Logging infrastructure exports (Logging with Hidden Volume Validation)
 pub use logging::{LoggingConfig, LoggingManager};
 
-// Shared marks and per-stream styles for CLI output
-pub use output::{
-    Mark, Stream, Style, Tone, error, format_error, format_info, format_warn, info, warn,
-};
+// Shared marks and per-stream styles for CLI output. `nails_base::error`
+// above brings both the `error` module and the `output::error` function.
+pub use output::{Mark, Stream, Style, Tone, format_error, format_info, format_warn, info, warn};
 
 #[cfg(test)]
 mod tests {
@@ -217,6 +183,14 @@ mod tests {
     fn test_library_compiles() {
         // Smoke test to verify core library compiles
         // Test body removed - compilation success is sufficient
+    }
+
+    #[test]
+    fn unit_tests_never_reach_the_host() {
+        // `unit_test_mode!` marks this binary before the first test, so the
+        // base crate's host switches answer as they do in its own unit tests.
+        assert!(crate::runtime_safety::in_unit_tests());
+        assert!(crate::runtime_safety::should_skip_host_interaction());
     }
 
     #[test]

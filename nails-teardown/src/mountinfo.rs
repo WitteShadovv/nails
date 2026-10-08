@@ -502,7 +502,7 @@ this is not a mountinfo line
         // option to fsconfig(2) separately, so the comma needs no `\,` and the
         // kernel prints it as a bare `\054`. Both forms must decode alike.
         let scene = include_str!(
-            "../../nails-core/tests/fixtures/kernel/userns/mountinfo-overlay-scene.txt"
+            "../../nails-base/tests/fixtures/kernel/userns/mountinfo-overlay-scene.txt"
         );
         let overlay = parse_mountinfo(scene)
             .into_iter()
