@@ -1,4 +1,4 @@
-# Shell History Forensics in NAILS
+# Shell history forensics
 
 This page explains, at a technical level, where a shell can leave a record of
 what was typed in a hidden session, why naive deletion is not enough against a
@@ -29,10 +29,11 @@ history-protection scheme is only as strong as the surface it forgets about.
 | Process accounting | `/var/log/account/pacct` | Per-command accounting when `acct` is enabled. |
 | TTY / script capture | `script`, `ttyrec`, session recorders | Captures the full terminal stream. |
 
-NAILS layers the hidden environment over the decoy with OverlayFS, so writes
-made inside the session land on the hidden upper, not the decoy lower. The risk
-is not the overlay itself but the moments around it: a buffer that flushes after
-the overlay is gone, or a history file that already exists on the real disk.
+In the hidden session the whole root is an overlay whose upper is on the hidden
+volume, so a history file written there lands on the hidden volume, never on the
+decoy disk. The risk is in the **decoy** shells around the session: the shell
+you unlock the volume and run `nails activate` from, and a decoy shell that
+flushes its buffer when the session starts.
 
 ## How NAILS neutralises each surface
 
@@ -43,17 +44,20 @@ yourself (see
 [decoy-requirements.md](./decoy-requirements.md#shell-history-hardening)). What
 NAILS does at runtime is:
 
-1. **Keep hidden writes off the decoy.** The session runs over an OverlayFS
-   upper, so a history file written inside the session lands on the hidden
-   volume, not the decoy lower.
-2. **Kill shells before the unmount.** Both standard and emergency teardown
-   SIGKILL every interactive shell (including root's) before the overlays come
-   down, so none runs an exit trap or flushes its in-memory buffer to the decoy
-   (see [the flush race](#the-flush-race)). Standard deactivation then reboots.
-3. **Make no post-unmount write.** Editing, or even reading, a history file on
-   the decoy after unmount is itself a deactivation-time artifact (a fresh
-   timestamp at the moment of teardown), so no teardown makes such an access.
-   Decoy-history hygiene belongs to the pre-activation cleanup.
+1. **Keep hidden writes off the decoy.** Every process of the hidden session
+   runs inside the root overlay, so its history files land in the upper on the
+   hidden volume. When the session ends, the orderly shutdown stops its shells
+   while the overlay is still the root, so their final flush lands there too.
+2. **Kill the decoy's shells before entry.** Stopping a login session sends its
+   shells `SIGHUP`, on which bash writes its history. Right before it starts the
+   soft-reboot, `nails activate` therefore sends `SIGKILL` to the decoy's
+   interactive shells, yours included, so none of them writes the activation
+   command to a history file on the decoy (see [the flush race](#the-flush-race)).
+   `nails emergency` kills shells the same way before it starts the way back or
+   the power-off.
+3. **Make no write to decoy history.** NAILS never edits or reads a history file
+   on the decoy: an access would itself leave a fresh timestamp. Decoy-history
+   hygiene is decoy configuration and the operator's pre-activation routine.
 4. **Warn on incremental flushing.** A preflight check warns when the shell you
    run NAILS from flushes history after every command
    (`INC_APPEND_HISTORY`/`SHARE_HISTORY`, or `history -a` in bash
@@ -86,29 +90,32 @@ there is nothing for these mechanisms to preserve.
 
 ## The flush race
 
-The one window where a hidden command can reach the decoy is the gap between the
-overlay unmount and the shell's exit:
+The one window where a typed command can reach the decoy disk is a decoy shell
+that is still alive when its session ends:
 
 ```
-command typed in hidden session
+nails activate typed in a decoy shell
     -> held in bash's in-memory buffer
-    -> overlay unmounts, real decoy filesystem reappears
-    -> shell exits or receives SIGHUP
-    -> bash flushes the buffer to the REAL ~/.bash_history
+    -> the soft-reboot stops the decoy's login sessions
+    -> the shell receives SIGHUP
+    -> bash flushes the buffer to the decoy's ~/.bash_history
 ```
 
-NAILS closes this window by killing shell processes before the unmount:
+`nails activate` closes this window by killing the decoy's interactive shells
+with `SIGKILL` as its last step before the soft-reboot, so no exit trap or
+flush runs. Your terminal closes at that point; what activation printed up to
+then is already on it. A shell that flushes after every command
+(`INC_APPEND_HISTORY`, `SHARE_HISTORY` or `history -a` in `PROMPT_COMMAND`) has
+already written the command before any of this, which is why the pre-flight
+check warns about it and why the decoy commands belong in a shell with history
+off (`set +o history`).
 
-- **Both standard and emergency deactivation** send `SIGKILL` to every
-  interactive shell first, so none runs an exit trap or flushes its buffer.
-  Standard deactivation additionally reboots once teardown completes.
-
-The operator's part is to not manually exit a shell once deactivation has begun,
-and to confirm the history files are empty after returning to the decoy.
+Inside the hidden session there is no such window: the shells stop before the
+switch back, while the overlay is still the root.
 
 ## Verifying on the decoy
 
-After deactivation, back on the decoy system:
+After a session, back on the decoy system:
 
 ```bash
 # Both should be empty (or contain only decoy commands).
@@ -124,7 +131,7 @@ compromised and follow the recovery guidance in the operator guide.
 
 ## See also
 
-- [operator-guide.md](./operator-guide.md#shell-history) - operator steps and the
-  deactivation workflow.
+- [operator-guide.md](./operator-guide.md#shell-history) - operator steps before
+  and during a session.
 - [decoy-requirements.md](./decoy-requirements.md#shell-history-hardening) -
   decoy-side history hardening you configure yourself.
