@@ -140,7 +140,7 @@ Use only:
 - Runner, all tests: `./scripts/run-e2e-tests.sh all`
 - Resolve only: `python3 -m ci.e2e resolve ci`, or `python3 -m ci.e2e resolve --affected origin/main`
 - Interactive driver: `nix run .#e2e.session-lifecycle.driverInteractive`, or `./scripts/run-e2e-tests.sh -i session-lifecycle`
-- Local full or group run with bounded memory and parallel VMs: `just e2e-local [target] [jobs]` (see [docs/e2e-performance.md](../../docs/e2e-performance.md))
+- Local full or group run with bounded memory and parallel VMs: `just e2e-local [target] [jobs]`
 - Where a run's time went: `scripts/e2e-log-profile.py LOG...` (`nix build -L` logs or `nix log` output)
 
 The tests, one link farm per group, and the metadata live under `legacyPackages.x86_64-linux` (`e2e.<name>` and `e2e-metadata`), not under `checks`, so `nix flake check` stays a fast lint gate. The short `.#e2e.<name>` form resolves on x86_64-linux hosts; elsewhere use `.#legacyPackages.x86_64-linux.e2e.<name>` with an x86_64-linux builder.
@@ -186,8 +186,9 @@ per-test node stays minimal.
 
 On the local KVM workstation a boot to `multi-user.target` took a median of
 21.8 s (p90 27.7 s) before dhcpcd stopped gating the boot, about 6 s less
-after, and booting was 38% of all test-script time in a full run (190 boots
-for 106 tests); see [docs/e2e-performance.md](../../docs/e2e-performance.md).
+after, and booting was 38% of all test-script time in a full run of the earlier
+live-overlay suite (190 boots for 106 tests); see
+[the historical measurements](../../docs/history/e2e-performance-live-overlay.md).
 
 **GitHub-hosted runners: not measured yet.** No number is recorded here
 because none has been measured, and the CI lanes cannot provide one as they

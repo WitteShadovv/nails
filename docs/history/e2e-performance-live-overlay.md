@@ -1,5 +1,13 @@
 # E2E suite performance and robustness
 
+> [!NOTE]
+> **Historical record.** These measurements were taken on the VM suite of the
+> earlier live-overlay mode (removed by
+> [ADR 0008](../adr/0008-whole-root-soft-reboot.md)). Many of the tests, batches
+> and commands it names no longer exist, and its "this branch" refers to work
+> that has since been merged. How to run and profile the current suite is in
+> [nix/e2e-tests/README.md](../../nix/e2e-tests/README.md).
+
 This page covers where the NixOS VM suite (`nix/e2e-tests`) spends its time,
 what has already been changed to make it faster and less flaky, how to measure
 the effect, and what larger changes are left. All numbers come from real logs
@@ -242,8 +250,8 @@ To separate the per-test savings from the parallelism, measure the same group
 three ways and profile each:
 
 ```sh
-before='git+file:///home/witteshadovv/git/nails?ref=chunk/fin-env&rev=71f0b65ae822027afa3ef7f6347d2611a41a5358'
-after='git+file:///home/witteshadovv/git/nails?ref=chunk/research-fastvm'
+before='git+file://<checkout>?ref=<branch>&rev=71f0b65ae822027afa3ef7f6347d2611a41a5358'
+after='git+file://<checkout>?ref=<branch>'
 
 # 1. Before, serial (as the full runs were made):
 /usr/bin/time -v nix build --no-link -L --keep-going --max-jobs 1 \
@@ -282,7 +290,7 @@ item is its own commit on `chunk/r-vmspeed`.
 
 Tests with an identical node now run as scenarios of one test
 (`lib/batch.nix`, `nix/e2e-tests/py/nails_e2e/batch.py`; how it works is in
-[nix/e2e-tests/README.md](../nix/e2e-tests/README.md#batched-scenarios)).
+[nix/e2e-tests/README.md](../../nix/e2e-tests/README.md#batched-scenarios)).
 Every scenario starts with a check that the guest is as clean as it booted and
 the guest is reset between scenarios, by a power cycle when a NAILS session was
 left behind; the activating scenarios run last, so no batch needs one in a

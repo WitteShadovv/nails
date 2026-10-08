@@ -1,7 +1,7 @@
 """Flag the E2E synchronisation patterns that made tests flaky or hang.
 
 Each rule names a pattern that has cost a real failure in the suite's history
-(see docs/e2e-performance.md, "Robustness"):
+(see docs/history/e2e-performance-live-overlay.md, "Robustness"):
 
 * ``sleep``: a fixed ``time.sleep(...)`` or ``<machine>.sleep(...)`` used to
   wait for something. A sleep inside a bounded polling loop (a ``while`` on a

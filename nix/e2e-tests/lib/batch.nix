@@ -2,7 +2,7 @@
 #
 # Booting is most of what a single-boot test costs, so tests that share an
 # identical node run in one VM instead (see "Batched scenarios" in README.md and
-# docs/e2e-performance.md). Each scenario lives in its own file under
+# docs/history/e2e-performance-live-overlay.md). Each scenario lives in its own file under
 # `nix/e2e-tests/scenarios/<group>/` and evaluates to
 #
 #   {

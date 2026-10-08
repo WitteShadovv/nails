@@ -13,7 +13,8 @@ VM suite: overlay `st_dev`, a no-op `reapply`, an emergency broken-pipe panic,
 a 28 s systemctl call, and overlay-only activation against real mountinfo. A
 prototype of the tier below found one more, the decoding of overlay layer
 paths from mountinfo, within minutes. The evidence is in
-[testing-strategy.md](../testing-strategy.md).
+[history/testing-strategy-live-overlay.md](../history/testing-strategy-live-overlay.md);
+the current policy is [testing-strategy.md](../testing-strategy.md).
 
 Since Linux 5.11 an unprivileged process can create a user namespace and mount
 tmpfs, bind mounts and overlayfs inside it.
