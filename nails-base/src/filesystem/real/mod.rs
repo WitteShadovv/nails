@@ -22,7 +22,7 @@ mod noatime;
 mod system_ops;
 
 /// Read-only, access-time-preserving opens and listings, shared with the
-/// forensic readers ([`crate::forensic`]) so every read of the decoy goes
+/// forensic readers (`nails_forensics::forensic`) so every read of the decoy goes
 /// through the same `O_NOATIME` path.
 pub use noatime::{EntryType, NoatimeEntry, OpenKind, open_noatime, read_dir_noatime};
 
