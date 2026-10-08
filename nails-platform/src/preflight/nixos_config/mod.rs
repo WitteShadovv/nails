@@ -5,7 +5,7 @@
 //!
 //! Validates NixOS configuration overlay structure in hidden storage.
 
-use super::super::{CheckResult, PreFlightCheck};
+use super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, NixParser, RealNixParser, Result, parse_check_composed_config};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,8 +27,8 @@ use std::sync::Arc;
 /// so the example is `no_run` (it shells out on a real host).
 ///
 /// ```no_run
-/// use nails_core::preflight::{NixOSConfigCheck, PreFlightCheck, CheckResult};
-/// use nails_core::MockFilesystem;
+/// use nails_platform::preflight::{NixOSConfigCheck, PreFlightCheck, CheckResult};
+/// use nails_base::MockFilesystem;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();

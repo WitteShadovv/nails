@@ -1131,6 +1131,7 @@ dependencies = [
  "memchr",
  "nails-base",
  "nails-core",
+ "nails-platform",
  "nails-teardown",
  "nix",
  "predicates",
@@ -1147,6 +1148,18 @@ dependencies = [
  "tracing-subscriber",
  "tracing-test",
  "zbus",
+]
+
+[[package]]
+name = "nails-platform"
+version = "0.2.0"
+dependencies = [
+ "nails-base",
+ "nails-platform",
+ "nix",
+ "proptest",
+ "tempfile",
+ "tracing",
 ]
 
 [[package]]

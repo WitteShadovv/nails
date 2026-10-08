@@ -73,14 +73,8 @@ pub mod preflight;
 // Forensic validation system
 pub mod verify;
 
-// NixOS profile builder
-pub mod nixos;
-
 // Status command module (live session view)
 pub mod status;
-
-// Backend chain resolution (the hidden volume's device-mapper stack).
-pub mod backend_lock;
 
 pub mod runtime_copy;
 
@@ -91,8 +85,9 @@ pub mod session;
 
 pub mod watcher;
 
-// Platform seam: host detection and per-platform behaviour (NixOS / FHS / refused).
-pub mod platform;
+// Host detection, the platform backends, the NixOS configuration layer and
+// the backend chain resolution.
+pub use nails_platform::{backend_lock, nixos, platform};
 
 // Persona inventory: the decoy autostart/user-unit/linger/autologin state the
 // hidden session would inherit from the decoy account.

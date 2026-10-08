@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-pub(crate) fn split_flake_ref(flake_ref: &str) -> (&str, Option<&str>) {
+pub fn split_flake_ref(flake_ref: &str) -> (&str, Option<&str>) {
     match flake_ref.split_once('#') {
         Some((base_ref, fragment)) if !fragment.is_empty() => (base_ref, Some(fragment)),
         Some((base_ref, _)) => (base_ref, None),
@@ -19,7 +19,7 @@ pub(crate) fn local_flake_dir(base_ref: &str) -> Option<PathBuf> {
     resolve_local_flake_dir(base_ref).ok().flatten()
 }
 
-pub(crate) fn resolve_local_flake_dir(base_ref: &str) -> crate::Result<Option<PathBuf>> {
+pub fn resolve_local_flake_dir(base_ref: &str) -> crate::Result<Option<PathBuf>> {
     if base_ref.starts_with('/') {
         return Ok(Some(PathBuf::from(base_ref)));
     }
@@ -73,7 +73,7 @@ fn looks_like_explicit_relative_flake_ref(base_ref: &str) -> bool {
     matches!(base_ref, "." | "..") || base_ref.starts_with("./") || base_ref.starts_with("../")
 }
 
-pub(crate) fn selected_nixos_configuration_fragment(
+pub fn selected_nixos_configuration_fragment(
     explicit_fragment: Option<&str>,
 ) -> crate::Result<(String, bool)> {
     if let Some(fragment) = explicit_fragment.filter(|fragment| !fragment.is_empty()) {

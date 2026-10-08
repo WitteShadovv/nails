@@ -8,7 +8,7 @@
 //!   configuration is clean;
 //! - [`NixOSBuilder`]: which configuration to build (a flake attribute or a
 //!   legacy `configuration.nix`). The build itself runs into the next root's
-//!   store, see [`crate::session::nixos`].
+//!   store, see `nails_session::session::nixos`.
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,7 @@ pub use config::{
     stage_hidden_nixos_config, verify_base_config_clean,
 };
 
-pub(crate) use flake_ref::{
+pub use flake_ref::{
     resolve_local_flake_dir, selected_nixos_configuration_fragment, split_flake_ref,
 };
 
@@ -97,12 +97,12 @@ impl NixOSBuilder {
     }
 
     /// The flake directory, for a flake build.
-    pub(crate) fn flake_dir(&self) -> Option<&Path> {
+    pub fn flake_dir(&self) -> Option<&Path> {
         self.is_flake().then_some(self.config_path.as_path())
     }
 
     /// The `nix build` installable of the hidden toplevel (flake builds).
-    pub(crate) fn toplevel_installable(&self) -> crate::Result<String> {
+    pub fn toplevel_installable(&self) -> crate::Result<String> {
         if !self.is_flake() {
             return Err(crate::NailsError::NixOSError(
                 "an explicit toplevel build is only supported for flake configurations".into(),

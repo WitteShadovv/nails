@@ -46,14 +46,15 @@ use super::{AUTO_GENERATED_HIDDEN_CONFIGURATION, NixOSConfigInfo};
 /// # Example
 ///
 /// ```no_run
-/// use nails_core::{RealFilesystem, nixos::prepare_nixos_config_overlay};
+/// use nails_base::RealFilesystem;
+/// use nails_platform::nixos::prepare_nixos_config_overlay;
 /// use std::path::PathBuf;
 ///
 /// let fs = RealFilesystem;
 /// let hidden_path = PathBuf::from("/mnt/hidden");
 ///
 /// let config_info = prepare_nixos_config_overlay(&fs, &hidden_path)?;
-/// # Ok::<(), nails_core::NailsError>(())
+/// # Ok::<(), nails_base::NailsError>(())
 /// ```
 pub fn prepare_nixos_config_overlay<F: Filesystem>(
     fs: &F,

@@ -9,7 +9,7 @@
 //! root upper's `/etc/nixos`, and the pre-flight checks that inspect it. A host
 //! without a layer (FHS / Debian) never runs them; its hidden configuration is
 //! whatever the upper's `/etc` holds. The build and the activation of the hidden
-//! toplevel are in [`crate::session::nixos`].
+//! toplevel are in `nails_session::session::nixos`.
 
 use std::path::Path;
 

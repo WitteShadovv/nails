@@ -1,0 +1,39 @@
+[package]
+name = "nails-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Host detection, platform backends and the NixOS configuration layer of the nails libraries"
+homepage.workspace = true
+repository.workspace = true
+readme = "../README.md"
+# Never publish to a registry; see nails-core/Cargo.toml.
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "nails_platform"
+path = "src/lib.rs"
+
+[features]
+# The test-only hooks; forwards to nails-base. Off by default, see
+# nails-core/Cargo.toml.
+test-hooks = ["nails-base/test-hooks"]
+# Exposes `FakePlatform` to the test code of the crates above. Off by default.
+test-support = ["nails-base/test-support"]
+
+[dependencies]
+nails-base = { path = "../nails-base" }
+nix = { workspace = true, features = ["feature"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+tempfile = { workspace = true }
+# Self dev-dependency, as in nails-core: the test-only hooks and fixtures for
+# this crate's own tests.
+nails-platform = { path = ".", features = ["test-hooks", "test-support"] }

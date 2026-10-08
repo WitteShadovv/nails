@@ -72,6 +72,7 @@
           ./nails-base
           ./nails-cli
           ./nails-core
+          ./nails-platform
           ./nails-teardown
           (lib.fileset.maybeMissing ./rust-toolchain.toml)
         ];

@@ -57,7 +57,8 @@ const SELF_MOUNTINFO: &str = "/proc/self/mountinfo";
 ///
 /// ```no_run
 /// use std::path::Path;
-/// use nails_core::{RealFilesystem, nixos::verify_base_config_clean};
+/// use nails_base::RealFilesystem;
+/// use nails_platform::nixos::verify_base_config_clean;
 ///
 /// let fs = RealFilesystem;
 /// let is_clean = verify_base_config_clean(&fs, Path::new("/mnt/hidden"))?;
@@ -65,7 +66,7 @@ const SELF_MOUNTINFO: &str = "/proc/self/mountinfo";
 /// if !is_clean {
 ///     eprintln!("WARNING: Base config contains hidden environment traces!");
 /// }
-/// # Ok::<(), nails_core::NailsError>(())
+/// # Ok::<(), nails_base::NailsError>(())
 /// ```
 pub fn verify_base_config_clean<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Result<bool> {
     let nix_files = fs.find_files_with_pattern(Path::new(BASE_NIXOS_DIR), ".nix")?;

@@ -3,7 +3,7 @@
 
 //! Suspicious NAILS/base-config reference pre-flight check.
 
-use super::super::{CheckResult, PreFlightCheck};
+use super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result, verify_base_config_clean};
 use std::path::PathBuf;
 

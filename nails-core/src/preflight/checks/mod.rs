@@ -17,13 +17,11 @@ pub mod journald_storage;
 pub mod memory_wipe;
 pub mod mount_namespace;
 pub mod nixos_build_target;
-pub mod nixos_config;
 pub mod residue_catalog;
 pub mod sleep_policy;
 pub mod space;
 pub mod state;
 pub mod storage_readiness;
-pub mod suspicious_nails_reference;
 pub mod symlink_support;
 pub mod systemd_conf;
 pub mod upper_fs_probe;
@@ -40,12 +38,15 @@ pub use journald_storage::{JournaldStorage, parse_journald_storage};
 pub use memory_wipe::{InitOnFree, MemoryWipeCheck, parse_init_on_free};
 pub use mount_namespace::MountNamespaceCheck;
 pub use nixos_build_target::NixOSBuildTargetCheck;
-pub use nixos_config::NixOSConfigCheck;
 pub use residue_catalog::ResidueCatalogCheck;
 pub use sleep_policy::SleepPolicyCheck;
 pub use space::{OverlayDirs, SpaceCheck};
 pub use state::StateCheck;
 pub use storage_readiness::StorageReadinessCheck;
-pub use suspicious_nails_reference::SuspiciousNailsReferenceCheck;
 pub use symlink_support::SymlinkSupportCheck;
 pub use upper_fs_probe::UpperFsCapabilityCheck;
+
+// The NixOS configuration layer's checks live with the layer.
+pub use nails_platform::preflight::{
+    NixOSConfigCheck, SuspiciousNailsReferenceCheck, nixos_config, suspicious_nails_reference,
+};
