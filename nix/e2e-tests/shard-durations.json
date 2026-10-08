@@ -37,6 +37,7 @@
   "preflight-vfat-targets": 110,
   "quickstart-zero-config": 180,
   "rehearse-canary": 360,
+  "session-disk-mounts": 500,
   "session-emergency": 420,
   "session-fstab-policy": 300,
   "session-interrupted-entry": 360,

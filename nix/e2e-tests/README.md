@@ -437,6 +437,12 @@ soft-reboots with `py/nails_e2e/session.py`:
   sessions that deletes the hidden toplevel from the decoy store, the second
   session still starting it, and the decoy store (database, writable store
   layer, profiles and roots) unchanged by each session;
+- `session-disk-mounts`: a second disk mounted read-write in the hidden session
+  raising the watcher's alert, `deactivate` freeing it while busy, and with
+  `[session_mounts] read_only` the disk read-only from the hidden boot on, a
+  disk hot-plugged during the session made read-only by the udev rule alone,
+  every write failing, and both disks writable again and unchanged after the
+  way back;
 - `soft-reboot-mechanics`: the mechanism itself, described above.
 
 ## Adding a fixture
