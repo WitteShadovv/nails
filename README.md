@@ -1,358 +1,450 @@
 <div align="center">
-  <img src="docs/assets/logo.png" alt="NAILS logo" width="160" />
-  <h1>NAILS — Overlay environment manager</h1>
 
-[![License: GPLv3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Rust 1.93+](https://img.shields.io/badge/rust-1.93+-orange.svg)](https://www.rust-lang.org/)
-[![Platforms](https://img.shields.io/badge/platforms-NixOS%20%7C%20Debian%2013%2B%20%7C%20Ubuntu%2024.04%2B-5277C3.svg)](#platform-support)
-[![CI](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml)
-[![GitHub Release](https://img.shields.io/github/v/release/WitteShadovv/nails?display_name=tag)](https://github.com/WitteShadovv/nails/releases)
-[![Status: Alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](#project-status)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+  <img src="docs/assets/banner-light.svg" alt="NAILS: a hidden session on a decoy Linux system, entered with a soft-reboot" width="720">
+</picture>
+
+[![CI](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml)
+[![NixOS VM tests](https://github.com/WitteShadovv/nails/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/WitteShadovv/nails/actions/workflows/e2e.yml)
+[![Debian and Ubuntu VM tests](https://github.com/WitteShadovv/nails/actions/workflows/distro-e2e.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/distro-e2e.yml)
+[![Release](https://img.shields.io/github/v/release/WitteShadovv/nails?include_prereleases&display_name=tag)](https://github.com/WitteShadovv/nails/releases)
+<br>
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![MSRV 1.93](https://img.shields.io/badge/MSRV-1.93-orange.svg)](rust-toolchain.toml)
+[![Platforms](https://img.shields.io/badge/platforms-NixOS%20%7C%20Debian%2013%20%7C%20Ubuntu%2024.04%2B-5277C3.svg)](#requirements)
+[![systemd 254+](https://img.shields.io/badge/systemd-254%2B-555.svg)](#requirements)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](#project-status)
 
 </div>
 
-> **A CLI for running a hidden session on a decoy system: one overlay over the whole decoy root, entered and left with a soft-reboot, with first-class NixOS support and a plain root overlay on Debian 13 and Ubuntu 24.04+.**
+NAILS is a command-line tool that runs a hidden session on an ordinary-looking
+("decoy") Linux system. It soft-reboots the machine into one OverlayFS overlay
+over the whole decoy root, with every change written to an encrypted hidden
+volume you provide, and soft-reboots back to the plain decoy when you are done.
+Nothing that starts the hidden session is installed on the decoy.
 
-NAILS runs a hidden environment on top of a believable decoy system by combining a user-managed
-hidden storage backend, one OverlayFS over the whole decoy root, systemd's soft-reboot
-(`systemctl soft-reboot`, systemd 254 or newer) and — on NixOS — a declarative hidden
-configuration. NixOS is the first-class platform; Debian 13 and Ubuntu 24.04+ run the same session
-with whatever the hidden `/etc` holds. See [Platform support](#platform-support) for what each
-platform does and the hosts NAILS refuses.
+NixOS is the first-class platform (a declarative hidden configuration is built
+and entered in the same step); Debian 13 and Ubuntu 24.04 or newer run the same
+session with whatever the hidden `/etc` holds.
 
 > [!WARNING]
-> NAILS is **alpha** security software. It is intended for technically experienced users who can
-> test their exact setup, storage backend, and operating procedure before relying on it. Read the
-> [operator guide](docs/operator-guide.md) and the [threat model](docs/threat-model.md) first.
+> NAILS is **alpha** security software. It is meant for technically experienced
+> users who can test their exact machine, storage backend and procedure before
+> relying on it. It narrows what a forensic examination of the decoy can find; it
+> does not make you invisible. Read the [operator guide](docs/operator-guide.md)
+> and the [threat model](docs/threat-model.md) first.
+
+**Contents:** [Threat model in brief](#threat-model-in-brief) ·
+[Requirements](#requirements) · [Installation](#installation) ·
+[Quick start](#quick-start) · [The session lifecycle](#the-session-lifecycle) ·
+[Safety notes](#safety-notes) · [Commands](#commands) ·
+[Documentation](#documentation) · [Development](#development)
 
 ## What NAILS does
 
-NAILS is built around two environments on the same machine:
+There are two environments on one machine:
 
-- a visible **decoy** installation that should remain mundane and plausible
-- a hidden **real** environment stored on a mounted backend you control
+- the **decoy**: the installed system, which should stay mundane and plausible;
+- the **hidden session**: the same system started again on an overlay whose
+  writable layer lives on a hidden volume that you unlock and mount yourself
+  (for example a VeraCrypt hidden volume or a LUKS2 volume).
 
-Activation builds one overlay over the whole decoy root, with every change kept on the hidden
-volume, and soft-reboots into it. Every program of the decoy closes, the operator is logged out,
-and the hidden session starts at its own login screen. Inside it every process — the desktop,
-applications and services — runs on the overlay, and no userspace process can reach the decoy
-filesystem by any path. Deactivation soft-reboots back into the plain decoy root, which starts at
-its own login screen. Once the backend is closed, the host is back in its normal decoy state
-within the documented [threat model](docs/threat-model.md).
+`nails activate` builds the overlay at `/run/nextroot` and enters it with
+`systemctl soft-reboot`: systemd stops every decoy program, switches root into the
+overlay and starts a fresh userspace there. Every process of the hidden session,
+from the desktop to the services, starts inside the overlay, so no userspace
+process can write to the decoy filesystem by any path. `nails deactivate` soft-reboots back into the plain
+decoy root and closes the hidden volume on the way. `nails emergency` does the
+same at once, or powers the machine off.
 
-NAILS does **not** provide encryption itself. It relies on an external storage backend such as
-VeraCrypt or LUKS/`cryptsetup` for hidden or encrypted storage.
+NAILS does **not** encrypt anything itself. The hidden volume, and its
+deniability, come from the storage backend you choose; see
+[docs/backends.md](docs/backends.md).
 
-## How it works
-
-At a high level:
-
-1. You mount a hidden, writable Linux filesystem that can host an overlayfs upper layer (symbolic links, trusted xattrs, a valid readdir `d_type`, and whiteouts).
-2. `nails activate`, run on the decoy, checks the host, then mounts one overlay at `/run/nextroot`: the decoy root as the read-only lower, `<hidden-root>/root/upper` as the upper. Every other decoy filesystem gets a safe decision first: the ESP and `/boot` are bound read-only, a separately mounted filesystem such as `/home` gets an overlay of its own, and swap, unmounted disks and network filesystems are masked.
-3. On NixOS with a hidden configuration, the hidden system is built into the next root's store (nothing reaches the decoy `/nix`) and activated there; no bootloader is touched and no system profile changes. On Debian and Ubuntu the hidden configuration is whatever the upper's `/etc` holds.
-4. Activation soft-reboots. systemd stops every decoy program, switches root into the overlay and starts the hidden userspace there.
-5. `nails deactivate` soft-reboots back into the plain decoy root and closes the hidden backend on the way; `nails emergency` kills every hidden program at once and does the same, or powers off.
-
-Key design points:
-
-- **One overlay, no process heuristics**: every process of the hidden session starts inside the overlay, so there is nothing to find, restart or kill on the decoy side, and writes to `/usr`, `/var` or `/nix` land in the upper like any other
-- **A persistent upper**: the hidden root's changes stay on the hidden volume across sessions
-- **Nothing installed on the decoy**: the session is set up at runtime from the hidden volume, with no boot entry, initrd change or unit on the decoy disk
-- **Storage-agnostic backend model** as long as the backend is already mounted, writable and kernel-managed
-- **Verification support** through `nails verify` for known/common artifacts
-
-The design and its evidence are recorded in
+The design and its evidence are in
 [ADR 0008](docs/adr/0008-whole-root-soft-reboot.md).
 
-## Before you use it
+## Threat model in brief
 
-NAILS is designed for a narrow threat model and operational style.
+NAILS is built for one adversary: someone who gets **offline access to the
+disks** after the fact, typically by seizing a powered-off machine, and may make
+you unlock the **decoy** once. After a clean session on a correctly prepared
+decoy, the decoy disk holds nothing of the hidden session except a short, documented
+list of residual channels, and no hook that would start it.
 
-### Requirements
+What it helps with:
+
+- keeping the hidden session's files, logs, shell history and package builds off
+  the decoy disk (they all land in the overlay's upper on the hidden volume);
+- leaving no enabler on the decoy: no boot entry, initrd change, unit or binary;
+- checking your own setup: `nails check` before entry, `nails verify` for known
+  artifacts, and `nails rehearse` to plant a canary and search the raw decoy disk
+  for it.
+
+What it does **not** protect against:
+
+- anyone with access to the **running** machine, memory forensics, or cold-boot
+  attacks (power off after a session: a soft-reboot keeps RAM);
+- **network and remote records**: the hidden session shares the decoy's kernel,
+  machine-id, hostname, MAC addresses and, by default, its user account and
+  home; ISPs, VPNs and online services see whatever it does;
+- compelled disclosure of the **hidden** volume, physical or repeated coercion,
+  or an adversary who images the disk more than once and compares;
+- a persistent decoy: a journal, syslog or audit log on the decoy disk records
+  the soft-reboots. Activation refuses such a decoy unless you override it;
+- firmware or hardware compromise, keyloggers, side channels, or a compromised
+  root on the decoy.
+
+The full adversary, assumptions, residual channels and evaluation scope are in
+[docs/threat-model.md](docs/threat-model.md). It is the only place the threat
+model is written down; read it before relying on NAILS.
+
+## Requirements
 
 | Requirement | Notes |
 |---|---|
-| Supported platform | NixOS, Debian 13+, or Ubuntu 24.04+, with systemd 254 or newer. See [Platform support](#platform-support); other hosts are refused. |
-| Hidden storage backend | Any mounted, writable, kernel-managed Linux filesystem that can host an overlayfs upper (symlinks, trusted xattrs, `d_type`, whiteouts) — e.g. ext4, xfs, btrfs, f2fs. NFS, CIFS/SMB, 9p, most FUSE mounts, and FAT/exFAT/NTFS cannot. See [docs/backends.md](docs/backends.md) for what is tested and the hazards of each backend. |
-| Root access | Required for `activate`, `deactivate`, `emergency`, `recover` and `reset-upper` |
-| Rust 1.93+ | Only needed to build from source |
-| Amnesic decoy | Required: the decoy must keep no durable record of the hidden session. Activation fails closed otherwise (override with `--accept-persistent-decoy`). See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
-| Impermanence-style setup | Strongly recommended for the strongest documented posture; see [docs/decoy-requirements.md](docs/decoy-requirements.md). The decoy *root* itself must still be a disk filesystem (see below). |
+| A supported host | NixOS, Debian 13 or newer, or Ubuntu 24.04 or newer, with **systemd 254 or newer**. Other hosts are refused (see below). |
+| An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no disk swap. Activation fails closed otherwise (`--accept-persistent-decoy` overrides it). See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
+| A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
+| A hidden volume | Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
+| Root (`sudo`) | `activate`, `deactivate`, `emergency`, `recover` and the writing `rehearse` steps refuse to run without it. Run `init`, `check`, `verify` and `reset-upper` with `sudo` too, as the examples do, so they can read and write root-owned files. |
+| A local account | The account you run `sudo` from must be in `/etc/passwd`: the static binary does not use NSS, so LDAP or SSSD accounts cannot be resolved. |
 
-### Platform support
+<details>
+<summary><b>Platform matrix and refused setups</b></summary>
 
-NAILS detects the host from `/etc/os-release` and the running init, then the pre-flight checks
-confirm that it can soft-reboot. The matrix below matches what detection and the checks accept.
+NAILS detects the host from `/etc/os-release` and the running init; the pre-flight
+checks then confirm it can soft-reboot.
 
 | Platform | Support | Notes |
 |---|---|---|
 | NixOS | Full | A hidden NixOS configuration (flake or `configuration.nix`) is built into the hidden root's store and entered in the same soft-reboot. It must run on the decoy's kernel. Pinned nixpkgs without `soft-reboot.target`/`systemd-soft-reboot.service` need a small module, which `nails check` prints. |
 | Debian 13 (trixie) and newer | Root overlay | The same whole-root session; the hidden configuration is whatever the upper's `/etc` holds. Requires the merged-`/usr` layout. |
 | Ubuntu 24.04 and newer | Root overlay | As Debian. |
-| Debian family derivatives | Provisional | A host whose `ID_LIKE` names `debian`/`ubuntu` is accepted on the same terms when its systemd is new enough; its base release is not version-gated. |
+| Debian-family derivatives | Provisional | A host whose `ID_LIKE` names `debian` or `ubuntu` is accepted on the same terms when its systemd is new enough; its base release is not version-gated. |
 | Debian 12, Ubuntu 22.04 | Refused | systemd is too old for a soft-reboot (252 and 249). |
-| Fedora, Arch, other distributions | Refused | No validated backend yet; detection declines with a documented message. Planned — see [ROADMAP.md](ROADMAP.md). |
-| ostree / image-based hosts | Refused | NAILS cannot overlay an immutable system. |
-| Non-systemd hosts (OpenRC, runit, …) | Refused | The session is entered and left with a systemd soft-reboot. |
+| Fedora, Arch, other distributions | Refused | No validated backend yet. Planned; see [ROADMAP.md](ROADMAP.md). |
+| ostree and image-based hosts | Refused | NAILS cannot overlay an immutable system. |
+| Non-systemd hosts (OpenRC, runit, ...) | Refused | The session is entered and left with a systemd soft-reboot. |
 
-The `decoy-root` check also refuses a decoy whose root is a tmpfs (an impermanent root), ZFS or
-an overlay: the way back mounts the decoy root again by its device.
+Also refused by the pre-flight checks:
 
-### Important constraints
+- a decoy root on tmpfs (an impermanent root), ZFS or an overlay (`decoy-root`);
+- active disk swap; only RAM-backed zram is allowed (`swap`);
+- a persistent journal or an active syslog or audit daemon, unless overridden
+  (`decoy-persistence`);
+- a hidden volume that is not mounted, or whose filesystem cannot host an
+  overlayfs upper: NFS, CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS
+  (`hidden-volume`, `upper-fs-capability`);
+- running inside a container or another mount namespace than PID 1's
+  (`mount-namespace`).
 
-- NAILS does **not** mount, unlock, or protect the hidden backend for you.
-- **Activation and deactivation log you out.** Every program closes at the soft-reboot; save your
-  work first. The hidden session and, afterwards, the decoy start at their own login screens.
-- Your backend must be kernel-managed (dm-crypt, a loop device): a FUSE mount dies with the
-  programs at the soft-reboot. It stays mounted for the whole hidden session and is closed by the
-  switch back.
-- What the soft-reboot leaves is in RAM only: the kernel ring buffer (`dmesg`), the soft-reboot
-  counter (two per session) and the unchanged boot ID and uptime. Power off after a session when
-  that matters.
-- The account you run `sudo` from must be a local account listed in `/etc/passwd`: the static
-  release binary does not use NSS, so a directory account (LDAP, SSSD) cannot be resolved.
-- A clean `nails verify` result is evidence for known/common artifacts, **not proof** that no trace remains.
+`nails check` runs every check, changes nothing and prints what it would do.
+For the strongest posture, keep state such as `/var` and `/home` on storage that
+is wiped at boot (impermanence-style); the decoy *root* itself must stay on a
+disk. See
+[docs/decoy-requirements.md](docs/decoy-requirements.md).
 
-### Hidden-volume space and copy-up
-
-The hidden root's upper persists across sessions. OverlayFS copies a lower file into the upper
-**in full** the first time it is written, truncated, or re-chmod/chowned, so the first write to a
-large file (the Nix database, a browser profile, a VM image) can stall on a slow or encrypted
-backend, and the upper only grows. A file copied up earlier also **shadows** later decoy updates
-of the same file: after the decoy updates itself (a package upgrade, a NixOS rebuild of the decoy),
-the hidden session still sees its own older copy. To keep the volume small and current:
-
-- watch usage with `nails status`, which reports the hidden volume's total, used
-  and free space without scanning it;
-- run `nix-collect-garbage -d` and clear caches **inside** the hidden session;
-- from the decoy, delete a path's hidden copy with
-  `sudo /mnt/data/nails reset-upper <PATH>` so the decoy's own files show through again (it
-  confirms first, and warns that resetting `/nix` drops the hidden Nix store). It is refused in
-  the hidden session, where the upper is the live root.
-
-See [docs/operator-guide.md](docs/operator-guide.md#copy-up-cost-and-shadowed-decoy-updates) for
-the full maintenance guidance.
+</details>
 
 ## Installation
 
-NAILS is installed by copying a verified static binary onto the mounted hidden root, and in no other way. [`docs/distribution.md`](docs/distribution.md) lists which channels are supported and why the usual registries and package managers are not.
+NAILS is installed by copying a verified static binary onto the mounted hidden
+volume, and in no other way. No package, registry or decoy-side install is
+supported; [docs/distribution.md](docs/distribution.md) explains why.
 
-### Install the verified release binary
-
-Download the latest bundle from the canonical [GitHub Releases page](https://github.com/WitteShadovv/nails/releases) and verify its artifacts (see [RELEASING.md](RELEASING.md) for how releases are produced). Mount the hidden storage first, then place the published `nails` executable directly on that hidden root. Do not leave the binary on the decoy filesystem:
-
-```bash
-# Open and mount hidden storage first
-sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden \
-  "$HOME/Downloads/family_photos" data
-sudo mount /dev/mapper/data /mnt/data
-
-# Install the release binary onto hidden storage
-install -m0755 /path/to/downloaded/nails /mnt/data/nails
-```
-
-Verify the download before first use, as [`docs/verify-release.md`](docs/verify-release.md) describes: the checksum, the build provenance, and where to do it without leaving a trace on the decoy system. For higher assurance, rebuild the published source revision and compare it against the bundle using the reproducibility guidance in
-[`docs/release-artifact-reproducibility.md`](docs/release-artifact-reproducibility.md).
-
-### Upgrading from inside a hidden session
-
-The builds below are for upgrading an existing install, not for a first install. Run them only inside an active hidden session: the build caches (`~/.cargo`, `/nix/store`, the `result` GC root) then land on the hidden upper layer, never on the decoy. See [`docs/distribution.md`](docs/distribution.md).
-
-From source:
-
-```bash
-git clone https://github.com/WitteShadovv/nails /mnt/data/src/nails
-cd /mnt/data/src/nails
-cargo build --release
-install -m0755 ./target/release/nails /mnt/data/nails
-```
-
-With Nix:
-
-```bash
-nix build .#nails
-install -m0755 ./result/bin/nails /mnt/data/nails
-```
-
-> [!NOTE]
-> Zero-config path discovery trusts the binary installed on hidden storage. If you run NAILS from
-> a build directory or `/nix/store`, set `hidden_volume_root` explicitly or use `--config`.
-
-## Quick start
-
-This is the shortest runnable path. The [operator guide](docs/operator-guide.md) walks the same
-steps in full, organised around where each one runs, with a recovery runbook and the honest limits.
-
-1. **Mount your hidden storage**.
+1. Outside the decoy system (a live environment that keeps nothing, or a
+   separate machine), download the latest bundle from
+   [GitHub Releases](https://github.com/WitteShadovv/nails/releases) and verify
+   it as [docs/verify-release.md](docs/verify-release.md) describes (checksum
+   and build provenance). For more assurance, rebuild it:
+   [docs/release-artifact-reproducibility.md](docs/release-artifact-reproducibility.md).
+2. Unlock and mount the hidden volume, then put the binary directly on it. Never
+   leave a copy on the decoy disk:
 
    ```bash
    sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden \
      "$HOME/Downloads/family_photos" data
    sudo mount /dev/mapper/data /mnt/data
+   sudo install -m0755 /path/to/verified/nails /mnt/data/nails
    ```
 
-   This opens a VeraCrypt hidden volume stored in a file container. [docs/backends.md](docs/backends.md)
-   has the commands for a whole-device VeraCrypt volume and for LUKS2, and the discard and
-   timestamp hazards of each; never add `--allow-discards`.
+The examples use the mapping name `data` and the mount point `/mnt/data`. Keep
+yours neutral too: names surface in `/dev/mapper`, `/dev/disk/by-label`, mount
+unit names and the journal, and NAILS warns when one contains a telling word.
 
-   Keep the mapping name, the mount point and the filesystem label neutral (the examples use
-   `data` and `/mnt/data`). None of them may hint at hidden storage: they surface in
-   `/dev/mapper`, `/dev/disk/by-label`, generated mount unit names and the journal, and NAILS
-   warns at activation when any of them contains a telling word.
+<details>
+<summary><b>Upgrading the binary from inside a hidden session</b></summary>
 
-2. **Bootstrap the hidden layout** on the mounted backend.
+These builds are for upgrading an existing install, not for a first install. Run
+them only inside an active hidden session: the build caches (`~/.cargo`,
+`/nix/store`, the `result` GC root) then land on the hidden upper, never on the
+decoy.
+
+```bash
+# From source
+git clone https://github.com/WitteShadovv/nails /mnt/data/src/nails
+cd /mnt/data/src/nails
+cargo build --release
+install -m0755 ./target/release/nails /mnt/data/nails
+
+# With Nix
+nix build .#nails
+install -m0755 ./result/bin/nails /mnt/data/nails
+```
+
+Zero-config path discovery trusts the binary installed on the hidden volume. If
+you run NAILS from a build directory or `/nix/store`, set `hidden_volume_root`
+explicitly or pass `--config`.
+
+</details>
+
+## Quick start
+
+The shortest runnable path. The [operator guide](docs/operator-guide.md) walks the
+same steps in full, organised by where each one runs, with a recovery runbook.
+Type the decoy-side commands in a shell with history off (`set +o history`).
+
+1. **Mount the hidden volume** (see [Installation](#installation)).
+   [docs/backends.md](docs/backends.md) has the commands for a whole-device
+   VeraCrypt volume and for LUKS2. Never add `--allow-discards`.
+
+2. **Lay out the hidden volume** once:
 
    ```bash
    sudo /mnt/data/nails init /mnt/data
    ```
 
-   Run `init` by its full path on the hidden volume and with `sudo`: the mount point
-   is root-owned after `sudo mount`, and `nails` is never placed on the decoy `PATH`.
-   `init` checks the target before writing anything and refuses a directory that is not a
-   mounted volume of its own, so the layout never lands on the decoy disk;
-   `--allow-unmounted` overrides this for a directory-style backend. On NixOS it seeds the
-   hidden NixOS layout from `/etc/nixos/hardware-configuration.nix`; `--hardware-config <PATH>`
-   names another base and `--no-hardware-config` skips the layout. It reports each item as
-   created or already present and ends with the next steps.
+   `init` refuses a directory that is not a mounted volume of its own, so the
+   layout never lands on the decoy disk. On NixOS it seeds the hidden NixOS layout
+   from `/etc/nixos/hardware-configuration.nix`. It ends by printing the next
+   steps.
 
-3. **Optionally review the generated config**.
+3. **Optionally review the configuration.** Every key is optional and an empty
+   file uses the defaults:
 
    ```bash
    $EDITOR /mnt/data/config/nails.toml
    /mnt/data/nails config validate
+   /mnt/data/nails config show        # effective values and where each comes from
    ```
 
-   The file is strict TOML: every key is optional (an empty file uses the defaults) and unknown
-   keys are rejected. Leave `hidden_volume_root` unset to derive it from the binary location.
-   Example:
+   On NixOS, edit the hidden module `/mnt/data/config/nixos/configuration.nix`,
+   or point `nixos_flake` at a flake. [docs/configuration.md](docs/configuration.md)
+   lists every key.
 
-   ```toml
-   nixos_flake = "/mnt/data/nixos#my-host"
-   ```
-
-   `nails config show` prints the effective configuration and where each value comes from;
-   `nails config show --example` prints every key. [docs/configuration.md](docs/configuration.md)
-   lists every key with its default and effect.
-
-4. **On NixOS, add or replace the hidden configuration** if you do not want the generated starter
-   module.
-
-   ```bash
-   $EDITOR /mnt/data/config/nixos/configuration.nix
-   ```
-
-   It is built against the decoy's own `/etc/nixos` plus the hidden hardware configuration that
-   `init` placed in the hidden root (`/mnt/data/root/upper/etc/nixos/`). A flake given with
-   `nixos_flake` or `--nixos-flake` is used instead.
-
-5. **Check readiness, then activate.**
+4. **Check, then activate:**
 
    ```bash
    sudo /mnt/data/nails check
    sudo /mnt/data/nails activate
    ```
 
-   `check` runs the same pre-flight checks as `activate` and changes nothing; `activate
-   --dry-run` previews the steps. Activation prepares the hidden root, prints its result and
-   soft-reboots: every program closes and you are logged out. Log in again at the hidden
-   session's login screen. As its last step activation kills the decoy's interactive shells, so
-   the activation command is never written to a history file.
+   `check` runs the same pre-flight checks as `activate` and changes nothing.
+   `activate` asks for confirmation, prepares the hidden root and soft-reboots:
+   **every program closes and you are logged out.** Log in again at the hidden
+   session's login screen.
 
-6. **Return to the decoy when finished**, from inside the hidden session.
-
-   ```bash
-   sudo /mnt/data/nails deactivate
-   ```
-
-   The hidden session shuts down in order, the hidden backend is closed by the switch, and the
-   decoy starts at its own login screen. Before handing the machine over, prefer
-   `deactivate --poweroff`, and leave the machine off for a few minutes. A soft-reboot keeps the
-   kernel's RAM state, and a warm reboot does not clear RAM either: DRAM keeps its contents across
-   a reset unless the firmware honours the TCG memory-overwrite request (MOR), and setting MOR
-   itself writes EFI NVRAM.
-
-7. **Verify from the hidden side, before handing the machine over.**
-
-   The binary lives on the hidden volume, not on the decoy, so run `verify`
-   from the hidden session, before `deactivate`:
+5. **Verify, then return** from inside the hidden session:
 
    ```bash
    sudo /mnt/data/nails verify --deep
+   sudo /mnt/data/nails deactivate --poweroff
    ```
 
-   To inspect the decoy itself for leftovers, mount its image or partition
-   read-only and scan it offline, again from the hidden side:
+   `deactivate` without `--poweroff` returns to the decoy's login screen.
+   Powering off is what clears RAM; leave the machine off for a few minutes
+   before handing it over.
 
-   ```bash
-   sudo /mnt/data/nails verify --offline --root /mnt/decoy
-   ```
+<details>
+<summary><b>What <code>nails check</code> prints</b></summary>
 
-   A clean result reports what it checked and lists what it did not; it is
-   evidence against known artifacts, not proof the decoy is untouched.
+<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check: every pre-flight check with PASS or WARN, the effective configuration, the decision for each decoy filesystem, and a final Ready to activate line" width="820">
 
-## Command overview
+Captured from the `session-lifecycle` NixOS VM test; see
+[docs/assets/README.md](docs/assets/README.md) for how each screenshot is made.
 
-The binary lives on the hidden volume and is never placed on the decoy `PATH`, so
-every invocation uses its full path (the examples use `/mnt/data/nails`). `sudo`'s
-`secure_path` excludes the hidden root, so a bare `sudo nails`-style call (no path)
-would not resolve.
+</details>
+
+## The session lifecycle
+
+```mermaid
+flowchart LR
+    D["Decoy<br/>plain decoy root"]
+    H["Hidden session<br/>whole-root overlay,<br/>upper on the hidden volume"]
+    O["Powered off<br/>RAM decays"]
+    D -->|"nails activate<br/>(soft-reboot)"| H
+    H -->|"nails deactivate<br/>(orderly stop, soft-reboot)"| D
+    H -->|"nails emergency<br/>(kill everything, soft-reboot)"| D
+    H -.->|"--poweroff"| O
+    D -.->|"nails recover<br/>(after an interrupted activation)"| D
+```
+
+| Step | Runs on | What happens | What you see |
+|---|---|---|---|
+| `activate` | the decoy | Pre-flight checks, a read-only residue baseline of the decoy (report on the hidden volume), the root overlay at `/run/nextroot`, on NixOS the hidden system built into the overlay, then the soft-reboot. Ctrl+C before the switch rolls everything back. | Progress and a summary, then your terminal closes and the screen shows a text console for a few seconds. The hidden session starts at its own login screen. |
+| `deactivate` | the hidden session | Mounts the decoy root for the way back, marks the hidden volume for closing, and soft-reboots. The orderly shutdown stops every hidden program; the last step scrubs `/run` of what the session added. | Programs close as at a logout. The decoy starts at its own login screen. The hidden volume is unmounted and closed. |
+| `emergency` | the hidden session | The same way back, but every hidden program is killed at once (`cgroup.kill`). It acts immediately; `--countdown` adds an abortable wait. If the way back cannot be prepared, it powers off. | A few seconds of text console, then the decoy's normal login screen. Log in with the decoy password; nothing logs in automatically. |
+| `--poweroff` | either command | Powers off instead of returning to the decoy. | The machine turns off. |
+| `recover` | the decoy | Removes what an interrupted activation left in `/run` and resets the state. Never reboots. | A short report. |
+
+Both transitions log you out. Save your work first.
+
+<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line, Hidden session prepared in 2.6s, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
+
+<details>
+<summary><b>What <code>nails status --json</code> reports in the hidden session</b></summary>
+
+<img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: posture active, session hidden, the hidden system path, the overlaid mounts and the last activation's duration" width="820">
+
+Every command accepts `--json` and prints one line with a versioned envelope
+(`schema_version`, `command`, `ok`, then `data` or `error`). The schemas are in
+[docs/schemas/](docs/schemas/).
+
+</details>
+
+## Safety notes
+
+- **NAILS does not mount, unlock or protect the hidden volume.** That is your
+  backend's job, and so is its deniability.
+- **Run it by its full path on the hidden volume** (`sudo /mnt/data/nails ...`).
+  Never put a copy, symlink or `PATH` entry on the decoy: the binary holds
+  identifiable strings that survive deletion.
+- **The hidden volume must stay mounted for the whole session.** It is
+  kernel-managed for that reason: a FUSE mount dies with the programs at the
+  soft-reboot.
+- **A soft-reboot leaves traces in RAM**: the kernel ring buffer, the
+  soft-reboot counter (two per session) and the unchanged boot ID and uptime.
+  Power off after a session when that matters. A warm reboot does not clear RAM
+  either.
+- **Do not suspend during a session.** Suspend keeps the whole hidden session
+  and the volume key in RAM. Set the lid switch to `ignore` or `lock` and
+  consider `sleep_policy` (see [docs/configuration.md](docs/configuration.md#sleep-policy)).
+- **Do not start the decoy's sync and account clients** in the hidden session
+  for sensitive work: what they send stays on the remote side, and a decoy client
+  can pull it back after the session. See the
+  [operator guide](docs/operator-guide.md#remote-state-and-sync-clients).
+- **A clean `nails verify` is evidence, not proof.** It checks for known
+  artifacts and lists what it did not check.
+- **Panic button:** bind a key to a root-owned unit that runs
+  `nails emergency --poweroff`, defined only in the hidden configuration. Never
+  give the binary a passwordless `sudo` rule. See the
+  [operator guide](docs/operator-guide.md#panic-switch).
+
+<details>
+<summary><b>Hidden-volume space, copy-up and shadowed decoy updates</b></summary>
+
+The hidden root's upper persists across sessions. OverlayFS copies a decoy file
+into the upper **in full** the first time it is written, truncated or
+re-chmod/chowned, so the first write to a large file (the Nix database, a browser
+profile, a VM image) can stall on a slow or encrypted backend, and the upper only
+grows. On NixOS the first entry also copies the hidden system's whole closure
+onto the hidden volume, which can take several GB and minutes. A file copied up
+earlier also **shadows** later decoy updates of that file: after a decoy package
+upgrade or rebuild, the hidden session still sees its own older copy.
+
+- watch free space with `df -h /mnt/data`; `nails check` fails when it drops
+  below `minimum_space_mb`;
+- run `nix-collect-garbage -d` and clear caches **inside** the hidden session;
+- from the decoy, `sudo /mnt/data/nails reset-upper <PATH>` deletes a path's
+  hidden copy so the decoy's own files show through again (it asks first, and is
+  refused in the hidden session).
+
+See [the operator guide](docs/operator-guide.md#copy-up-cost-and-shadowed-decoy-updates).
+
+</details>
+
+<details>
+<summary><b>Troubleshooting</b></summary>
+
+In the hidden session the way out is always `deactivate`, then `emergency`, then a
+power-off. A power-off is always safe: nothing of the session is installed on the
+decoy and everything NAILS puts in `/run` is gone at power-off.
+
+| Situation | What to do |
+|---|---|
+| `nails check` fails | Read the `->` hint under each failing check; it names the fix. |
+| Activation was interrupted (killed, crashed) | `nails status` exits 7 and says to run `nails recover`. Run it on the decoy. Ctrl+C during activation rolls back by itself. |
+| `deactivate` refuses or fails | Run `nails emergency`. |
+| The hidden session hangs | Switch to a text console (Ctrl+Alt+F2), log in and run `nails emergency`. A stuck service can delay `deactivate` by up to 90 s; `emergency` does not wait. |
+| The hidden volume failed (USB pulled, I/O errors) | Run the RAM copy activation left behind: `sudo /run/overlay-runtime/control emergency`. Power off if that does not respond. |
+| The hidden volume is full | Free space inside the session, or deactivate and `reset-upper` a large path from the decoy. Never delete files out of the upper by hand. |
+| Power loss or crash | The decoy boots normally. If `nails status` reports a mismatched state, run `nails recover` once. |
+
+The full runbook, including cleaning up by hand when `recover` cannot run, is in
+[the operator guide](docs/operator-guide.md#when-things-go-wrong).
+
+</details>
+
+<details>
+<summary><b>FAQ</b></summary>
+
+**Does NAILS hide that a hidden volume exists?** No. That depends on the backend:
+a VeraCrypt hidden volume cannot be told apart from its outer volume's free
+space, a LUKS volume is visibly an encrypted volume. NAILS adds nothing to the
+backend's claim. It keeps the *session* off the decoy.
+
+**Can I keep working on the decoy while the hidden session runs?** No. Only one
+of them runs at a time; switching logs you out of the other.
+
+**Why does it need a soft-reboot?** Every process of the hidden session then
+starts inside the overlay, so there is nothing on the decoy side to find,
+restart or kill. The older design that overlaid a running system directory by
+directory could miss a writer silently; see
+[ADR 0008](docs/adr/0008-whole-root-soft-reboot.md).
+
+**Does the hidden session get its own account?** Not yet. By default it runs as
+the decoy user in the decoy home seen through the overlay; the `fresh-home`
+persona gives it an empty home instead. See
+[persona modes](docs/configuration.md#persona-modes).
+
+**Does it work on a persistent decoy?** Only with `--accept-persistent-decoy`,
+and then the decoy's journal records the soft-reboots and the activation
+command. Prefer an amnesic decoy.
+
+**How do I know it works on my machine?** Run `nails rehearse` (plant a canary in
+a hidden session, then search the raw decoy disk for it) and
+`nails verify --offline --examiner` against an image of the decoy. See
+[the operator guide](docs/operator-guide.md#rehearsing-before-you-rely-on-it).
+
+</details>
+
+## Commands
+
+The binary lives on the hidden volume, so every invocation uses its full path.
+`sudo`'s `secure_path` does not include the hidden volume, so a bare
+`sudo nails` would not resolve.
 
 | Command | Where | Purpose |
 |---|---|---|
-| `sudo /mnt/data/nails init <PATH>` | decoy | Bootstrap a hidden-volume layout on an existing mounted root |
-| `sudo /mnt/data/nails check` | decoy | Report readiness to activate without changing anything (alias: `doctor`) |
-| `sudo /mnt/data/nails activate` | decoy | Soft-reboot into the hidden session |
-| `sudo /mnt/data/nails deactivate` | hidden session | Soft-reboot back to the plain decoy (`--poweroff` to power off) |
-| `sudo /mnt/data/nails emergency` | either | Kill the hidden session at once and return to the decoy (or power off); on the decoy, remove an interrupted activation |
-| `sudo /mnt/data/nails recover` | decoy | Remove what an interrupted activation left in `/run` |
-| `/mnt/data/nails status` | either | Show the live session, security posture, and hidden-volume disk usage |
-| `sudo /mnt/data/nails verify` | hidden session | Scan for known/common host artifacts (live, or `--offline` against a decoy image) |
-| `sudo /mnt/data/nails rehearse` | both | Plant a canary in a hidden session, then scan the raw decoy disk for it |
-| `sudo /mnt/data/nails reset-upper <PATH>` | decoy | Delete a path's hidden copy from the hidden root's upper |
-| `/mnt/data/nails config path\|show\|validate` | either | Locate, inspect or check the configuration file |
+| `init <PATH>` | decoy | Lay out a mounted hidden volume |
+| `check` | decoy | Report readiness to activate, changing nothing (alias `doctor`) |
+| `activate` | decoy | Soft-reboot into the hidden session |
+| `deactivate` | hidden session | Soft-reboot back to the plain decoy (`--poweroff` to power off) |
+| `emergency` | either | Kill the hidden session at once and return (or power off); on the decoy, remove an interrupted activation |
+| `recover` | decoy | Remove what an interrupted activation left in `/run` |
+| `status` | either | The live session, security posture and hidden-volume space |
+| `verify` | hidden session | Scan for known artifacts (live, or `--offline` against a decoy image) |
+| `rehearse` | both | Plant a canary in a hidden session, then scan the raw decoy disk for it |
+| `reset-upper <PATH>` | decoy | Delete a path's hidden copy from the hidden root's upper |
+| `config path\|show\|validate` | either | Locate, inspect or check the configuration file |
+| `completions <SHELL>` | either | Print a shell completion script |
 
-For full flag-level usage, run `/mnt/data/nails --help` or
-`/mnt/data/nails <command> --help`, or read [docs/cli.md](docs/cli.md).
+The full reference, generated from the code, is [docs/cli.md](docs/cli.md) (also
+shipped as the `nails.1` man page).
 
-## CLI reference
+<details>
+<summary><b><code>nails -h</code></b></summary>
 
-### Global flags
+<img src="docs/assets/screenshots/help.svg" alt="Terminal output of nails -h: the command list and the global options" width="820">
 
-Accepted before or after the subcommand (`nails -q status` and `nails status -q`
-are the same).
+</details>
 
-| Flag | Effect |
-|---|---|
-| `-c`, `--config <PATH>` | Read this TOML file instead of the binary-relative default |
-| `-v`, `--verbose` | More diagnostics on stderr (`-v` debug, `-vv` trace); conflicts with `--quiet` |
-| `-q`, `--quiet` | Print only errors and the final result |
-| `--color <auto\|always\|never>` | When to emit ANSI colour (default `auto`) |
-| `--ascii` | Use ASCII markers instead of Unicode symbols and box drawing |
-| `--json` | Print a machine-readable JSON envelope on stdout |
-| `--no-log-file` | Do not write the log file on the hidden volume (stderr still logs) |
+<details>
+<summary><b>Exit codes and JSON output</b></summary>
 
-### `activate` flags
-
-| Flag | Effect |
-|---|---|
-| `-y`, `--yes` | Proceed without the confirmation prompt (otherwise it prompts on a terminal and refuses without one, because it logs you out) |
-| `--overlay-only` | NixOS: enter with the decoy's own system, without building the hidden configuration (the hidden `/etc` and home still apply) |
-| `--nixos-flake <REF>` | NixOS: the hidden configuration as a flake reference `<path>#<host>` |
-| `--accept-persistent-decoy` | Activate despite a persistent decoy posture (overrides `accept_persistent_decoy`) |
-| `--dry-run` | Preview the steps without changing anything |
-| `--no-preflight` | Skip pre-flight checks (dangerous; expert use only) |
-
-`deactivate` takes `-y`/`--yes` and `--poweroff` (power off instead of
-returning to the decoy). `emergency` takes `--countdown <SECS>` (an abortable
-wait; it acts immediately by default), `--poweroff` (power off instead of
-returning to the decoy; RAM decays) and `--reboot` (a full reboot, which does not
-clear RAM). `recover` takes no options. `verify` takes `--deep`, and
-`--offline --root <MOUNT>` to scan a mounted decoy image.
-
-### Exit codes
-
-Every command returns one of these; they are a stable contract a script can
-branch on.
+Every command returns one of these codes; scripts can rely on them.
 
 | Code | Meaning |
 |---|---|
@@ -363,140 +455,135 @@ branch on.
 | `4` | A pre-flight check refused the operation |
 | `5` | The operation needs privileges it did not have |
 | `6` | The on-disk state could not be trusted |
-| `7` | The system is degraded, or an interrupted activation needs `nails recover` |
+| `7` | The session is degraded, for example an interrupted activation that needs `nails recover` |
 | `8` | The host is not one NAILS can operate on |
 | `9` | Completed, but with a warning the caller should act on |
 | `10` | `verify` found warnings |
 | `11` | `verify` found critical artifacts, or `rehearse scan` found its canary |
-| `130` | Cancelled by a signal (SIGINT/SIGTERM); the entry was rolled back |
-
-### JSON output
+| `130` | Cancelled by a signal (SIGINT/SIGTERM); an entry in progress is rolled back |
 
 With `--json`, every command writes one line: a stable envelope with
 `schema_version` (currently `1`), the `command` name, an `ok` boolean, and either
-a typed `data` object (success) or a typed `error` object with a snake_case
-`code`, a `message` and an optional `hint` (failure). Bump the schema version
-signals an incompatible change to a field's meaning.
+a typed `data` object or an `error` object with a snake_case `code`, a `message`
+and an optional `hint`. A new schema version signals an incompatible change.
 
-## Threat model and limitations
+</details>
 
-NAILS targets **post-seizure forensic analysis** of a powered-off device. It
-reduces host-side artifacts; it does not protect against every class of attack.
-The hidden session runs on the decoy's kernel and shares the host's network
-identity and any remote state with the decoy, and by default it starts from the
-decoy account and home as well. The adversary, assumptions,
-out-of-scope list, residual channels and evaluation scope are in
-[docs/threat-model.md](docs/threat-model.md). Read it, and validate your exact
-procedure end to end, before relying on NAILS in a high-risk context.
+<details>
+<summary><b>Upgrading from an earlier release</b></summary>
 
-For sensitive work, do not start the decoy's sync and account clients in the
-hidden session; the [operator guide](docs/operator-guide.md#threat-model-limitations)
-explains why and how.
+Upgrade only while NAILS is inactive: end the session with `nails deactivate` (or,
+on the decoy, `nails recover` after an interrupted activation) using the old
+binary before replacing it. This release changes operator-facing interfaces, with
+no compatibility shim: convert your setup before running the new binary.
 
-## Reproducible release artifact
+- **Session mode.** The per-directory overlays (`/etc`, `/home`, `/var`, ...) are
+  gone. The only mode is the whole-root session entered and left with a
+  soft-reboot (systemd 254 or newer, so Debian 12 and Ubuntu 22.04 are no longer
+  supported). The hidden root's layers live under `<hidden-root>/root/`
+  (`upper`, `work`, `mounts`, `cache`); the uppers of the old mode
+  (`<hidden-root>/<name>` and `<hidden-root>/.work`) are not read. Move what you
+  need from them into the hidden session, then delete them. On NixOS the hidden
+  hardware configuration moves to `<hidden-root>/root/upper/etc/nixos/`; run
+  `nails init` again to place it.
+- **Configuration format.** Configuration is strict TOML. Convert any earlier
+  YAML configuration to `config/nails.toml` next to the binary on the hidden
+  volume (see [docs/configuration.md](docs/configuration.md)). Unknown keys,
+  wrong types and syntax errors are rejected with a one-line message. The overlay
+  keys (`overlays`, `overlay_mode`, `overlay_exclusions`,
+  `overlay_exclusions_remove`, `allow_leaky_exclusions`), `risky_services`,
+  `nixos_switch_required`, `clear_history`, `prompt_label`, `[color_scheme]` and
+  `[emergency]` are removed and now rejected as unknown keys.
+- **Invocation.** Always run the binary by its full path on the hidden volume.
+  No copy, symlink or `PATH` entry on the decoy is supported.
+- **Flags and commands.** The output flags are global and accepted in any
+  position; `--plain`, `--no-color`, `--no-logs` and `--verbose-details` are
+  replaced by `--color`, `--ascii`, `--quiet`, `--verbose` and `--no-log-file`.
+  `activate --session`, `--pivot`, `--risky-services` and
+  `--terminate-processes`, `deactivate --no-clear-history`,
+  `emergency --lock-backend`, and the `reapply` and `notify-dispatch` commands
+  are removed.
+- **Exit codes and JSON.** The process returns the documented exit codes, and
+  `--json` emits the versioned envelope (`schema_version = 1`).
+- **State schema.** `state.json` carries a `version` field. The states are
+  `Inactive`, `Active` and `Degraded`; `nails status` reads the live session from
+  the mount table and the session plan in `/run`, because a soft-reboot keeps the
+  boot ID. A state file written by an incompatible version is treated as a safe
+  default (inactive) rather than trusted.
 
-NAILS has one canonical Nix-built Linux release artifact:
+The release changelog mirrors these notes under its "Upgrade notes" heading; keep
+[CHANGELOG.md](CHANGELOG.md) and this section in step when cutting a release.
 
-- flake attribute: `.#nails-release`
-- target: `x86_64-unknown-linux-musl`
+</details>
 
-To reproduce the release bundle locally for a specific revision:
+## Documentation
+
+The full index is [docs/README.md](docs/README.md). The essentials:
+
+- [Operator guide](docs/operator-guide.md): the whole workflow by where each step
+  runs, the recovery runbook and the honest limits
+- [Threat model](docs/threat-model.md): adversary, assumptions, residual channels
+- [Decoy requirements](docs/decoy-requirements.md): what the decoy must and must
+  not keep, per platform
+- [Storage backends](docs/backends.md): which backends work and the hazards of each
+- [Configuration](docs/configuration.md) and [CLI](docs/cli.md) reference
+- [Verify a release](docs/verify-release.md)
+- [Architecture](docs/architecture.md) and the
+  [design records](docs/adr/README.md)
+- [Project site](https://nails.run), [changelog](CHANGELOG.md),
+  [roadmap](ROADMAP.md)
+
+## Development
+
+NAILS is a Cargo workspace of seven crates (the `nails` binary and six
+libraries); [docs/architecture.md](docs/architecture.md) shows how they fit
+together.
+
+<details>
+<summary><b>Developer quick start</b></summary>
 
 ```bash
-nix build -L .#nails-release -o result --option accept-flake-config false
+git clone https://github.com/WitteShadovv/nails.git
+cd nails
+nix develop          # the pinned toolchain and every tool the checks use
+just check           # formatting, clippy, file sizes and the tests
+nix flake check      # Nix, shell and workflow linters (no VM tests)
+nix build .#e2e.session-lifecycle --no-link -L   # one NixOS VM test (needs KVM)
 ```
 
-See [`docs/release-artifact-reproducibility.md`](docs/release-artifact-reproducibility.md) for the
-scope of the reproducibility claim and artifact verification details.
+- [CONTRIBUTING.md](CONTRIBUTING.md): setup, conventions, sign-off
+- [Development guide](docs/development-guide.md) and
+  [testing strategy](docs/testing-strategy.md)
+- [VM test suite](nix/e2e-tests/README.md) and [CI](docs/ci.md)
+- [Releasing](RELEASING.md)
 
-## Upgrading
-
-Upgrade only while NAILS is inactive: end the session with `nails deactivate` (or, on the decoy,
-`nails recover` after an interrupted activation) with the old binary before replacing it. This
-release changes operator-facing interfaces. There is no backwards-compatibility shim: convert your
-setup before running the new binary.
-
-- **Session mode.** The per-directory overlays (`/etc`, `/home`, `/var`, …) are gone. The only
-  mode is the whole-root session entered and left with a soft-reboot (systemd 254 or newer, so
-  Debian 12 and Ubuntu 22.04 are no longer supported). The hidden root's layers live under
-  `<hidden-root>/root/` (`upper`, `work`, `mounts`, `cache`); the uppers of the old mode
-  (`<hidden-root>/<name>` and `<hidden-root>/.work`) are not read. Move what you need from them
-  into the hidden session, then delete them. On NixOS the hidden hardware configuration moves to
-  `<hidden-root>/root/upper/etc/nixos/`; run `nails init` again to place it.
-- **Configuration format.** Configuration is now strict TOML. Convert any earlier
-  YAML configuration to `config/nails.toml` next to the binary on the hidden volume
-  (see [docs/configuration.md](docs/configuration.md) for every key and its default).
-  Unknown keys, wrong types and TOML syntax errors are rejected with a one-line
-  message rather than silently falling back to a default. The overlay keys
-  (`overlays`, `overlay_mode`, `overlay_exclusions`, `overlay_exclusions_remove`,
-  `allow_leaky_exclusions`), `risky_services`, `nixos_switch_required`,
-  `clear_history`, `prompt_label`, `[color_scheme]` and `[emergency]` are removed and
-  now rejected as unknown keys.
-- **Invocation.** Always run the binary by its full path on the hidden volume
-  (`sudo /mnt/data/nails …`). No copy, symlink or `PATH` entry on the decoy is
-  supported.
-- **Flags and commands.** The output flags are now global and accepted in any position; the old
-  per-command output flags (`--plain`, `--no-color`, `--no-logs`,
-  `--verbose-details`) are removed in favour of `--color`, `--ascii`, `--quiet`,
-  `--verbose` and `--no-log-file`. `activate --session`, `--pivot`, `--risky-services` and
-  `--terminate-processes`, `deactivate --no-clear-history`, `emergency --lock-backend`, and the
-  `reapply` and `notify-dispatch` commands are removed. See [CLI reference](#cli-reference).
-- **Exit codes and JSON.** The process now returns the documented
-  [exit codes](#exit-codes), and `--json` emits the versioned envelope
-  (`schema_version = 1`) described under [JSON output](#json-output).
-- **State schema.** The on-disk `state.json` carries a `version` field. The states
-  are `Inactive`, `Active` and `Degraded`; `nails status` reads the live session from the
-  mount table and the session plan in `/run`, because a soft-reboot keeps the boot ID. A
-  state file written by an incompatible version is treated as a safe default
-  (inactive) rather than trusted.
-
-> [!NOTE]
-> The release changelog mirrors these upgrade notes under its own "Upgrade notes"
-> heading; keep [CHANGELOG.md](CHANGELOG.md) and this section in step when cutting
-> a release.
+</details>
 
 ## Related projects
 
-- **NAILS** (this repository) is the CLI and workflow for running a hidden session over an existing decoy system you operate.
-- **[NAILS OS](https://github.com/WitteShadovv/nails-os)** is a separate installable NixOS distribution with its own live ISO, installer, persistence model, and system-level security design.
+- **NAILS** (this repository) is the CLI and workflow for running a hidden session
+  over an existing decoy system you operate.
+- **[NAILS OS](https://github.com/WitteShadovv/nails-os)** is a separate
+  installable NixOS distribution with its own live ISO, installer, persistence
+  model and system-level security design.
 
-They are related projects, but they are not interchangeable products and do not share the same installation or threat-model boundaries.
-
-## Documentation and project policies
-
-### User and operator references
-
-- [Project site](https://nails.run)
-- [Operator guide](docs/operator-guide.md) — the full workflow, recovery runbook and honest limits
-- [Threat model](docs/threat-model.md) — adversary, assumptions, residual channels and evaluation scope
-- [Decoy requirements](docs/decoy-requirements.md) — what the decoy system must and must not keep
-- [Storage backends](docs/backends.md) — which backends are tested and the hazards of each
-- [Configuration reference](docs/configuration.md) — every `nails.toml` key with its default and effect
-- [CLI reference](docs/cli.md) — commands, flags, exit codes and the JSON envelope
-- [Architecture overview](docs/architecture.md) — how the crates and runtime layers fit together
-- [Distribution channels](docs/distribution.md)
-- [Verify a release](docs/verify-release.md)
-- [Release artifact reproducibility](docs/release-artifact-reproducibility.md)
-- [GitHub Releases](https://github.com/WitteShadovv/nails/releases)
-- [Change history](CHANGELOG.md)
-- [Roadmap](ROADMAP.md)
-
-### Contributing and governance
-
-- [Contributing guide](CONTRIBUTING.md)
-- [Security policy](SECURITY.md)
-- [Support](SUPPORT.md)
-- [Code of Conduct](CODE_OF_CONDUCT.md)
-- [Code owners](CODEOWNERS)
+They are related, but not interchangeable, and do not share the same installation
+or threat-model boundaries.
 
 ## Project status
 
-NAILS is actively maintained and currently released as **alpha** software.
+NAILS is actively maintained and released as **alpha** software.
 
-- How releases are produced, numbered and verified is documented in [RELEASING.md](RELEASING.md).
-- Interfaces and operator workflows are still subject to change between alpha releases.
-- Use it only after testing your exact hardware, storage backend, activation path, and recovery procedure.
-- Security claims are bounded by the documented threat model and by the checks you perform on your own setup.
+- Interfaces and operator workflows can still change between alpha releases.
+- Use it only after testing your exact hardware, storage backend, activation path
+  and recovery procedure.
+- Security claims are bounded by the documented threat model and by the checks
+  you run on your own setup.
+- How releases are produced, numbered and verified: [RELEASING.md](RELEASING.md).
+
+Policies: [contributing](CONTRIBUTING.md) · [security](SECURITY.md) ·
+[support](SUPPORT.md) · [code of conduct](CODE_OF_CONDUCT.md) ·
+[code owners](CODEOWNERS)
 
 ## Acknowledgements
 
@@ -511,9 +598,10 @@ NAILS has been developed with AI-assisted tooling for drafting code, tests, and 
 
 Copyright (C) 2025-2026 WitteShadovv.
 
-This project is licensed under the **GNU General Public License v3.0**. See [LICENSE](LICENSE).
+This project is licensed under the **GNU General Public License v3.0 or later**.
+See [LICENSE](LICENSE).
 
 > [!CAUTION]
-> This software is provided for educational and security research purposes. It comes with no
-> warranty, and it should not be treated as a guarantee of deniability or forensic invisibility in
-> any specific threat environment.
+> This software is provided for educational and security research purposes. It
+> comes with no warranty, and it should not be treated as a guarantee of
+> deniability or forensic invisibility in any specific threat environment.

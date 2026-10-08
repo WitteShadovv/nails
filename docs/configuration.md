@@ -16,7 +16,7 @@ distributions, ostree/image-based hosts and non-systemd hosts are refused with a
 documented message. On the Debian family there is no declarative layer: the
 `nixos_*` keys below are inert and the hidden configuration is whatever the
 upper's `/etc` holds. See the
-[platform support matrix](../README.md#platform-support) for the full table.
+[platform support matrix](../README.md#requirements) for the full table.
 
 ## Where the file lives
 
