@@ -15,9 +15,11 @@
 # garbage collection deletes its own paths (the toplevel, its /etc, its units).
 #
 #   1. Session 1 builds (realises) the hidden toplevel, keeps its closure on
-#      the hidden volume and enters it. Back on the decoy, the decoy store
-#      (its database, its writable store layer, its profiles and roots) is
-#      exactly as before.
+#      the hidden volume and enters it. Back on the decoy, the decoy store is
+#      unchanged: its database (as content), its profiles and roots are as
+#      before, and every path of the decoy and hidden systems still hashes as
+#      the database recorded it. (The VM's tmpfs store layer is not compared:
+#      after the way back the decoy mounts a fresh one at /nix/.rw-store.)
 #   2. The decoy rebuilds (a new rooted build) and garbage-collects: the hidden
 #      toplevel is gone from the decoy store.
 #   3. Session 2 enters the same hidden toplevel again: it still starts, from
@@ -83,6 +85,7 @@ in
   testScript =
     { nodes, ... }:
     ''
+      import difflib
       import secrets
       import shlex
 
@@ -104,19 +107,51 @@ in
 
 
       def decoy_store_state():
-          # The decoy's store as far as anything can change it: its database
-          # (content, not the sqlite file, which a reader may checkpoint), its
-          # writable store layer byte for byte, and its profiles and roots.
-          # The read-only store share is the host's store and is left out.
+          # What the hidden session could change in the decoy store: its
+          # database (as content: the sqlite file changes when a reader
+          # checkpoints it) and its profiles and roots. The store contents
+          # are checked against the database's hashes by verify_contents().
+          return {
+              "database": machine.succeed("nix-store --dump-db"),
+              "roots": machine.succeed(
+                  "find /nix/var/nix/profiles /nix/var/nix/gcroots -xdev -printf '%y %p %l\\n' "
+                  "| LC_ALL=C sort"
+              ),
+          }
+
+
+      def ram_layer():
+          # The VM's writable store layer is a tmpfs fstab entry, which the
+          # fstab policy leaves to each side's systemd: after the way back the
+          # decoy mounts a fresh, empty one at /nix/.rw-store, while its
+          # /nix/store overlay (carried across the session) keeps the old one
+          # as its upper. So this path no longer shows the store's upper and is
+          # only logged, never compared.
           return machine.succeed(
-              "nix-store --dump-db | sha256sum; "
-              "cd /nix/.rw-store && find . -xdev -printf '%y %m %U %G %s %T@ %p %l\\n' "
-              "| LC_ALL=C sort | sha256sum; "
-              "cd /nix/.rw-store && find . -xdev -type f -print0 | LC_ALL=C sort -z "
-              "| xargs -0 -r sha256sum | sha256sum; "
-              "find /nix/var/nix/profiles /nix/var/nix/gcroots -xdev -printf '%y %p %l\\n' "
-              "| LC_ALL=C sort | sha256sum"
+              "findmnt -no SOURCE,FSTYPE,OPTIONS /nix/.rw-store; "
+              "findmnt -no OPTIONS /nix/store; "
+              "cd /nix/.rw-store && find . -xdev -printf '%y %m %s %p %l\\n' | LC_ALL=C sort"
           )
+
+
+      def assert_store_unchanged(before, label):
+          after = decoy_store_state()
+          changed = []
+          for key, text in before.items():
+              if after[key] != text:
+                  changed.append(key)
+                  diff = difflib.unified_diff(
+                      text.splitlines(), after[key].splitlines(), lineterm="", n=0
+                  )
+                  machine.log(f"{label}: the decoy store's {key} changed:\n" + "\n".join(list(diff)[:200]))
+          assert not changed, f"{label} changed the decoy store: {changed}"
+
+
+      def verify_contents(*roots):
+          # Every registered path these roots reach still hashes as the decoy
+          # database recorded it: the store contents are byte for byte intact.
+          paths = " ".join(roots)
+          machine.succeed(f"nix-store --verify-path $(nix-store --query --requisites {paths})")
 
 
       def kept_in():
@@ -155,6 +190,7 @@ in
 
       with subtest("session 1 keeps the hidden closure on the hidden volume"):
           store_before = decoy_store_state()
+          ram_before = ram_layer()
           # The first entry copies the whole hidden system onto the hidden volume.
           canonical_activate(CONFIG, f"--nixos-flake {FLAKE}", "activate-1", deadline_s=1200.0)
           assert_hidden_system()
@@ -175,7 +211,9 @@ in
           canonical_deactivate(CONFIG, "deactivate-1")
           current = machine.succeed("readlink -f /run/current-system").strip()
           assert current == decoy_system, current
-          assert decoy_store_state() == store_before, "session 1 changed the decoy store"
+          machine.log("the RAM store layer before and after:\n" + ram_before + "\n---\n" + ram_layer())
+          assert_store_unchanged(store_before, "session 1")
+          verify_contents("/run/current-system", HIDDEN_SYSTEM)
 
       with subtest("the decoy rebuilds and garbage-collects its store"):
           nonce = secrets.token_hex(8)
@@ -202,7 +240,8 @@ in
 
       with subtest("session 2 leaves the decoy store unchanged"):
           canonical_deactivate(CONFIG, "deactivate-2")
-          assert decoy_store_state() == store_before, "session 2 changed the decoy store"
+          assert_store_unchanged(store_before, "session 2")
+          verify_contents("/run/current-system", rebuilt)
           machine.fail(f"test -e {HIDDEN_SYSTEM}")
     '';
 }
