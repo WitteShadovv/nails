@@ -8,6 +8,35 @@ tool the checks below need. For the per-tier test commands, runtimes and
 prerequisites, see the [Testing section of CONTRIBUTING.md](../CONTRIBUTING.md#testing);
 for the CI layout, [docs/ci.md](ci.md).
 
+## Crates
+
+The library is split into crates along the session's boundaries
+([ADR 0010](adr/0010-library-crate-split.md)), from the bottom up:
+`nails-teardown`, `nails-base`, `nails-platform`, `nails-session`,
+`nails-forensics` and `nails-core`, with `nails-cli` on top. A crate depends
+only on crates below it; `nails-core/tests/crate_graph.rs` fails on a new edge,
+and `nails-forensics/tests/boundary.rs` keeps verification read-only. Code
+outside the library crates uses the `nails_core::` paths: `nails-core`
+re-exports every module of the crates below.
+
+When you add a crate:
+
+- list it in the workspace `members`, in `crate_graph.rs` and in ADR 0010;
+- give it `[lints] workspace = true`, the `#![cfg_attr(test, allow(unsafe_code))]`
+  line and `nails_base::unit_test_mode!();` in its `lib.rs`, `test-hooks` and
+  `test-support` features that forward to the crates below, and a self
+  dev-dependency that turns both on, as the other library crates do;
+- add its directory wherever the crate directories are listed: `sourceFiles` in
+  `flake.nix`, the `nails-source` check in `nix/checks.nix`, the `rust` filter
+  in `ci/changes.py`, the `relevant` filter in `.github/workflows/e2e.yml` and
+  `scripts/check-orphan-modules.sh`.
+
+`unit_test_mode!` keeps a crate's unit tests off the host: the base crate's
+switches (the host-interaction skip, the state attach gate, immediate alerts)
+ask `runtime_safety::in_unit_tests()`, which the macro sets before `main` in
+that crate's unit-test binary. Integration tests and the `nails` binary built
+for them are not marked; they keep the `NAILS_TEST_RUNTIME` rule below.
+
 ## Test tiers
 
 Most of the suite is unprivileged and runs with a plain `cargo test

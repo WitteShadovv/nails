@@ -7,12 +7,21 @@
 //! on a decoy system, entered and left with `systemctl soft-reboot` into a
 //! whole-root overlay (ADR 0008).
 //!
-//! This crate contains all core functionality including:
-//! - State management and transitions
-//! - Filesystem operations and validation
-//! - Pre-flight checks
-//! - NixOS integration and profile management
-//! - Cleanup orchestration
+//! This crate holds the orchestration that needs every area at once: the
+//! manager (enter, leave, recover, reset-upper), the pre-flight registry and
+//! the checks that read several areas, and `status`. It re-exports every
+//! module of the library crates below it under its own name, so a front end
+//! talks to one library:
+//!
+//! - `nails-base`: errors, the filesystem and process seams, configuration,
+//!   state, the artifact registry, logging, output, the pre-flight framework;
+//! - `nails-platform`: host detection, the platform backends, the NixOS
+//!   configuration layer;
+//! - `nails-session`: the whole-root session's entry, fstab policy, way back,
+//!   probes, persona and runtime units;
+//! - `nails-forensics`: verification, the residue catalog, rehearse.
+//!
+//! The dependency direction is recorded in ADR 0010.
 //!
 //! The core library is designed to be reusable by different interfaces:
 //! - CLI (nails-cli)

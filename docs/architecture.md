@@ -6,20 +6,37 @@ through. It is an orientation document, not a specification — the code and the
 [architecture decision records](adr/README.md) are authoritative where they
 disagree with this page.
 
-## Three crates
+## Crates
 
-NAILS is a Cargo workspace with a deliberately thin binary, a library that
-holds everything else, and a small crate for the emergency hot path and the
-soft-reboot transition.
+NAILS is a Cargo workspace with a deliberately thin binary, five library crates
+split along the session's boundaries, and a small crate for the emergency hot
+path and the soft-reboot transition. Each crate depends only on the crates
+below it in this list:
 
 - **`nails-cli`** parses arguments, renders human and JSON output, prompts, and
   turns results into the documented exit codes. It contains no activation logic:
   it builds a request, hands it to the library, and formats what comes back.
-- **`nails-core`** holds all the business logic — host detection, configuration,
-  the state machine, pre-flight checks, the whole-root session (entry, fstab
-  policy, the hidden NixOS build, the way back, the probes `status` uses) and
-  verification. It is testable without root because every side effect goes
-  through a trait.
+- **`nails-core`** ties the areas together: the manager (enter, leave,
+  recover, reset-upper), the pre-flight registry and the checks that need
+  several areas, and `status`. It re-exports every module of the crates below
+  under its own name (`nails_core::config`, `nails_core::verify`, …), so the
+  CLI talks to one library.
+- **`nails-forensics`** looks for traces and never makes or removes them:
+  `verify` (live and offline, the examiner's view, the drift scanners), the
+  read-only raw-device and tree readers, the residue catalog and its check, and
+  `rehearse`.
+- **`nails-session`** is the configuration-aware half of the whole-root
+  session: the entry, the fstab policy, the hidden NixOS build, the way back,
+  the session's checks and the probes `status` uses, the persona, and the
+  session's runtime units (the RAM copy reader, the backend watcher and the
+  sleep guard).
+- **`nails-platform`** holds everything host-specific: detection, the
+  `Platform` backends, the NixOS configuration layer and its checks, the NixOS
+  builder and the backend chain resolver.
+- **`nails-base`** is the foundation every library crate reads: the error type,
+  the `Filesystem` and process seams (with the host-command resolver),
+  configuration, state, the artifact registry, the attach gate, logging,
+  output, notifications and the pre-flight framework.
 - **`nails-teardown`** holds everything the panic path and the soft-reboot
   transition need, with no configuration and no logging
   (`nails_teardown::whole_root`): the session plan on `/run`, the mount
@@ -31,13 +48,16 @@ soft-reboot transition.
   transition before clap, the configuration or tracing exist.
 
 Keeping the logic in the library (rather than in the binary) is recorded in
-[ADR 0001](adr/0001-core-library-boundary.md); the teardown crate and its
+[ADR 0001](adr/0001-core-library-boundary.md), the split into these crates and
+the tests that hold their boundaries in
+[ADR 0010](adr/0010-library-crate-split.md), and the teardown crate and its
 boundary in [ADR 0007](adr/0007-emergency-architecture.md) and
 [ADR 0008](adr/0008-whole-root-soft-reboot.md).
 
 ## The platform seam
 
-Every host-specific decision is made in one module, `platform`, so the rest of
+Every host-specific decision is made in one module, `platform` (in
+`nails-platform`), so the rest of
 the code never branches on "is this NixOS?" directly.
 
 1. **Detection.** `platform::detect` reads `/etc/os-release`,
@@ -69,24 +89,26 @@ it.
 
 ## Runtime layers
 
-An activation moves through these layers, all inside `nails-core` unless noted:
+An activation moves through these layers; each names its modules and crates:
 
-- **Configuration** (`config`) loads strict TOML (`nails.toml`), layers CLI
+- **Configuration** (`config`, `nails-base`) loads strict TOML (`nails.toml`), layers CLI
   overrides on top, and derives the hidden-volume root from the binary location
   when it is not set. See the [configuration reference](configuration.md).
-- **State machine** (`state`) models the recorded state as a type-safe enum
+- **State machine** (`state`, `nails-base`) models the recorded state as a type-safe enum
   (`Inactive`, `Active`, `Degraded`) with only the legal transitions
   expressible, persisted to `state.json`. Because a soft-reboot keeps the boot
   ID, the live session (hidden root, entry under way, interrupted entry, plain
   decoy) is read from the mount table and the session plan
   (`session::probe`), not from the state file. The rationale for the typed
   states is in [ADR 0003](adr/0003-type-safe-state-machine.md).
-- **Pre-flight** (`preflight`, plus `session::checks`) runs a registry of
+- **Pre-flight** (the framework in `nails-base`, the registry and most checks
+  in `nails-core`, `session::checks` in `nails-session`) runs a registry of
   trait-based checks — systemd version and the soft-reboot units, the decoy
   root, the fstab policy, backend readiness, overlay-filesystem capability,
   space, the amnesic-decoy guard, and more — before anything is mounted, and
   fails closed.
-- **Entry** (`session::entry`, `session::policy`, `session::nixos`) snapshots
+- **Entry** (`session::entry`, `session::policy`, `session::nixos`, in
+  `nails-session`) snapshots
   `/run`, writes the session plan and the RAM copy of the binary to
   `/run/overlay-runtime`, mounts the root overlay at `/run/nextroot`, builds
   and activates the hidden NixOS system there, applies the fstab policy, checks
@@ -104,13 +126,13 @@ An activation moves through these layers, all inside `nails-core` unless noted:
   session's runtime units and masks; leaving, it repoints back, scrubs `/run`,
   restores `utab` and writes the kmsg cursor. An unarmed populated
   `/run/nextroot` is detached instead.
-- **Way back and emergency** (`session::leave`, `nails-teardown`'s
+- **Way back and emergency** (`nails-session`'s `session::leave`, `nails-teardown`'s
   `whole_root::ret` and `whole_root::emergency`) mount the decoy root at
   `/run/nextroot`, mark the backend for deferred removal and enqueue the
   soft-reboot; the emergency kills every hidden cgroup first. Emergency runs
   the hot path from `main` before clap (the design history is in
   [ADR 0007](adr/0007-emergency-architecture.md)).
-- **Verification** (`verify`) scans for known residue, live or offline against
+- **Verification** (`verify`, `nails-forensics`) scans for known residue, live or offline against
   a decoy image.
 
 ## Testing without root

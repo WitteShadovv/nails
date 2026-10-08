@@ -268,6 +268,9 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Changed
 
+- The library is split into crates along the session's boundaries (ADR 0010): `nails-base`,
+  `nails-platform`, `nails-session` and `nails-forensics` below `nails-core`, which re-exports them.
+  Tests pin the crate graph and keep verification read-only. No user-visible change.
 - `nails deactivate` runs in the hidden session and soft-reboots back to the plain decoy: it mounts
   the decoy root at `/run/nextroot`, marks the hidden backend's device-mapper stack for deferred
   removal and records the state as inactive; the orderly shutdown stops every hidden program and

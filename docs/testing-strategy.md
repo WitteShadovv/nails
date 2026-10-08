@@ -184,7 +184,7 @@ exactly one test.
 scene, a hidden-root scene (a mapper-named tmpfs at a root with a
 space, an overlay with its upper on it, a shadowed overlay pair), a `setsid`
 child's `stat` and `status`, and `/proc/swaps`. The fixtures live in
-`nails-core/tests/fixtures/kernel/userns/` and `nails_core::kernel_fixtures`
+`nails-base/tests/fixtures/kernel/userns/` and `nails_base::kernel_fixtures`
 reads them. `... vm` captures, as root in the hidden root of a live session,
 the session's mountinfo, `/proc/swaps`, journald's `stat`, `status` and
 `cgroup`, and the systemd version in the two invocations the session probe
@@ -299,7 +299,7 @@ method or a test hook brings its real-tier test, or states which tier owes one.
 
 **Done in this change:**
 
-- `nails-core/src/test_support.rs`: `Rerun` and `ScratchTmpfs`.
+- `nails-base/src/test_support.rs`: `Rerun` and `ScratchTmpfs`.
 - `journald_fd.rs`: `inspect_journal_fds_of` split out, with the live test and a
   fixture test in `journald_fd_kernel_tests.rs`.
 - `nails-core/tests/kernel_semantics.rs`: mountinfo round trip, shadowed

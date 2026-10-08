@@ -1,6 +1,7 @@
 # 1. Core library holds all business logic
 
-- Status: accepted
+- Status: accepted; the two-crate layout is superseded by
+  [ADR 0010](0010-library-crate-split.md), the decision stands
 - Date: 2026-10-02
 
 ## Context

@@ -26,7 +26,7 @@ This page lists the channels that respect that and the ones that do not.
 None of these is offered, and none should be used, because each writes a lasting
 indicator onto the decoy or into a public index:
 
-- **crates.io.** Both crates set `publish = false`. A crate on a registry is a
+- **crates.io.** Every workspace crate sets `publish = false`. A crate on a registry is a
   permanent, indexed record, and `cargo install` writes to the decoy's
   `~/.cargo`.
 - **nixpkgs.** A nixpkgs package leaves `nails`-named `/nix/store` paths and is a

@@ -19,3 +19,4 @@ that supersedes the old one rather than editing history.
 | [0007](0007-emergency-architecture.md) | Emergency teardown architecture (accepted, implemented) |
 | [0008](0008-whole-root-soft-reboot.md) | Whole-root overlay entered by soft-reboot (accepted, implemented: the only session mode) |
 | [0009](0009-dual-root-emergency.md) | Dual root on one seat: whole-root isolation with a non-disruptive emergency (not adopted; research) |
+| [0010](0010-library-crate-split.md) | Library crates split along the session's boundaries (accepted, implemented) |
