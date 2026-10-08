@@ -474,6 +474,14 @@ mod entry_kernel_tests {
         ) -> nails_core::Result<PathBuf> {
             Err(NailsError::NixOSError("not in this test".into()))
         }
+        fn keep_hidden_closure(
+            &self,
+            _: &Path,
+            _: &Path,
+            _: &Path,
+        ) -> nails_core::Result<nails_core::session::store::KeepReport> {
+            Err(NailsError::NixOSError("not in this test".into()))
+        }
         fn activate_hidden_system(&self, _: &Path, _: &Path) -> nails_core::Result<()> {
             Ok(())
         }
@@ -986,5 +994,129 @@ mod nixos_kernel_tests {
                         .any(|e| e.mount_point == root.path().join("proc"))
                 );
             });
+    }
+}
+
+mod store_kernel_tests {
+    //! Keeping the hidden closure on the hidden volume (T-137): copied up
+    //! through the store overlay, it survives the decoy deleting it from the
+    //! lower, and the lower is never written.
+
+    use nails_core::session::store::keep_closure;
+    use nails_core::test_path;
+    use nails_core::test_support::{Rerun, ScratchTmpfs};
+    use nails_teardown::whole_root::nextroot::mount_overlay;
+    use std::fs::FileTimes;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    /// Every entry below `dir` with its type, mode, size, mtime and content.
+    fn listing(dir: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(path) = stack.pop() {
+            let meta = std::fs::symlink_metadata(&path).unwrap();
+            let rel = path.strip_prefix(dir).unwrap().display().to_string();
+            let body = if meta.is_file() {
+                std::fs::read_to_string(&path).unwrap()
+            } else if meta.is_symlink() {
+                std::fs::read_link(&path).unwrap().display().to_string()
+            } else {
+                let mut children: Vec<PathBuf> = std::fs::read_dir(&path)
+                    .unwrap()
+                    .map(|e| e.unwrap().path())
+                    .collect();
+                children.sort();
+                stack.extend(children);
+                String::new()
+            };
+            out.push(format!(
+                "{rel} {:o} {} {} {body}",
+                meta.mode(),
+                meta.len(),
+                meta.mtime()
+            ));
+        }
+        out.sort();
+        out
+    }
+
+    fn file(path: &Path, content: &str, mode: u32) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, content).unwrap();
+        let f = std::fs::File::options().write(true).open(path).unwrap();
+        f.set_times(FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(1)))
+            .unwrap();
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+    }
+
+    #[test]
+    fn a_kept_closure_survives_the_decoy_deleting_it_from_the_lower() {
+        let _ = Rerun::new(test_path!(
+            a_kept_closure_survives_the_decoy_deleting_it_from_the_lower
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let decoy = ScratchTmpfs::new("");
+            let store = decoy.mkdir("nix/store");
+            file(&store.join("aaa-pkg/bin/tool"), "tool", 0o555);
+            file(&store.join("aaa-pkg/share/doc"), "doc", 0o444);
+            std::fs::create_dir_all(store.join("aaa-pkg/share/empty")).unwrap();
+            std::os::unix::fs::symlink("bin", store.join("aaa-pkg/lib")).unwrap();
+            file(&store.join("bbb-script"), "#!/bin/sh\n", 0o555);
+            std::os::unix::fs::symlink("aaa-pkg", store.join("ccc-link")).unwrap();
+            // Shared with the decoy but not in the hidden closure.
+            file(&store.join("ddd-other/x"), "other", 0o444);
+            let before = listing(decoy.path());
+
+            let hidden = ScratchTmpfs::new("");
+            let upper = hidden.mkdir("root/upper");
+            let work = hidden.mkdir("root/work");
+            let root = ScratchTmpfs::new("");
+            mount_overlay(decoy.path(), &upper, &work, root.path()).unwrap();
+            let kept_view = listing(&root.path().join("nix/store/aaa-pkg"));
+
+            let closure: Vec<PathBuf> = ["aaa-pkg", "bbb-script", "ccc-link"]
+                .iter()
+                .map(|n| Path::new("/nix/store").join(n))
+                .collect();
+            let record = hidden.path().join("root/store-kept");
+            let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap();
+            let report = keep_closure(root.path(), &closure, &record, &mounts).unwrap();
+            assert_eq!((report.paths, report.copied), (3, 3), "{report:?}");
+            assert!(report.bytes > 0, "{report:?}");
+            assert_eq!(listing(decoy.path()), before, "the lower was written");
+            assert!(upper.join("nix/store/aaa-pkg/bin/tool").is_file());
+            assert!(!upper.join("nix/store/ddd-other").exists());
+
+            // A later entry copies nothing again.
+            let again = keep_closure(root.path(), &closure, &record, &mounts).unwrap();
+            assert_eq!(again.copied, 0, "{again:?}");
+
+            // The decoy garbage-collects between sessions: the paths leave
+            // the lower, and the next session mounts the overlay again.
+            nix::mount::umount(root.path()).unwrap();
+            for name in ["aaa-pkg", "bbb-script", "ccc-link", "ddd-other"] {
+                let path = store.join(name);
+                if path.is_dir() && !path.is_symlink() {
+                    std::fs::remove_dir_all(&path).unwrap();
+                } else {
+                    std::fs::remove_file(&path).unwrap();
+                }
+            }
+            mount_overlay(decoy.path(), &upper, &work, root.path()).unwrap();
+            let merged = root.path().join("nix/store");
+            assert_eq!(listing(&merged.join("aaa-pkg")), kept_view);
+            assert_eq!(
+                std::fs::read_to_string(merged.join("bbb-script")).unwrap(),
+                "#!/bin/sh\n"
+            );
+            assert_eq!(
+                std::fs::read_link(merged.join("ccc-link")).unwrap(),
+                Path::new("aaa-pkg")
+            );
+            assert!(!merged.join("ddd-other").exists());
+        });
     }
 }

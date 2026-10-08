@@ -13,6 +13,8 @@
 //! <hidden>/root/decoy/<unit>      mount points of the decoy filesystems the
 //!                                  hidden session carries for the way back
 //! <hidden>/root/cache              nix's evaluation cache during the build
+//! <hidden>/root/store-kept         the hidden system's store paths already
+//!                                  copied into the store upper (T-137)
 //! <hidden>/config/nixos/           the hidden NixOS module (NixOS)
 //! ```
 //!
@@ -79,6 +81,12 @@ impl Layout {
     /// nix's cache directory during the hidden build.
     pub fn cache(&self) -> PathBuf {
         self.hidden_root.join("root/cache")
+    }
+
+    /// The record of the hidden system's store paths kept in the store upper
+    /// (see [`super::store`]).
+    pub fn store_kept(&self) -> PathBuf {
+        self.hidden_root.join("root/store-kept")
     }
 
     /// The hidden NixOS configuration directory as the hidden root sees it.

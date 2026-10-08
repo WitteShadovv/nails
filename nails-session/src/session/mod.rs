@@ -21,6 +21,7 @@ pub mod nixos;
 pub mod persona;
 pub mod policy;
 pub mod probe;
+pub mod store;
 pub mod systemd;
 pub mod units;
 

@@ -21,9 +21,10 @@
 //!    hidden build, because a separate `/nix` (or a VM's store share) must be
 //!    in place before anything reads the next root's store;
 //! 6. on NixOS with a hidden configuration: the hidden toplevel built into the
-//!    next root's store and activated chrooted (see [`super::nixos`]), then
-//!    the policy applied to the hidden generation's own fstab for what the
-//!    decoy's did not cover;
+//!    next root's store, its closure copied onto the hidden volume so a decoy
+//!    garbage collection cannot break it ([`super::store`]), and activated
+//!    chrooted (see [`super::nixos`]), then the policy applied to the hidden
+//!    generation's own fstab for what the decoy's did not cover;
 //! 7. `/run` bound in and the tree made private; the init checked the way
 //!    PID 1 will, and the soft-reboot units the way back needs found in the
 //!    next root;
@@ -35,6 +36,7 @@
 use super::layout::{Layout, Paths};
 use super::nixos;
 use super::policy::{self, Decision};
+use super::store;
 use crate::error::{NailsError, Result};
 use crate::nixos::NixOSBuilder;
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
@@ -66,6 +68,15 @@ pub trait EntryHost {
         store_root: &Path,
         cache: &Path,
     ) -> Result<PathBuf>;
+    /// Copy the closure of `system` that the store under `store_root` still
+    /// reads from the decoy store onto the hidden volume (see
+    /// [`super::store`]); `record` lists the paths kept before.
+    fn keep_hidden_closure(
+        &self,
+        store_root: &Path,
+        system: &Path,
+        record: &Path,
+    ) -> Result<store::KeepReport>;
     /// Activate `system` chrooted into `root`.
     fn activate_hidden_system(&self, root: &Path, system: &Path) -> Result<()>;
 }
@@ -93,12 +104,20 @@ impl EntryHost for RealEntryHost {
         store_root: &Path,
         cache: &Path,
     ) -> Result<PathBuf> {
-        nixos::build_into(
-            &crate::process::RealProcessRunner,
-            builder,
-            store_root,
-            cache,
-        )
+        let runner = crate::process::RealProcessRunner;
+        store::forget_vanished(&runner, store_root);
+        nixos::build_into(&runner, builder, store_root, cache)
+    }
+
+    fn keep_hidden_closure(
+        &self,
+        store_root: &Path,
+        system: &Path,
+        record: &Path,
+    ) -> Result<store::KeepReport> {
+        let closure = store::closure(&crate::process::RealProcessRunner, store_root, system)?;
+        let mounts = read_mountinfo().map_err(|e| io(Path::new("/proc/self/mountinfo"), e))?;
+        store::keep_closure(store_root, &closure, record, &mounts)
     }
 
     fn activate_hidden_system(&self, root: &Path, system: &Path) -> Result<()> {
@@ -364,6 +383,15 @@ fn build(
     if let Some(builder) = inputs.builder {
         ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
         let system = host.build_hidden_system(builder, &nextroot, &layout.cache())?;
+        // Before anything runs from it: the decoy may garbage-collect its
+        // store before the next session (T-137).
+        let kept = host.keep_hidden_closure(&nextroot, &system, &layout.store_kept())?;
+        tracing::info!(
+            paths = kept.paths,
+            copied = kept.copied,
+            bytes = kept.bytes,
+            "hidden system kept on the hidden volume"
+        );
         host.activate_hidden_system(&nextroot, &system)?;
         if let Some(decoy) = &plan.decoy.system
             && nixos::kernel_of(&nextroot, &system) != nixos::kernel_of(&nextroot, decoy)
