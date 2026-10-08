@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 /// The workflow description shown in `nails --help` (long form).
 const ROOT_LONG_ABOUT: &str = "\
-Overlay environment manager.
+Run a hidden session on a decoy Linux system.
 
 NAILS runs a hidden session on a decoy system: one OverlayFS over the whole
 decoy root, with every change kept on the hidden volume, entered and left with
@@ -59,18 +59,18 @@ EXIT STATUS:
   4    a pre-flight check refused the operation
   5    the operation needs privileges it did not have
   6    the on-disk state could not be trusted
-  7    the system is degraded or a reboot is required to finish
+  7    a degraded or interrupted session, or an incomplete cleanup
   8    the host is not one NAILS can operate on
   9    completed, but with a warning the caller should act on
   10   verify found warnings
   11   verify found critical artifacts, or rehearse scan found its canary
   130  cancelled by a signal (SIGINT/SIGTERM)";
 
-/// Overlay environment manager
+/// Run a hidden session on a decoy Linux system
 #[derive(Parser, Debug)]
 #[command(name = "nails")]
 #[command(version)]
-#[command(about = "Overlay environment manager", long_about = ROOT_LONG_ABOUT)]
+#[command(about = "Run a hidden session on a decoy Linux system", long_about = ROOT_LONG_ABOUT)]
 #[command(after_long_help = EXIT_STATUS_HELP)]
 pub struct Cli {
     #[command(flatten)]
@@ -168,9 +168,9 @@ pub enum Commands {
     Emergency(EmergencyArgs),
     /// Remove what an interrupted activation left in /run
     Recover(RecoverArgs),
-    /// Show current status and uptime
+    /// Show the session, security posture and hidden volume
     Status(StatusArgs),
-    /// Verify system is clean of NAILS artifacts
+    /// Check for known NAILS traces (evidence, not proof)
     Verify(VerifyArgs),
     /// Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
     Rehearse(RehearseArgs),

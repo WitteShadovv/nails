@@ -465,7 +465,7 @@ Every command returns one of these codes; scripts can rely on them.
 | `4` | A pre-flight check refused the operation |
 | `5` | The operation needs privileges it did not have |
 | `6` | The on-disk state could not be trusted |
-| `7` | The session is degraded, for example an interrupted activation that needs `nails recover` |
+| `7` | A degraded or interrupted session, or an incomplete cleanup; `nails status` names the fix (usually `nails recover`) |
 | `8` | The host is not one NAILS can operate on |
 | `9` | Completed, but with a warning the caller should act on |
 | `10` | `verify` found warnings |

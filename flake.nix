@@ -1,5 +1,5 @@
 {
-  description = "Overlay environment manager (NAILS)";
+  description = "NAILS: run a hidden session on a decoy Linux system";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

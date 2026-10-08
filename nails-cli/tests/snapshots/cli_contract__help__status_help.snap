@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Show current status and uptime
+Show the session, security posture and hidden volume
 
 Usage: nails status [OPTIONS]
 

@@ -43,7 +43,9 @@ fn test_help_flag() {
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicates::str::contains("Overlay environment manager"));
+        .stdout(predicates::str::contains(
+            "Run a hidden session on a decoy Linux system",
+        ));
 }
 
 /// Test that activate command accepts --no-preflight flag

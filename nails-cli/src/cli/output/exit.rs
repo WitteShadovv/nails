@@ -34,15 +34,18 @@ pub enum ExitStatus {
     NeedsRoot,
     /// The on-disk state could not be trusted, so the command refused to act.
     InvalidState,
-    /// The system is degraded or a reboot is required to finish.
+    /// A degraded or interrupted session (`nails status` names the fix, usually
+    /// `nails recover`), or a cleanup that `recover` or `emergency` could not
+    /// finish (a mount stayed below `/run/nextroot`, or only the kernel could be
+    /// asked to power off).
     DegradedReboot,
     /// The host is not one NAILS can operate on (ostree / image-based, or a
     /// non-systemd PID 1), so the command refused before touching any state.
     Unsupported,
-    /// The operation completed but with a warning the caller should act on — for
-    /// `activate`/`reapply`, the overlays are up but the hidden NixOS
-    /// configuration was not applied. Distinct from success so a script can tell a
-    /// clean activation from one that only mounted the overlays.
+    /// The operation completed but with a warning the caller should act on: an
+    /// activation whose soft-reboot was enqueued with entry warnings, or a
+    /// rehearsal scan that could not read every target. Distinct from success so a
+    /// script can tell a clean run from one that needs a look.
     SuccessWithWarnings,
     /// `verify` found warnings.
     VerifyWarning,

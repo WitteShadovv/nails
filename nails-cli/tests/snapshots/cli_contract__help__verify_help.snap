@@ -9,7 +9,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Verify system is clean of NAILS artifacts
+Check for known NAILS traces (evidence, not proof)
 
 Usage: nails verify [OPTIONS]
 

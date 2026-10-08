@@ -27,7 +27,7 @@ This document contains the help content for the `nails` command-line program.
 
 ## `nails`
 
-Overlay environment manager.
+Run a hidden session on a decoy Linux system.
 
 NAILS runs a hidden session on a decoy system: one OverlayFS over the whole
 decoy root, with every change kept on the hidden volume, entered and left with
@@ -64,7 +64,7 @@ EXIT STATUS:
   4    a pre-flight check refused the operation
   5    the operation needs privileges it did not have
   6    the on-disk state could not be trusted
-  7    the system is degraded or a reboot is required to finish
+  7    a degraded or interrupted session, or an incomplete cleanup
   8    the host is not one NAILS can operate on
   9    completed, but with a warning the caller should act on
   10   verify found warnings
@@ -77,8 +77,8 @@ EXIT STATUS:
 * `deactivate` — Soft-reboot from the hidden session back to the plain decoy
 * `emergency` — Kill the hidden session at once and soft-reboot back to the decoy (or power off)
 * `recover` — Remove what an interrupted activation left in /run
-* `status` — Show current status and uptime
-* `verify` — Verify system is clean of NAILS artifacts
+* `status` — Show the session, security posture and hidden volume
+* `verify` — Check for known NAILS traces (evidence, not proof)
 * `rehearse` — Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
 * `check` — Check readiness to activate without making any changes (alias: doctor)
 * `init` — Initialize NAILS directory structure on a hidden volume
@@ -219,7 +219,7 @@ EXAMPLES:
 
 ## `nails status`
 
-Show current status and uptime
+Show the session, security posture and hidden volume
 
 **Usage:** `nails status [OPTIONS]`
 
@@ -236,7 +236,7 @@ EXAMPLES:
 
 ## `nails verify`
 
-Verify system is clean of NAILS artifacts
+Check for known NAILS traces (evidence, not proof)
 
 **Usage:** `nails verify [OPTIONS]`
 
@@ -497,7 +497,7 @@ Every command shares one set of exit codes.
 | 4 | A pre-flight check refused the operation |
 | 5 | The operation needs privileges it did not have |
 | 6 | The on-disk state could not be trusted |
-| 7 | The system is degraded or a reboot is required to finish |
+| 7 | A degraded or interrupted session, or an incomplete cleanup; `nails status` names the fix (usually `nails recover`) |
 | 8 | The host is not one NAILS can operate on |
 | 9 | Completed, but with a warning the caller should act on |
 | 10 | `verify` found warnings |

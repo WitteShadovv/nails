@@ -8,7 +8,7 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-Overlay environment manager.
+Run a hidden session on a decoy Linux system.
 
 NAILS runs a hidden session on a decoy system: one OverlayFS over the whole
 decoy root, with every change kept on the hidden volume, entered and left with
@@ -33,8 +33,8 @@ Commands:
   deactivate   Soft-reboot from the hidden session back to the plain decoy
   emergency    Kill the hidden session at once and soft-reboot back to the decoy (or power off)
   recover      Remove what an interrupted activation left in /run
-  status       Show current status and uptime
-  verify       Verify system is clean of NAILS artifacts
+  status       Show the session, security posture and hidden volume
+  verify       Check for known NAILS traces (evidence, not proof)
   rehearse     Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
   check        Check readiness to activate without making any changes (alias: doctor)
   init         Initialize NAILS directory structure on a hidden volume
@@ -95,7 +95,7 @@ EXIT STATUS:
   4    a pre-flight check refused the operation
   5    the operation needs privileges it did not have
   6    the on-disk state could not be trusted
-  7    the system is degraded or a reboot is required to finish
+  7    a degraded or interrupted session, or an incomplete cleanup
   8    the host is not one NAILS can operate on
   9    completed, but with a warning the caller should act on
   10   verify found warnings

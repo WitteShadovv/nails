@@ -1,5 +1,5 @@
 # cargo-deny configuration for NAILS
-# Overlay environment manager
+# NAILS: run a hidden session on a decoy Linux system
 #
 # This configuration enforces dependency policies for a security-critical,
 # GPL-3.0 licensed Rust application.
