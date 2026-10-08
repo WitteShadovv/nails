@@ -5,9 +5,9 @@
 //!
 //! Everything the panic path runs lives in this crate, and the crate may only
 //! depend on `rustix`, `libc` and `serde`. Cargo already refuses a dependency on
-//! `nails-core` (it would be a cycle); this test also fails when any other
-//! dependency is added, so growing the reviewed surface is a deliberate change
-//! to this list.
+//! another NAILS crate (every one of them sits above this one, so it would be a
+//! cycle); this test also fails when any other dependency is added, so growing
+//! the reviewed surface is a deliberate change to this list.
 
 use std::path::PathBuf;
 
@@ -56,7 +56,15 @@ fn no_source_reaches_for_core_logging_or_config() {
                 continue;
             }
             let text = std::fs::read_to_string(&path).unwrap();
-            for forbidden in ["nails_core", "tracing::", "toml::"] {
+            for forbidden in [
+                "nails_base",
+                "nails_core",
+                "nails_forensics",
+                "nails_platform",
+                "nails_session",
+                "tracing::",
+                "toml::",
+            ] {
                 assert!(
                     !text.contains(forbidden),
                     "{} uses {forbidden}",
