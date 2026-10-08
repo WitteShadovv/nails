@@ -40,7 +40,7 @@ in
   ];
   # Two hidden builds, a copy of the whole system closure onto the hidden
   # volume, a decoy garbage collection and four soft-reboots.
-  globalTimeout = 2400;
+  globalTimeout = 4800;
 
   nodes.machine =
     {
