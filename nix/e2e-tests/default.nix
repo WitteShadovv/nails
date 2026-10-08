@@ -166,12 +166,17 @@ let
     assert _nails_vm_started, "testScript never started a VM"
   '';
 
+  # The wrapper keeps the original's formal arguments: the test framework
+  # passes `nodes` only to a testScript that asks for it.
   wrapTestScript =
-    original: args:
-    let
-      body = if builtins.isFunction original then original args else original;
-    in
-    vmStartedPrelude + "\n" + body + "\n" + vmStartedAssert;
+    original:
+    lib.setFunctionArgs (
+      args:
+      let
+        body = if builtins.isFunction original then original args else original;
+      in
+      vmStartedPrelude + "\n" + body + "\n" + vmStartedAssert
+    ) (if builtins.isFunction original then lib.functionArgs original else { });
 
   # The assertions live here rather than in the test derivation so that
   # evaluating the metadata (which the shard planner consumes) enforces them.
