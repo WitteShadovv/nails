@@ -39,8 +39,8 @@ defaults below. Unknown keys at any level, values of the wrong type and TOML
 syntax errors are rejected with a one-line message that names the file, the
 line and column, and for a misspelt key the closest valid key. A typo never
 falls back to a default without a word. The keys of the earlier per-directory
-overlay mode (`overlays`, `overlay_mode`, `overlay_exclusions` and the others
-listed in the [changelog](../CHANGELOG.md)) are rejected the same way.
+overlay mode, listed under "Removed" in the [changelog](../CHANGELOG.md), are
+rejected the same way.
 
 On an invalid file, `activate`, `check`, `status`, `verify`, `rehearse`,
 `reset-upper` and `nails config` exit with status 3. `deactivate` and `recover`

@@ -499,20 +499,17 @@ no compatibility shim: convert your setup before running the new binary.
 - **Configuration format.** Configuration is strict TOML. Convert any earlier
   YAML configuration to `config/nails.toml` next to the binary on the hidden
   volume (see [docs/configuration.md](docs/configuration.md)). Unknown keys,
-  wrong types and syntax errors are rejected with a one-line message. The overlay
-  keys (`overlays`, `overlay_mode`, `overlay_exclusions`,
-  `overlay_exclusions_remove`, `allow_leaky_exclusions`), `risky_services`,
-  `nixos_switch_required`, `clear_history`, `prompt_label`, `[color_scheme]` and
-  `[emergency]` are removed and now rejected as unknown keys.
+  wrong types and syntax errors are rejected with a one-line message. The keys of
+  the per-directory overlay mode and the `[emergency]` table are removed and now
+  rejected as unknown keys; the changelog's "Removed" section lists every one.
 - **Invocation.** Always run the binary by its full path on the hidden volume.
   No copy, symlink or `PATH` entry on the decoy is supported.
 - **Flags and commands.** The output flags are global and accepted in any
-  position; `--plain`, `--no-color`, `--no-logs` and `--verbose-details` are
-  replaced by `--color`, `--ascii`, `--quiet`, `--verbose` and `--no-log-file`.
-  `activate --session`, `--pivot`, `--risky-services` and
-  `--terminate-processes`, `deactivate --no-clear-history`,
-  `emergency --lock-backend`, and the `reapply` and `notify-dispatch` commands
-  are removed.
+  position, and the old per-command output flags are replaced by `--color`,
+  `--ascii`, `--quiet`, `--verbose` and `--no-log-file`. The flags and commands
+  of the live-overlay mode (the session, process and backend-lock options of
+  `activate`, `deactivate` and `emergency`, and two maintenance commands) are
+  removed; the changelog's "Removed" section names each of them.
 - **Exit codes and JSON.** The process returns the documented exit codes, and
   `--json` emits the versioned envelope (`schema_version = 1`).
 - **State schema.** `state.json` carries a `version` field. The states are
