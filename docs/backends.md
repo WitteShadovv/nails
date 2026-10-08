@@ -48,7 +48,7 @@ Whatever the backend, the filesystem at the hidden root must:
   volume's own mount unit, but the bind NAILS places inside the next root keeps
   it alive, and it appears at the same path in the hidden session.
 
-`sudo nails activate --dry-run` previews activation and prints every preflight
+`sudo /mnt/data/nails check` (or `activate --dry-run`) prints every preflight
 result, including the backend detection below.
 
 ## Backend detection in preflight
@@ -176,8 +176,7 @@ Every backend leaves the same traces on the decoy side while you unlock it:
 
 - **Shell history.** The unlock and mount commands name the tool, the mapping
   and, for a container, its path. Type them in a shell with history disabled;
-  see "Shell History Protection" in the
-  [operator guide](operator-guide.md#history-off-on-the-decoy).
+  see [History off on the decoy](operator-guide.md#history-off-on-the-decoy).
 - **The journal.** sudo logs every command line it runs, and the kernel and
   udev log the loop and device-mapper devices being created. Keep the journal
   volatile (journald `Storage=volatile`) or on impermanent storage.

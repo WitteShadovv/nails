@@ -1,4 +1,4 @@
-# NAILS Operator Guide
+# Operator guide
 
 > **Required reading before any security-sensitive use.** This guide describes
 > what NAILS actually does, organised by *where* each step runs. Following it
@@ -41,14 +41,14 @@ what you did.
 >   soft-reboot, so none of them writes the activation command to its history
 >   file. Your terminal closes at that point; what activation printed up to then
 >   is already on it.
-> - Choose neutral names. A mapper called `data0`, a mount at `/mnt/usb` and a
+> - Choose neutral names. A mapper called `data`, a mount at `/mnt/data` and a
 >   plain filesystem label reveal nothing; `hidden`, `veracrypt`, `tcrypt`,
 >   `decoy` or `nails` do. **Renaming alone is not enough** — the names still
 >   surface in sudo logs, the kernel ring buffer, generated mount units and
 >   `/dev/disk/by-label` (see [Pre-activation residue](#pre-activation-residue)).
 
 Throughout, `<hidden-root>` is wherever you mounted the hidden volume (the
-examples use `/mnt/usb`), and the binary lives at `<hidden-root>/nails`. Always
+examples use `/mnt/data`), and the binary lives at `<hidden-root>/nails`. Always
 invoke it by its absolute path.
 
 ---
@@ -135,8 +135,11 @@ Keep all of it `root`-owned on the hidden volume.
      `/nix`) gets an overlay of its own, with its upper under
      `<hidden-root>/root/mounts/`;
    - swap, local filesystems that are not mounted now, network filesystems and
-     overlay entries whose upper is on a disk are masked in `/run`, so the hidden
-     systemd never activates them.
+     overlay entries that are not mounted now but have their upper on a disk
+     are masked in `/run`, so the hidden systemd never activates them.
+
+   The full table is in
+   [configuration.md](configuration.md#what-the-session-covers).
 
    `nails check` lists the decision for each entry.
 6. It binds `/run` and the hidden volume into the next root (the hidden volume
@@ -348,7 +351,7 @@ systemd.services.panic = {
   description = "Session teardown";
   serviceConfig = {
     Type = "oneshot";
-    ExecStart = "/mnt/usb/nails emergency --poweroff";
+    ExecStart = "/mnt/data/nails emergency --poweroff";
   };
 };
 
@@ -484,19 +487,20 @@ the decoy.
 The `nails` binary lives on the hidden volume, so run `verify` from the hidden
 side. A verify run never claims the system is clean; a run with no findings
 prints "no known artifacts found" plus the list of areas it did not inspect.
-Exit codes: `0` clean, `10` warnings, `11` critical, `2` the scan could not run.
+Exit codes: `0` no known artifacts, `10` warnings, `11` critical, `1` the scan
+could not run, `3` the configuration could not be loaded.
 
 ```bash
-sudo /mnt/usb/nails verify            # standard
-sudo /mnt/usb/nails verify --deep     # homes, histories, temp dirs
-sudo /mnt/usb/nails verify --json     # machine-readable
+sudo /mnt/data/nails verify            # standard
+sudo /mnt/data/nails verify --deep     # homes, histories, temp dirs
+sudo /mnt/data/nails verify --json     # machine-readable
 ```
 
 To inspect the decoy itself for leftovers, mount its image or partition
 read-only and scan it offline (again from the hidden side):
 
 ```bash
-sudo /mnt/usb/nails verify --offline --root /mnt/decoy
+sudo /mnt/data/nails verify --offline --root /mnt/decoy
 ```
 
 In offline mode every path is read under `--root`, and the live-only checks
@@ -509,7 +513,7 @@ To see the decoy the way an examiner would, add `--examiner`, and `--disk` with
 the raw disk or image behind the mounted root:
 
 ```bash
-sudo /mnt/usb/nails verify --offline --root /mnt/decoy --examiner --disk /dev/sda
+sudo /mnt/data/nails verify --offline --root /mnt/decoy --examiner --disk /dev/sda
 ```
 
 The examiner's view lists setup traces rather than session residue: LUKS headers
@@ -537,11 +541,11 @@ The forensic E2E tests prove the leak claims on CI's virtual machines.
 desktop, before you rely on them:
 
 ```bash
-sudo /mnt/usb/nails rehearse plant         # 1. inside an active hidden session
-sudo /mnt/usb/nails deactivate --poweroff  # 2. end the session and power off
+sudo /mnt/data/nails rehearse plant         # 1. inside an active hidden session
+sudo /mnt/data/nails deactivate --poweroff  # 2. end the session and power off
 # boot the decoy, unlock and mount the hidden volume again, then:
-sudo /mnt/usb/nails rehearse scan          # 3. from the decoy, or a later session
-sudo /mnt/usb/nails rehearse reset         # remove the rehearsal when done
+sudo /mnt/data/nails rehearse scan          # 3. from the decoy, or a later session
+sudo /mnt/data/nails rehearse reset         # remove the rehearsal when done
 ```
 
 `plant` puts a random token where a session most often leaks: a file named after
@@ -619,7 +623,8 @@ seconds or minutes.
 - The first write to a large file (the Nix database, browser profiles, VM images)
   is slow; later writes are fast.
 - The upper only grows: copied-up files and whiteouts persist across sessions.
-  Watch space with `nails status`; run `nix-collect-garbage -d` and clear caches
+  Watch space with `df -h <hidden-root>` (`nails check` fails when free space is
+  below `minimum_space_mb`); run `nix-collect-garbage -d` and clear caches
   inside the session.
 - **A copied-up file shadows later decoy updates.** Once a file is in the upper,
   the hidden session sees that copy, whatever the decoy does to its own file
@@ -631,7 +636,7 @@ seconds or minutes.
   (see "The hidden NixOS system").
 - To drop a path's hidden copy so the decoy's own files show through again, run
   `reset-upper` **on the decoy**, with the hidden volume mounted:
-  `sudo /mnt/usb/nails reset-upper /etc/nixos` (it lists what it deletes and
+  `sudo /mnt/data/nails reset-upper /etc/nixos` (it lists what it deletes and
   confirms first; resetting `/nix` drops the hidden Nix store and warns first).
   For a separately overlaid filesystem it also removes that filesystem's upper.
   It is refused in the hidden session, where the upper is the live root.
@@ -676,7 +681,7 @@ against automounts and mistakes. See
     policy covers only what the hidden systemd mounts (session_mounts.read_only
     enforces this; the watcher alerts otherwise)
 [ ] On NixOS, apply changes with `nixos-rebuild test`, never `switch` or `boot`
-[ ] Keep the emergency command ready: sudo /mnt/usb/nails emergency
+[ ] Keep the emergency command ready: sudo /mnt/data/nails emergency
 [ ] Know your physical emergency procedure
 ```
 
@@ -804,12 +809,15 @@ session — browser profiles and cookies, SSH/GPG keys and agents, password-mana
 databases, shell/editor/application history and caches. Changes made in the
 hidden session go to the upper, so the decoy home on disk stays as it was.
 
-`[persona]` in `nails.toml` is the setting for how the hidden session relates to
-the decoy account. Its effect in the whole-root session is being reworked; see
-[configuration.md](configuration.md#persona-modes) for what the keys accept
-today. Until then, for sensitive work, sign in to the hidden session's own
-accounts rather than the decoy's, and treat using the decoy's logins in the
-hidden session as an informed choice.
+`[persona]` in `nails.toml` sets how the hidden session relates to the decoy
+account. `persona.mode = "fresh-home"` gives the hidden session an empty home,
+created once in the upper at the first entry, so nothing of the decoy home shows
+through. `persona.mask_inherited` writes masks for the named autostart entries
+and user units into the upper at each entry. See
+[configuration.md](configuration.md#persona-modes). In the default
+`shared-home` mode, sign in to the hidden session's own accounts for sensitive
+work rather than the decoy's, and treat using the decoy's logins in the hidden
+session as an informed choice.
 
 #### Inherited autostart, services and autologin
 
@@ -817,8 +825,8 @@ The hidden session inherits what the decoy starts automatically: enabled system
 services, `~/.config/autostart` and `/etc/xdg/autostart` entries, enabled user
 services and timers, lingering, and display-manager autologin. Sync, cloud and
 messaging clients therefore run under the decoy identity and can contact remote
-servers and your other devices. `nails check` and the activation confirmation
-list this inherited state and flag names that look like remote-linked clients (a
+servers and your other devices. `nails check`, and the `inherited-autostart`
+warning in activation's pre-flight output, list this inherited state and flag names that look like remote-linked clients (a
 name-only heuristic).
 
 Disable what you do not want **inside the hidden session**: mask the unit

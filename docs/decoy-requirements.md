@@ -60,9 +60,10 @@ decoy disk.
   `Storage=external`, registered pstore records, or an armed kdump. Each can
   persist process or kernel memory (which may contain hidden-session data) to the
   decoy disk or firmware-backed storage.
-- **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which can trigger an
-  automatic decoy rebuild (and touch EFI NVRAM) while the hidden session runs.
-  The generated hidden module force-disables `system.autoUpgrade`.
+- **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which rebuilds the
+  decoy on its own schedule (and can touch EFI NVRAM). The generated hidden
+  module force-disables `system.autoUpgrade`, but with `--overlay-only` the
+  decoy's own system, timer included, runs in the hidden session.
 - **sudo's own logs** — `Defaults logfile=` in `/etc/sudoers` or
   `/etc/sudoers.d/*` writes every sudo command line to a file, and I/O logging
   (`log_input`, `log_output`, the `log_stdin`/`log_ttyout`/... flags, or the
@@ -78,9 +79,10 @@ stamps described below. It warns or notes them and never blocks.
 
 Suspend and hibernate are not a filesystem concern, so they sit outside the
 overlay model, but they are a direct hazard: suspending while a session is active
-leaves the whole hidden environment — overlays, the open dm-crypt mapper and the
-master key — resident in RAM behind the decoy lock screen. On resume the decoy
-login unlocks a still-live hidden session. logind's defaults make this the normal
+leaves the whole hidden environment — the root overlay, the open dm-crypt
+mapper and the master key — resident in RAM behind the hidden session's lock
+screen. The decoy is not running at all, and whoever unlocks that screen is in
+the live hidden session. logind's defaults make this the normal
 case: `HandleLidSwitch` and `HandleLidSwitchExternalPower` both default to
 `suspend`, and desktops add their own idle auto-suspend.
 
@@ -199,11 +201,11 @@ history yourself so an interactive shell has nowhere to write:
   file and re-creates the symlinks early in boot closes the gap before the first
   interactive login.
 
-On an amnesic decoy (impermanence, overlayroot, bilibop) the history file is on
-volatile storage and discarded at power-off regardless, so these steps are
-defence in depth. Do **not** disable them during a session, re-enable history
-recording, or run `history -a`/`history -w`: each of those writes the commands
-you typed back to the decoy.
+If the decoy's home is on a wiped-on-boot tmpfs, the history file is discarded
+at power-off anyway, so these steps are defence in depth. In the decoy shell you
+unlock from, do **not** re-enable history recording or run
+`history -a`/`history -w`: each of those writes the commands you typed to the
+decoy disk. (Inside the hidden session, history lands in the upper.)
 
 ## Writes that bypass the overlays
 
@@ -218,7 +220,7 @@ decision in place inside the next root:
 | `/boot`, `/boot/efi`, `/efi` (ESP, boot partitions), and filesystems mounted read-only | read-only bind |
 | other mounted local filesystems (a separate `/home`, `/var`, `/srv`), mounted VM host shares and overlays | overlay, upper at `<hidden>/root/mounts/<unit name>/upper` |
 | swap | masked: never activated |
-| local filesystems not mounted now but mounted at boot, network filesystems, overlay entries with an upper on a disk | masked: not available in the hidden session |
+| local filesystems not mounted now but mounted at boot, network filesystems, overlay entries not mounted now with an upper on a disk | masked: not available in the hidden session |
 | tmpfs and kernel filesystems, `noauto` entries, the hidden volume | left alone |
 
 A mount that is not in fstab (an automounted USB drive, a disk mounted by hand)
@@ -250,8 +252,8 @@ uptime points to use the decoy does not account for.
   firmware. No software can change or hide this; a decoy that is used normally
   keeps its logged uptime plausible.
 
-On an amnesic decoy (impermanence, overlayroot) the first two are wiped at every
-boot anyway. `verify` reports their timestamps as notes, so you can see what an
+If `/var` is on a wiped-on-boot tmpfs, the first two are wiped at every boot
+anyway. `verify` reports their timestamps as notes, so you can see what an
 examiner would see.
 
 ## Setup traces an examiner looks for
@@ -339,7 +341,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
 | [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Send core dumps nowhere persistent and disarm kdump on the decoy. | `examiner-audit` |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `session-emergency` |
-| [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the /home overlay | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
+| [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the upper on the hidden volume | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
 | [NixOS account bookkeeping](threat-model.md#known-residual-changes) (`var-lib-nixos`) | `/var/lib/nixos` | NixOS | none: the decoy rewrites these files on every boot; only a control run tells noise from a leak | `platform-scanners` | Overlay /var; the drift test compares against a plain-reboot control. | `session-nixos-hidden-system` |
 | [Decoy filesystems the hidden systemd would mount](#writes-that-bypass-the-overlays) (`decoy-filesystems`) | fstab entries of the hidden root: a separate /home or /var, the ESP, decoy swap, a second disk | all | `fstab-policy` (refuses) | none: verify cannot tell what a session wrote to another filesystem | NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, and masks swap and unmounted disks before the switch. | `soft-reboot-mechanics` |

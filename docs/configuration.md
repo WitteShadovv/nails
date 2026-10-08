@@ -90,8 +90,8 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 | `show_opsec_reminders` | boolean | `true` | Show reminders in `nails status` once the hidden environment has been active for 6, 12 and 24 hours. |
 | `nixos_flake` | string (flake reference) | unset | Flake of the hidden NixOS system, for example `/mnt/data/nixos#my-host`; it is built into the hidden root's store before the soft-reboot. Unset, the legacy hidden configuration is built (the decoy's `/etc/nixos` plus the hidden hardware configuration in the upper). `activate --nixos-flake` overrides it. |
 | `accept_persistent_decoy` | boolean | `false` | Accept a persistent decoy posture instead of refusing activation. When `false` (the default), activation fails closed if the decoy keeps a persistent journald journal on disk or runs an active rsyslog/syslog-ng/auditd: what the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on its disk. Overridden by `--accept-persistent-decoy`. See [decoy-requirements.md](decoy-requirements.md). |
-| `persona.mask_inherited` | list of entry names, or `["*"]` | `[]` | Inherited decoy autostart entries and user units to hide from the hidden session. Each value is a name as `nails check` lists it: the `.desktop` stem for an autostart entry, or the full unit name for a user unit. `["*"]` names every maskable inherited entry. Lingering and autologin are reported but not masked. Being reworked for the whole-root session; see [Inherited decoy state](#inherited-decoy-state). |
-| `persona.mode` | `"shared-home"` or `"fresh-home"` | `"shared-home"` | How the hidden session relates to the decoy account. `shared-home` starts it from the decoy home (the root overlay's lower), so the decoy's accounts, keys and app profiles are live; activation warns while it is in effect. `fresh-home` is meant to start the operator's home empty in the hidden session. Being reworked for the whole-root session; see [Persona modes](#persona-modes). |
+| `persona.mask_inherited` | list of entry names, or `["*"]` | `[]` | Inherited decoy autostart entries and user units to hide from the hidden session. Each value is a name as `nails check` lists it: the `.desktop` stem for an autostart entry, or the full unit name for a user unit. `["*"]` names every maskable inherited entry. Lingering and autologin are reported but not masked. See [Inherited decoy state](#inherited-decoy-state). |
+| `persona.mode` | `"shared-home"` or `"fresh-home"` | `"shared-home"` | How the hidden session relates to the decoy account. `shared-home` starts it from the decoy home (the root overlay's lower), so the decoy's accounts, keys and app profiles are live. `fresh-home` gives the operator an empty home, created in the upper at the first entry. See [Persona modes](#persona-modes). |
 | `backend_watch.auto_emergency` | boolean | `false` | Opt into an automatic emergency when the hidden backend fails. When `false` (the default) the watcher is alert-only, so a transient I/O stall can never end the session; when `true`, the emergency runs on its own, returning to the decoy, only after the failure outlasts `backend_watch.debounce_secs`. See [Backend watcher](#backend-watcher). |
 | `backend_watch.debounce_secs` | integer (seconds) | `15` | How long a failure must persist before an opted-in automatic emergency fires. Ignored unless `backend_watch.auto_emergency` is `true`. |
 | `backend_watch.enabled` | boolean | `true` | Run the backend watcher as a runtime unit of the hidden session. The watcher polls the hidden backend and alerts you when it fails. With `false` and `session_mounts.alert` and `session_mounts.read_only` both `false`, no watcher runs. See [Backend watcher](#backend-watcher). |
@@ -127,7 +127,10 @@ gets a fixed decision before the switch:
 | swap | masked: never activated |
 | a local filesystem not mounted now but mounted at boot | masked, with its automount |
 | a network filesystem | masked: the hidden session would write to the server |
-| an overlay entry whose upper is on a disk | masked |
+| a VM host share (9p, virtiofs) or an overlay entry mounted in the decoy | an overlay with its upper on the hidden volume |
+| an overlay entry not mounted now, its upper on a disk | masked |
+| an overlay entry not mounted now with its upper in RAM, or a VM host share not mounted now | left to the hidden systemd |
+| a `noauto` entry without an automount | left alone: never mounted |
 | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 | the hidden volume, or a path inside it | bound at its own path |
 
@@ -154,14 +157,15 @@ account:
 - `shared-home` (default): the hidden session works with the decoy home, so
   logging in there gives it the decoy's browser profiles, SSH and GPG keys,
   password-manager state and shell history. This is a deliberate trade-off — it
-  keeps a single, consistent login — so activation prints a warning while it is
-  in effect, and `nails status` and `nails check` report it.
-- `fresh-home`: a hidden session whose home starts empty, so the decoy home
-  contents are not visible.
+  keeps a single, consistent login. `nails check` prints the persona mode,
+  `nails status --json` reports it, and the `inherited-autostart` pre-flight
+  warning lists what the decoy account brings in.
+- `fresh-home`: at the first entry, activation creates the operator's home in
+  the upper as an opaque directory, so nothing of the decoy home shows through.
+  It stays the hidden home at every later entry. The operator is the account
+  that ran `sudo`, so activation must run through `sudo`.
 
-How the persona modes apply in the whole-root session is being reworked, and
-`fresh-home` may change before it is relied on. Test the mode you choose on your
-own machine before trusting it.
+Test the mode you choose on your own machine before trusting it.
 
 A third model, `separate-user` — a fixed-UID hidden account distinct from the
 decoy user — is planned for a later release. It is not an accepted value yet;
@@ -178,7 +182,8 @@ your other devices.
 
 `nails check` lists this inherited state and flags names that look like
 remote-linked clients (a name-only heuristic; it makes no claim about signed-in
-state). The same summary appears in the activation confirmation.
+state). Activation shows the same summary in its pre-flight output (the
+`inherited-autostart` warning).
 
 `persona.mask_inherited` lists entries to hide from the hidden session, or the
 single value `"*"` for every maskable entry:
@@ -188,8 +193,10 @@ single value `"*"` for every maskable entry:
 mask_inherited = ["dropbox", "syncthing.service"]
 ```
 
-How these masks are applied in the whole-root session is being reworked. You
-can always disable an entry from inside the hidden session (`systemctl --user
+At each entry, activation writes a `Hidden=true` override (an autostart entry)
+or a `/dev/null` mask (a user unit) for every named entry into the operator's
+home in the next root, so the mask lands in the upper only. You can also
+disable an entry from inside the hidden session (`systemctl --user
 mask <unit>`, or remove or override the autostart file): the change lands in the
 upper, so it affects the hidden session only. Lingering and autologin are
 decoy settings — disable them on the decoy itself if they matter.

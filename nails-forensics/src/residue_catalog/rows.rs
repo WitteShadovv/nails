@@ -182,7 +182,7 @@ pub const CATALOG: &[ResidueClass] = &[
         platforms: Platforms::All,
         risk: "Desktop applications record every opened file; an entry that names the hidden root survives if it reaches the decoy home.",
         preflight: Probe::None(
-            "written by desktop applications during the session, into the /home overlay",
+            "written by desktop applications during the session, into the upper on the hidden volume",
         ),
         preflight_blocks: false,
         verify: Probe::Check("deep-scan-recent-files"),
