@@ -57,6 +57,13 @@ state, config and CLI surfaces; there are no compatibility shims.
   `/etc/nixos` is the hidden configuration and `nixos-rebuild test` applies changes.
   `--overlay-only` enters with the decoy's own system plus the hidden `/etc` and home. Debian 13
   and Ubuntu 24.04+ run the same session with the hidden configuration in the upper's `/etc`.
+- The hidden NixOS system no longer depends on the decoy store: before activating it, activation
+  copies every path of its closure still read from the decoy store up into the store overlay's
+  upper on the hidden volume (through the overlay; the decoy store is never written), recorded in
+  `<hidden-root>/root/store-kept` so later entries copy only new paths, and `nix-store --verify`
+  drops paths the decoy deleted from the hidden store database before the build. A decoy that
+  garbage-collects or rebuilds between sessions no longer breaks the hidden system (T-137, VM test
+  `session-nixos-store-gc`).
 - The transition step (`ExecStart=` of `systemd-soft-reboot.service`, run from the RAM copy) acts
   only on an armed plan. On the way back it scrubs `/run` of what the hidden session added (an
   allowlist that never touches sockets, `/run/udev`, credentials or the current/booted system

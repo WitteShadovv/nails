@@ -230,7 +230,9 @@ systemctl soft-reboot
   running and updating itself) are allowed, but a file copied up earlier shadows
   newer decoy versions. Example: the Nix DB `db.sqlite` copied up in session 1
   hides store paths that the decoy builds or garbage-collects later. Today's
-  `/nix` overlay has the same issue. [I]
+  `/nix` overlay has the same issue. [I] For the hidden NixOS system this is
+  solved by keeping its closure on the hidden volume (§3, "The hidden store",
+  T-137).
 - **`/boot` and the ESP.** The decoy fstab is evaluated again inside the hidden
   root. Without a policy, the hidden session would mount the ESP **read-write**,
   and `systemd-boot-random-seed.service` would rewrite `loader/random-seed` from
@@ -299,6 +301,53 @@ systemctl soft-reboot
   `activate` or `switch-to-configuration test` are allowed, as today
   (threat-model invariant). The hidden toplevel must also run on the decoy's
   kernel, because the modules come from `/run/booted-system`.
+
+- **The hidden store (T-137).** The hidden toplevel is built into the next
+  root's store, an overlay over the decoy store: new paths land in the upper,
+  but every path the hidden closure shares with the decoy is read from the
+  lower, while the copied-up hidden database keeps listing it as valid. A decoy
+  that garbage-collects or rebuilds between sessions deletes such paths from
+  the lower, and the hidden system then fails to start with nix none the wiser.
+  Three ways out were weighed:
+  - **A separate store** on the hidden volume, bound at `/nix` in the next
+    root instead of an overlay. It is the cleanest picture, but the build then
+    has nothing to read: every build input, the evaluation's sources (nixpkgs,
+    flake inputs) included, would have to be copied or substituted in from the
+    decoy store first, and everything the hidden root uses from the decoy at
+    runtime outside the hidden closure (the RAM copy's interpreter, the
+    modules under `/run/booted-system`) would be missing.
+  - **Verify and repair at entry**: check the closure in the merged store
+    and realise missing paths again. A missing path can only come back from a
+    copy the hidden volume already holds or from a build whose inputs may be
+    gone too, so this needs the separate store's copy anyway.
+  - **Chosen: keep the overlay for the build, and copy the hidden closure up
+    into the upper.** After the build and before the activation, NAILS
+    lists the toplevel's closure (`nix-store --query --requisites`) and copies
+    every path still read from the lower up into the store overlay's upper,
+    through the overlay itself: opening a file for writing, or setting a
+    directory's or symlink's owner to the one it has, makes overlayfs copy it
+    up whole with its mode, owner and times, and nothing is written. The lower
+    is a read-only bind, so the decoy store stays byte for byte unchanged. A
+    record on the hidden volume lists the kept paths, so later entries copy
+    only new ones; a path whose copy in the upper is gone is copied again.
+    Before the build, `nix-store --verify` drops from the hidden database the
+    paths that vanished, so a changed configuration realises them again
+    rather than trusting them.
+
+  Cost: one full copy of the hidden closure at the first entry (several GB
+  for a desktop: the copy reads the decoy disk and writes the hidden backend,
+  minutes on an encrypted or USB backend), the new paths at later entries,
+  and the space for it on the hidden volume, checked before anything is
+  copied. A hidden closure shares most paths with the decoy's, so the
+  overlay's sharing saved exactly the space this spends: robustness is
+  bought with it. Not kept: paths only the hidden session's own profiles use,
+  and the build inputs of a changed configuration (offline, a rebuild after a
+  decoy garbage collection can fail; the entry is then refused and rolled
+  back). [I for the cost; the copy-up and its survival of a deleted lower are
+  shown on the real kernel by `store_kernel_tests` in
+  `nails-core/tests/whole_root_kernel.rs`; the VM test `session-nixos-store-gc`
+  garbage-collects and rebuilds the decoy between two hidden sessions and
+  compares the decoy store before and after each.]
 
 ## 4. Debian and Ubuntu
 
@@ -671,7 +720,8 @@ supported.
   `soft-reboot-units`, `decoy-root`, `session-state`, `fstab-policy`).
 - **NixOS, variant B**: the hidden toplevel is built into the next root's
   store (`nix build --store /run/nextroot`, the evaluation cache on the hidden
-  volume), its `activate` runs chrooted with a private `/run`, and the
+  volume), its closure is copied up onto the hidden volume (§3, "The hidden
+  store"), its `activate` runs chrooted with a private `/run`, and the
   transition repoints `/run/current-system` after every decoy unit has
   stopped. One grey-out; the greeter is the hidden configuration's.
   `activate --overlay-only` enters with the decoy's own system and the hidden
@@ -719,8 +769,9 @@ supported.
   A hidden configuration with its own never-stopped units (`DefaultDependencies=no`,
   `RemainAfterExit=yes`) could still leave state that the decoy would then
   reuse.
-- **Overlay copy-up versus a decoy that keeps changing** (§2), especially the Nix
-  DB and `/etc` after a decoy rebuild between sessions.
+- **Overlay copy-up versus a decoy that keeps changing** (§2), especially `/etc`
+  after a decoy rebuild between sessions. The hidden NixOS closure no longer
+  depends on the decoy store (§3, "The hidden store").
 - **The emergency ruling conflict** (§6), resolved by the decision: the
   emergency ends at the decoy's login screen.
 

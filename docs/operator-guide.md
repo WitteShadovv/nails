@@ -154,8 +154,31 @@ in `<hidden-root>/root/upper/etc/nixos/` (it imports
 `<hidden-root>/config/nixos/configuration.nix`) — activation builds the hidden
 toplevel into the next root's store (`nix build --store /run/nextroot`). The
 build reads the decoy store through the lower and writes every new path, the
-Nix database included, into the upper; nothing reaches the decoy `/nix`. It
-then runs the toplevel's activation chrooted into the next root with a private
+Nix database included, into the upper; nothing reaches the decoy `/nix`.
+
+Before it activates the toplevel, activation **copies the hidden system's
+whole closure onto the hidden volume**: every store path the hidden toplevel
+needs that is still read from the decoy store is copied up into the store
+overlay's upper (`<hidden-root>/root/upper/nix/store`, or
+`<hidden-root>/root/mounts/<store>/upper` when the decoy store is a separate
+filesystem). The decoy can then garbage-collect or rebuild its own store
+between sessions without breaking the hidden system: a path it deletes leaves
+the lower only. The copy reads the decoy store through the read-only lower and
+never writes it. It costs space and time once: the first entry copies the whole
+closure (several GB for a desktop, minutes on a slow or encrypted backend; the
+activation shows its progress), later entries copy only the paths that are new
+to the closure, which `<hidden-root>/root/store-kept` records. Activation is
+refused before it copies anything when the hidden volume lacks the space.
+Before the build, `nix-store --verify` also drops from the hidden store
+database the paths the decoy deleted since the last session, so the build
+realises them again instead of trusting them. What is not kept: store paths
+only the hidden session's own profiles or results use (a `nix profile install`
+in the hidden session); install them through the hidden configuration to keep
+them. Building a changed hidden configuration after the decoy collected its
+garbage may need build inputs that are gone; without a binary cache that build
+fails, and the entry is refused and rolled back.
+
+It then runs the toplevel's activation chrooted into the next root with a private
 `/run`, and the transition step repoints `/run/current-system` only after every
 decoy unit has stopped, so PID 1 executes the hidden systemd against the hidden
 `/etc`. No bootloader is installed and no system profile changes. The hidden
@@ -600,9 +623,11 @@ seconds or minutes.
 - **A copied-up file shadows later decoy updates.** Once a file is in the upper,
   the hidden session sees that copy, whatever the decoy does to its own file
   afterwards. After the decoy updates itself between sessions, the hidden session
-  can see an outdated mix: the Nix database copied up in one session hides store
-  paths the decoy built or garbage-collected later, and a hidden `/etc` keeps its
-  old files after a decoy rebuild or package upgrade.
+  can see an outdated mix: the Nix database copied up in one session does not
+  list store paths the decoy built later, and a hidden `/etc` keeps its old files
+  after a decoy rebuild or package upgrade. Store paths the decoy garbage-collects
+  do not break the hidden NixOS system: its closure is kept on the hidden volume
+  (see "The hidden NixOS system").
 - To drop a path's hidden copy so the decoy's own files show through again, run
   `reset-upper` **on the decoy**, with the hidden volume mounted:
   `sudo /mnt/usb/nails reset-upper /etc/nixos` (it lists what it deletes and
