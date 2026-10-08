@@ -155,7 +155,8 @@ in
 
       with subtest("session 1 keeps the hidden closure on the hidden volume"):
           store_before = decoy_store_state()
-          canonical_activate(CONFIG, f"--nixos-flake {FLAKE}", "activate-1")
+          # The first entry copies the whole hidden system onto the hidden volume.
+          canonical_activate(CONFIG, f"--nixos-flake {FLAKE}", "activate-1", deadline_s=1200.0)
           assert_hidden_system()
           upper = kept_in()
           assert upper is not None, (

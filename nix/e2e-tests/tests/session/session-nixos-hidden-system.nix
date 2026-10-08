@@ -105,7 +105,8 @@ in
     state_before = nixos_state()
 
     with subtest("activation enters the hidden toplevel in one soft-reboot"):
-        canonical_activate(CONFIG, f"--nixos-flake {FLAKE}", "activate-1")
+        # The first entry copies the whole hidden system onto the hidden volume.
+        canonical_activate(CONFIG, f"--nixos-flake {FLAKE}", "activate-1", deadline_s=1200.0)
         current = machine.succeed("readlink -f /run/current-system").strip()
         assert current == hidden_system, f"current-system is {current}, not {hidden_system}"
         booted = machine.succeed("readlink -f /run/booted-system").strip()

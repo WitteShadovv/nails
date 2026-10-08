@@ -185,11 +185,15 @@
 
   # Enter the hidden session from a test: `nails activate -y` soft-reboots into
   # the hidden root. Its output goes to the hidden volume (the decoy shell that
-  # ran it is gone after the switch). `env` is a prefix of variable
-  # assignments (for example the sudo variables that name the operator).
-  # Returns the in-guest timings.
+  # ran it is gone after the switch) and, line by line, to the console, so a
+  # long step (a hidden build, the first copy of the hidden system) shows its
+  # progress in the test log. `env` is a prefix of variable assignments (for
+  # example the sudo variables that name the operator). `deadline_s` bounds the
+  # wait for the hidden root's backdoor. Returns the in-guest timings.
   canonicalActivateFn = ''
-    def canonical_activate(config_path, extra_args="", label="activate", env=""):
+    def canonical_activate(
+        config_path, extra_args="", label="activate", env="", deadline_s=600.0
+    ):
         import shlex
 
         # Aliased, so the test's own `session` import is never shadowed.
@@ -198,17 +202,17 @@
         log = "/mnt/data/" + label + ".log"
         timings = _session.follow_soft_reboot(
             machine,
-            env
+            "set -o pipefail; "
+            + env
             + " nails --config "
             + shlex.quote(config_path)
             + " activate -y "
             + extra_args
-            + " > "
+            + " 2>&1 | tee "
             + log
-            + " 2>&1 || { rc=$?; cat "
-            + log
-            + " > /dev/console; exit $rc; }",
+            + " > /dev/console",
             label,
+            deadline_s=deadline_s,
         )
         print(machine.succeed("cat " + log + " || true"))
         _session.assert_hidden_root(machine)
