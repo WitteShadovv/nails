@@ -54,7 +54,7 @@ in
     with subtest("Ctrl+C during the countdown aborts the emergency"):
         canonical_activate(CONFIG, "--overlay-only", "activate-abort")
         machine.succeed(
-            "systemctl reset-failed hidden-writer.service 2>/dev/null; "
+            "systemctl reset-failed hidden-writer.service 2>/dev/null || true; "
             + "systemd-run --unit hidden-writer --property=Type=exec "
             + "sleep infinity"
         )
@@ -87,7 +87,7 @@ in
     with subtest("the default emergency is immediate, with no countdown"):
         canonical_activate(CONFIG, "--overlay-only", "activate-immediate")
         machine.succeed(
-            "systemctl reset-failed hidden-writer.service 2>/dev/null; "
+            "systemctl reset-failed hidden-writer.service 2>/dev/null || true; "
             + "systemd-run --unit hidden-writer --property=Type=exec "
             + "sleep infinity"
         )

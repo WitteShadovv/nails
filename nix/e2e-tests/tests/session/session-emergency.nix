@@ -94,7 +94,7 @@ in
     hidden_token = "hidden-" + secrets.token_hex(6)
     with subtest("emergency from a hidden login shell kills it and returns"):
         machine.succeed(
-            "systemctl reset-failed hidden-writer.service 2>/dev/null; "
+            "systemctl reset-failed hidden-writer.service 2>/dev/null || true; "
             + "systemd-run --unit hidden-writer --property=Type=exec "
             + "sleep infinity"
         )
