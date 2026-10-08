@@ -12,8 +12,8 @@
 //!
 //! This module is a platform-neutral, read-only inventory of that inherited
 //! state. It is a pure function of a [`Filesystem`], so the same collector backs
-//! the Warn-only [`inherited-autostart`](crate::preflight::checks) pre-flight
-//! check, the full listing in `nails check`, and the activation-time masking of
+//! the Warn-only `inherited-autostart` pre-flight check (in `nails-core`),
+//! the full listing in `nails check`, and the activation-time masking of
 //! inherited entries. It never writes and never fails: an unreadable or missing
 //! source contributes nothing rather than aborting the inventory.
 //!

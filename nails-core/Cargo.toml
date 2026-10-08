@@ -32,40 +32,44 @@ path = "src/lib.rs"
 # environment strings) exist in a shipped binary. This crate's own unit tests get
 # it implicitly through cfg(test); integration tests, nails-cli and the packaged
 # nails-e2e build turn it on through this feature.
-test-hooks = ["nails-base/test-hooks", "nails-platform/test-hooks"]
+test-hooks = [
+    "nails-base/test-hooks",
+    "nails-platform/test-hooks",
+    "nails-session/test-hooks",
+]
 # Exposes the in-crate test fixtures (`Config::test_default`, `TestWorld`) to
 # downstream test code in `nails-cli` and this crate's integration tests. Off by
 # default; the fixtures also compile for this crate's own tests via `cfg(test)`.
-test-support = ["nails-base/test-support", "nails-platform/test-support"]
+test-support = [
+    "nails-base/test-support",
+    "nails-platform/test-support",
+    "nails-session/test-support",
+]
 
 [dependencies]
 # Use workspace versions for consistency
-thiserror = { workspace = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
 nix = { workspace = true, features = ["mount", "sched", "user", "signal", "process", "fs", "resource"] }
-signal-hook = { workspace = true }
 rustix = { workspace = true, features = ["fs", "process", "mount", "thread"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 toml = { workspace = true }
 chrono = { workspace = true }
 tempfile = { workspace = true }
-colored = { workspace = true }
-sha2 = { workspace = true }
 hex = { workspace = true }
 # The foundation: errors, the filesystem and process seams, configuration,
 # state, the artifact registry and the pre-flight framework.
 nails-base = { path = "../nails-base" }
 # Host detection, the platform backends and the NixOS configuration layer.
 nails-platform = { path = "../nails-platform" }
+# The configuration-aware parts of the whole-root session.
+nails-session = { path = "../nails-session" }
 # The whole-root session mechanics: the plan format, the mountinfo parser,
 # the transition and the emergency hot path.
 nails-teardown = { path = "../nails-teardown" }
 # Fast substring search for the raw-device canary scan (already in the tree
 # through regex-automata).
 memchr = "2.8"
-zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
 
 [dev-dependencies]
 # Workspace testing dependencies

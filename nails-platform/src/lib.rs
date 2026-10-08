@@ -49,3 +49,14 @@ pub use platform::{
     detect_platform, discover_host_target, discover_with_platform, platform_for,
 };
 pub use preflight::{NixOSConfigCheck, SuspiciousNailsReferenceCheck};
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn unit_tests_never_reach_the_host() {
+        // `unit_test_mode!` marks this binary before the first test, so the
+        // base crate's host switches answer as they do in its own unit tests.
+        assert!(nails_base::runtime_safety::in_unit_tests());
+        assert!(nails_base::runtime_safety::should_skip_host_interaction());
+    }
+}

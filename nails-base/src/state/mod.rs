@@ -8,7 +8,7 @@
 //!
 //! A soft-reboot keeps the boot ID and kills the activating process, so the
 //! state file is not where NAILS learns where the machine is: the live facts
-//! ([`crate::session::probe`]) are authoritative, and the state file is the
+//! (`nails_session::session::probe`) are authoritative, and the state file is the
 //! record next to them.
 
 use chrono::{DateTime, Utc};

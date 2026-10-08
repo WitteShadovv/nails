@@ -76,22 +76,13 @@ pub mod verify;
 // Status command module (live session view)
 pub mod status;
 
-pub mod runtime_copy;
-
-pub mod sleep_guard;
-
-// The whole-root session (ADR 0008): entry, way back, fstab policy, probes.
-pub mod session;
-
-pub mod watcher;
+// The whole-root session (ADR 0008): entry, way back, fstab policy, probes,
+// the persona and the session's runtime units.
+pub use nails_session::{persona, runtime_copy, session, sleep_guard, watcher};
 
 // Host detection, the platform backends, the NixOS configuration layer and
 // the backend chain resolution.
 pub use nails_platform::{backend_lock, nixos, platform};
-
-// Persona inventory: the decoy autostart/user-unit/linger/autologin state the
-// hidden session would inherit from the decoy account.
-pub mod persona;
 
 // Real-kernel test support and the captured kernel fixtures. Test-only.
 #[cfg(any(test, feature = "test-support"))]

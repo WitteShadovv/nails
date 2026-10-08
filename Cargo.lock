@@ -1125,13 +1125,13 @@ version = "0.2.0"
 dependencies = [
  "assert_cmd",
  "chrono",
- "colored",
  "criterion",
  "hex",
  "memchr",
  "nails-base",
  "nails-core",
  "nails-platform",
+ "nails-session",
  "nails-teardown",
  "nix",
  "predicates",
@@ -1139,15 +1139,10 @@ dependencies = [
  "rustix",
  "serde",
  "serde_json",
- "sha2",
- "signal-hook",
  "tempfile",
- "thiserror",
  "toml",
  "tracing",
- "tracing-subscriber",
  "tracing-test",
- "zbus",
 ]
 
 [[package]]
@@ -1160,6 +1155,21 @@ dependencies = [
  "proptest",
  "tempfile",
  "tracing",
+]
+
+[[package]]
+name = "nails-session"
+version = "0.2.0"
+dependencies = [
+ "nails-base",
+ "nails-platform",
+ "nails-session",
+ "nails-teardown",
+ "rustix",
+ "tempfile",
+ "toml",
+ "tracing",
+ "zbus",
 ]
 
 [[package]]

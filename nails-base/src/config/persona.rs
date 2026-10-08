@@ -13,7 +13,7 @@
 //!
 //! [`PersonaMode::FreshHome`] is the opt-in separation: at the first entry the
 //! operator's home becomes an opaque directory in the upper on the hidden
-//! volume (see [`crate::session::persona`]), so the hidden session starts from
+//! volume (see `nails_session::session::persona`), so the hidden session starts from
 //! a clean home and the decoy home contents are not visible. It stays the
 //! hidden home at every later entry.
 //!

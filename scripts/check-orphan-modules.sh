@@ -12,6 +12,7 @@ SOURCE_ROOTS=(
   "$REPO_ROOT/nails-base/src"
   "$REPO_ROOT/nails-core/src"
   "$REPO_ROOT/nails-platform/src"
+  "$REPO_ROOT/nails-session/src"
   "$REPO_ROOT/nails-cli/src"
   "$REPO_ROOT/nails-teardown/src"
 )
