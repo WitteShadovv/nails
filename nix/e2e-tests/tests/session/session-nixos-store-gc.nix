@@ -223,7 +223,7 @@ in
       with subtest("the decoy rebuilds and garbage-collects its store"):
           nonce = secrets.token_hex(8)
           expr = (
-              f'derivation {{ name = "decoy-rebuild-{nonce}"; system = builtins.currentSystem; '
+              f'derivation {{ name = "decoy-rebuild-{nonce}"; system = "${pkgs.stdenv.hostPlatform.system}"; '
               f'builder = "/bin/sh"; args = [ "-c" "echo {nonce} > $out" ]; }}'
           )
           rebuilt = machine.succeed(
