@@ -17,7 +17,6 @@ pub mod journald_storage;
 pub mod memory_wipe;
 pub mod mount_namespace;
 pub mod nixos_build_target;
-pub mod residue_catalog;
 pub mod sleep_policy;
 pub mod space;
 pub mod state;
@@ -38,7 +37,6 @@ pub use journald_storage::{JournaldStorage, parse_journald_storage};
 pub use memory_wipe::{InitOnFree, MemoryWipeCheck, parse_init_on_free};
 pub use mount_namespace::MountNamespaceCheck;
 pub use nixos_build_target::NixOSBuildTargetCheck;
-pub use residue_catalog::ResidueCatalogCheck;
 pub use sleep_policy::SleepPolicyCheck;
 pub use space::{OverlayDirs, SpaceCheck};
 pub use state::StateCheck;
@@ -50,3 +48,6 @@ pub use upper_fs_probe::UpperFsCapabilityCheck;
 pub use nails_platform::preflight::{
     NixOSConfigCheck, SuspiciousNailsReferenceCheck, nixos_config, suspicious_nails_reference,
 };
+
+// The residue catalog's check lives with the catalog.
+pub use nails_forensics::preflight::{ResidueCatalogCheck, residue_catalog};

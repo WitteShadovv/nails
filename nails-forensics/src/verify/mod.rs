@@ -13,7 +13,8 @@
 //! # Example
 //!
 //! ```rust
-//! use nails_core::{Verifier, VerifyStatus, MockFilesystem};
+//! use nails_base::MockFilesystem;
+//! use nails_forensics::{Verifier, VerifyStatus};
 //!
 //! let fs = MockFilesystem::new();
 //! let verifier = Verifier::new(fs);
@@ -24,7 +25,7 @@
 //!     VerifyStatus::Warning => println!("Potential issues found"),
 //!     VerifyStatus::Critical => println!("Critical artifacts detected"),
 //! }
-//! # Ok::<(), nails_core::NailsError>(())
+//! # Ok::<(), nails_base::NailsError>(())
 //! ```
 
 pub mod examiner;

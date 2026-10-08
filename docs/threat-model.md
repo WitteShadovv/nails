@@ -233,7 +233,7 @@ boot does).
 
 The whole-root overlay cannot cover these. Each is either bounded by an
 assumption above or documented as a known gap. The table is generated from the residue catalog
-(`nails-core/src/residue_catalog/rows.rs`), which also holds the classes the
+(`nails-forensics/src/residue_catalog/rows.rs`), which also holds the classes the
 overlay does cover; [decoy-requirements.md](decoy-requirements.md#residue-catalog)
 has the whole catalog.
 

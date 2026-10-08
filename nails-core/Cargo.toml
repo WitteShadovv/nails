@@ -36,6 +36,7 @@ test-hooks = [
     "nails-base/test-hooks",
     "nails-platform/test-hooks",
     "nails-session/test-hooks",
+    "nails-forensics/test-hooks",
 ]
 # Exposes the in-crate test fixtures (`Config::test_default`, `TestWorld`) to
 # downstream test code in `nails-cli` and this crate's integration tests. Off by
@@ -44,6 +45,7 @@ test-support = [
     "nails-base/test-support",
     "nails-platform/test-support",
     "nails-session/test-support",
+    "nails-forensics/test-support",
 ]
 
 [dependencies]
@@ -56,7 +58,6 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 chrono = { workspace = true }
 tempfile = { workspace = true }
-hex = { workspace = true }
 # The foundation: errors, the filesystem and process seams, configuration,
 # state, the artifact registry and the pre-flight framework.
 nails-base = { path = "../nails-base" }
@@ -64,12 +65,11 @@ nails-base = { path = "../nails-base" }
 nails-platform = { path = "../nails-platform" }
 # The configuration-aware parts of the whole-root session.
 nails-session = { path = "../nails-session" }
+# Verification, the examiner's view, the residue catalog and rehearse.
+nails-forensics = { path = "../nails-forensics" }
 # The whole-root session mechanics: the plan format, the mountinfo parser,
 # the transition and the emergency hot path.
 nails-teardown = { path = "../nails-teardown" }
-# Fast substring search for the raw-device canary scan (already in the tree
-# through regex-automata).
-memchr = "2.8"
 
 [dev-dependencies]
 # Workspace testing dependencies

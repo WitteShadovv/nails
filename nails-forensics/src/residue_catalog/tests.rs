@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 fn repo_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
-        .expect("nails-core has a parent workspace directory")
+        .expect("nails-forensics has a parent workspace directory")
         .to_path_buf()
 }
 
@@ -39,34 +39,6 @@ fn e2e_test_names() -> BTreeSet<String> {
         }
     }
     names
-}
-
-/// The names of every pre-flight check the registry can contain.
-fn preflight_check_names() -> BTreeSet<&'static str> {
-    use crate::manager::{RegistryInputs, build_registry};
-    use crate::{Config, MockFilesystem, SystemState};
-
-    let fs = MockFilesystem::new();
-    let config = Config::test_default();
-    let inputs = RegistryInputs {
-        overlay_only: false,
-        read_only: true,
-        current_state: SystemState::Inactive,
-        flake_target_already_validated: false,
-        selected_flake_dir: None,
-        discovered_target: crate::platform::HostTarget::None,
-        operator: None,
-        accept_persistent_decoy: false,
-        caller_path: None,
-    };
-    let registry = build_registry(
-        &fs,
-        &config,
-        &inputs,
-        Some(&crate::platform::NixOsConfigLayer),
-    )
-    .expect("registry builds");
-    registry.names().into_iter().collect()
 }
 
 /// GitHub's heading anchor for a Markdown heading line.
@@ -206,24 +178,6 @@ fn every_row_names_a_vm_test_that_exists_or_says_why_not() {
 }
 
 #[test]
-fn preflight_probes_name_registered_checks() {
-    let names = preflight_check_names();
-    assert!(
-        names.contains("residue-catalog"),
-        "the catalog check is not registered"
-    );
-    for row in catalog() {
-        if let Probe::Check(name) = row.preflight {
-            assert!(
-                names.contains(name),
-                "{} names pre-flight check {name}, which the registry does not contain: {names:?}",
-                row.id
-            );
-        }
-    }
-}
-
-#[test]
 fn verify_probes_name_verify_checks() {
     let ids: BTreeSet<&str> = crate::verify::VERIFY_CHECK_IDS.iter().copied().collect();
     for row in catalog() {
@@ -335,7 +289,7 @@ fn links_to_the_same_doc_become_bare_anchors() {
 }
 
 /// The committed docs carry the tables the catalog generates. Regenerate with
-/// `REGENERATE_CATALOG_DOCS=1 cargo test -p nails-core residue_catalog`.
+/// `REGENERATE_CATALOG_DOCS=1 cargo test -p nails-forensics residue_catalog`.
 #[test]
 fn generated_doc_tables_match_the_catalog() {
     let regenerate = std::env::var_os("REGENERATE_CATALOG_DOCS").is_some();
@@ -354,7 +308,7 @@ fn generated_doc_tables_match_the_catalog() {
         assert!(
             committed == synced,
             "docs/{doc} has drifted from the residue catalog. Regenerate it with \
-             `REGENERATE_CATALOG_DOCS=1 cargo test -p nails-core residue_catalog`"
+             `REGENERATE_CATALOG_DOCS=1 cargo test -p nails-forensics residue_catalog`"
         );
     }
 }

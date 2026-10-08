@@ -39,6 +39,7 @@ class SelectTest(unittest.TestCase):
         for path in (
             "nails-base/src/lib.rs",
             "nails-core/src/lib.rs",
+            "nails-forensics/src/lib.rs",
             "nails-platform/src/lib.rs",
             "nails-session/src/lib.rs",
             "nails-cli/tests/cli_integration.rs",

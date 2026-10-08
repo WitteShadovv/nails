@@ -1126,10 +1126,9 @@ dependencies = [
  "assert_cmd",
  "chrono",
  "criterion",
- "hex",
- "memchr",
  "nails-base",
  "nails-core",
+ "nails-forensics",
  "nails-platform",
  "nails-session",
  "nails-teardown",
@@ -1143,6 +1142,25 @@ dependencies = [
  "toml",
  "tracing",
  "tracing-test",
+]
+
+[[package]]
+name = "nails-forensics"
+version = "0.2.0"
+dependencies = [
+ "chrono",
+ "hex",
+ "memchr",
+ "nails-base",
+ "nails-forensics",
+ "nails-platform",
+ "nails-session",
+ "nails-teardown",
+ "nix",
+ "rustix",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

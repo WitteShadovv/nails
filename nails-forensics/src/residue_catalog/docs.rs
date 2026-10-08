@@ -13,7 +13,7 @@
 //!
 //! [`sync_document`] rewrites every marked block in a document from the
 //! catalog. A unit test runs it over the committed docs and fails when the
-//! result differs; `REGENERATE_CATALOG_DOCS=1 cargo test -p nails-core
+//! result differs; `REGENERATE_CATALOG_DOCS=1 cargo test -p nails-forensics
 //! residue_catalog` writes the regenerated docs instead.
 
 use super::{CATALOG, Channel, E2e, Probe, ProbeSeverity, ResidueClass, ResidueKind};

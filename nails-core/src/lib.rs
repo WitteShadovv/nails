@@ -55,23 +55,14 @@ pub mod config {
 #[cfg(any(test, feature = "test-support"))]
 mod test_world;
 
-// The residue catalog: every trace class, its probes, docs and VM test.
-pub mod residue_catalog;
-
-// `nails rehearse`: the canary self-test.
-pub mod rehearse;
-
-// Read-only raw-device, layout and tree readers for the forensic self-checks
-pub mod forensic;
+// Verification, the forensic readers, the residue catalog and rehearse.
+pub use nails_forensics::{forensic, rehearse, residue_catalog, verify};
 
 // Manager module (core orchestrator)
 pub mod manager;
 
 // Pre-flight validation system: the framework from nails-base and the checks.
 pub mod preflight;
-
-// Forensic validation system
-pub mod verify;
 
 // Status command module (live session view)
 pub mod status;
@@ -91,6 +82,10 @@ pub use nails_base::{kernel_fixtures, test_path, test_support};
 // Property-based parser tests (`just fuzz` runs them with many more cases).
 #[cfg(test)]
 mod fuzz;
+
+// The residue catalog's pre-flight probes against the registry.
+#[cfg(test)]
+mod residue_catalog_tests;
 
 // Re-export for convenience
 pub use artifacts::{

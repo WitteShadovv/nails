@@ -13,9 +13,9 @@
 //! reason to refuse activation on its own. The check only tests existence and
 //! lists directories (without updating access times); it writes nothing.
 
-use super::super::{CheckResult, PreFlightCheck};
 use crate::residue_catalog::{self, Probe, ProbeSeverity};
 use crate::{Filesystem, Result};
+use nails_base::preflight::{CheckResult, PreFlightCheck};
 use std::path::{Path, PathBuf};
 
 /// Pre-flight check that runs the catalog's path probes.

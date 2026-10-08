@@ -5,7 +5,7 @@
 //!
 //! Adding a row: give it a detector or a reason there is none, a VM test or a
 //! reason there is none, and a doc anchor that exists. Then regenerate the doc
-//! tables (`REGENERATE_CATALOG_DOCS=1 cargo test -p nails-core residue_catalog`)
+//! tables (`REGENERATE_CATALOG_DOCS=1 cargo test -p nails-forensics residue_catalog`)
 //! and commit the result. The unit tests in `tests.rs` enforce all of it.
 
 use super::{Channel, E2e, Platforms, Probe, ProbeSeverity, ResidueClass, ResidueKind};

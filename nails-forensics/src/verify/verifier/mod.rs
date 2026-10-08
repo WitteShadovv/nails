@@ -7,9 +7,9 @@ use super::types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, 
 use crate::artifacts::{self, ArtifactKind, ArtifactScope, ArtifactSeverity};
 use crate::config::Config;
 use crate::filesystem::ProcessMatch;
-use crate::preflight::SwapSeverity;
 use crate::state::StateFile;
 use crate::{Filesystem, Result};
+use nails_base::preflight::SwapSeverity;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

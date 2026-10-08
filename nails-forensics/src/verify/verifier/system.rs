@@ -196,7 +196,7 @@ impl<F: Filesystem> Verifier<F> {
         // Classify swap per device, matching the pre-flight check exactly: a disk
         // or file swap (or hibernation) can leak memory to persistent storage and
         // is critical; ephemeral encrypted swap warns; RAM-only zram passes.
-        let posture = crate::preflight::classify_swap(&self.filesystem);
+        let posture = nails_base::preflight::classify_swap(&self.filesystem);
         match posture.severity {
             SwapSeverity::Pass => {}
             SwapSeverity::Warn => findings.push(

@@ -11,6 +11,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SOURCE_ROOTS=(
   "$REPO_ROOT/nails-base/src"
   "$REPO_ROOT/nails-core/src"
+  "$REPO_ROOT/nails-forensics/src"
   "$REPO_ROOT/nails-platform/src"
   "$REPO_ROOT/nails-session/src"
   "$REPO_ROOT/nails-cli/src"

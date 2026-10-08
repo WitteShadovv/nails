@@ -313,9 +313,9 @@ Disable VeraCrypt's history, harden the decoy shell history (see
 
 ## Residue catalog
 
-Generated from `nails-core/src/residue_catalog/rows.rs`; do not edit the tables
-by hand. A unit test fails when they drift; regenerate them with
-`REGENERATE_CATALOG_DOCS=1 cargo test -p nails-core residue_catalog`.
+Generated from `nails-forensics/src/residue_catalog/rows.rs`; do not edit the
+tables by hand. A unit test fails when they drift; regenerate them with
+`REGENERATE_CATALOG_DOCS=1 cargo test -p nails-forensics residue_catalog`.
 
 A row with "none" in the pre-flight or verify column says why nothing at that
 point can see the class; verify lists those classes among the areas it did not

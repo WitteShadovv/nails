@@ -72,6 +72,7 @@
           ./nails-base
           ./nails-cli
           ./nails-core
+          ./nails-forensics
           ./nails-platform
           ./nails-session
           ./nails-teardown
