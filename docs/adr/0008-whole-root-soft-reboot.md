@@ -248,6 +248,27 @@ systemctl soft-reboot
   units are left alone. Swap must never be activated, which the decoy
   requirements already demand. A hidden NixOS generation can declare its own
   `fileSystems` instead. [I] This is the main piece of generic FHS work.
+- **Disks mounted during the session (T-143).** The policy covers what an
+  fstab names. A disk the hidden session mounts itself (a USB drive udisks
+  automounts, a masked decoy partition mounted by hand) is a real disk outside
+  every overlay. The session watcher alerts on every read-write mount of a
+  block device outside the hidden volume. Opted in (`[session_mounts]
+  read_only`), every disk the session does not use is made read-only at the
+  block layer (`BLKROSET`) for the session: a udev rule that the entry
+  transition writes to `/run/udev/rules.d` runs the RAM copy for each disk and
+  partition as it appears, before udev announces it to udisks, and the hidden
+  boot's coldplug covers the disks present at entry; the watcher sweeps as a
+  fallback. The kernel then refuses a read-write mount and writes through the
+  node, and nothing a mount writes reaches the disk. The decoy root's disk, the
+  hidden backend and its members, the carried and policy mounts, and virtual
+  devices are never touched, so the way back can mount the decoy root
+  read-write. The leave transition makes exactly the recorded devices writable
+  again and removes the rule (the scrub leaves `/run/udev` alone), and
+  `deactivate` unmounts such disks before the way back. A polkit rule or a
+  udisks mount-options file was not used: either covers only udisks, not a
+  manual `mount` or a raw write, and the udisks options live in `/etc`, where
+  they would persist in the upper. A root user can always undo the flag. [I;
+  VM test `session-disk-mounts`]
 - **`/etc`, machine-id, initrd.** `/etc` is the decoy's (from the lower) plus
   hidden changes. The machine-id is the decoy's unless the upper overrides it
   (§3, network identity). The initrd does not run again. Whatever it set up stays,
@@ -716,7 +737,8 @@ supported.
   policy (§2: boot filesystems read-only, mounted decoy filesystems overlaid
   with an upper on the hidden volume, swap, unmounted disks, network
   filesystems and disk-backed overlay entries masked), the entry, the way back,
-  the carried decoy filesystems (§5), the probes `status` uses, and the new pre-flight checks (`systemd-version`,
+  the carried decoy filesystems (§5), the disks mounted during the session
+  (§2), the probes `status` uses, and the new pre-flight checks (`systemd-version`,
   `soft-reboot-units`, `decoy-root`, `session-state`, `fstab-policy`).
 - **NixOS, variant B**: the hidden toplevel is built into the next root's
   store (`nix build --store /run/nextroot`, the evaluation cache on the hidden

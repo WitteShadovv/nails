@@ -64,6 +64,13 @@ state, config and CLI surfaces; there are no compatibility shims.
   drops paths the decoy deleted from the hidden store database before the build. A decoy that
   garbage-collects or rebuilds between sessions no longer breaks the hidden system (T-137, VM test
   `session-nixos-store-gc`).
+- Disks mounted during the hidden session (T-143). The session watcher raises a neutral desktop
+  alert for every read-write mount of a block device outside the hidden volume
+  (`[session_mounts] alert`, on by default; the watcher now also runs for it). Opt-in
+  `[session_mounts] read_only` makes every disk the session does not use read-only at the block
+  layer for the session, through a runtime udev rule for disks attached during it and a watcher
+  sweep as a fallback; the way back makes exactly those disks writable again. `nails deactivate`
+  unmounts disks mounted during the session before the way back. VM test `session-disk-mounts`.
 - The transition step (`ExecStart=` of `systemd-soft-reboot.service`, run from the RAM copy) acts
   only on an armed plan. On the way back it scrubs `/run` of what the hidden session added (an
   allowlist that never touches sockets, `/run/udev`, credentials or the current/booted system

@@ -643,12 +643,37 @@ terminal colours. What the hidden session looks like is up to its configuration;
 a hidden desktop that looks different from the decoy's, or a login screen that
 does, is itself a tell.
 
+### Disks mounted during the session
+
+The fstab policy covers what the decoy's fstab names. A disk you mount in the
+hidden session — a USB drive the desktop automounts, a decoy partition the
+policy masked, a Windows partition — is a real disk outside every overlay, and a
+read-write mount of it takes your writes (mounting it read-write alone already
+writes its superblock).
+
+- The session watcher raises a desktop alert ("Disk mounted with write access")
+  for every read-write mount of a disk outside the hidden volume
+  (`session_mounts.alert`, on by default).
+- With `session_mounts.read_only = true`, every disk the session does not use is
+  read-only for the session, from the hidden boot on and for every disk attached
+  later: mounts come up read-only (`mount` warns "write-protected, mounted
+  read-only"), `mount -o rw` fails, and writes fail. Turn it on unless you need
+  to write to an external disk in the hidden session.
+- `nails deactivate` unmounts these disks before the way back (a busy one is
+  detached and its users end with the session), and the way back makes the disks
+  writable again, so the decoy mounts them as usual.
+
+A root shell can always set a disk writable again and mount it; the guard is
+against automounts and mistakes. See
+[Disks mounted during the session](configuration.md#disks-mounted-during-the-session).
+
 ### During the session
 
 ```
 [ ] Work only inside the hidden session; every write lands on the hidden volume
-[ ] Do not mount decoy partitions by hand except read-only: the fstab policy
-    covers only what the hidden systemd mounts
+[ ] Do not mount decoy partitions or external disks read-write: the fstab
+    policy covers only what the hidden systemd mounts (session_mounts.read_only
+    enforces this; the watcher alerts otherwise)
 [ ] On NixOS, apply changes with `nixos-rebuild test`, never `switch` or `boot`
 [ ] Keep the emergency command ready: sudo /mnt/usb/nails emergency
 [ ] Know your physical emergency procedure
