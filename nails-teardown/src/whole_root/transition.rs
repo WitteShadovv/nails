@@ -77,6 +77,13 @@ pub const STOP_GUARDED_UNITS: [&str; 1] = ["blk-availability.service"];
 /// The drop-in text that clears a unit's stop commands.
 pub const STOP_GUARD_TEXT: &str = "[Service]\nExecStop=\n";
 
+/// The stop guards' file name. systemd applies a unit's drop-ins in the order
+/// of their file names across every directory, and an `ExecStop=` in a later
+/// one adds its commands back: `zz-` sorts after the `override.conf` that
+/// `systemctl edit` writes, NixOS's `overrides.conf` and numbered drop-ins.
+/// The entry checks the result after the reload all the same.
+pub const STOP_GUARD_NAME: &str = "zz-overlay-runtime.conf";
+
 /// The drop-in directory for `unit`, below `/run`.
 pub fn stop_guard_dir(unit: &str) -> PathBuf {
     Path::new("systemd/system").join(format!("{unit}.d"))
@@ -88,7 +95,7 @@ pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
     for unit in STOP_GUARDED_UNITS {
         let dir = run.join(stop_guard_dir(unit));
         std::fs::create_dir_all(&dir)?;
-        plan::write_private_atomic(&dir.join(DROPIN_NAME), STOP_GUARD_TEXT.as_bytes())?;
+        plan::write_private_atomic(&dir.join(STOP_GUARD_NAME), STOP_GUARD_TEXT.as_bytes())?;
     }
     let dir = run.join(DROPIN_DIR);
     std::fs::create_dir_all(&dir)?;
@@ -100,12 +107,12 @@ pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
 /// Remove the drop-in and the stop guards (and their directories when empty)
 /// under `run`.
 pub fn remove_dropin(run: &Path) {
-    let dirs = STOP_GUARDED_UNITS
+    let files = STOP_GUARDED_UNITS
         .iter()
-        .map(|unit| run.join(stop_guard_dir(unit)))
-        .chain(std::iter::once(run.join(DROPIN_DIR)));
-    for dir in dirs {
-        let _ = std::fs::remove_file(dir.join(DROPIN_NAME));
+        .map(|unit| (run.join(stop_guard_dir(unit)), STOP_GUARD_NAME))
+        .chain(std::iter::once((run.join(DROPIN_DIR), DROPIN_NAME)));
+    for (dir, name) in files {
+        let _ = std::fs::remove_file(dir.join(name));
         let _ = std::fs::remove_dir(dir);
     }
 }

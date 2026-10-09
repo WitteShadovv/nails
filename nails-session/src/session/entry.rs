@@ -79,6 +79,10 @@ pub trait EntryHost {
     ) -> Result<store::KeepReport>;
     /// Activate `system` chrooted into `root`.
     fn activate_hidden_system(&self, root: &Path, system: &Path) -> Result<()>;
+    /// The stop commands `unit` runs with every drop-in loaded, as
+    /// `systemctl show --property=ExecStop --value` prints them: empty when it
+    /// runs none, or when the unit does not exist.
+    fn unit_stop_commands(&self, unit: &str) -> Result<String>;
 }
 
 /// The real host.
@@ -86,6 +90,17 @@ pub trait EntryHost {
 pub struct RealEntryHost;
 
 impl EntryHost for RealEntryHost {
+    fn unit_stop_commands(&self, unit: &str) -> Result<String> {
+        let systemctl = nails_teardown::whole_root::tools::find(None, "systemctl")
+            .ok_or_else(|| NailsError::InvalidState("systemctl not found".to_string()))?;
+        nails_teardown::whole_root::tools::run_output(
+            &systemctl,
+            &["show", "--property=ExecStop", "--value", unit],
+            std::time::Duration::from_secs(30),
+        )
+        .ok_or_else(|| NailsError::InvalidState(format!("systemctl show {unit} failed")))
+    }
+
     fn daemon_reload(&self) -> Result<()> {
         let systemctl = nails_teardown::whole_root::tools::find(None, "systemctl")
             .ok_or_else(|| NailsError::InvalidState("systemctl not found".to_string()))?;
@@ -547,7 +562,35 @@ fn install_transition(paths: &Paths, host: &dyn EntryHost, dropin: &mut bool) ->
     };
     transition::install_dropin(&paths.run, &binary).map_err(|e| io(&paths.run, e))?;
     *dropin = true;
-    host.daemon_reload()
+    host.daemon_reload()?;
+    check_stop_guards(host)
+}
+
+/// Refuse the entry when a guarded unit still runs stop commands once the
+/// drop-ins are loaded: a drop-in that sorts after the guard set `ExecStop=`
+/// again, and that stop would unmount what the switch needs (see
+/// [`transition::STOP_GUARDED_UNITS`]).
+fn check_stop_guards(host: &dyn EntryHost) -> Result<()> {
+    for unit in transition::STOP_GUARDED_UNITS {
+        let stop = host.unit_stop_commands(unit)?;
+        if !stop.trim().is_empty() {
+            return Err(NailsError::PreFlightCheckFailed(vec![(
+                "stop-guard".to_string(),
+                format!(
+                    "{unit} would still run a stop command during the switch ({}): a drop-in \
+                     that sorts after /run/systemd/system/{unit}.d/{} sets ExecStop= again, \
+                     and that stop unmounts the hidden volume",
+                    stop.trim(),
+                    transition::STOP_GUARD_NAME
+                ),
+                Some(format!(
+                    "Remove the ExecStop= from that drop-in (`systemctl cat {unit}` shows \
+                     where it is) and activate again"
+                )),
+            )]));
+        }
+    }
+    Ok(())
 }
 
 /// The mounts below `root`, with their mount points made relative to it (as
@@ -661,6 +704,40 @@ mod tests {
                 .as_deref(),
             Some("subvol=/@")
         );
+    }
+
+    /// A host that only answers the stop-command query.
+    struct StopHost(&'static str);
+
+    impl EntryHost for StopHost {
+        fn daemon_reload(&self) -> Result<()> {
+            Ok(())
+        }
+        fn build_hidden_system(&self, _: &NixOSBuilder, _: &Path, _: &Path) -> Result<PathBuf> {
+            unreachable!("not used by the stop-guard check")
+        }
+        fn keep_hidden_closure(&self, _: &Path, _: &Path, _: &Path) -> Result<store::KeepReport> {
+            unreachable!("not used by the stop-guard check")
+        }
+        fn activate_hidden_system(&self, _: &Path, _: &Path) -> Result<()> {
+            unreachable!("not used by the stop-guard check")
+        }
+        fn unit_stop_commands(&self, _: &str) -> Result<String> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    #[test]
+    fn a_stop_command_left_after_the_guard_refuses_the_entry() {
+        assert!(check_stop_guards(&StopHost("\n")).is_ok());
+        let error = check_stop_guards(&StopHost(
+            "{ path=/usr/sbin/blkdeactivate ; argv[]=/usr/sbin/blkdeactivate -u ; }\n",
+        ))
+        .unwrap_err();
+        let text = error.to_string();
+        assert!(text.contains("blk-availability.service"), "{text}");
+        assert!(text.contains("zz-overlay-runtime.conf"), "{text}");
+        assert!(matches!(error, NailsError::PreFlightCheckFailed(_)));
     }
 
     #[test]

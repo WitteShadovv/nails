@@ -282,7 +282,7 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
     // the way in, and a LUKS or LVM decoy root below it on the way back.
     let guard = run
         .join(stop_guard_dir("blk-availability.service"))
-        .join(DROPIN_NAME);
+        .join(STOP_GUARD_NAME);
     assert_eq!(
         fs::read_to_string(&guard).unwrap(),
         "[Service]\nExecStop=\n"
@@ -292,6 +292,11 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
             .lines()
             .all(|l| !l.to_lowercase().contains("nails"))
     );
+    assert!(!STOP_GUARD_NAME.contains("nails"));
+    // Later than what `systemctl edit` and NixOS write, so neither undoes it.
+    for other in ["override.conf", "overrides.conf", "99-local.conf"] {
+        assert!(STOP_GUARD_NAME > other, "{other} sorts after the guard");
+    }
 
     remove_dropin(run);
     assert!(

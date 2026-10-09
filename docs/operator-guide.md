@@ -717,7 +717,7 @@ umount -R /run/nextroot
 #    drop-in that clears blk-availability.service's stop.
 rm -rf /run/overlay-runtime
 rm -rf /run/systemd/system/systemd-soft-reboot.service.d
-rm -f /run/systemd/system/blk-availability.service.d/50-overlay-runtime.conf
+rm -f /run/systemd/system/blk-availability.service.d/zz-overlay-runtime.conf
 systemctl daemon-reload
 
 # 3. Confirm nothing is left.

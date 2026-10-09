@@ -456,6 +456,9 @@ mod entry_kernel_tests {
     }
 
     impl EntryHost for FakeHost {
+        fn unit_stop_commands(&self, _: &str) -> nails_core::Result<String> {
+            Ok(String::new())
+        }
         fn daemon_reload(&self) -> nails_core::Result<()> {
             if self.reloads.get() == 0
                 && let Some(nextroot) = &self.nextroot
