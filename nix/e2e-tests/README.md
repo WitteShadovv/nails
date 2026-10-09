@@ -109,6 +109,13 @@ redirects it to the hidden volume.
   machine while it is unchanged (`py/nails_e2e/store_image.py`), so only the
   first start of a test pays for it. The driver log says `Reusing Nix store
   image.` on each later start.
+- `blk-availability.nix`: the `blk-availability.service` Debian and Ubuntu
+  enable wherever `dmsetup` is installed. Its stop, which every soft-reboot
+  runs, unmounts the filesystems on device-mapper devices (`blkdeactivate
+  -u`). A NixOS VM always carries its store mounts below the hidden volume, so
+  the stop cannot unmount the volume itself there; a decoy filesystem on LVM
+  shows the loss instead (`session-fstab-policy`). The distribution tier
+  covers the volume itself.
 
 ## Tag taxonomy
 
@@ -429,6 +436,9 @@ soft-reboots with `py/nails_e2e/session.py`:
 - `session-fstab-policy`: the decision `check` reports for every decoy
   filesystem, the read-only ESP, a separate decoy filesystem overlaid with a
   hidden upper, masked swap, and no hidden write on any decoy disk afterwards;
+  with Debian's `blk-availability.service` running, a decoy filesystem on LVM
+  that the switch keeps mounted for the way back (the unit's stop is cleared
+  for the session and back afterwards);
 - `session-nixos-hidden-system`: a hidden NixOS toplevel entered in one
   soft-reboot, the way back to the decoy toplevel, re-entry, a configuration
   that does not evaluate refusing the entry, and no bootloader or system
