@@ -153,6 +153,12 @@ fn an_entry_whose_init_does_not_resolve_is_disarmed_instead_of_freezing_pid1() {
     );
     assert!(!world.runtime().exists());
     assert!(!world.run().join(DROPIN_DIR).exists());
+    assert!(
+        !world
+            .run()
+            .join(stop_guard_dir("blk-availability.service"))
+            .exists()
+    );
     assert!(!world.run().join("systemd/system/dev-vda3.swap").exists());
 }
 
@@ -243,6 +249,10 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
         "the runtime directory is scrubbed"
     );
     assert!(!r.join(DROPIN_DIR).exists(), "the drop-in is scrubbed");
+    assert!(
+        !r.join(stop_guard_dir("blk-availability.service")).exists(),
+        "the stop guard is scrubbed, so the decoy's own shutdown is unchanged"
+    );
     assert_eq!(
         fs::read_to_string(r.join("mount/utab")).unwrap(),
         "ID=1 decoy\n"
@@ -261,6 +271,34 @@ fn the_dropin_runs_the_ram_copy_with_its_output_discarded() {
     assert!(text.contains("Type=oneshot"));
     assert!(!text.to_lowercase().contains("nails"));
     assert!(!DROPIN_NAME.contains("nails"));
+}
+
+#[test]
+fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path();
+    install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    // blkdeactivate -u would unmount the hidden volume below /run/nextroot on
+    // the way in, and a LUKS or LVM decoy root below it on the way back.
+    let guard = run
+        .join(stop_guard_dir("blk-availability.service"))
+        .join(DROPIN_NAME);
+    assert_eq!(
+        fs::read_to_string(&guard).unwrap(),
+        "[Service]\nExecStop=\n"
+    );
+    assert!(
+        STOP_GUARD_TEXT
+            .lines()
+            .all(|l| !l.to_lowercase().contains("nails"))
+    );
+
+    remove_dropin(run);
+    assert!(
+        !run.join(stop_guard_dir("blk-availability.service"))
+            .exists()
+    );
+    assert!(!run.join(DROPIN_DIR).exists());
 }
 
 #[test]

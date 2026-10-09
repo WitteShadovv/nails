@@ -24,6 +24,8 @@ const TEARDOWN_ALLOWED: &[&str] = &[
     "whole_root::ret::in_hidden_root",
     "whole_root::transition::DROPIN_DIR",
     "whole_root::transition::DROPIN_NAME",
+    "whole_root::transition::STOP_GUARDED_UNITS",
+    "whole_root::transition::stop_guard_dir",
 ];
 
 /// The items of nails-session this crate may use. The crate root imports the

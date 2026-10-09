@@ -9,7 +9,9 @@ use crate::session::units::WATCH_UNIT;
 use nails_teardown::mountinfo::{MountEntry, parse_mountinfo};
 use nails_teardown::whole_root::nextroot::NEXTROOT;
 use nails_teardown::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR};
-use nails_teardown::whole_root::transition::{DROPIN_DIR, DROPIN_NAME};
+use nails_teardown::whole_root::transition::{
+    DROPIN_DIR, DROPIN_NAME, STOP_GUARDED_UNITS, stop_guard_dir,
+};
 
 /// Where runtime unit files live.
 const RUN_UNIT_DIR: &str = "/run/systemd/system";
@@ -89,6 +91,17 @@ impl<F: Filesystem> Verifier<F> {
                 "the soft-reboot transition drop-in {} is left",
                 dropin.display()
             )));
+        }
+        for unit in STOP_GUARDED_UNITS {
+            let guard = Path::new("/run")
+                .join(stop_guard_dir(unit))
+                .join(DROPIN_NAME);
+            if self.filesystem.path_exists(&guard)? {
+                findings.push(critical(format!(
+                    "the session's stop guard {} is left: {unit} skips its stop commands",
+                    guard.display()
+                )));
+            }
         }
         findings.extend(self.leftover_run_units()?);
         Ok(findings)
