@@ -577,7 +577,21 @@ state, config and CLI surfaces; there are no compatibility shims.
   the way back. The transition drop-in now comes with a runtime drop-in that clears the unit's stop
   until the way back, and `verify` reports one that is left. Found on real hardware (Debian 13);
   covered by `session-fstab-policy` (a decoy filesystem on LVM) and the Ubuntu 24.04 distribution
-  smoke test.
+  smoke test. The drop-in sorts after `override.conf` and NixOS's `overrides.conf`, and the entry
+  refuses (`stop-guard`) when systemd still reports a stop command after the reload.
+- A NixOS decoy with a static address (`networking.interfaces`) keeps its network through the
+  switch. Its `network-addresses-<interface>.service` deleted the address when it stopped, and a
+  soft-reboot does not replay the device event that starts it again: the other root came up
+  without an address in both directions. Its stop is cleared from activation to the way back, by
+  a prefix drop-in that covers every interface. Found on real hardware (NixOS 26.05).
+- The in-session alerts (a disk mounted read-write, the hidden volume gone) reach the desktop
+  where `notify-send` is not installed, as on Debian's GNOME and KDE desktops: the same
+  notification goes out through systemd's `busctl`.
+- `verify --examiner` no longer reports vendor firmware as encrypted containers: the container
+  search skips `/usr/lib/firmware` and `/lib/firmware` (Intel microcode read as random) and says
+  so under what was not checked.
+- `status` on the plain decoy explains a record that still says Active after a power loss or a
+  reset in the session, and points at `nails recover`.
 - The read-only guard on a Debian-family host keeps the decoy root read-only in place, with the
   per-mount read-only flag on the root mount, instead of stacking a self-bind on `/`. The stacked
   bind left the root writable for every running process, could not be unmounted (`EBUSY`), piled

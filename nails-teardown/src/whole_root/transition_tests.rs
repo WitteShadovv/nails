@@ -253,6 +253,11 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
         !r.join(stop_guard_dir("blk-availability.service")).exists(),
         "the stop guard is scrubbed, so the decoy's own shutdown is unchanged"
     );
+    assert!(
+        !r.join(stop_guard_dir("network-addresses-.service"))
+            .exists(),
+        "the address guard is scrubbed too"
+    );
     assert_eq!(
         fs::read_to_string(r.join("mount/utab")).unwrap(),
         "ID=1 decoy\n"
@@ -298,7 +303,26 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
         assert!(STOP_GUARD_NAME > other, "{other} sorts after the guard");
     }
 
+    // NixOS's static addresses: one prefix drop-in covers every interface.
+    let addresses = run
+        .join(stop_guard_dir("network-addresses-.service"))
+        .join(STOP_GUARD_NAME);
+    assert_eq!(
+        fs::read_to_string(&addresses).unwrap(),
+        "[Service]\nExecStop=\n"
+    );
+    assert_eq!(
+        stop_guard_dir("network-addresses-.service"),
+        Path::new("systemd/system/network-addresses-.service.d")
+    );
+    assert!(is_unit_prefix("network-addresses-.service"));
+    assert!(!is_unit_prefix("blk-availability.service"));
+
     remove_dropin(run);
+    assert!(
+        !run.join(stop_guard_dir("network-addresses-.service"))
+            .exists()
+    );
     assert!(
         !run.join(stop_guard_dir("blk-availability.service"))
             .exists()

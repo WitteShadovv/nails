@@ -61,8 +61,10 @@ pub fn dropin_text(binary: &Path) -> String {
     )
 }
 
-/// Units whose stop would tear down a mount the switch needs, each kept from
-/// running its `ExecStop=` while a session is staged or running.
+/// Units whose stop would tear down something the switch needs, each kept
+/// from running its `ExecStop=` while a session is staged or running. A name
+/// ending in `-.service` is a prefix: systemd reads `foo-.service.d/` for
+/// every `foo-*.service`.
 ///
 /// `blk-availability.service` (Debian and Ubuntu ship it, enabled, wherever
 /// `dmsetup` is installed) runs `blkdeactivate -u` when it stops. That
@@ -72,7 +74,20 @@ pub fn dropin_text(binary: &Path) -> String {
 /// path; on the way back the decoy root below `/run/nextroot` when the decoy
 /// root is on LUKS or LVM, which would leave PID 1 nothing to switch to. A
 /// real power-off still detaches device-mapper devices in systemd-shutdown.
-pub const STOP_GUARDED_UNITS: [&str; 1] = ["blk-availability.service"];
+///
+/// `network-addresses-<interface>.service` is how NixOS applies a static
+/// address (`networking.interfaces`). Its stop deletes the address, and it
+/// starts again only when its network device appears, which a soft-reboot
+/// does not replay: the other root came up without its address and could not
+/// be reached. The kernel keeps the address across the switch when nothing
+/// deletes it.
+pub const STOP_GUARDED_UNITS: [&str; 2] =
+    ["blk-availability.service", "network-addresses-.service"];
+
+/// Whether `unit` in [`STOP_GUARDED_UNITS`] is a prefix rather than a unit name.
+pub fn is_unit_prefix(unit: &str) -> bool {
+    unit.ends_with("-.service")
+}
 
 /// The drop-in text that clears a unit's stop commands.
 pub const STOP_GUARD_TEXT: &str = "[Service]\nExecStop=\n";

@@ -568,10 +568,15 @@ fn install_transition(paths: &Paths, host: &dyn EntryHost, dropin: &mut bool) ->
 
 /// Refuse the entry when a guarded unit still runs stop commands once the
 /// drop-ins are loaded: a drop-in that sorts after the guard set `ExecStop=`
-/// again, and that stop would unmount what the switch needs (see
-/// [`transition::STOP_GUARDED_UNITS`]).
+/// again, and that stop would undo what the switch needs (see
+/// [`transition::STOP_GUARDED_UNITS`]). A prefix guard has no unit of its own
+/// to ask about; its units carry their stop in the unit file, which every
+/// drop-in follows.
 fn check_stop_guards(host: &dyn EntryHost) -> Result<()> {
-    for unit in transition::STOP_GUARDED_UNITS {
+    for unit in transition::STOP_GUARDED_UNITS
+        .iter()
+        .filter(|unit| !transition::is_unit_prefix(unit))
+    {
         let stop = host.unit_stop_commands(unit)?;
         if !stop.trim().is_empty() {
             return Err(NailsError::PreFlightCheckFailed(vec![(
@@ -579,7 +584,7 @@ fn check_stop_guards(host: &dyn EntryHost) -> Result<()> {
                 format!(
                     "{unit} would still run a stop command during the switch ({}): a drop-in \
                      that sorts after /run/systemd/system/{unit}.d/{} sets ExecStop= again, \
-                     and that stop unmounts the hidden volume",
+                     and that stop undoes what the switch needs",
                     stop.trim(),
                     transition::STOP_GUARD_NAME
                 ),
@@ -725,6 +730,43 @@ mod tests {
         fn unit_stop_commands(&self, _: &str) -> Result<String> {
             Ok(self.0.to_string())
         }
+    }
+
+    #[test]
+    fn a_prefix_guard_is_not_asked_about_by_name() {
+        /// Answers with a stop command for anything but blk-availability.
+        struct PrefixOnly;
+        impl EntryHost for PrefixOnly {
+            fn daemon_reload(&self) -> Result<()> {
+                Ok(())
+            }
+            fn build_hidden_system(&self, _: &NixOSBuilder, _: &Path, _: &Path) -> Result<PathBuf> {
+                unreachable!()
+            }
+            fn keep_hidden_closure(
+                &self,
+                _: &Path,
+                _: &Path,
+                _: &Path,
+            ) -> Result<store::KeepReport> {
+                unreachable!()
+            }
+            fn activate_hidden_system(&self, _: &Path, _: &Path) -> Result<()> {
+                unreachable!()
+            }
+            fn unit_stop_commands(&self, unit: &str) -> Result<String> {
+                assert!(
+                    !unit.ends_with("-.service"),
+                    "asked about the prefix {unit}"
+                );
+                Ok(if unit == "blk-availability.service" {
+                    String::new()
+                } else {
+                    "{ path=/bin/true }".to_string()
+                })
+            }
+        }
+        assert!(check_stop_guards(&PrefixOnly).is_ok());
     }
 
     #[test]
