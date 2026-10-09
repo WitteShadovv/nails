@@ -6,7 +6,9 @@
 //! When the hidden volume stops responding, the watcher (a runtime unit of the
 //! hidden session) raises one alert on the operator's session bus through
 //! `notify-send`. It is attributed to a neutral application name, so nothing on
-//! screen names the tool.
+//! screen names the tool. Where `notify-send` is not installed (libnotify-bin
+//! is not part of Debian's GNOME or KDE desktops), the same notification goes
+//! out through systemd's `busctl`, which every supported host has.
 
 use crate::Result;
 use serde::{Deserialize, Serialize};
@@ -85,6 +87,37 @@ fn immediate_alert_command(
     command.arg(&notification.title).arg(&notification.body)
 }
 
+/// The same alert as a direct `org.freedesktop.Notifications.Notify` call on
+/// the operator's session bus, for hosts without `notify-send`.
+fn bus_alert_command(
+    notification: &Notification,
+    session_env: &[(&'static str, String)],
+) -> crate::process::ProcessCommand {
+    // The freedesktop urgency hint is a byte: 0 low, 1 normal, 2 critical.
+    let urgency = match notification.urgency.as_str() {
+        "low" => "0",
+        "critical" => "2",
+        _ => "1",
+    };
+    let mut command = crate::process::ProcessCommand::tool("busctl")
+        .args(["--user", "call", "org.freedesktop.Notifications"])
+        .args([
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+        ])
+        // app_name, replaces_id, app_icon, summary, body, actions, hints,
+        // expire_timeout.
+        .args(["Notify", "susssasa{sv}i", NEUTRAL_APP_NAME, "0"])
+        .arg(notification.icon.as_deref().unwrap_or(""))
+        .arg(&notification.title)
+        .arg(&notification.body)
+        .args(["0", "1", "urgency", "y", urgency, "-1"]);
+    for (key, value) in session_env {
+        command = command.set_env(key, value);
+    }
+    command
+}
+
 /// Send a desktop notification to the operator's session now.
 ///
 /// In a unit-test binary of a NAILS library crate
@@ -95,13 +128,20 @@ pub fn send_immediate(notification: &Notification, env: &crate::RuntimeEnv) -> R
     if crate::runtime_safety::in_unit_tests() {
         return Ok(());
     }
-    let command = immediate_alert_command(notification, &notification_runtime_environment(env));
-    let output = RealProcessRunner.run(&command)?;
+    let session_env = notification_runtime_environment(env);
+    let (tool, output) =
+        match RealProcessRunner.run(&immediate_alert_command(notification, &session_env)) {
+            Err(e) if e.io_kind() == Some(std::io::ErrorKind::NotFound) => (
+                "busctl",
+                RealProcessRunner.run(&bus_alert_command(notification, &session_env))?,
+            ),
+            other => ("notify-send", other?),
+        };
     if !output.status.success() {
         return Err(crate::NailsError::io(
-            "notify-send",
+            tool,
             std::io::Error::other(format!(
-                "notify-send exited with {}: {}",
+                "{tool} exited with {}: {}",
                 output.status,
                 String::from_utf8_lossy(&output.stderr).trim()
             )),
@@ -124,6 +164,36 @@ mod tests {
         )));
         assert!(env.contains(&("DISPLAY", ":0".to_string())));
         assert!(build_runtime_environment(None, None, None).is_empty());
+    }
+
+    #[test]
+    fn the_bus_fallback_sends_the_same_neutral_alert() {
+        let alert = Notification {
+            title: "Disk mounted with write access".into(),
+            body: "/mnt/x (/dev/sdb1) is mounted read-write.".into(),
+            urgency: "critical".into(),
+            icon: Some("drive-removable-media".into()),
+            created_at: String::new(),
+        };
+        let env = build_runtime_environment(Some(1000), None, None);
+        let text = format!("{}", bus_alert_command(&alert, &env));
+        assert!(
+            text.contains("--user call org.freedesktop.Notifications"),
+            "{text}"
+        );
+        assert!(
+            text.contains("Notify susssasa{sv}i System 0 drive-removable-media"),
+            "{text}"
+        );
+        assert!(text.contains("0 1 urgency y 2 -1"), "{text}");
+        assert!(!text.to_lowercase().contains("nails"), "{text}");
+        let normal = Notification {
+            urgency: "normal".into(),
+            icon: None,
+            ..alert
+        };
+        let text = format!("{}", bus_alert_command(&normal, &env));
+        assert!(text.contains("urgency y 1 -1"), "{text}");
     }
 
     #[test]
