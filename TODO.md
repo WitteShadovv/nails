@@ -3286,9 +3286,11 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
 
   **Done when:** `docs/threat-model.md` names the compelled-unlock scenario as in scope with its limits, the out-of-scope list no longer contradicts it, and the operator guide matches.
 
-- [ ] **T-149: Run the VM suite on the hardware fixes and merge them** (high · effort S)
+- [x] **T-149: Run the VM suite on the hardware fixes and merge them** (high · effort S)
 
-  _Status (2026-10-09): the six fixes from the real-hardware bench (blk-availability stop guard and its hardening, NixOS static addresses, the busctl alert fallback, the examiner's firmware skip, the status hint for a stale record) are on `chunk/hw-alerts` with unit tests and the full Rust gates green. The VM suite run was stopped on low memory on the development machine before it finished._
+  _Status (2026-10-09): done. All 59 VM tests, the Debian 13 and Ubuntu 24.04 smoke tests and the package build passed on `chunk/hw-alerts` (01bc00b8), and `overhaul` was fast-forwarded to it._
+
+  _Status (2026-10-09, earlier): the six fixes from the real-hardware bench (blk-availability stop guard and its hardening, NixOS static addresses, the busctl alert fallback, the examiner's firmware skip, the status hint for a stale record) are on `chunk/hw-alerts` with unit tests and the full Rust gates green. The VM suite run was stopped on low memory on the development machine before it finished._
 
   **Problem:** The fixes change the session's switch (two new runtime drop-ins and a refusal after the reload), so they must pass the whole VM suite before they reach `overhaul`.
 
