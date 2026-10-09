@@ -3286,6 +3286,46 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
 
   **Done when:** `docs/threat-model.md` names the compelled-unlock scenario as in scope with its limits, the out-of-scope list no longer contradicts it, and the operator guide matches.
 
+- [ ] **T-149: Run the VM suite on the hardware fixes and merge them** (high · effort S)
+
+  _Status (2026-10-09): the six fixes from the real-hardware bench (blk-availability stop guard and its hardening, NixOS static addresses, the busctl alert fallback, the examiner's firmware skip, the status hint for a stale record) are on `chunk/hw-alerts` with unit tests and the full Rust gates green. The VM suite run was stopped on low memory on the development machine before it finished._
+
+  **Problem:** The fixes change the session's switch (two new runtime drop-ins and a refusal after the reload), so they must pass the whole VM suite before they reach `overhaul`.
+
+  **Fix:** Free the Nix store (`nix-collect-garbage`), run `just e2e-local` with at most two VMs at a time, plus the Debian and Ubuntu smoke tests, and fast-forward `overhaul`.
+
+  **Done when:** the suite and both distribution smoke tests pass on the branch tip and `overhaul` points at it.
+
+- [ ] **T-150: VM regression test for NixOS static addresses across the switch** (medium · effort S)
+
+  _Status (2026-10-09): found on real hardware (NixOS 26.05, static IPv4): `network-addresses-<if>.service` deleted the address when the decoy stopped it, and a soft-reboot did not start it again, so the hidden session had no network. Fixed by a prefix stop guard; not yet covered by a VM test._
+
+  **Problem:** The NixOS VM tests reach the guest through the test driver's console, so a session without its address on the test VLAN never failed a test.
+
+  **Fix:** In one NixOS session test whose node has a VLAN with a static address (`networking.interfaces.eth1.ipv4.addresses`, as the test framework assigns), assert the address is still there in the hidden session and again after the way back; prove the assertion fails without the guard.
+
+  **Done when:** the test passes with the fix and fails without it.
+
+- [ ] **T-151: Examiner known-file filter from the package database** (low · effort M)
+
+  _Status (2026-10-09): the container search now skips `/usr/lib/firmware` and `/lib/firmware`, because Intel microcode read as encrypted containers on a real Debian install; that leaves a hiding place the report has to name._
+
+  **Problem:** An examiner filters package files against a hash set (the package database or NSRL) instead of skipping directories. Skipping by path both misses a container placed in a firmware directory and keeps other vendor blobs elsewhere as false positives.
+
+  **Fix:** On Debian and Ubuntu, treat a random-looking file as known when `/var/lib/dpkg/info/*.md5sums` lists it and its MD5 matches, and walk the firmware directories again. Report a listed file whose hash does not match.
+
+  **Done when:** a fixture with an unmodified package blob and a modified one gives no finding and one finding respectively, and the firmware directories are no longer skipped.
+
+- [ ] **T-152: memory-wipe check reads the kernel's own report** (low · effort S)
+
+  _Status (2026-10-09): on hardware the check passed while recommending `init_on_free=1`, by design: the kernel command line alone cannot tell a kernel built with `CONFIG_INIT_ON_FREE_DEFAULT_ON`._
+
+  **Problem:** A PASS that reads like a warning; the check cannot say whether freed memory is zeroed.
+
+  **Fix:** Read the boot line `mem auto-init: ... heap free:on|off` from the kernel log (or `/boot/config-$(uname -r)`), WARN when freed memory is not zeroed, and keep the informational PASS only when neither source is available.
+
+  **Done when:** unit tests cover the kernel-log line for on, off and absent, and the check reports WARN on a kernel that does not zero freed memory.
+
 ### Not adopted
 
 - Shufflecake as a backend: an out-of-tree kernel module whose presence is itself a decoy-side trace; it stays detected and named by `backend-detect` only.
