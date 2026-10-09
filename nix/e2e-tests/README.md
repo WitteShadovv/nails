@@ -487,13 +487,16 @@ Each smoke scenario shares the static musl `nails` binary into the guest over
 9p (on `/run`, off the decoy disk); asserts platform detection selects the
 Debian-family backend; images the decoy as booted for a baseline; runs the
 decoy-persistence preflight (a stock persistent journal is refused, and passes
-once the decoy is amnesic); activates, soft-rebooting into the whole-root
-overlay and writing canaries, including under `/usr`, that must land in the
-upper; asserts the ESP is read-only in the hidden root; runs `emergency`, which
-soft-reboots back to the plain decoy; runs a second session that ends with
-`deactivate`; and runs the host-side decoy disk-image check
-(`lib/disk_forensics.py`, shared with the NixOS suite) with null and positive
-controls.
+once the decoy is amnesic); where the image ships `dmsetup` (Ubuntu), runs
+Debian's `blk-availability.service`; activates, soft-rebooting into the
+whole-root overlay and writing canaries, including under `/usr`, that must land
+in the upper; asserts the ESP is read-only in the hidden root; runs
+`emergency`, which soft-reboots back to the plain decoy; runs a second session
+that ends with `deactivate`, entered with `/boot` and the ESP unmounted where
+`blk-availability.service` runs, so that nothing carried below the hidden
+volume keeps the unit's stop from unmounting it; and runs the host-side decoy
+disk-image check (`lib/disk_forensics.py`, shared with the NixOS suite) with
+null and positive controls.
 
 `nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
 guest writes vanish when QEMU exits and there is no root qcow2 for the forensic

@@ -6,7 +6,10 @@
 # non-NixOS host (systemd >= 254): activation soft-reboots the stock cloud image
 # into an overlay of its own root, every hidden write (including /usr) lands on
 # the hidden root, the ESP stays read-only, and deactivation and emergency
-# soft-reboot back to the plain decoy without a trace on the decoy disk.
+# soft-reboot back to the plain decoy without a trace on the decoy disk. Where
+# the image ships dmsetup (Ubuntu), the decoy runs Debian's
+# blk-availability.service, and the second session, entered without /boot or
+# the ESP mounted, keeps its hidden volume through that unit's stop.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -86,6 +89,33 @@ distroVm.buildVmTest {
     # Trees a hidden write goes to. /usr is included: the whole root is
     # overlaid, so a hidden write there lands on the hidden root as well.
     canary_trees = ("home", "etc", "srv", "opt", "var", "usr", "root")
+
+    # blk-availability.service as Debian's and Ubuntu's dmsetup package ships
+    # it, enabled wherever it is installed. Its stop, which every soft-reboot
+    # runs, unmounts each filesystem on a device-mapper device outside a few
+    # system paths (blkdeactivate -u): in the switch, the hidden volume below
+    # /run/nextroot.
+    blk_availability_unit = "\n".join(
+        (
+            "[Unit]",
+            "Description=Availability of block devices",
+            "Before=shutdown.target",
+            "After=iscsi-shutdown.service iscsi.service iscsid.service fcoe.service rbdmap.service",
+            "DefaultDependencies=no",
+            "Conflicts=shutdown.target",
+            "",
+            "[Service]",
+            "Type=oneshot",
+            "ExecStart=/usr/bin/true",
+            "ExecStop=/usr/sbin/blkdeactivate -u -l wholevg -m disablequeueing -r wait",
+            "RemainAfterExit=yes",
+            "",
+            "[Install]",
+            "WantedBy=sysinit.target",
+            "",
+        )
+    )
+    blkdeactivate = "argv[]=/usr/sbin/blkdeactivate -u -l wholevg -m disablequeueing -r wait"
 
 
     def write_config():
@@ -186,6 +216,10 @@ distroVm.buildVmTest {
         prepare_boot()
 
 
+    def blk_availability_stop():
+        return vm.succeed("systemctl show -P ExecStop blk-availability.service").strip()
+
+
     # Each probe is bounded on its own, so a wedged PID 1 or journald still lets
     # the next one (and the test's own failure) run.
     pid1_probes = (
@@ -269,11 +303,31 @@ distroVm.buildVmTest {
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         vm.succeed(f"{nails_cmd} check --overlay-only")
 
+    with subtest("blk-availability.service runs on the decoy where dmsetup ships it"):
+        # Debian's generic cloud image has no device-mapper tools, so nothing
+        # there can unmount the hidden volume in the switch.
+        blk_availability = vm.execute("test -x /usr/sbin/blkdeactivate")[0] == 0
+        if blk_availability:
+            vm.succeed(
+                "printf %s "
+                + shlex.quote(blk_availability_unit)
+                + " > /etc/systemd/system/blk-availability.service"
+            )
+            vm.succeed("systemctl daemon-reload && systemctl enable --now blk-availability.service")
+            vm.succeed("systemctl is-active blk-availability.service")
+            stop = blk_availability_stop()
+            assert blkdeactivate in stop, stop
+        else:
+            print("this image ships no /usr/sbin/blkdeactivate: no blk-availability.service")
+
     with subtest("activation soft-reboots into the whole-root overlay"):
         follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
         print(vm.succeed("cat /mnt/data/activate.log || true"))
         pid1_health("after the first activation")
         session.assert_hidden_root(vm)
+        # The hidden volume is still at its path, with the binary's log and
+        # the upper on it.
+        vm.succeed("mountpoint -q /mnt/data")
         status = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]
         assert status["posture"] == "active", f"expected the hidden session, got {status}"
         # Every hidden write, /usr included, lands on the hidden root.
@@ -301,12 +355,45 @@ distroVm.buildVmTest {
 
     with subtest("a second session ends with deactivate"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
+        boot_mounts: list[str] = []
+        if blk_availability:
+            # The first session carried /boot and the ESP below the hidden
+            # volume, and those binds kept blkdeactivate from unmounting it.
+            # With neither mounted, as on a BIOS server without a separate
+            # /boot (where the stop did unmount it), the session carries
+            # nothing there. The decoy mounts both again from its fstab on the
+            # way back.
+            boot_mounts = [
+                target
+                for target in vm.succeed("findmnt -rn -o TARGET").split()
+                if target in ("/boot", "/boot/efi", "/efi")
+            ]
+            for target in reversed(boot_mounts):
+                vm.succeed(f"umount {target}")
         follow(f"{nails_cmd} activate -y > /mnt/data/activate-2.log 2>&1", "activate-2")
         session.assert_hidden_root(vm)
+        vm.succeed("mountpoint -q /mnt/data && test -s /mnt/data/activate-2.log")
+        if blk_availability:
+            # The unit runs in the hidden session too; its stop stays cleared
+            # until the way back has switched.
+            vm.succeed("systemctl is-active blk-availability.service")
+            stop = blk_availability_stop()
+            assert stop == "", f"blk-availability.service still stops with {stop}"
         follow(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
         vm.fail("mountpoint -q /mnt/data")
         vm.fail("test -e /run/overlay-runtime")
+        # A LUKS-backed hidden root's mapping closed itself (a loop-backed one
+        # has none).
+        vm.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        if blk_availability:
+            # The decoy's own shutdown deactivates its block devices again.
+            vm.fail("test -e /run/systemd/system/blk-availability.service.d")
+            vm.succeed("systemctl is-active blk-availability.service")
+            stop = blk_availability_stop()
+            assert blkdeactivate in stop, stop
+            for target in boot_mounts:
+                vm.succeed(f"mountpoint -q {target}")
 
     with subtest("decoy disk-image leak check: no hidden canaries, positive control caught"):
         canary_tokens = [f"NAILS_CANARY_{tree}" for tree in canary_trees]
