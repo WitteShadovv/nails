@@ -17,9 +17,20 @@ use std::path::{Path, PathBuf};
 const TEXT_LIMIT: u64 = 4 << 20;
 /// Bytes per entropy sample of a container candidate.
 const SAMPLE: usize = 64 << 10;
-/// Directories the container walk never enters: pseudo filesystems, and the
-/// read-only Nix store, whose build outputs are not where a container hides.
-const WALK_SKIP: &[&str] = &["proc", "sys", "dev", "run", "nix/store"];
+/// Directories the container walk never enters: pseudo filesystems, the
+/// read-only Nix store, whose build outputs are not where a container hides,
+/// and the firmware directories, whose blobs (Intel microcode among them) are
+/// encrypted by their vendors and read as random. On a real Debian install the
+/// microcode alone put seven "containers" in every report.
+const WALK_SKIP: &[&str] = &[
+    "proc",
+    "sys",
+    "dev",
+    "run",
+    "nix/store",
+    "usr/lib/firmware",
+    "lib/firmware",
+];
 
 /// Read at most `limit` bytes of a file without following a final symlink or
 /// touching its access time.

@@ -143,6 +143,36 @@ fn every_seeded_setup_trace_is_reported_under_its_conclusion() {
 }
 
 #[test]
+fn vendor_firmware_blobs_are_no_candidates_and_the_report_says_so() {
+    let root = clean_root();
+    // Intel microcode files are vendor-encrypted: random-looking, sized in
+    // whole sectors, with no header a format sniffer knows.
+    write(
+        root.path(),
+        "/usr/lib/firmware/intel-ucode/06-8f-04",
+        &random(1_219_584),
+    );
+    write(
+        root.path(),
+        "/lib/firmware/vendor/blob.bin",
+        &random(2 << 20),
+    );
+    let report = examine(root.path(), &ExaminerOptions::default());
+    assert!(
+        !ids(&report).contains("container-candidates"),
+        "{report:#?}"
+    );
+    assert!(
+        report
+            .not_checked
+            .iter()
+            .any(|n| n.contains("/usr/lib/firmware") && n.contains("/lib/firmware")),
+        "{:?}",
+        report.not_checked
+    );
+}
+
+#[test]
 fn a_file_whose_size_is_not_a_multiple_of_512_is_no_candidate() {
     let root = clean_root();
     write(root.path(), "/home/alice/odd.bin", &random((2 << 20) + 7));
