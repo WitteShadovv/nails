@@ -105,6 +105,46 @@ fn every_live_view_maps_to_its_posture_and_remedy() {
 }
 
 #[test]
+fn an_active_record_on_the_plain_decoy_is_explained_with_its_remedy() {
+    // A hard reset in the session: the decoy boots, the record still says Active.
+    let dir = tempfile::tempdir().unwrap();
+    let record = StateFile {
+        state: SystemState::Active {
+            activated_at: Utc::now(),
+        },
+        ..StateFile::default()
+    };
+    record
+        .save_with_custom_root(&dir.path().join("state.json"), dir.path())
+        .unwrap();
+    let report = command(dir.path())
+        .report(&SessionView::Decoy, &[], Utc::now())
+        .unwrap();
+    assert_eq!(report.posture, Posture::Decoy);
+    assert!(
+        report
+            .reason
+            .as_deref()
+            .is_some_and(|r| r.contains("none is running")),
+        "{:?}",
+        report.reason
+    );
+    assert_eq!(
+        report.remediation,
+        Some("Run `nails recover` to reset the record")
+    );
+
+    // An inactive record on the decoy needs no word.
+    StateFile::default()
+        .save_with_custom_root(&dir.path().join("state.json"), dir.path())
+        .unwrap();
+    let report = command(dir.path())
+        .report(&SessionView::Decoy, &[], Utc::now())
+        .unwrap();
+    assert_eq!((report.reason, report.remediation), (None, None));
+}
+
+#[test]
 fn a_tampered_state_file_on_the_decoy_is_unknown() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("state.json"), "{ not json").unwrap();

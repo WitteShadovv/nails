@@ -286,7 +286,18 @@ impl<F: Filesystem> StatusCommand<F> {
     ) -> Result<StatusReport> {
         let loaded = StateFile::load_with_outcome(&self.state_file_path)?;
         let state_file = loaded.state_file;
-        let (posture, reason, remediation) = posture_of(view, loaded.outcome.is_unknown());
+        let (posture, mut reason, mut remediation) = posture_of(view, loaded.outcome.is_unknown());
+        // A power loss or a reset in the session leaves the record at Active
+        // while the machine boots the plain decoy: say so, rather than show an
+        // active state next to a decoy posture without a word.
+        if posture == Posture::Decoy && matches!(state_file.state, SystemState::Active { .. }) {
+            reason = Some(
+                "the record still holds an active session, but none is running: it ended \
+                 without updating the record (a power loss, a reset or a failed hidden volume)"
+                    .to_string(),
+            );
+            remediation = Some("Run `nails recover` to reset the record");
+        }
         let plan = plan_of(view);
         let entered_at = plan
             .and_then(|p| p.entered_at)
