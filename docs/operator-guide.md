@@ -148,7 +148,11 @@ Keep all of it `root`-owned on the hidden volume.
    the machine.
 7. It installs the transition step (a runtime drop-in for
    `systemd-soft-reboot.service`), prints its result, kills the decoy's
-   interactive shells and soft-reboots.
+   interactive shells and soft-reboots. A second runtime drop-in clears the
+   stop command of `blk-availability.service`, which Debian and Ubuntu enable
+   wherever `dmsetup` is installed: its `blkdeactivate -u` would unmount the
+   hidden volume below `/run/nextroot` during the switch, or a LUKS or LVM
+   decoy root on the way back. The way back removes both.
 
 **The hidden NixOS system.** With a hidden configuration — a flake given with
 `--nixos-flake` or `nixos_flake`, or otherwise the legacy configuration, which
@@ -709,9 +713,11 @@ set +o history
 # 1. Detach the next root and everything below it.
 umount -R /run/nextroot
 
-# 2. Remove the session plan and RAM copy, and the transition drop-in.
+# 2. Remove the session plan and RAM copy, the transition drop-in and the
+#    drop-in that clears blk-availability.service's stop.
 rm -rf /run/overlay-runtime
 rm -rf /run/systemd/system/systemd-soft-reboot.service.d
+rm -f /run/systemd/system/blk-availability.service.d/50-overlay-runtime.conf
 systemctl daemon-reload
 
 # 3. Confirm nothing is left.

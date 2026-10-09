@@ -570,6 +570,14 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Fixed
 
+- The whole-root session survives `blk-availability.service`, which Debian and Ubuntu enable
+  wherever `dmsetup` is installed. Its stop, `blkdeactivate -u`, unmounted the hidden volume below
+  `/run/nextroot` during the soft-reboot into the session, which then came up without the volume
+  at its path (binary, logs and upper unreachable), and would unmount a LUKS or LVM decoy root on
+  the way back. The transition drop-in now comes with a runtime drop-in that clears the unit's stop
+  until the way back, and `verify` reports one that is left. Found on real hardware (Debian 13);
+  covered by `session-fstab-policy` (a decoy filesystem on LVM) and the Ubuntu 24.04 distribution
+  smoke test.
 - The read-only guard on a Debian-family host keeps the decoy root read-only in place, with the
   per-mount read-only flag on the root mount, instead of stacking a self-bind on `/`. The stacked
   bind left the root writable for every running process, could not be unmounted (`EBUSY`), piled
