@@ -20,6 +20,9 @@ pub const ENV_TARGET_UID: &str = "NAILS_TARGET_UID";
 /// directories) refers to this constant.
 pub const NIXOS_SYSTEM_PROFILE_BIN: &str = "/run/current-system/sw/bin";
 
+/// Root's `nixos` channel: the `nixpkgs` of NixOS's default `nix.nixPath`.
+pub const NIXOS_ROOT_CHANNEL: &str = "/nix/var/nix/profiles/per-user/root/channels/nixos";
+
 #[cfg(test)]
 mod tests {
     use super::*;

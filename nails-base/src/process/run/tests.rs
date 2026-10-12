@@ -149,6 +149,36 @@ fn caller_path_skips_relative_path_entries() {
 }
 
 #[test]
+fn caller_path_falls_back_to_the_system_tool_dirs_for_a_minimal_path() {
+    // A systemd unit's PATH holds none of the tools; `sh` is in every system dir set.
+    let empty = tempfile::tempdir().unwrap();
+    let _env = ScopedRuntimeEnv::new(RuntimeEnv::empty().with_path(empty.path().as_os_str()));
+
+    let resolved = resolve(&Program::CallerPath("sh"), None).unwrap();
+
+    let parent = resolved.parent().unwrap();
+    assert!(
+        SYSTEM_TOOL_DIRS.iter().any(|dir| Path::new(dir) == parent),
+        "sh resolved outside the system tool dirs: {}",
+        resolved.display()
+    );
+}
+
+#[test]
+fn an_injected_search_path_has_no_system_fallback() {
+    let empty = tempfile::tempdir().unwrap();
+
+    let err =
+        io_error(resolve(&Program::CallerPath("sh"), Some(empty.path().as_os_str())).unwrap_err());
+
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    assert!(
+        err.to_string().contains("not found on the search path"),
+        "{err}"
+    );
+}
+
+#[test]
 fn caller_path_resolves_through_an_injected_search_path() {
     let temp_dir = tempfile::tempdir().unwrap();
     let stub = temp_dir.path().join("nails-stub-tool");

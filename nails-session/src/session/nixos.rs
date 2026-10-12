@@ -45,6 +45,15 @@ pub fn decoy_system(run: &Path) -> Option<PathBuf> {
         .filter(|p| p.starts_with("/nix/store"))
 }
 
+/// The `nixpkgs=` search-path entry for a legacy build whose caller has no
+/// `NIX_PATH`: root's `nixos` channel, which NixOS's default `nix.nixPath`
+/// names. A login shell sets `NIX_PATH`; a systemd unit (a panic key,
+/// `systemd-run`) does not, and `<nixpkgs/nixos>` would not resolve.
+fn default_nixpkgs(caller_nix_path: bool, root_channel: &Path) -> Option<String> {
+    (!caller_nix_path && root_channel.is_dir())
+        .then(|| format!("nixpkgs={}", root_channel.display()))
+}
+
 /// The kernel image a toplevel boots, to compare the hidden toplevel's kernel
 /// with the running one.
 pub fn kernel_of(store_root: &Path, system: &Path) -> Option<PathBuf> {
@@ -83,7 +92,7 @@ pub fn build_into(
             // file through the overlay, its hardware-configuration.nix the
             // hidden one in the upper.
             let in_root = store_root.join(config.strip_prefix("/").unwrap_or(config));
-            ProcessCommand::caller_path("nix-build")
+            let command = ProcessCommand::caller_path("nix-build")
                 .args([
                     "--store",
                     &store,
@@ -94,7 +103,15 @@ pub fn build_into(
                 ])
                 .arg("-I")
                 .arg(format!("nixos-config={}", in_root.display()))
-                .allow_env("NIX_PATH")
+                .allow_env("NIX_PATH");
+            let caller_nix_path = nails_base::runtime_env::current().inherited.has("NIX_PATH");
+            match default_nixpkgs(
+                caller_nix_path,
+                Path::new(nails_base::constants::NIXOS_ROOT_CHANNEL),
+            ) {
+                Some(nixpkgs) => command.arg("-I").arg(nixpkgs),
+                None => command,
+            }
         }
     }
     .set_env("XDG_CACHE_HOME", cache_dir)
@@ -239,6 +256,21 @@ mod tests {
         std::os::unix::fs::symlink(target.path(), run.path().join("current-system")).unwrap();
         // Outside /nix/store: not a NixOS toplevel.
         assert_eq!(decoy_system(run.path()), None);
+    }
+
+    #[test]
+    fn without_a_caller_nix_path_the_root_channel_supplies_nixpkgs() {
+        let channel = tempfile::tempdir().unwrap();
+        assert_eq!(
+            default_nixpkgs(false, channel.path()),
+            Some(format!("nixpkgs={}", channel.path().display()))
+        );
+        // The caller's NIX_PATH wins, and a host without the channel adds nothing.
+        assert_eq!(default_nixpkgs(true, channel.path()), None);
+        assert_eq!(
+            default_nixpkgs(false, &channel.path().join("missing")),
+            None
+        );
     }
 
     #[test]

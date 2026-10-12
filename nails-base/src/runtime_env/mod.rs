@@ -70,6 +70,11 @@ impl InheritedVars {
     pub fn iter(&self) -> impl Iterator<Item = (&OsStr, &OsStr)> {
         self.0.iter().map(|(k, v)| (k.as_os_str(), v.as_os_str()))
     }
+
+    /// Whether the caller's environment holds `key` with a non-empty value.
+    pub fn has(&self, key: &str) -> bool {
+        self.iter().any(|(k, v)| k == key && !v.is_empty())
+    }
 }
 
 impl std::fmt::Debug for InheritedVars {

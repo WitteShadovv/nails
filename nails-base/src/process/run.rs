@@ -130,7 +130,10 @@ pub enum Program {
     /// A host tool such as `systemctl`, resolved from [`SYSTEM_TOOL_DIRS`].
     Tool(&'static str),
     /// A binary looked up on the caller's `PATH`, or on the command's
-    /// [search path](ProcessCommand::search_path) when one is set.
+    /// [search path](ProcessCommand::search_path) when one is set. Not found on
+    /// the caller's `PATH`, it is looked up in [`SYSTEM_TOOL_DIRS`] as well: a
+    /// systemd unit (a panic key, `systemd-run`) starts nails with a minimal
+    /// `PATH` that, on NixOS, holds none of the Nix tools.
     ///
     /// Used where resolving from the caller's `PATH` is correct rather than a
     /// hijack risk: the Nix toolchain (`nix`, `nixos-rebuild`), whose VM tests
@@ -756,8 +759,23 @@ fn resolve(program: &Program, search_path: Option<&OsStr>) -> Result<PathBuf> {
             let dirs: Vec<PathBuf> = std::env::split_paths(&path)
                 .filter(|dir| dir.is_absolute())
                 .collect();
-            find_executable(name, dirs.iter().map(PathBuf::as_path))
-                .ok_or_else(|| not_found(name, format!("{} not found on {}", name, searched)))
+            let on_path = find_executable(name, dirs.iter().map(PathBuf::as_path));
+            // The caller's PATH first, so a test's stubs still win; then the
+            // root-owned system directories, for a caller with a minimal PATH.
+            let fallback = || {
+                search_path
+                    .is_none()
+                    .then(|| find_executable(name, SYSTEM_TOOL_DIRS.iter().map(Path::new)))
+                    .flatten()
+            };
+            on_path.or_else(fallback).ok_or_else(|| {
+                let also = if search_path.is_none() {
+                    format!(" or in {}", SYSTEM_TOOL_DIRS.join(", "))
+                } else {
+                    String::new()
+                };
+                not_found(name, format!("{name} not found on {searched}{also}"))
+            })
         }
         Program::Exact(path) => Ok(path.clone()),
     }
