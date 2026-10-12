@@ -3338,15 +3338,17 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
 
   **Done when:** the tier fails on today's Ubuntu 26.04 regression before its fix and passes after, and a new distro release is added by one entry in the matrix.
 
-- [ ] **T-154: AppArmor-confined services that notify systemd fail after a soft-reboot on Ubuntu 26.04** (medium · effort M)
+- [ ] **T-154: AppArmor-confined services that notify systemd fail after a soft-reboot into another root on Ubuntu 26.04** (medium · effort M)
 
-  _Status (2026-10-12): found by hand on Ubuntu 26.04.1; a plain `systemctl soft-reboot` without NAILS shows it too. After the switch, AppArmor denies chronyd's `sendmsg` to `/systemd/notify` and `/systemd/journal/dev-log`: the paths under the carried-over `/run` resolve as disconnected, and the profile has no `attach_disconnected`. chrony fails on both sides (no time sync); cups timed out the same way in the first session._
+  _Status (2026-10-12): investigated in the Ubuntu 26.04.1 VM. Not caused by NAILS: a plain `systemctl soft-reboot` into a bind of `/` at `/run/nextroot` (no NAILS) breaks chrony the same way; a soft-reboot without `/run/nextroot` (same root) does not. chronyd and cupsd run in their own mount namespace (`ProtectSystem=strict`) and are denied `sendmsg` to PID 1's notify socket and the journal's `dev-log`, both bound before the switch: AppArmor resolves them as disconnected (`/systemd/notify`). The chronyd profile already has `attach_disconnected`, which attaches at `/` and so does not match `/run/...` rules; `attach_disconnected.path=/run/` (AppArmor 5) lets chrony start and sync but misnames other disconnected paths (`/run/run/chrony/chronyd.sock`). Effect: no time sync and cups timeouts in the hidden session, and chrony listed as failed on the decoy after the way back until its next full boot, which hints that a soft-reboot happened._
 
-  **Problem:** Every service with an AppArmor profile that reports readiness with `sd_notify` (`Type=notify`) or logs to the journal socket can fail or time out in the other root.
+  _Side finding: NAILS binds `/run` into `/run/nextroot` (needed on NixOS for PID 1's init check), so `switch_root()` detaches the original `/run` mount instead of moving it, and its submounts (`/run/credentials/...`) are left on the detached mount. ADR 0008 calls that "exactly the same result"; it is not. Binding only when the init lives under `/run` (NixOS) restores systemd's own move on FHS distributions and was tested on Ubuntu 26.04 (entry and way back fine), but it does not fix the AppArmor denials, so it was not merged._
 
-  **Fix:** Find out why paths under `/run` are disconnected after a soft-reboot (the mount move of `/run` into the new root), report it to Ubuntu (apparmor or systemd) with a reproducer, and decide what NAILS does meanwhile: a runtime profile override is not possible without writing to `/etc`, so at least `check` warns on Ubuntu 26.04 and the guide names the affected services.
+  **Problem:** No NAILS-side fix is clean: loading changed profiles at runtime is per profile, fragile, and on the decoy side would itself be a NAILS action and a detectable difference.
 
-  **Done when:** the cause is known and reported upstream, and either the services start in both roots or `check` and the guide say which ones do not.
+  **Fix:** Report to Ubuntu (systemd or apparmor) with the reproducer above. Meanwhile, `check` warns on Ubuntu 26.04 that time sync and printing fail in the session and that the decoy shows chrony failed after the way back until a full reboot; the guide says so and suggests a full reboot after a session. Correct ADR 0008's statement about the `/run` bind.
+
+  **Done when:** the report is filed, and `check` and the guide name the effect.
 
 - [ ] **T-155: Small findings from the 2026-10-12 VM runs (Ubuntu 26.04, Debian 13, NixOS 26.05)** (low · effort S)
 
