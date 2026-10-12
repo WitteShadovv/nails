@@ -11,7 +11,7 @@ use crate::forensic::Encoding;
 use crate::test_support::{Rerun, ScratchTmpfs};
 use std::io::{Seek, SeekFrom, Write};
 
-const TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+const TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"; // pragma: allowlist secret
 
 fn state(token: &str) -> RehearsalState {
     RehearsalState {

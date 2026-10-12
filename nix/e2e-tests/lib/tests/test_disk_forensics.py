@@ -8,6 +8,7 @@ turn every leak into a false pass.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import random
@@ -389,10 +390,7 @@ class HashTreeTest(unittest.TestCase):
             (root / "d" / "f").write_bytes(b"abc")
             (root / "l").symlink_to("d/f")
             sums = df.hash_tree(root)
-        self.assertEqual(
-            sums,
-            {"d/f": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"},
-        )
+        self.assertEqual(sums, {"d/f": hashlib.sha256(b"abc").hexdigest()})
 
     def test_write_artifact_uses_the_out_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

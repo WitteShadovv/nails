@@ -7,8 +7,13 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # Kernel fixtures are verbatim /proc captures (the kernel writes trailing
+      # tabs and spaces) and the screenshots are generated CLI output, checked
+      # against a fresh generation: neither may be normalised.
       - id: trailing-whitespace
+        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/)
       - id: end-of-file-fixer
+        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/)
       - id: check-yaml
       - id: check-json
       - id: check-toml
@@ -62,7 +67,9 @@ repos:
         exclude: '.*/tmp-.*\.nix$|^docs/.*$' # Allow store paths in docs (examples)
         args:
           - -c
-          - 'for file in "$@"; do if grep -q "/nix/store" "$file"; then echo "Hard-coded store paths found in $file!"; exit 1; fi; done'
+          # A store path with its hash pins one build; the bare /nix/store
+          # directory (a mount point in the VM tests) is fine.
+          - 'for file in "$@"; do if grep -qE "/nix/store/[0-9a-z]{32}-" "$file"; then echo "Hard-coded store paths found in $file!"; exit 1; fi; done'
           - --
 
       - id: shell-script-check
