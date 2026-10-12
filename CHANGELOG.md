@@ -570,6 +570,14 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Fixed
 
+- On Ubuntu 26.04 the login screen comes up on both sides of the switch again. Its
+  `dbus.service` and `dbus.socket` are no longer stopped at shutdown (`DefaultDependencies=no`)
+  but do not survive a soft-reboot either, so the bus died in the final kill while PID 1 kept its
+  socket open: the new manager waited about 90 s on it, then marked every D-Bus-activated service
+  (accounts-daemon among them) as failed to load, and gdm never started. A plain
+  `systemctl soft-reboot` on Ubuntu 26.04 does the same. The session now adds runtime drop-ins
+  that stop both units at `shutdown.target`, as Debian 13 and Ubuntu 24.04 do, so the switch takes
+  about 10 s and the bus starts again in the other root. Found by hand in a VirtualBox VM.
 - The whole-root session survives `blk-availability.service`, which Debian and Ubuntu enable
   wherever `dmsetup` is installed. Its stop, `blkdeactivate -u`, unmounted the hidden volume below
   `/run/nextroot` during the soft-reboot into the session, which then came up without the volume

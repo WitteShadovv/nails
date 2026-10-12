@@ -10,7 +10,7 @@ use nails_teardown::mountinfo::{MountEntry, parse_mountinfo};
 use nails_teardown::whole_root::nextroot::NEXTROOT;
 use nails_teardown::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR};
 use nails_teardown::whole_root::transition::{
-    DROPIN_DIR, DROPIN_NAME, STOP_GUARD_NAME, STOP_GUARDED_UNITS, stop_guard_dir,
+    DROPIN_DIR, DROPIN_NAME, STOP_GUARD_NAME, runtime_guards, stop_guard_dir,
 };
 
 /// Where runtime unit files live.
@@ -92,13 +92,14 @@ impl<F: Filesystem> Verifier<F> {
                 dropin.display()
             )));
         }
-        for unit in STOP_GUARDED_UNITS {
+        for (unit, _) in runtime_guards() {
             let guard = Path::new("/run")
                 .join(stop_guard_dir(unit))
                 .join(STOP_GUARD_NAME);
             if self.filesystem.path_exists(&guard)? {
                 findings.push(critical(format!(
-                    "the session's stop guard {} is left: {unit} skips its stop commands",
+                    "the session's runtime guard {} is left: {unit} runs changed until \
+                     the next boot",
                     guard.display()
                 )));
             }

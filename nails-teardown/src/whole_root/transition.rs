@@ -104,13 +104,43 @@ pub fn stop_guard_dir(unit: &str) -> PathBuf {
     Path::new("systemd/system").join(format!("{unit}.d"))
 }
 
+/// Units that must stop with the rest of the root at a soft-reboot, which
+/// their own unit files prevent.
+///
+/// Since Ubuntu 26.04, `dbus.service` and `dbus.socket` carry
+/// `DefaultDependencies=no` so that the bus outlives a shutdown. At a
+/// soft-reboot that leaves `dbus-daemon` to the final kill and the listening
+/// socket open in PID 1: the new manager connects to it, nothing answers, and
+/// after about 90 s it marks every D-Bus-activated service as failed to load
+/// (accounts-daemon among them, so gdm never starts). Stopped at
+/// `shutdown.target`, as Debian 13 and Ubuntu 24.04 do, the bus comes up
+/// again in the other root like at boot. `Conflicts=` adds up across
+/// drop-ins, so no later drop-in can take it back.
+pub const SHUTDOWN_BOUND_UNITS: [&str; 2] = ["dbus.service", "dbus.socket"];
+
+/// The drop-in text that stops a unit at `shutdown.target`.
+pub const SHUTDOWN_BOUND_TEXT: &str = "[Unit]\nConflicts=shutdown.target\nBefore=shutdown.target\n";
+
+/// Every runtime guard the session installs, as (unit, drop-in text), each
+/// written as [`STOP_GUARD_NAME`] in [`stop_guard_dir`] of its unit.
+pub fn runtime_guards() -> impl Iterator<Item = (&'static str, &'static str)> {
+    STOP_GUARDED_UNITS
+        .into_iter()
+        .map(|unit| (unit, STOP_GUARD_TEXT))
+        .chain(
+            SHUTDOWN_BOUND_UNITS
+                .into_iter()
+                .map(|unit| (unit, SHUTDOWN_BOUND_TEXT)),
+        )
+}
+
 /// Install the drop-in, and the stop guards, under `run`. The caller reloads
 /// the service manager.
 pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
-    for unit in STOP_GUARDED_UNITS {
+    for (unit, text) in runtime_guards() {
         let dir = run.join(stop_guard_dir(unit));
         std::fs::create_dir_all(&dir)?;
-        plan::write_private_atomic(&dir.join(STOP_GUARD_NAME), STOP_GUARD_TEXT.as_bytes())?;
+        plan::write_private_atomic(&dir.join(STOP_GUARD_NAME), text.as_bytes())?;
     }
     let dir = run.join(DROPIN_DIR);
     std::fs::create_dir_all(&dir)?;
@@ -122,9 +152,8 @@ pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
 /// Remove the drop-in and the stop guards (and their directories when empty)
 /// under `run`.
 pub fn remove_dropin(run: &Path) {
-    let files = STOP_GUARDED_UNITS
-        .iter()
-        .map(|unit| (run.join(stop_guard_dir(unit)), STOP_GUARD_NAME))
+    let files = runtime_guards()
+        .map(|(unit, _)| (run.join(stop_guard_dir(unit)), STOP_GUARD_NAME))
         .chain(std::iter::once((run.join(DROPIN_DIR), DROPIN_NAME)));
     for (dir, name) in files {
         let _ = std::fs::remove_file(dir.join(name));

@@ -3328,6 +3328,26 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
 
   **Done when:** unit tests cover the kernel-log line for on, off and absent, and the check reports WARN on a kernel that does not zero freed memory.
 
+- [ ] **T-153: Automated graphical session tests on every supported desktop distro** (high · effort L)
+
+  _Status (2026-10-12): found by hand on Ubuntu 26.04.1 (GNOME, VirtualBox): after `activate`, gdm, gpu-manager and cups failed in the hidden root and no login screen came up. No automated test starts a display manager outside NixOS: the Debian and Ubuntu tiers are containers, the VM suite is NixOS only, and the server bench checked SSH, not the greeter._
+
+  **Problem:** The suites prove the switch, the mounts and the way back, but not that a person gets a usable desktop on either side. A distro release that breaks the graphical session in the hidden root (or on the way back) passes every test we run.
+
+  **Fix:** A VM tier that installs each supported desktop image (Debian 13 GNOME, Ubuntu 24.04 and 26.04 desktop, NixOS GNOME and KDE), runs init, `check`, `activate`, `deactivate` and `emergency`, and on each side waits for the greeter and logs in through it (OCR or a screenshot match, as NixOS `waitForText` does). Every failed unit in either root fails the test, and screenshots and the journal are kept as artifacts. Run it on Hetzner per release and on demand per PR.
+
+  **Done when:** the tier fails on today's Ubuntu 26.04 regression before its fix and passes after, and a new distro release is added by one entry in the matrix.
+
+- [ ] **T-154: AppArmor-confined services that notify systemd fail after a soft-reboot on Ubuntu 26.04** (medium · effort M)
+
+  _Status (2026-10-12): found by hand on Ubuntu 26.04.1; a plain `systemctl soft-reboot` without NAILS shows it too. After the switch, AppArmor denies chronyd's `sendmsg` to `/systemd/notify` and `/systemd/journal/dev-log`: the paths under the carried-over `/run` resolve as disconnected, and the profile has no `attach_disconnected`. chrony fails on both sides (no time sync); cups timed out the same way in the first session._
+
+  **Problem:** Every service with an AppArmor profile that reports readiness with `sd_notify` (`Type=notify`) or logs to the journal socket can fail or time out in the other root.
+
+  **Fix:** Find out why paths under `/run` are disconnected after a soft-reboot (the mount move of `/run` into the new root), report it to Ubuntu (apparmor or systemd) with a reproducer, and decide what NAILS does meanwhile: a runtime profile override is not possible without writing to `/etc`, so at least `check` warns on Ubuntu 26.04 and the guide names the affected services.
+
+  **Done when:** the cause is known and reported upstream, and either the services start in both roots or `check` and the guide say which ones do not.
+
 ### Not adopted
 
 - Shufflecake as a backend: an out-of-tree kernel module whose presence is itself a decoy-side trace; it stays detected and named by `backend-detect` only.

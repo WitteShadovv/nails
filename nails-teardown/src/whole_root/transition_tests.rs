@@ -318,7 +318,21 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
     assert!(is_unit_prefix("network-addresses-.service"));
     assert!(!is_unit_prefix("blk-availability.service"));
 
+    // Ubuntu 26.04's bus outlives a shutdown; the guard stops it with the root.
+    for unit in ["dbus.service", "dbus.socket"] {
+        let bus = run.join(stop_guard_dir(unit)).join(STOP_GUARD_NAME);
+        assert_eq!(
+            fs::read_to_string(&bus).unwrap(),
+            "[Unit]\nConflicts=shutdown.target\nBefore=shutdown.target\n",
+            "{unit}"
+        );
+    }
+    assert_eq!(runtime_guards().count(), 4);
+
     remove_dropin(run);
+    for unit in ["dbus.service", "dbus.socket"] {
+        assert!(!run.join(stop_guard_dir(unit)).exists(), "{unit}");
+    }
     assert!(
         !run.join(stop_guard_dir("network-addresses-.service"))
             .exists()

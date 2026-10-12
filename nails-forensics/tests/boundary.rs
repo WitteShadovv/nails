@@ -25,7 +25,7 @@ const TEARDOWN_ALLOWED: &[&str] = &[
     "whole_root::transition::DROPIN_DIR",
     "whole_root::transition::DROPIN_NAME",
     "whole_root::transition::STOP_GUARD_NAME",
-    "whole_root::transition::STOP_GUARDED_UNITS",
+    "whole_root::transition::runtime_guards",
     "whole_root::transition::stop_guard_dir",
 ];
 
