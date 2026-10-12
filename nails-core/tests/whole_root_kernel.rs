@@ -342,7 +342,9 @@ mod kernel_tests {
         }
         let dir = root.join(name);
         if let Err(e) = std::fs::create_dir(&dir) {
-            nails_core::test_support::skip(&format!("the caller's cgroup is not delegated: {e}"));
+            nails_core::test_support::skip_host(&format!(
+                "the caller's cgroup is not delegated: {e}"
+            ));
         }
         dir
     }
@@ -927,7 +929,7 @@ mod nixos_kernel_tests {
 
     use nails_core::session::nixos::activate_in;
     use nails_core::test_path;
-    use nails_core::test_support::{Rerun, ScratchTmpfs, skip};
+    use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host};
     use std::os::unix::fs::PermissionsExt;
     use std::path::{Path, PathBuf};
 
@@ -944,7 +946,7 @@ mod nixos_kernel_tests {
             .in_user_mount_ns()
             .run(|| {
                 let Some(shell) = store_shell() else {
-                    skip("no /nix/store shell on this host");
+                    skip_host("no /nix/store shell on this host");
                 };
                 let root = ScratchTmpfs::new("");
                 for dir in ["nix/store", "dev", "proc", "sys", "run", "etc", "system"] {

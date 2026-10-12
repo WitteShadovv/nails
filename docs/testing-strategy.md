@@ -45,7 +45,9 @@ unshares `CLONE_NEWUSER | CLONE_NEWNS` and maps the caller to uid 0; the child
 makes `/` recursively private and runs the body, and every mount dies with it,
 even after a panic. `ScratchTmpfs` gives the body a tmpfs. On a host without user
 namespaces the test prints why and passes vacuously; `NAILS_REQUIRE_USERNS=1`
-turns that skip into a failure. Re-executing rather than forking avoids
+turns that skip into a failure. A test that also needs something no CI runner
+has (a delegated cgroup, a NixOS `/bin/sh`) ends with `skip_host` instead, which
+stays a skip. Re-executing rather than forking avoids
 inheriting a lock from another test thread, and works under libtest and nextest.
 
 What runs in this tier:

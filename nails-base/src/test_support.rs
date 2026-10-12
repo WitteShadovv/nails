@@ -28,7 +28,9 @@
 //! Ubuntu's `kernel.apparmor_restrict_unprivileged_userns=1`, which grants the
 //! namespace no capabilities) yields [`Outcome::Skipped`] with the reason, so the
 //! test passes vacuously there. Setting [`REQUIRE_USERNS_ENV`] to `1` turns that
-//! skip into a failure; CI sets it in the job that must exercise these tests.
+//! skip into a failure; CI sets it in the job that must exercise these tests. A
+//! test that also needs something no CI runner has (a delegated cgroup, a NixOS
+//! store) ends with [`skip_host`] instead, which that variable leaves a skip.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -42,6 +44,9 @@ pub const REQUIRE_USERNS_ENV: &str = "NAILS_REQUIRE_USERNS";
 
 /// Exit status of a child that found no usable namespace (the automake "skip").
 const SKIP_EXIT: i32 = 77;
+
+/// Exit status of a child that lacks a host prerequisite other than namespaces.
+const HOST_SKIP_EXIT: i32 = 78;
 
 /// Prefix of the line a skipping child prints on stderr, followed by the reason.
 const SKIP_MARKER: &str = "NAILS_TEST_SKIP: ";
@@ -65,7 +70,8 @@ macro_rules! test_path {
 pub enum Outcome {
     /// The body ran (in this process, when this is the child) and passed.
     Ran,
-    /// The host could not provide the namespaces; the body did not run.
+    /// The host could not provide the namespaces, or a prerequisite the body
+    /// probes; the body did not run.
     Skipped(String),
 }
 
@@ -132,8 +138,8 @@ impl<'a> Rerun<'a> {
     /// # Panics
     ///
     /// In the parent, when the child fails, cannot be spawned for a reason other
-    /// than missing namespace support, or skips while [`REQUIRE_USERNS_ENV`] is
-    /// set.
+    /// than missing namespace support, or skips (other than through
+    /// [`skip_host`]) while [`REQUIRE_USERNS_ENV`] is set.
     pub fn run(self, body: impl FnOnce()) -> Outcome {
         if std::env::var_os(CHILD_ENV).is_some_and(|name| name == self.test_path) {
             if self.user_mount_ns {
@@ -146,10 +152,10 @@ impl<'a> Rerun<'a> {
             return Outcome::Ran;
         }
         let test_path = self.test_path;
-        let outcome = self.spawn_and_wait();
+        let (outcome, host_skip) = self.spawn_and_wait();
         if let Outcome::Skipped(reason) = &outcome {
             assert!(
-                std::env::var(REQUIRE_USERNS_ENV).as_deref() != Ok("1"),
+                host_skip || std::env::var(REQUIRE_USERNS_ENV).as_deref() != Ok("1"),
                 "{REQUIRE_USERNS_ENV}=1 but the test was skipped: {reason}"
             );
             eprintln!("skipped {test_path}: {reason}");
@@ -157,7 +163,8 @@ impl<'a> Rerun<'a> {
         outcome
     }
 
-    fn spawn_and_wait(self) -> Outcome {
+    /// The child's outcome, and whether a skip came from [`skip_host`].
+    fn spawn_and_wait(self) -> (Outcome, bool) {
         let exe = std::env::current_exe().expect("locate the running test binary");
         let mut cmd = Command::new(exe);
         cmd.args([
@@ -179,10 +186,13 @@ impl<'a> Rerun<'a> {
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(err) if self.user_mount_ns && is_namespace_refusal(&err) => {
-                return Outcome::Skipped(format!(
-                    "cannot create a user + mount namespace ({err}); user namespaces \
-                     are unavailable to this process"
-                ));
+                return (
+                    Outcome::Skipped(format!(
+                        "cannot create a user + mount namespace ({err}); user namespaces \
+                         are unavailable to this process"
+                    )),
+                    false,
+                );
             }
             Err(err) => panic!("spawn the child test process: {err}"),
         };
@@ -203,12 +213,12 @@ impl<'a> Rerun<'a> {
             .map(|t| t.join().unwrap_or_default())
             .unwrap_or_default();
 
-        if status.code() == Some(SKIP_EXIT) {
+        if let Some(code @ (SKIP_EXIT | HOST_SKIP_EXIT)) = status.code() {
             let reason = stderr
                 .lines()
                 .find_map(|line| line.strip_prefix(SKIP_MARKER))
                 .unwrap_or("the child reported no reason");
-            return Outcome::Skipped(reason.to_string());
+            return (Outcome::Skipped(reason.to_string()), code == HOST_SKIP_EXIT);
         }
         assert!(
             status.success(),
@@ -226,7 +236,7 @@ impl<'a> Rerun<'a> {
             "child test {} did not run exactly one test (is the test path right?)\n{stdout}",
             self.test_path
         );
-        Outcome::Ran
+        (Outcome::Ran, false)
     }
 }
 
@@ -293,10 +303,18 @@ fn write_proc(path: &std::ffi::CStr, data: &[u8]) -> std::io::Result<()> {
 }
 
 /// End the namespaced child as skipped, with `reason` on stderr: for a
-/// prerequisite only the body can probe (a delegated cgroup, say).
+/// namespace prerequisite only the body can probe (mounting cgroup2, say).
 pub fn skip(reason: &str) -> ! {
     eprintln!("{SKIP_MARKER}{reason}");
     std::process::exit(SKIP_EXIT);
+}
+
+/// Like [`skip`], for a prerequisite of the host rather than of the namespaces
+/// (a delegated cgroup, a NixOS store): [`REQUIRE_USERNS_ENV`] does not turn
+/// this skip into a failure, since no CI runner provides it.
+pub fn skip_host(reason: &str) -> ! {
+    eprintln!("{SKIP_MARKER}{reason}");
+    std::process::exit(HOST_SKIP_EXIT);
 }
 
 /// In the namespaced child: re-execute this test binary, with the same
@@ -492,5 +510,16 @@ mod tests {
             );
         });
         assert_eq!(outcome, Outcome::Ran);
+    }
+
+    /// CI runs this with `NAILS_REQUIRE_USERNS=1`, which must leave a host skip a skip.
+    #[test]
+    fn a_host_skip_is_reported_as_a_skip() {
+        let outcome = Rerun::new(crate::test_path!(a_host_skip_is_reported_as_a_skip))
+            .run(|| super::skip_host("no such thing on this host"));
+        assert_eq!(
+            outcome,
+            Outcome::Skipped("no such thing on this host".to_string())
+        );
     }
 }
