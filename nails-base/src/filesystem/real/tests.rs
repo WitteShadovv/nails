@@ -608,3 +608,390 @@ fn test_mock_overwrite_file_in_place_missing_file_is_not_found() {
         other => panic!("expected NotFound IoError, got {other:?}"),
     }
 }
+
+// ========================================================================
+// Tests for refused file operations
+// ========================================================================
+
+/// The path and I/O error of a refused operation.
+fn io_error<T: std::fmt::Debug>(result: crate::Result<T>) -> (std::path::PathBuf, std::io::Error) {
+    match result {
+        Err(NailsError::IoError { path, source }) => (path, source),
+        other => panic!("expected an IoError, got {other:?}"),
+    }
+}
+
+/// Run `body` with `dir` set to `mode`, restoring 0o700 afterwards so the
+/// temporary directory can be removed. `None` when running as root, which
+/// bypasses directory permissions and so cannot observe the refusal.
+fn with_mode<T>(dir: &Path, mode: u32, body: impl FnOnce() -> T) -> Option<T> {
+    use std::os::unix::fs::PermissionsExt;
+    if nix::unistd::geteuid().is_root() {
+        return None;
+    }
+    fs::set_permissions(dir, fs::Permissions::from_mode(mode)).unwrap();
+    let result = body();
+    fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    Some(result)
+}
+
+#[test]
+fn device_id_names_the_filesystem_of_the_resolved_path() {
+    use std::os::unix::fs::MetadataExt;
+
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("probe");
+    fs::write(&file, "x").unwrap();
+    let link = temp_dir.path().join("link");
+    std::os::unix::fs::symlink(&file, &link).unwrap();
+
+    let expected = fs::metadata(&file).unwrap().dev();
+    assert_eq!(fs.device_id(&file).unwrap(), expected);
+    // A symlink reports the device of its target, not of the link inode.
+    assert_eq!(fs.device_id(&link).unwrap(), expected);
+
+    let missing = temp_dir.path().join("missing");
+    let (path, err) = io_error(fs.device_id(&missing));
+    assert_eq!(path, missing);
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[test]
+fn supports_symlinks_reports_a_missing_directory_as_an_error() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing = temp_dir.path().join("missing");
+
+    let (path, err) = io_error(fs.supports_symlinks(&missing));
+
+    assert_eq!(path, missing.join(".nails_symlink_probe"));
+    assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+}
+
+#[test]
+fn is_writable_is_false_for_a_read_only_directory() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let locked = temp_dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+
+    let Some(writable) = with_mode(&locked, 0o500, || fs.is_writable(&locked).unwrap()) else {
+        return;
+    };
+
+    assert!(!writable);
+    assert!(!locked.join(".nails_write_test").exists());
+}
+
+#[test]
+fn write_file_content_over_a_directory_fails_the_rename() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let target = temp_dir.path().join("occupied");
+    fs::create_dir(&target).unwrap();
+    fs::write(target.join("inside"), "keep").unwrap();
+
+    let (path, err) = io_error(fs.write_file_content(&target, "data"));
+
+    assert_eq!(path, target.with_extension("tmp"));
+    assert!(
+        err.to_string().starts_with(&format!(
+            "Failed to rename {} to {}",
+            target.with_extension("tmp").display(),
+            target.display()
+        )),
+        "{err}"
+    );
+    assert_eq!(fs::read_to_string(target.join("inside")).unwrap(), "keep");
+}
+
+/// The atomic write fails while writing the temp file on a full filesystem
+/// and leaves the original content in place.
+#[test]
+fn write_file_content_on_a_full_filesystem_keeps_the_original() {
+    use crate::test_support::{Rerun, ScratchTmpfs};
+
+    let _ = Rerun::new(crate::test_path!(
+        write_file_content_on_a_full_filesystem_keeps_the_original
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let scratch = ScratchTmpfs::new("size=16k");
+        let file = scratch.path().join("data.txt");
+        fs::write(&file, "original").unwrap();
+
+        let (path, err) =
+            io_error(RealFilesystem.write_file_content(&file, &"x".repeat(256 * 1024)));
+
+        assert_eq!(path, file.with_extension("tmp"));
+        assert_eq!(err.kind(), std::io::ErrorKind::StorageFull);
+        assert!(
+            err.to_string().starts_with("Failed to write to temp file"),
+            "{err}"
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), "original");
+    });
+}
+
+#[test]
+fn overwrite_file_in_place_refuses_a_path_without_a_parent_or_a_file_name() {
+    let fs = RealFilesystem;
+
+    let (path, err) = io_error(fs.overwrite_file_in_place(Path::new("/"), "x"));
+    assert_eq!(path, Path::new("/"));
+    assert!(err.to_string().contains("no parent directory"), "{err}");
+
+    let temp_dir = tempfile::tempdir().unwrap();
+    let dotdot = temp_dir.path().join("sub/..");
+    let (path, err) = io_error(fs.overwrite_file_in_place(&dotdot, "x"));
+    assert_eq!(path, dotdot);
+    assert!(err.to_string().contains("no file name"), "{err}");
+}
+
+#[test]
+fn overwrite_file_in_place_on_a_full_filesystem_reports_the_failed_rewrite() {
+    use crate::test_support::{Rerun, ScratchTmpfs};
+
+    let _ = Rerun::new(crate::test_path!(
+        overwrite_file_in_place_on_a_full_filesystem_reports_the_failed_rewrite
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let scratch = ScratchTmpfs::new("size=16k");
+        let root = scratch.path().canonicalize().unwrap();
+        let file = root.join(".bash_history");
+        fs::write(&file, "ls\n").unwrap();
+
+        let (path, err) =
+            io_error(RealFilesystem.overwrite_file_in_place(&file, &"x".repeat(256 * 1024)));
+
+        assert_eq!(path, file);
+        assert_eq!(err.kind(), std::io::ErrorKind::StorageFull);
+        assert!(err.to_string().starts_with("Failed to rewrite"), "{err}");
+    });
+}
+
+#[test]
+fn find_files_with_pattern_fails_on_an_unreadable_directory() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let locked = temp_dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("nails.log"), "x").unwrap();
+
+    let Some(result) = with_mode(&locked, 0o000, || {
+        fs.find_files_with_pattern(temp_dir.path(), "nails")
+    }) else {
+        return;
+    };
+
+    let (path, err) = io_error(result);
+    assert_eq!(path, locked);
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(
+        err.to_string()
+            .starts_with(&format!("Failed to read directory {}", locked.display())),
+        "{err}"
+    );
+}
+
+#[test]
+fn scan_files_with_pattern_recurses_skips_links_and_records_unreadable_directories() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join("nested/deeper")).unwrap();
+    fs::write(root.join("nested/deeper/App.NAILS.log"), "x").unwrap();
+    fs::write(root.join("nested/other.txt"), "x").unwrap();
+    // Neither a link to a matching file nor a link to a directory counts.
+    std::os::unix::fs::symlink(
+        root.join("nested/deeper/App.NAILS.log"),
+        root.join("nails-link"),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(root.join("nested"), root.join("dir-link")).unwrap();
+    let locked = root.join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("nails.hidden"), "x").unwrap();
+
+    let Some(scan) = with_mode(&locked, 0o000, || {
+        fs.scan_files_with_pattern(root, "Nails").unwrap()
+    }) else {
+        return;
+    };
+
+    assert_eq!(scan.matches, vec![root.join("nested/deeper/App.NAILS.log")]);
+    assert_eq!(scan.unreadable, vec![locked]);
+
+    let missing = fs
+        .scan_files_with_pattern(&root.join("missing"), "nails")
+        .unwrap();
+    assert!(missing.matches.is_empty());
+    assert!(missing.unreadable.is_empty());
+}
+
+#[test]
+fn path_operations_on_a_missing_path_name_it_in_the_error() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing = temp_dir.path().join("missing");
+    let elsewhere = temp_dir.path().join("elsewhere");
+
+    let cases: Vec<(&str, crate::Result<()>)> = vec![
+        (
+            "Failed to get file size for",
+            fs.file_size(&missing).map(drop),
+        ),
+        ("Failed to rename", fs.rename_file(&missing, &elsewhere)),
+        ("Failed to remove file", fs.remove_file(&missing)),
+        ("Failed to remove directory", fs.remove_dir_all(&missing)),
+    ];
+    for (prefix, result) in cases {
+        let (path, err) = io_error(result);
+        assert_eq!(path, missing, "{prefix}");
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound, "{prefix}");
+        assert!(
+            err.to_string()
+                .starts_with(&format!("{prefix} {}", missing.display())),
+            "{err}"
+        );
+    }
+    assert!(!elsewhere.exists());
+}
+
+#[test]
+fn remove_directory_refuses_a_non_empty_directory() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let dir = temp_dir.path().join("full");
+    fs::create_dir(&dir).unwrap();
+    fs::write(dir.join("keep"), "x").unwrap();
+
+    let (path, err) = io_error(fs.remove_directory(&dir));
+
+    assert_eq!(path, dir);
+    assert_eq!(err.kind(), std::io::ErrorKind::DirectoryNotEmpty);
+    assert_eq!(fs::read_to_string(dir.join("keep")).unwrap(), "x");
+}
+
+// ========================================================================
+// Tests for refused secure deletion
+// ========================================================================
+
+#[test]
+fn secure_delete_of_a_missing_file_reports_the_size_lookup() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing = temp_dir.path().join("missing");
+
+    let (path, err) = io_error(fs.secure_delete(&missing));
+
+    assert_eq!(path, missing);
+    assert!(
+        err.to_string().starts_with("Failed to get file size"),
+        "{err}"
+    );
+}
+
+#[test]
+fn secure_delete_of_a_read_only_file_leaves_it_intact() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let file = temp_dir.path().join("secret.txt");
+    fs::write(&file, "secret").unwrap();
+
+    let Some(result) = with_mode(&file, 0o400, || fs.secure_delete(&file)) else {
+        return;
+    };
+
+    let (path, err) = io_error(result);
+    assert_eq!(path, file);
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(
+        err.to_string()
+            .starts_with("Failed to open file for secure deletion"),
+        "{err}"
+    );
+    assert_eq!(fs::read_to_string(&file).unwrap(), "secret");
+}
+
+/// A sparse file larger than the filesystem cannot be overwritten: the first
+/// pass fails with the filesystem full, and the file is not unlinked as if the
+/// wipe had succeeded.
+#[test]
+fn secure_delete_that_cannot_overwrite_keeps_the_file() {
+    use crate::test_support::{Rerun, ScratchTmpfs};
+
+    let _ = Rerun::new(crate::test_path!(
+        secure_delete_that_cannot_overwrite_keeps_the_file
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let scratch = ScratchTmpfs::new("size=64k");
+        let file = scratch.path().join("sparse");
+        fs::File::create(&file)
+            .unwrap()
+            .set_len(1024 * 1024)
+            .unwrap();
+
+        let (path, err) = io_error(RealFilesystem.secure_delete(&file));
+
+        assert_eq!(path, file);
+        assert_eq!(err.kind(), std::io::ErrorKind::StorageFull);
+        assert!(
+            err.to_string()
+                .starts_with("Failed to overwrite file with zeros"),
+            "{err}"
+        );
+        assert_eq!(fs::metadata(&file).unwrap().len(), 1024 * 1024);
+    });
+}
+
+#[test]
+fn secure_delete_dir_all_fails_on_an_unlistable_directory() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let locked = temp_dir.path().join("locked");
+    fs::create_dir(&locked).unwrap();
+    fs::write(locked.join("secret"), "secret").unwrap();
+
+    // Search and write, but no read: the entries cannot be listed.
+    let Some(result) = with_mode(&locked, 0o300, || fs.secure_delete_dir_all(&locked)) else {
+        return;
+    };
+
+    let (path, err) = io_error(result);
+    assert_eq!(path, locked);
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(
+        err.to_string().starts_with("Failed to read directory"),
+        "{err}"
+    );
+    assert_eq!(fs::read_to_string(locked.join("secret")).unwrap(), "secret");
+}
+
+#[test]
+fn secure_delete_dir_all_wipes_the_contents_even_when_the_directory_stays() {
+    let fs = RealFilesystem;
+    let temp_dir = tempfile::tempdir().unwrap();
+    let parent = temp_dir.path().join("parent");
+    let dir = parent.join("wipe-me");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("secret"), "secret").unwrap();
+
+    // The parent is read-only, so the emptied directory cannot be unlinked.
+    let Some(result) = with_mode(&parent, 0o500, || fs.secure_delete_dir_all(&dir)) else {
+        return;
+    };
+
+    let (path, err) = io_error(result);
+    assert_eq!(path, dir);
+    assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+    assert!(
+        err.to_string().starts_with("Failed to remove directory"),
+        "{err}"
+    );
+    assert!(dir.is_dir());
+    assert!(!dir.join("secret").exists());
+}

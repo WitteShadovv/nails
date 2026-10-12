@@ -183,12 +183,26 @@ pub fn execute(
 /// confirmed. The warning and the list of directories go to stderr so stdout
 /// stays clean for `--json`.
 fn prompt_reset_confirmation(settings: &OutputSettings, plan: &nails_core::ResetUpperPlan) -> bool {
-    use std::io::{BufRead, Write};
+    confirm_reset(
+        settings,
+        plan,
+        &mut std::io::stderr(),
+        &mut std::io::stdin().lock(),
+    )
+}
 
+/// [`prompt_reset_confirmation`] on the given streams: the warning goes to
+/// `out`, the answer is read from `input`. Only `y` or `yes` (any case)
+/// confirms; anything else, or a read error, declines.
+fn confirm_reset(
+    settings: &OutputSettings,
+    plan: &nails_core::ResetUpperPlan,
+    out: &mut impl std::io::Write,
+    input: &mut impl std::io::BufRead,
+) -> bool {
     let style = settings.stderr_style();
-    let mut stderr = std::io::stderr();
     let _ = writeln!(
-        stderr,
+        out,
         "{}",
         style.marked(
             Mark::Warn,
@@ -199,20 +213,88 @@ fn prompt_reset_confirmation(settings: &OutputSettings, plan: &nails_core::Reset
         )
     );
     for path in plan.removals() {
-        let _ = writeln!(stderr, "    remove {}", path.display());
+        let _ = writeln!(out, "    remove {}", path.display());
     }
     if plan.resets_nix_store {
         let _ = writeln!(
-            stderr,
+            out,
             "    WARNING: resetting /nix drops the hidden Nix database and store paths."
         );
     }
-    let _ = write!(stderr, "    Continue? [y/N]: ");
-    let _ = stderr.flush();
+    let _ = write!(out, "    Continue? [y/N]: ");
+    let _ = out.flush();
 
-    let mut input = String::new();
-    if std::io::stdin().lock().read_line(&mut input).is_err() {
+    let mut answer = String::new();
+    if input.read_line(&mut answer).is_err() {
         return false;
     }
-    matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn plan(target: &str, removals: &[&str]) -> nails_core::ResetUpperPlan {
+        nails_core::ResetUpperPlan {
+            target: PathBuf::from(target),
+            removals: removals.iter().map(PathBuf::from).collect(),
+            resets_nix_store: target == "/nix",
+        }
+    }
+
+    /// Run the confirmation with `answer` typed, returning the verdict and the
+    /// text shown.
+    fn confirm(plan: &nails_core::ResetUpperPlan, answer: &[u8]) -> (bool, String) {
+        let mut out = Vec::new();
+        let verdict = confirm_reset(
+            &OutputSettings::default(),
+            plan,
+            &mut out,
+            &mut std::io::Cursor::new(answer),
+        );
+        (verdict, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn the_prompt_lists_every_removal_before_asking() {
+        let plan = plan(
+            "/srv/data",
+            &[
+                "/mnt/data/root/upper/srv/data",
+                "/mnt/data/root/mounts/srv-data",
+            ],
+        );
+        let (_, shown) = confirm(&plan, b"n\n");
+        assert_eq!(
+            shown,
+            "\u{26a0} This permanently deletes the hidden upper for /srv/data.\n\
+             \x20   remove /mnt/data/root/upper/srv/data\n\
+             \x20   remove /mnt/data/root/mounts/srv-data\n\
+             \x20   Continue? [y/N]: "
+        );
+    }
+
+    #[test]
+    fn resetting_nix_warns_about_the_store_and_database() {
+        let (_, shown) = confirm(&plan("/nix", &["/mnt/data/root/upper/nix"]), b"\n");
+        assert!(
+            shown.contains("WARNING: resetting /nix drops the hidden Nix database"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn only_yes_in_any_case_confirms_the_reset() {
+        let plan = plan("/srv/data", &["/mnt/data/root/upper/srv/data"]);
+        for answer in ["y\n", "YES\n", "  Yes  \n"] {
+            assert!(confirm(&plan, answer.as_bytes()).0, "{answer:?}");
+        }
+        for answer in ["\n", "n\n", "yep\n", ""] {
+            assert!(!confirm(&plan, answer.as_bytes()).0, "{answer:?}");
+        }
+        // Input that is not UTF-8 is a read error, and declines.
+        assert!(!confirm(&plan, b"\xff\n").0);
+    }
 }

@@ -349,6 +349,22 @@ mod write_user_file_tests {
         std::fs::metadata(path).unwrap().permissions().mode() & 0o7777
     }
 
+    /// The path and I/O error of a refused write.
+    fn io_error(result: Result<()>) -> (std::path::PathBuf, std::io::Error) {
+        match result {
+            Err(NailsError::IoError { path, source }) => (path, source),
+            other => panic!("expected an IoError, got {other:?}"),
+        }
+    }
+
+    /// Whether a `.nails-tmp.*` temp file was left behind in `dir`.
+    fn temp_left_in(dir: &Path) -> bool {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with(".nails-tmp."))
+    }
+
     #[test]
     fn planted_tmp_sibling_symlink_cannot_redirect_the_write() {
         let dir = tempfile::TempDir::new().unwrap();
@@ -423,5 +439,235 @@ mod write_user_file_tests {
 
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "second");
         assert_eq!(mode_of(&target), 0o640);
+    }
+
+    #[test]
+    fn a_path_without_a_parent_or_a_file_name_is_refused() {
+        let (path, err) = io_error(write_user_file(
+            Path::new("/"),
+            "payload",
+            &test_user(),
+            0o600,
+        ));
+        assert_eq!(path, Path::new("/"));
+        assert!(err.to_string().contains("no parent directory"), "{err}");
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let dotdot = dir.path().join("sub/..");
+        let (path, err) = io_error(write_user_file(&dotdot, "payload", &test_user(), 0o600));
+        assert_eq!(path, dotdot);
+        assert!(err.to_string().contains("no file name"), "{err}");
+        // Refused before any directory was created.
+        assert!(!dir.path().join("sub").exists());
+    }
+
+    #[test]
+    fn a_parent_that_is_a_regular_file_is_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, "keep").unwrap();
+
+        let (path, err) = io_error(write_user_file(
+            &file.join("x"),
+            "payload",
+            &test_user(),
+            0o600,
+        ));
+
+        assert_eq!(path, file);
+        assert!(
+            err.to_string().contains("exists and is not a directory"),
+            "{err}"
+        );
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "keep");
+    }
+
+    #[test]
+    fn a_parent_below_a_regular_file_reports_the_stat_failure() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let file = dir.path().join("file");
+        std::fs::write(&file, "keep").unwrap();
+        let parent = file.join("sub");
+
+        let (path, err) = io_error(write_user_file(
+            &parent.join("x"),
+            "payload",
+            &test_user(),
+            0o600,
+        ));
+
+        assert_eq!(path, parent);
+        assert_eq!(err.kind(), std::io::ErrorKind::NotADirectory);
+        assert!(err.to_string().starts_with("Failed to stat"), "{err}");
+    }
+
+    #[test]
+    fn missing_parents_under_a_symlinked_ancestor_are_never_created() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let base = dir.path();
+        let real = base.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let (path, err) = io_error(write_user_file(
+            &link.join("new/file"),
+            "payload",
+            &test_user(),
+            0o600,
+        ));
+
+        // The walk up the missing chain stops at the planted link.
+        assert_eq!(path, link);
+        assert!(
+            err.to_string()
+                .contains("Refusing to create directories under symlinked path"),
+            "{err}"
+        );
+        assert!(!real.join("new").exists());
+    }
+
+    #[test]
+    fn an_existing_parent_reached_through_a_symlinked_ancestor_is_refused() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let base = dir.path();
+        let real = base.join("real");
+        std::fs::create_dir_all(real.join("sub")).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let parent = link.join("sub");
+
+        // The parent itself is a real directory; only its ancestor is a link,
+        // which the symlink-free resolution of the parent refuses.
+        let (path, err) = io_error(write_user_file(
+            &parent.join("file"),
+            "payload",
+            &test_user(),
+            0o600,
+        ));
+
+        assert_eq!(path, parent);
+        assert!(
+            err.to_string()
+                .contains("is not resolvable without symlinks"),
+            "{err}"
+        );
+        assert!(!real.join("sub/file").exists());
+    }
+
+    #[test]
+    fn an_overlong_file_name_fails_the_stat_before_any_write() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("n".repeat(300));
+
+        let (path, err) = io_error(write_user_file(&target, "payload", &test_user(), 0o600));
+
+        assert_eq!(path, target);
+        assert!(err.to_string().contains("before writing"), "{err}");
+        assert!(err.to_string().contains("ENAMETOOLONG"), "{err}");
+        assert!(!temp_left_in(dir.path()));
+    }
+
+    #[test]
+    fn a_directory_at_the_destination_fails_the_rename_and_removes_the_temp() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let target = dir.path().join("occupied");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::write(target.join("inside"), "keep").unwrap();
+
+        let (path, err) = io_error(write_user_file(&target, "payload", &test_user(), 0o600));
+
+        assert_eq!(path, target);
+        assert!(
+            err.to_string()
+                .contains("Failed to move temp file into place"),
+            "{err}"
+        );
+        // The directory is untouched and the temp written for it is gone.
+        assert_eq!(
+            std::fs::read_to_string(target.join("inside")).unwrap(),
+            "keep"
+        );
+        assert!(!temp_left_in(dir.path()));
+    }
+
+    #[test]
+    fn a_read_only_parent_refuses_the_temp_file() {
+        if nix::unistd::geteuid().is_root() {
+            // root bypasses directory permissions, so the create would succeed.
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+
+        let result = write_user_file(&locked.join("file"), "payload", &test_user(), 0o600);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let (path, err) = io_error(result);
+        assert_eq!(path, locked);
+        assert!(
+            err.to_string().contains("Failed to create temp file in"),
+            "{err}"
+        );
+        assert!(!locked.join("file").exists());
+    }
+
+    #[test]
+    fn a_read_only_ancestor_refuses_the_missing_parent() {
+        if nix::unistd::geteuid().is_root() {
+            // root bypasses directory permissions, so the mkdir would succeed.
+            return;
+        }
+        let dir = tempfile::TempDir::new().unwrap();
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked).unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let missing = locked.join("new");
+
+        let result = write_user_file(&missing.join("file"), "payload", &test_user(), 0o600);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let (path, err) = io_error(result);
+        assert_eq!(path, missing);
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+        assert!(
+            err.to_string().starts_with("Failed to create directory"),
+            "{err}"
+        );
+    }
+
+    /// A payload larger than the filesystem fails mid-write; the half-written
+    /// temp must not be left behind in the user's home.
+    #[test]
+    fn a_full_filesystem_fails_the_write_and_leaves_nothing_behind() {
+        use crate::test_support::{Rerun, ScratchTmpfs};
+
+        let _ = Rerun::new(crate::test_path!(
+            a_full_filesystem_fails_the_write_and_leaves_nothing_behind
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let scratch = ScratchTmpfs::new("size=4k");
+            let root = scratch.path().canonicalize().unwrap();
+            let target = root.join("big");
+
+            let (path, err) = io_error(write_user_file(
+                &target,
+                &"x".repeat(256 * 1024),
+                &test_user(),
+                0o600,
+            ));
+
+            assert_eq!(path, target);
+            assert_eq!(err.kind(), std::io::ErrorKind::StorageFull);
+            assert!(
+                err.to_string().starts_with("Failed to write temp file"),
+                "{err}"
+            );
+            assert!(!target.exists());
+            assert!(!temp_left_in(&root));
+        });
     }
 }

@@ -81,3 +81,168 @@ fn the_json_envelope_carries_the_live_view_and_the_record() {
             .contains("overlay_verification")
     );
 }
+
+/// Write `lines` as `nails.log` in a fresh log directory.
+fn log_dir(lines: &[String]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("nails.log"), lines.join("\n")).unwrap();
+    dir
+}
+
+/// One JSON log line as the file layer writes it.
+fn log_line(timestamp: &str, level: &str, message: &str) -> String {
+    serde_json::json!({
+        "timestamp": timestamp,
+        "level": level,
+        "fields": {"message": message},
+    })
+    .to_string()
+}
+
+fn plain() -> Style {
+    Style {
+        color: false,
+        ascii: false,
+    }
+}
+
+#[test]
+fn the_config_label_notes_a_missing_file_and_names_a_present_one() {
+    let dir = tempfile::tempdir().unwrap();
+    let present = dir.path().join("nails.toml");
+    std::fs::write(&present, "").unwrap();
+    let absent = dir.path().join("absent.toml");
+
+    assert_eq!(
+        super::config_file_label(&present),
+        present.display().to_string()
+    );
+    assert_eq!(
+        super::config_file_label(&absent),
+        format!("{} (not found, using defaults)", absent.display())
+    );
+}
+
+#[test]
+fn recent_logs_are_none_without_a_log_file() {
+    let dir = tempfile::tempdir().unwrap();
+    assert_eq!(
+        super::read_recent_logs(dir.path(), None, false, plain()),
+        None
+    );
+}
+
+#[test]
+fn recent_logs_skip_entries_before_the_activation_and_debug_noise() {
+    let dir = log_dir(&[
+        log_line("2026-01-01T09:00:00Z", "INFO", "before the session"),
+        log_line("2026-01-01T10:00:01Z", "INFO", "session entered"),
+        log_line("2026-01-01T10:00:02Z", "DEBUG", "probe detail"),
+        log_line("2026-01-01T10:00:03Z", "TRACE", "inner loop"),
+        log_line("2026-01-01T10:00:04Z", "WARN", "backend slow"),
+        "not json at all".to_string(),
+        serde_json::json!({"level": "ERROR", "fields": {"message": "no timestamp"}}).to_string(),
+    ]);
+    let activated = chrono::DateTime::parse_from_rfc3339("2026-01-01T10:00:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+
+    let lines = super::read_recent_logs(dir.path(), Some(activated), false, plain()).unwrap();
+
+    assert_eq!(
+        lines,
+        vec![
+            "[10:00:01] INFO session entered".to_string(),
+            "[10:00:04] WARN backend slow".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn recent_logs_keep_debug_and_trace_when_asked() {
+    let dir = log_dir(&[
+        log_line("2026-01-01T10:00:02Z", "DEBUG", "probe detail"),
+        log_line("2026-01-01T10:00:03Z", "TRACE", "inner loop"),
+        log_line("2026-01-01T10:00:04Z", "NOTICE", "unknown level"),
+    ]);
+
+    let lines = super::read_recent_logs(dir.path(), None, true, plain()).unwrap();
+
+    assert_eq!(
+        lines,
+        vec![
+            "[10:00:02] DEBUG probe detail".to_string(),
+            "[10:00:03] TRACE inner loop".to_string(),
+            "[10:00:04] NOTICE unknown level".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn recent_logs_keep_only_the_newest_twenty_in_order() {
+    let lines: Vec<String> = (0..25)
+        .map(|i| {
+            log_line(
+                &format!("2026-01-01T10:00:{i:02}Z"),
+                "INFO",
+                &format!("entry {i}"),
+            )
+        })
+        .collect();
+    let dir = log_dir(&lines);
+
+    let recent = super::read_recent_logs(dir.path(), None, false, plain()).unwrap();
+
+    assert_eq!(recent.len(), super::RECENT_LOG_LIMIT);
+    assert_eq!(recent.first().unwrap(), "[10:00:05] INFO entry 5");
+    assert_eq!(recent.last().unwrap(), "[10:00:24] INFO entry 24");
+}
+
+#[test]
+fn recent_logs_fall_back_to_a_top_level_message_and_paint_levels() {
+    let dir = log_dir(&[serde_json::json!({
+        "timestamp": "2026-01-01T10:00:01Z",
+        "level": "ERROR",
+        "message": "top-level text",
+    })
+    .to_string()]);
+    let style = Style {
+        color: true,
+        ascii: false,
+    };
+
+    let lines = super::read_recent_logs(dir.path(), None, false, style).unwrap();
+
+    assert_eq!(
+        lines,
+        vec!["[\x1b[2m10:00:01\x1b[0m] \x1b[1;31mERROR\x1b[0m top-level text".to_string()]
+    );
+}
+
+#[test]
+fn recent_logs_fold_a_unicode_mark_to_ascii_in_ascii_mode() {
+    let dir = log_dir(&[log_line(
+        "2026-01-01T10:00:01Z",
+        "INFO",
+        "\u{2713} Activation complete",
+    )]);
+    let ascii = Style {
+        color: false,
+        ascii: true,
+    };
+
+    let folded = super::read_recent_logs(dir.path(), None, false, ascii).unwrap();
+    let kept = super::read_recent_logs(dir.path(), None, false, plain()).unwrap();
+
+    assert_eq!(folded, vec!["[10:00:01] INFO [PASS] Activation complete"]);
+    assert_eq!(kept, vec!["[10:00:01] INFO \u{2713} Activation complete"]);
+}
+
+#[test]
+fn recent_logs_are_none_when_nothing_matches() {
+    let dir = log_dir(&[log_line("2026-01-01T10:00:02Z", "DEBUG", "probe detail")]);
+    assert_eq!(
+        super::read_recent_logs(dir.path(), None, false, plain()),
+        None
+    );
+}

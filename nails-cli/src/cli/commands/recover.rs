@@ -18,7 +18,7 @@
 use std::path::Path;
 
 use nails_core::manager::SessionRecovery;
-use nails_core::output::Mark;
+use nails_core::output::{Mark, Style};
 use nails_teardown::whole_root::ret::BackendClose;
 use serde::Serialize;
 
@@ -70,72 +70,20 @@ pub fn execute(
 
     match manager.recover_session(&nails_core::session::RealEntryHost) {
         Ok(outcome) => {
-            let (name, remaining, backend) = match &outcome {
-                SessionRecovery::Clean => ("clean", Vec::new(), Vec::new()),
-                SessionRecovery::RolledBack { remaining, backend } => {
-                    ("rolled_back", remaining.clone(), backend.clone())
-                }
-            };
-            let remaining: Vec<String> =
-                remaining.iter().map(|p| p.display().to_string()).collect();
-            let backend: Vec<BackendData> = backend
-                .into_iter()
-                .map(|(name, state)| BackendData {
-                    name,
-                    state: match state {
-                        BackendClose::Closed => "closed",
-                        BackendClose::InUse => "in_use",
-                    },
-                })
-                .collect();
-            if json {
-                Envelope::success(
-                    "recover",
-                    RecoverData {
-                        outcome: name,
-                        remaining_mounts: remaining.clone(),
-                        backend,
-                    },
-                )
-                .print();
-            } else {
-                let style = settings.stdout_style();
-                let line = match outcome {
-                    SessionRecovery::Clean => "Nothing to recover: no interrupted activation",
-                    SessionRecovery::RolledBack { .. } => {
-                        "Removed the interrupted activation's next root and runtime files"
-                    }
-                };
-                crate::cli::output::println_tolerating_broken_pipe(&style.marked(Mark::Pass, line));
-                for mount in &remaining {
-                    crate::cli::output::println_tolerating_broken_pipe(&format!(
-                        "  ! still mounted: {mount} (a reboot clears it)"
-                    ));
-                }
-                for device in &backend {
-                    let line = if device.state == "closed" {
-                        style.marked(
-                            Mark::Pass,
-                            format!("Closed the hidden backend device {}", device.name),
-                        )
-                    } else {
-                        style.marked(
-                            Mark::Warn,
-                            format!(
-                                "The hidden backend device {} is still open and in use: its \
-                                 key stays in RAM until you unmount it and close it",
-                                device.name
-                            ),
-                        )
-                    };
-                    crate::cli::output::println_tolerating_broken_pipe(&line);
-                }
-            }
-            if remaining.is_empty() {
+            let data = recover_data(&outcome);
+            let status = if data.remaining_mounts.is_empty() {
                 ExitStatus::Ok
             } else {
                 ExitStatus::DegradedReboot
+            };
+            if json {
+                Envelope::success("recover", data).print();
+            } else {
+                for line in human_lines(&data, settings.stdout_style()) {
+                    crate::cli::output::println_tolerating_broken_pipe(&line);
+                }
             }
+            status
         }
         Err(e) => report_error(
             json,
@@ -143,5 +91,117 @@ pub fn execute(
             ExitStatus::InvalidState,
             deactivate_error_body(&e),
         ),
+    }
+}
+
+/// The `data` payload for `outcome`.
+fn recover_data(outcome: &SessionRecovery) -> RecoverData {
+    let (name, remaining, backend): (_, &[std::path::PathBuf], &[(String, BackendClose)]) =
+        match outcome {
+            SessionRecovery::Clean => ("clean", &[], &[]),
+            SessionRecovery::RolledBack { remaining, backend } => {
+                ("rolled_back", remaining, backend)
+            }
+        };
+    RecoverData {
+        outcome: name,
+        remaining_mounts: remaining.iter().map(|p| p.display().to_string()).collect(),
+        backend: backend
+            .iter()
+            .map(|(name, state)| BackendData {
+                name: name.clone(),
+                state: match state {
+                    BackendClose::Closed => "closed",
+                    BackendClose::InUse => "in_use",
+                },
+            })
+            .collect(),
+    }
+}
+
+/// The human report: the outcome, each mount left behind, each backend device.
+fn human_lines(data: &RecoverData, style: Style) -> Vec<String> {
+    let headline = if data.outcome == "clean" {
+        "Nothing to recover: no interrupted activation"
+    } else {
+        "Removed the interrupted activation's next root and runtime files"
+    };
+    let mut lines = vec![style.marked(Mark::Pass, headline)];
+    for mount in &data.remaining_mounts {
+        lines.push(format!("  ! still mounted: {mount} (a reboot clears it)"));
+    }
+    for device in &data.backend {
+        lines.push(if device.state == "closed" {
+            style.marked(
+                Mark::Pass,
+                format!("Closed the hidden backend device {}", device.name),
+            )
+        } else {
+            style.marked(
+                Mark::Warn,
+                format!(
+                    "The hidden backend device {} is still open and in use: its key stays \
+                     in RAM until you unmount it and close it",
+                    device.name
+                ),
+            )
+        });
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ASCII: Style = Style {
+        color: false,
+        ascii: true,
+    };
+
+    #[test]
+    fn a_clean_recovery_is_one_line_and_an_empty_payload() {
+        let data = recover_data(&SessionRecovery::Clean);
+        assert_eq!(
+            serde_json::to_value(&data).unwrap(),
+            serde_json::json!({"outcome": "clean", "remaining_mounts": [], "backend": []})
+        );
+        assert_eq!(
+            human_lines(&data, ASCII),
+            vec!["[PASS] Nothing to recover: no interrupted activation"]
+        );
+    }
+
+    #[test]
+    fn a_rollback_reports_leftover_mounts_and_each_backend_device() {
+        let data = recover_data(&SessionRecovery::RolledBack {
+            remaining: vec!["/run/nextroot/home".into()],
+            backend: vec![
+                ("hidden-crypt".to_string(), BackendClose::Closed),
+                ("hidden-loop".to_string(), BackendClose::InUse),
+            ],
+        });
+
+        assert_eq!(
+            serde_json::to_value(&data).unwrap(),
+            serde_json::json!({
+                "outcome": "rolled_back",
+                "remaining_mounts": ["/run/nextroot/home"],
+                "backend": [
+                    {"name": "hidden-crypt", "state": "closed"},
+                    {"name": "hidden-loop", "state": "in_use"},
+                ],
+            })
+        );
+        assert_eq!(
+            human_lines(&data, ASCII),
+            vec![
+                "[PASS] Removed the interrupted activation's next root and runtime files",
+                "  ! still mounted: /run/nextroot/home (a reboot clears it)",
+                "[PASS] Closed the hidden backend device hidden-crypt",
+                "[WARN] The hidden backend device hidden-loop is still open and in use: its \
+                 key stays in RAM until you unmount it and close it",
+            ]
+        );
     }
 }

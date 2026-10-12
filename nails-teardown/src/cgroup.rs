@@ -249,4 +249,165 @@ mod tests {
         );
         assert_eq!(v2_path("12:pids:/x\n"), None);
     }
+
+    #[test]
+    fn this_process_is_listed_in_its_own_cgroup() {
+        let Some(own) = own_path() else {
+            eprintln!("no cgroup v2 hierarchy on this host");
+            return;
+        };
+        let own_dir = dir(Path::new(CGROUP_ROOT), &own);
+        if !own_dir.is_dir() {
+            eprintln!("the cgroup hierarchy is not mounted at {CGROUP_ROOT}");
+            return;
+        }
+        assert!(own.starts_with('/'), "{own}");
+        assert!(procs(&own_dir).contains(&std::process::id()));
+    }
+
+    #[test]
+    fn the_cgroup_directory_is_joined_below_the_root() {
+        assert_eq!(
+            dir(Path::new("/sys/fs/cgroup"), "/system.slice/a.service"),
+            PathBuf::from("/sys/fs/cgroup/system.slice/a.service")
+        );
+        assert_eq!(
+            dir(Path::new("/sys/fs/cgroup"), "/"),
+            PathBuf::from("/sys/fs/cgroup/")
+        );
+    }
+
+    #[test]
+    fn procs_reads_the_cgroup_and_every_child_below_it() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("cgroup.procs"), "10\n11\n").unwrap();
+        std::fs::create_dir_all(root.path().join("child/grandchild")).unwrap();
+        std::fs::write(root.path().join("child/cgroup.procs"), "").unwrap();
+        std::fs::write(
+            root.path().join("child/grandchild/cgroup.procs"),
+            "12\nnot-a-pid\n",
+        )
+        .unwrap();
+
+        let mut pids = procs(root.path());
+        pids.sort_unstable();
+
+        assert_eq!(pids, vec![10, 11, 12]);
+        assert!(procs(&root.path().join("missing")).is_empty());
+    }
+
+    #[test]
+    fn the_atomic_kill_writes_one_to_cgroup_kill() {
+        let cgroup = tempfile::tempdir().unwrap();
+
+        assert_eq!(kill(cgroup.path(), &[]).unwrap(), KillMethod::Atomic);
+        assert_eq!(
+            std::fs::read_to_string(cgroup.path().join("cgroup.kill")).unwrap(),
+            "1"
+        );
+    }
+
+    #[test]
+    fn a_cgroup_that_is_gone_is_an_error_to_kill() {
+        let parent = tempfile::tempdir().unwrap();
+
+        let err = kill(&parent.path().join("gone"), &[]).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    /// Without `cgroup.kill` (a kernel before 5.14) every listed process is
+    /// SIGKILLed through its own handle, children cgroups included, and the
+    /// spared pids are left running.
+    #[test]
+    fn without_cgroup_kill_each_process_but_the_spared_is_killed() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let cgroup = tempfile::tempdir().unwrap();
+        // A link into a missing directory makes the write fail with NotFound,
+        // as the cgroupfs of an older kernel does for the absent file.
+        std::os::unix::fs::symlink(
+            cgroup.path().join("absent/cgroup.kill"),
+            cgroup.path().join("cgroup.kill"),
+        )
+        .unwrap();
+        let spawn = || {
+            std::process::Command::new("sleep")
+                .arg("30")
+                .spawn()
+                .unwrap()
+        };
+        let (mut victim, mut nested, mut spared) = (spawn(), spawn(), spawn());
+        std::fs::write(
+            cgroup.path().join("cgroup.procs"),
+            format!("{}\n{}\n", victim.id(), spared.id()),
+        )
+        .unwrap();
+        std::fs::create_dir(cgroup.path().join("payload")).unwrap();
+        std::fs::write(
+            cgroup.path().join("payload/cgroup.procs"),
+            format!("{}\n", nested.id()),
+        )
+        .unwrap();
+
+        let method = kill(cgroup.path(), &[spared.id()]).unwrap();
+        let spared_running = spared.try_wait().unwrap().is_none();
+        let _ = spared.kill();
+        let _ = spared.wait();
+
+        assert_eq!(method, KillMethod::PerProcess);
+        assert_eq!(victim.wait().unwrap().signal(), Some(libc::SIGKILL));
+        assert_eq!(nested.wait().unwrap().signal(), Some(libc::SIGKILL));
+        assert!(spared_running, "a spared process must survive the kill");
+    }
+
+    #[test]
+    fn populated_follows_the_events_file() {
+        let root = tempfile::tempdir().unwrap();
+        let (full, empty) = (root.path().join("full"), root.path().join("empty"));
+        std::fs::create_dir(&full).unwrap();
+        std::fs::create_dir(&empty).unwrap();
+        std::fs::write(full.join("cgroup.events"), "populated 1\nfrozen 0\n").unwrap();
+        std::fs::write(empty.join("cgroup.events"), "populated 0\nfrozen 0\n").unwrap();
+
+        assert!(populated(&full));
+        assert!(!populated(&empty));
+        // systemd removes a unit's cgroup once it is empty.
+        assert!(!populated(&root.path().join("removed")));
+    }
+
+    #[test]
+    fn await_empty_reports_the_cgroups_still_populated_when_the_budget_runs_out() {
+        let root = tempfile::tempdir().unwrap();
+        let (full, empty) = (root.path().join("full"), root.path().join("empty"));
+        std::fs::create_dir(&full).unwrap();
+        std::fs::create_dir(&empty).unwrap();
+        std::fs::write(full.join("cgroup.events"), "populated 1\n").unwrap();
+        std::fs::write(empty.join("cgroup.events"), "populated 0\n").unwrap();
+
+        let start = Instant::now();
+        let left = await_empty(&[full.clone(), empty], Duration::from_millis(20));
+
+        assert_eq!(left, vec![full]);
+        assert!(start.elapsed() >= Duration::from_millis(20));
+    }
+
+    #[test]
+    fn await_empty_returns_once_the_cgroup_empties() {
+        let root = tempfile::tempdir().unwrap();
+        let events = root.path().join("cgroup.events");
+        std::fs::write(&events, "populated 1\n").unwrap();
+        let emptier = {
+            let events = events.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                std::fs::write(events, "populated 0\n").unwrap();
+            })
+        };
+
+        let left = await_empty(&[root.path().to_path_buf()], Duration::from_secs(30));
+        emptier.join().unwrap();
+
+        assert!(left.is_empty());
+    }
 }

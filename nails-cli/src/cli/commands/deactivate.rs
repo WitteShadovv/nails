@@ -138,10 +138,24 @@ pub fn execute(
 /// Prompt on the terminal before deactivating, returning whether the operator
 /// confirmed. The warning and question go to stderr so stdout stays clean.
 fn prompt_deactivate_confirmation(settings: &OutputSettings, poweroff: bool) -> bool {
-    use std::io::{BufRead, Write};
+    confirm_deactivate(
+        settings,
+        poweroff,
+        &mut std::io::stderr(),
+        &mut std::io::stdin().lock(),
+    )
+}
 
+/// [`prompt_deactivate_confirmation`] on the given streams: the warning goes to
+/// `out`, the answer is read from `input`. Only `y` or `yes` (any case)
+/// confirms; anything else, or a read error, declines.
+fn confirm_deactivate(
+    settings: &OutputSettings,
+    poweroff: bool,
+    out: &mut impl std::io::Write,
+    input: &mut impl std::io::BufRead,
+) -> bool {
     let style = settings.stderr_style();
-    let mut stderr = std::io::stderr();
     let (headline, detail) = if poweroff {
         (
             "This ends the hidden session and powers off now.",
@@ -153,16 +167,16 @@ fn prompt_deactivate_confirmation(settings: &OutputSettings, poweroff: bool) -> 
             "    Every hidden program is closed; unsaved work is lost.",
         )
     };
-    let _ = writeln!(stderr, "{}", style.marked(Mark::Warn, headline));
-    let _ = writeln!(stderr, "{detail}");
-    let _ = write!(stderr, "    Continue? [y/N]: ");
-    let _ = stderr.flush();
+    let _ = writeln!(out, "{}", style.marked(Mark::Warn, headline));
+    let _ = writeln!(out, "{detail}");
+    let _ = write!(out, "    Continue? [y/N]: ");
+    let _ = out.flush();
 
-    let mut input = String::new();
-    if std::io::stdin().lock().read_line(&mut input).is_err() {
+    let mut answer = String::new();
+    if input.read_line(&mut answer).is_err() {
         return false;
     }
-    matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 #[cfg(test)]

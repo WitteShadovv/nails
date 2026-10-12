@@ -158,3 +158,57 @@ fn backend_alert() -> Notification {
         created_at: chrono::Utc::now().to_rfc3339(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Words that would tell a bystander reading the screen what this is.
+    const REVEALING: &[&str] = &["hidden", "nails", "decoy", "session", "overlay"];
+
+    fn assert_neutral(alert: &Notification) {
+        let text = format!("{} {}", alert.title, alert.body).to_lowercase();
+        for word in REVEALING {
+            assert!(!text.contains(word), "{word:?} in {text:?}");
+        }
+    }
+
+    #[test]
+    fn the_backend_alert_reads_as_an_ordinary_storage_warning() {
+        let alert = backend_alert();
+        assert_eq!(alert.title, "Storage unavailable");
+        assert_eq!(
+            alert.body,
+            "A mounted volume stopped responding. Save your work and reconnect it."
+        );
+        assert_eq!(alert.urgency, "critical");
+        assert_eq!(alert.icon.as_deref(), Some("drive-harddisk"));
+        chrono::DateTime::parse_from_rfc3339(&alert.created_at)
+            .expect("the alert carries an RFC 3339 timestamp");
+        assert_neutral(&alert);
+    }
+
+    #[test]
+    fn the_mount_alert_names_the_mount_point_and_its_device() {
+        let mount = MountEntry {
+            mount_id: 90,
+            parent_id: 1,
+            dev: "8:17".to_string(),
+            root: "/".into(),
+            mount_point: "/media/usb".into(),
+            mount_opts: "rw,relatime".to_string(),
+            fstype: "vfat".to_string(),
+            source: "/dev/sdb1".into(),
+            super_opts: "rw".to_string(),
+        };
+        let alert = mount_alert(&mount);
+        assert_eq!(alert.title, "Disk mounted with write access");
+        assert_eq!(
+            alert.body,
+            "/media/usb (/dev/sdb1) is mounted read-write. Files written there stay on that disk."
+        );
+        assert_eq!(alert.urgency, "critical");
+        assert_eq!(alert.icon.as_deref(), Some("drive-removable-media"));
+        assert_neutral(&alert);
+    }
+}

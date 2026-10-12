@@ -155,3 +155,142 @@ fn a_tampered_state_file_on_the_decoy_is_unknown() {
     assert_eq!(report.state_source, "corrupt");
     assert_eq!(report.uptime, None);
 }
+
+#[test]
+fn uptime_reads_in_the_largest_two_units_with_singular_and_plural() {
+    assert_eq!(format_uptime(Duration::zero()), "0 minutes");
+    assert_eq!(format_uptime(Duration::seconds(59)), "0 minutes");
+    assert_eq!(format_uptime(Duration::minutes(1)), "1 minute");
+    assert_eq!(format_uptime(Duration::minutes(59)), "59 minutes");
+    assert_eq!(format_uptime(Duration::hours(1)), "1 hour");
+    assert_eq!(
+        format_uptime(Duration::hours(1) + Duration::minutes(1)),
+        "1 hour 1 minute"
+    );
+    assert_eq!(
+        format_uptime(Duration::hours(23) + Duration::minutes(59)),
+        "23 hours 59 minutes"
+    );
+    assert_eq!(format_uptime(Duration::days(1)), "1 day");
+    // Past a day the minutes are dropped, even when there are no hours.
+    assert_eq!(
+        format_uptime(Duration::days(1) + Duration::minutes(30)),
+        "1 day"
+    );
+    assert_eq!(
+        format_uptime(Duration::days(1) + Duration::hours(1) + Duration::minutes(5)),
+        "1 day 1 hour"
+    );
+    assert_eq!(format_uptime(Duration::days(365)), "365 days");
+}
+
+#[test]
+fn a_negative_uptime_from_clock_skew_reads_as_zero() {
+    assert_eq!(format_uptime(Duration::hours(-3)), "0 minutes");
+}
+
+#[test]
+fn reminders_accumulate_at_six_twelve_and_twenty_four_hours() {
+    let severities = |uptime| {
+        generate_opsec_reminders(uptime, true)
+            .into_iter()
+            .map(|r| r.severity)
+            .collect::<Vec<_>>()
+    };
+    assert!(severities(Duration::hours(5) + Duration::minutes(59)).is_empty());
+    assert_eq!(severities(Duration::hours(6)), [ReminderSeverity::Info]);
+    assert_eq!(
+        severities(Duration::hours(12)),
+        [ReminderSeverity::Info, ReminderSeverity::Warning]
+    );
+    assert_eq!(
+        severities(Duration::hours(24)),
+        [
+            ReminderSeverity::Info,
+            ReminderSeverity::Warning,
+            ReminderSeverity::Critical
+        ]
+    );
+
+    let critical = &generate_opsec_reminders(Duration::days(3), true)[2];
+    assert_eq!(
+        critical.message,
+        "Session >24 hours - strongly recommend deactivation"
+    );
+}
+
+#[test]
+fn disabled_reminders_stay_silent_however_long_the_session() {
+    assert_eq!(generate_opsec_reminders(Duration::days(30), false), []);
+}
+
+#[test]
+fn each_severity_has_its_label_and_shared_mark() {
+    for (severity, label, plain, mark) in [
+        (ReminderSeverity::Info, "INFO", "[INFO]", crate::Mark::Info),
+        (
+            ReminderSeverity::Warning,
+            "WARNING",
+            "[WARNING]",
+            crate::Mark::Warn,
+        ),
+        (
+            ReminderSeverity::Critical,
+            "CRITICAL",
+            "[CRITICAL]",
+            crate::Mark::Fail,
+        ),
+    ] {
+        assert_eq!(severity.to_string(), label);
+        assert_eq!(severity.to_plain(), plain);
+        assert_eq!(severity.mark(), mark);
+    }
+}
+
+#[test]
+fn a_reminder_renders_its_label_in_ascii_and_its_mark_otherwise() {
+    let reminder = OpSecReminder {
+        severity: ReminderSeverity::Warning,
+        message: "Extended session".to_string(),
+    };
+    assert_eq!(reminder.to_plain(), "[WARNING] Extended session");
+
+    let ascii = crate::Style {
+        color: true,
+        ascii: true,
+    };
+    // ASCII output keeps the reminder's own label, uncoloured, rather than the
+    // generic `[WARN]` mark.
+    assert_eq!(reminder.render(ascii), "[WARNING] Extended session");
+
+    let unicode = crate::Style {
+        color: false,
+        ascii: false,
+    };
+    assert_eq!(reminder.render(unicode), "⚠ Extended session");
+    assert_eq!(reminder.to_string(), "⚠ Extended session");
+
+    let coloured = crate::Style {
+        color: true,
+        ascii: false,
+    };
+    assert_eq!(
+        reminder.render(coloured),
+        "\x1b[1;33m⚠\x1b[0m Extended session"
+    );
+}
+
+#[test]
+fn a_reminder_round_trips_through_json() {
+    let reminder = OpSecReminder {
+        severity: ReminderSeverity::Critical,
+        message: "Session >24 hours".to_string(),
+    };
+    let json = serde_json::to_string(&reminder).unwrap();
+    assert_eq!(
+        json,
+        r#"{"severity":"Critical","message":"Session >24 hours"}"#
+    );
+    let back: OpSecReminder = serde_json::from_str(&json).unwrap();
+    assert_eq!(back, reminder);
+}

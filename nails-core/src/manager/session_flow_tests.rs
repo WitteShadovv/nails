@@ -1,0 +1,681 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Tests for the whole-root session through the manager.
+//!
+//! Each test hands the flow a [`Machine`] of its own: a scratch `/` and `/run`
+//! and a fixed mount table, so the live view (decoy, interrupted, entering,
+//! hidden) is whatever the test lays out. The full entry runs in a private
+//! user + mount namespace on scratch tmpfs. Kept in a sibling file so
+//! `session_flow.rs` stays within the production line budget.
+
+use super::*;
+use crate::nixos::NixOSBuilder;
+use crate::platform::FakePlatform;
+use crate::test_support::{Rerun, ScratchTmpfs};
+use crate::{Config, PlatformState, RealFilesystem, StateFile};
+use nails_teardown::mountinfo::parse_mountinfo;
+use nails_teardown::whole_root::plan::{
+    Arm, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, RootSide, Tools,
+};
+use std::cell::{Cell, RefCell};
+use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+
+/// The plain decoy: `/` is the decoy's own ext4.
+const DECOY_TABLE: &str = "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n";
+
+/// Counts the reloads; nothing else is asked of it outside the namespace test.
+#[derive(Default)]
+struct FakeEntryHost {
+    reloads: Cell<u32>,
+}
+
+impl EntryHost for FakeEntryHost {
+    fn daemon_reload(&self) -> Result<()> {
+        self.reloads.set(self.reloads.get() + 1);
+        Ok(())
+    }
+    fn build_hidden_system(&self, _: &NixOSBuilder, _: &Path, _: &Path) -> Result<PathBuf> {
+        Err(NailsError::NixOSError("not in this test".into()))
+    }
+    fn keep_hidden_closure(
+        &self,
+        _: &Path,
+        _: &Path,
+        _: &Path,
+    ) -> Result<crate::session::store::KeepReport> {
+        Err(NailsError::NixOSError("not in this test".into()))
+    }
+    fn activate_hidden_system(&self, _: &Path, _: &Path) -> Result<()> {
+        Ok(())
+    }
+    fn unit_stop_commands(&self, _: &str) -> Result<String> {
+        Ok(String::new())
+    }
+}
+
+/// Records the targets started; refuses them when `refuse` is set.
+#[derive(Default)]
+struct FakeTarget {
+    started: RefCell<Vec<String>>,
+    refuse: bool,
+}
+
+impl TargetHost for FakeTarget {
+    fn start_target(&self, target: &str) -> Result<()> {
+        self.started.borrow_mut().push(target.to_string());
+        if self.refuse {
+            return Err(NailsError::InvalidState(format!("{target} refused")));
+        }
+        Ok(())
+    }
+}
+
+/// A manager whose hidden volume (and state file) is `hidden`.
+fn manager(hidden: &Path) -> NailsManager<RealFilesystem> {
+    let config = Config {
+        hidden_volume_root: hidden.to_path_buf(),
+        state_file_path: hidden.join("state.json"),
+        log_path: hidden.join("logs"),
+        ..Config::test_default()
+    };
+    NailsManager::new(RealFilesystem, config, hidden.join("state.json"))
+}
+
+/// A scratch `/` and `/run` below `dir`, seen through `table`.
+fn machine(dir: &Path, table: &str) -> Machine {
+    let paths = Paths {
+        root: dir.join("root"),
+        run: dir.join("run"),
+    };
+    std::fs::create_dir_all(&paths.root).unwrap();
+    std::fs::create_dir_all(&paths.run).unwrap();
+    Machine {
+        paths,
+        mounts: Some(parse_mountinfo(table)),
+    }
+}
+
+/// The table of a hidden root whose upper is `upper`.
+fn hidden_table(upper: &Path) -> String {
+    format!(
+        "1 0 0:40 / / rw - overlay overlay rw,lowerdir=/x,upperdir={},workdir=/w\n",
+        upper.display()
+    )
+}
+
+fn plan(hidden: &Path) -> Plan {
+    let side = RootSide {
+        init: PathBuf::from("/usr/lib/systemd/systemd"),
+        system: None,
+    };
+    Plan {
+        version: PLAN_VERSION,
+        hidden_root: hidden.to_path_buf(),
+        upper: hidden.join("root/upper"),
+        work: hidden.join("root/work"),
+        owner: None,
+        decoy_root: DecoyRoot {
+            source: PathBuf::from("/dev/vda2"),
+            fstype: "ext4".into(),
+            data: None,
+        },
+        decoy: side.clone(),
+        hidden: side,
+        policy_mounts: Vec::new(),
+        masks: Vec::new(),
+        session_units: Vec::new(),
+        backend: Vec::new(),
+        tools: Tools::default(),
+        armed: None,
+        entered_at: None,
+        run_noexec: false,
+        carried: Vec::new(),
+        read_only_disks: false,
+    }
+}
+
+fn write_plan(machine: &Machine, plan: &Plan) {
+    std::fs::create_dir_all(machine.paths.runtime()).unwrap();
+    plan.write_atomic(&machine.paths.plan()).unwrap();
+}
+
+fn record(hidden: &Path, state: SystemState) {
+    StateFile {
+        state,
+        ..StateFile::default()
+    }
+    .save_with_custom_root(&hidden.join("state.json"), hidden)
+    .unwrap();
+}
+
+fn recorded(hidden: &Path) -> StateFile {
+    StateFile::load(&hidden.join("state.json")).unwrap()
+}
+
+fn active() -> SystemState {
+    SystemState::Active {
+        activated_at: Utc::now(),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// recover
+// ---------------------------------------------------------------------------
+
+#[test]
+fn recovering_the_plain_decoy_resets_an_active_record() {
+    // A hard reset in the session leaves the record Active on the decoy.
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let mut m = manager(&hidden);
+    let host = FakeEntryHost::default();
+
+    let outcome = m
+        .recover_session_on(&machine(dir.path(), DECOY_TABLE), &host)
+        .unwrap();
+
+    assert_eq!(outcome, SessionRecovery::Clean);
+    assert_eq!(recorded(&hidden).state, SystemState::Inactive);
+    assert_eq!(host.reloads.get(), 0, "nothing to reload on a clean decoy");
+}
+
+#[test]
+fn recovering_the_plain_decoy_leaves_an_inactive_record_unwritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let mut m = manager(&hidden);
+
+    let outcome = m
+        .recover_session_on(&machine(dir.path(), DECOY_TABLE), &FakeEntryHost::default())
+        .unwrap();
+
+    assert_eq!(outcome, SessionRecovery::Clean);
+    assert!(
+        !hidden.join("state.json").exists(),
+        "an inactive record needs no write"
+    );
+}
+
+#[test]
+fn an_interrupted_entry_is_rolled_back_and_the_record_reset() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut leftover = plan(&hidden);
+    // A device that is not open is not reported.
+    leftover.backend = vec!["nails-test-never-open".into()];
+    write_plan(&machine, &leftover);
+    std::fs::write(machine.paths.runtime().join("nails"), b"binary copy").unwrap();
+    let mut m = manager(&hidden);
+    let host = FakeEntryHost::default();
+
+    let outcome = m.recover_session_on(&machine, &host).unwrap();
+
+    assert_eq!(
+        outcome,
+        SessionRecovery::RolledBack {
+            remaining: Vec::new(),
+            backend: Vec::new(),
+        }
+    );
+    assert!(
+        !machine.paths.runtime().exists(),
+        "the runtime directory with the plan and the binary copy is removed"
+    );
+    assert_eq!(host.reloads.get(), 1);
+    assert_eq!(recorded(&hidden).state, SystemState::Inactive);
+}
+
+#[test]
+fn recovery_refuses_while_an_activation_is_still_entering() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    // Armed just now by a live process: this test's own.
+    let pid = std::process::id();
+    let mut entering = plan(&hidden);
+    entering.owner = Some(Owner {
+        pid,
+        start_time: nails_teardown::proc::stat(pid).unwrap().start_time,
+    });
+    entering.armed = Some(Arm::now(Direction::Enter));
+    write_plan(&machine, &entering);
+    let mut m = manager(&hidden);
+
+    let error = m
+        .recover_session_on(&machine, &FakeEntryHost::default())
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("entering the hidden root right now"),
+        "{error}"
+    );
+    assert!(
+        machine.paths.plan().exists(),
+        "the live activation's plan stays"
+    );
+}
+
+#[test]
+fn recovery_in_the_hidden_root_points_to_deactivate() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    let table = hidden_table(&hidden.join("root/upper"));
+    let mut m = manager(&hidden);
+
+    let error = m
+        .recover_session_on(&machine(dir.path(), &table), &FakeEntryHost::default())
+        .unwrap_err();
+
+    assert!(error.to_string().contains("`nails deactivate`"), "{error}");
+}
+
+// ---------------------------------------------------------------------------
+// leave
+// ---------------------------------------------------------------------------
+
+#[test]
+fn leaving_is_refused_outside_the_hidden_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    let mut m = manager(&hidden);
+    let target = FakeTarget::default();
+
+    let error = m
+        .leave_session_on(&machine(dir.path(), DECOY_TABLE), LeaveTo::Decoy, &target)
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("not in a hidden session"),
+        "{error}"
+    );
+    assert!(target.started.borrow().is_empty());
+}
+
+#[test]
+fn leaving_a_hidden_root_without_its_plan_asks_for_a_power_off() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let table = hidden_table(&hidden.join("root/upper"));
+    let mut m = manager(&hidden);
+    let target = FakeTarget::default();
+
+    let error = m
+        .leave_session_on(&machine(dir.path(), &table), LeaveTo::Decoy, &target)
+        .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("the way back is unknown"), "{message}");
+    assert!(message.contains("no session plan in /run"), "{message}");
+    assert!(message.contains("Power the machine off"), "{message}");
+    assert!(target.started.borrow().is_empty());
+    assert!(
+        recorded(&hidden).state.is_active(),
+        "the record is untouched"
+    );
+}
+
+#[test]
+fn powering_off_from_the_hidden_root_records_inactive_first() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    let mut m = manager(&hidden);
+    let target = FakeTarget::default();
+
+    let report = m
+        .leave_session_on(&machine, LeaveTo::Poweroff, &target)
+        .unwrap();
+
+    assert_eq!(report, crate::session::LeaveReport::default());
+    assert_eq!(*target.started.borrow(), ["poweroff.target"]);
+    assert_eq!(recorded(&hidden).state, SystemState::Inactive);
+}
+
+// ---------------------------------------------------------------------------
+// trigger
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_started_soft_reboot_leaves_the_prepared_entry_alone() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    let machine = machine(dir.path(), DECOY_TABLE);
+    write_plan(&machine, &plan(&hidden));
+    let mut m = manager(&hidden);
+    let target = FakeTarget::default();
+    let host = FakeEntryHost::default();
+
+    m.trigger_entry_on(&machine, &target, &host).unwrap();
+
+    assert_eq!(*target.started.borrow(), ["soft-reboot.target"]);
+    assert!(machine.paths.plan().exists());
+    assert_eq!(host.reloads.get(), 0);
+}
+
+#[test]
+fn a_refused_soft_reboot_rolls_the_entry_back_and_resets_the_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    record(&hidden, active());
+    let machine = machine(dir.path(), DECOY_TABLE);
+    write_plan(&machine, &plan(&hidden));
+    let mut m = manager(&hidden);
+    let target = FakeTarget {
+        refuse: true,
+        ..FakeTarget::default()
+    };
+    let host = FakeEntryHost::default();
+
+    let error = m.trigger_entry_on(&machine, &target, &host).unwrap_err();
+
+    assert_eq!(
+        error.to_string(),
+        NailsError::InvalidState("soft-reboot.target refused".into()).to_string()
+    );
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 1);
+    assert_eq!(recorded(&hidden).state, SystemState::Inactive);
+}
+
+// ---------------------------------------------------------------------------
+// enter
+// ---------------------------------------------------------------------------
+
+#[test]
+fn entering_from_the_hidden_root_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    let mut m = manager(&hidden);
+    let host = FakeEntryHost::default();
+
+    let outcome = m
+        .enter_session_on(&machine, &EnterOptions::default(), &host)
+        .unwrap();
+
+    assert!(
+        matches!(outcome, EnterOutcome::AlreadyActive),
+        "{outcome:?}"
+    );
+    assert_eq!(host.reloads.get(), 0);
+    assert!(!hidden.join("state.json").exists());
+}
+
+#[test]
+fn an_unsupported_host_is_refused_before_anything_is_written() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&hidden);
+    let mut profile = FakePlatform::fhs().host_profile();
+    profile.kind = PlatformKind::Unsupported;
+    profile.unsupported_reason = Some("an immutable image-based host".into());
+    m.set_host_profile(profile);
+
+    let error = m
+        .enter_session_on(
+            &machine,
+            &EnterOptions::default(),
+            &FakeEntryHost::default(),
+        )
+        .unwrap_err();
+
+    assert!(
+        matches!(&error, NailsError::UnsupportedPlatform { reason } if reason == "an immutable image-based host"),
+        "{error:?}"
+    );
+    assert!(!machine.paths.runtime().exists());
+}
+
+#[test]
+fn without_a_profile_the_host_is_nixos_when_it_has_a_current_system() {
+    let dir = tempfile::tempdir().unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let m = manager(&dir.path().join("hidden"));
+    assert!(!m.require_supported_host(&machine).unwrap());
+    std::os::unix::fs::symlink(
+        "/nix/store/aaa-nixos-system",
+        machine.paths.run.join("current-system"),
+    )
+    .unwrap();
+    // `exists` follows the link; a dangling one is not a live generation.
+    assert!(!m.require_supported_host(&machine).unwrap());
+    std::fs::remove_file(machine.paths.run.join("current-system")).unwrap();
+    std::fs::create_dir(machine.paths.run.join("current-system")).unwrap();
+    assert!(m.require_supported_host(&machine).unwrap());
+}
+
+#[test]
+fn a_detected_profile_decides_nixos_by_its_kind() {
+    let dir = tempfile::tempdir().unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&dir.path().join("hidden"));
+    m.set_host_profile(FakePlatform::nixos().host_profile());
+    assert!(m.require_supported_host(&machine).unwrap());
+    m.set_host_profile(FakePlatform::fhs().host_profile());
+    assert!(!m.require_supported_host(&machine).unwrap());
+}
+
+#[test]
+fn a_ram_decoy_root_refuses_the_entry_before_anything_is_prepared() {
+    // The way back mounts the decoy root again, so it must be a block device.
+    let dir = tempfile::tempdir().unwrap();
+    let machine = machine(dir.path(), "1 0 0:30 / / rw - tmpfs tmpfs rw\n");
+    let mut m = manager(&dir.path().join("hidden"));
+    m.set_host_profile(FakePlatform::fhs().host_profile());
+    let options = EnterOptions {
+        skip_preflight: true,
+        ..EnterOptions::default()
+    };
+    let host = FakeEntryHost::default();
+
+    let error = m.enter_session_on(&machine, &options, &host).unwrap_err();
+
+    assert!(
+        error.to_string().contains("is not on a block device"),
+        "{error}"
+    );
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// record
+// ---------------------------------------------------------------------------
+
+fn entry_with(hidden_system: Option<&str>, decoy_system: Option<&str>) -> entry::Entry {
+    let mut plan = plan(Path::new("/mnt/data"));
+    plan.hidden.system = hidden_system.map(PathBuf::from);
+    plan.decoy.system = decoy_system.map(PathBuf::from);
+    entry::Entry {
+        plan,
+        decisions: Vec::new(),
+        warnings: Vec::new(),
+    }
+}
+
+#[test]
+fn a_recorded_nixos_entry_keeps_both_generations_and_its_timing() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut m = manager(dir.path());
+    let entry = entry_with(
+        Some("/nix/store/bbb-nixos-system"),
+        Some("/nix/store/aaa-nixos-system"),
+    );
+
+    m.record_entry(&entry, std::time::Duration::from_millis(1234))
+        .unwrap();
+
+    let state = recorded(dir.path());
+    assert!(state.state.is_active(), "{:?}", state.state);
+    assert_eq!(
+        state.platform,
+        Some(PlatformState::NixOs {
+            generation: Some("/nix/store/bbb-nixos-system".into()),
+            last_switch_warning: None,
+        })
+    );
+    assert_eq!(
+        state.decoy_system.as_deref(),
+        Some("/nix/store/aaa-nixos-system")
+    );
+    assert_eq!(state.last_activation.unwrap().duration_ms, 1234);
+}
+
+#[test]
+fn a_recorded_fhs_entry_marks_the_debian_family() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut m = manager(dir.path());
+
+    m.record_entry(&entry_with(None, None), std::time::Duration::ZERO)
+        .unwrap();
+
+    let state = recorded(dir.path());
+    assert!(state.state.is_active());
+    assert_eq!(state.platform, Some(PlatformState::DebianFamily));
+    assert_eq!(state.decoy_system, None);
+}
+
+#[test]
+fn an_overlay_only_entry_on_nixos_records_no_platform() {
+    // The decoy's own NixOS system, no hidden build: nothing hidden to name.
+    let dir = tempfile::tempdir().unwrap();
+    let mut m = manager(dir.path());
+    m.seed_cached_state(StateFile {
+        platform: Some(PlatformState::DebianFamily),
+        ..StateFile::default()
+    });
+
+    m.record_entry(
+        &entry_with(None, Some("/nix/store/aaa-nixos-system")),
+        std::time::Duration::ZERO,
+    )
+    .unwrap();
+
+    let state = recorded(dir.path());
+    assert!(state.state.is_active());
+    assert_eq!(state.platform, None);
+    assert_eq!(
+        state.decoy_system.as_deref(),
+        Some("/nix/store/aaa-nixos-system")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// the whole entry, against a real kernel
+// ---------------------------------------------------------------------------
+
+/// A minimal FHS decoy root: an os-release, an init, the soft-reboot units
+/// and an fstab.
+fn fhs_decoy() -> ScratchTmpfs {
+    let decoy = ScratchTmpfs::new("");
+    for dir in ["etc", "usr/lib/systemd/system", "run", "home"] {
+        decoy.mkdir(dir);
+    }
+    for unit in ["soft-reboot.target", "systemd-soft-reboot.service"] {
+        std::fs::write(decoy.path().join("usr/lib/systemd/system").join(unit), "").unwrap();
+    }
+    std::fs::write(decoy.path().join("etc/os-release"), "ID=debian\n").unwrap();
+    std::fs::write(
+        decoy.path().join("etc/fstab"),
+        "/dev/vda2 / ext4 defaults 0 1\n",
+    )
+    .unwrap();
+    let init = decoy.path().join("usr/lib/systemd/systemd");
+    std::fs::write(&init, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(&init, std::fs::Permissions::from_mode(0o755)).unwrap();
+    decoy
+}
+
+#[test]
+fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_refused() {
+    let _ = Rerun::new(crate::test_path!(
+        an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_refused
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        m.set_host_profile(FakePlatform::fhs().host_profile());
+        let options = EnterOptions {
+            skip_preflight: true,
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        let host = FakeEntryHost::default();
+
+        let outcome = m.enter_session_on(&machine, &options, &host).unwrap();
+
+        let EnterOutcome::Prepared(entry) = outcome else {
+            panic!("expected a prepared entry, got {outcome:?}");
+        };
+        // The plan is armed for the entry, read from the given mount table,
+        // and written where the soft-reboot will find it.
+        assert_eq!(entry.plan.decoy_root.source, Path::new("/dev/vda2"));
+        assert_eq!(
+            entry.plan.armed.map(|arm| arm.direction),
+            Some(Direction::Enter)
+        );
+        assert_eq!(entry.plan.hidden_root, hidden.path());
+        assert!(machine.paths.plan().is_file());
+        assert!(
+            machine
+                .paths
+                .nextroot()
+                .join("usr/lib/systemd/systemd")
+                .is_file()
+        );
+        assert!(host.reloads.get() >= 1, "the drop-in is loaded");
+        // The record says Active before the soft-reboot kills this process.
+        let state = recorded(hidden.path());
+        assert!(state.state.is_active(), "{:?}", state.state);
+        assert_eq!(state.platform, Some(PlatformState::DebianFamily));
+        assert!(state.last_activation.is_some());
+
+        let target = FakeTarget {
+            refuse: true,
+            ..FakeTarget::default()
+        };
+        assert!(m.trigger_entry_on(&machine, &target, &host).is_err());
+
+        // Nothing of the entry is left, and the record is back to inactive.
+        let mounts = read_mountinfo().unwrap();
+        assert!(
+            mounts
+                .iter()
+                .all(|e| !e.mount_point.starts_with(machine.paths.nextroot())),
+            "the next root is detached"
+        );
+        assert!(!machine.paths.runtime().exists());
+        assert_eq!(recorded(hidden.path()).state, SystemState::Inactive);
+    });
+}

@@ -39,6 +39,8 @@ zbus = { version = "5", default-features = false, features = ["blocking-api", "a
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# Lets the sleep guard tests wait for what the guard logs.
+tracing-subscriber = { workspace = true }
 # Self dev-dependency, as in nails-core: the test-only hooks and fixtures for
 # this crate's own tests.
 nails-session = { path = ".", features = ["test-hooks", "test-support"] }

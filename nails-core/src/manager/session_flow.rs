@@ -16,6 +16,7 @@ use crate::session::entry::{self, EntryHost, EntryInputs};
 use crate::session::{LeaveTo, Paths, SessionView, TargetHost};
 use crate::state::{LastActivation, SystemState};
 use chrono::Utc;
+use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
 use std::path::PathBuf;
 
 /// What `activate` asked for.
@@ -57,19 +58,48 @@ pub enum SessionRecovery {
     },
 }
 
+/// What the session flow reads of the machine: the system paths and the live
+/// mount table in production; the tests give a scratch tree and a fixed table.
+struct Machine {
+    paths: Paths,
+    /// The mount table, or `None` to read the live one.
+    mounts: Option<Vec<MountEntry>>,
+}
+
+impl Machine {
+    fn system() -> Self {
+        Self {
+            paths: Paths::system(),
+            mounts: None,
+        }
+    }
+
+    fn mounts(&self) -> std::io::Result<Vec<MountEntry>> {
+        match &self.mounts {
+            Some(mounts) => Ok(mounts.clone()),
+            None => read_mountinfo(),
+        }
+    }
+}
+
 impl<F: Filesystem> NailsManager<F> {
     /// Where the machine is right now.
     pub fn session_view(&self) -> SessionView {
-        crate::session::probe(&Paths::system(), &self.config.hidden_volume_root)
+        self.session_view_on(&Machine::system())
     }
 
-    fn require_supported_host(&self) -> Result<bool> {
+    fn session_view_on(&self, machine: &Machine) -> SessionView {
+        let mounts = machine.mounts().unwrap_or_default();
+        crate::session::probe::probe_with(&machine.paths, &self.config.hidden_volume_root, &mounts)
+    }
+
+    fn require_supported_host(&self, machine: &Machine) -> Result<bool> {
         match self.host_profile() {
             Some(profile) => {
                 profile.require_supported()?;
                 Ok(profile.kind == PlatformKind::NixOs)
             }
-            None => Ok(Paths::system().run.join("current-system").exists()),
+            None => Ok(machine.paths.run.join("current-system").exists()),
         }
     }
 
@@ -82,17 +112,27 @@ impl<F: Filesystem> NailsManager<F> {
         options: &EnterOptions,
         host: &dyn EntryHost,
     ) -> Result<EnterOutcome> {
-        if self.session_view().is_hidden() {
+        self.enter_session_on(&Machine::system(), options, host)
+    }
+
+    fn enter_session_on(
+        &mut self,
+        machine: &Machine,
+        options: &EnterOptions,
+        host: &dyn EntryHost,
+    ) -> Result<EnterOutcome> {
+        if self.session_view_on(machine).is_hidden() {
             return Ok(EnterOutcome::AlreadyActive);
         }
-        let nixos = self.require_supported_host()?;
+        let nixos = self.require_supported_host(machine)?;
         if !options.skip_preflight {
             self.stage_hidden_config(options.overlay_only)?;
             self.run_preflight_checks(options.overlay_only, options.accept_persistent_decoy)?;
         }
         let started = std::time::Instant::now();
         let hidden_root = self.config.hidden_volume_root.clone();
-        let entries = nails_teardown::mountinfo::read_mountinfo()
+        let entries = machine
+            .mounts()
             .map_err(|e| NailsError::io("/proc/self/mountinfo", e))?;
         let decoy_root = entry::decoy_root_of(&entries, std::path::Path::new("/"))?;
         let backend = crate::backend_lock::resolve_backend_chain(&self.filesystem, &hidden_root)
@@ -119,9 +159,9 @@ impl<F: Filesystem> NailsManager<F> {
             rebuild_space_mb: self.config.rebuild_space_mb,
             read_only_disks: self.config.session_mounts.read_only,
         };
-        let prepared = entry::prepare(&Paths::system(), &inputs, host)?;
+        let prepared = entry::prepare(&machine.paths, &inputs, host)?;
         if let Err(e) = self.record_entry(&prepared, started.elapsed()) {
-            entry::rollback(&Paths::system());
+            entry::rollback(&machine.paths);
             let _ = host.daemon_reload();
             return Err(e);
         }
@@ -169,8 +209,17 @@ impl<F: Filesystem> NailsManager<F> {
         target: &dyn TargetHost,
         entry_host: &dyn EntryHost,
     ) -> Result<()> {
+        self.trigger_entry_on(&Machine::system(), target, entry_host)
+    }
+
+    fn trigger_entry_on(
+        &mut self,
+        machine: &Machine,
+        target: &dyn TargetHost,
+        entry_host: &dyn EntryHost,
+    ) -> Result<()> {
         if let Err(e) = target.start_target("soft-reboot.target") {
-            entry::rollback(&Paths::system());
+            entry::rollback(&machine.paths);
             let _ = entry_host.daemon_reload();
             let _ = self.force_state(SystemState::Inactive);
             return Err(e);
@@ -186,7 +235,16 @@ impl<F: Filesystem> NailsManager<F> {
         to: LeaveTo,
         host: &dyn TargetHost,
     ) -> Result<crate::session::LeaveReport> {
-        let mut plan = match self.session_view() {
+        self.leave_session_on(&Machine::system(), to, host)
+    }
+
+    fn leave_session_on(
+        &mut self,
+        machine: &Machine,
+        to: LeaveTo,
+        host: &dyn TargetHost,
+    ) -> Result<crate::session::LeaveReport> {
+        let mut plan = match self.session_view_on(machine) {
             SessionView::Hidden(plan) => *plan,
             SessionView::HiddenWithoutPlan(why) => {
                 return Err(NailsError::InvalidState(format!(
@@ -202,12 +260,20 @@ impl<F: Filesystem> NailsManager<F> {
         };
         self.force_state(SystemState::Inactive)?;
         rustix::fs::sync();
-        crate::session::leave(&Paths::system(), &mut plan, to, host)
+        crate::session::leave(&machine.paths, &mut plan, to, host)
     }
 
     /// Remove the leftovers of an interrupted entry on the decoy.
     pub fn recover_session(&mut self, host: &dyn EntryHost) -> Result<SessionRecovery> {
-        match self.session_view() {
+        self.recover_session_on(&Machine::system(), host)
+    }
+
+    fn recover_session_on(
+        &mut self,
+        machine: &Machine,
+        host: &dyn EntryHost,
+    ) -> Result<SessionRecovery> {
+        match self.session_view_on(machine) {
             SessionView::Decoy => {
                 if matches!(self.current_state(), Ok(SystemState::Active { .. })) {
                     self.force_state(SystemState::Inactive)?;
@@ -215,9 +281,9 @@ impl<F: Filesystem> NailsManager<F> {
                 Ok(SessionRecovery::Clean)
             }
             SessionView::Interrupted { .. } => {
-                let paths = Paths::system();
+                let paths = &machine.paths;
                 let plan = nails_teardown::whole_root::plan::Plan::load(&paths.plan()).ok();
-                let remaining = entry::rollback(&paths);
+                let remaining = entry::rollback(paths);
                 let _ = host.daemon_reload();
                 let _ = self.force_state(SystemState::Inactive);
                 // Nothing hidden runs on the decoy: close the hidden backend
@@ -245,3 +311,7 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "session_flow_tests.rs"]
+mod tests;

@@ -141,7 +141,10 @@ pub fn kill_all_interactive_shells(spared_units: &[String]) {
 
 #[cfg(test)]
 mod tests {
-    use super::shell_is_interactive;
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
 
     fn argv(words: &[&str]) -> Vec<String> {
         words.iter().map(|w| w.to_string()).collect()
@@ -182,5 +185,158 @@ mod tests {
             true,
             true
         ));
+    }
+
+    /// Spawn `program args` and wait until its comm reads `comm` (a `setsid`
+    /// wrapper execs the shell only after `spawn` returns) and it sleeps, done
+    /// starting up. Its stdin stays open so an interactive shell blocks
+    /// reading it.
+    fn spawn_as(comm: &str, program: &str, args: &[&str]) -> Child {
+        let child = Command::new(program)
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| panic!("spawn {program}: {e}"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while proc::comm(child.id()).as_deref() != Some(comm)
+            || proc::stat(child.id()).map(|s| s.state) != Some('S')
+        {
+            assert!(
+                Instant::now() < deadline,
+                "{program} never settled as {comm}: {:?}",
+                proc::stat(child.id())
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        child
+    }
+
+    /// Whether `child` was SIGKILLed, waiting for it to go.
+    fn was_killed(child: &mut Child) -> bool {
+        child.wait().unwrap().signal() == Some(libc::SIGKILL)
+    }
+
+    /// Whether `child` still runs; it is killed and reaped either way.
+    fn still_running(mut child: Child) -> bool {
+        let running = child.try_wait().unwrap().is_none();
+        let _ = child.kill();
+        let _ = child.wait();
+        running
+    }
+
+    /// Run `body` as PID 1 of a fresh user, mount and PID namespace with its
+    /// own `/proc` (through `unshare`), so the shell killers see and can
+    /// signal only the processes the test spawns. `test` is the libtest name.
+    ///
+    /// A host where `unshare` cannot create the namespaces skips, unless
+    /// `NAILS_REQUIRE_USERNS=1` (set by the CI job that must run these).
+    fn in_pid_namespace(test: &str, body: impl FnOnce()) {
+        const CHILD_ENV: &str = "NAILS_TEARDOWN_PID_NS_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some_and(|name| name == test) {
+            // Never let a killer loose on the host's processes.
+            assert_eq!(std::process::id(), 1, "the body must run as PID 1");
+            // Lead a session of our own, so the shells spawned below belong
+            // to this invocation unless they call setsid themselves.
+            rustix::process::setsid().expect("setsid");
+            body();
+            return;
+        }
+        let output = Command::new("unshare")
+            .args([
+                "--user",
+                "--map-root-user",
+                "--pid",
+                "--fork",
+                "--mount-proc",
+                "--",
+            ])
+            .arg(std::env::current_exe().unwrap())
+            .args([test, "--exact", "--nocapture", "--test-threads", "1"])
+            .env(CHILD_ENV, test)
+            .stdin(Stdio::null())
+            .output();
+        let required = std::env::var("NAILS_REQUIRE_USERNS").as_deref() == Ok("1");
+        let output = match output {
+            Ok(output) => output,
+            Err(e) => {
+                assert!(!required, "cannot run unshare: {e}");
+                eprintln!("skipped {test}: cannot run unshare ({e})");
+                return;
+            }
+        };
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.starts_with("unshare:") {
+            assert!(!required, "cannot create the namespaces: {stderr}");
+            eprintln!("skipped {test}: {stderr}");
+            return;
+        }
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{test} failed in its PID namespace\n{stdout}\n{stderr}"
+        );
+    }
+
+    #[test]
+    fn a_live_interactive_shell_is_told_from_a_script_and_a_non_shell() {
+        let shell = spawn_as("sh", "sh", &["-i"]);
+        let script = spawn_as("sh", "sh", &["-c", "sleep 30; :"]);
+        let other = spawn_as("sleep", "sleep", &["30"]);
+
+        let verdicts = [
+            is_interactive_shell(shell.id()),
+            is_interactive_shell(script.id()),
+            is_interactive_shell(other.id()),
+        ];
+        for child in [shell, script, other] {
+            still_running(child);
+        }
+
+        assert_eq!(verdicts, [true, false, false]);
+    }
+
+    #[test]
+    fn the_invocation_s_shells_are_killed_last_and_scripts_never() {
+        in_pid_namespace(
+            "shells::tests::the_invocation_s_shells_are_killed_last_and_scripts_never",
+            || {
+                let mut own = spawn_as("sh", "sh", &["-i"]);
+                let mut foreign = spawn_as("sh", "setsid", &["sh", "-i"]);
+                let script = spawn_as("sh", "setsid", &["sh", "-c", "sleep 30; :"]);
+                let spared = ["unrelated.service".to_string()];
+
+                // First every shell outside the invocation...
+                let killed = kill_interactive_shells(&Invocation::current(), &spared);
+                let pids: Vec<u32> = killed.iter().map(ProcessHandle::pid).collect();
+                assert_eq!(pids, vec![foreign.id()]);
+                assert!(was_killed(&mut foreign));
+                assert_eq!(own.try_wait().unwrap(), None, "the own shell waits");
+
+                // ...then, last, the invocation's own.
+                assert_eq!(kill_invoking_shells(&spared), vec![own.id()]);
+                assert!(was_killed(&mut own));
+                assert!(still_running(script), "a script keeps no history");
+            },
+        );
+    }
+
+    #[test]
+    fn every_interactive_shell_is_killed_before_a_soft_reboot() {
+        in_pid_namespace(
+            "shells::tests::every_interactive_shell_is_killed_before_a_soft_reboot",
+            || {
+                let mut own = spawn_as("sh", "sh", &["-i"]);
+                let mut foreign = spawn_as("sh", "setsid", &["sh", "-i"]);
+                let script = spawn_as("sh", "sh", &["-c", "sleep 30; :"]);
+
+                kill_all_interactive_shells(&[]);
+
+                assert!(was_killed(&mut own));
+                assert!(was_killed(&mut foreign));
+                assert!(still_running(script));
+            },
+        );
     }
 }
