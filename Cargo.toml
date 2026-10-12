@@ -26,7 +26,7 @@ clap = { version = "4.6.1", features = ["derive", "cargo"] }
 clap_complete = "4.6.1"
 # Man page and Markdown CLI reference generation, used only by the
 # `cli_reference` staleness test that keeps `nails.1` and `docs/cli.md` current.
-clap_mangen = "0.2.31"
+clap_mangen = "0.3.3"
 clap-markdown = "0.1.5"
 
 # Error handling (AR6, AR7)
@@ -37,12 +37,12 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3.22", features = ["json"] }
 
 # Filesystem operations (AR9)
-nix = { version = "0.30.1", features = ["mount", "sched"] }
+nix = { version = "0.31.3", features = ["mount", "sched"] }
 
 # Async-signal-safe signal handling. Only the atomic-flag registration is used:
 # SIGINT/SIGTERM set a cancel flag the activation path polls between steps, and
 # SIGHUP is caught so a terminal hangup no longer kills an in-flight operation.
-signal-hook = { version = "0.3", default-features = false }
+signal-hook = { version = "0.4", default-features = false }
 
 # Direct syscalls for extended attributes (overlay opaque markers): rustix's
 # l*xattr functions give us no-follow semantics without spawning attr binaries.
