@@ -214,18 +214,27 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     // the transition runs, and logs to the kernel once more on its way out:
     // the cursor must be taken after it, so the decoy journald skips it.
     let late = world.dir.path().join("late-stopped");
+    let calls = world.dir.path().join("reset-failed-calls");
+    plan.session_units = vec![RuntimeUnit {
+        name: "overlay-runtime-monitor.service".to_string(),
+        content: String::new(),
+        wanted_by: Vec::new(),
+    }];
+    world.write_plan(&plan);
     let systemctl = world.dir.path().join("systemctl");
     fs::write(
         &systemctl,
         format!(
-            "#!/bin/sh\necho '7 soft-reboot.target start waiting'\n\
+            "#!/bin/sh\nif [ \"$1\" = reset-failed ]; then echo \"$@\" >> {calls}; exit 0; fi\n\
+             echo '7 soft-reboot.target start waiting'\n\
              if [ ! -e {late} ]; then\n\
                echo '12 late.service stop running'\n\
                printf '6,502,3,-;late hidden record\\n' >> {kmsg}\n\
                : > {late}\n\
              fi\n",
             late = late.display(),
-            kmsg = world.kmsg().display()
+            kmsg = world.kmsg().display(),
+            calls = calls.display()
         ),
     )
     .unwrap();
@@ -265,6 +274,12 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
     let cursor = fs::read(r.join(run_scrub::KERNEL_SEQNUM)).unwrap();
     assert_eq!(u64::from_ne_bytes(cursor.try_into().unwrap()), 503);
+    // An emergency's SIGKILL left the session's own units failed; the decoy
+    // must not inherit that record.
+    assert_eq!(
+        fs::read_to_string(&calls).unwrap(),
+        "reset-failed overlay-runtime-monitor.service\n"
+    );
 }
 
 #[test]

@@ -373,6 +373,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // (and PID 1 logs its end): wait, bounded, until only the soft-reboot's
     // own jobs are left.
     if let Some(systemctl) = &env.systemctl {
+        reset_session_units(systemctl, &plan.session_units);
         let _ =
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
@@ -383,6 +384,24 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         removed: report.removed.len(),
         failed: report.failed.len(),
     }
+}
+
+/// Forget the failed state of the session's own units. An emergency SIGKILLs
+/// them (the watcher, the sleep guard), and PID 1 carries a failed unit
+/// across the soft-reboot: the decoy would list it in `systemctl --failed`
+/// until its next boot, though its unit file is gone.
+fn reset_session_units(systemctl: &Path, units: &[runtime_units::RuntimeUnit]) {
+    let names: Vec<&str> = units
+        .iter()
+        .map(|unit| unit.name.as_str())
+        .filter(|name| runtime_units::valid_unit_name(name))
+        .collect();
+    if names.is_empty() {
+        return;
+    }
+    let mut args = vec!["reset-failed"];
+    args.extend(names);
+    let _ = crate::whole_root::tools::run(systemctl, &args, crate::whole_root::tools::TOOL_BUDGET);
 }
 
 #[cfg(test)]

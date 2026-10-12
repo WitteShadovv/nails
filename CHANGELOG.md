@@ -570,6 +570,11 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Fixed
 
+- After an emergency, the decoy no longer lists the session's own runtime units
+  (`overlay-runtime-monitor.service`, `overlay-runtime-power.service`) as failed. The emergency
+  SIGKILLs them, and PID 1 carried their failed state across the soft-reboot, visible in
+  `systemctl --failed` until the decoy's next boot. The way back now resets them before the
+  switch. Found by hand on Debian 13 in a VirtualBox VM.
 - On Ubuntu 26.04 the login screen comes up on both sides of the switch again. Its
   `dbus.service` and `dbus.socket` are no longer stopped at shutdown (`DefaultDependencies=no`)
   but do not survive a soft-reboot either, so the bus died in the final kill while PID 1 kept its
