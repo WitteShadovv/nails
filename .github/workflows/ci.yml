@@ -390,7 +390,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.docs == 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
 
     steps:
       - name: Checkout code
@@ -398,14 +398,13 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Install lychee
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
-        with:
-          tool: lychee
-          fallback: none
+      # lychee comes from the flake's pinned nixpkgs, the same build the dev
+      # shell uses (install-action has no lychee and must not fall back).
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
 
       - name: Check the documentation
-        run: ./scripts/docs-check.sh
+        run: nix shell --inputs-from . nixpkgs#lychee --command ./scripts/docs-check.sh
 
   # The one required status. A job the path filter skipped counts as passed.
   gate:

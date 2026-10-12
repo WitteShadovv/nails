@@ -69,14 +69,16 @@ in
   # Link-check the Markdown docs and reject retired names. A link can point at
   # any file in the tree, so the whole source is the input rather than a minimal
   # fileset; the check is offline and takes seconds. The script walks the files
-  # with `find` here because the build sandbox has no `.git`.
+  # with `find` here because the build sandbox has no `.git`. lychee builds its
+  # HTTP client even with `--offline`, and that needs a CA bundle; the sandbox
+  # has none.
   docs-check = lint "docs-check" {
     files = root;
     tools = [
       pkgs.lychee
       pkgs.bash
     ];
-    script = "bash scripts/docs-check.sh";
+    script = "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt bash scripts/docs-check.sh";
   };
 
   # With shellcheck on PATH, actionlint also lints every `run:` script.
@@ -213,6 +215,7 @@ in
       pkgs.python3
       pkgs.ruff
       pkgs.mypy
+      pkgs.bash
     ];
     script = ''
       export HOME="$PWD"

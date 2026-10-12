@@ -78,7 +78,8 @@ class PatchedScriptRunTest(unittest.TestCase):
     def run_start(self) -> str:
         env = dict(os.environ, TMPDIR=str(self.state), USE_TMPDIR="1")
         completed = subprocess.run(
-            [self.machine.start_command._cmd],
+            # Through bash, not the shebang: the Nix build sandbox has no /usr/bin/env.
+            ["bash", self.machine.start_command._cmd],
             env=env,
             check=True,
             capture_output=True,
