@@ -281,7 +281,9 @@ mod tests {
 
     #[test]
     fn a_live_interactive_shell_is_told_from_a_script_and_a_non_shell() {
-        let shell = spawn_as("sh", "sh", &["-i"]);
+        // In a session of its own: under a terminal, an interactive shell in
+        // the test's background process group would be stopped (SIGTTOU).
+        let shell = spawn_as("sh", "setsid", &["sh", "-i"]);
         let script = spawn_as("sh", "sh", &["-c", "sleep 30; :"]);
         let other = spawn_as("sleep", "sleep", &["30"]);
 
