@@ -570,6 +570,13 @@ state, config and CLI surfaces; there are no compatibility shims.
 
 ### Fixed
 
+- On NixOS, `activate`, `deactivate` and `emergency` work when a systemd unit starts them (a
+  panic key, `systemd-run`). Such a unit has a minimal `PATH` and no `NIX_PATH`, so the entry
+  failed with "nix-build not found on PATH" and then "file 'nixpkgs/nixos' was not found". The
+  Nix tools are now also looked up in the root-owned system directories when the caller's `PATH`
+  lacks them, and a legacy build whose caller has no `NIX_PATH` takes `nixpkgs` from root's
+  `nixos` channel, as NixOS's default `nix.nixPath` does. Found by hand on NixOS 26.05 in a
+  VirtualBox VM.
 - After an emergency, the decoy no longer lists the session's own runtime units
   (`overlay-runtime-monitor.service`, `overlay-runtime-power.service`) as failed. The emergency
   SIGKILLs them, and PID 1 carried their failed state across the soft-reboot, visible in
