@@ -373,7 +373,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // (and PID 1 logs its end): wait, bounded, until only the soft-reboot's
     // own jobs are left.
     if let Some(systemctl) = &env.systemctl {
-        reset_session_units(systemctl, &plan.session_units);
+        reset_new_failures(systemctl, &plan.failed_at_entry);
         let _ =
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
@@ -386,21 +386,26 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     }
 }
 
-/// Forget the failed state of the session's own units. An emergency SIGKILLs
-/// them (the watcher, the sleep guard), and PID 1 carries a failed unit
-/// across the soft-reboot: the decoy would list it in `systemctl --failed`
-/// until its next boot, though its unit file is gone.
-fn reset_session_units(systemctl: &Path, units: &[runtime_units::RuntimeUnit]) {
-    let names: Vec<&str> = units
+/// Forget the failures the session caused: every unit failed now that was
+/// not failed when the session was prepared. An emergency SIGKILLs units (the
+/// session's watcher, a decoy unit caught stopping), and PID 1 carries a
+/// failed unit across the soft-reboot: the decoy would list it in
+/// `systemctl --failed` until its next boot. The decoy's own earlier failures
+/// stay.
+fn reset_new_failures(systemctl: &Path, failed_at_entry: &[String]) {
+    let Some(failed) = crate::whole_root::tools::failed_units(systemctl) else {
+        return;
+    };
+    let new: Vec<&str> = failed
         .iter()
-        .map(|unit| unit.name.as_str())
-        .filter(|name| runtime_units::valid_unit_name(name))
+        .filter(|unit| !failed_at_entry.contains(unit))
+        .map(String::as_str)
         .collect();
-    if names.is_empty() {
+    if new.is_empty() {
         return;
     }
     let mut args = vec!["reset-failed"];
-    args.extend(names);
+    args.extend(new);
     let _ = crate::whole_root::tools::run(systemctl, &args, crate::whole_root::tools::TOOL_BUDGET);
 }
 

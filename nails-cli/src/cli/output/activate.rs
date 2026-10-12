@@ -292,6 +292,7 @@ mod tests {
                 run_noexec: false,
                 carried: Vec::new(),
                 read_only_disks: false,
+                failed_at_entry: Vec::new(),
             },
             decisions: vec![
                 Decision::ReadOnlyBind {

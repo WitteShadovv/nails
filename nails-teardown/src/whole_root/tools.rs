@@ -149,6 +149,35 @@ pub fn daemon_reload(systemctl: &Path) -> bool {
     run_bounded(systemctl, &["daemon-reload"], Duration::from_secs(30))
 }
 
+/// The units PID 1 holds in the failed state, `None` when `systemctl` could
+/// not be asked.
+pub fn failed_units(systemctl: &Path) -> Option<Vec<String>> {
+    run_output(
+        systemctl,
+        &[
+            "list-units",
+            "--state=failed",
+            "--all",
+            "--plain",
+            "--no-legend",
+            "--no-pager",
+            "--full",
+        ],
+        TOOL_BUDGET,
+    )
+    .map(|text| parse_unit_list(&text))
+}
+
+/// The unit names, the first column, of a `systemctl list-units --plain
+/// --no-legend` listing; lines whose first word is no unit name are skipped.
+pub fn parse_unit_list(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|name| crate::whole_root::runtime_units::valid_unit_name(name))
+        .map(str::to_string)
+        .collect()
+}
+
 /// Mark the device-mapper device `name` for removal on its last close. Its
 /// key leaves kernel memory the moment the switch releases the last opener.
 pub fn remove_deferred(dmsetup: &Path, name: &str) -> bool {
@@ -245,6 +274,19 @@ pub fn remove_now(dmsetup: &Path, name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_unit_listing_yields_the_unit_names_only() {
+        let listing = "nscd.service                    loaded failed failed Name Service Cache Daemon\n\
+                       generate-shutdown-ramfs.service loaded failed failed Generate shutdown ramfs\n\
+                       \n\
+                       0 loaded units listed.\n";
+        assert_eq!(
+            parse_unit_list(listing),
+            ["nscd.service", "generate-shutdown-ramfs.service"]
+        );
+        assert!(parse_unit_list("").is_empty());
+    }
 
     #[test]
     fn a_tool_that_exits_zero_in_time_succeeds_and_a_slow_one_is_killed() {

@@ -83,6 +83,11 @@ pub trait EntryHost {
     /// `systemctl show --property=ExecStop --value` prints them: empty when it
     /// runs none, or when the unit does not exist.
     fn unit_stop_commands(&self, unit: &str) -> Result<String>;
+    /// The units PID 1 holds in the failed state now, recorded in the plan so
+    /// the way back resets only the failures the session caused.
+    fn failed_units(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// The real host.
@@ -99,6 +104,12 @@ impl EntryHost for RealEntryHost {
             std::time::Duration::from_secs(30),
         )
         .ok_or_else(|| NailsError::InvalidState(format!("systemctl show {unit} failed")))
+    }
+
+    fn failed_units(&self) -> Vec<String> {
+        nails_teardown::whole_root::tools::find(None, "systemctl")
+            .and_then(|systemctl| nails_teardown::whole_root::tools::failed_units(&systemctl))
+            .unwrap_or_default()
     }
 
     fn daemon_reload(&self) -> Result<()> {
@@ -344,6 +355,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         run_noexec: false,
         carried: Vec::new(),
         read_only_disks: inputs.read_only_disks,
+        failed_at_entry: Vec::new(),
     }
 }
 
@@ -365,6 +377,7 @@ fn build(
     write_runtime(paths, inputs, &snapshot)?;
     let layout = Layout::new(inputs.hidden_root);
     let mut plan = skeleton(paths, inputs, &layout);
+    plan.failed_at_entry = host.failed_units();
     // Recorded before it is cleared, so a rollback always knows to set it again.
     plan.run_noexec = nextroot::is_mount_point(&mounts, &paths.run)
         && nextroot::is_noexec(&paths.run).unwrap_or(false);

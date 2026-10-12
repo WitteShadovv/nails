@@ -232,6 +232,12 @@ pub struct Plan {
     /// [`crate::whole_root::disk_guard`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub read_only_disks: bool,
+    /// The units already failed when the session was prepared. The way back
+    /// resets every other failed unit, so a failure the session caused (an
+    /// emergency's kill, a unit that would not stop) never reaches the decoy,
+    /// while the decoy's own earlier failures stay.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_at_entry: Vec<String>,
 }
 
 /// Why a plan could not be used.
@@ -373,6 +379,7 @@ pub(crate) fn sample() -> Plan {
         run_noexec: false,
         carried: Vec::new(),
         read_only_disks: false,
+        failed_at_entry: Vec::new(),
     }
 }
 

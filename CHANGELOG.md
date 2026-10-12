@@ -577,11 +577,14 @@ state, config and CLI surfaces; there are no compatibility shims.
   lacks them, and a legacy build whose caller has no `NIX_PATH` takes `nixpkgs` from root's
   `nixos` channel, as NixOS's default `nix.nixPath` does. Found by hand on NixOS 26.05 in a
   VirtualBox VM.
-- After an emergency, the decoy no longer lists the session's own runtime units
-  (`overlay-runtime-monitor.service`, `overlay-runtime-power.service`) as failed. The emergency
-  SIGKILLs them, and PID 1 carried their failed state across the soft-reboot, visible in
-  `systemctl --failed` until the decoy's next boot. The way back now resets them before the
-  switch. Found by hand on Debian 13 in a VirtualBox VM.
+- After an emergency, the decoy no longer lists units as failed that the session left failed:
+  the session's own runtime units (`overlay-runtime-monitor.service`,
+  `overlay-runtime-power.service`) and decoy units the kill caught while they stopped
+  (`nscd.service` and `generate-shutdown-ramfs.service` on NixOS). PID 1 carried their failed
+  state across the soft-reboot, visible in `systemctl --failed` until the decoy's next boot. The
+  entry now records the units already failed, and the way back resets every other failed unit,
+  so the decoy keeps only its own earlier failures. Found by hand on Debian 13 and NixOS 26.05 in
+  VirtualBox VMs.
 - On Ubuntu 26.04 the login screen comes up on both sides of the switch again. Its
   `dbus.service` and `dbus.socket` are no longer stopped at shutdown (`DefaultDependencies=no`)
   but do not survive a soft-reboot either, so the bus died in the final kill while PID 1 kept its
