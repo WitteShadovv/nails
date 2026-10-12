@@ -81,6 +81,9 @@ coverage:
     # the build directory. In CI the percentage also goes to the job summary.
     out=target/coverage
     mkdir -p "$out"
+    # Start from no profile data: old runs leave profiles behind (some of files
+    # since deleted) that would shift a local figure away from CI's clean one.
+    cargo llvm-cov clean --workspace
     cargo llvm-cov --no-report nextest --workspace --all-features --locked
     cargo llvm-cov report --ignore-filename-regex "$ignore" --cobertura --output-path "$out/cobertura.xml"
     cargo llvm-cov report --ignore-filename-regex "$ignore" --lcov --output-path "$out/lcov.info"
