@@ -153,8 +153,10 @@ What the operator must do for the in-scope case to hold:
 
 The whole-root overlay isolates **writes to the on-disk filesystems**: in the
 hidden session every process runs inside an overlay of the decoy root whose
-upper is on the hidden volume, and no userspace process can reach the decoy
-filesystem by any path. It does not give the hidden environment a separate
+upper is on the hidden volume, so every write through the decoy's mounts lands in
+the upper; only what goes around the mount layer, listed under
+[Residual channels](#residual-channels), reaches the decoy. It does not give the
+hidden environment a separate
 machine, kernel, account or online identity: the hidden userspace is the decoy's
 own system (or, on NixOS, a hidden generation of it) started again on the same
 kernel, with the decoy's units, accounts and configuration plus whatever the
@@ -265,8 +267,8 @@ NAILS does not tune individual applications. It redirects **every write outside
 pseudo filesystems at the mount layer**: the hidden session runs entirely inside
 one overlay of the decoy root (and an overlay of each other decoy filesystem),
 so whatever program writes — known or unknown — writes into an upper on the
-hidden volume. No process of the hidden session can reach the decoy filesystem
-by any path, because every one of them starts inside the overlay after a
+hidden volume. No process of the hidden session reaches a decoy filesystem
+through its mounts, because every one of them starts inside the overlay after a
 soft-reboot. The question "which application leaks?" becomes "which writes
 bypass the mount layer?", and that set is small and enumerable: the residual
 channels listed above, and the decoy filesystems the fstab policy has to
@@ -308,9 +310,9 @@ The forensic claims rest on this configuration:
 - **dead-disk analysis** of the powered-off decoy disk image.
 
 That full configuration was evaluated manually, once. The automated E2E
-disk-image checks cover NixOS VMs with a **LUKS2/ext4** hidden backend, plus the
-Debian 13 and Ubuntu 24.04 smoke runs (one nightly backend test images a
-VeraCrypt volume but has not yet been validated on a Nix host). Other backends
+disk-image checks cover NixOS VMs with a **LUKS2/ext4** hidden backend and, in
+the VeraCrypt backend test, a **VeraCrypt hidden volume** opened with
+`cryptsetup`, plus the Debian 13 and Ubuntu 24.04 smoke runs. Other backends
 and filesystems, and physical hardware (time to the greeter, GPU and Wi-Fi after
 the soft-reboot, TPM-sealed decoy roots, GRUB) are not covered; see
 [backends.md](backends.md) for the per-backend status. Claims outside this scope

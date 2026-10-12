@@ -20,10 +20,10 @@
 # after the baseline and two soft-reboots), so a decoy file modified in place
 # fails the test even when it carries no token.
 #
-# This is a nightly/manual backend test, not part of the PR smoke lane (it is not
-# in `ciNames`). cryptsetup can open a tcrypt volume but not create one, so the
-# container is generated in-VM with the `veracrypt` console tool. See the
-# "VALIDATE ON A NIX HOST" note on the creation block below.
+# It is not in the `ci` group (`ciNames`): it runs in every E2E run that rebuilds
+# the tests (a pull request that changes the code, a push to main) and nightly.
+# cryptsetup can open a tcrypt volume but not create one, so the container is
+# generated in-VM with the `veracrypt` console tool.
 
 { self, pkgs, ... }:
 let
@@ -119,14 +119,8 @@ in
         control_state = disk_forensics.image_state(control, "control", machine)
 
     with subtest("create a VeraCrypt hidden volume on the secondary disk"):
-        # VALIDATE ON A NIX HOST: the exact `veracrypt --text --create` flags for
-        # non-interactive hidden-volume creation cannot be evaluated in the build
-        # sandbox. The outer volume is created first, then the hidden volume in
-        # its reserved tail. If the console tool rejects creating a hidden volume
-        # without the outer password in one pass, create the outer, mount it to
-        # establish its filesystem, then create the hidden volume with the outer
-        # passphrase supplied as well. The alternative is a tcplay-made TrueCrypt
-        # volume opened with `--type tcrypt --tcrypt-hidden` (drop `--veracrypt`).
+        # The outer volume is created first, then the hidden volume in its
+        # reserved tail, both non-interactively with the console tool.
         machine.succeed(
             "veracrypt --text --create /dev/disk/by-id/virtio-data "
             + "--volume-type=normal "

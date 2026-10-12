@@ -53,9 +53,13 @@ There are two environments on one machine:
 `nails activate` builds the overlay at `/run/nextroot` and enters it with
 `systemctl soft-reboot`: systemd stops every decoy program, switches root into the
 overlay and starts a fresh userspace there. Every process of the hidden session,
-from the desktop to the services, starts inside the overlay, so no userspace
-process can write to the decoy filesystem by any path. `nails deactivate` soft-reboots back into the plain
-decoy root and closes the hidden volume on the way. `nails emergency` does the
+from the desktop to the services, starts inside the overlay, so whatever it
+writes through the decoy's mounted filesystems lands in the upper on the hidden
+volume. The few writes that go around the mount layer (a disk the session mounts
+itself, EFI variables) are listed under
+[residual channels](docs/threat-model.md#residual-channels).
+`nails deactivate` soft-reboots back into the plain decoy root and closes the
+hidden volume on the way. `nails emergency` does the
 same at once, or powers the machine off.
 
 NAILS does **not** encrypt anything itself. The hidden volume, and its
@@ -231,18 +235,26 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    from `/etc/nixos/hardware-configuration.nix`. It ends by printing the next
    steps.
 
-3. **Optionally review the configuration.** Every key is optional and an empty
-   file uses the defaults:
+3. **Optionally review the configuration**, but not on the decoy: an editor
+   leaves its own traces there (swap and backup files, `~/.viminfo`, recent-file
+   lists). Every key is optional, and the template `init` writes uses the
+   defaults. Prepare `config/nails.toml` on the separate machine, before you copy
+   it to the hidden volume (`init` keeps a file that is already there), or inside
+   a hidden session as a new file that you move into place after the session, as
+   for a [binary update](docs/operator-guide.md#updating-nails):
 
    ```bash
-   $EDITOR /mnt/data/config/nails.toml
-   /mnt/data/nails config validate
-   /mnt/data/nails config show        # effective values and where each comes from
+   # inside a hidden session
+   $EDITOR /mnt/data/config/nails.toml.new
+   /mnt/data/nails config validate /mnt/data/config/nails.toml.new
+   /mnt/data/nails --config /mnt/data/config/nails.toml.new config show   # effective values and their sources
    ```
 
    Leave `hidden_volume_root` unset to derive it from the binary's location. On
-   NixOS, edit the hidden module `/mnt/data/config/nixos/configuration.nix`, or
-   point `nixos_flake` at a flake:
+   NixOS, change the hidden module `/mnt/data/config/nixos/configuration.nix`
+   inside a hidden session (see the operator guide's
+   [Changing the hidden configuration](docs/operator-guide.md#changing-the-hidden-configuration)),
+   or point `nixos_flake` at a flake:
 
    ```toml
    nixos_flake = "/mnt/data/nixos#my-host"
@@ -488,16 +500,17 @@ and an optional `hint`. A new schema version signals an incompatible change.
 <details>
 <summary><b>Upgrading from an earlier release</b></summary>
 
-Upgrade only while NAILS is inactive: end the session with `nails deactivate` (or,
-on the decoy, `nails recover` after an interrupted activation) using the old
-binary before replacing it. This release changes operator-facing interfaces, with
-no compatibility shim: convert your setup before running the new binary.
+Upgrade only while NAILS is inactive: end a 0.2 session with its own
+`nails deactivate` (a reboot ends it too) before replacing the binary. This
+release changes operator-facing interfaces, with no compatibility shim: convert
+your setup before running the new binary.
 
 - **Session mode.** The per-directory overlays (`/etc`, `/home`, `/var`, ...) are
   gone. The only mode is the whole-root session entered and left with a
-  soft-reboot (systemd 254 or newer, so Debian 12 and Ubuntu 22.04 are no longer
-  supported). The hidden root's layers live under `<hidden-root>/root/`
-  (`upper`, `work`, `mounts`, `cache`); the uppers of the old mode
+  soft-reboot, which needs systemd 254 or newer. Besides NixOS, Debian 13 and
+  Ubuntu 24.04 or newer are now supported as decoys. The hidden root's layers
+  live under `<hidden-root>/root/` (`upper`, `work`, `mounts`, `cache`); the
+  uppers of the old mode
   (`<hidden-root>/<name>` and `<hidden-root>/.work`) are not read. Move what you
   need from them into the hidden session, then delete them. On NixOS the hidden
   hardware configuration moves to `<hidden-root>/root/upper/etc/nixos/`; run
@@ -578,7 +591,9 @@ nix build .#e2e.session-lifecycle --no-link -L   # one NixOS VM test (needs KVM)
   over an existing decoy system you operate.
 - **[NAILS OS](https://github.com/WitteShadovv/nails-os)** is a separate
   installable NixOS distribution with its own live ISO, installer, persistence
-  model and system-level security design.
+  model and system-level security design. Its root is a tmpfs, and NAILS needs
+  a decoy root on a block device (the `decoy-root` check), so NAILS does not run
+  on NAILS OS.
 
 They are related, but not interchangeable, and do not share the same installation
 or threat-model boundaries.

@@ -31,8 +31,9 @@ what you did.
 > **Type as little as possible on the decoy.**
 >
 > - On the decoy you unlock and mount the hidden volume and run `nails check`
->   and `nails activate` (and, when needed, `nails recover` or
->   `nails reset-upper`). Do nothing else with the tool there: do not read
+>   and `nails activate` (once, before the first session, `nails init`; when
+>   needed, `nails recover` or `nails reset-upper`). Do nothing else with the
+>   tool there, and do not edit its configuration there either: do not read
 >   `state.json`, and do not name the hidden volume, its mapper, its mount point
 >   or the tool in any other command.
 > - Type those commands in a shell with history off — see
@@ -714,11 +715,14 @@ set +o history
 umount -R /run/nextroot
 
 # 2. Remove the session plan and RAM copy, the transition drop-in and the
-#    drop-in that clears blk-availability.service's stop.
+#    runtime guards (blk-availability's stop, NixOS's static addresses and
+#    the D-Bus units).
 rm -rf /run/overlay-runtime
 rm -rf /run/systemd/system/systemd-soft-reboot.service.d
 rm -f /run/systemd/system/blk-availability.service.d/zz-overlay-runtime.conf
 rm -f /run/systemd/system/network-addresses-.service.d/zz-overlay-runtime.conf
+rm -f /run/systemd/system/dbus.service.d/zz-overlay-runtime.conf
+rm -f /run/systemd/system/dbus.socket.d/zz-overlay-runtime.conf
 systemctl daemon-reload
 
 # 3. Confirm nothing is left.

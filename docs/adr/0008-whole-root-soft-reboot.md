@@ -218,9 +218,11 @@ systemctl soft-reboot
   placed under `/run` would **not** survive, because `/run` moves
   non-recursively. [V-src; V-spike]
 - **The decoy root mount.** It is detached with `MNT_DETACH`. Its superblock stays
-  alive only as the overlay's read-only lower. After the switch, no userspace
-  process can reach the decoy filesystem by any path. [V-src] This is the core
-  forensic gain over today's design (§7). The superblock itself is still mounted
+  alive only as the overlay's read-only lower. After the switch, no mount in the
+  hidden session leads to the decoy root except through that lower. [V-src] This
+  is the core forensic gain over today's design (§7). A process that mounts the
+  decoy's block device again still reaches it, like any disk the session mounts
+  itself (a residual channel in the threat model). The superblock itself is still mounted
   read-write. Nothing writes it, because there are no openers, but making it
   read-only at superblock level (mount it again, `remount,ro`, unmount) is an open
   hardening step. [I]

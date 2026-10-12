@@ -15,12 +15,13 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Upgrade notes
 
-Upgrade only while NAILS is inactive: run `nails deactivate` (or `nails recover` for a stuck
-state) with the old binary before replacing it. This release breaks compatibility with earlier
-state, config and CLI surfaces; there are no compatibility shims.
+Upgrade only while NAILS is inactive: end a 0.2 session with its own `nails deactivate` (a reboot
+ends it too) before replacing the binary. This release breaks compatibility with earlier state,
+config and CLI surfaces; there are no compatibility shims.
 
-- The whole-root session is the only session mode (ADR 0008). It needs systemd 254 or newer, so
-  Debian 12 and Ubuntu 22.04 are no longer supported. The hidden root lives under
+- The whole-root session is the only session mode (ADR 0008). It needs systemd 254 or newer;
+  besides NixOS, Debian 13 and Ubuntu 24.04 or newer are now supported as decoys. The hidden root
+  lives under
   `<hidden-root>/root/` (`upper`, `work`, `mounts`, `cache`); the uppers of the per-directory
   overlays (`<hidden-root>/<name>`, `<hidden-root>/.work`) are not read. Move what you need into a
   hidden session and delete them. On NixOS the hidden hardware configuration now lives in
@@ -508,9 +509,9 @@ state, config and CLI surfaces; there are no compatibility shims.
   key (4096 MB by default) is checked after mounting and before a hidden NixOS rebuild, a
   post-switch notification warns when the hidden volume is nearly full, and a full volume during
   the build is reported as `hidden-volume-full` with `nails reapply` guidance.
-- Platform detection supports Debian 12+ and Ubuntu 24.04+ in overlay-only mode and refuses older
-  releases, non-merged-usr layouts and unvalidated distributions (Fedora, Arch, unknown) with a
-  documented message.
+- Platform detection supports Debian 13+ and Ubuntu 24.04+ (no hidden build: the hidden
+  configuration is the upper's `/etc`) and refuses older releases, non-merged-usr layouts and
+  unvalidated distributions (Fedora, Arch, unknown) with a documented message.
 - Coverage is measured over production code only against one threshold in
   `.config/coverage.toml`; the filesystem mock no longer ships in release builds.
 - Operator docs now invoke the binary from the hidden volume by full path (`sudo "$ROOT/nails" …`,
@@ -536,8 +537,6 @@ state, config and CLI surfaces; there are no compatibility shims.
   `overlay_exclusions_remove`, `allow_leaky_exclusions`, `risky_services`,
   `nixos_switch_required`, `clear_history`, `prompt_label`, the `[color_scheme]` table and the
   `[emergency]` table (`lock_backend`, `close_command`), and the ephemeral overlay directories.
-- Debian 12 and Ubuntu 22.04 support (systemd too old for a soft-reboot), and Debian 12 in the
-  distribution smoke tests.
 - The per-PR `distro-smoke` container lane (`scripts/distro-smoke/`, the `distro-smoke` job in
   `ci.yml` and its `distro-runner` input). It drove the live-overlay lifecycle, and a container
   cannot soft-reboot; the Debian and Ubuntu VM tests in `distro-e2e.yml` cover the session.

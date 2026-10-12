@@ -36,7 +36,7 @@ Run the latest release and verify its artifacts before use; how releases are pro
 Use one of these two channels, in this order:
 
 1. **GitHub private vulnerability reporting (primary).** Open a report at <https://github.com/WitteShadovv/nails/security/advisories/new>, or use **Report a vulnerability** on the repository's Security tab. Only you and the maintainer can see the report, and the fix and the eventual advisory are coordinated in the same private thread.
-2. **Email to `security@nails.run` (fallback).** Use it if you cannot or do not want to use a GitHub account, or if you do not want GitHub to be able to read the report. Encrypt it with the PGP key below if you can.
+2. **Email to `security@nails.run` (fallback).** Use it if you cannot or do not want to use a GitHub account, or if you do not want GitHub to be able to read the report. No PGP key is published yet (see below), so send only a short request for a private channel first, without any details of the issue.
 
 Please **do not** open public GitHub issues or pull requests for suspected vulnerabilities.
 
@@ -44,7 +44,7 @@ If you accidentally post something sensitive in a public issue, tell us through 
 
 ### PGP key
 
-The OpenPGP key for `security@nails.run` is published through Web Key Directory (WKD) on nails.run. Fetch it with:
+No OpenPGP key for `security@nails.run` is published yet. It will be published through Web Key Directory (WKD) on nails.run, and its fingerprint will appear below. Once both are there, fetch it with:
 
 ```sh
 gpg --auto-key-locate clear,nodefault,wkd --locate-external-keys security@nails.run
