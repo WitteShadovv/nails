@@ -3348,7 +3348,7 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
 
   **Done when:** the cause is known and reported upstream, and either the services start in both roots or `check` and the guide say which ones do not.
 
-- [ ] **T-155: Small findings from the 2026-10-12 VM runs (Ubuntu 26.04, Debian 13)** (low · effort S)
+- [ ] **T-155: Small findings from the 2026-10-12 VM runs (Ubuntu 26.04, Debian 13, NixOS 26.05)** (low · effort S)
 
   _Status (2026-10-12): seen by hand in VirtualBox; none blocks a session._
 
@@ -3356,6 +3356,9 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
   - Ubuntu 26.04: `grub2-common.service` and `grub-initrd-fallback.service` fail in the hidden root (`grub-editenv`: "failed to get canonical path of 'overlay'"). Harmless, the decoy's grubenv cannot change; mask them in the hidden root and update `walkthroughs.md` HW-13, which expects the write to land in the upper.
   - `check`'s `inherited-autostart` still asks to mask an entry that `persona.mask_inherited` already masks: read the config and report masked entries as handled.
   - `recover` says "Nothing to recover: no interrupted activation" when it resets a stale `Active` record after a power loss; say that it reset the record.
+  - NixOS 26.05: `systemd-boot-random-seed.service` fails in the hidden root, because the ESP is a read-only bind there (intended); mask it in the hidden root. The decoy refreshes `loader/random-seed` at its next start, as any boot does.
+  - NixOS: `activate` started from a systemd unit (a panic key, `systemd-run`) fails with "nix-build not found on PATH" and then "file 'nixpkgs/nixos' was not found in the Nix search path": it relies on the login shell's `PATH` and `NIX_PATH`. Look for the tools in `/run/current-system/sw/bin` and take `NIX_PATH` from `/etc/set-environment` (or the `nix.nixPath` the system was built with) when they are unset.
+  - NixOS in VirtualBox: the way back took 67 to 90 s with a GNOME user logged in, against 24 s for a plain `systemctl soft-reboot` of the decoy. The hidden root's journal shows the login screen's user manager waiting 55 s for `virtualboxClientVmsvga.service` (VBoxClient, VirtualBox guest tools) to honour SIGTERM. Absent on real hardware; why the plain soft-reboot is not slowed the same way is still open. The login screen's gnome-shell also aborted (SIGABRT, "Failed to store screen time limits data") while stopping in the hidden root.
   - Disk names change between boots in VirtualBox (`sda` and `sdb` swapped). The guide's setup steps should find the hidden disk by its LUKS header or `/dev/disk/by-id`, never by a `sdX` name.
 
   **Done when:** the masked units are absent from `systemctl --failed` in both roots, and `check` and `recover` say what they did.
