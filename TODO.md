@@ -3348,6 +3348,18 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
 
   **Done when:** the cause is known and reported upstream, and either the services start in both roots or `check` and the guide say which ones do not.
 
+- [ ] **T-155: Small findings from the 2026-10-12 VM runs (Ubuntu 26.04, Debian 13)** (low · effort S)
+
+  _Status (2026-10-12): seen by hand in VirtualBox; none blocks a session._
+
+  - `systemd-remount-fs.service` fails in the hidden root when the decoy's fstab gives `/` options (Debian cloud image: `discard,errors=remount-ro,x-systemd.growfs`): overlayfs refuses option changes on a remount ("No changes allowed in reconfigure"). The root stays correct; the failed unit is noise. Likewise `systemd-growfs-root.service` ("not backed by block device"). Mask both in the hidden root, like the swap and mount masks.
+  - Ubuntu 26.04: `grub2-common.service` and `grub-initrd-fallback.service` fail in the hidden root (`grub-editenv`: "failed to get canonical path of 'overlay'"). Harmless, the decoy's grubenv cannot change; mask them in the hidden root and update `walkthroughs.md` HW-13, which expects the write to land in the upper.
+  - `check`'s `inherited-autostart` still asks to mask an entry that `persona.mask_inherited` already masks: read the config and report masked entries as handled.
+  - `recover` says "Nothing to recover: no interrupted activation" when it resets a stale `Active` record after a power loss; say that it reset the record.
+  - Disk names change between boots in VirtualBox (`sda` and `sdb` swapped). The guide's setup steps should find the hidden disk by its LUKS header or `/dev/disk/by-id`, never by a `sdX` name.
+
+  **Done when:** the masked units are absent from `systemctl --failed` in both roots, and `check` and `recover` say what they did.
+
 ### Not adopted
 
 - Shufflecake as a backend: an out-of-tree kernel module whose presence is itself a decoy-side trace; it stays detected and named by `backend-detect` only.
