@@ -253,6 +253,8 @@ mod tests {
                 address.push(byte[0] as char);
             }
             if address.is_empty() {
+                let _ = daemon.kill();
+                let _ = daemon.wait();
                 skip_host("dbus-daemon could not start a bus on this host");
             }
             #[allow(unsafe_code)]

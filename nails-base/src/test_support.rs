@@ -148,7 +148,14 @@ impl<'a> Rerun<'a> {
             if self.pid_ns && std::env::var_os(PID1_ENV).is_none() {
                 std::process::exit(run_as_pid1());
             }
-            body();
+            // A skip unwinds out of the body, so its temp dirs and scratch
+            // mounts are dropped before the child exits.
+            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body)) {
+                match payload.downcast::<Skip>() {
+                    Ok(skip) => exit_skipped(&skip.reason, skip.host),
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }
             return Outcome::Ran;
         }
         let test_path = self.test_path;
@@ -302,19 +309,37 @@ fn write_proc(path: &std::ffi::CStr, data: &[u8]) -> std::io::Result<()> {
     }
 }
 
-/// End the namespaced child as skipped, with `reason` on stderr: for a
+/// The payload a skip unwinds the body with; [`Rerun::run`] catches it.
+struct Skip {
+    reason: String,
+    host: bool,
+}
+
+/// End the re-executed child's body as skipped, with `reason` on stderr: for a
 /// namespace prerequisite only the body can probe (mounting cgroup2, say).
+/// Call it on the body's own thread; it unwinds, so everything the body holds
+/// is dropped (and its temp dirs removed) before the child exits.
 pub fn skip(reason: &str) -> ! {
-    eprintln!("{SKIP_MARKER}{reason}");
-    std::process::exit(SKIP_EXIT);
+    std::panic::resume_unwind(Box::new(Skip {
+        reason: reason.to_string(),
+        host: false,
+    }))
 }
 
 /// Like [`skip`], for a prerequisite of the host rather than of the namespaces
 /// (a delegated cgroup, a NixOS store): [`REQUIRE_USERNS_ENV`] does not turn
 /// this skip into a failure, since no CI runner provides it.
 pub fn skip_host(reason: &str) -> ! {
+    std::panic::resume_unwind(Box::new(Skip {
+        reason: reason.to_string(),
+        host: true,
+    }))
+}
+
+/// Exit the child as skipped, with `reason` on stderr.
+fn exit_skipped(reason: &str, host: bool) -> ! {
     eprintln!("{SKIP_MARKER}{reason}");
-    std::process::exit(HOST_SKIP_EXIT);
+    std::process::exit(if host { HOST_SKIP_EXIT } else { SKIP_EXIT });
 }
 
 /// In the namespaced child: re-execute this test binary, with the same
@@ -381,7 +406,7 @@ fn run_as_pid1() -> i32 {
         )
     } {
         Ok(pid) => pid,
-        Err(errno) => skip(&format!("cannot create a PID namespace ({errno})")),
+        Err(errno) => exit_skipped(&format!("cannot create a PID namespace ({errno})"), false),
     };
     match nix::sys::wait::waitpid(pid, None) {
         Ok(nix::sys::wait::WaitStatus::Exited(_, code)) => code,
@@ -471,7 +496,13 @@ impl ScratchTmpfs {
 
 impl Drop for ScratchTmpfs {
     fn drop(&mut self) {
-        let _ = nix::mount::umount2(self.dir.path(), nix::mount::MntFlags::MNT_DETACH);
+        // Detach whatever a test stacked on the tmpfs too (an overlay, say):
+        // the directory can be removed only once nothing is mounted on it.
+        for _ in 0..16 {
+            if nix::mount::umount2(self.dir.path(), nix::mount::MntFlags::MNT_DETACH).is_err() {
+                break;
+            }
+        }
     }
 }
 
@@ -510,6 +541,43 @@ mod tests {
             );
         });
         assert_eq!(outcome, Outcome::Ran);
+    }
+
+    #[test]
+    fn a_skip_drops_what_the_body_holds_before_the_child_exits() {
+        // The parent's pid names a directory both processes find.
+        fn shared(pid: u32) -> std::path::PathBuf {
+            std::env::temp_dir().join(format!("nails-skip-drop-{pid}"))
+        }
+        struct RemoveOnDrop(std::path::PathBuf);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                std::fs::remove_file(&self.0).unwrap();
+            }
+        }
+        let dir = shared(std::process::id());
+
+        let outcome = Rerun::new(crate::test_path!(
+            a_skip_drops_what_the_body_holds_before_the_child_exits
+        ))
+        .run(|| {
+            let dir = shared(std::os::unix::process::parent_id());
+            std::fs::create_dir(&dir).unwrap();
+            std::fs::write(dir.join("kept"), "").unwrap();
+            std::fs::write(dir.join("dropped"), "").unwrap();
+            let _guard = RemoveOnDrop(dir.join("dropped"));
+            super::skip_host("dropping on the way out");
+        });
+
+        let kept = dir.join("kept").exists();
+        let dropped = !dir.join("dropped").exists();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            outcome,
+            Outcome::Skipped("dropping on the way out".to_string())
+        );
+        assert!(kept, "the body ran");
+        assert!(dropped, "the skip dropped the body's guard");
     }
 
     /// CI runs this with `NAILS_REQUIRE_USERNS=1`, which must leave a host skip a skip.
