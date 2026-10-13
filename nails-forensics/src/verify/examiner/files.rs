@@ -8,6 +8,7 @@ use crate::filesystem::real::{OpenKind, open_noatime, read_dir_noatime};
 use crate::forensic::entropy;
 use crate::forensic::tree::{WalkLimits, walk_files};
 use crate::verify::Severity;
+use nails_base::crypttab::parse_crypttab;
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::fs::{FileExt, MetadataExt};
@@ -63,26 +64,26 @@ fn config_lines(text: &str) -> impl Iterator<Item = &str> {
 }
 
 /// crypttab entries, and fstab entries that mount a mapper or a loop file.
+///
+/// A crypttab entry warns when it opens a TrueCrypt or VeraCrypt volume (by
+/// any option systemd opens as one,
+/// [`is_tcrypt`](nails_base::crypttab::CrypttabEntry::is_tcrypt)), a
+/// headerless `plain` mapping or a file.
 pub(super) fn config_entries(root: &Path) -> Vec<ExaminerFinding> {
     let mut out = Vec::new();
     if let Some(text) = read_text(&rebase(root, "/etc/crypttab"), TEXT_LIMIT) {
-        for line in config_lines(&text) {
-            let fields: Vec<&str> = line.split_whitespace().collect();
-            let name = fields.first().copied().unwrap_or("");
-            let device = fields.get(1).copied().unwrap_or("");
-            let options = fields.get(3).copied().unwrap_or("");
-            let deniable = ["tcrypt", "veracrypt", "plain", "tcrypt-hidden"]
-                .iter()
-                .any(|kind| options.split(',').any(|opt| opt == *kind));
-            let file_backed = device.starts_with('/') && !device.starts_with("/dev/");
+        for entry in parse_crypttab(&text) {
+            let deniable = entry.is_tcrypt() || entry.has_option("plain");
+            let source = entry.source.as_str();
+            let file_backed = source.starts_with('/') && !source.starts_with("/dev/");
             let severity = if deniable || file_backed {
                 Severity::Warn
             } else {
                 Severity::Info
             };
-            let mut evidence = format!("encrypted mapping {name} from {device}");
-            if !options.is_empty() {
-                evidence.push_str(&format!(" ({options})"));
+            let mut evidence = format!("encrypted mapping {} from {source}", entry.name);
+            if !entry.options.is_empty() {
+                evidence.push_str(&format!(" ({})", entry.options.join(",")));
             }
             out.push(finding(
                 "crypttab-fstab",

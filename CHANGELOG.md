@@ -607,6 +607,12 @@ config and CLI surfaces; there are no compatibility shims.
 - `backend-detect` names a device once when two layers of the stack sit on it, such as the two
   halves of an LVM snapshot or a thin pool's metadata and data on one physical volume. It named
   such a device, with its warnings, once for each layer on it.
+- `verify --examiner` warns about every crypttab line that opens a TrueCrypt or VeraCrypt volume.
+  It knew only `tcrypt`, `veracrypt` and `tcrypt-hidden`, so a decoy line that opens a device with
+  `tcrypthidden`, `tcrypt-veracrypt`, `tcrypt-system` or `tcrypt-keyfile=` was reported as
+  information only, although `vault /dev/sdb none tcrypthidden` opens the hidden volume at boot.
+  The examiner now reads crypttab with the parser the `swap` check uses, so it also skips a line
+  with fewer than two fields, as systemd does.
 - On NixOS, `activate`, `deactivate` and `emergency` work when a systemd unit starts them (a
   panic key, `systemd-run`). Such a unit has a minimal `PATH` and no `NIX_PATH`, so the entry
   failed with "nix-build not found on PATH" and then "file 'nixpkgs/nixos' was not found". The
