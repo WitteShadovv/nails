@@ -421,9 +421,9 @@ its 4 GiB guest, which only 9p needed.
 
 `--jobs auto` budgets 3.5 GiB of host memory per test (`GIB_PER_TEST` in
 `ci/e2e/run.py`), so the switch was checked against that budget. During a full
-run with two VMs at once (`--jobs 2`, 59 tests, 56 min), a sampler read
-`/proc` every 5 s for every QEMU process, its virtiofsd daemons and its test
-driver:
+run of the 59 tests (56 min) with two tests at once (`--jobs 2`; up to three
+VMs, since three of the tests start two VMs each), a sampler read `/proc` every
+5 s for every QEMU process, its virtiofsd daemons and its test driver:
 
 | At a test's peak | Largest | Typical |
 | --- | ---: | ---: |
