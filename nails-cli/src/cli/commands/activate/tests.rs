@@ -237,3 +237,24 @@ fn execute_colour_settings_paint_dry_run_marks() {
         "stdout={stdout}"
     );
 }
+
+/// `activate --dry-run` runs `check` with the options activation itself runs
+/// the pre-flight checks with, for every combination of the shared flags.
+#[test]
+fn a_dry_run_checks_with_the_options_activation_uses() {
+    for (overlay_only, accept_persistent_decoy) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let args = ActivateArgs {
+            overlay_only,
+            accept_persistent_decoy,
+            dry_run: true,
+            ..ActivateArgs::default()
+        };
+        assert_eq!(
+            crate::cli::commands::check::preflight_options(&super::dry_run_check_args(&args)),
+            super::enter_options(&args).preflight(),
+            "{args:?}"
+        );
+    }
+}

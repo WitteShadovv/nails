@@ -14,7 +14,7 @@
 use std::io::Write;
 use std::path::Path;
 
-use nails_core::{CliOverrides, Config, Filesystem};
+use nails_core::{CliOverrides, Config, Filesystem, PreflightOptions};
 
 use crate::cli::args::CheckArgs;
 use crate::cli::output::check::{
@@ -59,18 +59,17 @@ pub fn execute(
     // hidden NixOS layout only happens on the activation path, never here.
     let manager = super::build_nixos_manager(config, state_path, overlay_only, env);
 
-    let registry =
-        match manager.preflight_registry(overlay_only, true, args.accept_persistent_decoy) {
-            Ok(registry) => registry,
-            Err(e) => {
-                return report_error(
-                    json,
-                    COMMAND,
-                    ExitStatus::Failed,
-                    ErrorBody::new("check_error", format!("could not assemble checks: {e}")),
-                );
-            }
-        };
+    let registry = match manager.preflight_registry(&preflight_options(args)) {
+        Ok(registry) => registry,
+        Err(e) => {
+            return report_error(
+                json,
+                COMMAND,
+                ExitStatus::Failed,
+                ErrorBody::new("check_error", format!("could not assemble checks: {e}")),
+            );
+        }
+    };
 
     let (results, _) = registry.run_all_detailed(manager.filesystem());
     let checks: Vec<CheckRow> = results
@@ -114,10 +113,16 @@ pub fn execute(
     }
 }
 
-/// Describe how the graphical session would be handled.
-///
-/// The check runs non-interactively and without privileges, so a session it
-/// cannot classify is reported as `unknown` rather than surfaced as an error.
+/// The pre-flight options of `check`: what activation builds from the same
+/// flags (`EnterOptions::preflight`), so both run the same checks.
+pub(super) fn preflight_options(args: &CheckArgs) -> PreflightOptions {
+    PreflightOptions {
+        overlay_only: args.overlay_only,
+        accept_persistent_decoy: args.accept_persistent_decoy,
+        ..PreflightOptions::default()
+    }
+}
+
 /// What the fstab policy would do with each decoy filesystem.
 fn decoy_filesystems(hidden_root: &Path) -> Vec<String> {
     use nails_core::session::{fstab, policy};

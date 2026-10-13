@@ -6,7 +6,7 @@
 //! Kept in a sibling file so `preflight_runner.rs` stays within the production
 //! line budget; compiled only under `#[cfg(test)]`.
 
-use super::{RegistryInputs, build_registry};
+use super::{PreflightOptions, RegistryInputs, build_registry};
 use crate::manager::NailsManager;
 use crate::platform::NixOsConfigLayer;
 use crate::preflight::CheckResult;
@@ -25,14 +25,12 @@ fn build_registry_includes_the_shared_checks() {
     let fs = MockFilesystem::new();
     let config = explicit_config();
     let inputs = RegistryInputs {
-        overlay_only: false,
-        read_only: true,
+        options: PreflightOptions::default(),
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
-        accept_persistent_decoy: false,
         caller_path: None,
     };
 
@@ -62,14 +60,15 @@ fn overlay_only_registry_drops_the_nixos_checks() {
     let fs = MockFilesystem::new();
     let config = explicit_config();
     let inputs = RegistryInputs {
-        overlay_only: true,
-        read_only: true,
+        options: PreflightOptions {
+            overlay_only: true,
+            ..PreflightOptions::default()
+        },
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
-        accept_persistent_decoy: false,
         caller_path: None,
     };
 
@@ -89,14 +88,12 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
     let fs = MockFilesystem::new();
     let config = explicit_config();
     let inputs = RegistryInputs {
-        overlay_only: false,
-        read_only: true,
+        options: PreflightOptions::default(),
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
-        accept_persistent_decoy: false,
         caller_path: None,
     };
 
@@ -123,20 +120,55 @@ fn activation_and_check_build_identical_check_lists() {
     };
     let manager = NailsManager::new(MockFilesystem::new(), config, state_path);
 
-    // Activation (read_only = false) and check (read_only = true) route through
-    // the same `preflight_registry`, so for the same inputs the sequence of
-    // check names is identical — only individual checks' write behaviour differs.
-    let activation = manager
-        .preflight_registry(false, false, false)
-        .expect("activation registry");
+    // A registry that may stage storage and a read-only one route through the
+    // same `preflight_registry`, so for the same inputs the sequence of check
+    // names is identical — only individual checks' write behaviour differs.
+    let staging = manager
+        .preflight_registry(&PreflightOptions {
+            read_only: false,
+            ..PreflightOptions::default()
+        })
+        .expect("staging registry");
     let check = manager
-        .preflight_registry(false, true, false)
+        .preflight_registry(&PreflightOptions::default())
         .expect("check registry");
 
-    let activation_names = check_names(&activation.run_all_detailed(&MockFilesystem::new()).0);
+    let staging_names = check_names(&staging.run_all_detailed(&MockFilesystem::new()).0);
     let doctor_names = check_names(&check.run_all_detailed(&MockFilesystem::new()).0);
 
-    assert_eq!(activation_names, doctor_names);
+    assert_eq!(staging_names, doctor_names);
+}
+
+/// `nails check` builds its options from its flags and activation takes them
+/// from `EnterOptions::preflight`: the same flags give the same options and so
+/// the same checks (T-062).
+#[test]
+fn check_and_activation_build_the_same_checks_from_the_same_flags() {
+    let manager = manager_with(MockFilesystem::new());
+    let names = |options: &PreflightOptions| {
+        manager
+            .preflight_registry(options)
+            .expect("registry builds")
+            .names()
+    };
+    for (overlay_only, accept_persistent_decoy) in
+        [(false, false), (true, false), (false, true), (true, true)]
+    {
+        let check = PreflightOptions {
+            overlay_only,
+            accept_persistent_decoy,
+            ..PreflightOptions::default()
+        };
+        let activation = crate::manager::EnterOptions {
+            overlay_only,
+            accept_persistent_decoy,
+            ..crate::manager::EnterOptions::default()
+        }
+        .preflight();
+        assert_eq!(activation, check);
+        assert!(activation.read_only, "activation never stages storage");
+        assert_eq!(names(&activation), names(&check));
+    }
 }
 
 #[test]
@@ -150,14 +182,12 @@ fn read_only_registry_creates_nothing() {
         ..explicit_config()
     };
     let inputs = RegistryInputs {
-        overlay_only: false,
-        read_only: true,
+        options: PreflightOptions::default(),
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
-        accept_persistent_decoy: false,
         caller_path: None,
     };
 
@@ -208,7 +238,10 @@ fn failing_check_is_reported_through_tracing() {
     let manager = NailsManager::new(fs, config, state_path);
 
     let err = manager
-        .run_preflight_checks(true, false)
+        .run_preflight_checks(&PreflightOptions {
+            overlay_only: true,
+            ..PreflightOptions::default()
+        })
         .expect_err("an unmounted hidden volume must fail preflight");
     match err {
         NailsError::PreFlightCheckFailed(failures) => {
@@ -229,7 +262,7 @@ fn failing_check_is_reported_through_tracing() {
 /// The build-target check's verdict for a manager's registry.
 fn build_target_result(manager: &NailsManager<MockFilesystem>) -> Option<CheckResult> {
     let registry = manager
-        .preflight_registry(false, true, false)
+        .preflight_registry(&PreflightOptions::default())
         .expect("registry builds");
     registry
         .run_all_detailed(manager.filesystem())

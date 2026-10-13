@@ -64,7 +64,11 @@ fn preflight_rejects_a_missing_hidden_volume() {
         ..Config::default()
     };
     let manager = NailsManager::new(MockFilesystem::new(), config, state_path);
-    assert!(manager.run_preflight_checks(false, false).is_err());
+    assert!(
+        manager
+            .run_preflight_checks(&nails_core::PreflightOptions::default())
+            .is_err()
+    );
 }
 
 #[test]

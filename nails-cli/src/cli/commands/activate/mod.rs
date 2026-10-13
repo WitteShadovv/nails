@@ -99,6 +99,25 @@ fn write_activation_residue_baseline(
     }
 }
 
+/// The `check` arguments `activate --dry-run` runs with.
+fn dry_run_check_args(args: &ActivateArgs) -> crate::cli::args::CheckArgs {
+    crate::cli::args::CheckArgs {
+        overlay_only: args.overlay_only,
+        nixos_flake: args.nixos_flake.clone(),
+        accept_persistent_decoy: args.accept_persistent_decoy,
+    }
+}
+
+/// What the activation asks of the session entry.
+fn enter_options(args: &ActivateArgs) -> EnterOptions {
+    EnterOptions {
+        skip_preflight: args.no_preflight,
+        overlay_only: args.overlay_only,
+        accept_persistent_decoy: args.accept_persistent_decoy,
+        binary: std::env::current_exe().unwrap_or_default(),
+    }
+}
+
 /// Execute the activate command.
 ///
 /// # Returns
@@ -119,12 +138,7 @@ pub fn execute(
 ) -> ExitStatus {
     let json = settings.is_json();
     if args.dry_run {
-        let check_args = crate::cli::args::CheckArgs {
-            overlay_only: args.overlay_only,
-            nixos_flake: args.nixos_flake.clone(),
-            accept_persistent_decoy: args.accept_persistent_decoy,
-        };
-        return super::check::execute(settings, env, &check_args, config_override);
+        return super::check::execute(settings, env, &dry_run_check_args(args), config_override);
     }
 
     let mut loaded = match super::load_config_or_report(config_override, "activate", json) {
@@ -219,12 +233,7 @@ pub fn execute(
             "Preparing the hidden session (pre-flight, hidden system, next root)...",
         );
     }
-    let options = EnterOptions {
-        skip_preflight: args.no_preflight,
-        overlay_only: args.overlay_only,
-        accept_persistent_decoy: args.accept_persistent_decoy,
-        binary: std::env::current_exe().unwrap_or_default(),
-    };
+    let options = enter_options(args);
     let start = Instant::now();
     let result = manager.enter_session(&options, &RealEntryHost);
     let duration = start.elapsed().as_secs_f64();

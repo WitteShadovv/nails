@@ -8,7 +8,7 @@
 //! this adds the pre-flight registry, the hidden NixOS configuration, the
 //! state file and the backend chain.
 
-use super::NailsManager;
+use super::{NailsManager, PreflightOptions};
 use crate::error::{NailsError, Result};
 use crate::filesystem::Filesystem;
 use crate::platform::PlatformKind;
@@ -31,6 +31,19 @@ pub struct EnterOptions {
     pub accept_persistent_decoy: bool,
     /// The running binary, copied to RAM for the panic path.
     pub binary: PathBuf,
+}
+
+impl EnterOptions {
+    /// The pre-flight options of this activation: what `nails check` builds
+    /// from the same flags, so both run the same checks. The registry stays
+    /// read-only, as it does for `check`.
+    pub fn preflight(&self) -> PreflightOptions {
+        PreflightOptions {
+            overlay_only: self.overlay_only,
+            accept_persistent_decoy: self.accept_persistent_decoy,
+            ..PreflightOptions::default()
+        }
+    }
 }
 
 /// What [`NailsManager::enter_session`] did.
@@ -127,7 +140,7 @@ impl<F: Filesystem> NailsManager<F> {
         let nixos = self.require_supported_host(machine)?;
         if !options.skip_preflight {
             self.stage_hidden_config(options.overlay_only)?;
-            self.run_preflight_checks(options.overlay_only, options.accept_persistent_decoy)?;
+            self.run_preflight_checks(&options.preflight())?;
         }
         let started = std::time::Instant::now();
         let hidden_root = self.config.hidden_volume_root.clone();

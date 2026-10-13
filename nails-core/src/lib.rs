@@ -110,8 +110,8 @@ pub use filesystem::{Filesystem, RealFilesystem};
 pub use filesystem::{MockFilesystem, PathKind};
 pub use hidden_root::{AttachState, HiddenRoot, ensure_state_dir_attached};
 pub use manager::{
-    EnterOptions, EnterOutcome, NailsManager, RegistryInputs, ResetUpperPlan, SessionRecovery,
-    build_registry,
+    EnterOptions, EnterOutcome, NailsManager, PreflightOptions, RegistryInputs, ResetUpperPlan,
+    SessionRecovery, build_registry,
 };
 // Platform seam exports
 pub use platform::{

@@ -16,7 +16,7 @@ pub mod preflight_runner;
 pub mod session_flow;
 pub mod state_management;
 
-pub use preflight_runner::{RegistryInputs, build_registry};
+pub use preflight_runner::{PreflightOptions, RegistryInputs, build_registry};
 pub use session_flow::{EnterOptions, EnterOutcome, SessionRecovery};
 pub use state_management::ResetUpperPlan;
 
