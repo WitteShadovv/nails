@@ -81,26 +81,14 @@ allow = [
 
     # Unicode license (common in text processing crates)
     "Unicode-3.0",
+
+    # Permissive and GPL-compatible (FSF license list). foldhash, the default
+    # hasher of hashbrown, which the dev-only jsonschema pulls in.
+    "Zlib",
 ]
 
 # Deny any license not in the allow list
 # This is the default behavior when 'allow' is specified
-
-# Crates with clarified license expressions
-# Some crates have non-standard license files or need manual verification
-[[licenses.clarify]]
-name = "ring"
-expression = "MIT AND ISC AND OpenSSL"
-license-files = [
-    { path = "LICENSE", hash = 0xbd0eed23 }
-]
-
-[[licenses.clarify]]
-name = "webpki"
-expression = "ISC"
-license-files = [
-    { path = "LICENSE", hash = 0x001c7e6c }
-]
 
 # Private crates that don't need license checking (our own workspace crates)
 [licenses.private]
