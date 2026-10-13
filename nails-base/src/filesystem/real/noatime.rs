@@ -29,7 +29,9 @@ pub enum OpenKind {
     FileNoFollow,
 }
 
-/// Open `path` read-only with `O_NOATIME`, retrying without it on `EPERM`.
+/// Open `path` read-only with `O_NOATIME`, retrying without it on `EPERM`
+/// ([`with_noatime`](nails_teardown::noatime::with_noatime), the rule the
+/// next root's reads follow too).
 pub fn open_noatime(path: &Path, kind: OpenKind) -> io::Result<OwnedFd> {
     use rustix::fs::{Mode, OFlags, open};
 
@@ -40,12 +42,8 @@ pub fn open_noatime(path: &Path, kind: OpenKind) -> io::Result<OwnedFd> {
         OpenKind::FileNoFollow => base |= OFlags::NOFOLLOW,
     }
 
-    match open(path, base | OFlags::NOATIME, Mode::empty()) {
-        Ok(fd) => Ok(fd),
-        // O_NOATIME needs file ownership or CAP_FOWNER; retry without it.
-        Err(rustix::io::Errno::PERM) => open(path, base, Mode::empty()).map_err(io::Error::from),
-        Err(e) => Err(io::Error::from(e)),
-    }
+    nails_teardown::noatime::with_noatime(|noatime| open(path, base | noatime, Mode::empty()))
+        .map_err(io::Error::from)
 }
 
 /// Read a whole file as UTF-8 without updating its access time.

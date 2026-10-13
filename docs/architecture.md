@@ -70,7 +70,8 @@ and the transition step before anything else is initialised.
   primitives and the pre-switch init check, the transition step, the `/run`
   snapshot and scrub, the kmsg cursor, the way back, the runtime units and
   masks, the kill of all userspace and the emergency hot path. It also holds the
-  mountinfo parser and the cgroup, pidfd and shell kills. It depends on
+  mountinfo parser, the rule for opening a file without updating its access
+  time, and the cgroup, pidfd and shell kills. It depends on
   `rustix`, `libc`, `serde` and `serde_json` only, so `main` can run the emergency and the
   transition before clap, the configuration or tracing exist.
 

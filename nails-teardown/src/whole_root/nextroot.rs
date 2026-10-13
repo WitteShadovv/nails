@@ -21,6 +21,7 @@
 //! cycle, so every switch is checked first.
 
 use crate::mountinfo::{MountEntry, escape_overlay_path, read_mountinfo};
+use crate::noatime::with_noatime;
 use rustix::fs::{Mode, OFlags, ResolveFlags, StatVfsMountFlags};
 use rustix::mount::{MountFlags, MountPropagationFlags, UnmountFlags};
 use std::ffi::CString;
@@ -282,11 +283,12 @@ pub fn exists_in_root(root: &Path, path: &Path) -> bool {
 /// inside `root`): the next root's `/etc/fstab`, which on NixOS is a link
 /// into the hidden store, or the decoy's own.
 ///
-/// The file is opened with `O_NOATIME`, so a check or an entry that reads the
-/// decoy's fstab does not stamp it with the time of the read on a `relatime`
-/// filesystem. The kernel grants the flag only to the file's owner or a
-/// caller with `CAP_FOWNER` (root has it); anyone else gets `EPERM`, and the
-/// read falls back to a plain open, which cannot avoid the update.
+/// The file is opened with `O_NOATIME` ([`with_noatime`]), so a check or an
+/// entry that reads the decoy's fstab does not stamp it with the time of the
+/// read on a `relatime` filesystem; a caller that neither owns the file nor
+/// holds `CAP_FOWNER` cannot avoid that. The flag covers the file alone: on
+/// NixOS the decoy's `/etc/fstab` and `/etc/static` are links on its root,
+/// and the lookup that follows them can still update their access times.
 pub fn read_in_root(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
     let dir = rustix::fs::open(
         root,
@@ -295,19 +297,15 @@ pub fn read_in_root(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
     )
     .map_err(to_io)?;
     let relative = path.strip_prefix("/").unwrap_or(path);
-    let open = |flags: OFlags| {
+    let fd = with_noatime(|noatime| {
         rustix::fs::openat2(
             &dir,
             relative.as_os_str().as_bytes(),
-            flags | OFlags::RDONLY | OFlags::CLOEXEC,
+            noatime | OFlags::RDONLY | OFlags::CLOEXEC,
             Mode::empty(),
             ResolveFlags::IN_ROOT,
         )
-    };
-    let fd = match open(OFlags::NOATIME) {
-        Err(rustix::io::Errno::PERM) => open(OFlags::empty()),
-        other => other,
-    }
+    })
     .map_err(to_io)?;
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut std::fs::File::from(fd), &mut bytes)?;

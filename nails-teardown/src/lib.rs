@@ -19,6 +19,7 @@
 
 pub mod cgroup;
 pub mod mountinfo;
+pub mod noatime;
 pub mod proc;
 pub mod shells;
 pub mod whole_root;
