@@ -184,7 +184,11 @@ jobs:
   distro-result:
     name: distro-result
     needs: [plan, distro]
-    if: always()
+    # !cancelled(), not always(): a run cancelled by a newer 'distro-e2e'
+    # label reports nothing, rather than a plan or scenario failure it never
+    # had. A skipped check counts as passed, so revisit this before the lane
+    # becomes a required check.
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
 
