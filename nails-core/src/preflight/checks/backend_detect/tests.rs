@@ -382,6 +382,69 @@ fn luks_on_whole_device_passes() {
     );
 }
 
+/// An LVM snapshot of the hidden volume: the snapshot (`253:3` -> dm-3) sits on
+/// the origin's `-real` device (dm-1) and on its copy-on-write store (dm-2),
+/// and both sit on one plain dm-crypt mapping (dm-0) with discards on. As in
+/// sysfs, each `slaves/` entry is a link to the device's own directory.
+#[test]
+fn a_device_two_layers_sit_on_is_named_once() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(
+        MOUNTINFO,
+        &mountinfo("253:3", "ext4", "/dev/mapper/vg-snap"),
+    );
+    let slaves = |dir: &str, names: &[&str]| {
+        let links = names
+            .iter()
+            .map(|name| {
+                let link = PathBuf::from(format!("{dir}/slaves/{name}"));
+                fs.create_symlink(&Path::new(SYS_BLOCK).join(name), &link)
+                    .unwrap();
+                link
+            })
+            .collect();
+        fs.mock_set_directory_contents(&Path::new(dir).join("slaves"), links);
+    };
+    add_device(
+        &fs,
+        "/sys/dev/block/253:3",
+        "dm-3",
+        Some("LVM-snap"),
+        None,
+        "0",
+    );
+    slaves("/sys/dev/block/253:3", &["dm-1", "dm-2"]);
+    for (name, uuid) in [("dm-1", "LVM-origin-real"), ("dm-2", "LVM-snap-cow")] {
+        let dir = format!("{SYS_BLOCK}/{name}");
+        add_device(&fs, &dir, name, Some(uuid), None, "0");
+        slaves(&dir, &["dm-0"]);
+    }
+    add_device(
+        &fs,
+        "/sys/block/dm-0",
+        "dm-0",
+        Some("CRYPT-PLAIN-pv"),
+        None,
+        "4096",
+    );
+
+    let result = assess_offline(&fs, Path::new(ROOT));
+    let message = result.message();
+    assert!(result.is_warn(), "{message}");
+    assert!(
+        message.starts_with(
+            "Hidden root backend: ext4 on device-mapper device dm-3 on device-mapper device \
+             dm-1 on device-mapper device dm-2 on plain dm-crypt mapping dm-0. Discards"
+        ),
+        "{message}"
+    );
+    assert_eq!(
+        message.matches("Discards are enabled").count(),
+        1,
+        "{message}"
+    );
+}
+
 #[test]
 fn discard_enabled_tcrypt_mapping_warns() {
     let fs = tcrypt_container_fixture("ext4", "2147450880");

@@ -600,6 +600,9 @@ config and CLI surfaces; there are no compatibility shims.
 - The `swap` check skips a crypttab line with fewer than two fields, as systemd does. Such a line
   ended its search for the swap's entry, so a swap keyed from `/dev/urandom` on a later line of
   the same name failed the check instead of warning.
+- `backend-detect` names a device once when two layers of the stack sit on it, such as the two
+  halves of an LVM snapshot or a thin pool's metadata and data on one physical volume. It named
+  such a device, with its warnings, once for each layer on it.
 - On NixOS, `activate`, `deactivate` and `emergency` work when a systemd unit starts them (a
   panic key, `systemd-run`). Such a unit has a minimal `PATH` and no `NIX_PATH`, so the entry
   failed with "nix-build not found on PATH" and then "file 'nixpkgs/nixos' was not found". The
