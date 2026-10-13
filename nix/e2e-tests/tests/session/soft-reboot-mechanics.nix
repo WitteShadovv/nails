@@ -681,6 +681,20 @@ in
             machine.fail("test -e /nails-canary")
             precheck_nextroot()
 
+        with subtest(f"cycle {cycle}: keep the static address through the switch"):
+            # NixOS starts network-addresses-<interface>.service only when its
+            # device appears, which a soft-reboot does not replay, and the
+            # unit's stop deletes the address. As nails does (STOP_GUARDED_UNITS
+            # in nails-teardown), clear that stop for the session, so the kernel
+            # keeps the address in both directions. The leave scrub removes the
+            # drop-in with the rest of /run/systemd/system.
+            machine.succeed(
+                "mkdir -p /run/systemd/system/network-addresses-.service.d && "
+                "printf '[Service]\\nExecStop=\\n' "
+                "> /run/systemd/system/network-addresses-.service.d/zz-overlay-runtime.conf && "
+                "systemctl daemon-reload"
+            )
+
         soft_reboot(f"cycle{cycle}-enter")
 
         with subtest(f"cycle {cycle}: the hidden root is the overlay"):
