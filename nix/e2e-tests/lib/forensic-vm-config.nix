@@ -21,7 +21,7 @@
   };
 
   # A persistent journal, so a logged canary survives into the image for the
-  # carve-and-scan journal check. extraConfig is used rather than the newer
-  # services.journald.storage option so the profile does not depend on it.
-  services.journald.extraConfig = "Storage=persistent";
+  # carve-and-scan journal check. It overrides the volatile default of
+  # vm-config.nix.
+  services.journald.settings.Journal.Storage = "persistent";
 }

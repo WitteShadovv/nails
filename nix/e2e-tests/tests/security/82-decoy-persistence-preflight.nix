@@ -34,7 +34,7 @@ in
       environment.systemPackages = [ self.packages.x86_64-linux.nails ];
       # vm-config models an amnesic decoy (volatile journald). Force a persistent
       # journal so the decoy-persistence check must fail closed.
-      services.journald.storage = lib.mkForce "persistent";
+      services.journald.settings.Journal.Storage = lib.mkForce "persistent";
       # Two more persistent log sinks the check must refuse.
       services.rsyslogd.enable = true;
       security.auditd.enable = true;

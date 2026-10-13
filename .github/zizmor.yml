@@ -6,6 +6,13 @@ rules:
       policies:
         "*": hash-pin
 
+  # zizmor 1.30 asks for GitHub's self-repository syntax (`uses: $/...`) for
+  # the local actions and reusable workflows, but actionlint 1.7.12 rejects
+  # that syntax as an invalid action reference. Re-enable this audit and move
+  # the `uses: ./...` lines over once actionlint accepts it.
+  self-repository:
+    disable: true
+
   # Findings that predate the zizmor check, ignored per file because these
   # workflows are being rewritten. Delete an entry once its file is fixed or
   # gone; never add one for new code.

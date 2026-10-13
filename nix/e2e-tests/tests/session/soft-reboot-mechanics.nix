@@ -79,7 +79,7 @@ in
       # Stricter than the suite default (volatile): the hidden journal must be
       # shown to land in the overlay upper, never in the decoy's
       # /var/log/journal.
-      services.journald.storage = lib.mkForce "persistent";
+      services.journald.settings.Journal.Storage = lib.mkForce "persistent";
 
       # soft-reboot.target and systemd-soft-reboot.service come from
       # vm-config.nix (lib/soft-reboot-units.nix): the pinned nixpkgs does not

@@ -36,7 +36,9 @@ let
   nailsE2eHelpers =
     ps:
     ps.buildPythonPackage {
-      pname = "nails-e2e-test-helpers";
+      # The project name in py/pyproject.toml: the build checks that the
+      # installed metadata carries this name and version.
+      pname = "nails-e2e";
       version = "0";
       src = ./py;
       pyproject = true;

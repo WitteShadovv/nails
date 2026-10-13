@@ -28,13 +28,6 @@
       }
     ];
 
-    # Most tests read the host Nix store over 9p. The 16 KiB default msize
-    # splits every larger read and readdir into many round trips, and QEMU's
-    # own 9p documentation recommends raising it. 256 KiB stays below the
-    # virtio transport's ceiling (PAGE_SIZE * (VIRTQUEUE_NUM - 3), about
-    # 500 KiB), so no kernel clamps it.
-    msize = 262144;
-
     # Keeping restrictNetwork = false is harmless and avoids the QEMU "-net none"
     # flag that can interfere with the test framework's own virtual network.
     restrictNetwork = false;
@@ -47,7 +40,7 @@
   # disk, so the decoy-persistence pre-flight check passes and the E2E suite
   # exercises the supported posture. A test that wants to exercise the refusal
   # path overrides this back to "persistent".
-  services.journald.storage = lib.mkDefault "volatile";
+  services.journald.settings.Journal.Storage = lib.mkDefault "volatile";
 
   # Test user with sudo privileges
   users.users.testuser = {
