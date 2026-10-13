@@ -87,7 +87,7 @@ jobs:
       - name: Install just
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: just@1.49.0
+          tool: just@1.58.0
           fallback: none
 
       # A manifest change (a version bump, a new dependency) without the
@@ -136,7 +136,7 @@ jobs:
       - name: Install test tools
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-llvm-cov@0.8.4,cargo-nextest@0.9.72,just@1.49.0
+          tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
       # The prompt syntax tests skip a shell that is not installed.
@@ -225,7 +225,7 @@ jobs:
       - name: Install just
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: just@1.49.0
+          tool: just@1.58.0
           fallback: none
 
       # The suite must leave an empty private TMPDIR, as in the `rust` job.
@@ -259,7 +259,7 @@ jobs:
       - name: Install policy tools
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-deny@0.19.1,just@1.49.0
+          tool: cargo-deny@0.20.2,just@1.58.0
           fallback: none
 
       - name: Check bans, licenses and sources

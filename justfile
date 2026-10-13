@@ -13,7 +13,7 @@ default:
 # without dev-dependencies. Crates that only build for other platforms (wasm,
 # Windows, macOS) or only for tests and benchmarks never ship.
 
-shipped_graph := "--exclude-dev --target x86_64-unknown-linux-musl --target x86_64-unknown-linux-gnu"
+shipped_targets := "x86_64-unknown-linux-musl x86_64-unknown-linux-gnu"
 
 # --- Rust quality gate ---
 
@@ -125,8 +125,14 @@ ci-rust: fmt-check lint line-count coverage doctest
 # --- Dependency policy ---
 
 # Check the shipped dependency graph against deny.toml (the CI merge gate).
+# One run per target: cargo-deny 0.20 accepts `--target` only once (fixed
+# upstream after 0.20.2), and the targets' graphs together are the shipped one.
 deny *checks="advisories bans licenses sources":
-    cargo deny --locked {{ shipped_graph }} check {{ checks }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for target in {{ shipped_targets }}; do
+        cargo deny --locked --exclude-dev --target "$target" check {{ checks }}
+    done
 
 # Check every target and dev-dependency against deny.toml (weekly, never gates).
 deny-full *checks="advisories bans licenses sources":

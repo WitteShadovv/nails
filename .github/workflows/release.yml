@@ -219,7 +219,7 @@ jobs:
       - name: Install cargo-cyclonedx and cyclonedx-cli
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-cyclonedx@0.5.9,cyclonedx@0.30.0
+          tool: cargo-cyclonedx@0.5.9,cyclonedx@0.33.1
 
       # Only the nails binary, resolved for the release target without
       # build-time dependencies; the commit time keeps the file reproducible.

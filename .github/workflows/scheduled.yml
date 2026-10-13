@@ -107,7 +107,7 @@ jobs:
       - name: Install policy tools
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-deny@0.19.1,just@1.49.0
+          tool: cargo-deny@0.20.2,just@1.58.0
           fallback: none
 
       - name: Check every target and dev-dependency
@@ -244,7 +244,7 @@ jobs:
       - name: Install test tools
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-nextest@0.9.72,just@1.49.0
+          tool: cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
       - name: Repeat the test suite
@@ -381,7 +381,7 @@ jobs:
       - name: Install test tools
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.72,just@1.49.0
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
       # `just mutants` scopes the run to state/, overlay/ and cleanup/.
@@ -433,7 +433,7 @@ jobs:
       - name: Install policy tools
         uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-deny@0.19.1
+          tool: cargo-deny@0.20.2
           fallback: none
 
       - name: Move every dependency to its newest allowed version
