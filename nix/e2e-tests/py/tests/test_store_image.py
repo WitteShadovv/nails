@@ -128,7 +128,7 @@ class CacheStoreImageTest(unittest.TestCase):
         self.assertFalse(cache_store_image(machine))
         self.assertEqual(machine.start_command._cmd, "/nonexistent/run-machine-vm")
 
-    def test_a_9p_store_script_is_left_alone(self) -> None:
+    def test_a_script_without_a_store_image_is_left_alone(self) -> None:
         directory = Path(tempfile.mkdtemp())
         script = directory / "run-machine-vm"
         script.write_text("#!/bin/sh\nexec true\n", encoding="utf-8")
