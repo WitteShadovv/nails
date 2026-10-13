@@ -43,7 +43,7 @@ impl<F: Filesystem> Verifier<F> {
             return true;
         }
         self.hidden_root().is_some_and(|root| {
-            crate::session::probe::root_is_hidden_overlay(&entries, root).is_some()
+            nails_teardown::mountinfo::root_is_hidden_overlay(&entries, root).is_some()
         })
     }
 

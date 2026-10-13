@@ -64,7 +64,7 @@ returns (`nails_core::kernel_fixtures::vm`).
 
 | File | Used by |
 | --- | --- |
-| `mountinfo-host.txt` | the `session::probe` hidden-overlay-root test |
+| `mountinfo-host.txt` | the hidden-overlay-root test in `nails-teardown/src/mountinfo.rs` |
 | `proc-swaps.txt` | `classify_swap` fixture test |
 | `proc-stat-journald.txt`, `proc-status-journald.txt` | the `/proc/<pid>/stat` and `status` parser tests in `nails-teardown/src/proc.rs` |
 | `proc-cgroup-journald.txt` | the `nails-teardown` cgroup-to-unit test |

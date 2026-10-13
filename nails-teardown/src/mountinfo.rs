@@ -330,6 +330,19 @@ pub fn top_mount_at<'a>(entries: &'a [MountEntry], target: &Path) -> Option<&'a 
     (current.mount_point == target).then_some(current)
 }
 
+/// Whether `/` is an overlay whose upper lies under `hidden_root`, which is
+/// how the hidden session looks from inside: the upper's path when it is.
+pub fn root_is_hidden_overlay(entries: &[MountEntry], hidden_root: &Path) -> Option<String> {
+    let root = top_mount_at(entries, Path::new("/"))?;
+    if root.fstype != "overlay" {
+        return None;
+    }
+    let upper = parse_overlay_opts(&root.super_opts).upperdir?;
+    upper
+        .starts_with(hidden_root)
+        .then(|| upper.display().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,5 +555,45 @@ this is not a mountinfo line
         let lower = escape_overlay_path(Path::new("/weird,path:seg")).unwrap();
         let opts = parse_overlay_opts(&format!("rw,lowerdir={lower},upperdir=/u,workdir=/w"));
         assert_eq!(opts.lowerdir, vec![PathBuf::from("/weird,path:seg")]);
+    }
+
+    #[test]
+    fn only_an_overlay_root_with_its_upper_on_the_hidden_volume_is_the_hidden_session() {
+        let hidden = parse_mountinfo(
+            "1 0 0:40 / / rw - overlay overlay rw,lowerdir=/x,upperdir=/mnt/data/root/upper,workdir=/mnt/data/root/work\n",
+        );
+        assert_eq!(
+            root_is_hidden_overlay(&hidden, Path::new("/mnt/data")).as_deref(),
+            Some("/mnt/data/root/upper")
+        );
+        // The upper elsewhere, or a sibling sharing a string prefix.
+        assert_eq!(
+            root_is_hidden_overlay(&hidden, Path::new("/mnt/other")),
+            None
+        );
+        assert_eq!(root_is_hidden_overlay(&hidden, Path::new("/mnt/dat")), None);
+        let decoy = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
+        assert_eq!(root_is_hidden_overlay(&decoy, Path::new("/mnt/data")), None);
+    }
+
+    /// The mount table of a live hidden session, captured as root in the
+    /// decoy-journal-leak VM test (nails-base's fixture README): `/` is the
+    /// overlay whose upper is on the hidden volume at `/mnt/data`.
+    #[test]
+    fn the_captured_hidden_session_has_a_hidden_overlay_root() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../nails-base/tests/fixtures/kernel/vm/mountinfo-host.txt");
+        let Ok(mountinfo) = std::fs::read_to_string(path) else {
+            eprintln!("the VM capture is not taken yet (nails-base fixture README)");
+            return;
+        };
+        let entries = parse_mountinfo(&mountinfo);
+        let upper = root_is_hidden_overlay(&entries, Path::new("/mnt/data"))
+            .expect("the captured root is the hidden overlay");
+        assert!(upper.starts_with("/mnt/data/"), "{upper}");
+        assert_eq!(
+            root_is_hidden_overlay(&entries, Path::new("/mnt/other")),
+            None
+        );
     }
 }

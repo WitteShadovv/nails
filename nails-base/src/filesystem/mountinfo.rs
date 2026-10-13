@@ -9,7 +9,8 @@
 //! the two wrappers that speak this crate's error type.
 
 pub use nails_teardown::mountinfo::{
-    MountEntry, OverlayOpts, parse_mountinfo, parse_overlay_opts, top_mount_at, unescape_octal,
+    MountEntry, OverlayOpts, parse_mountinfo, parse_overlay_opts, root_is_hidden_overlay,
+    top_mount_at, unescape_octal,
 };
 
 use crate::{IoResultExt, NailsError, Result};

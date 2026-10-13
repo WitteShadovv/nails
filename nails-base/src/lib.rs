@@ -73,6 +73,10 @@ pub mod hidden_root;
 // Words that give hidden storage away in a mount path, mapper name or label.
 pub mod naming;
 
+// The parsers of `/etc/fstab` and `/etc/crypttab`.
+pub mod crypttab;
+pub mod fstab;
+
 // Test-runtime guards for host interaction. Public for the other NAILS crates
 // only; not part of any interface.
 #[doc(hidden)]

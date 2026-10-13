@@ -245,23 +245,13 @@ fn crypttab_random_key<F: Filesystem>(fs: &F, name: &str) -> bool {
     let Ok(content) = fs.read_file_content(Path::new(CRYPTTAB)) else {
         return false;
     };
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.first() != Some(&name) {
-            continue;
-        }
-        let keyfile = fields.get(2).copied().unwrap_or("");
-        let options = fields.get(3).copied().unwrap_or("");
-        if keyfile == "/dev/urandom" || keyfile == "/dev/random" {
-            return true;
-        }
-        return options.split(',').any(|o| o.trim() == "swap");
-    }
-    false
+    crate::crypttab::parse_crypttab(&content)
+        .into_iter()
+        .find(|entry| entry.name == name)
+        .is_some_and(|entry| {
+            matches!(entry.key.as_deref(), Some("/dev/urandom" | "/dev/random"))
+                || entry.has_option("swap")
+        })
 }
 
 /// Hibernation findings: a configured resume device or a `resume=` kernel
