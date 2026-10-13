@@ -70,6 +70,9 @@ pub mod target_user;
 // Attach gate: write nothing unless the hidden root is positively mounted.
 pub mod hidden_root;
 
+// Words that give hidden storage away in a mount path, mapper name or label.
+pub mod naming;
+
 // Test-runtime guards for host interaction. Public for the other NAILS crates
 // only; not part of any interface.
 #[doc(hidden)]

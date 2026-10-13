@@ -60,7 +60,8 @@ and the transition step before anything else is initialised.
 - **`nails-base`** is the foundation every library crate reads: the error type,
   the `Filesystem` and process seams (with the host-command resolver),
   configuration, state, the artifact registry, the attach gate, logging,
-  output, notifications and the pre-flight framework.
+  output, notifications and the pre-flight framework. It also holds the list
+  of words that give hidden storage away in a name.
 - **`nails-teardown`** holds everything the panic path and the soft-reboot
   transition need, with no configuration and no logging
   (`nails_teardown::whole_root`): the session plan on `/run`, the mount

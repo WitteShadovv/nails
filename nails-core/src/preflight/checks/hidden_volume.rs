@@ -6,27 +6,9 @@
 //! Validates that the hidden volume is mounted and writable before activation.
 
 use super::super::{CheckResult, PreFlightCheck};
+use crate::naming::suspicious_token;
 use crate::{Filesystem, Result, config::get_default_hidden_volume_root};
 use std::path::{Component, PathBuf};
-
-/// Words that hint at hidden storage. One shared list so the mount path, the
-/// device-mapper name and the filesystem label are all judged the same way.
-///
-/// A match is a leak, not a failure: the name survives in the leftover
-/// mount-point directory, in generated systemd `.mount`/`.device` unit names, in
-/// `/dev/disk/by-label` and in kernel and sudo journal lines, where anyone who
-/// reads them learns that hidden storage exists. Matching is case-insensitive
-/// and on substrings, so `veracrypt-hidden`, `MyNailsVol` and `decoy0` all hit.
-const SUSPICIOUS_STORAGE_TOKENS: &[&str] = &["hidden", "nails", "veracrypt", "tcrypt", "decoy"];
-
-/// The first [`SUSPICIOUS_STORAGE_TOKENS`] entry contained in `name`, if any.
-fn suspicious_token(name: &str) -> Option<&'static str> {
-    let lower = name.to_ascii_lowercase();
-    SUSPICIOUS_STORAGE_TOKENS
-        .iter()
-        .copied()
-        .find(|token| lower.contains(token))
-}
 
 /// Pre-flight check that validates the hidden volume is mounted and accessible
 ///
@@ -347,16 +329,8 @@ mod tests {
     }
 
     // ------------------------------------------------------------------------
-    // Neutral-naming audit
+    // Neutral-naming audit (the token list is tested in `nails_base::naming`)
     // ------------------------------------------------------------------------
-
-    #[test]
-    fn suspicious_token_is_case_insensitive_substring() {
-        assert_eq!(suspicious_token("MyVeraCryptVol"), Some("veracrypt"));
-        assert_eq!(suspicious_token("DECOY0"), Some("decoy"));
-        assert_eq!(suspicious_token("nails-store"), Some("nails"));
-        assert_eq!(suspicious_token("data"), None);
-    }
 
     #[test]
     fn warns_when_root_path_hints_at_hidden_storage() {
