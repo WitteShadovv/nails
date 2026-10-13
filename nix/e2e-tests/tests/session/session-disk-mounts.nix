@@ -44,6 +44,9 @@ in
           driveConfig.deviceExtraOpts.serial = "extra";
         }
       ];
+      # The test VMs are q35 machines, whose root bus takes no hot-plugged
+      # device: the disk attached during the session goes into this port.
+      virtualisation.qemu.options = [ "-device pcie-root-port,id=hotplug-port,chassis=1" ];
       environment.systemPackages = [
         self.packages.x86_64-linux.nails
         (pkgs.writeShellScriptBin "notify-send" ''
@@ -176,8 +179,12 @@ in
         image = machine.state_dir / "hotplug.img"
         with open(image, "wb") as handle:
             handle.truncate(32 * 1024 * 1024)
-        machine.send_monitor_command(f"drive_add 0 file={image},if=none,id=hot,format=raw")
-        machine.send_monitor_command("device_add virtio-blk-pci,drive=hot,id=hotdev,serial=hotplug")
+        machine.log(machine.send_monitor_command(f"drive_add 0 file={image},if=none,id=hot,format=raw"))
+        machine.log(
+            machine.send_monitor_command(
+                "device_add virtio-blk-pci,drive=hot,id=hotdev,serial=hotplug,bus=hotplug-port"
+            )
+        )
         machine.wait_until_succeeds(f"test -b {HOTPLUG}", timeout=60)
         machine.succeed("udevadm settle")
         machine.wait_until_succeeds(f"test \"$(blockdev --getro {HOTPLUG})\" = 1", timeout=10)
