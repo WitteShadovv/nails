@@ -2,7 +2,12 @@
 # Simplified: let NixOS test framework handle boot/filesystems
 # Secondary disk (serial "data", /dev/disk/by-id/virtio-data) is available for LUKS hidden volume testing
 
-{ lib, pkgs, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 {
   # Virtual hardware configuration
   virtualisation = {
@@ -32,6 +37,18 @@
 
   # No swap for forensic safety
   swapDevices = lib.mkForce [ ];
+
+  # The QEMU VM module registers the VM's store paths (the closure that
+  # regInfo= on the kernel command line names) from register-nix-paths.service,
+  # which sysinit.target pulls in at every start of the service manager, the
+  # one after a soft-reboot included. Run again on the decoy after it collected
+  # garbage, it puts the collected paths back into the decoy's store database,
+  # a change no session made. The registration belongs to the boot: a marker in
+  # /run, which a soft-reboot carries over, keeps it to the first start.
+  systemd.services.register-nix-paths = lib.mkIf config.nix.enable {
+    unitConfig.ConditionPathExists = "!/run/register-nix-paths.done";
+    serviceConfig.ExecStartPost = "${pkgs.coreutils}/bin/touch /run/register-nix-paths.done";
+  };
 
   # Model an amnesic decoy: journald keeps no persistent journal on the decoy
   # disk, so the decoy-persistence pre-flight check passes and the E2E suite
