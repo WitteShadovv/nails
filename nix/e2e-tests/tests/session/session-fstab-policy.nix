@@ -14,8 +14,8 @@
 #     write lands there and never on the extra disk;
 #   - the swap unit is masked, so the hidden systemd never swaps onto a decoy
 #     disk;
-#   - the VM's /nix/store (an overlay of a 9p share) is overlaid too, which is
-#     what lets PID 1 find its own binary in the hidden root;
+#   - the VM's /nix/store (an overlay of the host store share) is overlaid too,
+#     which is what lets PID 1 find its own binary in the hidden root;
 #   - the hidden volume and the LVM filesystem the session carries for the way
 #     back are still mounted: the switch ran blk-availability's stop with its
 #     command cleared. On real hardware the uncleared stop unmounted the hidden

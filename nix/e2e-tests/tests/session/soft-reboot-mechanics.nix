@@ -36,7 +36,7 @@
 # token.
 #
 # The VM boots through a real bootloader (as forensic/80 does), so the Nix
-# store lives on the root disk like on a real install, not on a 9p share, and
+# store lives on the root disk like on a real install, not on a host share, and
 # the root overlay covers it. journald is set to persistent storage on purpose:
 # that is the stricter case for "the hidden journal lands in the overlay".
 #
