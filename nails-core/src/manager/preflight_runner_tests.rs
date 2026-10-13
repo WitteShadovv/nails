@@ -10,7 +10,7 @@ use super::{PreflightOptions, RegistryInputs, build_registry};
 use crate::manager::NailsManager;
 use crate::platform::NixOsConfigLayer;
 use crate::preflight::CheckResult;
-use crate::{Config, MockFilesystem, NailsError, SystemState};
+use crate::{Config, Filesystem, MockFilesystem, NailsError, SystemState};
 
 fn check_names(results: &[(String, CheckResult)]) -> Vec<String> {
     results.iter().map(|(name, _)| name.clone()).collect()
@@ -168,6 +168,34 @@ fn check_and_activation_build_the_same_checks_from_the_same_flags() {
         assert_eq!(activation, check);
         assert!(activation.read_only, "activation never stages storage");
         assert_eq!(names(&activation), names(&check));
+    }
+}
+
+/// Activation's pre-flight never stages storage, even with options that ask
+/// for a registry that may: a refused activation leaves nothing on the hidden
+/// volume.
+#[test]
+fn run_preflight_checks_creates_nothing_whatever_the_options_say() {
+    let hidden_root = std::path::Path::new("/mnt/hidden");
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden", true);
+    fs.mock_set_mounted(hidden_root, true);
+    fs.mock_set_writable("/mnt/hidden", true);
+    let manager = manager_with(fs);
+
+    let _ = manager.run_preflight_checks(&PreflightOptions {
+        read_only: false,
+        ..PreflightOptions::default()
+    });
+
+    for dir in ["root", "root/upper", "root/work"] {
+        assert!(
+            !manager
+                .filesystem()
+                .path_exists(&hidden_root.join(dir))
+                .unwrap(),
+            "pre-flight created {dir}"
+        );
     }
 }
 

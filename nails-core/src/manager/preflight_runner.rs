@@ -26,7 +26,8 @@ pub struct PreflightOptions {
     /// directory or changes permissions. On by default, and both `nails check`
     /// and activation keep it on: a refused activation leaves nothing on the
     /// hidden volume, and the entry creates the layout itself once every check
-    /// passed.
+    /// passed. Activation's [`NailsManager::run_preflight_checks`] turns it on
+    /// whatever it is given.
     pub read_only: bool,
     /// Accept a persistent decoy posture (the `--accept-persistent-decoy` flag):
     /// the decoy-persistence check then warns instead of failing. The effective
@@ -329,12 +330,15 @@ impl<F: Filesystem> NailsManager<F> {
     /// result, and refuse with [`NailsError::PreFlightCheckFailed`] when any
     /// fails. Creates an empty state file when all pass.
     ///
-    /// Activation passes [`EnterOptions::preflight`](super::EnterOptions::preflight),
-    /// which keeps the registry read-only: a refused activation must leave
-    /// nothing on the hidden volume, and the entry creates the root overlay's
-    /// directories itself once every check passed.
+    /// Activation passes [`EnterOptions::preflight`](super::EnterOptions::preflight).
+    /// The registry is read-only whatever `options.read_only` says: a refused
+    /// activation must leave nothing on the hidden volume, and the entry
+    /// creates the root overlay's directories itself once every check passed.
     pub fn run_preflight_checks(&self, options: &PreflightOptions) -> Result<()> {
-        let registry = self.preflight_registry(options)?;
+        let registry = self.preflight_registry(&PreflightOptions {
+            read_only: true,
+            ..options.clone()
+        })?;
 
         // Run all checks (always get full results for display)
         let (results, all_passed) = registry.run_all_detailed(&self.filesystem);
