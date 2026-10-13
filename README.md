@@ -7,7 +7,7 @@
 
 [![CI](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/WitteShadovv/nails/actions/workflows/ci.yml)
 [![NixOS VM tests](https://github.com/WitteShadovv/nails/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/WitteShadovv/nails/actions/workflows/e2e.yml)
-[![Debian and Ubuntu VM tests](https://github.com/WitteShadovv/nails/actions/workflows/distro-e2e.yml/badge.svg)](https://github.com/WitteShadovv/nails/actions/workflows/distro-e2e.yml)
+[![Debian and Ubuntu VM tests](https://github.com/WitteShadovv/nails/actions/workflows/distro-e2e.yml/badge.svg?branch=main)](https://github.com/WitteShadovv/nails/actions/workflows/distro-e2e.yml)
 [![Release](https://img.shields.io/github/v/release/WitteShadovv/nails?include_prereleases&display_name=tag)](https://github.com/WitteShadovv/nails/releases)
 <br>
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
