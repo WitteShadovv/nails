@@ -120,9 +120,9 @@ private mount namespace, which keeps every mount invisible to
 the host and discards all of them when the process exits — a failing test cannot
 leave a mount behind on your machine.
 
-Build the test binary unprivileged, then run it elevated. On ubuntu-24.04 the
-AppArmor policy blocks unprivileged user namespaces, so the run step is the only
-part that needs `sudo`:
+Build the test binary unprivileged, then run it elevated. On the ubuntu-26.04
+runners the AppArmor policy blocks unprivileged user namespaces, so the run step
+is the only part that needs `sudo`:
 
 ```sh
 # 1. Build the test binary without running it, and capture its path.

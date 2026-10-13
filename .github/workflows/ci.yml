@@ -37,7 +37,7 @@ jobs:
   # first parent of its merge commit; every other event runs everything.
   changes:
     name: changes
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
@@ -63,7 +63,7 @@ jobs:
     name: lint
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -111,7 +111,7 @@ jobs:
     name: rust
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
       # The ci profile in .config/nextest.toml: one retry, a hang limit and a
@@ -151,7 +151,7 @@ jobs:
         run: echo "TMPDIR=$(mktemp -d "$RUNNER_TEMP/tests.XXXXXX")" >> "$GITHUB_ENV"
 
       # The real-kernel tests mount tmpfs and overlayfs in an unprivileged user +
-      # mount namespace. AppArmor on ubuntu-24.04 gives such a namespace no
+      # mount namespace. AppArmor on ubuntu-26.04 gives such a namespace no
       # capabilities until this sysctl is cleared. NAILS_REQUIRE_USERNS turns a
       # skipped kernel test into a failure, so they cannot pass vacuously here.
       - name: Allow unprivileged user namespaces
@@ -205,7 +205,7 @@ jobs:
     name: shuffle
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - name: Checkout code
@@ -243,7 +243,7 @@ jobs:
     name: deps
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.deps == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -281,7 +281,7 @@ jobs:
     name: privileged-mounts
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -299,7 +299,7 @@ jobs:
           shared-key: ci
           save-if: false
 
-      # AppArmor on ubuntu-24.04 blocks unprivileged user namespaces, so only
+      # AppArmor on ubuntu-26.04 blocks unprivileged user namespaces, so only
       # the run step is elevated.
       - name: Build privileged test binary
         id: build
@@ -321,7 +321,7 @@ jobs:
     name: nix-build
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.nix == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
 
     steps:
@@ -357,7 +357,7 @@ jobs:
     name: lint-misc
     needs: changes
     if: needs.changes.outputs.nix == 'true' || needs.changes.outputs.workflows == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -389,7 +389,7 @@ jobs:
     name: docs-check
     needs: changes
     if: needs.changes.outputs.docs == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -411,7 +411,7 @@ jobs:
     name: gate
     needs: [changes, lint, rust, shuffle, deps, privileged-mounts, nix-build, lint-misc, docs-check]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       # report-status reads the results of the work jobs through this.
@@ -435,7 +435,7 @@ jobs:
     name: report-status
     needs: gate
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read

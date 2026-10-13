@@ -57,7 +57,7 @@ jobs:
   # whether its own task is in the list.
   tasks:
     name: Select tasks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       run: ${{ steps.select.outputs.run }}
@@ -90,7 +90,7 @@ jobs:
     name: Dependency Policy (full graph)
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'advisories')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
@@ -117,7 +117,7 @@ jobs:
     name: deny.toml ignore expiry
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'advisories')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
 
     steps:
@@ -137,7 +137,7 @@ jobs:
     name: Crate fetcher canary
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'fetcher-canary')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
 
     steps:
@@ -184,7 +184,7 @@ jobs:
     name: Warm Rust cache
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'cache-warm')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     # rust-cache hashes every CARGO* and RUST* variable into its key, so these
     # must equal the top-level env of ci.yml or every restore misses.
@@ -224,7 +224,7 @@ jobs:
     name: Stress (flaky tests)
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'stress')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
 
     steps:
@@ -259,7 +259,7 @@ jobs:
     name: Benchmarks
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'benchmarks')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -366,7 +366,7 @@ jobs:
     name: Mutation testing
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'mutants')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
 
     steps:
@@ -411,7 +411,7 @@ jobs:
     name: Refresh Cargo.lock
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'lockfile')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Bind the DEPENDENCY_UPDATE_TOKEN to a dedicated deployment environment so
     # the secret is scoped (and can carry protection rules) rather than being
     # readable by every job in the repository.
@@ -501,7 +501,7 @@ jobs:
     name: Refresh flake.lock
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'flake-lock')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: dependency-updates
     timeout-minutes: 20
     permissions:
@@ -549,7 +549,7 @@ jobs:
     name: Update pre-commit hooks
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'pre-commit')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: dependency-updates
     timeout-minutes: 15
     permissions:
@@ -601,7 +601,7 @@ jobs:
     # !cancelled() rather than always(): a run cancelled by hand says nothing
     # about the jobs, while a job that hit its timeout still reports as red.
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -628,7 +628,7 @@ jobs:
     name: Report CI status
     needs: [tasks, fetcher-canary, reproducibility, cache-warm, stress, benchmarks, mutants]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read

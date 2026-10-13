@@ -202,7 +202,7 @@ because none has been measured, and the CI lanes cannot provide one as they
 stand: `ci.e2e run` reads `nix build` output as `internal-json` and keeps the
 driver log only of a failed test, so a green job log holds no driver lines. A
 measurement needs one dispatched run that keeps the driver output, for
-example a temporary job on `ubuntu-24.04` (after the usual checkout and Nix
+example a temporary job on `ubuntu-26.04` (after the usual checkout and Nix
 setup steps of `e2e.yml`) that builds a handful of tests with one VM at a
 time and uploads the log:
 
@@ -531,7 +531,7 @@ derived by mapping over this table, so nothing else changes.
 ### Running and CI
 
 The tier needs KVM, so it is a VM tier, not a container one. A hosted
-`ubuntu-24.04` runner exposes `/dev/kvm`; a self-hosted KVM runner is selected by
+`ubuntu-26.04` runner exposes `/dev/kvm`; a self-hosted KVM runner is selected by
 passing its label list. The CI matrix is planned by
 `python3 -m ci.e2e distro-plan` and kept at or below eight parallel jobs
 (distributions times their shards). `.github/workflows/distro-e2e.yml` runs it on

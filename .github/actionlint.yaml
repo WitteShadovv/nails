@@ -1,0 +1,8 @@
+# actionlint configuration, read by `actionlint` and by the actionlint check in
+# nix/checks.nix.
+self-hosted-runner:
+  # actionlint 1.7.12 predates the hosted ubuntu-26.04 image and rejects its
+  # label as unknown. Listing it here only teaches actionlint the label; drop
+  # the entry once actionlint knows it.
+  labels:
+    - ubuntu-26.04

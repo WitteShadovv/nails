@@ -58,7 +58,7 @@ env:
   # SHA-256 of actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz, from the
   # release notes. Bump it together with RUNNER_VERSION.
   RUNNER_SHA256: "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32"  # pragma: allowlist secret
-  HCLOUD_IMAGE: ubuntu-24.04
+  HCLOUD_IMAGE: ubuntu-26.04
   # Candidate (server type, location) pairs, tried in order until one is
   # available. Nested KVM needs a dedicated-vCPU (ccx) type.
   HCLOUD_CANDIDATES: >-
@@ -67,7 +67,7 @@ env:
 jobs:
   provision:
     name: Provision runner
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: hetzner
     timeout-minutes: 20
     outputs:
@@ -106,7 +106,7 @@ jobs:
           #cloud-config
           runcmd:
             - [ bash, -c, "export RUNNER_ALLOW_RUNASROOT=1 DEBIAN_FRONTEND=noninteractive
-                && apt-get update && apt-get install -y curl tar qemu-kvm
+                && apt-get update && apt-get install -y curl tar qemu-system-x86
                 && mkdir -p /opt/runner && cd /opt/runner
                 && curl -fsSL -o runner.tgz https://github.com/actions/runner/releases/download/v${RUNNER_VERSION}/actions-runner-linux-x64-${RUNNER_VERSION}.tar.gz
                 && echo \"${RUNNER_SHA256}  runner.tgz\" | sha256sum -c -
@@ -160,7 +160,7 @@ jobs:
     name: Delete the server
     needs: [provision, e2e]
     if: always() && needs.provision.outputs.server-id != ''
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment: hetzner
     timeout-minutes: 10
     steps:

@@ -7,7 +7,7 @@ name: Distro E2E
 # This tier is informational: it gates no merge (keep it off branch protection).
 # It runs on a nightly schedule, when a pull request gets the 'distro-e2e'
 # label, and on manual dispatch or a reusable call. The runner is an input,
-# because each VM needs KVM; a hosted ubuntu-24.04 runner exposes /dev/kvm, and
+# because each VM needs KVM; a hosted ubuntu-26.04 runner exposes /dev/kvm, and
 # a self-hosted KVM runner is selected by passing its label list.
 #
 # One smoke scenario per distribution runs by default; the whole matrix is kept
@@ -28,10 +28,10 @@ on:
     inputs:
       runner:
         description: >-
-          runs-on for the VM jobs, as JSON: "ubuntu-24.04" or a label list such
+          runs-on for the VM jobs, as JSON: "ubuntu-26.04" or a label list such
           as ["self-hosted","nails-distro"]
         type: string
-        default: '"ubuntu-24.04"'
+        default: '"ubuntu-26.04"'
       distros:
         description: >-
           Space-separated distributions to run (e.g. "debian-13 ubuntu-24.04");
@@ -46,7 +46,7 @@ on:
     inputs:
       runner:
         type: string
-        default: '"ubuntu-24.04"'
+        default: '"ubuntu-26.04"'
       distros:
         type: string
         default: ""
@@ -83,7 +83,7 @@ jobs:
     # On a pull request, run only when the 'distro-e2e' label was added. The
     # action is checked too, because a call sees its caller's event.
     if: ${{ github.event_name != 'pull_request' || (github.event.action == 'labeled' && github.event.label.name == 'distro-e2e') }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     outputs:
       runner: ${{ steps.select.outputs.runner }}
@@ -102,7 +102,7 @@ jobs:
           MAX_JOBS_INPUT: ${{ inputs.max-jobs }}
         run: |
           set -euo pipefail
-          runner=$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))' "${RUNNER_INPUT:-\"ubuntu-24.04\"}")
+          runner=$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))' "${RUNNER_INPUT:-\"ubuntu-26.04\"}")
           max_jobs=${MAX_JOBS_INPUT:-8}
           if ! [[ "$max_jobs" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::max-jobs must be a positive integer, got '$max_jobs'"
@@ -189,7 +189,7 @@ jobs:
     # had. A skipped check counts as passed, so revisit this before the lane
     # becomes a required check.
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
 
     steps:

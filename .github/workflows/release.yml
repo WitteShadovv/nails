@@ -37,10 +37,10 @@ on:
         type: string
       e2e-runner:
         description: >-
-          runs-on for the E2E shards, as JSON: "ubuntu-24.04" or a label list
+          runs-on for the E2E shards, as JSON: "ubuntu-26.04" or a label list
           such as ["self-hosted","nails-e2e"]
         type: string
-        default: '"ubuntu-24.04"'
+        default: '"ubuntu-26.04"'
       e2e-max-shards:
         description: >-
           Upper bound on parallel E2E shards; use 1 for a single-use
@@ -63,7 +63,7 @@ defaults:
 jobs:
   version:
     name: Check tag and version
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -116,7 +116,7 @@ jobs:
   build:
     name: Build
     needs: version
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
       contents: read
@@ -191,7 +191,7 @@ jobs:
     uses: ./.github/workflows/e2e.yml
     with:
       mode: all
-      runner: ${{ inputs.e2e-runner || '"ubuntu-24.04"' }}
+      runner: ${{ inputs.e2e-runner || '"ubuntu-26.04"' }}
       max-shards: ${{ inputs.e2e-max-shards || 10 }}
     secrets:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -199,7 +199,7 @@ jobs:
   sbom:
     name: SBOM
     needs: [version, build]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
@@ -254,7 +254,7 @@ jobs:
   attest:
     name: Attest
     needs: [version, build, rebuild, e2e, sbom]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       id-token: write # sign through Sigstore with this job's OIDC identity
@@ -289,7 +289,7 @@ jobs:
   draft-release:
     name: Draft release
     needs: [version, attest]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write # create the draft release and upload its assets
@@ -338,7 +338,7 @@ jobs:
     name: Report status
     needs: [version, build, rebuild, e2e, sbom, attest, draft-release]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
