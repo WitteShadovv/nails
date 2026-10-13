@@ -10,6 +10,10 @@
 //! a plain open when the kernel refuses the flag because the caller neither owns
 //! the inode nor holds `CAP_FOWNER` (`EPERM`). Root always holds `CAP_FOWNER`, so
 //! the fallback only applies to unprivileged runs, which cannot avoid the update.
+//!
+//! The flag covers the inode that is opened and nothing else: a lookup still
+//! updates the access time of each symlink it follows, such as a NixOS decoy's
+//! links into `/etc/static` ([`nails_teardown::noatime`]).
 
 use std::ffi::OsString;
 use std::io::{self, Read};
