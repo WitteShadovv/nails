@@ -12,6 +12,9 @@ let
   fs = lib.fileset;
   root = ../.;
 
+  # The Python that pyproject.toml targets, the same as the dev shell's.
+  python = pkgs.python314;
+
   nixFiles = fs.fileFilter (file: file.hasExt "nix") root;
   shellScripts = fs.fileFilter (file: file.hasExt "sh") root;
   githubDir = root + "/.github";
@@ -161,7 +164,7 @@ in
       ./e2e-tests/shard-durations.json
     ];
     tools = [
-      pkgs.python3
+      python
       pkgs.ruff
       pkgs.mypy
       pkgs.git
@@ -189,7 +192,7 @@ in
       ../pyproject.toml
     ];
     tools = [
-      pkgs.python3
+      python
       pkgs.ruff
       pkgs.mypy
     ];
@@ -212,7 +215,7 @@ in
       ../pyproject.toml
     ];
     tools = [
-      pkgs.python3
+      python
       pkgs.ruff
       pkgs.mypy
       pkgs.bash
@@ -242,7 +245,7 @@ in
       ../ci
       ./e2e-tests/shard-durations.json
     ];
-    tools = [ pkgs.python3 ];
+    tools = [ python ];
     script = ''
       python3 -m ci.e2e check \
         --weights nix/e2e-tests/shard-durations.json \

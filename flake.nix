@@ -287,7 +287,9 @@
           zizmor
           lychee # scripts/docs-check.sh link-checks the Markdown docs
           just
-          python3 # ci/*.py checks; tomllib needs Python 3.11 or newer
+          # The Python that pyproject.toml targets, for ci/, scripts/ and the
+          # E2E helpers; nix/checks.nix runs the same one.
+          python314
           ruff
           mypy
           cargo-deny
