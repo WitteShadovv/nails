@@ -82,11 +82,12 @@
 
       # rustc links a +crt-static musl binary against the musl that ships with
       # the Rust toolchain (1.2.5 in Rust 1.93), not the C toolchain's, unless
-      # self-contained linking is off. With it off, libc.a and the crt start
-      # files come from pkgsMusl's musl: the one nixpkgs patches and the one
-      # the release SBOM names (nails.libc). The link still needs the
-      # toolchain's libunwind.a; this directory holds it alone, so the bundled
-      # libc.a cannot come along.
+      # self-contained linking is off. With it off, libc.a and musl's crt files
+      # (crt1/rcrt1/Scrt1.o, crti.o, crtn.o) come from pkgsMusl's musl: the one
+      # nixpkgs patches and the one the release SBOM names (nails.libc). The
+      # crtbegin/crtend files come from the GCC of pkgsMusl's C toolchain. The
+      # link still needs the Rust toolchain's libunwind.a; this directory holds
+      # it alone, so the bundled libc.a cannot come along.
       rustLibunwind = pkgs.linkFarm "rust-libunwind-${rustChannel}" [
         {
           name = "libunwind.a";
@@ -152,7 +153,9 @@
         passthru.libc = pkgsMusl.stdenv.cc.libc;
 
         # The linker map lists every file the link loaded. The build fails
-        # unless libc.a and the crt start files all came from passthru.libc.
+        # unless libc.a and musl's crt files (crt1/rcrt1/Scrt1.o, crti.o,
+        # crtn.o) all came from passthru.libc. GCC's crtbegin/crtend files are
+        # not musl's, so the check leaves them out.
         preBuild = ''
           export NIX_LDFLAGS_AFTER_${pkgsMusl.stdenv.cc.suffixSalt}+=" -Map=$NIX_BUILD_TOP/nails.map"
         '';
@@ -160,7 +163,7 @@
           libc=${passthru.libc}/lib
           loaded=$(grep -oE '[^ ()]+/(libc\.a|[rS]?crt1\.o|crt[in]\.o)' "$NIX_BUILD_TOP/nails.map" | sort -u) || true
           if ! grep -qxF "$libc/libc.a" <<< "$loaded" || grep -vqF "$libc/" <<< "$loaded"; then
-            printf 'nails must link libc.a and the crt start files of %s only; the link loaded:\n%s\n' "$libc" "$loaded" >&2
+            printf 'nails must take libc.a and the musl crt files (crt1/rcrt1/Scrt1.o, crti.o, crtn.o) from %s only; the link loaded:\n%s\n' "$libc" "$loaded" >&2
             exit 1
           fi
         '';
