@@ -1,9 +1,13 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Space pre-flight check
 //!
 //! Validates that sufficient disk space is available on the hidden volume.
 
 use super::super::{CheckResult, PreFlightCheck};
-use crate::{Filesystem, Result, obfuscate};
+use crate::config::get_default_hidden_volume_root;
+use crate::{Filesystem, Result};
 use std::path::PathBuf;
 
 /// Pre-flight check to validate sufficient disk space is available
@@ -15,19 +19,20 @@ use std::path::PathBuf;
 /// - Temporary files during activation
 /// - NixOS profile builds (lazy build pattern)
 ///
-/// # Graduated Response System
+/// # Response
 ///
-/// Uses three-tier threshold system for nuanced feedback:
-/// - **Pass** (>= minimum): Safe to proceed
-/// - **Warn** (50-100% of minimum): Proceed with caution, monitor space
-/// - **Fail** (< 50% of minimum): Blocked, insufficient space
+/// A single hard floor, no warn band:
+/// - **Pass** (>= `minimum_space_mb`): safe to proceed
+/// - **Fail** (< `minimum_space_mb`): blocked, insufficient space
 ///
-/// # Default Thresholds
+/// This is the base floor for an overlay-only activation. A hidden NixOS build
+/// writes a much larger store delta into the root upper; the entry checks that
+/// separately against `rebuild_space_mb` right before the build, since
+/// estimating it in pre-flight would mean evaluating the hidden flake first.
 ///
-/// Default minimum: 1024 MB (1 GB)
-/// - Pass: >= 1024 MB
-/// - Warn: 512-1023 MB
-/// - Fail: < 512 MB
+/// # Default Threshold
+///
+/// Default minimum: 500 MB.
 ///
 /// # Example
 ///
@@ -37,7 +42,7 @@ use std::path::PathBuf;
 /// use std::path::PathBuf;
 ///
 /// let fs = MockFilesystem::new();
-/// let check = SpaceCheck::new(PathBuf::from("/mnt/hidden-volume"), 1024);
+/// let check = SpaceCheck::new(PathBuf::from("/mnt/hidden-volume"), 500);
 ///
 /// // Simulate 2GB available
 /// fs.mock_set_free_space(std::path::Path::new("/mnt/hidden-volume"), 2 * 1024 * 1024 * 1024);
@@ -47,7 +52,7 @@ use std::path::PathBuf;
 /// ```
 #[derive(Debug, Clone)]
 pub struct SpaceCheck {
-    pub(crate) hidden_volume_path: PathBuf,
+    pub(crate) hidden_volume_root: PathBuf,
     pub(crate) minimum_space_mb: u64,
 }
 
@@ -56,11 +61,11 @@ impl SpaceCheck {
     ///
     /// # Arguments
     ///
-    /// * `hidden_volume_path` - Path to check for free space
+    /// * `hidden_volume_root` - Path to check for free space
     /// * `minimum_space_mb` - Minimum space required in megabytes
-    pub fn new(hidden_volume_path: PathBuf, minimum_space_mb: u64) -> Self {
+    pub fn new(hidden_volume_root: PathBuf, minimum_space_mb: u64) -> Self {
         Self {
-            hidden_volume_path,
+            hidden_volume_root,
             minimum_space_mb,
         }
     }
@@ -104,11 +109,12 @@ impl SpaceCheck {
 }
 
 impl Default for SpaceCheck {
-    /// Create check with default hidden volume path and 1024 MB minimum
+    /// Create check with default hidden volume path and the base space floor
     fn default() -> Self {
         Self {
-            hidden_volume_path: PathBuf::from(obfuscate::hidden_volume_root()),
-            minimum_space_mb: 1024, // 1 GB default
+            hidden_volume_root: PathBuf::from(get_default_hidden_volume_root()),
+            // Base floor; the config default (`default_minimum_space_mb`) matches.
+            minimum_space_mb: 500,
         }
     }
 }
@@ -122,32 +128,27 @@ impl<F: Filesystem> PreFlightCheck<F> for SpaceCheck {
         "Validates sufficient disk space is available for activation"
     }
 
+    fn requires_hidden_volume(&self) -> bool {
+        true
+    }
+
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // Get available space in bytes
-        let available_bytes = fs.get_free_space(&self.hidden_volume_path)?;
+        let available_bytes = fs.disk_usage(&self.hidden_volume_root)?.available;
         let available_mb = Self::bytes_to_mb(available_bytes);
         let minimum_mb = self.minimum_space_mb;
-        let warn_threshold = minimum_mb / 2; // 50% of minimum
 
-        // Three-tier graduated response
+        // Single hard floor, no warn band: a larger NixOS rebuild delta is
+        // checked separately against `rebuild_space_mb` before the build.
         if available_mb >= minimum_mb {
-            // PASS: >= minimum (safe to proceed)
             let ratio = ((available_mb as f64) / (minimum_mb as f64)).min(9999.9);
             Ok(CheckResult::Pass(format!(
                 "{} available ({:.1}x minimum required)",
                 Self::format_space(available_mb),
                 ratio
             )))
-        } else if available_mb >= warn_threshold {
-            // WARN: 50-100% of minimum (proceed with caution)
-            Ok(CheckResult::Warn(format!(
-                "{} available (below {} recommended). Activation may succeed but monitor space.",
-                Self::format_space(available_mb),
-                Self::format_space(minimum_mb)
-            )))
         } else {
-            // FAIL: < 50% of minimum (blocked)
-            Ok(CheckResult::Fail(format!(
+            Ok(CheckResult::fail(format!(
                 "Only {} available. Free up at least {} before activation.",
                 Self::format_space(available_mb),
                 Self::format_space(minimum_mb)

@@ -10,26 +10,30 @@
 # Refs #
 
 # --- COMMIT END ---
-# Type can be:
+# Type can be (same list as the commit-msg hook and pr-title.yml):
 #   feat     (new feature)
 #   fix      (bug fix)
 #   docs     (documentation)
-#   test     (tests)
+#   style    (formatting, no code change)
 #   refactor (refactoring)
 #   perf     (performance)
-#   chore    (build/dependencies)
+#   test     (tests)
+#   build    (build system or dependencies)
+#   ci       (CI configuration and scripts)
+#   chore    (other maintenance)
+#   revert   (revert a previous commit)
 # --------------------
 # Scopes (NAILS-specific):
-#   activate, deactivate, emergency, status  (commands)
-#   state, overlay, nixos, config            (modules)
-#   test, docs, ci                           (development)
+#   core, cli, ci, nix, e2e, release, docs, deps
 # --------------------
 # Remember:
 #   - Use imperative mood ("add" not "added")
 #   - Don't end subject with period
 #   - Separate subject from body with blank line
+#   - Release bumps use chore(release): ...
 # --------------------
 # Examples:
-#   feat(activate): add lazy build pattern
-#   fix(emergency): prevent double-mount error
-#   test(state): add property-based validation
+#   feat(cli): add lazy build pattern
+#   fix(core): prevent double-mount error
+#   test(core): add property-based validation
+#   chore(release): v0.3.0

@@ -3,7 +3,7 @@
     def run_command_capture(name, command):
         import shlex
 
-        prefix = f"/tmp/{name}"
+        prefix = f"/run/{name}"
         stdout_path = f"{prefix}.stdout"
         stderr_path = f"{prefix}.stderr"
         rc_path = f"{prefix}.rc"
@@ -29,10 +29,14 @@
   '';
 
   runPtyCommandCaptureFn = ''
-    def run_pty_command_capture(name, command):
+    def run_pty_command_capture(name, command, term="xterm-256color"):
         import shlex
 
-        prefix = f"/tmp/{name}"
+        # The test driver's console exports TERM=dumb, which (rightly) turns
+        # colour auto-detection off. Give the pty the terminal type a real
+        # interactive session would carry so TTY behaviour is what is tested.
+
+        prefix = f"/run/{name}"
         typescript = f"{prefix}.typescript"
         stderr_path = f"{prefix}.script.stderr"
         rc_path = f"{prefix}.rc"
@@ -40,6 +44,7 @@
             "bash -lc "
             + shlex.quote(
                 f"rm -f {typescript} {stderr_path}; "
+                + f"export TERM={shlex.quote(term)}; "
                 + "set +e; "
                 + f"script -qefc {shlex.quote(command)} {shlex.quote(typescript)} >/dev/null 2>{stderr_path}; "
                 + f"printf \"%s\" \"$?\" > {rc_path}"
@@ -87,16 +92,5 @@
   assertAsciiOnlyFn = ''
     def assert_ascii_only(text, label):
         assert text.isascii(), f"Expected ASCII-only output for {label}, got: {text!r}"
-  '';
-
-  countNonEmptyLinesFn = ''
-    def count_nonempty_lines(text):
-        return sum(1 for line in text.splitlines() if line.strip())
-  '';
-
-  assertNoBlockedSubstringsFn = ''
-    def assert_no_blocked_substrings(text, blocked, label):
-        for needle in blocked:
-            assert needle not in text, f"Found blocked substring {needle!r} in {label}: {text!r}"
   '';
 }

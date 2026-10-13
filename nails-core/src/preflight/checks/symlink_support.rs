@@ -1,10 +1,14 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Symlink support pre-flight check
 //!
 //! Validates that the hidden volume filesystem supports symbolic links.
 //! FAT32 and exFAT volumes will fail this check.
 
 use super::super::{CheckResult, PreFlightCheck};
-use crate::{Filesystem, Result, obfuscate};
+use crate::config::get_default_hidden_volume_root;
+use crate::{Filesystem, Result};
 use std::path::PathBuf;
 
 /// Pre-flight check that validates the hidden volume filesystem supports symbolic links
@@ -29,7 +33,7 @@ use std::path::PathBuf;
 /// ```
 #[derive(Debug, Clone)]
 pub struct SymlinkSupportCheck {
-    hidden_volume_path: PathBuf,
+    hidden_volume_root: PathBuf,
 }
 
 impl SymlinkSupportCheck {
@@ -37,9 +41,9 @@ impl SymlinkSupportCheck {
     ///
     /// # Arguments
     ///
-    /// * `hidden_volume_path` - Path to the hidden volume mount point
-    pub fn new(hidden_volume_path: PathBuf) -> Self {
-        Self { hidden_volume_path }
+    /// * `hidden_volume_root` - Path to the hidden volume mount point
+    pub fn new(hidden_volume_root: PathBuf) -> Self {
+        Self { hidden_volume_root }
     }
 }
 
@@ -47,7 +51,7 @@ impl Default for SymlinkSupportCheck {
     /// Create check with default hidden volume path
     fn default() -> Self {
         Self {
-            hidden_volume_path: PathBuf::from(obfuscate::hidden_volume_root()),
+            hidden_volume_root: PathBuf::from(get_default_hidden_volume_root()),
         }
     }
 }
@@ -61,19 +65,23 @@ impl<F: Filesystem> PreFlightCheck<F> for SymlinkSupportCheck {
         "Validates hidden volume filesystem supports symbolic links"
     }
 
+    fn requires_hidden_volume(&self) -> bool {
+        true
+    }
+
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        if !fs.supports_symlinks(&self.hidden_volume_path)? {
-            return Ok(CheckResult::Fail(format!(
+        if !fs.supports_symlinks(&self.hidden_volume_root)? {
+            return Ok(CheckResult::fail(format!(
                 "Filesystem at {} does not support symbolic links. \
                  The hidden volume must be formatted with a Linux filesystem (e.g. ext4). \
                  FAT32 and exFAT do not support symlinks.",
-                self.hidden_volume_path.display()
+                self.hidden_volume_root.display()
             )));
         }
 
         Ok(CheckResult::Pass(format!(
             "Filesystem at {} supports symbolic links",
-            self.hidden_volume_path.display()
+            self.hidden_volume_root.display()
         )))
     }
 }
@@ -89,7 +97,7 @@ mod tests {
     fn test_symlink_support_check_default_path() {
         let check = SymlinkSupportCheck::default();
         assert_eq!(
-            check.hidden_volume_path,
+            check.hidden_volume_root,
             PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT)
         );
     }
@@ -98,7 +106,7 @@ mod tests {
     fn test_symlink_support_check_custom_path() {
         let custom_path = PathBuf::from("/custom/path");
         let check = SymlinkSupportCheck::new(custom_path.clone());
-        assert_eq!(check.hidden_volume_path, custom_path);
+        assert_eq!(check.hidden_volume_root, custom_path);
     }
 
     #[test]
@@ -159,6 +167,6 @@ mod tests {
     fn test_symlink_support_check_clone() {
         let check = SymlinkSupportCheck::default();
         let cloned = check.clone();
-        assert_eq!(check.hidden_volume_path, cloned.hidden_volume_path);
+        assert_eq!(check.hidden_volume_root, cloned.hidden_volume_root);
     }
 }

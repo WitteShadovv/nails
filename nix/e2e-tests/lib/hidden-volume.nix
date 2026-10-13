@@ -1,125 +1,123 @@
 # Hidden Volume Simulation for E2E Tests
-# Provides LUKS-based hidden volume simulation using secondary disk
+# Provides LUKS-based hidden volume simulation using secondary disk.
+#
+# Every on-disk name here is neutral ("data"): the device-mapper name, the ext4
+# label and the mount point must never hint at hidden storage, because they
+# survive in /dev/mapper, /dev/disk/by-label, generated mount unit names and the
+# kernel/journal. The Nix identifiers below are internal to the test harness and
+# never reach the guest's disk.
 
-{
-  # Setup script - creates LUKS volume and prepares directory structure
-  # Note: Use single quotes in echo to avoid breaking Python string interpolation
-  setupHiddenVolume = ''
-    echo 'Setting up hidden volume on /dev/vdb...'
-
-    # Format /dev/vdb with LUKS using test passphrase
-    # --iter-time=1 makes this fast for testing (less secure but acceptable for tests)
-    echo -n 'test-passphrase' | cryptsetup luksFormat -q --iter-time=1 /dev/vdb -
-
-    # Open LUKS volume as "hidden-volume" device
-    echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/vdb hidden-volume
-
-    # Create ext4 filesystem with label "hidden-volume"
-    mkfs.ext4 -L hidden-volume /dev/mapper/hidden-volume
-
-    # Mount the hidden volume
-    mkdir -p /mnt/hidden-volume
-    mount /dev/mapper/hidden-volume /mnt/hidden-volume
-
-    # Create NAILS directory structure (matching what nails expects)
-    # Upper directories for overlays
-    mkdir -p /mnt/hidden-volume/home
-    mkdir -p /mnt/hidden-volume/etc
-    mkdir -p /mnt/hidden-volume/var
-    mkdir -p /mnt/hidden-volume/nix
-    # Work directories for overlays
-    mkdir -p /mnt/hidden-volume/.work/home
-    mkdir -p /mnt/hidden-volume/.work/etc
-    mkdir -p /mnt/hidden-volume/.work/var
-    mkdir -p /mnt/hidden-volume/.work/nix
-    # Additional required directories
-    mkdir -p /mnt/hidden-volume/config
-    mkdir -p /mnt/hidden-volume/config/nixos
-    mkdir -p /mnt/hidden-volume/nixos
-
-    echo 'Hidden volume setup complete!'
-    echo 'Volume mounted at: /mnt/hidden-volume'
-    echo 'Directory structure created for NAILS'
+let
+  # Shared diagnostics for a backend that will not close. A LUKS backend that
+  # stays open keeps its master key in RAM, which is exactly the leak the threat
+  # model forbids, so a close failure must fail the test loudly and name the
+  # holders rather than being masked as a "known limitation". The usual cause is
+  # an overlay that was only lazily detached and is still referenced by a live
+  # process, so the hidden superblock cannot be released.
+  reportBackendHolders = ''
+    echo 'Holders of /mnt/data:'
+    fuser -vm /mnt/data 2>&1 || true
+    echo 'Holders of the backing device-mapper node:'
+    fuser -vm /dev/mapper/data 2>&1 || true
+    echo 'Device-mapper state:'
+    dmsetup info data 2>&1 || true
+    echo 'Open file descriptors pointing into /mnt/data:'
+    for fd in /proc/[0-9]*/fd/*; do
+      target=$(readlink "$fd" 2>/dev/null) || continue
+      case "$target" in
+        /mnt/data*) echo "  $fd -> $target" ;;
+      esac
+    done
+    echo 'Overlay and data mounts still live:'
+    grep -E 'overlay|/mnt/data' /proc/mounts || true
   '';
 
-  # Unmount hidden volume (cryptsetup close)
-  unmountHiddenVolume = ''
-    echo 'Unmounting hidden volume...'
+  # Strict teardown of the hidden backend: a plain unmount followed by a real
+  # cryptsetup close, with NO lazy-unmount fallback and NO ignored close failure.
+  # On any failure it prints the holders and exits non-zero so the test fails.
+  unmountHiddenVolumeStrict = ''
+    echo 'Strict unmount of data volume...'
 
-    # Check if device exists and get diagnostics before attempting unmount
-    if [ -e /dev/mapper/hidden-volume ]; then
-      echo 'Device /dev/mapper/hidden-volume exists'
-
-      # Show what's using the device
-      echo 'Checking for open files on the device...'
-      lsof /dev/mapper/hidden-volume 2>/dev/null || echo 'lsof: no open files found'
-
-      # Show current mounts
-      echo 'Current mounts:'
-      mount | grep hidden-volume || echo 'No mounts found'
-    else
-      echo 'Device /dev/mapper/hidden-volume does not exist - nothing to do'
+    if [ ! -e /dev/mapper/data ]; then
+      echo 'Device /dev/mapper/data does not exist - nothing to do'
       exit 0
     fi
 
-    # Unmount the filesystem with retry logic
-    echo 'Attempting to unmount /mnt/hidden-volume...'
-
-    # First check what's mounted before unmounting
-    echo 'All active mounts before unmount:'
-    mount | grep -E '(overlay|hidden)' || echo 'No overlay or hidden mounts'
-
-    if umount /mnt/hidden-volume 2>&1; then
-      echo 'Successfully unmounted /mnt/hidden-volume'
-    else
-      echo 'Failed to unmount /mnt/hidden-volume'
-      # Try lazy unmount if regular unmount fails
-      echo 'Attempting lazy unmount...'
-      umount -l /mnt/hidden-volume 2>&1 || echo 'Lazy unmount also failed'
+    if mountpoint -q /mnt/data; then
+      if ! umount /mnt/data; then
+        echo 'ERROR: could not unmount /mnt/data; something still holds it.'
+        ${reportBackendHolders}
+        exit 1
+      fi
     fi
 
-    # Verify nothing overlay-related is still mounted
-    echo 'Checking for remaining overlay mounts after unmount:'
-    remaining_overlays=$(mount | grep 'overlay on /' || true)
-    if [ -n "$remaining_overlays" ]; then
-      echo 'WARNING: Found remaining overlay mounts:'
-      echo "$remaining_overlays"
-    else
-      echo 'No overlay mounts found (good)'
+    if ! cryptsetup close data; then
+      echo 'ERROR: cryptsetup close failed; the hidden backend is still open and'
+      echo 'its master key is still resident in RAM. This is a real leak, not a'
+      echo 'test-infrastructure artefact: a lazily detached overlay is almost'
+      echo 'certainly still holding the hidden superblock.'
+      ${reportBackendHolders}
+      exit 1
     fi
 
-    # Give the system a moment to cleanup
-    sleep 0.5
-
-    # Close the LUKS device
-    echo 'Closing LUKS device...'
-
-    # Attempt to close the LUKS device
-    # Note: This may fail due to kernel-internal dm-crypt references in VM environments
-    # This is acceptable for test purposes - the kernel will clean up on VM shutdown
-    if cryptsetup luksClose hidden-volume 2>&1; then
-      echo 'Successfully closed LUKS device'
-    else
-      echo 'Note: LUKS device could not be closed (kernel-internal reference in VM environment)'
-      echo 'This is a known test infrastructure limitation and does not affect test validity'
-      echo 'The device will be cleaned up when the VM shuts down'
-    fi
-
-    echo 'Hidden volume unmounted and closed.'
+    echo 'Data volume unmounted and backend closed.'
   '';
 
-  # Mount hidden volume (cryptsetup open + mount)
-  mountHiddenVolume = ''
-    echo 'Mounting hidden volume...'
+  # Open the existing LUKS backend and mount it again, without reformatting. Used
+  # after a crash/reboot to read back the state file and upper dirs that survive
+  # on the hidden filesystem, so a crash test actually exercises recovery instead
+  # of reading a missing state file that defaults to Inactive.
+  reopenHiddenVolume = ''
+    echo 'Reopening data volume...'
 
-    # Open LUKS volume
-    echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/vdb hidden-volume
+    # A soft-reboot back into the same root (a plain reboot that met a
+    # leftover next root) unmounts the volume but keeps its mapping open.
+    test -e /dev/mapper/data \
+      || echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/disk/by-id/virtio-data data
+    mkdir -p /mnt/data
+    mountpoint -q /mnt/data || mount /dev/mapper/data /mnt/data
 
-    # Mount the filesystem
-    mkdir -p /mnt/hidden-volume
-    mount /dev/mapper/hidden-volume /mnt/hidden-volume
+    echo 'Data volume reopened at: /mnt/data'
+  '';
+in
+{
+  inherit unmountHiddenVolumeStrict reopenHiddenVolume;
 
-    echo 'Hidden volume mounted at: /mnt/hidden-volume'
+  # Setup script - creates LUKS volume and prepares directory structure
+  # Note: Use single quotes in echo to avoid breaking Python string interpolation
+  setupHiddenVolume = ''
+    echo 'Setting up data volume on /dev/disk/by-id/virtio-data...'
+
+    # Format the data disk with LUKS using test passphrase
+    # --iter-time=1 makes this fast for testing (less secure but acceptable for tests)
+    echo -n 'test-passphrase' | cryptsetup luksFormat -q --iter-time=1 /dev/disk/by-id/virtio-data -
+
+    # Open LUKS volume as the neutral "data" device
+    echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - /dev/disk/by-id/virtio-data data
+
+    # Create ext4 filesystem with the neutral label "data"
+    mkfs.ext4 -L data /dev/mapper/data
+
+    # Mount the volume
+    mkdir -p /mnt/data
+    mount /dev/mapper/data /mnt/data
+
+    # The whole-root layout NAILS expects: the root overlay's work directory
+    # (its upper is created at the first activation, with the decoy root's own
+    # mode and owner) and the configuration directory.
+    mkdir -p /mnt/data/root/work
+    mkdir -p /mnt/data/config/nixos
+
+    echo 'Data volume setup complete!'
+    echo 'Volume mounted at: /mnt/data'
+    echo 'Directory structure created for NAILS'
   '';
 
+  # Unmount hidden volume (cryptsetup close). This is the strict teardown: it
+  # never falls back to a lazy unmount and never ignores a close failure, because
+  # either one would leave the master key in RAM.
+  unmountHiddenVolume = unmountHiddenVolumeStrict;
+
+  # Mount hidden volume (cryptsetup open + mount). Alias of reopenHiddenVolume.
+  mountHiddenVolume = reopenHiddenVolume;
 }

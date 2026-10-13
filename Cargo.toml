@@ -1,19 +1,33 @@
 [workspace]
-members = ["nails-cli", "nails-core"]
-resolver = "2"
+members = [
+    "nails-base",
+    "nails-cli",
+    "nails-core",
+    "nails-forensics",
+    "nails-platform",
+    "nails-session",
+    "nails-teardown",
+]
+resolver = "3"
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
 rust-version = "1.93"
-authors = ["NAILS Project"]
+authors = ["WitteShadovv"]
 license = "GPL-3.0-or-later"
-homepage = "https://github.com/WitteShadovv/nails"
+homepage = "https://nails.run"
 repository = "https://github.com/WitteShadovv/nails"
 
 [workspace.dependencies]
 # CLI and argument parsing
 clap = { version = "4.6.1", features = ["derive", "cargo"] }
+# Shell completion generation for `nails completions <shell>` (stdout only).
+clap_complete = "4.6.1"
+# Man page and Markdown CLI reference generation, used only by the
+# `cli_reference` staleness test that keeps `nails.1` and `docs/cli.md` current.
+clap_mangen = "0.3.3"
+clap-markdown = "0.1.5"
 
 # Error handling (AR6, AR7)
 thiserror = "2.0"
@@ -23,15 +37,28 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3.22", features = ["json"] }
 
 # Filesystem operations (AR9)
-nix = { version = "0.30.1", features = ["mount", "sched"] }
+nix = { version = "0.31.3", features = ["mount", "sched"] }
+
+# Async-signal-safe signal handling. Only the atomic-flag registration is used:
+# SIGINT/SIGTERM set a cancel flag the activation path polls between steps, and
+# SIGHUP is caught so a terminal hangup no longer kills an in-flight operation.
+signal-hook = { version = "0.4", default-features = false }
+
+# Direct syscalls for extended attributes (overlay opaque markers): rustix's
+# l*xattr functions give us no-follow semantics without spawning attr binaries.
+rustix = { version = "1", features = ["fs"] }
 
 # Serialization (AR10)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-serde-saphyr = "0.0.22"
 
-# Date and time (AR10 - for state timestamps)
-chrono = { version = "0.4", features = ["serde"] }
+# Configuration file format (strict nails.toml)
+toml = "1.1"
+
+# Date and time (for state timestamps). Only Utc::now, DateTime, Duration and
+# RFC 3339 parsing are used, so the wasm bindings and other default extras are
+# left out.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 
 # Atomic file operations (NFR13)
 tempfile = "3.10"
@@ -46,7 +73,41 @@ hex = "0.4"
 # Testing (for workspace-level consistency)
 assert_cmd = "2.2.1"
 predicates = "3.1.3"
+# Property tests. Only `std`: the fork and timeout features add crates unused here
+proptest = { version = "1.11", default-features = false, features = ["std"] }
+# Snapshot testing for the CLI contract. `insta` captures help/version and the
+# human renderings; `insta-cmd` snapshots a whole command invocation (stdout,
+# stderr and exit code) in one assertion. Dev-only, so none of this reaches the
+# shipped binary. `json`/`redactions` back `assert_json_snapshot!`; `filters`
+# strips the trailing whitespace clap emits in help text so the committed
+# snapshots survive the trailing-whitespace lint.
+insta = { version = "1.48.0", features = ["json", "redactions", "filters"] }
+insta-cmd = "0.7.0"
+# JSON Schema validation for the machine-readable (`--json`) contract: the same
+# fixtures the E2E suite uses are enforced here against real command output.
+# `default-features = false` drops the HTTP/file `$ref` resolvers and the format
+# assertions the fixtures do not rely on.
+jsonschema = { version = "0.58.4", default-features = false }
+
+# Compile-time code policy shared by every crate and target. `unsafe_code` is
+# denied: each production unsafe site opts in with a scoped
+# `#[allow(unsafe_code)]` next to its `// SAFETY:` comments, so a new unsafe
+# block cannot land without one. The size lints catch functions that outgrow a
+# single screen of logic; their thresholds live in clippy.toml.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+too_many_lines = "warn"
+cognitive_complexity = "warn"
 
 [profile.release]
 strip = true
 lto = true
+
+# The bench profile inherits release, and fat LTO there costs well over a
+# minute of compile time on every benchmark run. Thin LTO keeps the
+# cross-crate inlining the measurements depend on at a fraction of the cost.
+[profile.bench]
+lto = "thin"

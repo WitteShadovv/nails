@@ -1,7 +1,10 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Storage readiness pre-flight check
 //!
 //! Unified pre-flight check that validates hidden storage directory structure
-//! AND overlay directory accessibility in a single pass (Story 14.5).
+//! AND overlay directory accessibility in a single pass.
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::OverlayDirs;
@@ -10,16 +13,12 @@ use std::path::PathBuf;
 
 /// Required directories in hidden storage (design.tex Section 4.3.5)
 const REQUIRED_DIRS: &[&str] = &[
-    "etc",        // Upper layer for /etc overlay
-    "home",       // Upper layer for /home overlay
-    "config",     // NAILS configuration (nails.yaml)
-    "nix",        // Hidden environment Nix configuration
-    ".work/etc",  // OverlayFS work directory for /etc
-    ".work/home", // OverlayFS work directory for /home
-    ".work/nix",  // OverlayFS work directory for /nix
+    "root/upper", // Upper layer of the root overlay: the hidden system
+    "root/work",  // Its overlayfs work directory
 ];
 
-// Note: Additional work directories for overlays (e.g., .work/nix) are auto-created as needed
+// Note: the layers of other overlaid decoy filesystems (root/mounts/…) are
+// created at entry, once the fstab policy has decided which there are.
 
 /// Unified pre-flight check that validates hidden storage directory structure
 /// AND overlay directory accessibility in a single pass.
@@ -40,7 +39,7 @@ const REQUIRED_DIRS: &[&str] = &[
 /// ├── etc/           # Upper layer for /etc overlay
 /// ├── home/          # Upper layer for /home overlay
 /// ├── nix/           # Upper layer for /nix overlay
-/// ├── config/        # NAILS configuration (nails.yaml)
+/// ├── config/        # NAILS configuration (nails.toml)
 /// └── .work/         # OverlayFS work directories
 ///     ├── etc/
 ///     ├── home/
@@ -67,8 +66,12 @@ const REQUIRED_DIRS: &[&str] = &[
 /// ```
 #[derive(Debug, Clone)]
 pub struct StorageReadinessCheck {
-    hidden_volume_path: PathBuf,
+    hidden_volume_root: PathBuf,
     overlays: Vec<OverlayDirs>,
+    /// When set, the check only inspects the layout: it never creates a missing
+    /// directory or changes permissions, and reports what activation would create
+    /// as a warning instead. Used by the read-only `nails check` command.
+    read_only: bool,
 }
 
 impl StorageReadinessCheck {
@@ -76,43 +79,53 @@ impl StorageReadinessCheck {
     ///
     /// # Arguments
     ///
-    /// * `hidden_volume_path` - Path to the hidden volume mount point
+    /// * `hidden_volume_root` - Path to the hidden volume mount point
     /// * `overlays` - Overlay directory configurations to validate
-    pub fn new(hidden_volume_path: PathBuf, overlays: Vec<OverlayDirs>) -> Self {
+    pub fn new(hidden_volume_root: PathBuf, overlays: Vec<OverlayDirs>) -> Self {
         Self {
-            hidden_volume_path,
+            hidden_volume_root,
             overlays,
+            read_only: false,
         }
+    }
+
+    /// Make the check read-only: it validates the layout without creating any
+    /// missing directory or changing permissions. Missing directories activation
+    /// would auto-create are reported as a warning rather than a failure.
+    pub fn read_only(mut self) -> Self {
+        self.read_only = true;
+        self
     }
 }
 
-impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
-    fn name(&self) -> &'static str {
-        "storage-readiness"
-    }
-
-    fn description(&self) -> &'static str {
-        "Validates hidden storage directories exist and are accessible"
-    }
-
-    fn run(&self, fs: &F) -> Result<CheckResult> {
-        let mut issues = Vec::new();
-
-        // Phase 1: Check required directories exist on hidden volume
+impl StorageReadinessCheck {
+    /// Phases 1 and 2: find required directories missing from the hidden volume
+    /// and create them, or record them as pending when read-only.
+    fn ensure_required_dirs<F: Filesystem>(
+        &self,
+        fs: &F,
+        issues: &mut Vec<String>,
+        pending: &mut Vec<String>,
+    ) -> Result<()> {
         let mut missing = Vec::new();
         for dir in REQUIRED_DIRS {
-            let path = self.hidden_volume_path.join(dir);
+            let path = self.hidden_volume_root.join(dir);
             if !fs.path_exists(&path)? || !fs.is_directory(&path)? {
                 missing.push(*dir);
             }
         }
 
-        // Phase 2: Auto-create missing directories (Story 14.4)
+        // Phase 2: Auto-create missing directories, or record them
+        // when read-only.
         if !missing.is_empty() {
             let mut created = Vec::new();
 
             for dir in &missing {
-                let path = self.hidden_volume_path.join(dir);
+                if self.read_only {
+                    pending.push(format!("{}/", dir));
+                    continue;
+                }
+                let path = self.hidden_volume_root.join(dir);
                 match fs.create_directory(&path) {
                     Ok(()) => {
                         if let Err(e) = fs.set_permissions(&path, 0o700) {
@@ -135,46 +148,62 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
                 tracing::info!(directories = %created.join(", "), "Auto-created directories");
             }
         }
+        Ok(())
+    }
 
-        // Phase 3: Validate overlay directories are accessible and auto-create if missing
-        for overlay in &self.overlays {
-            let mut lower_ok = true;
-            // Lower must exist and be readable
-            if !fs.path_exists(&overlay.lower)? {
-                issues.push(format!(
-                    "{} lower directory not found: {}",
-                    overlay.name,
-                    overlay.lower.display()
-                ));
-                lower_ok = false;
-            } else if !fs.is_readable(&overlay.lower)? {
-                issues.push(format!(
-                    "{} lower directory not readable: {}",
-                    overlay.name,
-                    overlay.lower.display()
-                ));
-                lower_ok = false;
-            }
+    /// Phase 3: the overlay lower must be readable, and its upper and work
+    /// directories must exist and be writable (created unless read-only).
+    fn check_overlay<F: Filesystem>(
+        &self,
+        fs: &F,
+        overlay: &OverlayDirs,
+        issues: &mut Vec<String>,
+        pending: &mut Vec<String>,
+    ) -> Result<()> {
+        let mut lower_ok = true;
+        // Lower must exist and be readable
+        if !fs.path_exists(&overlay.lower)? {
+            issues.push(format!(
+                "{} lower directory not found: {}",
+                overlay.name,
+                overlay.lower.display()
+            ));
+            lower_ok = false;
+        } else if !fs.is_readable(&overlay.lower)? {
+            issues.push(format!(
+                "{} lower directory not readable: {}",
+                overlay.name,
+                overlay.lower.display()
+            ));
+            lower_ok = false;
+        }
 
-            // Upper permissions should mirror lower directory permissions
-            let desired_upper_mode = if lower_ok {
-                match fs.get_permissions(&overlay.lower) {
-                    Ok(mode) => Some(mode),
-                    Err(e) => {
-                        issues.push(format!(
-                            "{} lower permissions unreadable: {}",
-                            overlay.name, e
-                        ));
-                        None
-                    }
+        // Upper permissions should mirror lower directory permissions
+        let desired_upper_mode = if lower_ok {
+            match fs.get_permissions(&overlay.lower) {
+                Ok(mode) => Some(mode),
+                Err(e) => {
+                    issues.push(format!(
+                        "{} lower permissions unreadable: {}",
+                        overlay.name, e
+                    ));
+                    None
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
 
-            // Upper: auto-create if missing
-            let mut upper_exists = fs.path_exists(&overlay.upper)?;
-            if !upper_exists {
+        // Upper: auto-create if missing (or record it when read-only)
+        let mut upper_exists = fs.path_exists(&overlay.upper)?;
+        if !upper_exists {
+            if self.read_only {
+                pending.push(format!(
+                    "{} upper ({})",
+                    overlay.name,
+                    overlay.upper.display()
+                ));
+            } else {
                 match fs.create_directory(&overlay.upper) {
                     Ok(()) => {
                         upper_exists = true;
@@ -194,28 +223,37 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
                     }
                 }
             }
+        }
 
-            if upper_exists {
-                if let Some(mode) = desired_upper_mode
-                    && let Err(e) = fs.set_permissions(&overlay.upper, mode)
-                {
-                    issues.push(format!(
-                        "{} upper directory: failed to set permissions to match lower: {}",
-                        overlay.name, e
-                    ));
-                }
-                if !fs.is_writable(&overlay.upper)? {
-                    issues.push(format!(
-                        "Not writable: {} upper ({})",
-                        overlay.name,
-                        overlay.upper.display()
-                    ));
-                }
+        if upper_exists {
+            if !self.read_only
+                && let Some(mode) = desired_upper_mode
+                && let Err(e) = fs.set_permissions(&overlay.upper, mode)
+            {
+                issues.push(format!(
+                    "{} upper directory: failed to set permissions to match lower: {}",
+                    overlay.name, e
+                ));
             }
+            if !fs.is_writable(&overlay.upper)? {
+                issues.push(format!(
+                    "Not writable: {} upper ({})",
+                    overlay.name,
+                    overlay.upper.display()
+                ));
+            }
+        }
 
-            // Work: auto-create if missing
-            let mut work_exists = fs.path_exists(&overlay.work)?;
-            if !work_exists {
+        // Work: auto-create if missing (or record it when read-only)
+        let mut work_exists = fs.path_exists(&overlay.work)?;
+        if !work_exists {
+            if self.read_only {
+                pending.push(format!(
+                    "{} work ({})",
+                    overlay.name,
+                    overlay.work.display()
+                ));
+            } else {
                 match fs.create_directory(&overlay.work) {
                     Ok(()) => {
                         work_exists = true;
@@ -235,33 +273,68 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
                     }
                 }
             }
-
-            if work_exists {
-                if let Err(e) = fs.set_permissions(&overlay.work, 0o700) {
-                    issues.push(format!(
-                        "{} work directory: failed to set permissions: {}",
-                        overlay.name, e
-                    ));
-                }
-                if !fs.is_writable(&overlay.work)? {
-                    issues.push(format!(
-                        "Not writable: {} work ({})",
-                        overlay.name,
-                        overlay.work.display()
-                    ));
-                }
-            }
         }
 
-        if issues.is_empty() {
-            Ok(CheckResult::Pass(
-                "Hidden storage ready: all directories accessible".to_string(),
-            ))
-        } else {
-            Ok(CheckResult::Fail(format!(
+        if work_exists {
+            if !self.read_only
+                && let Err(e) = fs.set_permissions(&overlay.work, 0o700)
+            {
+                issues.push(format!(
+                    "{} work directory: failed to set permissions: {}",
+                    overlay.name, e
+                ));
+            }
+            if !fs.is_writable(&overlay.work)? {
+                issues.push(format!(
+                    "Not writable: {} work ({})",
+                    overlay.name,
+                    overlay.work.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
+    fn name(&self) -> &'static str {
+        "storage-readiness"
+    }
+
+    fn description(&self) -> &'static str {
+        "Validates hidden storage directories exist and are accessible"
+    }
+
+    fn requires_hidden_volume(&self) -> bool {
+        true
+    }
+
+    fn run(&self, fs: &F) -> Result<CheckResult> {
+        let mut issues = Vec::new();
+        // Directories activation would auto-create. In read-only mode they are
+        // reported here instead of being created, so a fresh-but-sound volume
+        // warns rather than fails.
+        let mut pending: Vec<String> = Vec::new();
+
+        self.ensure_required_dirs(fs, &mut issues, &mut pending)?;
+        for overlay in &self.overlays {
+            self.check_overlay(fs, overlay, &mut issues, &mut pending)?;
+        }
+
+        if !issues.is_empty() {
+            Ok(CheckResult::fail(format!(
                 "Storage not ready: {}",
                 issues.join(". ")
             )))
+        } else if !pending.is_empty() {
+            Ok(CheckResult::Warn(format!(
+                "Hidden storage usable; activation will create: {}",
+                pending.join(", ")
+            )))
+        } else {
+            Ok(CheckResult::Pass(
+                "Hidden storage ready: all directories accessible".to_string(),
+            ))
         }
     }
 }

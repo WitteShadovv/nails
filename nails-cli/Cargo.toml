@@ -5,12 +5,19 @@ edition.workspace = true
 rust-version.workspace = true
 authors.workspace = true
 license.workspace = true
-description = "CLI interface for NixOS Anti-forensics Isolation & Layering System"
+description = "Command-line interface for the nails overlay environment manager"
 homepage.workspace = true
 repository.workspace = true
 readme = "../README.md"
 keywords = ["nixos", "anti-forensics", "security", "privacy", "veracrypt"]
 categories = ["command-line-utilities"]
+# Never publish to a registry. A crate on crates.io is a permanent, indexed
+# public record that the tool exists and was built; installing from one would
+# also leave its traces on the decoy. See docs/distribution.md.
+publish = false
+
+[lints]
+workspace = true
 
 [lib]
 name = "nails"
@@ -20,27 +27,56 @@ path = "src/lib.rs"
 name = "nails"
 path = "src/main.rs"
 
+[features]
+# Mirror of nails-core's switch for the CLI's own test-only hooks (the detach
+# systemd-run override and refusal, the real-operations guard). Off by default so
+# the shipped binary carries none of them; pulls in nails-core's hooks too.
+test-hooks = ["nails-core/test-hooks"]
+
 [dependencies]
 # Workspace dependencies
 clap = { workspace = true, features = ["derive", "cargo"] }
+# Shell completion scripts for `nails completions <shell>`, written to stdout.
+clap_complete = { workspace = true }
 colored = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-nix = { workspace = true }
+nix = { workspace = true, features = ["user"] }
 chrono = { workspace = true }
 
 # Core library
 nails-core = { path = "../nails-core" }
+# The emergency hot path, dispatched from `main` before clap, config and tracing.
+nails-teardown = { path = "../nails-teardown" }
 
 [dev-dependencies]
 # Workspace testing dependencies
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = "3"
-criterion = { version = "0.8", features = ["html_reports"] }
-
-[[bench]]
-name = "startup"
-harness = false
+# Pull in nails-core's test-only extras for the CLI test builds. The
+# shipped binary (`cargo build`) never pulls in dev-dependencies, so neither
+# feature reaches release builds:
+#   - test-hooks: compile the test hooks (attach-gate bypass, runtime skip,
+#     override env vars) so the integration tests can drive real write paths
+#     against temp directories.
+#   - test-support: the shared test fixtures (`Config::test_default`, `TestWorld`).
+nails-core = { path = "../nails-core", features = [
+    "test-hooks",
+    "test-support",
+] }
+# Self dev-dependency: turns the CLI's own `test-hooks` feature on for the
+# integration tests and for the `nails` binary that `cargo test` builds and
+# `assert_cmd` drives. Dev-dependencies never reach `cargo build`, so the shipped
+# binary stays hook-free.
+nails-cli = { path = ".", features = ["test-hooks"] }
+# CLI contract tests (snapshots + JSON Schema): see the workspace dependency table.
+insta = { workspace = true }
+insta-cmd = { workspace = true }
+jsonschema = { workspace = true }
+# Man page and Markdown reference generators, used only by the `cli_reference`
+# test that regenerates `nails.1` and `docs/cli.md` and fails when they drift.
+clap_mangen = { workspace = true }
+clap-markdown = { workspace = true }

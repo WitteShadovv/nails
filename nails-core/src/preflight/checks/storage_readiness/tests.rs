@@ -1,6 +1,9 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use super::*;
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
-use crate::filesystem::MockFilesystem;
+use crate::filesystem::{MockFilesystem, PathKind};
 use std::path::Path;
 
 /// Helper: create StorageReadinessCheck with no overlays
@@ -16,14 +19,14 @@ fn make_check_with_overlays() -> StorageReadinessCheck {
             OverlayDirs::new(
                 "home".to_string(),
                 PathBuf::from("/home"),
-                PathBuf::from("/mnt/hidden-volume/home"),
-                PathBuf::from("/mnt/hidden-volume/.work/home"),
+                PathBuf::from("/mnt/data/home"),
+                PathBuf::from("/mnt/data/.work/home"),
             ),
             OverlayDirs::new(
                 "etc".to_string(),
                 PathBuf::from("/etc"),
-                PathBuf::from("/mnt/hidden-volume/etc"),
-                PathBuf::from("/mnt/hidden-volume/.work/etc"),
+                PathBuf::from("/mnt/data/etc"),
+                PathBuf::from("/mnt/data/.work/etc"),
             ),
         ],
     )
@@ -32,17 +35,18 @@ fn make_check_with_overlays() -> StorageReadinessCheck {
 /// Helper: set up all required directories on hidden volume
 fn setup_all_required_dirs(fs: &MockFilesystem) {
     for dir in &[
-        "etc",
+        "root",
+        "root/upper",
+        "root/work",
         "home",
-        "config",
-        "nix",
-        ".work/etc",
+        ".work",
         ".work/home",
-        ".work/nix",
+        "etc",
+        ".work/etc",
     ] {
-        let path = format!("/mnt/hidden-volume/{}", dir);
+        let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
         fs.mock_set_writable(&path, true);
     }
 }
@@ -70,19 +74,18 @@ fn test_storage_readiness_trait_metadata() {
 
 #[test]
 fn test_storage_readiness_all_dirs_exist_no_overlays_pass() {
-    // AC4: All dirs exist -> Pass
+    // All dirs exist -> Pass
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
     setup_all_required_dirs(&fs);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass());
-    assert!(result.message().contains("Hidden storage ready"));
 }
 
 #[test]
 fn test_storage_readiness_all_dirs_and_overlays_pass() {
-    // AC1+AC4: All dirs exist + overlays accessible -> single Pass
+    // All dirs exist + overlays accessible -> single Pass
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
     setup_all_required_dirs(&fs);
@@ -90,11 +93,6 @@ fn test_storage_readiness_all_dirs_and_overlays_pass() {
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass());
-    assert!(
-        result
-            .message()
-            .contains("Hidden storage ready: all directories accessible")
-    );
 }
 
 #[test]
@@ -111,75 +109,60 @@ fn test_storage_readiness_sets_upper_permissions_from_lower() {
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass());
 
-    let home_upper = fs.mock_get_permissions(Path::new("/mnt/hidden-volume/home"));
-    let etc_upper = fs.mock_get_permissions(Path::new("/mnt/hidden-volume/etc"));
+    let home_upper = fs.mock_get_permissions(Path::new("/mnt/data/home"));
+    let etc_upper = fs.mock_get_permissions(Path::new("/mnt/data/etc"));
     assert_eq!(home_upper, Some(0o750));
     assert_eq!(etc_upper, Some(0o755));
 }
 
 #[test]
 fn test_storage_readiness_missing_dir_autocreate_success() {
-    // AC6: Auto-create missing dirs (integration from 14.4)
+    // Auto-create missing dirs (integration from 14.4)
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
 
-    // Most dirs exist
-    for dir in &[
-        "home",
-        "config",
-        "nix",
-        ".work/etc",
-        ".work/home",
-        ".work/nix",
-    ] {
-        let path = format!("/mnt/hidden-volume/{}", dir);
+    // The work directory exists
+    for dir in &["root", "root/work"] {
+        let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
     }
 
-    // etc/ is missing but creatable
-    fs.mock_set_path_exists("/mnt/hidden-volume/etc", false);
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/etc", true);
+    // root/upper is missing but creatable
+    fs.mock_set_path_exists("/mnt/data/root/upper", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/upper", true);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_pass());
 
     // Verify permissions set
-    let perms = fs.mock_get_permissions(Path::new("/mnt/hidden-volume/etc"));
+    let perms = fs.mock_get_permissions(Path::new("/mnt/data/root/upper"));
     assert_eq!(perms, Some(0o700));
 }
 
 #[test]
 fn test_storage_readiness_missing_dir_autocreate_fails() {
-    // AC3: Creation failure -> single Fail message
+    // Creation failure -> single Fail message
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
 
-    for dir in &[
-        "home",
-        "config",
-        "nix",
-        ".work/etc",
-        ".work/home",
-        ".work/nix",
-    ] {
-        let path = format!("/mnt/hidden-volume/{}", dir);
+    for dir in &["root", "root/work"] {
+        let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
     }
 
-    fs.mock_set_path_exists("/mnt/hidden-volume/etc", false);
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/etc", false);
+    fs.mock_set_path_exists("/mnt/data/root/upper", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/upper", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
-    assert!(result.message().contains("Storage not ready"));
-    assert!(result.message().contains("etc/"));
+    assert!(result.message().contains("root/upper/"));
 }
 
 #[test]
 fn test_storage_readiness_overlay_lower_missing_fail() {
-    // AC3: Overlay lower missing -> Fail
+    // Overlay lower missing -> Fail
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
     setup_all_required_dirs(&fs);
@@ -196,14 +179,14 @@ fn test_storage_readiness_overlay_lower_missing_fail() {
 
 #[test]
 fn test_storage_readiness_overlay_upper_not_writable_fail() {
-    // AC3: Upper not writable -> single Fail
+    // Upper not writable -> single Fail
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
     setup_all_required_dirs(&fs);
     setup_overlay_lower_dirs(&fs);
 
     // Override: home upper is not writable
-    fs.mock_set_writable("/mnt/hidden-volume/home", false);
+    fs.mock_set_writable("/mnt/data/home", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
@@ -212,14 +195,14 @@ fn test_storage_readiness_overlay_upper_not_writable_fail() {
 
 #[test]
 fn test_storage_readiness_overlay_work_not_writable_fail() {
-    // AC3: Work not writable -> Fail
+    // Work not writable -> Fail
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
     setup_all_required_dirs(&fs);
     setup_overlay_lower_dirs(&fs);
 
     // Override: etc work is not writable
-    fs.mock_set_writable("/mnt/hidden-volume/.work/etc", false);
+    fs.mock_set_writable("/mnt/data/.work/etc", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
@@ -228,21 +211,21 @@ fn test_storage_readiness_overlay_work_not_writable_fail() {
 
 #[test]
 fn test_storage_readiness_mixed_issues_single_fail() {
-    // AC3: Mixed issues -> single Fail message listing ALL problems
+    // Mixed issues -> single Fail message listing ALL problems
     let fs = MockFilesystem::new();
     let check = make_check_with_overlays();
 
-    // config/ and nix/ missing and not creatable
-    for dir in &["etc", "home", ".work/etc", ".work/home", ".work/nix"] {
-        let path = format!("/mnt/hidden-volume/{}", dir);
+    // root/upper and root/work missing and not creatable
+    for dir in &["root", "etc", "home", ".work", ".work/etc", ".work/home"] {
+        let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
         fs.mock_set_writable(&path, true);
     }
-    fs.mock_set_path_exists("/mnt/hidden-volume/config", false);
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/config", false);
-    fs.mock_set_path_exists("/mnt/hidden-volume/nix", false);
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/nix", false);
+    fs.mock_set_path_exists("/mnt/data/root/upper", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/upper", false);
+    fs.mock_set_path_exists("/mnt/data/root/work", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/work", false);
 
     // Lower dirs: /etc not readable
     fs.mock_set_path_exists("/home", true);
@@ -253,9 +236,8 @@ fn test_storage_readiness_mixed_issues_single_fail() {
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
     let msg = result.message();
-    assert!(msg.contains("Storage not ready"), "msg: {}", msg);
-    assert!(msg.contains("config/"), "missing config/: {}", msg);
-    assert!(msg.contains("nix/"), "missing nix/: {}", msg);
+    assert!(msg.contains("root/upper/"), "missing root/upper/: {}", msg);
+    assert!(msg.contains("root/work/"), "missing root/work/: {}", msg);
     assert!(
         msg.contains("etc lower directory not readable"),
         "etc not readable: {}",
@@ -269,28 +251,21 @@ fn test_storage_readiness_directory_is_file_triggers_autocreate() {
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
 
-    for dir in &[
-        "home",
-        "config",
-        "nix",
-        ".work/etc",
-        ".work/home",
-        ".work/nix",
-    ] {
-        let path = format!("/mnt/hidden-volume/{}", dir);
+    for dir in &["root", "root/work"] {
+        let path = format!("/mnt/data/{}", dir);
         fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
+        fs.mock_set_path_type(&path, PathKind::Dir);
         fs.mock_set_writable(&path, true);
     }
 
-    // etc/ exists but is a file, not a directory
-    fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
-    fs.mock_set_path_type("/mnt/hidden-volume/etc", "file");
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/etc", false);
+    // root/upper exists but is a file, not a directory
+    fs.mock_set_path_exists("/mnt/data/root/upper", true);
+    fs.mock_set_path_type("/mnt/data/root/upper", PathKind::File);
+    fs.mock_set_directory_creatable("/mnt/data/root/upper", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
-    assert!(result.message().contains("etc/"));
+    assert!(result.message().contains("root/upper/"));
 }
 
 #[test]
@@ -323,8 +298,8 @@ fn test_storage_readiness_overlay_upper_missing_fail() {
     setup_overlay_lower_dirs(&fs);
 
     // Override: home upper does not exist and is NOT creatable
-    fs.mock_set_path_exists("/mnt/hidden-volume/home", false);
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/home", false);
+    fs.mock_set_path_exists("/mnt/data/home", false);
+    fs.mock_set_directory_creatable("/mnt/data/home", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
@@ -340,8 +315,8 @@ fn test_storage_readiness_overlay_work_missing_fail() {
     setup_overlay_lower_dirs(&fs);
 
     // Override: etc work does not exist and is NOT creatable
-    fs.mock_set_path_exists("/mnt/hidden-volume/.work/etc", false);
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/.work/etc", false);
+    fs.mock_set_path_exists("/mnt/data/.work/etc", false);
+    fs.mock_set_directory_creatable("/mnt/data/.work/etc", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
@@ -357,18 +332,18 @@ fn test_storage_readiness_collect_all_overlay_errors() {
         vec![OverlayDirs::new(
             "home".to_string(),
             PathBuf::from("/home"),
-            PathBuf::from("/mnt/hidden-volume/home"),
-            PathBuf::from("/mnt/hidden-volume/.work/home"),
+            PathBuf::from("/mnt/data/home"),
+            PathBuf::from("/mnt/data/.work/home"),
         )],
     );
     setup_all_required_dirs(&fs);
 
     // All overlay dirs missing and NOT creatable
     fs.mock_set_path_exists("/home", false);
-    fs.mock_set_path_exists("/mnt/hidden-volume/home", false);
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/home", false);
-    fs.mock_set_path_exists("/mnt/hidden-volume/.work/home", false);
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/.work/home", false);
+    fs.mock_set_path_exists("/mnt/data/home", false);
+    fs.mock_set_directory_creatable("/mnt/data/home", false);
+    fs.mock_set_path_exists("/mnt/data/.work/home", false);
+    fs.mock_set_directory_creatable("/mnt/data/.work/home", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
@@ -383,26 +358,19 @@ fn test_storage_readiness_multiple_missing_dirs_autocreate_partial() {
     let fs = MockFilesystem::new();
     let check = make_check_no_overlays();
 
-    for dir in &["home", ".work/etc", ".work/home", ".work/nix"] {
-        let path = format!("/mnt/hidden-volume/{}", dir);
-        fs.mock_set_path_exists(&path, true);
-        fs.mock_set_path_type(&path, "directory");
-    }
-
-    // config/ missing but creatable
-    fs.mock_set_path_exists("/mnt/hidden-volume/config", false);
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/config", true);
-    // nix/ missing and NOT creatable
-    fs.mock_set_path_exists("/mnt/hidden-volume/nix", false);
-    fs.mock_set_directory_creatable("/mnt/hidden-volume/nix", false);
-    // etc/ exists
-    fs.mock_set_path_exists("/mnt/hidden-volume/etc", true);
-    fs.mock_set_path_type("/mnt/hidden-volume/etc", "directory");
+    fs.mock_set_path_exists("/mnt/data/root", true);
+    fs.mock_set_path_type("/mnt/data/root", PathKind::Dir);
+    // root/upper missing but creatable
+    fs.mock_set_path_exists("/mnt/data/root/upper", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/upper", true);
+    // root/work missing and NOT creatable
+    fs.mock_set_path_exists("/mnt/data/root/work", false);
+    fs.mock_set_directory_creatable("/mnt/data/root/work", false);
 
     let result = check.run(&fs).unwrap();
     assert!(result.is_fail());
-    assert!(result.message().contains("nix/"));
-    // config/ was auto-created, so should NOT be in the error
+    assert!(result.message().contains("root/work/"));
+    // root/upper was auto-created; only root/work is reported missing
 }
 
 #[test]

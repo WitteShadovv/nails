@@ -1,0 +1,2 @@
+Filename				Type		Size		Used		Priority
+/fixture/swap1                          file		1048572		0		-1

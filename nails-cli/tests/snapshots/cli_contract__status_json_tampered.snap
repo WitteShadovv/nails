@@ -1,0 +1,27 @@
+---
+source: nails-cli/tests/cli_contract.rs
+expression: redact_status(value)
+---
+{
+  "command": "status",
+  "data": {
+    "decoy_persistent": "[decoy_persistent]",
+    "hidden_root": "[hidden_root]",
+    "hidden_root_mounted": false,
+    "masked_units": [],
+    "nextroot_mounted": false,
+    "opsec_reminders": [],
+    "persona_mode": "shared-home",
+    "policy_mounts": [],
+    "posture": "unknown",
+    "remediation": "Run `nails verify` and check the hidden volume before activating again",
+    "session": "decoy",
+    "state": {
+      "kind": "unknown",
+      "reason": "state file is corrupt or has no integrity digest"
+    },
+    "state_source": "corrupt"
+  },
+  "ok": true,
+  "schema_version": 1
+}

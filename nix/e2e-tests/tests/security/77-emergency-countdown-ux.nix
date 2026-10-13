@@ -1,102 +1,110 @@
-# Test 77: Emergency Countdown UX
-# Self-checks: with subtest; no time.sleep sync; hard assertions only; meta.tags set; shared helpers only; forensic invariants preserved.
-
-{ self, ... }:
+# Test 77: Emergency countdown UX in the whole-root session
+#
+# In the hidden session:
+#   1. `nails emergency --countdown 30` prints an abortable countdown with the
+#      Ctrl+C hint; Ctrl+C (SIGINT) during it aborts the emergency: the
+#      machine stays in the hidden root, the hidden service keeps running and
+#      the backend stays open.
+#   2. `nails emergency --countdown 15` counts down 15, 14, ... 1 in order,
+#      prints "starting now!", and only then returns to the plain decoy: the
+#      soft-reboot back starts at least 15 s after the trigger. Its stderr is
+#      written to the hidden volume and read back after reopening it.
+#   3. The default `nails emergency` prints no countdown and returns at once:
+#      its trigger-to-backdoor time is well below the countdown run's.
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
-  securityHelpers = import ./../../lib/security-helpers.nix;
 in
 {
   name = "emergency-countdown-ux";
   meta.tags = [ "security" ];
-
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
+  # Three activations and two emergency soft-reboots at about 15-30 s each.
+  globalTimeout = 1500;
 
   testScript = _: ''
-    def now():
-        import time
-
-        return time.time()
+    from nails_e2e import session
 
     ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.runDetachedCommandFn}
     ${testHelpers.readStatusJsonFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertNoOverlaysFn}
-    ${securityHelpers.capturedCommandFns}
+    ${testHelpers.canonicalActivateFn}
+
+    CONFIG = "/mnt/data/config/nails.toml"
+    COUNTDOWN = 15
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-
-    headless_config = "/run/nails-headless.yaml"
-    write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    write_headless_config(CONFIG)
 
-    with subtest("default emergency countdown is visible and ordered"):
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
 
-        prefix = "/run/nails-tests/emergency-countdown-default"
-        started_at = now()
-        result = run_shellless_transient_command(
-            prefix,
-            ["nails", "--config", headless_config, "emergency"],
-            unit_name="nails-emergency-countdown-default",
-            timeout=45,
+    def emergency_back(extra_args, err_file, label):
+        timings = session.follow_soft_reboot(
+            machine,
+            f"nails --config {CONFIG} emergency {extra_args} 2> {err_file}",
+            label,
         )
-        default_elapsed = now() - started_at
+        session.assert_decoy_root(machine)
+        machine.fail("systemctl is-active hidden-writer.service")
+        machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        return timings, machine.succeed(f"cat {err_file}")
 
-        assert result["rc"] == 0, result
-        assert result["systemd"].get("ExecMainCode") in ("exited", "0"), result
-        assert result["systemd"].get("ExecMainStatus") == "0", result
-        assert result["systemd"].get("Result") == "success", result
-        assert "Emergency deactivation complete" in result["stdout"], result
-        stderr = result["stderr"]
-        for marker in [
-            "Emergency deactivation in 3",
-            "Emergency deactivation in 2",
-            "Emergency deactivation in 1",
-            "Emergency deactivation starting now!",
-        ]:
-            assert marker in stderr, stderr
-        assert stderr.find("in 3") < stderr.find("in 2") < stderr.find("in 1") < stderr.find("starting now!"), stderr
-        assert default_elapsed >= 3.0, f"Countdown completed too quickly: {default_elapsed:.3f}s"
-        assert default_elapsed < 20.0, f"Countdown command took too long: {default_elapsed:.3f}s"
-        assert_no_overlays(["/home", "/etc"])
-        status = read_status_json(config_path=headless_config)
-        assert_status_state("inactive", payload=status)
 
-    with subtest("--no-countdown removes countdown text and delay"):
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
-
-        prefix = "/run/nails-tests/emergency-countdown-disabled"
-        started_at = now()
-        result = run_shellless_transient_command(
-            prefix,
-            ["nails", "--config", headless_config, "emergency", "--no-countdown"],
-            unit_name="nails-emergency-countdown-disabled",
-            timeout=30,
+    with subtest("Ctrl+C during the countdown aborts the emergency"):
+        canonical_activate(CONFIG, "--overlay-only", "activate-abort")
+        machine.succeed(
+            "systemctl reset-failed hidden-writer.service 2>/dev/null || true; "
+            + "systemd-run --unit hidden-writer --property=Type=exec "
+            + "sleep infinity"
         )
-        no_countdown_elapsed = now() - started_at
+        rc, out = machine.execute(
+            f"timeout -s INT -k 5 3 nails --config {CONFIG} emergency --countdown 30 2>&1"
+        )
+        assert rc == 124, f"the countdown did not run until interrupted (rc={rc}): {out}"
+        assert "Emergency in 30... (Ctrl+C to abort)" in out, out
+        assert "starting now!" not in out, out
+        session.assert_hidden_root(machine)
+        machine.succeed("systemctl is-active hidden-writer.service")
+        assert session.backend_open(machine), "the aborted emergency closed the backend"
+        status = read_status_json(config_path=CONFIG)
+        assert status["posture"] == "active", status
 
-        assert result["rc"] == 0, result
-        assert result["systemd"].get("ExecMainCode") in ("exited", "0"), result
-        assert result["systemd"].get("ExecMainStatus") == "0", result
-        assert result["systemd"].get("Result") == "success", result
-        assert "Emergency deactivation in " not in result["stderr"], result
-        assert "starting now!" not in result["stderr"], result
-        assert "Emergency deactivation complete" in result["stdout"], result
-        assert default_elapsed - no_countdown_elapsed >= 2.0, \
-            f"Expected --no-countdown to skip roughly three seconds (default={default_elapsed:.3f}s, no-countdown={no_countdown_elapsed:.3f}s)"
-        assert no_countdown_elapsed < 12.0, f"--no-countdown command took too long: {no_countdown_elapsed:.3f}s"
-        assert_no_overlays(["/home", "/etc"])
-        status = read_status_json(config_path=headless_config)
-        assert_status_state("inactive", payload=status)
+    with subtest("--countdown counts down in order, then returns to the decoy"):
+        countdown_timings, stderr = emergency_back(
+            f"--countdown {COUNTDOWN}", "/mnt/data/countdown.err", "emergency-countdown"
+        )
+        markers = [f"Emergency in {n}... (Ctrl+C to abort)" for n in range(COUNTDOWN, 0, -1)]
+        markers.append("Emergency starting now!")
+        cursor = -1
+        for marker in markers:
+            position = stderr.find(marker, cursor + 1)
+            assert position > cursor, f"{marker!r} missing or out of order in: {stderr!r}"
+            cursor = position
+        # Nothing of the way back can start before the countdown has run out.
+        assert countdown_timings["trigger_to_backdoor"] >= COUNTDOWN, countdown_timings
+
+    with subtest("the default emergency is immediate, with no countdown"):
+        canonical_activate(CONFIG, "--overlay-only", "activate-immediate")
+        machine.succeed(
+            "systemctl reset-failed hidden-writer.service 2>/dev/null || true; "
+            + "systemd-run --unit hidden-writer --property=Type=exec "
+            + "sleep infinity"
+        )
+        immediate_timings, stderr = emergency_back(
+            "", "/mnt/data/immediate.err", "emergency-immediate"
+        )
+        assert "Emergency in " not in stderr, stderr
+        assert "starting now!" not in stderr, stderr
+        # The same switch without the countdown: it must save most of the
+        # countdown. The margin absorbs soft-reboot timing variance.
+        saved = (
+            countdown_timings["trigger_to_backdoor"]
+            - immediate_timings["trigger_to_backdoor"]
+        )
+        assert saved >= COUNTDOWN - 7, (
+            f"the default emergency was not immediate: countdown={countdown_timings}, "
+            f"immediate={immediate_timings}"
+        )
   '';
 }

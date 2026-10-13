@@ -1,8 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Report a vulnerability privately
+    url: https://github.com/WitteShadovv/nails/security/advisories/new
+    about: GitHub private vulnerability reporting is the primary channel. Never open a public issue for a vulnerability.
+  - name: Security policy, encrypted email and reporter OPSEC
+    url: https://github.com/WitteShadovv/nails/blob/main/SECURITY.md
+    about: Email security@nails.run with PGP as the fallback if you cannot use GitHub reporting.
   - name: Support and issue guidance
     url: https://github.com/WitteShadovv/nails/blob/main/SUPPORT.md
     about: Review alpha-stage support scope and issue guidance before opening a report.
-  - name: Private security reporting
-    url: https://github.com/WitteShadovv/nails/blob/main/SECURITY.md
-    about: Report suspected vulnerabilities privately by email; do not open a public issue.

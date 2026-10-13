@@ -1,0 +1,75 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - emergency
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Kill the hidden session at once and soft-reboot back to the decoy (or power off)
+
+Usage: nails emergency [OPTIONS]
+
+Options:
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+      --countdown <SECS>
+          Wait this many seconds before acting, printing a Ctrl+C abort hint.
+
+          Omitted (the default) acts immediately. The wait is never affected by `--quiet` or `--json`, so output flags never change the timing.
+
+      --poweroff
+          Power the machine off instead of returning to the decoy, whatever the outcome. RAM decays: the strongest answer to a seizure. Leave the machine off for a few minutes. Mutually exclusive with `--reboot`
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --reboot
+          Reboot fully (firmware and bootloader) instead of the soft-reboot back.
+
+          A warm reboot does not clear RAM. Prefer `--poweroff` when RAM residue matters. Mutually exclusive with `--poweroff`.
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+WHAT HAPPENS:
+  In the hidden session: the decoy root is mounted at /run/nextroot, the
+  hidden volume is marked for closing, the soft-reboot is enqueued and every
+  hidden program is killed at once. The machine returns to the plain decoy,
+  which shows its normal login screen; log in with the decoy password. With
+  --poweroff the machine powers off instead. On the decoy, emergency removes
+  what an interrupted activation left in /run.
+
+EXAMPLES:
+  nails emergency                     Kill the hidden session and return now
+  nails emergency --countdown 5       Wait 5s (Ctrl+C to abort), then act
+  nails emergency --poweroff          Kill the hidden session and power off
+  nails emergency --reboot            Kill the hidden session and reboot fully
+
+----- stderr -----

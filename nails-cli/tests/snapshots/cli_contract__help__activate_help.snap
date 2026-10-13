@@ -1,0 +1,85 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - activate
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Soft-reboot into the hidden session (whole-root overlay on the hidden volume)
+
+Usage: nails activate [OPTIONS]
+
+Options:
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+      --no-preflight
+          Skip pre-flight checks (DANGEROUS - expert use only)
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+  -y, --yes
+          Proceed without the confirmation prompt
+
+          Without this flag activation prompts on a terminal and refuses to run without one, because it logs you out.
+
+      --nixos-flake <FLAKE_REF>
+          NixOS: the hidden configuration as a flake reference <path>#<host>
+
+          The hidden system is built from it into the hidden root's store before the soft-reboot. Supports attribute selection after the `#`.
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+      --dry-run
+          Preview activation steps without making changes
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --overlay-only
+          NixOS: enter with the decoy's own system, without building the hidden configuration (the hidden /etc and home still apply)
+
+      --accept-persistent-decoy
+          Accept a persistent decoy posture instead of refusing activation
+
+          By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk. This flag accepts that risk (and overrides `accept_persistent_decoy` in `nails.toml`).
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+WHAT HAPPENS:
+  Activation builds one overlay over the whole decoy root at /run/nextroot,
+  with every change stored on the hidden volume, and soft-reboots into it
+  (systemd 254 or newer). Every program is closed and you are logged out; the
+  hidden session starts at its own login screen. Nothing of the hidden session
+  can reach the decoy disk: the ESP is read-only, other decoy filesystems are
+  overlaid, and decoy swap is never used.
+
+EXAMPLES:
+  nails activate                      Enter the hidden session
+  nails activate --overlay-only       Enter with the decoy's own system (NixOS)
+  nails activate --dry-run            Preview without changing anything
+
+----- stderr -----

@@ -1,58 +1,62 @@
 # Roadmap
 
-NAILS is in **alpha**. This roadmap summarizes the work most likely to matter to evaluators,
-operators, and contributors in the next stages of the project.
+NAILS is in **alpha**. This roadmap is a Now / Next / Later view of where the project is going. It
+is about direction, not dates.
 
 > [!NOTE]
 > Roadmap items describe current priorities, not release commitments. Ordering may change as the
-> project and its threat model validation evolve.
+> project and its threat-model validation evolve. Issue links point at open discussions; open a new
+> issue if the scenario you care about is not tracked.
 
-## Near-term priorities
+## Now
 
-### 1. Safer activation, deactivation, and recovery
+Work in progress for the current release line.
 
-- Reduce partial-failure cases during activation and teardown.
-- Tighten handling around mount loss, overlay conflicts, and state transitions.
-- Improve recovery behavior when an operation is interrupted or the operator must fall back to
-  `nails emergency`.
+- **Debian/Ubuntu support.** Debian 13 and Ubuntu 24.04+ are the first non-NixOS platform. The
+  platform layer detects the host, refuses unsupported layouts (ostree/rpm-ostree,
+  transactional-update and non-systemd init), and runs the same whole-root session, with the hidden
+  configuration in the upper's `/etc` instead of a NixOS build. Tracked in [#5](https://github.com/WitteShadovv/nails/issues/5) and
+  [#6](https://github.com/WitteShadovv/nails/issues/6).
+- **Safer activation, deactivation and recovery.** Reduce partial-failure cases during activation
+  and the way back, tighten handling of a lost hidden volume, and improve recovery when an
+  operation is interrupted or the operator falls back to `nails emergency` / `nails recover`.
+- **Stronger post-deactivation verification.** Widen `nails verify` coverage for common host-side
+  artifacts and keep its output explicit about what was and was not checked, without implying broader
+  guarantees than the threat model supports.
+- **Tighter public documentation.** Keep the top-level docs aligned with the shipped surface and
+  supported workflow, remove stale guidance, and make the limits of the tool clear to an external
+  reader.
 
-### 2. Stronger post-deactivation verification
+## Next
 
-- Expand `nails verify` coverage for common host-side artifacts.
-- Make verification output clearer about what was checked, what was not checked, and what remains
-  operator responsibility.
-- Keep verification behavior aligned with the documented threat model rather than implying broader guarantees.
+Planned once the current line is stable.
 
-### 3. Clearer hidden-volume setup and configuration
+- **Fedora backend.** A validated backend for the Fedora family, covering its usr-merge layout
+  and dnf/rpm package-drift scanning.
+- **Arch backend.** A validated backend for Arch and close derivatives, with pacman-based drift
+  scanning. The platform layer is built so a new distribution is a backend plus a detection-table
+  entry, not a rewrite.
+- **aarch64 support.** Build, test and release the binary for 64-bit ARM alongside x86-64, and
+  exercise it in the E2E suite.
 
-- Make initial setup less error-prone for the supported NixOS workflow.
-- Improve config validation and error reporting before high-impact operations run.
-- Clarify the assumptions NAILS makes about the mounted hidden backend and supported filesystem behavior.
+## Later / Research
 
-### 4. Higher confidence in lifecycle testing and releases
+Longer-horizon work and open questions, not yet scheduled.
 
-- Add more automated coverage around lifecycle transitions and failure handling.
-- Keep release artifacts reproducible and easier to audit.
-- Improve confidence that documented operator paths match what CI and release validation actually test.
-
-### 5. Tighter public documentation
-
-- Keep top-level docs aligned with the current public surface and supported workflow.
-- Remove stale guidance and avoid linking to material that is not part of the public project surface.
-- Make it easier for an external reader to understand what NAILS does, what it assumes, and where its limits are.
-
-## Longer-term work
-
-- Better coverage for advanced and edge-case operating scenarios.
-- Continued internal refactoring to keep orchestration logic testable and maintainable.
-- More lifecycle hardening around optional or higher-risk paths such as `/boot` overlays.
-- Continued performance and regression monitoring where it improves operator safety or reliability.
+- **Memory forensics.** Study and harden against RAM-resident traces of a hidden session.
+- **Cross-backend evaluation.** Extend the disk-image leak checks and the VM/container smoke tiers so
+  every supported distribution is exercised end-to-end, with adding a distribution being one
+  detection-table entry.
+- **OpenRC / ostree support.** Explore whether non-systemd init systems and image-based
+  (ostree/rpm-ostree) hosts can be supported safely rather than refused.
+- **Usability study.** Evaluate the operator workflow with real users to find where setup, recovery
+  and verification are error-prone.
 
 ## How to read this roadmap
 
-In general, NAILS prioritizes:
+In general, NAILS prioritizes, in order:
 
-1. Safety, security, and correctness
+1. Safety, security and correctness
 2. Reliability of core system workflows
 3. Clear operator experience and recovery paths
 4. Maintainability and testability
@@ -60,6 +64,6 @@ In general, NAILS prioritizes:
 
 ## Feedback
 
-If there is a capability, hardening effort, or workflow improvement you would like to see
-prioritized, open an issue or start a public discussion with the operating scenario and risk you are
-trying to address.
+If there is a capability, hardening effort or workflow improvement you would like prioritized, open
+an issue with the operating scenario and the risk you are trying to address. Issues are public, so
+describe the scenario in general terms rather than your actual setup.

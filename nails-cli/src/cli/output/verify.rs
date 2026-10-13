@@ -1,57 +1,214 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Output formatting for the verify command
 
-use nails_core::{StateFileStatus, VerifyResult};
+use nails_core::output::{Mark, Style, Tone};
+use nails_core::{
+    ExaminerReport, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus,
+};
+use serde::Serialize;
+
+use crate::cli::output::envelope::Envelope;
+use crate::cli::output::exit::ExitStatus;
+
+/// The `data` payload for `verify --json`.
+///
+/// Separate from `nails_core::VerifyResult` so the wire enums render in
+/// `snake_case` (`secure`, `warn`, `deep`) rather than the library's internal
+/// `PascalCase`.
+#[derive(Debug, Serialize)]
+pub struct VerifyData {
+    status: VerifyStatusJson,
+    findings: Vec<FindingJson>,
+    scan_depth: ScanDepthJson,
+    config_aware: bool,
+    config_paths_checked: usize,
+    checks_run: usize,
+    areas_not_checked: Vec<String>,
+    state_file_status: StateFileStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    examiner: Option<ExaminerJson>,
+}
+
+/// The examiner audit on the wire: setup traces grouped by conclusion.
+#[derive(Debug, Serialize)]
+struct ExaminerJson {
+    groups: Vec<ExaminerGroupJson>,
+    not_checked: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExaminerGroupJson {
+    conclusion: String,
+    findings: Vec<ExaminerFindingJson>,
+}
+
+#[derive(Debug, Serialize)]
+struct ExaminerFindingJson {
+    catalog_id: String,
+    severity: SeverityJson,
+    location: String,
+    evidence: String,
+}
+
+fn severity_json(severity: Severity) -> SeverityJson {
+    match severity {
+        Severity::Info => SeverityJson::Info,
+        Severity::Warn => SeverityJson::Warn,
+        Severity::Critical => SeverityJson::Critical,
+    }
+}
+
+impl ExaminerJson {
+    fn from_report(report: &ExaminerReport) -> Self {
+        Self {
+            groups: report
+                .groups
+                .iter()
+                .map(|group| ExaminerGroupJson {
+                    conclusion: group.conclusion.to_string(),
+                    findings: group
+                        .findings
+                        .iter()
+                        .map(|finding| ExaminerFindingJson {
+                            catalog_id: finding.catalog_id.to_string(),
+                            severity: severity_json(finding.severity),
+                            location: finding.location.clone(),
+                            evidence: finding.evidence.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+            not_checked: report.not_checked.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum VerifyStatusJson {
+    Secure,
+    Warning,
+    Critical,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ScanDepthJson {
+    Standard,
+    Deep,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum SeverityJson {
+    Info,
+    Warn,
+    Critical,
+}
+
+#[derive(Debug, Serialize)]
+struct FindingJson {
+    severity: SeverityJson,
+    category: String,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fix_guidance: Option<String>,
+}
+
+impl VerifyData {
+    /// Build the wire payload from a verification result.
+    pub fn from_result(result: &VerifyResult) -> Self {
+        Self {
+            status: match result.status {
+                VerifyStatus::Secure => VerifyStatusJson::Secure,
+                VerifyStatus::Warning => VerifyStatusJson::Warning,
+                VerifyStatus::Critical => VerifyStatusJson::Critical,
+            },
+            findings: result
+                .findings
+                .iter()
+                .map(|finding| FindingJson {
+                    severity: severity_json(finding.severity),
+                    category: finding.category.clone(),
+                    message: finding.message.clone(),
+                    fix_guidance: finding.fix_guidance.clone(),
+                })
+                .collect(),
+            scan_depth: match result.scan_depth {
+                ScanDepth::Standard => ScanDepthJson::Standard,
+                ScanDepth::Deep => ScanDepthJson::Deep,
+            },
+            config_aware: result.config_aware,
+            config_paths_checked: result.config_paths_checked,
+            checks_run: result.checks_run,
+            areas_not_checked: result.areas_not_checked.clone(),
+            state_file_status: result.state_file_status.clone(),
+            examiner: result.examiner.as_ref().map(ExaminerJson::from_report),
+        }
+    }
+}
+
+/// Print the verification result as one envelope on stdout.
+pub fn print_verify_json(result: &VerifyResult) {
+    Envelope::success("verify", VerifyData::from_result(result)).print();
+}
+
+/// The exit status for a verification outcome: a warning and a critical finding
+/// are distinguishable from each other and from an ordinary failure.
+pub fn verify_exit_status(status: VerifyStatus) -> ExitStatus {
+    match status {
+        VerifyStatus::Secure => ExitStatus::Ok,
+        VerifyStatus::Warning => ExitStatus::VerifyWarning,
+        VerifyStatus::Critical => ExitStatus::VerifyCritical,
+    }
+}
 
 /// Print verification results in human-readable format
 ///
-/// This function is pub(crate) to enable testing of the output formatting.
-pub fn print_verify_result(result: &VerifyResult) {
-    use colored::Colorize;
+/// Marks come from the shared table and colour/ASCII follow `style` (the
+/// stdout style from the resolved output settings).
+pub fn print_verify_result(result: &VerifyResult, style: Style) {
     use nails_core::{Severity, VerifyStatus};
 
-    // Print header
-    match result.status {
-        VerifyStatus::Secure => {
-            println!(
-                "{}",
-                "✓ SECURE: No traces found. System appears clean."
-                    .green()
-                    .bold()
-            );
-        }
-        VerifyStatus::Warning => {
-            println!(
-                "{}",
-                format!(
-                    "⚠ WARNING: Found {} potential issues",
-                    result.findings.len()
-                )
-                .yellow()
-                .bold()
-            );
-        }
-        VerifyStatus::Critical => {
-            println!(
-                "{}",
-                format!(
-                    "✗ CRITICAL: Found {} artifacts requiring attention",
-                    result.findings.len()
-                )
-                .red()
-                .bold()
-            );
-        }
-    }
+    let depth = match result.scan_depth {
+        nails_core::ScanDepth::Standard => "standard",
+        nails_core::ScanDepth::Deep => "deep",
+    };
+    let header = match result.status {
+        VerifyStatus::Secure => style.paint_bold(
+            format_args!(
+                "{} No known artifacts found ({} checks, {depth} scan). This is not proof of absence.",
+                style.glyph(Mark::Pass),
+                result.checks_run,
+            ),
+            Tone::Green,
+        ),
+        VerifyStatus::Warning => style.paint_bold(
+            format_args!(
+                "{} WARNING: Found {} potential issues",
+                style.glyph(Mark::Warn),
+                result.findings.len()
+            ),
+            Tone::Yellow,
+        ),
+        VerifyStatus::Critical => style.paint_bold(
+            format_args!(
+                "{} CRITICAL: Found {} artifacts requiring attention",
+                style.glyph(Mark::Fail),
+                result.findings.len()
+            ),
+            Tone::Red,
+        ),
+    };
+    println!("{header}");
 
-    // Print scan depth info
-    match result.scan_depth {
-        nails_core::ScanDepth::Deep => {
-            println!(
-                "{}",
-                "Deep scan enabled - comprehensive validation".dimmed()
-            );
-        }
-        nails_core::ScanDepth::Standard => {}
+    if let nails_core::ScanDepth::Deep = result.scan_depth {
+        println!(
+            "{}",
+            style.paint("Deep scan enabled - comprehensive validation", Tone::Dim)
+        );
     }
 
     if let Some(summary) = config_scan_summary(result) {
@@ -62,24 +219,77 @@ pub fn print_verify_result(result: &VerifyResult) {
         println!("{}", summary);
     }
 
-    // Print findings
     if !result.findings.is_empty() {
         println!();
         for finding in &result.findings {
-            let severity_str = match finding.severity {
-                Severity::Info => "[INFO]".blue(),
-                Severity::Warn => "[WARN]".yellow(),
-                Severity::Critical => "[CRIT]".red(),
+            let severity = match finding.severity {
+                Severity::Info => style.paint("[INFO]", Tone::Blue),
+                Severity::Warn => style.paint("[WARN]", Tone::Yellow),
+                Severity::Critical => style.paint("[CRIT]", Tone::Red),
             };
 
-            println!(
-                "{} [{}] {}",
-                severity_str, finding.category, finding.message
-            );
+            println!("{} [{}] {}", severity, finding.category, finding.message);
 
             if let Some(ref guidance) = finding.fix_guidance {
-                println!("  → {}", guidance.dimmed());
+                println!(
+                    "  {} {}",
+                    style.glyph(Mark::Arrow),
+                    style.paint(guidance, Tone::Dim)
+                );
             }
+        }
+    }
+
+    if let Some(report) = &result.examiner {
+        print_examiner_report(report, style);
+    }
+
+    if !result.areas_not_checked.is_empty() {
+        println!();
+        println!("{}", style.paint("Not checked by this run:", Tone::Dim));
+        for area in &result.areas_not_checked {
+            println!(
+                "  {} {}",
+                style.glyph(Mark::Arrow),
+                style.paint(area, Tone::Dim)
+            );
+        }
+    }
+}
+
+/// Print the examiner audit: one heading per conclusion, then its traces.
+fn print_examiner_report(report: &ExaminerReport, style: Style) {
+    println!();
+    if report.groups.is_empty() {
+        println!(
+            "{}",
+            style.marked(
+                Mark::Pass,
+                "Examiner's view: no setup traces found (report only; nothing was changed)"
+            )
+        );
+        return;
+    }
+    println!(
+        "{}",
+        style.paint_bold(
+            format_args!(
+                "Examiner's view: {} setup trace(s) (report only; nothing was changed)",
+                report.finding_count()
+            ),
+            Tone::Yellow,
+        )
+    );
+    for group in &report.groups {
+        println!("  {} {}", style.glyph(Mark::Warn), group.conclusion);
+        for finding in &group.findings {
+            println!(
+                "    {} {}: {} [{}]",
+                style.glyph(Mark::Arrow),
+                finding.location,
+                finding.evidence,
+                finding.catalog_id
+            );
         }
     }
 }
@@ -123,7 +333,7 @@ mod tests {
         // Test that secure status prints correctly
         let result = VerifyResult::new(VerifyStatus::Secure, vec![], ScanDepth::Standard);
         // This will print to stdout - we're testing it doesn't panic and covers the code path
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -134,7 +344,7 @@ mod tests {
                 .with_fix_guidance("Delete the file"),
         ];
         let result = VerifyResult::new(VerifyStatus::Warning, findings, ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -145,14 +355,14 @@ mod tests {
             Finding::new(Severity::Warn, "file", "Artifact file found"),
         ];
         let result = VerifyResult::new(VerifyStatus::Critical, findings, ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
     fn test_print_verify_result_deep_scan() {
         // Test deep scan depth message
         let result = VerifyResult::new(VerifyStatus::Secure, vec![], ScanDepth::Deep);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -166,7 +376,7 @@ mod tests {
                 .with_fix_guidance("Run nails deactivate"),
         ];
         let result = VerifyResult::new(VerifyStatus::Critical, findings, ScanDepth::Deep);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -178,14 +388,14 @@ mod tests {
             "RAM may retain data briefly",
         )];
         let result = VerifyResult::new(VerifyStatus::Secure, findings, ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
     fn test_print_verify_result_empty_findings() {
         // Test with empty findings array
         let result = VerifyResult::new(VerifyStatus::Secure, vec![], ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -197,14 +407,14 @@ mod tests {
             Finding::new(Severity::Warn, "file", "Artifact 3"),
         ];
         let result = VerifyResult::new(VerifyStatus::Warning, findings, ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
     fn test_print_verify_result_standard_scan_no_depth_message() {
         // Test that standard scan doesn't print depth message
         let result = VerifyResult::new(VerifyStatus::Secure, vec![], ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -212,7 +422,7 @@ mod tests {
         // Edge case: warning status with exactly 1 finding
         let findings = vec![Finding::new(Severity::Warn, "test", "Single warning")];
         let result = VerifyResult::new(VerifyStatus::Warning, findings, ScanDepth::Standard);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]
@@ -229,7 +439,7 @@ mod tests {
             })
             .collect();
         let result = VerifyResult::new(VerifyStatus::Critical, findings, ScanDepth::Deep);
-        print_verify_result(&result);
+        print_verify_result(&result, Style::default());
     }
 
     #[test]

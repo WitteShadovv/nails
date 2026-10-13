@@ -1,411 +1,311 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Activate command handler
 //!
-//! This module contains the standalone handler for the `activate` command, which:
-//! - Loads configuration with CLI overrides
-//! - Runs pre-flight checks (unless skipped)
-//! - Optionally detaches to a background service when killing GUI sessions
-//! - Activates the hidden NixOS environment (mounts overlayfs, switches profiles)
-//! - Configures shell instrumentation for the active state
-//!
-//! The handler is extracted from the main CLI dispatch logic to improve modularity
-//! and testability.
+//! Activation runs on the decoy and prepares the whole-root session: the
+//! pre-flight checks, the hidden NixOS configuration (built into the next
+//! root's store), the overlay at `/run/nextroot` and the armed plan. It prints
+//! its result and then enqueues the soft-reboot, which stops every program of
+//! the decoy and starts the hidden userspace inside the overlay: the operator
+//! is logged out and logs in again at the hidden session's login screen. As its
+//! last step it SIGKILLs the decoy's interactive shells, so none of them writes
+//! the activation command to its history file on the decoy disk.
 
-mod dry_run;
+use crate::cli::args::ActivateArgs;
+use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::{self, ActivateResult, ExitStatus, OutputSettings};
 
-use crate::cli::detach::maybe_detach_for_session_kill;
-use crate::cli::output;
-
-use nails_core::{
-    ActivateOptions, CliOverrides, Config, Filesystem, NailsManager, NixOSBuilder, PreFlightCheck,
-    RealFilesystem, Verbosity,
-};
-use std::sync::{Arc, Mutex};
+use nails_core::manager::{EnterOptions, EnterOutcome};
+use nails_core::session::{RealEntryHost, RealTargetHost};
+use nails_core::{CliOverrides, NailsError, Verbosity};
+use std::io::IsTerminal;
 use std::time::Instant;
 
-fn suspicious_check_name() -> String {
-    <nails_core::SuspiciousNailsReferenceCheck as nails_core::PreFlightCheck<
-        nails_core::RealFilesystem,
-    >>::name(&nails_core::SuspiciousNailsReferenceCheck)
-    .to_string()
+/// Run the read-only decoy residue scan and record a pre-mount baseline on the
+/// hidden volume.
+///
+/// This is a best-effort snapshot taken before any overlay is mounted: it only
+/// reads the decoy and writes its report to `<hidden-root>/reports/`, which is
+/// torn down with the session. A scan or write failure is logged and activation
+/// continues, because the baseline is a convenience for later comparison, not a
+/// precondition for activating.
+fn write_activation_residue_baseline(
+    manager: &nails_core::NailsManager<nails_core::RealFilesystem>,
+    json: bool,
+    settings: &OutputSettings,
+) {
+    use nails_core::{RealFilesystem, StateFileStatus, Verifier, VerifyStatus};
+
+    let config = manager.config().clone();
+    let hidden_root = config.hidden_volume_root.clone();
+    if hidden_root.as_os_str().is_empty() {
+        return;
+    }
+
+    // Pre-activation: the system is Inactive, so the scan sees the decoy as it is
+    // before overlays. Standard depth keeps activation responsive; the scanners
+    // and artifact checks run at either depth. The scan is scoped to the decoy:
+    // the hidden volume is already attached for the activation about to start, so
+    // its own mount, on-volume files and backing device are deliberately attached,
+    // not residue, and must not show up as findings in the decoy baseline.
+    let verifier = Verifier::with_config(RealFilesystem, config, None, StateFileStatus::NotChecked)
+        .with_runtime_env(manager.runtime_env())
+        .scoped_to_decoy();
+    let result = match verifier.run(false) {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "pre-activation decoy residue scan failed; continuing without a baseline report"
+            );
+            return;
+        }
+    };
+
+    let timestamp = chrono::Utc::now().to_rfc3339();
+    match nails_core::write_activation_residue_report(
+        &RealFilesystem,
+        &hidden_root,
+        &result,
+        &timestamp,
+    ) {
+        Ok(summary) => {
+            let status = match summary.status {
+                VerifyStatus::Secure => "clean",
+                VerifyStatus::Warning => "warnings",
+                VerifyStatus::Critical => "critical findings",
+            };
+            if json {
+                tracing::debug!(
+                    path = %summary.path.display(),
+                    "wrote pre-activation decoy residue report"
+                );
+            } else if settings.verbosity >= Verbosity::Normal {
+                println!(
+                    "Pre-activation decoy residue baseline: {status} ({} finding{}) -> {}",
+                    summary.finding_count,
+                    if summary.finding_count == 1 { "" } else { "s" },
+                    summary.path.display()
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "could not write pre-activation decoy residue report; continuing"
+            );
+        }
+    }
 }
 
-/// Execute the activate command
-///
-/// # Parameters
-///
-/// - `no_preflight`: Skip pre-flight checks (DANGEROUS - expert use only)
-/// - `quiet`: Quiet mode, only show final result
-/// - `verbose`: Verbosity level (0 = normal, 1 = verbose, 2+ = debug)
-/// - `json`: Output results in JSON format
-/// - `no_color`: Disable colored output
-/// - `plain`: ASCII-only output (no Unicode symbols)
-/// - `no_clear_history`: Skip clearing shell history on deactivation
-/// - `no_kill_session`: Do not kill graphical session (interactive mode)
-/// - `accept_pivot_risks`: Accept pivot mount fallback for any volume (degraded security)
-/// - `interactive`: Prompt for confirmations instead of auto-accepting
-/// - `nixos_flake`: Optional NixOS flake reference (e.g., /etc/nixos#hostname)
-/// - `config_override`: Optional path to configuration file
-/// - `check_real_ops`: Safety guard callback to verify real operations are allowed
+/// Execute the activate command.
 ///
 /// # Returns
 ///
-/// This function never returns normally - it always exits the process with an
-/// appropriate exit code (0 for success, 1 for activation failure, 2 for errors).
-#[allow(clippy::too_many_arguments)]
+/// [`ExitStatus::Ok`] once the soft-reboot is enqueued (or the session was
+/// already active), [`ExitStatus::SuccessWithWarnings`] when it is enqueued
+/// with warnings, [`ExitStatus::PreflightRefused`] when a pre-flight check
+/// refuses, [`ExitStatus::Unsupported`] on an unsupported host,
+/// [`ExitStatus::Usage`] without confirmation off a terminal,
+/// [`ExitStatus::InvalidState`] when the state file cannot be trusted,
+/// [`ExitStatus::Config`] for a bad configuration and [`ExitStatus::Failed`]
+/// otherwise.
 pub fn execute(
-    no_preflight: bool,
-    quiet: bool,
-    verbose: u8,
-    json: bool,
-    no_color: bool,
-    plain: bool,
-    no_clear_history: bool,
-    no_kill_session: bool,
-    accept_pivot_risks: bool,
-    interactive: bool,
-    nixos_flake: Option<String>,
-    dry_run: bool,
-    overlay_only: bool,
-    config_override: Option<std::path::PathBuf>,
-    check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
-) -> ! {
-    // Configure color output (must be done before any colored output)
-    // Story 14.7: Integrate output module with NO_COLOR/--no-color/--plain support
-    // Note: set_plain_mode() already handles colored::control::set_override()
-    nails_core::set_plain_mode(plain);
-    nails_core::set_color_enabled(
-        !(plain
-            || no_color
-            || std::env::var("NO_COLOR").is_ok()
-            || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()),
-    );
-
-    // Convert CLI flags to Verbosity enum
-    let verbosity = if quiet {
-        Verbosity::Quiet
-    } else {
-        match verbose {
-            0 => Verbosity::Normal,
-            1 => Verbosity::Verbose,
-            _ => Verbosity::Debug, // 2+ maps to Debug
-        }
-    };
-
-    // Apply defaults: kill_session, yes, and no_pivot are enabled by default
-    // Users must explicitly disable them with --no-kill-session, --interactive, or --accept-pivot-risks
-    let kill_session = !no_kill_session; // Default true unless explicitly disabled
-    let yes = !interactive; // Default true unless explicitly disabled
-    let no_pivot = !accept_pivot_risks; // Default true unless explicitly disabled
-
-    // Build ActivateOptions from CLI flags
-    let mut options = ActivateOptions {
-        kill_session,
-        accept_pivot_risks,
-        no_pivot,
-        yes,
-        quiet,
-        verbosity: verbose,
-        json,
-        no_color,
-        overlay_only,
-        skip_process_detection_override: None, // Use default test behavior
-        session_kill_confirmed: false,
-        pre_activation_cleanup: true, // Default to running pre-activation cleanup
-    };
-
-    if options.kill_session {
-        if !options.yes {
-            eprintln!("Error: --kill-session is non-interactive after detach; use --yes");
-            std::process::exit(2);
-        }
-        if !options.accept_pivot_risks && !options.no_pivot {
-            eprintln!(
-                "Error: --kill-session requires --accept-pivot-risks or --no-pivot to avoid prompts"
-            );
-            std::process::exit(2);
-        }
+    settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
+    args: &ActivateArgs,
+    config_override: Option<&std::path::Path>,
+) -> ExitStatus {
+    let json = settings.is_json();
+    if args.dry_run {
+        let check_args = crate::cli::args::CheckArgs {
+            overlay_only: args.overlay_only,
+            nixos_flake: args.nixos_flake.clone(),
+            accept_persistent_decoy: args.accept_persistent_decoy,
+        };
+        return super::check::execute(settings, env, &check_args, config_override);
     }
 
-    // Validate options (check for conflicting flags)
-    if let Err(e) = options.validate() {
-        eprintln!("Error: {}", e);
-        std::process::exit(2);
-    }
-
-    // Build CLI overrides from parsed arguments (Story 10.3)
-    let cli_overrides = CliOverrides {
-        preflight_checks: if no_preflight { Some(false) } else { None },
-        clear_history: if no_clear_history { Some(false) } else { None },
-        verbosity: if quiet {
-            Some("quiet".to_string())
-        } else if verbose >= 2 {
-            Some("debug".to_string())
-        } else if verbose == 1 {
-            Some("info".to_string()) // AC4: -v maps to "info"
-        } else {
-            None // Use config file or default
-        },
-        color_output: if no_color { Some(false) } else { None },
-        nixos_flake,
-        ..Default::default()
+    let mut loaded = match super::load_config_or_report(config_override, "activate", json) {
+        Ok(loaded) => loaded,
+        Err(status) => return status,
     };
+    loaded.apply_cli_overrides(&CliOverrides {
+        nixos_flake: args.nixos_flake.clone(),
+    });
+    let config = loaded.into_config();
 
-    // Load config with CLI overrides (Story 10.3, updated in Story 14.1)
-    // P0-04: Fail closed on explicit --config path errors
-    let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-
-    let config = if config_override.is_some() {
-        // Explicit --config: strict load, fail on missing/unreadable
-        Config::load(&config_path).unwrap_or_else(|e| {
-            eprintln!("Error loading config from {}: {}", config_path.display(), e);
-            std::process::exit(2);
-        })
-    } else {
-        // Implicit discovery: fall back to defaults when missing
-        Config::from_file_and_cli(&config_path, &cli_overrides).unwrap_or_else(|e| {
-            eprintln!("Error loading config: {}", e);
-            std::process::exit(2);
-        })
-    };
-
-    // Apply CLI overrides for explicit --config path too
-    let mut config = {
-        let mut c = config;
-        c.apply_cli_overrides(&cli_overrides);
-        c
-    };
-    config.loaded_config_path = config_override
-        .clone()
-        .or_else(|| Some(config_path.clone()));
-
-    // TEST SAFETY GUARD (Layer 1): Check if real operations are allowed
-    if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
-        eprintln!("{}", msg);
-        std::process::exit(2);
-    }
-
-    // --dry-run: preview activation steps without making changes
-    if dry_run {
-        dry_run::execute_dry_run(&config, no_preflight, overlay_only, no_kill_session, plain);
+    if !args.yes && !std::io::stdin().is_terminal() {
+        return report_error(
+            json,
+            "activate",
+            ExitStatus::Usage,
+            ErrorBody::new(
+                "needs_confirmation",
+                "activate logs you out and needs confirmation, but stdin is not a terminal; pass -y/--yes to run non-interactively",
+            ),
+        );
     }
 
     let state_path = config.state_file_path.clone();
+    let mut manager =
+        super::build_nixos_manager(config, state_path.clone(), args.overlay_only, env);
+    manager.set_verbosity(settings.verbosity);
 
-    // Create NailsManager with real filesystem (enable NixOS switching when flake is present)
-    let filesystem = RealFilesystem;
-    let nails_profile = std::path::PathBuf::from("/nix/var/nix/profiles/nails-system");
+    if manager.session_view().is_hidden() {
+        print_result(settings, &ActivateResult::AlreadyActive, 0.0);
+        return ExitStatus::Ok;
+    }
 
-    let manager = if overlay_only {
-        // --overlay-only: skip NixOS builder creation entirely
-        tracing::info!("Overlay-only mode: skipping NixOS profile switch");
-        Arc::new(Mutex::new(NailsManager::new(
-            filesystem, config, state_path,
-        )))
-    } else if let Some(ref flake_ref) = config.nixos_flake {
-        // Explicit flake reference from --flake flag or config nixos_flake
-        // Skip auto-discovery and use the provided reference directly
-        tracing::info!(
-            flake_ref = %flake_ref,
-            "Using explicit NixOS flake reference"
-        );
-        let builder = NixOSBuilder::new_with_flake_ref(flake_ref.clone(), nails_profile);
-        Arc::new(Mutex::new(NailsManager::with_nixos(
-            filesystem, config, state_path, builder,
-        )))
-    } else {
-        // Auto-discovery cascade: hidden volume → /etc/nixos → legacy → no NixOS
-        let nixos_flake_dir = config.hidden_volume_root.join("nixos");
-        let nixos_flake = nixos_flake_dir.join("flake.nix");
-        let etc_flake = std::path::PathBuf::from("/etc/nixos/flake.nix");
-        let legacy_config = std::path::PathBuf::from("/etc/nixos/configuration.nix");
-        let system_profile = std::path::PathBuf::from("/nix/var/nix/profiles/system");
-        if nixos_flake.exists() {
-            let builder = NixOSBuilder::new(nixos_flake_dir, nails_profile);
-            Arc::new(Mutex::new(NailsManager::with_nixos(
-                filesystem, config, state_path, builder,
-            )))
-        } else if etc_flake.exists() {
-            let builder = NixOSBuilder::new(std::path::PathBuf::from("/etc/nixos"), nails_profile);
-            Arc::new(Mutex::new(NailsManager::with_nixos(
-                filesystem, config, state_path, builder,
-            )))
-        } else if legacy_config.exists() || system_profile.exists() {
-            let builder = NixOSBuilder::new_legacy(legacy_config, nails_profile);
-            Arc::new(Mutex::new(NailsManager::with_nixos(
-                filesystem, config, state_path, builder,
-            )))
-        } else {
-            Arc::new(Mutex::new(NailsManager::new(
-                filesystem, config, state_path,
-            )))
+    match nails_core::HiddenRoot::verify_attached(
+        manager.filesystem(),
+        &manager.config().hidden_volume_root,
+        false,
+    ) {
+        Ok(nails_core::AttachState::Attached) => {}
+        Ok(nails_core::AttachState::Unattached(reason)) => {
+            return report_error(
+                json,
+                "activate",
+                ExitStatus::PreflightRefused,
+                ErrorBody::new("preflight", format!("hidden-root: {reason}")),
+            );
         }
+        Err(e) => {
+            return report_error(
+                json,
+                "activate",
+                ExitStatus::PreflightRefused,
+                ErrorBody::new("preflight", e.to_string()),
+            );
+        }
+    }
+
+    let _state_lock = match super::acquire_state_lock_or_report(&state_path, "activate", json) {
+        Ok(lock) => lock,
+        Err(status) => return status,
     };
-
-    // Set verbosity level
-    super::lock_manager_or_exit(&manager, "setting activation verbosity").set_verbosity(verbosity);
-
-    // If kill-session, run preflight before detaching so output stays visible.
-    let mut skip_preflight = no_preflight;
-    if options.kill_session && !no_preflight {
-        if verbosity >= Verbosity::Normal {
-            tracing::info!("Running pre-flight checks before session kill...");
-        }
-
-        {
-            let mgr = super::lock_manager_or_exit(
-                &manager,
-                "running read-only NixOS preflight before detach",
-            );
-            if let Err(e) = mgr.run_read_only_nixos_preflight(overlay_only) {
-                eprintln!("Error: {}", e);
-                std::process::exit(2);
-            }
-
-            let suspicious_check = nails_core::SuspiciousNailsReferenceCheck;
-            match suspicious_check.run(mgr.filesystem()) {
-                Ok(nails_core::CheckResult::Pass(_)) | Ok(nails_core::CheckResult::Warn(_)) => {}
-                Ok(nails_core::CheckResult::Fail(message)) => {
-                    eprintln!(
-                        "Error: {}",
-                        nails_core::NailsError::PreFlightCheckFailed(vec![(
-                            suspicious_check_name(),
-                            message,
-                        )])
-                    );
-                    std::process::exit(2);
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(2);
-                }
-            }
-        }
-
-        // Probe symlink support before staging (catches FAT32/exFAT early)
-        {
-            let mgr =
-                super::lock_manager_or_exit(&manager, "probing hidden volume symlink support");
-            match mgr
-                .filesystem()
-                .supports_symlinks(&mgr.config().hidden_volume_root)
-            {
-                Ok(false) => {
-                    let msg = format!(
-                        "Filesystem at {} does not support symbolic links. \
-                         The hidden volume must be formatted with a Linux filesystem (e.g. ext4). \
-                         FAT32 and exFAT do not support symlinks.",
-                        mgr.config().hidden_volume_root.display()
-                    );
-                    eprintln!("Error: {}", msg);
-                    std::process::exit(2);
-                }
-                Err(e) => {
-                    tracing::warn!(error = %e, "Could not probe symlink support; continuing");
-                }
-                Ok(true) => {}
-            }
-        }
-
-        {
-            let mgr = super::lock_manager_or_exit(
-                &manager,
-                "staging hidden config symlink before detach-safe pre-flight checks",
-            );
-            if let Err(e) = nails_core::stage_hidden_config_symlink(
-                mgr.filesystem(),
-                &mgr.config().hidden_volume_root,
-            ) {
-                tracing::error!(
-                    error = %e,
-                    "Failed to stage hidden config symlink before detach-safe pre-flight checks"
-                );
-                eprintln!("Error: {}", e);
-                std::process::exit(2);
-            }
-        }
-
-        {
-            let mgr = super::lock_manager_or_exit(&manager, "running activation pre-flight checks");
-            if let Err(e) = mgr.run_preflight_checks(overlay_only) {
-                eprintln!("Error: {}", e);
-                std::process::exit(2);
-            }
-        }
-
-        skip_preflight = true;
-    }
-
-    // Detach if we're about to kill the GUI session so the worker survives it
-    let argv: Vec<std::ffi::OsString> = std::env::args_os().collect();
-    let mut session_ctx = None;
-    if options.kill_session
-        && let Ok(ctx) = nails_core::detect_session_context()
-        && ctx.kind == nails_core::SessionKind::GraphicalUser
+    if let Ok((_, outcome)) = manager.current_state_with_outcome()
+        && outcome.is_unknown()
     {
-        session_ctx = Some(ctx);
+        return report_error(
+            json,
+            "activate",
+            ExitStatus::InvalidState,
+            ErrorBody::new(
+                "invalid_state",
+                "refusing to activate: the state file is corrupt or unreadable, so the \
+                 current state is unknown. Run 'nails verify' and recover the hidden volume first.",
+            ),
+        );
     }
 
-    if options.kill_session
-        && !options.session_kill_confirmed
-        && let Some(ref ctx) = session_ctx
-    {
-        if let Err(e) = nails_core::prompt_session_kill_confirmation(ctx, options.yes) {
-            eprintln!("Error: {}", e);
-            std::process::exit(2);
-        }
-        options.session_kill_confirmed = true;
+    if !args.yes && !confirm_logout(settings) {
+        return report_error(
+            json,
+            "activate",
+            ExitStatus::Failed,
+            ErrorBody::new("cancelled", "activation cancelled; nothing changed"),
+        );
     }
 
-    if let Err(e) = maybe_detach_for_session_kill(kill_session, &argv, session_ctx.as_ref()) {
-        eprintln!("Error: {}", e);
-        std::process::exit(2);
-    }
+    write_activation_residue_baseline(&manager, json, settings);
 
-    // Run activation with options and measure duration
+    if json {
+        output::print_activate_progress("preparing");
+    } else if settings.verbosity >= Verbosity::Normal {
+        crate::cli::output::eprintln_tolerating_broken_pipe(
+            "Preparing the hidden session (pre-flight, hidden system, next root)...",
+        );
+    }
+    let options = EnterOptions {
+        skip_preflight: args.no_preflight,
+        overlay_only: args.overlay_only,
+        accept_persistent_decoy: args.accept_persistent_decoy,
+        binary: std::env::current_exe().unwrap_or_default(),
+    };
     let start = Instant::now();
-    let result = NailsManager::activate_with_options(manager.clone(), options, skip_preflight);
+    let result = manager.enter_session(&options, &RealEntryHost);
     let duration = start.elapsed().as_secs_f64();
 
-    // If activation succeeded, set up shell instrumentation (non-critical)
-    let shell_setup_result = if result.is_ok() {
-        use nails_core::ShellInstrumentation;
-        match manager.lock() {
-            Ok(mgr) => {
-                let shell =
-                    ShellInstrumentation::new(nails_core::RealFilesystem, mgr.config().clone());
-                // shell_setup() never returns Err, only Ok(Some) or Ok(None)
-                shell.shell_setup().ok().flatten()
-            }
-            Err(error) => {
-                tracing::warn!(
-                    error = %error,
-                    "Skipping shell instrumentation because manager lock was poisoned"
-                );
-                None
-            }
+    let entry = match result {
+        Ok(EnterOutcome::AlreadyActive) => {
+            print_result(settings, &ActivateResult::AlreadyActive, duration);
+            return ExitStatus::Ok;
         }
-    } else {
-        None
+        Ok(EnterOutcome::Prepared(entry)) => entry,
+        Err(error) => {
+            print_result(settings, &ActivateResult::Failed(&error), duration);
+            return match error {
+                NailsError::PreFlightCheckFailed(_) => ExitStatus::PreflightRefused,
+                NailsError::UnsupportedPlatform { .. } => ExitStatus::Unsupported,
+                NailsError::Cancelled => ExitStatus::Cancelled,
+                _ => ExitStatus::Failed,
+            };
+        }
     };
+    print_result(settings, &ActivateResult::Entering(&entry), duration);
+    crate::cli::output::flush_stdio();
 
-    // Output results based on flags
-    if json {
-        output::print_activate_json(&result, duration, &manager, shell_setup_result.as_ref());
-    } else {
-        output::print_activate_human(
-            &result,
-            duration,
-            &manager,
-            shell_setup_result.as_ref(),
-            quiet,
+    // The decoy's shells write their history when they exit, bash on the
+    // SIGHUP that stopping their login session sends: the soft-reboot would
+    // do that the moment it is enqueued. SIGKILL them first, ours last, so
+    // the activation command never reaches a history file on the decoy disk.
+    // Everything above is already on the terminal; a failure below still
+    // reaches the log.
+    nails_teardown::shells::kill_all_interactive_shells(&[]);
+    let host = RealTargetHost::for_plan(Some(&entry.plan));
+    if let Err(error) = manager.trigger_entry(&host, &RealEntryHost) {
+        return report_error(
+            json,
+            "activate",
+            ExitStatus::Failed,
+            ErrorBody::new("soft_reboot", error.to_string())
+                .with_hint("the next root was removed again; nothing changed"),
         );
     }
-
-    // Return appropriate exit code
-    match result {
-        Ok(_) => std::process::exit(0),
-        Err(_) => std::process::exit(1),
+    drop(_state_lock);
+    if entry.warnings.is_empty() {
+        ExitStatus::Ok
+    } else {
+        ExitStatus::SuccessWithWarnings
     }
+}
+
+fn print_result(settings: &OutputSettings, result: &ActivateResult<'_>, duration: f64) {
+    if settings.is_json() {
+        output::print_activate_json_result(result, duration);
+    } else {
+        output::print_activate_human(result, duration, settings);
+    }
+}
+
+/// Ask on the terminal before logging the operator out.
+fn confirm_logout(settings: &OutputSettings) -> bool {
+    use nails_core::output::Mark;
+    use std::io::{BufRead, Write};
+    let style = settings.stderr_style();
+    let mut stderr = std::io::stderr();
+    let _ = writeln!(
+        stderr,
+        "{}",
+        style.marked(
+            Mark::Warn,
+            "Activation soft-reboots into the hidden session."
+        )
+    );
+    let _ = writeln!(
+        stderr,
+        "    Every program closes and you are logged out; unsaved work is lost."
+    );
+    let _ = write!(stderr, "    Continue? [y/N]: ");
+    let _ = stderr.flush();
+    let mut input = String::new();
+    if std::io::stdin().lock().read_line(&mut input).is_err() {
+        return false;
+    }
+    matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 #[cfg(test)]

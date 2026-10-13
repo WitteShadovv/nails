@@ -1,250 +1,393 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Emergency command handler
+//!
+//! The hot path runs in `nails-teardown` (`whole_root::emergency`), normally
+//! from `main` before the CLI is initialised (see `cli::early`). In the hidden
+//! session it prepares the way back, marks the hidden backend for closing,
+//! enqueues the soft-reboot to the plain decoy (or the power action) and kills
+//! every hidden process at once. The machine ends at the decoy's own login
+//! screen, where the operator logs in with the decoy password; with
+//! `--poweroff` it powers off. On the decoy it removes what an interrupted
+//! activation left in `/run`.
+//!
+//! This handler only reports: it prints the result and the timed phases and
+//! logs them, best-effort, because the soft-reboot it enqueued is already
+//! stopping userspace (the terminal may be gone by now). It then records the
+//! state as inactive while the hidden volume is still reachable.
 
-use std::path::PathBuf;
+use nails_core::output::Mark;
+use nails_teardown::whole_root::emergency::{self, Finish, HotReport, Side};
+use serde::Serialize;
 
-/// Execute the emergency command
-///
-/// Rapid deactivation with countdown.
-///
-/// # Arguments
-///
-/// * `config_override` - Optional config file path override
-/// * `no_countdown` - Skip the 3-second countdown (proceed immediately)
-/// * `quiet` - Suppress output except final result
-/// * `verbose` - Verbosity level (0 = normal, 1 = verbose, 2+ = debug)
-/// * `json` - Output results in JSON format
-/// * `no_color` - Disable colored output
-/// * `plain` - ASCII-only output (no Unicode symbols)
+use crate::cli::args::EmergencyArgs;
+use crate::cli::output::envelope::Envelope;
+use crate::cli::output::{ExitStatus, OutputSettings};
+
+/// The finish the arguments ask for.
+fn requested_finish(args: &EmergencyArgs) -> Finish {
+    if args.poweroff {
+        Finish::Poweroff
+    } else if args.reboot {
+        Finish::Reboot
+    } else {
+        Finish::Return
+    }
+}
+
+/// Execute the emergency command.
 ///
 /// # Returns
 ///
-/// Never returns - exits with code 0 on success, 1 on failure, 2 on config or safety guard failures
-#[allow(clippy::too_many_arguments)]
+/// - [`ExitStatus::Ok`] when the way back or the power action was enqueued, or
+///   there was nothing to do
+/// - [`ExitStatus::DegradedReboot`] when a decoy-side cleanup left mounts below
+///   `/run/nextroot`, or only the kernel could be asked to power off
+/// - [`ExitStatus::Failed`] when nothing at all could be dispatched
 pub fn execute(
-    config_override: Option<PathBuf>,
-    no_countdown: bool,
-    quiet: bool,
-    verbose: u8,
-    json: bool,
-    no_color: bool,
-    plain: bool,
-    check_real_ops: impl Fn(&std::path::Path) -> Result<(), String>,
-) -> ! {
-    use nails_core::{NailsManager, RealFilesystem, Verbosity, emergency_deactivate};
-    use std::sync::{Arc, Mutex};
-
-    // Configure color output
-    nails_core::set_plain_mode(plain);
-    nails_core::set_color_enabled(
-        !(plain
-            || no_color
-            || std::env::var("NO_COLOR").is_ok()
-            || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()),
-    );
-
-    // Convert CLI flags to Verbosity enum
-    let verbosity = if quiet {
-        Verbosity::Quiet
-    } else {
-        match verbose {
-            0 => Verbosity::Normal,
-            1 => Verbosity::Verbose,
-            _ => Verbosity::Debug,
+    settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
+    args: &EmergencyArgs,
+    config_override: Option<&std::path::Path>,
+) -> ExitStatus {
+    let report = match crate::cli::early::take_report() {
+        Some(report) => report,
+        None => {
+            // The early path did not run (not root): run it here. Without root
+            // nothing may be touched, so the hot path only judges the plan.
+            let _ = std::env::set_current_dir("/");
+            if let Some(secs) = args.countdown {
+                run_countdown(secs);
+            }
+            let plan = nails_teardown::whole_root::plan::Plan::load(
+                &nails_teardown::whole_root::plan::default_plan_path(),
+            )
+            .ok();
+            let mut host = emergency::Host::system();
+            host.act = nix::unistd::geteuid().is_root();
+            emergency::run(plan, &host, requested_finish(args))
         }
     };
-
-    // Load config
-    let config_path = nails_core::config::discover_config_path(config_override.as_deref());
-    let mut config = super::load_config_or_exit(&config_path, config_override.as_deref());
-    config.loaded_config_path = config_override
-        .clone()
-        .or_else(|| Some(config_path.clone()));
-
-    // TEST SAFETY GUARD
-    if let Err(msg) = check_real_ops(&config.hidden_volume_root) {
-        eprintln!("{}", msg);
-        std::process::exit(2);
-    }
-
-    let state_path = config.state_file_path.clone();
-
-    // Create manager
-    let filesystem = RealFilesystem;
-    let manager = Arc::new(Mutex::new(NailsManager::new(
-        filesystem, config, state_path,
-    )));
-    super::lock_manager_or_exit(&manager, "setting emergency deactivation verbosity")
-        .set_verbosity(verbosity);
-
-    // Countdown before emergency deactivation (skip if --no-countdown, --quiet, or --json)
-    if !no_countdown && !quiet && !json {
-        use std::io::Write;
-
-        for i in (1..=3).rev() {
-            eprint!("\r  Emergency deactivation in {}... ", i);
-            let _ = std::io::stderr().flush();
-            std::thread::sleep(std::time::Duration::from_secs(1));
-        }
-        eprintln!("\r  Emergency deactivation starting now!  ");
-    }
-
-    // Run emergency deactivation
-    match emergency_deactivate(Arc::clone(&manager)) {
-        Ok(()) => {
-            if !json {
-                let success_prefix = if plain { "[PASS]" } else { "✓" };
-                println!("{success_prefix} Emergency deactivation complete");
-                println!("  System returned to decoy configuration");
-                eprintln!();
-                for line in emergency_recovery_guidance(plain) {
-                    eprintln!("{line}");
-                }
-            } else {
-                println!("{}", emergency_success_json());
-            }
-            std::process::exit(0);
-        }
-        Err(e) => {
-            if !json {
-                let error_prefix = if plain { "[FAIL]" } else { "✗" };
-                eprintln!("{error_prefix} Emergency deactivation failed: {}", e);
-            } else {
-                eprintln!("{{\"status\":\"error\",\"message\":\"{}\"}}", e);
-            }
-            std::process::exit(1);
-        }
-    }
-}
-
-/// Build the JSON success response for emergency deactivation
-fn emergency_success_json() -> String {
-    r#"{"status":"success","message":"Emergency deactivation complete","recovery_guidance":["Dismount the hidden volume when it is safe to do so","If you are unsure cleanup was complete, reboot immediately"]}"#.to_string()
-}
-
-/// Recovery guidance lines for human-readable emergency output
-const EMERGENCY_RECOVERY_GUIDANCE: &[&str] = &[
-    "⚠ Critical: For maximum safety:",
-    "  1. Dismount the hidden volume when it is safe to do so",
-    "  2. If you are unsure cleanup was complete, reboot immediately",
-];
-
-const EMERGENCY_RECOVERY_GUIDANCE_PLAIN: &[&str] = &[
-    "[WARN] Critical: For maximum safety:",
-    "  1. Dismount the hidden volume when it is safe to do so",
-    "  2. If you are unsure cleanup was complete, reboot immediately",
-];
-
-fn emergency_recovery_guidance(plain: bool) -> &'static [&'static str] {
-    if plain {
-        EMERGENCY_RECOVERY_GUIDANCE_PLAIN
+    log_report(&report);
+    if settings.is_json() {
+        print_json(&report);
     } else {
-        EMERGENCY_RECOVERY_GUIDANCE
+        render_human(settings, &report);
+    }
+    crate::cli::output::flush_stdio();
+    record_inactive(env, &report, config_override);
+    exit_status(&report)
+}
+
+/// Run the hot path in-process (the backend watcher, the sleep guard) and log
+/// its report.
+pub(crate) fn run_hot_path_with(finish: Finish) {
+    let plan = nails_teardown::whole_root::plan::Plan::load(
+        &nails_teardown::whole_root::plan::default_plan_path(),
+    )
+    .ok();
+    let report = emergency::run(plan, &emergency::Host::system(), finish);
+    log_report(&report);
+}
+
+fn exit_status(report: &HotReport) -> ExitStatus {
+    match report.side {
+        Side::None if report.requested == Finish::Return => ExitStatus::Ok,
+        _ if !report.remaining.is_empty() => ExitStatus::DegradedReboot,
+        Side::Decoy if report.requested == Finish::Return => ExitStatus::Ok,
+        _ if report.dispatched.is_some() => ExitStatus::Ok,
+        _ if report.kernel_power_off => ExitStatus::DegradedReboot,
+        _ => ExitStatus::Failed,
+    }
+}
+
+/// Log the outcome and the phase timings (to the hidden-volume log while it is
+/// still mounted).
+fn log_report(report: &HotReport) {
+    let phases: Vec<String> = report
+        .phases
+        .iter()
+        .map(|(name, d)| format!("{name}={}ms", d.as_millis()))
+        .collect();
+    tracing::info!(
+        side = ?report.side,
+        requested = ?report.requested,
+        dispatched = ?report.dispatched,
+        fallback = report.fallback.as_deref().unwrap_or(""),
+        cgroups_killed = report.kill.cgroups.len(),
+        processes_killed = report.kill.processes.len(),
+        elapsed_ms = report.elapsed.as_millis() as u64,
+        phases = %phases.join(" "),
+        "emergency hot path finished"
+    );
+}
+
+/// Record the session as inactive, best-effort, while the hidden volume is
+/// still reachable. The live facts (`status` probes them) are authoritative.
+fn record_inactive(
+    env: &nails_core::RuntimeEnv,
+    report: &HotReport,
+    config_override: Option<&std::path::Path>,
+) {
+    if report.side == Side::None {
+        return;
+    }
+    let (config, _) = super::load_config_for_teardown(config_override);
+    let state_path = config.state_file_path.clone();
+    let mut manager = nails_core::NailsManager::new(nails_core::RealFilesystem, config, state_path)
+        .with_runtime_env(env.clone());
+    if let Err(e) = manager.force_state(nails_core::SystemState::Inactive) {
+        tracing::debug!(error = %e, "could not record the inactive state after the emergency");
+    }
+}
+
+/// Print an abortable countdown to stderr, one line per second, always ending
+/// with a Ctrl+C hint. Never gated by `--quiet`/`--json`.
+pub(crate) fn run_countdown(secs: u64) {
+    for remaining in (1..=secs).rev() {
+        crate::cli::output::eprint_tolerating_broken_pipe(&format!(
+            "\r  Emergency in {remaining}... (Ctrl+C to abort) "
+        ));
+        std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+    if secs > 0 {
+        crate::cli::output::eprintln_tolerating_broken_pipe(
+            "\r  Emergency starting now!                ",
+        );
+    }
+}
+
+fn finish_name(finish: Finish) -> &'static str {
+    match finish {
+        Finish::Return => "return_to_decoy",
+        Finish::Reboot => "reboot",
+        Finish::Poweroff => "poweroff",
+    }
+}
+
+fn side_name(side: Side) -> &'static str {
+    match side {
+        Side::Hidden => "hidden",
+        Side::Decoy => "decoy",
+        Side::None => "none",
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct PhaseData {
+    name: &'static str,
+    ms: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct EmergencyData {
+    /// Where the emergency ran: `hidden`, `decoy` or `none`.
+    side: &'static str,
+    /// What was asked for.
+    requested: &'static str,
+    /// What was enqueued (`null` when nothing was).
+    dispatched: Option<&'static str>,
+    /// Why the request was replaced, if it was.
+    fallback: Option<String>,
+    /// Whether the kernel was asked to power off directly.
+    kernel_power_off: bool,
+    /// Device-mapper names marked for deferred removal.
+    backend_closing: Vec<String>,
+    /// cgroups killed.
+    cgroups_killed: usize,
+    /// Processes killed one by one.
+    processes_killed: usize,
+    /// Mounts still below `/run/nextroot` after a decoy-side cleanup.
+    remaining_mounts: Vec<String>,
+    /// The timed phases, in order.
+    phases: Vec<PhaseData>,
+    /// The whole hot path, in milliseconds.
+    elapsed_ms: u64,
+}
+
+fn data(report: &HotReport) -> EmergencyData {
+    EmergencyData {
+        side: side_name(report.side),
+        requested: finish_name(report.requested),
+        dispatched: report.dispatched.map(finish_name),
+        fallback: report.fallback.clone(),
+        kernel_power_off: report.kernel_power_off,
+        backend_closing: report
+            .deferred
+            .iter()
+            .filter(|(_, ok)| *ok)
+            .map(|(n, _)| n.clone())
+            .collect(),
+        cgroups_killed: report.kill.cgroups.len(),
+        processes_killed: report.kill.processes.len(),
+        remaining_mounts: report
+            .remaining
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect(),
+        phases: report
+            .phases
+            .iter()
+            .map(|(name, d)| PhaseData {
+                name,
+                ms: u64::try_from(d.as_millis()).unwrap_or(u64::MAX),
+            })
+            .collect(),
+        elapsed_ms: u64::try_from(report.elapsed.as_millis()).unwrap_or(u64::MAX),
+    }
+}
+
+fn print_json(report: &HotReport) {
+    let envelope = Envelope::success("emergency", data(report));
+    crate::cli::output::println_tolerating_broken_pipe(&envelope.to_line());
+}
+
+fn human_lines(settings: &OutputSettings, report: &HotReport) -> Vec<String> {
+    let style = settings.stdout_style();
+    let mut out = Vec::new();
+    match report.side {
+        Side::None => out.push(style.marked(Mark::Pass, "No hidden session: nothing to tear down")),
+        Side::Decoy => {
+            out.push(style.marked(
+                Mark::Pass,
+                "Removed what an interrupted activation left in /run",
+            ));
+            for mount in &report.remaining {
+                out.push(format!("  ! still mounted: {}", mount.display()));
+            }
+        }
+        Side::Hidden => out.push(match report.dispatched {
+            Some(Finish::Return) => style.marked(
+                Mark::Pass,
+                "Returning to the decoy: hidden processes killed, soft-reboot under way",
+            ),
+            Some(Finish::Poweroff) => {
+                style.marked(Mark::Pass, "Hidden processes killed, powering off")
+            }
+            Some(Finish::Reboot) => style.marked(Mark::Pass, "Hidden processes killed, rebooting"),
+            None => style.marked(Mark::Fail, "Nothing could be enqueued"),
+        }),
+    }
+    if report.side != Side::Hidden && report.requested != Finish::Return {
+        match report.dispatched {
+            Some(finish) => out.push(format!("  Power action: {}", finish_name(finish))),
+            None => out.push("  ! The power action could not be enqueued".to_string()),
+        }
+    }
+    if let Some(why) = &report.fallback {
+        out.push(format!("  ! {why}"));
+    }
+    if report.kernel_power_off {
+        out.push("  ! The kernel was asked to power off directly".to_string());
+    }
+    if report.side == Side::Hidden {
+        out.push(format!(
+            "  Killed {} cgroup(s) and {} process(es)",
+            report.kill.cgroups.len(),
+            report.kill.processes.len()
+        ));
+    }
+    let phases: Vec<String> = report
+        .phases
+        .iter()
+        .map(|(name, d)| format!("{name} {}ms", d.as_millis()))
+        .collect();
+    if !phases.is_empty() {
+        out.push(format!(
+            "  Took {}ms ({})",
+            report.elapsed.as_millis(),
+            phases.join(", ")
+        ));
+    }
+    if report.side == Side::Hidden && report.dispatched == Some(Finish::Return) {
+        out.push(
+            "  The decoy starts at its own login screen; log in there with the decoy password."
+                .to_string(),
+        );
+    }
+    out
+}
+
+fn render_human(settings: &OutputSettings, report: &HotReport) {
+    if settings.is_quiet() && exit_status(report) == ExitStatus::Ok {
+        return;
+    }
+    for line in human_lines(settings, report) {
+        crate::cli::output::println_tolerating_broken_pipe(&line);
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        EMERGENCY_RECOVERY_GUIDANCE, emergency_recovery_guidance, emergency_success_json, execute,
-    };
-    use std::path::PathBuf;
+    use super::*;
+    use nails_teardown::whole_root::plan::Plan;
+    use std::time::Instant;
 
-    const SUBPROCESS_TEST_NAME: &str =
-        "cli::commands::emergency::tests::subprocess_emergency_entrypoint";
-
-    fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::process::Output {
-        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-        command
-            .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
-            .env("NAILS_EMERGENCY_SUBPROCESS_CASE", case);
-
-        if let Some(path) = config_path {
-            command.env("NAILS_EMERGENCY_SUBPROCESS_CONFIG", path);
-        }
-
-        command
-            .output()
-            .expect("failed to run emergency subprocess test")
-    }
-
-    #[test]
-    fn subprocess_emergency_entrypoint() {
-        let Ok(case) = std::env::var("NAILS_EMERGENCY_SUBPROCESS_CASE") else {
-            return;
+    fn simulated(plan: Option<Plan>, finish: Finish) -> HotReport {
+        let dir = tempfile::tempdir().unwrap();
+        let host = emergency::Host {
+            run: dir.path().join("run"),
+            nextroot: dir.path().join("run/nextroot"),
+            runtime_dir: dir.path().join("run/overlay-runtime"),
+            cgroup_root: dir.path().join("cgroup"),
+            protected_pids: Vec::new(),
+            act: false,
         };
-
-        let config_override =
-            std::env::var_os("NAILS_EMERGENCY_SUBPROCESS_CONFIG").map(PathBuf::from);
-
-        match case.as_str() {
-            "invalid-config" => {
-                execute(config_override, true, false, 0, false, false, false, |_| {
-                    Ok(())
-                })
-            }
-            "guard" => execute(config_override, true, false, 1, true, true, true, |_| {
-                Err("emergency guard blocked".to_string())
-            }),
-            other => panic!("unknown emergency subprocess case: {other}"),
-        }
+        emergency::run(plan, &host, finish)
     }
 
     #[test]
-    fn execute_emergency_fails_closed_for_invalid_config() {
-        use std::io::Write;
-
-        let mut config = tempfile::NamedTempFile::new().unwrap();
-        writeln!(config, "hidden_volume_path: [broken").unwrap();
-
-        let output = run_subprocess("invalid-config", Some(config.path()));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-        assert!(stderr.contains("Error loading config"));
-        assert!(stderr.contains("Invalid YAML"));
+    fn without_a_session_emergency_succeeds_and_says_so() {
+        let report = simulated(None, Finish::Return);
+        assert_eq!(exit_status(&report), ExitStatus::Ok);
+        let lines = human_lines(&OutputSettings::default(), &report);
+        assert!(lines[0].contains("nothing to tear down"), "{lines:?}");
     }
 
     #[test]
-    fn execute_emergency_honors_safety_guard() {
-        use std::io::Write;
-
-        let temp_dir = tempfile::tempdir().unwrap();
-        let hidden_root = temp_dir.path().join("hidden-volume");
-        std::fs::create_dir_all(&hidden_root).unwrap();
-
-        let mut config = tempfile::NamedTempFile::new().unwrap();
-        writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
-
-        let output = run_subprocess("guard", Some(config.path()));
-        let stderr = String::from_utf8_lossy(&output.stderr);
-
-        assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-        assert!(stderr.contains("emergency guard blocked"));
+    fn a_power_action_is_reported_on_every_side() {
+        let report = simulated(None, Finish::Poweroff);
+        assert_eq!(report.dispatched, Some(Finish::Poweroff));
+        assert_eq!(exit_status(&report), ExitStatus::Ok);
+        let json = serde_json::to_value(data(&report)).unwrap();
+        assert_eq!(json["requested"], "poweroff");
+        assert_eq!(json["dispatched"], "poweroff");
+        assert!(
+            json["phases"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["name"] == "enqueue")
+        );
     }
 
     #[test]
-    fn emergency_plain_recovery_guidance_is_ascii_only() {
-        let combined = emergency_recovery_guidance(true).join("\n");
-
-        assert!(combined.is_ascii(), "guidance={combined}");
-        assert!(combined.contains("[WARN]"));
+    fn the_json_names_no_product_and_carries_the_timings() {
+        let report = simulated(None, Finish::Reboot);
+        let text = serde_json::to_string(&data(&report)).unwrap();
+        assert!(!text.to_lowercase().contains("nails"), "{text}");
+        assert!(text.contains("\"elapsed_ms\""));
     }
 
     #[test]
-    fn emergency_success_json_contains_recovery_guidance() {
-        let json_str = emergency_success_json();
-        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert_eq!(parsed["status"], "success");
-        let guidance = parsed["recovery_guidance"].as_array().unwrap();
-        assert_eq!(guidance.len(), 2);
-        assert!(guidance[0].as_str().unwrap().contains("Dismount"));
-        assert!(guidance[1].as_str().unwrap().contains("reboot"));
+    fn the_requested_finish_follows_the_flags() {
+        let mut args = EmergencyArgs::default();
+        assert_eq!(requested_finish(&args), Finish::Return);
+        args.reboot = true;
+        assert_eq!(requested_finish(&args), Finish::Reboot);
+        args.reboot = false;
+        args.poweroff = true;
+        assert_eq!(requested_finish(&args), Finish::Poweroff);
     }
 
     #[test]
-    fn emergency_recovery_guidance_contains_expected_text() {
-        let combined: String = EMERGENCY_RECOVERY_GUIDANCE.join("\n");
-        assert!(combined.contains("Dismount the hidden volume"));
-        assert!(combined.contains("reboot immediately"));
+    fn countdown_waits_the_requested_seconds() {
+        let start = Instant::now();
+        run_countdown(1);
+        assert!(start.elapsed().as_millis() >= 1000);
+        let start = Instant::now();
+        run_countdown(0);
+        assert!(start.elapsed().as_millis() < 500);
     }
 }

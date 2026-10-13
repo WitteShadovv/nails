@@ -1,7 +1,13 @@
-# Test 09: State File Integrity
-# Tests state file existence, permissions, tampering detection, and persistence
-
-{ self, ... }:
+# Test 09: State file integrity across whole-root sessions
+#
+# The state file lives on the hidden volume (/mnt/data/state.json). In each of
+# three activate/deactivate cycles (each one a soft-reboot into the hidden root
+# and one back):
+#   - in the hidden session the file exists, is owner-only (0600), records the
+#     Active state, and `status` reports the "active" posture;
+#   - after the way back (and reopening the backend, which the switch closed)
+#     the file records Inactive and `status` reports the plain "decoy" posture.
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -12,73 +18,67 @@ in
     "security"
     "state"
   ];
-
-  nodes = {
-    machine =
-      { ... }:
-      {
-        imports = [ ./../../lib/vm-config.nix ];
-        environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-      };
-  };
+  # Three round trips, six soft-reboots at about 15-30 s each, plus setup.
+  globalTimeout = 1500;
 
   testScript = _: ''
+    import json
+
+    from nails_e2e import session
+
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.readStatusJsonFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
+
+    CONFIG = "/mnt/data/config/nails.toml"
+    STATE_FILE = "/mnt/data/state.json"
+
+
+    def read_state_kind():
+        # The on-disk state is the externally tagged SystemState enum: Active is
+        # an object keyed by "Active", Inactive the bare string "Inactive".
+        # Checking membership on the string would match "Active" inside
+        # "Inactive", so the type is checked first.
+        raw = json.loads(machine.succeed(f"cat {STATE_FILE}"))["state"]
+        if isinstance(raw, dict):
+            keys = list(raw.keys())
+            assert len(keys) == 1, f"unexpected state object: {raw}"
+            return keys[0]
+        return raw
+
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-
-    headless_config = "/tmp/nails-headless.yaml"
-    write_headless_config(headless_config)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    write_headless_config(CONFIG)
 
-    print("\n=== Test 1: State file existence and permissions after activate ===")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
-
-    state_file = machine.succeed(
-        "find /run /tmp /var -name '*.state' -o -name 'nails.state' -o -name 'state.json' 2>/dev/null | head -1 || "
-        "find /run /tmp /var -name '*nails*' -type f 2>/dev/null | grep -v config | head -1 || "
-        "echo NONE"
-    ).strip()
-
-    if state_file and state_file != "NONE":
-        perms = machine.succeed(f"stat -c %a {state_file}").strip()
-        print(f"✓ State file found at {state_file} with permissions {perms}")
-    else:
-        print("Note: No explicit state file found (state may be tracked via mounts/runtime)")
-
-    status = machine.succeed("nails status")
-    assert "Active" in status or "ACTIVE" in status, f"Expected Active status, got: {status}"
-    print("✓ NAILS reports Active state")
-
-    print("\n=== Test 2: Deactivate and verify state ===")
-    canonical_deactivate(headless_config, unit_name="nails-deactivate-state-integrity")
-
-    status = machine.succeed("nails status")
-    assert "Inactive" in status or "INACTIVE" in status, f"Expected Inactive after deactivate, got: {status}"
-    print("✓ NAILS reports Inactive after deactivate")
-
-    print("\n=== Test 3: State persistence across cycles ===")
     for cycle in range(1, 4):
-        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
+        with subtest(f"cycle {cycle}: the hidden session records Active in an owner-only file"):
+            if cycle > 1:
+                machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+            canonical_activate(CONFIG, "--overlay-only", f"activate-{cycle}")
+            machine.succeed(f"test -f {STATE_FILE}")
+            perms = machine.succeed(f"stat -c %a {STATE_FILE}").strip()
+            assert perms == "600", f"{STATE_FILE} has permissions {perms}, expected 600"
+            kind = read_state_kind()
+            assert kind == "Active", f"cycle {cycle}: state file records {kind!r}"
+            status = read_status_json(config_path=CONFIG)
+            assert status["posture"] == "active", status
 
-        status = machine.succeed("nails status")
-        assert "Active" in status or "ACTIVE" in status, \
-            f"Cycle {cycle}: Expected Active, got: {status}"
-
-        canonical_deactivate(
-            headless_config,
-            unit_name=f"nails-deactivate-state-integrity-cycle-{cycle}",
-        )
-
-        status = machine.succeed("nails status")
-        assert "Inactive" in status or "INACTIVE" in status, \
-            f"Cycle {cycle}: Expected Inactive, got: {status}"
-
-        print(f"✓ Cycle {cycle}: activate/deactivate state tracked correctly")
-
-    print("\n=== All State Integrity Tests Passed ===")
+        with subtest(f"cycle {cycle}: the way back records Inactive"):
+            canonical_deactivate(CONFIG, f"deactivate-{cycle}")
+            # The switch closed the backend: reopen it to read the state.
+            machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+            session.assert_decoy_root(machine)
+            kind = read_state_kind()
+            assert kind == "Inactive", f"cycle {cycle}: state file records {kind!r}"
+            perms = machine.succeed(f"stat -c %a {STATE_FILE}").strip()
+            assert perms == "600", f"{STATE_FILE} has permissions {perms}, expected 600"
+            status = read_status_json(config_path=CONFIG)
+            assert status["posture"] == "decoy", status
+            # Reopened for the next cycle at its start; close it here so every
+            # cycle starts from the same closed backend.
+            machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
 }

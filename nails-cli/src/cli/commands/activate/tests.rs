@@ -1,4 +1,9 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use super::execute;
+use crate::cli::args::ActivateArgs;
+use crate::cli::output::OutputSettings;
 use std::path::PathBuf;
 
 const SUBPROCESS_TEST_NAME: &str = "cli::commands::activate::tests::subprocess_activate_entrypoint";
@@ -18,170 +23,72 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
         .expect("failed to run activate subprocess test")
 }
 
-fn run_subprocess_with_env(
-    case: &str,
-    config_path: Option<&std::path::Path>,
-    envs: &[(&str, &str)],
-) -> std::process::Output {
-    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
-    command
-        .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
-        .env("NAILS_ACTIVATE_SUBPROCESS_CASE", case);
-
-    if let Some(path) = config_path {
-        command.env("NAILS_ACTIVATE_SUBPROCESS_CONFIG", path);
-    }
-
-    for (key, value) in envs {
-        command.env(key, value);
-    }
-
-    command
-        .output()
-        .expect("failed to run activate subprocess test")
-}
-
 #[test]
 fn subprocess_activate_entrypoint() {
     let Ok(case) = std::env::var("NAILS_ACTIVATE_SUBPROCESS_CASE") else {
         return;
     };
 
+    // The child stands in for the CLI entry point: it reads the environment the
+    // parent prepared on the `Command` exactly once and installs it, as `main`
+    // does.
+    let env = nails_core::RuntimeEnv::from_process_env();
+    nails_core::runtime_env::install(env.clone());
+
+    let execute =
+        |settings: &OutputSettings, args: &ActivateArgs, config: Option<&std::path::Path>| {
+            execute(settings, &env, args, config)
+        };
+
     let config_override = std::env::var_os("NAILS_ACTIVATE_SUBPROCESS_CONFIG").map(PathBuf::from);
 
-    match case.as_str() {
-        "interactive-requires-yes" => execute(
-            false,
-            false,
-            0,
-            false,
-            false,
-            false,
-            false,
-            false,
-            false,
-            true,
-            None,
-            false,
-            false,
-            None,
-            |_| Ok(()),
-        ),
-        "invalid-config" => execute(
-            false,
-            false,
-            0,
-            false,
-            false,
-            false,
-            false,
-            true,
-            false,
-            false,
-            None,
-            false,
-            false,
-            config_override,
-            |_| Ok(()),
-        ),
-        "safety-guard" => execute(
-            true,
-            false,
-            0,
-            false,
-            false,
-            false,
-            false,
-            true,
-            false,
-            false,
-            None,
-            false,
-            false,
-            config_override,
-            |_| Err("activate guard blocked".to_string()),
-        ),
+    let config = config_override.as_deref();
+    let ascii = OutputSettings {
+        ascii: true,
+        ..OutputSettings::default()
+    };
+    let keep_session = ActivateArgs::default();
+    let guarded = ActivateArgs {
+        no_preflight: true,
+        ..keep_session.clone()
+    };
+    let dry_run = ActivateArgs {
+        dry_run: true,
+        overlay_only: true,
+        ..guarded.clone()
+    };
+
+    let status = match case.as_str() {
+        "needs-confirmation-off-tty" => {
+            execute(&OutputSettings::default(), &ActivateArgs::default(), config)
+        }
+        "needs-confirmation-plain" => execute(&ascii, &ActivateArgs::default(), config),
+        "invalid-config" => execute(&OutputSettings::default(), &keep_session, config),
         "dry-run" => execute(
-            true,
-            false,
-            2,
-            false,
-            false,
-            true,
-            false,
-            true,
-            false,
-            false,
-            None,
-            true,
-            true,
-            config_override,
-            |_| Ok(()),
+            &OutputSettings {
+                verbosity: nails_core::Verbosity::Debug,
+                ..ascii
+            },
+            &dry_run,
+            config,
         ),
-        "dry-run-no-color" => execute(
-            true,
-            false,
-            0,
-            false,
-            true,
-            false,
-            false,
-            true,
-            false,
-            false,
-            None,
-            true,
-            true,
-            config_override,
-            |_| Ok(()),
-        ),
-        "safety-guard-plain" => execute(
-            true,
-            false,
-            0,
-            false,
-            false,
-            true,
-            false,
-            true,
-            false,
-            false,
-            None,
-            false,
-            false,
-            config_override,
-            |_| Err("activate guard blocked".to_string()),
+        "dry-run-no-color" => execute(&OutputSettings::default(), &dry_run, config),
+        "dry-run-color" => execute(
+            &OutputSettings {
+                color_stdout: true,
+                color_stderr: true,
+                ..OutputSettings::default()
+            },
+            &dry_run,
+            config,
         ),
         other => panic!("unknown activate subprocess case: {other}"),
-    }
+    };
+    crate::cli::chokepoint::exit_process(status.code());
 }
 
 #[test]
-fn execute_rejects_interactive_kill_session_before_loading_config() {
-    let output = run_subprocess("interactive-requires-yes", None);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-    assert!(stderr.contains("--kill-session is non-interactive after detach; use --yes"));
-}
-
-#[test]
-fn execute_fails_closed_for_invalid_config() {
-    use std::io::Write;
-
-    let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: [broken").unwrap();
-
-    let output = run_subprocess("invalid-config", Some(config.path()));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-    assert!(stderr.contains("Error loading config"));
-    assert!(stderr.contains("Invalid YAML"));
-}
-
-#[test]
-fn execute_honors_safety_guard_after_loading_config() {
+fn execute_refuses_off_tty_without_yes() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -189,13 +96,71 @@ fn execute_honors_safety_guard_after_loading_config() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
-    let output = run_subprocess("safety-guard", Some(config.path()));
+    let output = run_subprocess("needs-confirmation-off-tty", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
-    assert!(stderr.contains("activate guard blocked"));
+    assert!(
+        stderr.contains("stdin is not a terminal"),
+        "stderr={stderr}"
+    );
+}
+
+#[test]
+fn execute_exits_3_with_hint_for_unknown_key() {
+    use std::io::Write;
+
+    let mut config = tempfile::NamedTempFile::new().unwrap();
+    writeln!(
+        config,
+        "hidden_volume_root = \"/mnt/hv\"\nnixos_flak = \"x\""
+    )
+    .unwrap();
+
+    let output = run_subprocess("invalid-config", Some(config.path()));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+    assert!(stderr.contains("invalid config"), "{stderr}");
+    assert!(
+        stderr.contains("unknown key `nixos_flak` (did you mean `nixos_flake`?)"),
+        "{stderr}"
+    );
+    assert_eq!(stderr.trim().lines().count(), 1, "one error line: {stderr}");
+}
+
+#[test]
+fn execute_exits_3_for_unknown_nested_key() {
+    use std::io::Write;
+
+    let mut config = tempfile::NamedTempFile::new().unwrap();
+    writeln!(config, "[sleep_policy]\nmod = \"warn\"").unwrap();
+
+    let output = run_subprocess("invalid-config", Some(config.path()));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+    assert!(stderr.contains("did you mean `mode`?"), "{stderr}");
+}
+
+#[test]
+fn execute_exits_3_with_one_line_for_missing_explicit_config() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let missing = temp_dir.path().join("missing.toml");
+
+    let output = run_subprocess("invalid-config", Some(&missing));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+    assert_eq!(
+        stderr.trim(),
+        format!(
+            "error: config file not found: {} (run `nails init <root>` or pass --config)",
+            missing.display()
+        )
+    );
 }
 
 #[test]
@@ -207,14 +172,16 @@ fn execute_routes_into_dry_run_mode() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
+    // --dry-run is a thin alias for `check`; the tempdir is not a mounted hidden
+    // volume, so the readiness check refuses with exit 4 but still reports.
     let output = run_subprocess("dry-run", Some(config.path()));
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("=== NAILS Dry-Run: Activation Preview ==="));
-    assert!(stdout.contains("[WARN] Pre-flight checks skipped (--no-preflight)"));
+    assert_eq!(output.status.code(), Some(4), "stdout={stdout}");
+    assert!(stdout.contains("NAILS Readiness Check"), "stdout={stdout}");
+    assert!(stdout.contains("Pre-flight checks:"), "stdout={stdout}");
 }
 
 #[test]
@@ -226,20 +193,19 @@ fn execute_no_color_keeps_unicode_but_strips_ansi_from_failures() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
     let output = run_subprocess("dry-run-no-color", Some(config.path()));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(output.status.success(), "stdout={stdout} stderr={stderr}");
-    assert!(stderr.trim().is_empty(), "stderr={stderr}");
-    assert!(stdout.contains("⚠ Pre-flight checks skipped (--no-preflight)"));
+    assert_eq!(output.status.code(), Some(4), "stdout={stdout}");
+    // A failing check renders the Unicode fail mark without any ANSI colour.
+    assert!(stdout.contains("✗"), "stdout={stdout}");
     assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
 }
 
 #[test]
-fn execute_plain_uses_ascii_for_failures() {
+fn execute_ascii_uses_ascii_for_failures() {
     use std::io::Write;
 
     let temp_dir = tempfile::tempdir().unwrap();
@@ -247,9 +213,11 @@ fn execute_plain_uses_ascii_for_failures() {
     std::fs::create_dir_all(&hidden_root).unwrap();
 
     let mut config = tempfile::NamedTempFile::new().unwrap();
-    writeln!(config, "hidden_volume_path: {}", hidden_root.display()).unwrap();
+    writeln!(config, "hidden_volume_root = \"{}\"", hidden_root.display()).unwrap();
 
-    let output = run_subprocess("safety-guard-plain", Some(config.path()));
+    // Off a terminal without -y, activate refuses at the confirmation gate; in
+    // ASCII mode that failure renders without any non-ASCII mark.
+    let output = run_subprocess("needs-confirmation-plain", Some(config.path()));
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(2), "stderr={stderr}");
@@ -258,12 +226,14 @@ fn execute_plain_uses_ascii_for_failures() {
 }
 
 #[test]
-fn execute_no_color_env_keeps_unicode_without_ansi_in_dry_run() {
-    let output = run_subprocess_with_env("dry-run-no-color", None, &[("NO_COLOR", "1")]);
+fn execute_colour_settings_paint_dry_run_marks() {
+    let output = run_subprocess("dry-run-color", None);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("⚠ Pre-flight checks skipped (--no-preflight)"));
-    assert!(!stdout.contains("\u{001b}"), "stdout={stdout}");
-    assert!(!stdout.is_ascii(), "stdout={stdout}");
+    assert_eq!(output.status.code(), Some(4), "stdout={stdout}");
+    // A failing check paints its mark red when colour is on.
+    assert!(
+        stdout.contains("\u{001b}[1;31m✗\u{001b}[0m"),
+        "stdout={stdout}"
+    );
 }

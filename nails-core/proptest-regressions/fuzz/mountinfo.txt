@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 3e4b0847e6097e779a35d9ea80d4b56695ff4f98a2ac5c18bc570bde5b4fd3ad # shrinks to mounts = [Mount { id: 1, parent: 0, dev: "0:0", root: "/", mount_point: "/", opts: "rw,relatime", optional: [], fstype: "a", source: "", super_opts: "a" }]
+cc c1c0c5b660fc6bf9fee8d7771b17353814b6dae88db136e849fd1cde5f91b31f # shrinks to mounts = [Mount { id: 1, parent: 0, dev: "0:0", root: "/", mount_point: "/", opts: "rw,relatime", optional: ["shared:1"], fstype: "a", source: "", super_opts: "_" }]

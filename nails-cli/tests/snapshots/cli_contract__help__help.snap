@@ -1,0 +1,105 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Run a hidden session on a decoy Linux system.
+
+NAILS runs a hidden session on a decoy system: one OverlayFS over the whole
+decoy root, with every change kept on the hidden volume, entered and left with
+`systemctl soft-reboot` (systemd 254 or newer). The binary and its
+configuration live on the hidden volume, so you run it by its
+full path from the mounted volume (e.g. `sudo /mnt/data/nails status`),
+never from a copy on the decoy disk.
+
+The workflow has four steps:
+  1. Open and mount the hidden backend (e.g. unlock the LUKS/VeraCrypt volume).
+  2. `init <root>` once, to lay out the hidden volume.
+  3. `activate` to soft-reboot into the hidden session. You are logged out;
+     the hidden session starts at its own login screen.
+  4. `deactivate` to soft-reboot back to the plain decoy, or `emergency` to
+     kill the hidden session at once and return (or power off). If an
+     activation was interrupted, `recover` removes what it left behind.
+
+Usage: nails [OPTIONS] <COMMAND>
+
+Commands:
+  activate     Soft-reboot into the hidden session (whole-root overlay on the hidden volume)
+  deactivate   Soft-reboot from the hidden session back to the plain decoy
+  emergency    Kill the hidden session at once and soft-reboot back to the decoy (or power off)
+  recover      Remove what an interrupted activation left in /run
+  status       Show the session, security posture and hidden volume
+  verify       Check for known NAILS traces (evidence, not proof)
+  rehearse     Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
+  check        Check readiness to activate without making any changes (alias: doctor)
+  init         Initialize NAILS directory structure on a hidden volume
+  reset-upper  Delete a path's hidden copy from the hidden root's upper
+  config       Inspect and check the configuration file (nails.toml)
+  completions  Print a shell completion script on stdout (for `source <(...)`)
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+EXAMPLES:
+  # Run by full path from the mounted backend, never from a decoy copy.
+  sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
+  sudo /mnt/data/nails activate         Soft-reboot into the hidden session
+  /mnt/data/nails status --json         Machine-readable state and uptime
+  sudo /mnt/data/nails deactivate       Soft-reboot back to the decoy
+  sudo /mnt/data/nails emergency        Kill the hidden session and return now
+  source <(/mnt/data/nails completions bash)   Load completions in the session
+
+EXIT STATUS:
+  0    success
+  1    the operation failed
+  2    command-line usage error
+  3    the configuration file or environment was unusable
+  4    a pre-flight check refused the operation
+  5    the operation needs privileges it did not have
+  6    the on-disk state could not be trusted
+  7    a degraded or interrupted session, or an incomplete cleanup
+  8    the host is not one NAILS can operate on
+  9    completed, but with a warning the caller should act on
+  10   verify found warnings
+  11   verify found critical artifacts, or rehearse scan found its canary
+  130  cancelled by a signal (SIGINT/SIGTERM)
+
+----- stderr -----

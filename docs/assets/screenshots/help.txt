@@ -1,0 +1,33 @@
+title: nails -h
+command: nails -h
+caption: Real output of `nails -h` from nails 0.2.0, built from this repository with `cargo build -p nails-cli`.
+---
+Run a hidden session on a decoy Linux system
+
+Usage: nails [OPTIONS] <COMMAND>
+
+Commands:
+  activate     Soft-reboot into the hidden session (whole-root overlay on the hidden volume)
+  deactivate   Soft-reboot from the hidden session back to the plain decoy
+  emergency    Kill the hidden session at once and soft-reboot back to the decoy (or power off)
+  recover      Remove what an interrupted activation left in /run
+  status       Show the session, security posture and hidden volume
+  verify       Check for known NAILS traces (evidence, not proof)
+  rehearse     Rehearse: plant a canary in a hidden session, then scan the raw decoy for it
+  check        Check readiness to activate without making any changes (alias: doctor)
+  init         Initialize NAILS directory structure on a hidden volume
+  reset-upper  Delete a path's hidden copy from the hidden root's upper
+  config       Inspect and check the configuration file (nails.toml)
+  completions  Print a shell completion script on stdout (for `source <(...)`)
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+  -c, --config <PATH>  Path to the configuration file (overrides binary-relative discovery)
+  -v, --verbose...     More diagnostics on stderr: -v for debug, -vv for trace
+  -q, --quiet          Print only errors and the final result
+      --color <WHEN>   When to use colour [default: auto] [possible values: auto, always, never]
+      --ascii          Use ASCII markers instead of Unicode symbols and box drawing
+      --json           Print machine-readable JSON on stdout
+      --no-log-file    Do not write the log file on the hidden volume (diagnostics still go to stderr)
+  -h, --help           Print help (see more with '--help')
+  -V, --version        Print version

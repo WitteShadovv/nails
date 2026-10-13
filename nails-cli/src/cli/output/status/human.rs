@@ -1,261 +1,139 @@
-use nails_core::SystemState;
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::read_recent_logs;
+use nails_core::output::{Mark, Style};
+use nails_core::status::{Posture, StatusReport};
 
-pub fn print_status_human(
-    report: &nails_core::status::StatusReport,
-    verbose: bool,
-    config_path: &std::path::Path,
-    state_path: &std::path::Path,
-    hidden_volume_root: &std::path::Path,
-    log_path: &std::path::Path,
-) {
-    if nails_core::is_color_disabled() {
-        print_status_no_color(
-            report,
-            verbose,
-            config_path,
-            state_path,
-            hidden_volume_root,
-            log_path,
-        );
-        return;
+use super::{config_file_label, read_recent_logs};
+use crate::cli::output::dto::system_state_label;
+
+/// Print the status header box.
+pub fn print_status_header(style: Style) {
+    if style.ascii {
+        println!("=======================================");
+        println!("  NAILS Status Report");
+        println!("=======================================");
+    } else {
+        println!("╭─────────────────────────────────────╮");
+        println!("│  NAILS Status Report                │");
+        println!("╰─────────────────────────────────────╯");
     }
-
-    println!("╭─────────────────────────────────────╮");
-    println!("│  NAILS Status Report                │");
-    println!("╰─────────────────────────────────────╯");
     println!();
-
-    println!("State:              {:?}", report.state);
-
-    let posture = report.security_posture();
-    println!("Security Posture:   {}", posture);
-
-    if let SystemState::Active { .. } = report.state {
-        if let Some(activated_at) = report.activated_at {
-            println!(
-                "Activated at:       {}",
-                activated_at.format("%Y-%m-%d %H:%M:%S UTC")
-            );
-        }
-
-        if !report.formatted_uptime.is_empty() {
-            println!("Uptime:             {}", report.formatted_uptime);
-        }
-
-        println!();
-
-        if !report.overlay_mount_statuses.is_empty() {
-            println!("Overlays:");
-            for status in &report.overlay_mount_statuses {
-                if status.actually_mounted {
-                    println!("  ✓ {} (mounted)", status.path.display());
-                } else {
-                    println!("  ✗ {} (NOT mounted)", status.path.display());
-                }
-            }
-        }
-
-        if let Some(ref generation) = report.nixos_generation {
-            println!();
-            println!("NixOS Generation:   {}", generation);
-        }
-    } else if let SystemState::Inactive = report.state {
-        println!();
-        println!("Run 'nails activate' to mount hidden environment");
-    }
-
-    if verbose && matches!(report.state, SystemState::Active { .. }) {
-        println!();
-        println!("Verbose Details:");
-        println!("  Config file:        {}", config_path.display());
-        println!("  State file:         {}", state_path.display());
-        println!();
-
-        if let Some(ref overlay_details) = report.overlay_details {
-            println!("  Overlay Mount Details:");
-            for (mount_path, info) in overlay_details.iter() {
-                println!();
-                println!("    Mount:     {}", mount_path.display());
-                println!("    Lower:     {}", info.lower_dir.display());
-                println!("    Upper:     {}", info.upper_dir.display());
-                println!("    Work:      {}", info.work_dir.display());
-                println!(
-                    "    Mounted:   {}",
-                    info.mounted_at.format("%Y-%m-%d %H:%M:%S UTC")
-                );
-            }
-        }
-    }
-
-    if verbose && matches!(report.state, SystemState::Inactive) {
-        use nails_core::LoadOutcome;
-
-        println!();
-        println!("Verbose Details:");
-        println!("  Config file:        {}", config_path.display());
-        println!("  Hidden volume root: {}", hidden_volume_root.display());
-        println!("  State file:         {}", state_path.display());
-        println!("  Log path:           {}", log_path.display());
-        match &report.load_outcome {
-            LoadOutcome::FreshDefault => println!("  State loaded:       fresh default (no file)"),
-            LoadOutcome::Normal => println!("  State loaded:       normal"),
-            LoadOutcome::Migrated { from_version } => {
-                println!("  State loaded:       migrated from v{}", from_version)
-            }
-            LoadOutcome::RecoveredFromCorruption => {
-                println!("  State loaded:       recovered from corruption (using defaults)")
-            }
-        }
-    }
-
-    if !report.opsec_reminders.is_empty() {
-        println!();
-        for reminder in &report.opsec_reminders {
-            println!("{}", reminder);
-        }
-    }
-
-    if let Some(logs) = read_recent_logs(log_path, report.activated_at, verbose, true) {
-        println!();
-        println!("Recent Logs:");
-        for log in logs.iter().take(20) {
-            println!("  {}", log);
-        }
-    }
 }
 
-fn print_status_no_color(
-    report: &nails_core::status::StatusReport,
-    verbose: bool,
+/// The lines of the human status report (without the header and logs).
+pub(super) fn status_lines(report: &StatusReport, details: bool, style: Style) -> Vec<String> {
+    let mut out = Vec::new();
+    out.push(format!(
+        "Security Posture:   {}",
+        report.posture.render(style)
+    ));
+    if let Some(reason) = &report.reason {
+        out.push(format!("  {reason}"));
+    }
+    if let Some(remediation) = report.remediation {
+        out.push(format!("  {}", style.marked(Mark::Arrow, remediation)));
+    }
+    out.push(format!(
+        "State:              {} (recorded)",
+        system_state_label(&report.state)
+    ));
+    if let Some(entered) = report.entered_at {
+        out.push(format!(
+            "Entered:            {}",
+            entered.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
+    }
+    if let Some(uptime) = report.uptime {
+        out.push(format!(
+            "Uptime:             {}",
+            nails_core::status::format_uptime(uptime)
+        ));
+    }
+    if let Some(system) = &report.hidden_system {
+        out.push(format!("Hidden system:      {system}"));
+    }
+    if report.posture == Posture::Active || details {
+        for mount in &report.policy_mounts {
+            out.push(format!(
+                "  {} {} ({})",
+                style.mark(Mark::Bullet),
+                mount.target.display(),
+                mount.kind
+            ));
+        }
+        if !report.masked_units.is_empty() {
+            out.push(format!(
+                "Masked decoy units: {}",
+                report.masked_units.join(", ")
+            ));
+        }
+    }
+    out.push(format!(
+        "Hidden volume:      {} ({})",
+        report.hidden_root.display(),
+        if report.hidden_root_mounted {
+            "mounted"
+        } else {
+            "not mounted"
+        }
+    ));
+    if report.decoy_persistent && report.posture != Posture::Active {
+        out.push(style.marked(
+            Mark::Warn,
+            "The decoy keeps a persistent journal or syslog: the soft-reboots are recorded on its disk",
+        ));
+    }
+    if let Some(last) = &report.last_activation {
+        out.push(format!(
+            "Last activation:    took {} (finished {})",
+            nails_core::timing::format_elapsed(std::time::Duration::from_millis(last.duration_ms)),
+            last.finished_at.format("%Y-%m-%d %H:%M:%S UTC")
+        ));
+    }
+    for reminder in &report.opsec_reminders {
+        out.push(reminder.render(style));
+    }
+    out
+}
+
+/// Print the status report for people. `details` adds the resolved paths, the
+/// policy mounts on every posture and the recent log lines.
+pub fn print_status_human(
+    report: &StatusReport,
+    details: bool,
     config_path: &std::path::Path,
     state_path: &std::path::Path,
     hidden_volume_root: &std::path::Path,
     log_path: &std::path::Path,
+    style: Style,
 ) {
-    println!("╭─────────────────────────────────────╮");
-    println!("│  NAILS Status Report                │");
-    println!("╰─────────────────────────────────────╯");
-    println!();
-
-    println!("State:              {:?}", report.state);
-
-    let posture = report.security_posture();
-    println!(
-        "Security Posture:   {} {}: {}",
-        match posture {
-            nails_core::SecurityPosture::Secure => "🟢",
-            nails_core::SecurityPosture::Warning => "🟡",
-            nails_core::SecurityPosture::Decoy => "🔴",
-            nails_core::SecurityPosture::Critical => "🔴",
-        },
-        match posture {
-            nails_core::SecurityPosture::Secure => "SECURE",
-            nails_core::SecurityPosture::Warning => "WARNING",
-            nails_core::SecurityPosture::Decoy => "DECOY",
-            nails_core::SecurityPosture::Critical => "CRITICAL",
-        },
-        match posture {
-            nails_core::SecurityPosture::Secure => "Hidden environment active, overlays verified",
-            nails_core::SecurityPosture::Warning =>
-                "System in transitional state - wait for completion",
-            nails_core::SecurityPosture::Decoy => "Decoy system - no sensitive data accessible",
-            nails_core::SecurityPosture::Critical =>
-                "Emergency deactivation occurred - reboot recommended",
-        }
-    );
-
-    if let SystemState::Active { .. } = report.state {
-        if let Some(activated_at) = report.activated_at {
-            println!(
-                "Activated at:       {}",
-                activated_at.format("%Y-%m-%d %H:%M:%S UTC")
-            );
-        }
-
-        if !report.formatted_uptime.is_empty() {
-            println!("Uptime:             {}", report.formatted_uptime);
-        }
-
-        println!();
-
-        if !report.overlay_mount_statuses.is_empty() {
-            println!("Overlays:");
-            for status in &report.overlay_mount_statuses {
-                if status.actually_mounted {
-                    println!("  ✓ {} (mounted)", status.path.display());
-                } else {
-                    println!("  ✗ {} (NOT mounted)", status.path.display());
-                }
-            }
-        }
-
-        if let Some(ref generation) = report.nixos_generation {
-            println!();
-            println!("NixOS Generation:   {}", generation);
-        }
-    } else if let SystemState::Inactive = report.state {
-        println!();
-        println!("Run 'nails activate' to mount hidden environment");
+    print_status_header(style);
+    for line in status_lines(report, details, style) {
+        println!("{line}");
     }
-
-    if verbose && matches!(report.state, SystemState::Active { .. }) {
+    if details {
         println!();
-        println!("Verbose Details:");
-        println!("  Config file:        {}", config_path.display());
-        println!("  State file:         {}", state_path.display());
-        println!();
-
-        if let Some(ref overlay_details) = report.overlay_details {
-            println!("  Overlay Mount Details:");
-            for (mount_path, info) in overlay_details.iter() {
-                println!();
-                println!("    Mount:     {}", mount_path.display());
-                println!("    Lower:     {}", info.lower_dir.display());
-                println!("    Upper:     {}", info.upper_dir.display());
-                println!("    Work:      {}", info.work_dir.display());
-                println!(
-                    "    Mounted:   {}",
-                    info.mounted_at.format("%Y-%m-%d %H:%M:%S UTC")
-                );
-            }
-        }
-    }
-
-    if verbose && matches!(report.state, SystemState::Inactive) {
-        use nails_core::LoadOutcome;
-
-        println!();
-        println!("Verbose Details:");
-        println!("  Config file:        {}", config_path.display());
+        println!("Details:");
+        println!("  Config file:        {}", config_file_label(config_path));
         println!("  Hidden volume root: {}", hidden_volume_root.display());
         println!("  State file:         {}", state_path.display());
         println!("  Log path:           {}", log_path.display());
-        match &report.load_outcome {
-            LoadOutcome::FreshDefault => println!("  State loaded:       fresh default (no file)"),
-            LoadOutcome::Normal => println!("  State loaded:       normal"),
-            LoadOutcome::Migrated { from_version } => {
-                println!("  State loaded:       migrated from v{}", from_version)
+        println!(
+            "  State loaded:       {}",
+            match report.state_source {
+                "loaded" => "normal",
+                "missing" => "fresh default (no file)",
+                "unreadable" => "unreadable (state unknown, using defaults)",
+                _ => "corrupt (state unknown, using defaults)",
             }
-            LoadOutcome::RecoveredFromCorruption => {
-                println!("  State loaded:       recovered from corruption (using defaults)")
+        );
+        if let Some(logs) = read_recent_logs(log_path, report.entered_at, false, style) {
+            println!();
+            println!("Recent log lines:");
+            for line in logs {
+                println!("  {line}");
             }
-        }
-    }
-
-    if !report.opsec_reminders.is_empty() {
-        println!();
-        for reminder in &report.opsec_reminders {
-            println!("{}", reminder);
-        }
-    }
-
-    if let Some(logs) = read_recent_logs(log_path, report.activated_at, verbose, false) {
-        println!();
-        println!("Recent Logs:");
-        for log in logs.iter().take(20) {
-            println!("  {}", log);
         }
     }
 }

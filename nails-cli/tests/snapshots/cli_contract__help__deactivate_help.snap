@@ -1,0 +1,70 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - deactivate
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Soft-reboot from the hidden session back to the plain decoy
+
+Usage: nails deactivate [OPTIONS]
+
+Options:
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+  -y, --yes
+          Proceed without the confirmation prompt
+
+          Deactivation ends the hidden session. Without this flag it prompts on a terminal and refuses to run without one.
+
+      --poweroff
+          Power the machine off instead of returning to the decoy.
+
+          Powering off lets RAM decay; leave the machine off for a few minutes before handing it over.
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+WHAT HAPPENS:
+  In the hidden session, deactivation mounts the decoy root at /run/nextroot,
+  marks the hidden volume for closing and soft-reboots: every hidden program
+  is stopped in order, /run is scrubbed of the hidden session, and the decoy
+  starts again at its own login screen. The hidden volume is unmounted and
+  its encryption mapping closed by the switch itself.
+
+EXAMPLES:
+  nails deactivate                    Soft-reboot back to the decoy
+  nails deactivate --poweroff         Power off instead
+  nails deactivate -y                 Skip the confirmation prompt
+
+----- stderr -----

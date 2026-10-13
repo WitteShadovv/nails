@@ -1,128 +1,23 @@
-//! Tests for CLI logging initialization
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Tests for the public CLI logging and output-settings surface
 //!
-//! These tests verify that the logging module correctly initializes
-//! tracing subscribers with various configuration options.
+//! Subscriber behaviour (levels, ANSI, file layer) is exercised in subprocess
+//! unit tests next to the module, since a global subscriber can only be
+//! installed once per process.
 
-use std::env;
-use tempfile::TempDir;
+use nails::cli::logging::StdoutFormat;
+use nails::cli::output::OutputSettings;
 
-/// Test that init_stdout_subscriber doesn't panic with default settings
+/// The subscriber entry point takes the resolved settings, not loose flags.
 #[test]
-fn test_init_stdout_subscriber_default() {
-    // We can't easily test subscriber initialization without side effects,
-    // but we can verify it compiles and the function signature is correct
-
-    // This would initialize the global subscriber, so we can't actually call it in tests
-    // Instead, we verify the function exists and has the right signature
-    let _: fn(u8, bool, bool, Option<&std::path::Path>) =
-        nails::cli::logging::init_stdout_subscriber;
-    let _: fn(
-        u8,
-        bool,
-        bool,
-        bool,
-        bool,
-        Option<&std::path::Path>,
-        nails::cli::logging::StdoutFormat,
-    ) = nails::cli::logging::init_stdout_subscriber_with_mode;
-}
-
-/// Test init_stdout_subscriber with quiet mode
-#[test]
-fn test_init_quiet_mode() {
-    let quiet = true;
-    let verbose = 0;
-    let no_logs = true;
-
-    assert!(quiet);
-    assert_eq!(verbose, 0);
-    assert!(no_logs);
-}
-
-/// Test init_stdout_subscriber with verbose levels
-#[test]
-fn test_init_verbosity_levels() {
-    let levels = vec![0u8, 1u8, 2u8, 3u8];
-
-    for level in levels {
-        assert!(level <= 3);
-    }
-}
-
-/// Test init_stdout_subscriber with no_logs flag
-#[test]
-fn test_init_no_logs_flag() {
-    let no_logs = true;
-    assert!(no_logs);
+fn init_subscriber_takes_resolved_output_settings() {
+    let _: fn(&OutputSettings, bool, Option<&std::path::Path>, StdoutFormat) =
+        nails::cli::logging::init_subscriber;
 }
 
 #[test]
-fn test_stdout_format_variants_are_available() {
-    assert_eq!(
-        nails::cli::logging::StdoutFormat::Human,
-        nails::cli::logging::StdoutFormat::Human
-    );
-    assert_eq!(
-        nails::cli::logging::StdoutFormat::ActivateJsonStream,
-        nails::cli::logging::StdoutFormat::ActivateJsonStream
-    );
-}
-
-/// Test config path discovery with custom path
-#[test]
-fn test_config_path_discovery() {
-    let temp_dir = TempDir::new().unwrap();
-    let config_path = temp_dir.path().join("test-config.yaml");
-
-    std::fs::write(&config_path, "hidden_volume_path: /tmp/test").unwrap();
-    assert!(config_path.exists());
-}
-
-/// Test that NO_COLOR environment variable is respected
-#[test]
-fn test_no_color_env_respected() {
-    unsafe {
-        env::set_var("NO_COLOR", "1");
-    }
-    let no_color_set = env::var("NO_COLOR").is_ok();
-    unsafe {
-        env::remove_var("NO_COLOR");
-    }
-
-    assert!(no_color_set);
-}
-
-/// Test verbosity mapping to tracing levels
-#[test]
-fn test_verbosity_to_level_mapping() {
-    let quiet_level = if true { "WARN" } else { "INFO" };
-    assert_eq!(quiet_level, "WARN");
-
-    let normal_level = match 0u8 {
-        0 => "INFO",
-        1 => "DEBUG",
-        _ => "TRACE",
-    };
-    assert_eq!(normal_level, "INFO");
-
-    let verbose_level = match 1u8 {
-        0 => "INFO",
-        1 => "DEBUG",
-        _ => "TRACE",
-    };
-    assert_eq!(verbose_level, "DEBUG");
-
-    let debug_level = match 2u8 {
-        0 => "INFO",
-        1 => "DEBUG",
-        _ => "TRACE",
-    };
-    assert_eq!(debug_level, "TRACE");
-}
-
-/// Test file layer initialization error handling
-#[test]
-fn test_file_layer_graceful_fallback() {
-    let nonexistent_path = std::path::Path::new("/nonexistent/path/to/volume");
-    assert!(!nonexistent_path.exists());
+fn stdout_format_variants_are_distinct() {
+    assert_ne!(StdoutFormat::Human, StdoutFormat::ActivateJsonStream);
 }

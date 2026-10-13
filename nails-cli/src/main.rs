@@ -1,129 +1,169 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! # NAILS CLI Binary Entry Point
 //!
-//! Command-line interface binary for NixOS Anti-forensics Isolation & Layering System.
+//! Command-line interface binary for the nails overlay environment manager.
 //!
 //! The actual CLI logic is in lib.rs to allow for proper unit test coverage.
 
-use clap::Parser;
 use nails::cli::logging::StdoutFormat;
-use nails::cli::{Cli, Commands, execute_command};
+use nails::cli::{Cli, Commands, OutputSettings, execute_command};
 
-fn render_flags_for_command(command: &Commands) -> (bool, bool) {
+/// `activate --json` streams progress events as NDJSON on stdout ahead of the
+/// final result; every other command keeps diagnostics on stderr.
+fn stdout_format_for(command: &Commands, settings: &OutputSettings) -> StdoutFormat {
     match command {
-        Commands::Activate {
-            no_color, plain, ..
-        }
-        | Commands::Deactivate {
-            no_color, plain, ..
-        }
-        | Commands::Emergency {
-            no_color, plain, ..
-        }
-        | Commands::Status {
-            no_color, plain, ..
-        } => (*no_color, *plain),
-        _ => (false, false),
-    }
-}
-
-fn stdout_format_for_command(command: &Commands) -> StdoutFormat {
-    match command {
-        Commands::Activate { json: true, .. } => StdoutFormat::ActivateJsonStream,
+        Commands::Activate(_) if settings.is_json() => StdoutFormat::ActivateJsonStream,
         _ => StdoutFormat::Human,
     }
 }
 
-fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    // Parse CLI args to extract verbosity BEFORE initializing tracing
-    let cli = Cli::parse();
-    let (no_color, plain) = render_flags_for_command(&cli.command);
+/// Whether a command may write a log file onto the hidden volume.
+///
+/// Only the commands that act on an attached hidden volume do. Read-only
+/// commands (`status`, `verify`, `check`, `config`, `transition`) and `init` — which
+/// runs before the volume holds any NAILS structure — never create a log
+/// directory or file, so running them from the decoy or a download directory
+/// leaves nothing behind there. The attach gate is still the backstop: even a
+/// writing command logs to a file only when the hidden volume is really mounted.
+fn command_writes_logs(command: &Commands) -> bool {
+    match command {
+        Commands::Activate(_)
+        | Commands::Deactivate(_)
+        | Commands::Emergency(_)
+        | Commands::ResetUpper(_) => true,
+        // The rehearsal steps act on the attached hidden volume; the status view
+        // only reads.
+        Commands::Rehearse(args) => !matches!(
+            args.step,
+            None | Some(nails::cli::args::RehearseStep::Status)
+        ),
+        _ => false,
+    }
+}
 
-    // Configure output formatting (NO_COLOR environment variable)
-    nails_core::set_plain_mode(plain);
-    nails_core::set_color_enabled(
-        !(plain
-            || no_color
-            || std::env::var("NO_COLOR").is_ok()
-            || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()),
+fn main() -> std::process::ExitCode {
+    // First, before parsing: no crash from here on may dump core onto the decoy.
+    let core_dump_error = nails::cli::disable_core_dumps();
+
+    // The emergency hot path and the soft-reboot transition step run here,
+    // before clap, the environment snapshot, the configuration and tracing exist
+    // (ADR 0007, ADR 0008). The emergency command then prints and logs the
+    // result; the transition step ends the process itself. Any other command
+    // line is left untouched.
+    nails::cli::early::dispatch();
+
+    let cli = Cli::parse_checked();
+
+    // Read the environment exactly once. Every handler receives this snapshot,
+    // and it is installed for the leaf helpers (the process runner, the
+    // runtime-safety switch) that sit below every handler; nothing else reads
+    // the process environment.
+    let runtime_env = nails_core::RuntimeEnv::from_process_env();
+    nails_core::runtime_env::install(runtime_env.clone());
+
+    // Resolve verbosity, colour and ASCII once, before anything prints.
+    let settings = OutputSettings::detect(&cli.global, &runtime_env);
+    settings.install();
+
+    // Refuse privileged commands run without root before logging is initialised
+    // or any handler runs, so an unprivileged invocation writes no log or state
+    // file and the operator gets one clear `sudo` instruction.
+    if let Some(status) =
+        nails::cli::main_guard::enforce_root(&cli.command, &settings, &runtime_env)
+    {
+        return status.to_exit_code();
+    }
+
+    let log_file = !cli.global.no_log_file && command_writes_logs(&cli.command);
+    nails::cli::logging::init_subscriber(
+        &settings,
+        log_file,
+        cli.global.config.as_deref(),
+        stdout_format_for(&cli.command, &settings),
     );
 
-    let stdout_format = stdout_format_for_command(&cli.command);
+    // Route panics through tracing (the hidden-root log when one is active) and
+    // keep source paths and payloads off stderr, so a detached worker's crash
+    // never lands in the decoy journal. Installed after the subscriber exists.
+    nails::cli::install_panic_hook();
 
-    // Initialize tracing subscriber with verbosity-aware filtering
-    // Story 9.3: Wire verbosity flags to tracing subscriber (AC #5)
-    nails::cli::logging::init_stdout_subscriber_with_mode(
-        cli.verbose,
-        cli.quiet,
-        cli.no_logs,
-        no_color,
-        plain,
-        cli.config.as_deref(),
-        stdout_format,
-    );
+    if let Some(err) = core_dump_error {
+        tracing::debug!(error = %err, "could not fully disable core dumps");
+    }
 
-    execute_command(cli)
+    execute_command(cli, &settings, &runtime_env).to_exit_code()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use nails::cli::args::{ActivateArgs, VerifyArgs};
+    use nails::cli::output::OutputMode;
 
-    fn activate_command(json: bool) -> Commands {
-        Commands::Activate {
-            no_preflight: false,
-            quiet: false,
-            verbose: 0,
-            json,
-            no_color: false,
-            plain: false,
-            no_clear_history: false,
-            kill_session: false,
-            no_kill_session: false,
-            accept_pivot_risks: false,
-            no_pivot: false,
-            yes: false,
-            interactive: false,
-            nixos_flake: None,
-            dry_run: false,
-            overlay_only: false,
+    fn json() -> OutputSettings {
+        OutputSettings {
+            mode: OutputMode::Json,
+            ..OutputSettings::default()
         }
     }
 
     #[test]
-    fn status_render_flags_are_detected() {
-        let command = Commands::Status {
-            json: false,
-            no_color: true,
-            plain: false,
-            verbose: false,
-        };
-
-        assert_eq!(render_flags_for_command(&command), (true, false));
-    }
-
-    #[test]
-    fn non_rendering_commands_default_to_colored_human_mode() {
-        let command = Commands::Verify {
-            deep: false,
-            json: false,
-        };
-
-        assert_eq!(render_flags_for_command(&command), (false, false));
-    }
-
-    #[test]
     fn activate_json_uses_json_stream_stdout_format() {
+        let activate = Commands::Activate(ActivateArgs::default());
         assert_eq!(
-            stdout_format_for_command(&activate_command(true)),
+            stdout_format_for(&activate, &json()),
             StdoutFormat::ActivateJsonStream
         );
     }
 
     #[test]
     fn activate_without_json_uses_human_stdout_format() {
+        let activate = Commands::Activate(ActivateArgs::default());
         assert_eq!(
-            stdout_format_for_command(&activate_command(false)),
+            stdout_format_for(&activate, &OutputSettings::default()),
             StdoutFormat::Human
         );
+    }
+
+    #[test]
+    fn other_commands_with_json_keep_tracing_on_stderr() {
+        let verify = Commands::Verify(VerifyArgs::default());
+        assert_eq!(stdout_format_for(&verify, &json()), StdoutFormat::Human);
+    }
+
+    #[test]
+    fn writing_commands_enable_the_log_file() {
+        use nails::cli::args::ResetUpperArgs;
+        use std::path::PathBuf;
+
+        assert!(command_writes_logs(&Commands::Activate(
+            ActivateArgs::default()
+        )));
+        assert!(command_writes_logs(&Commands::Deactivate(
+            Default::default()
+        )));
+        assert!(command_writes_logs(&Commands::ResetUpper(ResetUpperArgs {
+            target: PathBuf::from("/home"),
+            yes: true,
+        })));
+    }
+
+    #[test]
+    fn read_only_and_setup_commands_never_create_log_files() {
+        use nails::cli::args::InitArgs;
+        use std::path::PathBuf;
+
+        assert!(!command_writes_logs(&Commands::Verify(
+            VerifyArgs::default()
+        )));
+        assert!(!command_writes_logs(&Commands::Check(Default::default())));
+        assert!(!command_writes_logs(&Commands::Status(Default::default())));
+        assert!(!command_writes_logs(&Commands::Init(InitArgs {
+            path: PathBuf::from("/mnt/data"),
+            ..Default::default()
+        })));
+        assert!(!command_writes_logs(&Commands::Transition));
     }
 }

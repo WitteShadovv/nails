@@ -1,5 +1,12 @@
-# Test 29: Activate Dry Run
-# Checklist: subtests, deterministic waits, hard assertions, meta.tags, shared helpers, forensic invariants preserved.
+# Test 29: `activate --dry-run` and `check` are read-only
+#
+# With a hidden flake named but the hidden NixOS layout never staged, `nails
+# check --nixos-flake` reports its sections (pre-flight checks, the decoy
+# filesystems of the hidden root, the session, the NixOS profile) and refuses
+# with exit 4. `activate --dry-run` with the same arguments is a thin alias:
+# identical output and exit code. Neither builds anything (no `nix build` or
+# `nix-build` runs), prepares a next root at /run/nextroot, writes a state
+# file or the hidden layout, or leaves the plain decoy root.
 
 { self, pkgs, ... }:
 let
@@ -27,61 +34,53 @@ in
 
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.readStatusJsonFn}
 
-    import json
-    import shlex
-    import uuid
+    from nails_e2e import run_command_capture, session
 
-    def run_command_capture(label, command):
-        stem = f"/tmp/{label}-{uuid.uuid4().hex}"
-        machine.succeed(
-            "bash -lc "
-            + shlex.quote(
-                "set +e; "
-                + command
-                + f" > {stem}.stdout 2> {stem}.stderr; "
-                + f"printf '%s' \"$?\" > {stem}.rc"
+    BUILD_LOG = "/run/nails-build-calls.log"
+
+
+    def install_build_shims():
+        """Put logging `nix` and `nix-build` shims first on PATH. They record
+        every call and then run the real tool, so a read-only `nix eval` still
+        works while any build shows up in the log."""
+        machine.succeed(f"rm -f {BUILD_LOG} && mkdir -p /run/nails-shims")
+        for tool in ("nix", "nix-build"):
+            real = machine.succeed(f"bash -lc 'command -v {tool}'").strip()
+            machine.succeed(
+                f"cat > /run/nails-shims/{tool} <<'EOF'\n"
+                "#!/bin/sh\n"
+                f"printf '{tool} %s\\n' \"$*\" >> {BUILD_LOG}\n"
+                f"exec {real} \"$@\"\n"
+                "EOF\n"
+                f"chmod 755 /run/nails-shims/{tool}"
             )
-        )
-        return (
-            int(machine.succeed(f"cat {stem}.rc")),
-            machine.succeed(f"cat {stem}.stdout"),
-            machine.succeed(f"cat {stem}.stderr"),
-        )
+        return "PATH=/run/nails-shims:$PATH"
 
-    def install_nixos_rebuild_wrapper(log_path):
-        real_nixos_rebuild = machine.succeed("bash -lc 'command -v nixos-rebuild'").strip()
-        machine.succeed(
-            f"""mkdir -p /tmp/nails-wrapper/bin
-    rm -f {log_path}
-    cat > /tmp/nails-wrapper/bin/nixos-rebuild <<'EOF'
-    #!/bin/sh
-    printf '%s\\n' "$*" >> {log_path}
-    exec {real_nixos_rebuild} "$@"
-    EOF
-    chmod 755 /tmp/nails-wrapper/bin/nixos-rebuild"""
-        )
-        return "PATH=/tmp/nails-wrapper/bin:$PATH"
 
-    def assert_inactive_status_local(config_path):
-        payload = json.loads(machine.succeed(f"nails --config {config_path} status --json"))
-        assert str(payload["state"]).lower() == "inactive", f"Expected inactive state, got: {payload}"
+    def assert_no_build():
+        rc, calls = machine.execute(f"cat {BUILD_LOG} 2>/dev/null")
+        calls = calls if rc == 0 else ""
+        builds = [
+            line
+            for line in calls.splitlines()
+            if line.startswith("nix-build") or " build " in f" {line} "
+        ]
+        assert not builds, f"a read-only command started a build: {builds}"
 
-    def assert_no_overlays_local(paths):
-        for path in paths:
-            machine.fail(f"/bin/sh -lc 'mountpoint -q {path} && [ \"$(findmnt -n -o FSTYPE {path})\" = overlay ]'")
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    headless_config = "/tmp/nails-headless.yaml"
-    flake_ref = "/mnt/hidden-volume/nixos#dry-run-e2e"
+    headless_config = "/run/nails-headless.toml"
+    flake_ref = "/mnt/data/nixos#dry-run-e2e"
     write_headless_config(headless_config)
 
-    with subtest("prepare hidden flake and rebuild wrapper"):
+    with subtest("prepare hidden flake and build shims"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("mkdir -p /mnt/hidden-volume/nixos")
-        machine.succeed("""cat > /mnt/hidden-volume/nixos/flake.nix <<'EOF'
+        machine.succeed("mkdir -p /mnt/data/nixos")
+        machine.succeed("""cat > /mnt/data/nixos/flake.nix <<'EOF'
     {
       description = "NAILS dry-run flake E2E";
       inputs.nixpkgs.url = "path:${nixpkgsPath}";
@@ -93,27 +92,56 @@ in
       };
     }
     EOF""")
-        wrapper_env = install_nixos_rebuild_wrapper("/tmp/nixos-rebuild-dry-run.log")
-        machine.fail("test -e /mnt/hidden-volume/state.json")
+        shim_env = install_build_shims()
+        machine.fail("test -e /mnt/data/state.json")
 
-    with subtest("dry-run prints plan without mutations"):
-        rc, stdout, stderr = run_command_capture(
-            "activate-dry-run",
-            f"{wrapper_env} nails --config {headless_config} activate --dry-run --no-kill-session --flake {flake_ref}",
+    with subtest("check reports readiness without mutating anything"):
+        check = run_command_capture(
+            machine,
+            "nails-check",
+            f"{shim_env} nails --config {headless_config} check --nixos-flake {flake_ref}",
         )
-        assert rc == 0, f"Expected dry-run success, got rc={rc}, stdout={stdout!r}, stderr={stderr!r}"
-        assert "NAILS Dry-Run: Activation Preview" in stdout, f"Unexpected dry-run output: {stdout!r}"
-        assert "Overlay Targets" in stdout, f"Expected overlay plan in stdout, got: {stdout!r}"
-        assert f"NixOS flake: {flake_ref} — would build and switch profile" in stdout, \
-            f"Expected explicit flake plan in stdout, got: {stdout!r}"
-        machine.fail("test -s /tmp/nixos-rebuild-dry-run.log")
+        out = check["stdout"]
+        for section in (
+            "NAILS Readiness Check",
+            "Pre-flight checks:",
+            "Decoy filesystems in the hidden root:",
+            "Session:",
+            "NixOS profile:",
+        ):
+            assert section in out, f"missing {section!r} in check output: {out!r}"
+        assert f"NixOS flake: {flake_ref}" in out, out
+        # The hidden layout was never staged, so the read-only check refuses
+        # (exit 4) with the nixos-config check instead of creating it.
+        assert check["rc"] == 4, (
+            f"expected check to refuse (rc=4), got rc={check['rc']}, stderr={check['stderr']!r}"
+        )
+        assert "Not ready" in out, out
+        nixos_rows = [line for line in out.splitlines() if "nixos-config:" in line]
+        assert nixos_rows and "/mnt/data/root/upper/etc/nixos" in nixos_rows[0], (
+            f"expected the nixos-config check to name the missing layout: {out!r}"
+        )
+        assert_no_build()
 
-    with subtest("state and filesystem remain untouched"):
-        assert_inactive_status_local(headless_config)
-        assert_no_overlays_local(["/etc", "/home", "/root", "/srv", "/tmp"])
-        machine.fail("test -e /mnt/hidden-volume/state.json")
-        machine.fail("test -e /mnt/hidden-volume/config/nixos/configuration.nix")
-        machine.fail("test -e /mnt/hidden-volume/etc/nixos/nails/configuration.nix")
+    with subtest("activate --dry-run is a thin alias for check"):
+        dry = run_command_capture(
+            machine,
+            "activate-dry-run",
+            f"{shim_env} nails --config {headless_config} activate --dry-run --nixos-flake {flake_ref}",
+        )
+        assert dry["rc"] == check["rc"], f"dry-run rc={dry['rc']} must match check rc={check['rc']}"
+        assert dry["stdout"] == check["stdout"], "dry-run and check must produce identical output"
+        assert_no_build()
+
+    with subtest("state, hidden volume and root remain untouched"):
+        status = read_status_json(config_path=headless_config)
+        assert status["posture"] == "decoy", status
+        session.assert_decoy_root(machine)
+        machine.fail("test -e /run/nextroot/etc")
+        machine.fail("test -e /mnt/data/state.json")
+        machine.fail("test -e /mnt/data/root/upper")
+        machine.fail("test -e /mnt/data/config/nixos/configuration.nix")
         machine.fail("test -e /etc/nixos/nails/configuration.nix")
+        assert machine.succeed("systemctl show -p SoftRebootsCount --value").strip() == "0"
   '';
 }

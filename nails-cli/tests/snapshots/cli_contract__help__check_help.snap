@@ -1,0 +1,64 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - check
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Check readiness to activate without making any changes (alias: doctor)
+
+Usage: nails check [OPTIONS]
+
+Options:
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+      --overlay-only
+          Check as for `activate --overlay-only` (skip the hidden NixOS build checks)
+
+      --nixos-flake <FLAKE_REF>
+          NixOS layer: check a specific flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+      --accept-persistent-decoy
+          Report a persistent decoy posture as a warning instead of a failure
+
+          Mirrors `activate --accept-persistent-decoy` so `check`/`--dry-run` reflects what activation would do.
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+EXAMPLES:
+  nails check                         Report readiness to activate
+  nails doctor                        Same, via the alias
+  nails check --overlay-only          Skip the hidden NixOS build checks
+
+----- stderr -----

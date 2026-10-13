@@ -1,0 +1,448 @@
+name: E2E
+
+# The NixOS VM suite, planned and run by the ci.e2e package. One workflow
+# serves every lane; only the selection and the runner differ:
+#
+#   pull request to main  affected: the ci group plus every test whose
+#                         derivation changed ('full-e2e' label: all)
+#   push to main          all; tests unchanged since a passed run are
+#                         substituted from the binary cache
+#   nightly schedule      execute: every test driver runs, cache or not,
+#                         durations are refreshed, the performance tests run
+#                         without blocking and red runs open an issue
+#   dispatch or call      any mode on any runner (`runner` is runs-on JSON);
+#                         release.yml calls it with mode all for a tag
+#
+# Only the nightly (or a dispatched 'execute') run times anything: every other
+# lane leaves the performance group out.
+#
+# No secret reaches code that nobody vetted: fork and Dependabot pull requests
+# run like any other, with a read-only cache. `e2e-result` is the one status
+# to require; it is green when the path filter found nothing to test.
+
+on:
+  pull_request:
+    branches: [main]
+    # 'labeled' lets the full-e2e label take effect without a new push. Any
+    # other label runs the same selection again, which is correct, merely
+    # redundant.
+    types: [opened, synchronize, reopened, ready_for_review, labeled]
+  push:
+    branches: [main]
+  schedule:
+    # Nightly at 02:17 UTC
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Which tests run
+        type: choice
+        default: all
+        options: [affected, ci, all, execute]
+      runner:
+        description: >-
+          runs-on for the shards, as JSON: "ubuntu-24.04" or a label list such
+          as ["self-hosted","nails-e2e"]
+        type: string
+        default: '"ubuntu-24.04"'
+      max-shards:
+        description: >-
+          Upper bound on parallel shards; use 1 for a single-use self-hosted
+          runner
+        type: number
+        default: 10
+  workflow_call:
+    inputs:
+      mode:
+        type: string
+        default: all
+      runner:
+        type: string
+        default: '"ubuntu-24.04"'
+      max-shards:
+        type: number
+        default: 10
+    secrets:
+      CACHIX_AUTH_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  # A new push supersedes a pull request's run; runs on main always finish,
+  # because each one fills the cache for the next.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      mode: ${{ steps.select.outputs.mode }}
+      runner: ${{ steps.select.outputs.runner }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          # Full history: the path filter and the affected selection compare
+          # against the base revision.
+          fetch-depth: 0
+          persist-credentials: false
+
+      # The single path filter of the suite. A change outside these paths
+      # cannot alter a test, so the run is skipped and e2e-result passes.
+      # It filters this workflow's own pull request and push runs only: a
+      # dispatch or a call (which sets MODE_INPUT) asked for its tests.
+      - name: Select mode, runner and base revision
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MODE_INPUT: ${{ inputs.mode }}
+          RUNNER_INPUT: ${{ inputs.runner }}
+          MAX_SHARDS_INPUT: ${{ inputs.max-shards }}
+          FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'full-e2e') }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+
+          mode=${MODE_INPUT:-}
+          if [ -z "$mode" ]; then
+            case "$EVENT_NAME" in
+              schedule) mode=execute ;;
+              push) mode=all ;;
+              pull_request) if [ "$FULL_LABEL" = true ]; then mode=all; else mode=affected; fi ;;
+              *) mode=ci ;;
+            esac
+          fi
+          case "$mode" in
+            affected | ci | all | execute) ;;
+            *) echo "::error::unknown mode '$mode'"; exit 1 ;;
+          esac
+
+          case "$EVENT_NAME" in
+            pull_request) base=HEAD^1 ;; # first parent of the PR merge commit
+            push) base=$PUSH_BEFORE ;;
+            *) base=origin/main ;;
+          esac
+          if ! git rev-parse -q --verify "$base^{commit}" > /dev/null; then
+            base=
+          fi
+
+          if [ -z "$MODE_INPUT" ] && { [ "$EVENT_NAME" = pull_request ] || [ "$EVENT_NAME" = push ]; }; then
+            relevant='^(nails-base/|nails-core/|nails-cli/|nails-forensics/|nails-platform/|nails-session/|nails-teardown/|nix/|ci/e2e/|\.github/actions/setup-nix/|\.github/workflows/e2e\.yml$|scripts/run-e2e-tests\.sh$|flake\.(nix|lock)$|Cargo\.(toml|lock)$|rust-toolchain\.toml$)'
+            # An unknown base (new branch, force push) counts as a change.
+            if [ -n "$base" ] && ! git diff --name-only "$base" HEAD | grep -qE "$relevant"; then
+              echo "No change under the E2E paths since $base; nothing to test."
+              mode=skip
+            fi
+          fi
+          if [ "$mode" = affected ] && [ -z "$base" ]; then
+            mode=all
+          fi
+
+          runner=$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))' "${RUNNER_INPUT:-\"ubuntu-24.04\"}")
+          max_shards=${MAX_SHARDS_INPUT:-10}
+          if ! [[ "$max_shards" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::max-shards must be a positive integer, got '$max_shards'"
+            exit 1
+          fi
+
+          {
+            echo "mode=$mode"
+            echo "runner=$runner"
+            echo "base=$base"
+            echo "max-shards=$max_shards"
+          } >> "$GITHUB_OUTPUT"
+          echo "Mode: $mode, runner: $runner, base: ${base:-none}, max shards: $max_shards"
+
+      - name: Set up Nix
+        if: steps.select.outputs.mode != 'skip'
+        uses: ./.github/actions/setup-nix
+        with:
+          # Fork pull requests and Dependabot receive no secrets, and the
+          # action pushes only for trusted events, so the token needs no
+          # environment.
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
+
+      # Built once here, so the shards substitute it from the cache instead
+      # of each compiling it (when a cache is configured).
+      - name: Build nails
+        if: steps.select.outputs.mode != 'skip'
+        run: nix build -L --no-link .#nails
+
+      - name: Plan shards
+        id: matrix
+        if: steps.select.outputs.mode != 'skip'
+        env:
+          MODE: ${{ steps.select.outputs.mode }}
+          BASE: ${{ steps.select.outputs.base }}
+          MAX_SHARDS: ${{ steps.select.outputs.max-shards }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            affected) targets=(--affected "$BASE") ;;
+            ci) targets=(ci) ;;
+            all | execute) targets=(all) ;;
+          esac
+          # Timing budgets on shared runners cannot gate a merge, so the
+          # performance tests never run in a shard, not even when a pull
+          # request changes them; the nightly performance job runs them.
+          targets+=(--exclude performance)
+          matrix=$(python3 -m ci.e2e plan "${targets[@]}" --max-shards "$MAX_SHARDS" --format github-matrix)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          {
+            echo "## E2E plan ($MODE)"
+            echo
+            echo "| Shard | Tests | Timeout (min) |"
+            echo "|---|---|---:|"
+            jq -r '.include[] | "| \(.index)/\(.count) | \(.tests | map("`" + . + "`") | join(" ")) | \(.timeout) |"' <<< "$matrix"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  shard:
+    name: Shard ${{ matrix.index }}/${{ matrix.count }}
+    needs: plan
+    if: needs.plan.outputs.mode != 'skip'
+    runs-on: ${{ fromJSON(needs.plan.outputs.runner) }}
+    # About 1.5 times the shard's weighted test time plus setup; see
+    # shard_timeout_minutes in ci/e2e/plan.py.
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      # install-nix-action (inside setup-nix) opens /dev/kvm to the runner
+      # user on hosted runners; self-hosted runners must provide KVM.
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          # Pushes passed tests (trusted events only), so later runs
+          # substitute them instead of booting them again.
+          cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
+
+      # Failed tests run once more; a pass on that retry is reported as FLAKY
+      # in the summary and as a warning, never silently turned green.
+      - name: Run tests
+        env:
+          MODE: ${{ needs.plan.outputs.mode }}
+          TESTS: ${{ join(matrix.tests, ' ') }}
+          INDEX: ${{ matrix.index }}
+          COUNT: ${{ matrix.count }}
+        run: |
+          set -euo pipefail
+          read -ra tests <<< "$TESTS"
+          if [ "${#tests[@]}" -eq 0 ]; then
+            echo "No tests selected for this shard."
+            exit 0
+          fi
+          args=(
+            run "${tests[@]}"
+            --retries 1
+            --durations-out "$RUNNER_TEMP/e2e-durations/shard-$INDEX.jsonl"
+            --log-dir "$RUNNER_TEMP/e2e-logs"
+            --summary "$GITHUB_STEP_SUMMARY"
+            --heading "E2E shard $INDEX/$COUNT ($MODE)"
+            --github
+          )
+          if [ "$MODE" = execute ]; then
+            args+=(--execute)
+          fi
+          python3 -m ci.e2e "${args[@]}"
+
+      # Drift is reported, never enforced, because runner types differ.
+      - name: Report shard weight drift
+        if: ${{ !cancelled() }}
+        env:
+          INDEX: ${{ matrix.index }}
+        run: |
+          durations="$RUNNER_TEMP/e2e-durations/shard-$INDEX.jsonl"
+          if [ ! -s "$durations" ]; then
+            echo "No per-test durations were recorded for this shard."
+            exit 0
+          fi
+          python3 -m ci.e2e drift \
+            --weights nix/e2e-tests/shard-durations.json \
+            --heading "E2E shard $INDEX weight drift" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --github \
+            "$durations"
+
+      - name: Upload durations
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: e2e-durations-shard-${{ matrix.index }}
+          path: ${{ runner.temp }}/e2e-durations/
+          if-no-files-found: ignore
+          retention-days: 90
+
+      # Only the logs of failed tests; the rest of the runner stays private.
+      - name: Upload failure logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: e2e-logs-shard-${{ matrix.index }}
+          path: ${{ runner.temp }}/e2e-logs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  # Informational: timing thresholds on shared runners are noisy, so a red
+  # performance run never fails the workflow or opens an issue.
+  performance:
+    name: Performance (informational)
+    needs: plan
+    if: needs.plan.outputs.mode == 'execute'
+    runs-on: ${{ fromJSON(needs.plan.outputs.runner) }}
+    timeout-minutes: 60
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Run the performance tests
+        run: |
+          python3 -m ci.e2e run performance --execute \
+            --durations-out "$RUNNER_TEMP/e2e-durations/performance.jsonl" \
+            --log-dir "$RUNNER_TEMP/e2e-logs" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            --heading "E2E performance (informational)" \
+            --github
+
+      - name: Upload durations
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: e2e-durations-performance
+          path: ${{ runner.temp }}/e2e-durations/
+          if-no-files-found: ignore
+          retention-days: 90
+
+  # The nightly run boots every test, so its durations are the freshest
+  # weights there are. The regenerated file is offered as an artifact and a
+  # diff; committing it stays a deliberate change.
+  weights:
+    name: Refresh shard weights
+    needs: [plan, shard, performance]
+    if: ${{ !cancelled() && needs.plan.outputs.mode == 'execute' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Download durations
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          pattern: e2e-durations-*
+          path: ${{ runner.temp }}/durations
+          merge-multiple: true
+
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+
+      - name: Regenerate the weights
+        run: |
+          set -euo pipefail
+          mapfile -t samples < <(find "$RUNNER_TEMP/durations" -name '*.jsonl' -size +0 | sort)
+          if [ "${#samples[@]}" -eq 0 ]; then
+            echo "No durations were recorded; the weights stay as they are."
+            exit 0
+          fi
+          python3 -m ci.e2e regen-weights --weights nix/e2e-tests/shard-durations.json "${samples[@]}"
+          {
+            echo "## Shard weights"
+            echo
+            if git diff --quiet -- nix/e2e-tests/shard-durations.json; then
+              echo "The recorded durations match the checked-in weights."
+            else
+              echo "Download the \`shard-durations\` artifact to commit these weights:"
+              echo
+              echo '```diff'
+              git diff -- nix/e2e-tests/shard-durations.json
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the weights
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: shard-durations
+          path: nix/e2e-tests/shard-durations.json
+          retention-days: 30
+
+  e2e-result:
+    name: e2e-result
+    needs: [plan, shard]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Check the outcome
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          SHARD_RESULT: ${{ needs.shard.result }}
+        run: |
+          echo "plan: $PLAN_RESULT, mode: ${MODE:-unknown}, shards: $SHARD_RESULT"
+          if [ "$PLAN_RESULT" != success ]; then
+            echo "::error::Planning the E2E run failed."
+            exit 1
+          fi
+          if [ "$MODE" = skip ]; then
+            echo "No E2E-relevant change; nothing had to run."
+            exit 0
+          fi
+          if [ "$SHARD_RESULT" != success ]; then
+            echo "::error::One or more E2E shards failed or did not finish."
+            exit 1
+          fi
+          echo "Every E2E shard passed."
+
+  # Pushes to main and nightly runs are unattended: a red one opens or
+  # comments on the 'CI red: E2E' issue, and the next green run closes it.
+  report-status:
+    name: Report status
+    needs: [plan, shard]
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
+          title: "CI red: E2E"

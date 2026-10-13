@@ -1,0 +1,12 @@
+---
+source: nails-cli/tests/cli_contract.rs
+expression: redact_volume_line(&stdout)
+---
+=======================================
+  NAILS Status Report
+=======================================
+
+Security Posture:   [DECOY] Decoy system in use - no hidden session
+State:              Inactive (recorded)
+Hidden volume: [SIZE]
+[WARN] The decoy keeps a persistent journal or syslog: the soft-reboots are recorded on its disk

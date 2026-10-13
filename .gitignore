@@ -15,16 +15,14 @@ target/
 
 # Distribution / packaging
 .Python
-build/
+/build/
 develop-eggs/
-dist/
+/dist/
 downloads/
 eggs/
 .eggs/
-lib64/
 parts/
 sdist/
-var/
 wheels/
 *.egg-info/
 .installed.cfg
@@ -35,7 +33,6 @@ nails.egg-info/
 .venv/
 venv/
 ENV/
-env/
 
 # IDE files
 .vscode/
@@ -47,18 +44,10 @@ env/
 .classpath
 .settings/
 
-# Local-only developer config
-settings.json
-
-# Editor/tool config files
-.claude/
-.codex/
-.opencode/
-.qodo/
-.cursor/
-
 # Testing
 .pytest_cache/
+# REPL history of the interactive NixOS test driver
+.nixos-test-history
 .coverage
 coverage/
 htmlcov/
@@ -110,7 +99,6 @@ secrets/
 *.o
 *.a
 *.out
-core
 *.core
 
 # SBOM and security scanning artifacts
@@ -118,7 +106,6 @@ sbom.*.json
 sbom*.json
 cyclonedx
 cyclonedx-*
-jq
 
 # Temporary files
 tmp/
@@ -130,38 +117,7 @@ temp/
 \#*\#
 .\#*
 
-# Local/private planning workspace
-# These docs are intentionally kept out of the public repo until curated.
-# Public docs that are already tracked remain unaffected.
-docs/analysis/
-docs/architecture/
-docs/epics/
-docs/flowcharts/
-docs/research/
-docs/sprint-artifacts/
-docs/*-report-*.md
-docs/*-readiness-*.md
-docs/atdd-checklist-*.md
-docs/epics*.md
-docs/sprint-change-proposal-*.md
-docs/ux-clarifications-*.md
-docs/architecture.md
-docs/bmm-workflow-status.yaml
-docs/ci.md
-docs/definition-of-done.md
-docs/development-guide.md
-docs/impermanence-base-config.nix
-docs/MIGRATION_GUIDE.md
-docs/prd.md
-docs/RUST_ARCHITECTURE.md
-docs/RUST_TRANSITION_SUMMARY.md
-docs/test-design-system.md
-docs/test-safety.md
-docs/ux-design-specification.md
-docs/ux-validation-report.md
-
-# Local-only artifacts and maintenance helpers
-.bmad/
-bmad-custom-src/
-epics.md
-scripts/clean-ai-traces.sh
+# Local E2E runner output (just e2e-local)
+/e2e-logs/
+/e2e-logs-run.txt
+/e2e-summary.txt

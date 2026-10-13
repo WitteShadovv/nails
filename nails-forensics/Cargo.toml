@@ -1,0 +1,61 @@
+[package]
+name = "nails-forensics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Residue verification, the examiner's view, the residue catalog and the rehearse canary self-test of the nails libraries"
+homepage.workspace = true
+repository.workspace = true
+readme = "../README.md"
+# Never publish to a registry; see nails-core/Cargo.toml.
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "nails_forensics"
+path = "src/lib.rs"
+
+[features]
+# The test-only hooks; forwards to the crates below. Off by default, see
+# nails-core/Cargo.toml.
+test-hooks = [
+    "nails-base/test-hooks",
+    "nails-platform/test-hooks",
+    "nails-session/test-hooks",
+]
+# The test fixtures of the crates below, for this crate's test builds.
+test-support = [
+    "nails-base/test-support",
+    "nails-platform/test-support",
+    "nails-session/test-support",
+]
+
+# The dependency boundary of this crate: it only reads. It uses the session's
+# probes and unit names and nails-teardown's readers (the plan format, the
+# mountinfo parser, the next-root and drop-in paths), never the code that
+# enters, leaves or tears down a session, and never the orchestration in
+# nails-core. The `boundary` test enforces both.
+[dependencies]
+nails-base = { path = "../nails-base" }
+nails-platform = { path = "../nails-platform" }
+nails-session = { path = "../nails-session" }
+nails-teardown = { path = "../nails-teardown" }
+chrono = { workspace = true }
+hex = { workspace = true }
+# Fast substring search for the raw-device canary scan (already in the tree
+# through regex-automata).
+memchr = "2.8"
+rustix = { workspace = true, features = ["fs", "process"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+nix = { workspace = true, features = ["mount"] }
+tempfile = { workspace = true }
+# Self dev-dependency, as in nails-core: the test-only hooks and fixtures for
+# this crate's own tests.
+nails-forensics = { path = ".", features = ["test-hooks", "test-support"] }

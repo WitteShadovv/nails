@@ -1,0 +1,14 @@
+# Single source of truth for the line-coverage floor.
+#
+# The `coverage` recipe in the justfile reads `line_threshold` from here and
+# nowhere else; CI runs that recipe through `just coverage` and local runs reach
+# it through `just ci-rust`, so the number is defined in exactly one file.
+#
+# The figure measures production code only. The in-memory filesystem mock, the
+# shared test fixtures, the platform test doubles and every test file are left
+# out of the report (the ignore regex in the `coverage` recipe), so it is not
+# inflated by test infrastructure that never ships in a release binary.
+#
+# Ratchet this upward as real coverage improves; never lower it to make a red
+# run pass.
+line_threshold = 86.0

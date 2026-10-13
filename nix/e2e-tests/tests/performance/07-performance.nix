@@ -1,15 +1,31 @@
 # Test 07: Performance Validation
-# Tests all performance requirements with statistical rigor
+#
+# Holds the whole-root session to its time budgets, each timed inside the
+# guest:
+#   - `nails status` (on the decoy and in the hidden session) and `nails check`
+#     stay fast: they only read;
+#   - `nails activate` and `nails deactivate`, from the trigger until the new
+#     userspace has settled after the soft-reboot (the `trigger_to_settled`
+#     timing follow_soft_reboot takes from the guest's uptime), stay within a
+#     generous VM budget, over two round trips;
+#   - `nails emergency` in the hidden session gets a shell on the plain decoy
+#     back quickly (`trigger_to_backdoor`): its hot path phases are logged by
+#     the hidden process, which the switch kills, so the user-visible time to
+#     the next userspace is what is measured.
+# The slowest sample must stay under each budget. Wall-clock budgets on shared
+# runners cannot gate a merge, so only the nightly E2E run executes this test.
 
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  emergency = import ./../../lib/emergency.nix;
   perf = import ./../../lib/perf.nix;
 in
 {
-  name = "performance";
+  name = "performance-validation";
+  # Five soft-reboots at about 15 s each, plus setup; the old weight was
+  # measured while every sample rebooted the VM.
+  globalTimeout = 1500;
   meta.tags = [ "performance" ];
 
   nodes = {
@@ -18,128 +34,84 @@ in
       {
         imports = [ ./../../lib/vm-config.nix ];
         environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-        services.getty.autologinUser = "root";
-        systemd.services.nails-emergency-test = emergency.makeEmergencyUnit self.packages.x86_64-linux.nails "/tmp/nails-headless.yaml";
       };
   };
 
   testScript = _: ''
-    def now():
-        import time
+    from nails_e2e import session
 
-        return time.time()
-
-    ${testHelpers.writeHeadlessConfigFn}
-    ${emergency.prepareTty1ShellFn}
-    ${emergency.waitForConsoleLogFn}
-    ${emergency.rebootAfterEmergencyFn}
-    ${emergency.runEmergencyCommandFn}
+    ${testHelpers.canonicalActivateFn}
+    ${testHelpers.canonicalDeactivateFn}
     ${perf.detectTcgThresholdMultiplierFn}
-    ${perf.p95Fn}
+    ${perf.guestElapsedMsFn}
+
+    CONFIG = "/mnt/data/config/nails.toml"
+
+
+    def assert_within_budget(label, samples_s, budget_s):
+        slowest = max(samples_s)
+        print(f"{label}: samples {samples_s} s, slowest {slowest:.3f}s, budget {budget_s:.1f}s")
+        assert slowest < budget_s, f"FAIL: {label} took {slowest:.3f}s, over its {budget_s:.1f}s budget"
+
+
+    def timed_reads(label, command, budget_s, samples=3):
+        assert_within_budget(
+            label, [guest_elapsed_ms(command) / 1000.0 for _ in range(samples)], budget_s
+        )
+
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-    headless_config = "/tmp/nails-headless.yaml"
-    write_headless_config(headless_config)
-
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+    machine.succeed("nails init /mnt/data")
+    machine.succeed(
+        f"cat > {CONFIG} <<'EOF'\n"
+        "hidden_volume_root = \"/mnt/data\"\n"
+        "minimum_space_mb = 100\n"
+        "EOF"
+    )
 
     is_tcg, threshold_multiplier = detect_tcg_threshold_multiplier()
     status_threshold = 0.5 * threshold_multiplier
-    activation_threshold = 5.0 * threshold_multiplier
-    emergency_threshold = 3.0 * threshold_multiplier
-
+    check_threshold = 10.0 * threshold_multiplier
+    # The spike measured 10 to 15 s per transition (about 6 s of it the DHCP
+    # client) on two vCPUs; a misbehaving unit can stall the shutdown far
+    # longer, which is what the budget is there to catch.
+    switch_threshold = 60.0 * threshold_multiplier
+    emergency_threshold = 30.0 * threshold_multiplier
     print(f"TCG mode: {is_tcg}, threshold multiplier: {threshold_multiplier:.1f}x")
-    print(f"  Status threshold:     {status_threshold:.1f}s")
-    print(f"  Activation threshold: {activation_threshold:.1f}s")
-    print(f"  Emergency threshold:  {emergency_threshold:.1f}s")
 
-    print("\n=== Testing Status Command Performance ===")
-    status_times = []
-    for _ in range(1, 11):
-        start = now()
-        machine.succeed("nails status")
-        status_times.append(now() - start)
+    with subtest("status and check on the decoy"):
+        timed_reads("Status (decoy)", f"nails --config {CONFIG} status", status_threshold)
+        # check exits 0 or 4 by readiness; only its run time matters here.
+        timed_reads(
+            "Check", f"nails --config {CONFIG} check --overlay-only || true", check_threshold
+        )
 
-    status_times_sorted = sorted(status_times)
-    p95_status = p95(status_times)
-    median_status = status_times_sorted[4]
+    with subtest("activate and deactivate round trips"):
+        activate_s = []
+        deactivate_s = []
+        for cycle in range(2):
+            if cycle > 0:
+                machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+            timings = canonical_activate(CONFIG, "--overlay-only", f"perf-activate-{cycle}")
+            activate_s.append(timings["trigger_to_settled"])
+            if cycle == 0:
+                timed_reads("Status (hidden)", f"nails --config {CONFIG} status", status_threshold)
+            timings = canonical_deactivate(CONFIG, f"perf-deactivate-{cycle}")
+            deactivate_s.append(timings["trigger_to_settled"])
+        assert_within_budget("Activate to the settled hidden root", activate_s, switch_threshold)
+        assert_within_budget("Deactivate to the settled decoy", deactivate_s, switch_threshold)
 
-    print("Status Performance (10 iterations):")
-    print(f"  Median: {median_status:.3f}s")
-    print(f"  P95:    {p95_status:.3f}s")
-
-    assert p95_status < status_threshold, \
-        f"FAIL: Status p95 {p95_status:.3f}s exceeds {status_threshold:.1f}s threshold"
-    print(f"✓ Status p95 {p95_status:.3f}s meets <{status_threshold:.1f}s requirement")
-
-    print("\n=== Testing Activation Performance ===")
-    activation_times = []
-    for _ in range(1, 6):
-        start = now()
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
-        activation_times.append(now() - start)
-
-        machine.execute("sudo nails emergency")
-        machine.crash()
-        machine.start()
-        machine.wait_for_unit("multi-user.target")
-        machine.fail("mount | grep 'overlay on /home'")
-        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-
-    activation_sorted = sorted(activation_times)
-    p95_activation = p95(activation_times)
-    median_activation = activation_sorted[2]
-
-    print("Activation Performance (5 cycles):")
-    print(f"  Median: {median_activation:.3f}s")
-    print(f"  P95:    {p95_activation:.3f}s")
-
-    assert p95_activation < activation_threshold, \
-        f"FAIL: Activation p95 {p95_activation:.3f}s exceeds {activation_threshold:.1f}s threshold"
-    print(f"✓ Activation p95 {p95_activation:.3f}s meets <{activation_threshold:.1f}s requirement")
-
-    print("\n=== Testing Emergency Performance ===")
-    emergency_times = []
-    for i in range(1, 6):
-        if i > 1:
-            machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-
-        machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
-        emergency_time = run_emergency_command()
-        emergency_times.append(emergency_time)
-
-        machine.fail("mount | grep 'overlay on /home'")
-        machine.fail("mount | grep 'overlay on /etc'")
-
-    emergency_sorted = sorted(emergency_times)
-    p95_emergency = p95(emergency_times)
-    median_emergency = emergency_sorted[2]
-
-    print("Emergency Performance (5 cycles):")
-    print(f"  Median: {median_emergency:.3f}s")
-    print(f"  P95:    {p95_emergency:.3f}s")
-
-    assert p95_emergency < emergency_threshold, \
-        f"FAIL: Emergency p95 {p95_emergency:.3f}s exceeds {emergency_threshold:.1f}s threshold"
-    print(f"✓ Emergency p95 {p95_emergency:.3f}s meets <{emergency_threshold:.1f}s requirement")
-
-    print(f"\n{'='*60}")
-    print("PERFORMANCE TEST SUMMARY")
-    print(f"{'='*60}")
-    kvm_note = " (TCG mode - relaxed thresholds)" if is_tcg else ""
-    print(f"Environment:{kvm_note}")
-    print("\nStatus Command:")
-    print(f"  Median: {median_status:.3f}s  P95: {p95_status:.3f}s  (Threshold: <{status_threshold:.1f}s)")
-    print(f"  {'✓ PASS' if p95_status < status_threshold else '✗ FAIL'}")
-    print("\nActivation:")
-    print(f"  Median: {median_activation:.3f}s  P95: {p95_activation:.3f}s  (Threshold: <{activation_threshold:.1f}s)")
-    print(f"  {'✓ PASS' if p95_activation < activation_threshold else '✗ FAIL'}")
-    print("\nEmergency:")
-    print(f"  Median: {median_emergency:.3f}s  P95: {p95_emergency:.3f}s  (Threshold: <{emergency_threshold:.1f}s)")
-    print(f"  {'✓ PASS' if p95_emergency < emergency_threshold else '✗ FAIL'}")
-    print(f"{'='*60}")
-
-    print("\n=== All Performance Tests Passed ===")
+    with subtest("emergency returns a decoy shell quickly"):
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        canonical_activate(CONFIG, "--overlay-only", "perf-activate-emergency")
+        timings = session.follow_soft_reboot(
+            machine, f"nails --config {CONFIG} emergency", "perf-emergency"
+        )
+        session.assert_decoy_root(machine)
+        assert_within_budget(
+            "Emergency to the decoy backdoor", [timings["trigger_to_backdoor"]], emergency_threshold
+        )
   '';
 }

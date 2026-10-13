@@ -1,8 +1,6 @@
-# Security Validation Guide
+# Security validation
 
-**Project:** NAILS (NixOS Anti-forensics Isolation & Layering System)
-
-This guide documents the security validation mechanisms that are actually in use in this public repository: SBOM generation, dependency auditing, deterministic release verification, SLSA provenance, and GitHub artifact attestations.
+This guide documents the security validation mechanisms that are actually in use in this public repository: SBOM generation, dependency policy checks, deterministic release verification and GitHub artifact attestations.
 
 ## Validation surfaces
 
@@ -10,45 +8,57 @@ This guide documents the security validation mechanisms that are actually in use
 
 The primary CI workflow performs:
 
-- `cargo audit`
-- `cargo deny check advisories licenses bans sources`
-- CycloneDX SBOM generation with `cargo sbom`
-- SBOM schema validation with `cyclonedx-cli`
-- `cargo geiger` unsafe-code reporting
-- test, coverage, and burn-in execution that support security-sensitive change control
+- the dependency policy over the shipped dependency graph (`just deny`): bans, licenses and sources on every run; RustSec advisories and the `deny.toml` ignore expiry check when `Cargo.toml`, `Cargo.lock` or `deny.toml` change
+- the test suite with an enforced line-coverage threshold, the doctests and the privileged real-overlayfs tests, which support security-sensitive change control
+- the canonical Nix build of `.#nails-release` with an archive smoke test
 
-### In release automation (`.github/workflows/release-core.yml`)
+### Weekly (`.github/workflows/scheduled.yml`)
+
+The scheduled workflow never gates a merge. It runs:
+
+- the dependency policy over every target and dev-dependency (`just deny-full`)
+- the `deny.toml` ignore expiry check
+- two from-source builds of `.#nails-release` on fresh runners, compared byte for byte (`reproducibility.yml`)
+
+### In release automation (`.github/workflows/release.yml`)
 
 The release workflow adds:
 
-- canonical Nix build of `.#nails-release`
-- same-runner determinism verification
-- two independent rebuild comparisons via `reproducibility.yml`
-- release SBOM generation
-- SLSA Level 3 provenance generation for published stable releases and prereleases
-- GitHub artifact attestation when repository visibility supports it
+- a check that the annotated tag, the workspace version, `Cargo.lock` and `CHANGELOG.md` agree
+- the canonical Nix build of `.#nails-release`, compiled from source with `--locked`
+- an independent rebuild on a fresh runner, compared byte for byte via `reproducibility.yml`
+- the whole E2E suite on the tagged commit
+- the release SBOM, musl included
+- GitHub artifact attestations for the archive, the binary and the SBOM, created only after every gate passed
+
+[ci.md](ci.md#release-workflow) describes the jobs.
 
 ## SBOMs
 
 ### Generate locally
 
+The release SBOM describes the `nails` binary for the release target, without build-time dependencies:
+
 ```bash
-cargo install cargo-sbom --locked
-cargo sbom --output-format cyclone_dx_json_1_6 > sbom.cdx.json
+cargo cyclonedx --manifest-path nails-cli/Cargo.toml --format json --spec-version 1.5 \
+  --target x86_64-unknown-linux-musl --describe binaries --no-build-deps
 ```
+
+It writes `nails-cli/nails_bin.cdx.json`. The release workflow then adds musl, which the binary links statically and cargo cannot see, with `python3 -m ci.release sbom-libc`.
 
 ### Validate format locally
 
 ```bash
-cyclonedx validate --input-file sbom.cdx.json --input-format json
+cyclonedx validate --input-file sbom.cdx.json --input-format json --input-version v1_5 --fail-on-errors
 ```
+
+Without `--fail-on-errors`, `cyclonedx validate` reports problems but still exits 0.
 
 ### Where SBOMs appear
 
 | Source | Asset | Notes |
 |---|---|---|
-| CI workflow artifacts | `sbom-cyclonedx` | Produced by `ci.yml` |
-| Published GitHub releases and prereleases | `sbom.cdx.json` | Produced by `release-core.yml` |
+| Published GitHub releases and prereleases | `sbom.cdx.json` | Produced and attested by `release.yml` |
 
 ### Example downstream use
 
@@ -56,25 +66,42 @@ cyclonedx validate --input-file sbom.cdx.json --input-format json
 grype sbom:sbom.cdx.json
 ```
 
-## Dependency auditing
+## Dependency policy
 
-### RustSec and policy checks
+`deny.toml` holds the cargo-deny policy: RustSec advisories (vulnerabilities, unmaintained and unsound crates, yanked releases), bans, licenses and sources. The `justfile` checks it at two scopes:
 
-Install locally:
+| Recipe | Scope | Where it runs |
+|---|---|---|
+| `just deny` | The shipped graph: the x86_64 Linux release targets without dev-dependencies | Merge gate in `ci.yml`; run locally with `just deny` |
+| `just deny-full` | Every target and every dev-dependency | Weekly in `scheduled.yml`; never blocks a merge |
 
-```bash
-cargo install cargo-audit --locked
-cargo install cargo-deny --locked
+Both recipes take the checks to run, for example `just deny advisories`.
+
+In CI, bans, licenses and sources are checked on every run. Advisories are checked when `Cargo.toml`, `Cargo.lock` or `deny.toml` change, and on manual runs. Advisory results follow the RustSec database rather than the change under review, so a newly published advisory does not turn unrelated pull requests or `main` red; the weekly full-graph scan reports it instead. Crates that never ship, such as wasm-only crates or benchmark dependencies, are outside the merge gate and covered only by that scan.
+
+### Ignoring an advisory
+
+An ignore is a last resort. Each entry in `[advisories] ignore` needs a `reason` and a `# expires: YYYY-MM-DD` line in the comment block directly above it, at most 180 days ahead:
+
+```toml
+ignore = [
+    # Only reachable from the benchmarks; drop once criterion updates.
+    # expires: 2027-01-31
+    { id = "RUSTSEC-0000-0000", reason = "dev-only, never shipped" },
+]
 ```
 
-Run the same checks used in CI:
+`ci/deny_ignores.py` fails when an ignore has no expiry, a malformed one, one that has passed, or one more than 180 days ahead. It runs in CI next to the advisory check, weekly in `scheduled.yml`, and as a pre-commit hook whenever `deny.toml` changes.
+
+### Run locally
+
+The tools come from the flake dev shell:
 
 ```bash
-cargo audit
-cargo deny check advisories licenses bans sources
+nix develop -c just deny        # the merge gate
+nix develop -c just deny-full   # the weekly full-graph scan
+python3 ci/deny_ignores.py
 ```
-
-These checks are merge-blocking in the main CI workflow.
 
 ## Deterministic release verification
 
@@ -90,58 +117,17 @@ nix build -L .#nails-release -o result --option accept-flake-config false
 
 - the release derivation builds successfully
 - the archive contains `LICENSE`, `README.md`, and the `nails` binary
-- the binary runs with `--version`
-- `checksums.txt` is present
-- same-runner rebuilds are stable
-- two additional rebuilds match the canonical output byte-for-byte
+- the binary runs with `--version` and reports the tagged version
+- `checksums.txt` matches the archive and the binary
+- an independent rebuild on a fresh runner matches the binary, the archive and `checksums.txt` byte for byte; this cross-runner comparison is the reproducibility evidence
 
-For PRs and pushes, `nix-pr-verify.yml` validates the same release derivation used by the release workflow.
+For PRs and pushes, the `nix-build` job of `ci.yml` validates the same release derivation used by the release workflow.
 
-## SLSA provenance
+## Provenance and verification
 
-Published releases include `nails.intoto.jsonl` generated by the official SLSA GitHub generator.
+The release workflow creates GitHub artifact attestations: Sigstore-signed SLSA build provenance for the archive and the binary, and an SBOM attestation that binds `sbom.cdx.json` to them. They meet SLSA v1.0 Build Level 2, signed provenance from a hosted build platform; the build does not run in an isolated reusable workflow, so the project does not claim Build Level 3.
 
-### Verify a published release artifact
-
-```bash
-go install github.com/slsa-framework/slsa-verifier/v2/cli/slsa-verifier@latest
-
-slsa-verifier verify-artifact nails-*.tar.gz \
-  --provenance-path nails.intoto.jsonl \
-  --source-uri github.com/WitteShadovv/nails
-```
-
-### Verify the extracted binary
-
-```bash
-slsa-verifier verify-artifact nails \
-  --provenance-path nails.intoto.jsonl \
-  --source-uri github.com/WitteShadovv/nails
-```
-
-The `--source-uri` must match the repository identity recorded in provenance.
-
-## GitHub artifact attestations
-
-The release workflow also attempts to create a GitHub artifact attestation for the canonical release bundle when repository visibility supports it.
-
-Verify with GitHub CLI:
-
-```bash
-gh attestation verify nails --repo WitteShadovv/nails
-```
-
-This attestation is complementary to the published SLSA provenance file.
-
-## Checksums
-
-Published release bundles include `checksums.txt`.
-
-Verify locally:
-
-```bash
-sha256sum --check checksums.txt
-```
+[verify-release.md](verify-release.md) is the one description of how to check a release: the checksum, the attestation, and where to do it without leaving a trace on the decoy system.
 
 ## Pre-merge and local validation
 
@@ -150,24 +136,25 @@ Useful local commands before opening or updating a PR:
 ```bash
 cargo fmt --all -- --check
 cargo clippy --all-targets --all-features -- -D warnings
-cargo audit
-cargo deny check advisories licenses bans sources
+just deny
 cargo nextest run --no-fail-fast --status-level all
 cargo llvm-cov --all-features --workspace --all-targets --cobertura --output-path ./coverage/cobertura.xml
 ```
 
-The CI coverage threshold is **85%**.
+CI enforces a single line-coverage floor over production code, defined once in
+`.config/coverage.toml` and read by `just coverage`. The in-memory filesystem
+mock, the shared test fixtures and every test file are excluded, so the figure
+measures only code that ships.
 
 ## Public release behavior
 
-- Exact stable tag pushes perform canonical build-and-verify only; they do **not** publish a GitHub release.
-- Manual `publish-release.yml` runs create a stable GitHub release directly from an exact stable tag after canonical build, determinism checks, provenance, and release assembly succeed.
-- Suffixed prerelease tags may publish immutable GitHub prereleases directly when they match the current `Cargo.toml` version.
+- An annotated `v<version>` tag on `main` starts the release workflow, which drafts the GitHub release; a maintainer publishes the draft ([RELEASING.md](../RELEASING.md)).
+- `X.Y.Z-rc.N` versions are drafted as prereleases; a `-dev` version is never released.
 - Release artifacts are intended to be independently verifiable by public users.
 
 ## Caveats
 
-- GitHub artifact attestations depend on repository visibility and GitHub platform support.
+- GitHub artifact attestations depend on GitHub platform support; verifying them needs the GitHub CLI and a GitHub login.
 - Workflow artifacts are temporary; published release assets are the public release channel.
 - Provenance proves build origin and integrity, not that the software is free of design or implementation flaws.
 
@@ -175,4 +162,5 @@ The CI coverage threshold is **85%**.
 
 - [SECURITY.md](../SECURITY.md)
 - [docs/ci.md](ci.md)
+- [docs/verify-release.md](verify-release.md)
 - [docs/release-artifact-reproducibility.md](release-artifact-reproducibility.md)

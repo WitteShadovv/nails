@@ -4,7 +4,7 @@ NAILS is maintained through this repository. Use GitHub issues for actionable bu
 
 If your issue is about NAILS OS, the installable distribution, open it in the separate [nails-os](https://github.com/WitteShadovv/nails-os) repository instead.
 
-NAILS is currently alpha-stage software and support is best-effort. The latest published stable release, when present, is the primary supported public release line; otherwise use the latest relevant prerelease.
+NAILS is currently alpha-stage software and support is best-effort. Run the latest release and verify its artifacts before reporting; see [RELEASING.md](RELEASING.md) for how releases are produced.
 
 ## Where to Get Help
 
@@ -12,7 +12,7 @@ NAILS is currently alpha-stage software and support is best-effort. The latest p
 | --- | --- |
 | Reproducible bug in NAILS | [GitHub Issues](https://github.com/WitteShadovv/nails/issues) using the bug report template |
 | Feature request or documentation improvement | [GitHub Issues](https://github.com/WitteShadovv/nails/issues) using the appropriate template |
-| Security vulnerability | `security@nails.run` — see [SECURITY.md](SECURITY.md) |
+| Security vulnerability | [Private vulnerability reporting](https://github.com/WitteShadovv/nails/security/advisories/new), or `security@nails.run` as the fallback — see [SECURITY.md](SECURITY.md) |
 | Usage or setup question | Review the README, command help, and existing issues first; if you find a concrete product or documentation gap, open an issue with specifics |
 
 ## Before You Open an Issue
@@ -21,26 +21,25 @@ Please:
 
 1. Search existing issues for duplicates.
 2. Confirm that the behavior is in scope for this repository.
-3. Check the latest published release or prerelease bundle, or note the exact commit if you are testing unreleased code.
-4. Gather useful diagnostics such as:
+3. Check the latest release bundle, or note the exact commit if you are testing unreleased code.
+4. Gather what the bug report form asks for:
    - `nails --version`
-   - `nails status -v`
-   - relevant NixOS version details
-   - configuration details needed to reproduce the problem
+   - your distribution and its release
+   - the steps that reproduce the problem, with real paths and hostnames replaced by placeholders
 
-When reporting problems, avoid posting secrets, private keys, recovery material, or any sensitive operational data.
+Issues are public and link your GitHub account to NAILS. Consider a throwaway account, and do not post `nails status` or `nails verify` output, real paths, hostnames, usernames, volume labels, secrets, private keys, recovery material, or any other sensitive operational data.
 
 ## Security Reports
 
-Do **not** report suspected vulnerabilities in public issues or discussions.
+Do **not** report suspected vulnerabilities in public issues or pull requests.
 
-Use the private reporting path in [SECURITY.md](SECURITY.md). If you are unsure whether an issue is security-sensitive, err on the side of private reporting.
+Use [GitHub private vulnerability reporting](https://github.com/WitteShadovv/nails/security/advisories/new), or email `security@nails.run` if you cannot use GitHub. [SECURITY.md](SECURITY.md) has the PGP key details and an OPSEC note for reporters. If you are unsure whether an issue is security-sensitive, err on the side of private reporting.
 
 ## Support Scope
 
 - Reports are triaged based on reproducibility, user impact, and the information provided.
-- We may ask for clarification or sanitized diagnostics before triage is complete.
-- The latest published stable release, when present, is the primary target for fixes and documentation updates; otherwise use the latest relevant prerelease.
+- We may ask for clarification before triage is complete, but never for real paths, hostnames, or unredacted output in a public issue.
+- The latest release is the target for fixes and documentation updates.
 - We do not provide private consulting or troubleshooting for custom deployments, forks, unsupported environments, or third-party integrations.
 
 Do **not** use the security contact for general troubleshooting or feature requests.

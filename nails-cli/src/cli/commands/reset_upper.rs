@@ -1,0 +1,300 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! reset-upper command handler
+
+use std::io::IsTerminal;
+use std::path::Path;
+
+use nails_core::output::Mark;
+
+use crate::cli::args::ResetUpperArgs;
+use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
+use crate::cli::output::{ExitStatus, OutputSettings};
+
+/// The `data` payload for `reset-upper --json`.
+#[derive(Debug, serde::Serialize)]
+struct ResetUpperData {
+    /// The path whose hidden copy was deleted.
+    target: String,
+    /// The directories that were removed (empty when there was nothing to do).
+    removed: Vec<String>,
+}
+
+/// Execute the reset-upper command.
+///
+/// Deletes a path's hidden copy from the root upper on the hidden volume
+/// (`<upper>/<path>`), and the layers of a separate decoy filesystem mounted
+/// at that path (`root/mounts/<path>`), so the decoy's own files show through
+/// again at the next entry. It refuses in the hidden session (the upper is the
+/// live root there), lists what it will delete, and confirms on a terminal
+/// (`-y` skips the prompt).
+///
+/// # Returns
+///
+/// - [`ExitStatus::Ok`] once the upper was removed (or there was nothing to do)
+/// - [`ExitStatus::Config`] when the configuration file could not be loaded
+/// - [`ExitStatus::InvalidState`] in the hidden session
+/// - [`ExitStatus::Usage`] when confirmation is needed but stdin is not a terminal
+/// - [`ExitStatus::Failed`] when the operator declines, or on a lock or removal failure
+pub fn execute(
+    settings: &OutputSettings,
+    env: &nails_core::RuntimeEnv,
+    args: &ResetUpperArgs,
+    config_override: Option<&Path>,
+) -> ExitStatus {
+    use nails_core::{NailsManager, RealFilesystem};
+
+    let json = settings.is_json();
+
+    // reset-upper deletes data on the hidden volume, so it must not run against
+    // a config file the operator did not mean.
+    let loaded = match super::load_config_or_report(config_override, "reset-upper", json) {
+        Ok(loaded) => loaded,
+        Err(status) => return status,
+    };
+    let config = loaded.into_config();
+
+    let state_path = config.state_file_path.clone();
+    let lock_state_path = state_path.clone();
+    let target = args.target.clone();
+
+    let manager =
+        NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
+
+    // Hold the exclusive state lock while we plan and delete, so a concurrent
+    // activation cannot mount the target out from under the reset.
+    let _state_lock =
+        match super::acquire_state_lock_or_report(&lock_state_path, "reset-upper", json) {
+            Ok(lock) => lock,
+            Err(status) => return status,
+        };
+
+    let plan = match manager.plan_reset_upper(&target) {
+        Ok(plan) => plan,
+        Err(e) => {
+            use nails_core::NailsError;
+            let status = match e {
+                NailsError::InvalidState(_) => ExitStatus::InvalidState,
+                _ => ExitStatus::Failed,
+            };
+            return report_error(
+                json,
+                "reset-upper",
+                status,
+                ErrorBody::new("reset_upper", e.to_string()),
+            );
+        }
+    };
+
+    if plan.is_empty() {
+        if json {
+            Envelope::success(
+                "reset-upper",
+                ResetUpperData {
+                    target: plan.target.display().to_string(),
+                    removed: Vec::new(),
+                },
+            )
+            .print();
+        } else {
+            println!(
+                "{}",
+                settings.stdout_style().marked(
+                    Mark::Info,
+                    format_args!("Nothing to reset for {}", plan.target.display())
+                )
+            );
+        }
+        return ExitStatus::Ok;
+    }
+
+    // Confirmation gate: the removal is destructive, so without -y it lists the
+    // directories and confirms on a terminal, refusing off one.
+    if !args.yes {
+        if std::io::stdin().is_terminal() {
+            if !prompt_reset_confirmation(settings, &plan) {
+                return report_error(
+                    json,
+                    "reset-upper",
+                    ExitStatus::Failed,
+                    ErrorBody::new("cancelled", "reset-upper cancelled; nothing was removed"),
+                );
+            }
+        } else {
+            return report_error(
+                json,
+                "reset-upper",
+                ExitStatus::Usage,
+                ErrorBody::new(
+                    "needs_confirmation",
+                    "reset-upper deletes the target's hidden upper and needs confirmation, but stdin is not a terminal; pass -y/--yes to run non-interactively",
+                ),
+            );
+        }
+    }
+
+    if let Err(e) = manager.apply_reset_upper(&plan) {
+        return report_error(
+            json,
+            "reset-upper",
+            ExitStatus::Failed,
+            ErrorBody::new("reset_upper", e.to_string()),
+        );
+    }
+
+    let removed: Vec<String> = plan
+        .removals()
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect();
+
+    if json {
+        Envelope::success(
+            "reset-upper",
+            ResetUpperData {
+                target: plan.target.display().to_string(),
+                removed,
+            },
+        )
+        .print();
+    } else {
+        let style = settings.stdout_style();
+        println!(
+            "{}",
+            style.marked(
+                Mark::Pass,
+                format_args!("Reset the hidden upper for {}", plan.target.display())
+            )
+        );
+        for path in &removed {
+            println!("  removed {path}");
+        }
+        println!(
+            "  {} falls back to its decoy on the next activation",
+            plan.target.display()
+        );
+    }
+
+    ExitStatus::Ok
+}
+
+/// Prompt on the terminal before deleting, returning whether the operator
+/// confirmed. The warning and the list of directories go to stderr so stdout
+/// stays clean for `--json`.
+fn prompt_reset_confirmation(settings: &OutputSettings, plan: &nails_core::ResetUpperPlan) -> bool {
+    confirm_reset(
+        settings,
+        plan,
+        &mut std::io::stderr(),
+        &mut std::io::stdin().lock(),
+    )
+}
+
+/// [`prompt_reset_confirmation`] on the given streams: the warning goes to
+/// `out`, the answer is read from `input`. Only `y` or `yes` (any case)
+/// confirms; anything else, or a read error, declines.
+fn confirm_reset(
+    settings: &OutputSettings,
+    plan: &nails_core::ResetUpperPlan,
+    out: &mut impl std::io::Write,
+    input: &mut impl std::io::BufRead,
+) -> bool {
+    let style = settings.stderr_style();
+    let _ = writeln!(
+        out,
+        "{}",
+        style.marked(
+            Mark::Warn,
+            format_args!(
+                "This permanently deletes the hidden upper for {}.",
+                plan.target.display()
+            )
+        )
+    );
+    for path in plan.removals() {
+        let _ = writeln!(out, "    remove {}", path.display());
+    }
+    if plan.resets_nix_store {
+        let _ = writeln!(
+            out,
+            "    WARNING: resetting /nix drops the hidden Nix database and store paths."
+        );
+    }
+    let _ = write!(out, "    Continue? [y/N]: ");
+    let _ = out.flush();
+
+    let mut answer = String::new();
+    if input.read_line(&mut answer).is_err() {
+        return false;
+    }
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn plan(target: &str, removals: &[&str]) -> nails_core::ResetUpperPlan {
+        nails_core::ResetUpperPlan {
+            target: PathBuf::from(target),
+            removals: removals.iter().map(PathBuf::from).collect(),
+            resets_nix_store: target == "/nix",
+        }
+    }
+
+    /// Run the confirmation with `answer` typed, returning the verdict and the
+    /// text shown.
+    fn confirm(plan: &nails_core::ResetUpperPlan, answer: &[u8]) -> (bool, String) {
+        let mut out = Vec::new();
+        let verdict = confirm_reset(
+            &OutputSettings::default(),
+            plan,
+            &mut out,
+            &mut std::io::Cursor::new(answer),
+        );
+        (verdict, String::from_utf8(out).unwrap())
+    }
+
+    #[test]
+    fn the_prompt_lists_every_removal_before_asking() {
+        let plan = plan(
+            "/srv/data",
+            &[
+                "/mnt/data/root/upper/srv/data",
+                "/mnt/data/root/mounts/srv-data",
+            ],
+        );
+        let (_, shown) = confirm(&plan, b"n\n");
+        assert_eq!(
+            shown,
+            "\u{26a0} This permanently deletes the hidden upper for /srv/data.\n\
+             \x20   remove /mnt/data/root/upper/srv/data\n\
+             \x20   remove /mnt/data/root/mounts/srv-data\n\
+             \x20   Continue? [y/N]: "
+        );
+    }
+
+    #[test]
+    fn resetting_nix_warns_about_the_store_and_database() {
+        let (_, shown) = confirm(&plan("/nix", &["/mnt/data/root/upper/nix"]), b"\n");
+        assert!(
+            shown.contains("WARNING: resetting /nix drops the hidden Nix database"),
+            "{shown}"
+        );
+    }
+
+    #[test]
+    fn only_yes_in_any_case_confirms_the_reset() {
+        let plan = plan("/srv/data", &["/mnt/data/root/upper/srv/data"]);
+        for answer in ["y\n", "YES\n", "  Yes  \n"] {
+            assert!(confirm(&plan, answer.as_bytes()).0, "{answer:?}");
+        }
+        for answer in ["\n", "n\n", "yep\n", ""] {
+            assert!(!confirm(&plan, answer.as_bytes()).0, "{answer:?}");
+        }
+        // Input that is not UTF-8 is a read error, and declines.
+        assert!(!confirm(&plan, b"\xff\n").0);
+    }
+}

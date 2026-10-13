@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c456188c5de4b72fafa5c4db2ad929adfb381dcf269fb233c2d29631fbbf82d3 # shrinks to mount_point = "/a", lowers = ["/a"], upper = "/a", work = "/\\a"
+cc da626f5e0337841e9a2964aca413b7efadb99a946af8350f33da6e701b34898c # shrinks to hidden_root = "/\\", mount_point = "/a"
+cc 43b938242772e83b0731d58034158c45c87f5c2df7491d19710f2995007077eb # shrinks to lowers = ["/\\000"], upper = "/a", work = "/a"

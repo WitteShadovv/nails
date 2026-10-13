@@ -1,0 +1,26 @@
+---
+source: nails-cli/tests/cli_contract.rs
+expression: redact_status(value)
+---
+{
+  "command": "status",
+  "data": {
+    "decoy_persistent": "[decoy_persistent]",
+    "hidden_root": "[hidden_root]",
+    "hidden_root_mounted": false,
+    "masked_units": [],
+    "nextroot_mounted": false,
+    "opsec_reminders": [],
+    "persona_mode": "shared-home",
+    "policy_mounts": [],
+    "posture": "decoy",
+    "session": "decoy",
+    "state": {
+      "kind": "degraded",
+      "reason": "in the hidden root without a way back"
+    },
+    "state_source": "loaded"
+  },
+  "ok": true,
+  "schema_version": 1
+}

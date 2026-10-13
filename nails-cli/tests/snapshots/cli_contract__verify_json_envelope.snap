@@ -1,0 +1,15 @@
+---
+source: nails-cli/tests/cli_contract.rs
+expression: projection
+---
+{
+  "command": "verify",
+  "data": {
+    "config_aware": true,
+    "config_paths_checked": 3,
+    "scan_depth": "standard",
+    "state_file_status_kind": "missing"
+  },
+  "ok": true,
+  "schema_version": 1
+}

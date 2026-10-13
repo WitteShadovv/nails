@@ -1,0 +1,53 @@
+name: PR Title
+
+# Conventional Commits are enforced on individual commits by the commit-msg
+# pre-commit hook, but a squash merge replaces the commit subjects with the
+# pull request title. This check holds that title to the same grammar so the
+# squashed commit that lands on main stays a valid Conventional Commit.
+#
+# The allowed types match .pre-commit-config.yaml (the commit-msg hook) and
+# .gitmessage exactly. Scope is optional and left unconstrained here; the hook
+# and .gitmessage document the scopes the project uses.
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - synchronize
+      - reopened
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # The job name is the required-check context; keep it short like `gate` and
+  # `e2e-result` so the branch ruleset lists `pr-title`.
+  pr-title:
+    name: pr-title
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pull-requests: read
+    steps:
+      - name: Check the title against the Conventional Commits grammar
+        uses: amannn/action-semantic-pull-request@0723387faaf9b38adef4775cd42cfd5155ed6017 # v5.5.3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          types: |
+            feat
+            fix
+            docs
+            style
+            refactor
+            perf
+            test
+            build
+            ci
+            chore
+            revert

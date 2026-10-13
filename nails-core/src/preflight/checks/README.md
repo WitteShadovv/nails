@@ -1,6 +1,6 @@
 # Pre-flight Checks
 
-This directory contains all concrete pre-flight check implementations. Each check validates a specific aspect of the system before NAILS activation.
+This directory contains the pre-flight checks that live in `nails-core`. Each check validates a specific aspect of the system before NAILS activation. The checks of other areas live with their area: the swap check with the framework in `nails-base`, the NixOS configuration checks in `nails-platform`, the session's checks in `nails-session` and the residue-catalog check in `nails-forensics` ([ADR 0010](../../../../docs/adr/0010-library-crate-split.md)). `nails_core::preflight::checks` re-exports all of them.
 
 ## Overview
 
@@ -9,44 +9,36 @@ Pre-flight checks are trait-based validators that run before system activation t
 - Resource availability (e.g., disk space, hidden volume mounted)
 - Configuration validity (e.g., NixOS config structure, overlay directories)
 
-All checks implement the `PreFlightCheck<F: Filesystem>` trait defined in `../mod.rs`.
+All checks implement the `PreFlightCheck<F: Filesystem>` trait defined in `nails_base::preflight`.
 
 ## Available Checks
 
-### Security & State
+The set of checks changes often, and which ones run depends on the host and the
+requested operation (for example the NixOS config and build-target checks run
+only on a NixOS host with a selected hidden flake). Rather than keep a hand-written
+list in step with the code, read the rustdoc, which is generated from the check
+implementations themselves:
 
-- **`state.rs`** - `StateCheck`: Validates system state is appropriate for activation
-  - Ensures system is not already active or in emergency state
-  - Verifies transition validity according to state machine rules
+```bash
+cargo doc --no-deps --open -p nails-core
+```
 
-- **`swap.rs`** - `SwapCheck`: Ensures swap is disabled for memory security
-  - Prevents sensitive data (keys, credentials) from being written to persistent storage
-  - Critical for plausible deniability guarantee
+Then open the `nails_core::preflight::checks` module: every check type carries a
+doc comment explaining what it validates and why. `manager::preflight_runner`
+shows the exact registration order and the host conditions under which each check
+is added.
 
-### Storage & Resources
+Notable details worth calling out here:
 
-- **`hidden_volume.rs`** - `HiddenVolumeCheck`: Validates hidden volume is mounted and accessible
-  - Checks mount point exists and is writable
-  - Ensures hidden storage root directory is available
-
-- **`space.rs`** - `SpaceCheck`: Validates sufficient disk space for activation
-  - Uses graduated response system (Pass/Warn/Fail thresholds)
-  - Default minimum: 1024 MB (1 GB)
-  - Also defines `OverlayDirs` struct for overlay configuration
-
-- **`storage_readiness.rs`** - `StorageReadinessCheck`: Unified storage validation (Story 14.5)
-  - Validates required directory structure on hidden volume
-  - Auto-creates missing directories with proper permissions
-  - Validates overlay directory accessibility (lower/upper/work)
-  - Replaces separate structure and overlay checks
-
-### Configuration
-
-- **`nixos_config.rs`** - `NixOSConfigCheck`: Validates NixOS configuration overlay structure
-  - Ensures base NixOS config exists
-  - Validates hidden storage NixOS configuration structure
-  - Checks modified hardware-configuration.nix has correct imports
-  - Verifies symlink staging for hidden config
+- **`space/`** - `SpaceCheck` enforces a single hard floor (no warn band). The
+  default minimum is **500 MB**, matching the `default_minimum_space_mb` config
+  default; it is the base floor for an overlay-only activation, while a full NixOS
+  rebuild's much larger store delta is enforced separately during activation. The
+  module also defines the `OverlayDirs` struct used to describe overlay layouts.
+- **`storage_readiness/`** - `StorageReadinessCheck` is the unified storage
+  validator: it checks the required directory structure, auto-creates missing
+  directories with `0o700` permissions, and validates overlay lower/upper/work
+  accessibility, replacing the separate structure and overlay checks.
 
 ## Adding a New Check
 
@@ -138,7 +130,10 @@ Every check should have tests covering:
 - Edge cases (boundary conditions, error handling)
 - Integration with `PreFlightRegistry`
 
-Aim for 100% code coverage (enforced by CI).
+Cover every branch a check can take. CI enforces a single production-code
+line-coverage floor (defined in `.config/coverage.toml`), not a per-check 100%
+target; test infrastructure such as `MockFilesystem` is excluded from the
+figure.
 
 ### 4. Register with the CLI
 
@@ -159,7 +154,7 @@ Pre-flight checks return `CheckResult` with three variants:
   - Example: "Swap disabled: memory security maintained"
 
 - **`Warn(String)`**: Non-critical issue detected, can proceed with caution
-  - Example: "800 MB available (below 1.0 GB recommended). Monitor space."
+  - Example: "Backend mapping has discard enabled; consider disabling it."
 
 - **`Fail(String)`**: Critical issue blocks activation
   - Example: "Swap is enabled. Run: sudo swapoff -a"
@@ -177,20 +172,20 @@ Return early with clear error messages. Include:
 - How to fix it (when applicable)
 
 ### 3. Actionable Error Messages
-Follow UXR19: Provide fix guidance in failure messages.
+Provide fix guidance in failure messages.
 
 Bad: "Storage not ready"
-Good: "Storage not ready: Missing /etc/ directory. Create with: sudo mkdir -p /mnt/hidden-volume/etc"
+Good: "Storage not ready: Missing /etc/ directory. Create with: sudo mkdir -p /mnt/data/etc"
 
 ### 4. Idempotent Checks
-Checks should be safe to run multiple times without side effects (except auto-creation features like Story 14.4).
+Checks should be safe to run multiple times without side effects (except auto-creation features).
 
 ### 5. Test Coverage
-All checks require comprehensive unit tests with 100% coverage. Use `MockFilesystem` for deterministic testing.
+All checks require comprehensive unit tests exercising every branch. Use `MockFilesystem` for deterministic testing; it is test-only infrastructure and does not count toward the coverage figure.
 
-## Story 14.4: Auto-creation Pattern
+## Auto-creation Pattern
 
-Starting with Story 14.4, checks can auto-create missing resources:
+Checks can auto-create missing resources:
 
 ```rust
 if !fs.path_exists(&required_dir)? {
@@ -348,7 +343,8 @@ if let Err(e) = fs.create_directory(&path) {
 
 ## Resources
 
-- Parent module: `../mod.rs` (trait definitions, registry)
+- Parent module: `../mod.rs` (re-exports the framework from `nails_base::preflight`: trait definitions, registry)
 - Filesystem abstraction: `../../filesystem/mod.rs`
 - Error types: `../../error.rs`
-- Design documentation: `docs/design.tex` (Section 4.3.5 - Pre-flight Checks)
+- Architecture decisions: [`docs/adr/`](../../../../docs/adr)
+- Threat model: [`docs/threat-model.md`](../../../../docs/threat-model.md)

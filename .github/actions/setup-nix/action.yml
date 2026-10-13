@@ -1,0 +1,65 @@
+# Every workflow that needs Nix sets it up through this action, so the
+# installer is pinned in one place and every job gets the same settings and
+# binary caches. docs/ci.md describes the cache and its trust rules.
+name: Set up Nix
+description: >-
+  Install Nix with KVM and the features the NixOS VM tests need, read the
+  project binary cache, and push selected build results to it from trusted
+  events.
+inputs:
+  cache:
+    description: >-
+      'false' leaves cache.nixos.org as the only substituter and pushes
+      nothing, for release and reproducibility builds that must compile nails
+      from source.
+    required: false
+    default: 'true'
+  cachix-auth-token:
+    description: >-
+      Token that may push to the project cache. It is used only for pushes to
+      main, schedules, manual dispatches and pull requests from a branch of
+      this repository. Never pass it to a job that runs a fork's code.
+    required: false
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Decide how to use the binary cache
+      id: plan
+      shell: bash
+      env:
+        CACHE: ${{ inputs.cache }}
+        # The project's public Cachix cache and its signing key. Fill in both
+        # once the cache exists; while both are empty, jobs run without it.
+        # The key is pinned here so that no substitute is trusted on first use.
+        CACHIX_NAME: ''
+        CACHIX_PUBLIC_KEY: ''
+        HAS_TOKEN: ${{ inputs.cachix-auth-token != '' }}
+        EVENT_NAME: ${{ github.event_name }}
+        GIT_REF: ${{ github.ref }}
+        HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+        REPOSITORY: ${{ github.repository }}
+      run: python3 "$GITHUB_ACTION_PATH/cache_plan.py"
+
+    - name: Install Nix
+      uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f # v31.10.5
+      with:
+        enable_kvm: true
+        extra_nix_config: |
+          accept-flake-config = false
+          always-allow-substitutes = true
+          system-features = nixos-test benchmark big-parallel kvm
+          ${{ steps.plan.outputs.nix-config }}
+
+    # Runs only when this job pushes; reads use the substituter configured
+    # above. The daemon uploads each path as soon as it is built, so a
+    # cancelled run keeps everything it finished.
+    - name: Push build results to the binary cache
+      if: steps.plan.outputs.push == 'true'
+      uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866 # v17
+      with:
+        name: ${{ steps.plan.outputs.cachix-name }}
+        authToken: ${{ inputs.cachix-auth-token }}
+        skipAddingSubstituter: true
+        useDaemon: true
+        pushFilter: ${{ steps.plan.outputs.push-filter }}

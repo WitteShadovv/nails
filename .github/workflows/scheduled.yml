@@ -1,0 +1,648 @@
+name: Scheduled
+
+# Maintenance that watches for problems appearing without a change to this
+# repository: new advisories, expiring deny.toml ignores, a crate fetcher that
+# crates.io stopped serving, a release build that is no longer reproducible,
+# evicted caches and flaky tests. It also refreshes the pinned versions that
+# Dependabot has no ecosystem for (Cargo.lock transitively, flake.lock and the
+# pre-commit hooks), each as its own pull request. Nothing here gates a pull
+# request; the report jobs at the end track red runs in issues instead.
+# GitHub disables a schedule after 60 days without repository activity, so a
+# dormant fork sees no scheduled run until a maintainer dispatches one.
+
+on:
+  schedule:
+    # Mondays at 03:00 UTC: every weekly task
+    - cron: "0 3 * * 1"
+    # Thursdays at 03:00 UTC: cache-warm alone. GitHub evicts a cache entry
+    # after 7 days without access, so a weekly touch alone can come too late.
+    # The tasks job below repeats this expression.
+    - cron: "0 3 * * 4"
+    # First of the month at 04:00 UTC: the pinned-input refreshes alone
+    # (Cargo.lock, flake.lock, pre-commit). The tasks job below repeats this
+    # expression.
+    - cron: "0 4 1 * *"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: Task to run; 'all' runs every weekly task
+        type: choice
+        default: all
+        options:
+          - all
+          - advisories
+          - fetcher-canary
+          - reproducibility
+          - cache-warm
+          - stress
+          - benchmarks
+          - mutants
+          - lockfile
+          - flake-lock
+          - pre-commit
+
+permissions:
+  contents: read
+
+concurrency:
+  group: scheduled-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Decides once which tasks this run executes, so every job below only asks
+  # whether its own task is in the list.
+  tasks:
+    name: Select tasks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      run: ${{ steps.select.outputs.run }}
+
+    steps:
+      - name: Select tasks
+        id: select
+        env:
+          SCHEDULE: ${{ github.event.schedule }}
+          TASK: ${{ inputs.task }}
+        run: |
+          if [ "$SCHEDULE" = "0 3 * * 4" ]; then
+            run='["cache-warm"]'
+          elif [ "$SCHEDULE" = "0 4 1 * *" ]; then
+            run='["lockfile","flake-lock","pre-commit"]'
+          elif [ "${TASK:-all}" = all ]; then
+            # The pinned-input refreshes are opt-in: they run only on their
+            # monthly schedule or when dispatched by name, because each opens a
+            # pull request.
+            run='["advisories","fetcher-canary","reproducibility","cache-warm","stress","benchmarks","mutants"]'
+          else
+            run=$(jq -cn --arg task "$TASK" '[$task]')
+          fi
+          echo "Tasks: $run"
+          echo "run=$run" >> "$GITHUB_OUTPUT"
+
+  # Full-graph scan: every target and every dev-dependency, including the
+  # crates that the merge gate in ci.yml deliberately leaves out.
+  advisories-full:
+    name: Dependency Policy (full graph)
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'advisories')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      # cargo-deny reads the graph through `cargo metadata`; without
+      # arguments rustup installs the toolchain pinned in rust-toolchain.toml
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install policy tools
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: cargo-deny@0.19.1,just@1.49.0
+          fallback: none
+
+      - name: Check every target and dev-dependency
+        run: just deny-full
+
+  deny-ignore-expiry:
+    name: deny.toml ignore expiry
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'advisories')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Check that no advisory ignore has expired
+        run: python3 ci/deny_ignores.py
+
+  # Builds the release from source with cache.nixos.org as the only
+  # substituter, then downloads every vendored crate again. A crates.io change
+  # that breaks importCargoLock (like the HTTP 403 that went unnoticed for a
+  # month) fails here instead of in the next pull request touching Cargo.lock.
+  fetcher-canary:
+    name: Crate fetcher canary
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'fetcher-canary')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Set up Nix without the project cache
+        uses: ./.github/actions/setup-nix
+        with:
+          cache: 'false'
+
+      - name: Build the release bundle
+        run: nix build -L .#nails-release --no-link
+
+      # The build substitutes any crate tarball that cache.nixos.org happens
+      # to hold. --check fetches each one from crates.io again and compares it
+      # with the hash in Cargo.lock.
+      - name: Download every vendored crate again
+        run: |
+          vendor=$(nix path-info --derivation .#nails.cargoDeps)
+          mapfile -t crates < <(nix-store --query --requisites "$vendor" | grep -E -- '-crate-.+\.tar\.gz\.drv$')
+          if [ "${#crates[@]}" -eq 0 ]; then
+            echo "::error::no crate downloads found behind $vendor"
+            exit 1
+          fi
+          echo "Downloading ${#crates[@]} crates again"
+          nix-store --realise --check "${crates[@]}" > /dev/null
+
+  # Two from-source builds of main on fresh runners must match byte for byte,
+  # so a determinism regression shows up here rather than in a release run.
+  reproducibility:
+    name: Reproducibility
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'reproducibility')
+    permissions:
+      contents: read
+    uses: ./.github/workflows/reproducibility.yml
+
+  # Restores the Rust cache that ci.yml saves on main. A restore counts as an
+  # access, so the cache survives weeks without a push to main.
+  cache-warm:
+    name: Warm Rust cache
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'cache-warm')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # rust-cache hashes every CARGO* and RUST* variable into its key, so these
+    # must equal the top-level env of ci.yml or every restore misses.
+    env:
+      RUST_BACKTRACE: 1
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      # The key also covers the compiler version, so it has to be the same
+      # toolchain that ci.yml installs.
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Restore the cache
+        id: restore
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          # The one shared-key of ci.yml
+          shared-key: ci
+          save-if: false
+
+      # A miss is not an error (main may not have saved this key yet), but it
+      # means this job warmed nothing, so it shows up in the run summary.
+      - name: Record the result
+        env:
+          HIT: ${{ steps.restore.outputs.cache-hit }}
+        run: |
+          echo "rust-cache 'ci': exact match ${HIT:-false}" >> "$GITHUB_STEP_SUMMARY"
+
+  # Flaky-test hunt: the whole suite ten times through nextest, no retries.
+  stress:
+    name: Stress (flaky tests)
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'stress')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install shells for prompt syntax tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y zsh fish
+
+      - name: Install test tools
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: cargo-nextest@0.9.72,just@1.49.0
+          fallback: none
+
+      - name: Repeat the test suite
+        run: just stress
+
+  # The nails-core micro-benchmarks, compared with the baseline of the latest
+  # earlier run on main instead of fixed budgets: shared runners vary too much
+  # for an absolute number to mean anything. A median more than ALERT_PERCENT
+  # slower raises a warning and never fails the job; a listed benchmark that
+  # leaves no result does, and so does a build or a benchmark that breaks.
+  benchmarks:
+    name: Benchmarks
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'benchmarks')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read # find and download the previous run's baseline artifact
+    env:
+      ALERT_PERCENT: 25
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      # --locked builds it with the dependency versions it was released with.
+      - name: Install critcmp
+        run: cargo install critcmp --version '~0.1' --locked
+
+      # Each run saves its results as the Criterion baseline 'current'.
+      - name: Run benchmarks
+        run: cargo bench --workspace --all-features --locked --bench '*' -- --save-baseline current
+
+      # --list names every benchmark the harnesses define; each one must have
+      # written a result, so a skipped or silently dropped benchmark fails here.
+      - name: Check that every benchmark left a result
+        run: |
+          set -euo pipefail
+          cargo bench --workspace --all-features --locked --bench '*' -- --list | sed -n 's/: benchmark$//p' | sort > "$RUNNER_TEMP/expected.txt"
+          find target/criterion -path '*/current/benchmark.json' -exec jq -r .title {} + | sort > "$RUNNER_TEMP/measured.txt"
+          missing=$(comm -23 "$RUNNER_TEMP/expected.txt" "$RUNNER_TEMP/measured.txt" | paste -sd, -)
+          if [ ! -s "$RUNNER_TEMP/expected.txt" ] || [ -n "$missing" ]; then
+            echo "::error::Benchmarks without a result: ${missing:-none was listed}"
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/bench"
+          critcmp --export current > "$RUNNER_TEMP/bench/baseline.json"
+
+      # The newest unexpired baseline from main. Without one (the first run,
+      # none within the retention period, or an API hiccup) this run only
+      # records its own: a comparison that cannot happen is no reason to fail.
+      - name: Download the previous baseline
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          LATEST_FROM_MAIN: >-
+            [.artifacts[] | select((.expired | not) and .workflow_run.head_branch == "main")][0].workflow_run.id // empty
+        run: |
+          if ! run_id=$(gh api "repos/$REPO/actions/artifacts?name=benchmark-baseline&per_page=50" --jq "$LATEST_FROM_MAIN"); then
+            echo "::warning::Could not list earlier benchmark baselines; nothing to compare with."
+          elif [ -z "$run_id" ]; then
+            echo "::notice::No earlier baseline from main; nothing to compare with."
+          elif gh run download "$run_id" --repo "$REPO" --name benchmark-baseline --dir "$RUNNER_TEMP/bench/previous"; then
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Could not download the baseline of run $run_id; nothing to compare with."
+          fi
+
+      # Both exports name their baseline 'current'; the earlier one is renamed
+      # so critcmp can tell the columns apart.
+      - name: Compare with the previous baseline
+        if: steps.previous.outputs.found == 'true'
+        working-directory: ${{ runner.temp }}/bench
+        env:
+          SLOWDOWNS: >-
+            .benchmarks | to_entries[] | select($old[0].benchmarks[.key]) |
+            (.value.criterion_estimates_v1.median.point_estimate /
+            $old[0].benchmarks[.key].criterion_estimates_v1.median.point_estimate) as $ratio |
+            select($ratio > 1 + $limit / 100) |
+            "::warning title=Benchmark slowdown::\(.key) is \(($ratio - 1) * 100 | round)% slower than in the previous run"
+        run: |
+          set -euo pipefail
+          jq '.name = "previous" | .benchmarks |= map_values(.baseline = "previous")' previous/baseline.json > previous.json
+          { echo "## Benchmarks against the previous run"; echo; echo '```'; critcmp previous.json baseline.json; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          jq -r --argjson limit "$ALERT_PERCENT" --slurpfile old previous.json "$SLOWDOWNS" baseline.json
+
+      # Only a complete run becomes the next baseline.
+      - name: Upload the baseline
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: benchmark-baseline
+          path: ${{ runner.temp }}/bench/baseline.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload the Criterion report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: benchmark-report
+          path: target/criterion/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Mutation testing of the core teardown, overlay and state-machine modules:
+  # cargo-mutants changes each mutable spot and re-runs the tests, so a mutation
+  # the suite still passes marks a gap no coverage percentage would reveal.
+  # Heavy, so it runs weekly rather than on the gate, and the full report is
+  # uploaded as an artifact for triage; a surviving mutant is to be read, not a
+  # reason to fail the job.
+  mutants:
+    name: Mutation testing
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'mutants')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install test tools
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.72,just@1.49.0
+          fallback: none
+
+      # `just mutants` scopes the run to state/, overlay/ and cleanup/.
+      - name: Mutate the core modules
+        run: just mutants
+
+      - name: Upload the mutants report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mutants-report
+          path: target/mutants/
+          if-no-files-found: error
+          retention-days: 30
+
+  # Monthly transitive refresh: #54's fixes were lockfile-only bumps that
+  # Dependabot's direct-dependency updates never proposed. `cargo update` moves
+  # every dependency to the newest version its requirement allows, then the
+  # shipped graph is re-checked and the result is offered as a pull request.
+  #
+  # A pull request opened with the default GITHUB_TOKEN does not start CI, so
+  # the refresh opens one only when the maintainer has set the dedicated
+  # DEPENDENCY_UPDATE_TOKEN secret (a fine-grained PAT with contents:write and
+  # pull-requests:write). Without it the job just prints the pending diff to the
+  # run summary, so nothing is lost.
+  transitive-refresh:
+    name: Refresh Cargo.lock
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'lockfile')
+    runs-on: ubuntu-24.04
+    # Bind the DEPENDENCY_UPDATE_TOKEN to a dedicated deployment environment so
+    # the secret is scoped (and can carry protection rules) rather than being
+    # readable by every job in the repository.
+    environment: dependency-updates
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Install policy tools
+        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        with:
+          tool: cargo-deny@0.19.1
+          fallback: none
+
+      - name: Move every dependency to its newest allowed version
+        run: cargo update
+
+      # Informational: a freshly surfaced advisory should still produce the
+      # pull request so a human can see it, so this never fails the job.
+      - name: Re-check the shipped graph
+        continue-on-error: true
+        run: cargo deny --exclude-dev check
+
+      - name: Detect the dedicated token
+        id: token
+        env:
+          TOKEN: ${{ secrets.DEPENDENCY_UPDATE_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open a pull request
+        if: steps.token.outputs.present == 'true'
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          token: ${{ secrets.DEPENDENCY_UPDATE_TOKEN }}
+          add-paths: Cargo.lock
+          branch: update/cargo-lock
+          delete-branch: true
+          commit-message: |
+            build(deps): refresh Cargo.lock
+
+            Move every transitive dependency to its newest allowed version.
+          title: "build(deps): refresh Cargo.lock"
+          body: |
+            Monthly `cargo update` of the transitive dependency graph.
+
+            `cargo deny --exclude-dev check` ran against the refreshed graph;
+            see this run's log for its result. Let the full gate run before
+            merging.
+          labels: |
+            dependencies
+            rust
+
+      - name: Write the diff to the run summary
+        if: steps.token.outputs.present != 'true'
+        run: |
+          {
+            echo "## Cargo.lock refresh"
+            echo
+            echo "No \`DEPENDENCY_UPDATE_TOKEN\` secret is set, so no pull"
+            echo "request was opened. The pending \`Cargo.lock\` changes are:"
+            echo
+            echo '```diff'
+            git diff -- Cargo.lock
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # flake.lock has no Dependabot ecosystem, so the pinned Nix inputs are
+  # refreshed here. `nix flake update` rewrites the lock in place; the pull
+  # request opens under DEPENDENCY_UPDATE_TOKEN (so it starts CI) when the
+  # secret is set, and under GITHUB_TOKEN otherwise.
+  flake-lock-refresh:
+    name: Refresh flake.lock
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'flake-lock')
+    runs-on: ubuntu-24.04
+    environment: dependency-updates
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Set up Nix without the project cache
+        uses: ./.github/actions/setup-nix
+        with:
+          cache: 'false'
+
+      - name: Update every flake input
+        run: nix flake update
+
+      - name: Open a pull request
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          token: ${{ secrets.DEPENDENCY_UPDATE_TOKEN || secrets.GITHUB_TOKEN }}
+          add-paths: flake.lock
+          branch: update/flake-lock
+          delete-branch: true
+          commit-message: |
+            build(nix): update flake.lock
+
+            Refresh the pinned Nix inputs to their latest revisions.
+          title: "build(nix): update flake.lock"
+          body: |
+            Monthly refresh of the pinned Nix inputs (`nix flake update`).
+
+            Review the input revision changes, then let the gate run before
+            merging.
+          labels: |
+            dependencies
+            nix
+
+  # pre-commit hook revisions have no Dependabot ecosystem either, so
+  # `pre-commit autoupdate` bumps them here on the same monthly cadence.
+  pre-commit-autoupdate:
+    name: Update pre-commit hooks
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'pre-commit')
+    runs-on: ubuntu-24.04
+    environment: dependency-updates
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v6.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Install pre-commit
+        run: python -m pip install --disable-pip-version-check pre-commit
+
+      - name: Bump hook revisions
+        run: pre-commit autoupdate
+
+      - name: Open a pull request
+        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        with:
+          token: ${{ secrets.DEPENDENCY_UPDATE_TOKEN || secrets.GITHUB_TOKEN }}
+          add-paths: .pre-commit-config.yaml
+          branch: update/pre-commit
+          delete-branch: true
+          commit-message: |
+            ci(pre-commit): autoupdate hook revisions
+
+            Refresh the pinned pre-commit hook revisions.
+          title: "ci(pre-commit): autoupdate hook revisions"
+          body: |
+            Monthly `pre-commit autoupdate` of the hook revisions.
+
+            Review the revision changes, then let the gate run before merging.
+          labels: |
+            dependencies
+            ci
+
+  # Advisories and expired ignores are triaged on their own, under the
+  # advisory label, apart from broken infrastructure.
+  report-advisories:
+    name: Report advisories
+    needs: [advisories-full, deny-ignore-expiry]
+    # !cancelled() rather than always(): a run cancelled by hand says nothing
+    # about the jobs, while a job that hit its timeout still reports as red.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
+          label: advisory
+          title: "Dependency advisories"
+
+  # The infrastructure tasks share the ci-red issue 'CI red: Scheduled'. A
+  # benchmark slowdown is only a warning, so a red benchmarks job means a
+  # broken build or a missing result.
+  report-ci:
+    name: Report CI status
+    needs: [tasks, fetcher-canary, reproducibility, cache-warm, stress, benchmarks, mutants]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
+          label: ci-red

@@ -1,0 +1,69 @@
+---
+source: nails-cli/tests/cli_contract.rs
+info:
+  program: nails
+  args:
+    - init
+    - "--help"
+---
+success: true
+exit_code: 0
+----- stdout -----
+Initialize NAILS directory structure on a hidden volume
+
+Usage: nails init [OPTIONS] <PATH>
+
+Arguments:
+  <PATH>
+          Path to the mounted hidden volume to initialize
+
+Options:
+      --allow-unmounted
+          Initialize a path that is not a mounted volume of its own
+
+          By default `init` refuses a target that shares a device with `/`, because writing the NAILS layout onto the decoy disk is exactly the mistake that leaves an identifying tree where the real volume later hides it. Pass this for a directory-style backend that is deliberately not a separate mount.
+
+  -c, --config <PATH>
+          Path to the configuration file (overrides binary-relative discovery)
+
+      --hardware-config <PATH>
+          Base hardware configuration to seed the hidden NixOS layout from
+
+          Overrides the default `/etc/nixos/hardware-configuration.nix`. On a non-NixOS host the layout is skipped unless this is given.
+
+  -v, --verbose...
+          More diagnostics on stderr: -v for debug, -vv for trace
+
+      --no-hardware-config
+          Do not create the hidden NixOS layout at all
+
+  -q, --quiet
+          Print only errors and the final result
+
+      --color <WHEN>
+          When to use colour
+
+          Possible values:
+          - auto:   Colour a stream only when it is a terminal, TERM is not `dumb` and NO_COLOR is unset or empty
+          - always: Always colour, even when piped
+          - never:  Never colour
+
+          [default: auto]
+
+      --ascii
+          Use ASCII markers instead of Unicode symbols and box drawing
+
+      --json
+          Print machine-readable JSON on stdout
+
+      --no-log-file
+          Do not write the log file on the hidden volume (diagnostics still go to stderr)
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+EXAMPLES:
+  nails init /mnt/data                Lay out the hidden volume at /mnt/data
+  nails init /mnt/data --no-hardware-config   Skip the hidden NixOS layout
+
+----- stderr -----

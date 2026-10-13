@@ -1,0 +1,26 @@
+<!-- SPDX-FileCopyrightText: 2025-2026 WitteShadovv -->
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+<!-- README banner, dark colour scheme. The dark and light variants differ only in colour. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 150" width="720" height="150" role="img" aria-label="NAILS: a hidden session on a decoy Linux system">
+  <svg x="4" y="6" width="138" height="138" viewBox="0 0 64 64">
+    <defs>
+      <linearGradient id="dark-fade" x1="0" y1="34" x2="0" y2="46" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#c7d4e5"/>
+        <stop offset="1" stop-color="#55657b"/>
+      </linearGradient>
+    </defs>
+    <g fill="none" stroke="url(#dark-fade)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M32 30H47M41.5 30L45.7 34.2M41.5 30L45.7 25.8M32 30L39.5 17M36.8 21.8L42.5 20.2M36.8 21.8L35.2 16M32 30L24.5 17M27.2 21.8L28.8 16M27.2 21.8L21.5 20.2M32 30H17M22.5 30L18.3 25.8M22.5 30L18.3 34.2M32 30L24.5 43M27.2 38.2L21.5 39.8M27.2 38.2L28.8 44M32 30L39.5 43M36.8 38.2L35.2 44M36.8 38.2L42.5 39.8"/>
+    </g>
+    <g fill="url(#dark-fade)">
+      <rect x="23" y="5" width="18" height="5" rx="2"/>
+      <rect x="30.5" y="9" width="3" height="44"/>
+      <path d="M30.5 52.5h3L32 60z"/>
+    </g>
+  </svg>
+  <g font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+    <text x="146" y="80" font-size="54" font-weight="600" letter-spacing="6" fill="#e6edf5">NAILS</text>
+    <line x1="148" y1="96" x2="700" y2="96" stroke="#3a4656" stroke-width="1"/>
+    <text x="148" y="122" font-size="16" fill="#a3b1c2">A hidden session on a decoy Linux system, entered with a soft-reboot</text>
+  </g>
+</svg>

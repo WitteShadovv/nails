@@ -1,12 +1,15 @@
-# Test 36: Shell History Zsh
-# Self-check: subtests used, no sleep sync, hard assertions, shell tag, shared helpers only.
-
+# Test 36: zsh history typed in the hidden session lands in the upper only
+#
+# The decoy user has a zsh history on the decoy disk. In the hidden session a
+# login on tty1 starts an interactive zsh and types a command; zsh writes its
+# history file on exit. That write is a copy-up into the hidden root's upper
+# (/mnt/data/root/upper/home/testuser/.zsh_history) on the hidden volume, and
+# after `nails deactivate` the decoy history file is byte-for-byte what it was
+# before activation.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
-  shellHelpers = import ./../../lib/shell-helpers.nix;
 in
 {
   name = "shell-history-zsh";
@@ -24,43 +27,69 @@ in
     };
 
   testScript = _: ''
+    import secrets
+
     ${testHelpers.writeHeadlessConfigFn}
-    ${testHelpers.runDetachedCommandFn}
-    ${shellHelpers.activateForUserFn}
-    ${shellHelpers.canonicalDeactivateForUserFn}
-    ${assertions.assertStatusStateFn}
-    ${testHelpers.readStatusJsonFn}
+    ${testHelpers.canonicalActivateFn}
+    ${testHelpers.canonicalDeactivateFn}
+
+    CONFIG = "/mnt/data/config/nails.toml"
+    UPPER = "/mnt/data/root/upper"
+    HISTORY = "/home/testuser/.zsh_history"
+
+
+    def login_tty1():
+        # Clear tty1 first, so a "Password:" left by an earlier phase cannot
+        # match; wait for login's own prompt before typing the password (login
+        # flushes typeahead when it turns echo off).
+        machine.wait_for_unit("getty@tty1.service")
+        machine.succeed("printf '\\033[H\\033[2J' > /dev/tty1")
+        machine.send_chars("testuser\n")
+        machine.wait_until_tty_matches("1", "Password: ", timeout=60)
+        machine.send_chars("test\n")
+        machine.wait_until_succeeds(
+            "loginctl list-sessions --no-legend | grep -q testuser", timeout=60
+        )
+
+
+    def history_hash():
+        return machine.succeed(f"sha256sum {HISTORY} | cut -d' ' -f1").strip()
+
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/nails-headless.yaml"
-    shell_path = "/run/current-system/sw/bin/zsh"
-    write_headless_config(config_path)
-
-    with subtest("prepare lower-disk zsh history and activate"):
+    with subtest("prepare a decoy zsh history and activate"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        machine.succeed("install -m 0644 -o testuser -g users /dev/null /home/testuser/.zsh_history")
-        machine.succeed("printf 'lower-history-entry\n' > /home/testuser/.zsh_history")
-        activate_for_user(config_path, shell_path)
-        assert_status_state("active", config_path=config_path)
-
-    with subtest("active session writes zsh history into overlay"):
+        write_headless_config(CONFIG)
         machine.succeed(
-            "sudo -u testuser env HOME=/home/testuser "
-            + shell_path
-            + " -lc \"printf 'nails activate\\nsecret-zsh-entry\\n' > ~/.zsh_history\""
+            f"install -m 0600 -o testuser -g users /dev/null {HISTORY}"
+            f" && printf 'lower-history-entry\\n' > {HISTORY}"
         )
-        machine.succeed("test -s /home/testuser/.zsh_history")
+        # Without a ~/.zshrc, zsh starts its new-user wizard, which eats what
+        # the test types next.
+        machine.succeed("install -m 0644 -o testuser -g users /dev/null /home/testuser/.zshrc")
+        decoy_hash = history_hash()
+        canonical_activate(CONFIG, "--overlay-only", "activate")
 
-    with subtest("deactivate truncates visible zsh history on decoy disk"):
-        canonical_deactivate_for_user(
-            config_path,
-            shell_path,
-            unit_name="nails-deactivate-shell-history-zsh",
-        )
-        machine.succeed("test -f /home/testuser/.zsh_history")
-        machine.succeed("test ! -s /home/testuser/.zsh_history")
-        assert_status_state("inactive", config_path=config_path)
+    token = "secret-zsh-" + secrets.token_hex(6)
+    with subtest("a command typed into a hidden zsh is saved to the upper"):
+        login_tty1()
+        machine.send_chars("zsh\n")
+        machine.wait_until_succeeds("pgrep -u testuser -x zsh", timeout=30)
+        machine.send_chars("echo zsh-ready-$((40 + 2))\n")
+        machine.wait_until_tty_matches("1", "zsh-ready-42", timeout=30)
+        machine.send_chars(f"echo {token}\n")
+        # zsh writes its history file when the interactive shell exits.
+        machine.send_chars("exit\n")
+        machine.wait_until_succeeds(f"grep -q {token} {UPPER}{HISTORY}", timeout=30)
+        machine.succeed(f"grep -q {token} {HISTORY}")
+        machine.send_chars("exit\n")
+
+    with subtest("deactivate: the decoy zsh history is unchanged"):
+        canonical_deactivate(CONFIG, "deactivate")
+        assert history_hash() == decoy_hash, "the decoy zsh history changed"
+        machine.succeed(f"grep -q lower-history-entry {HISTORY}")
+        machine.fail(f"grep -q {token} {HISTORY}")
   '';
 }

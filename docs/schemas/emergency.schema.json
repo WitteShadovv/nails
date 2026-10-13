@@ -1,0 +1,143 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://nails.local/schemas/emergency.schema.json",
+  "title": "NAILS emergency --json",
+  "description": "Machine-readable emergency envelope. The hot path runs before the CLI is initialised; this envelope reports it afterwards, best-effort: the soft-reboot it enqueued may end the process first.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "command",
+    "ok"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "command": {
+      "const": "emergency"
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "side",
+        "requested",
+        "dispatched",
+        "fallback",
+        "kernel_power_off",
+        "backend_closing",
+        "cgroups_killed",
+        "processes_killed",
+        "remaining_mounts",
+        "phases",
+        "elapsed_ms"
+      ],
+      "properties": {
+        "side": {
+          "enum": [
+            "hidden",
+            "decoy",
+            "none"
+          ]
+        },
+        "requested": {
+          "enum": [
+            "return_to_decoy",
+            "reboot",
+            "poweroff"
+          ]
+        },
+        "dispatched": {
+          "enum": [
+            "return_to_decoy",
+            "reboot",
+            "poweroff",
+            null
+          ]
+        },
+        "fallback": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "kernel_power_off": {
+          "type": "boolean"
+        },
+        "backend_closing": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "cgroups_killed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "processes_killed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "remaining_mounts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "phases": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "ms"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "ms": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "elapsed_ms": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        },
+        "hint": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

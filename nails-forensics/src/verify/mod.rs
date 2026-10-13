@@ -1,0 +1,53 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Forensic validation system for NAILS
+//!
+//! The verify module provides forensic cleanliness validation by checking for:
+//! - Active overlay mounts
+//! - Artifact files in suspicious locations
+//! - Running nails-related processes
+//! - Memory persistence risks (swap enabled)
+//! - Deep scans of temporary directories and logs
+//!
+//! # Example
+//!
+//! ```rust
+//! use nails_base::MockFilesystem;
+//! use nails_forensics::{Verifier, VerifyStatus};
+//!
+//! let fs = MockFilesystem::new();
+//! let verifier = Verifier::new(fs);
+//! let result = verifier.run(false)?; // Standard scan
+//!
+//! match result.status {
+//!     VerifyStatus::Secure => println!("System is clean"),
+//!     VerifyStatus::Warning => println!("Potential issues found"),
+//!     VerifyStatus::Critical => println!("Critical artifacts detected"),
+//! }
+//! # Ok::<(), nails_base::NailsError>(())
+//! ```
+
+pub mod examiner;
+mod journal;
+mod residue_report;
+pub mod scanners;
+mod types;
+mod verifier;
+
+#[cfg(test)]
+mod tests;
+
+// Re-export public types
+pub use examiner::{ExaminerFinding, ExaminerGroup, ExaminerOptions, ExaminerReport};
+pub use journal::{JournalReader, JournalctlReader};
+pub use residue_report::{
+    RESIDUE_REPORT_DIR, RESIDUE_REPORT_SCHEMA_VERSION, ResidueReport, ResidueReportSummary,
+    write_activation_residue_report,
+};
+pub use scanners::{
+    ArtifactScan, ArtifactScanner, DebianPackageDriftScanner, NixOsStateNoteScanner,
+    PACKAGE_BASELINE_DIR,
+};
+pub use types::{Finding, ScanDepth, Severity, StateFileStatus, VerifyResult, VerifyStatus};
+pub use verifier::{VERIFY_CHECK_IDS, Verifier};

@@ -49,13 +49,12 @@ nix develop
 # Install local hooks if you use pre-commit
 pre-commit install
 
-# Baseline validation
-cargo fmt --check
-cargo clippy --all-targets --all-features -- -D warnings
-cargo test
+# Baseline validation (the justfile is the single source of these commands)
+just check        # formatting, clippy, Rust file sizes and the tests
+nix flake check   # Nix, shell and workflow linters; builds no VM test
 ```
 
-If you are not using the Nix development environment, make sure your local toolchain is compatible with the repository before opening a PR.
+`nix develop` is the only supported development shell: it pins the toolchain and provides every tool the checks and hooks need. If you are not using it, make sure your local toolchain is compatible with the repository before opening a PR.
 
 ### About the pre-commit hooks
 
@@ -70,6 +69,27 @@ pre-commit run --all-files
 
 Running the full hook set before you open a pull request is the best way to reduce review churn.
 
+## Testing
+
+The suite runs in tiers, each with its own command, runtime and prerequisites. Everything runs inside `nix develop`. [docs/ci.md](docs/ci.md#test-and-ci-tiers) maps each tier to the workflow that enforces it; [docs/development-guide.md](docs/development-guide.md) covers the privileged tier and environment-sensitive tests in depth.
+
+| Tier | Command | Runtime | Prerequisites |
+|---|---|---|---|
+| Format, lint and unit tests (pre-push gate) | `just check` | about 90 s | dev shell |
+| CI parity, with coverage | `just ci-rust` | a few minutes | dev shell |
+| Real-kernel tests (rootless) | `just kernel-tests` | seconds | dev shell, unprivileged user namespaces |
+| The one root-only overlay test | see `docs/development-guide.md` | seconds | root, an overlayfs-capable kernel |
+| One E2E test | `just e2e session-lifecycle` | minutes | KVM (`/dev/kvm`), Nix |
+| E2E smoke group | `just e2e smoke` | minutes | KVM, Nix |
+| Full E2E suite | `just e2e all` | long (nightly in CI) | KVM, Nix |
+
+- **Unprivileged by default.** `just test` (and `just check`) need no root. Most tests drive the logic through `MockFilesystem` and temporary directories; the real-kernel tests re-run themselves in an unprivileged user and mount namespace and skip, with a message, where user namespaces are unavailable (`just kernel-tests` fails instead).
+- **Ignored tests.** Only one real-overlay test needs root: the whiteout and opaque-directory test in `nails-core/tests/privileged_mounts.rs`. It is `#[ignore]`d and runs in a private mount namespace in the `privileged-mounts` CI job (part of `gate`); `docs/development-guide.md` has the exact build-and-run commands. The other `#[ignore]`d tests regenerate a committed file or need a host state they cannot set up; each says why in its `#[ignore = "..."]` reason.
+- **`NAILS_UNSAFE_REAL_OPS`.** CLI integration tests that would perform real host actions refuse to run unless `NAILS_UNSAFE_REAL_OPS=1` is set, so a normal `cargo test` skips them rather than touching the host. Set it only inside a disposable VM or container.
+- **Environment-sensitive tests.** All tests in a binary share one process environment, so tests never mutate it: product code reads the environment once, in `main`, into a `RuntimeEnv`, and a test builds the `RuntimeEnv` it needs and injects it (see `docs/development-guide.md`). Never call `std::env::set_var`/`remove_var`.
+- **Shared fixtures.** Build managers for a test through `nails_core::TestWorld` rather than re-deriving a `Config` and `NailsManager` by hand; it stages the mock filesystem, roots the config in a temporary directory and (via `.with_nixos`, `.with_state`/`.inactive`, `.with_filesystem`) covers the specialised cases. `Config::test_default()` gives a deterministic config on its own. Both live behind the `test-support` feature, so `nails-cli` and the integration tests share them.
+- **Test-file layout.** A module keeps its tests in a sibling `tests/` directory wired with a single `mod tests;` declaration, not one giant `tests.rs`. `tests/mod.rs` holds the shared fixtures and the `mod <behaviour>;` declarations; each `tests/<behaviour>.rs` groups one behaviour (a pre-flight check, the entry, the way back, …) and starts with `use super::*;`. Keep each file under about 1,500 lines and split by behaviour when it grows past that.
+
 ## Contribution Guidelines
 
 ### Keep changes focused
@@ -82,6 +102,7 @@ Running the full hook set before you open a pull request is the best way to redu
 
 - New behavior should include tests when feasible.
 - Avoid unnecessary dependencies.
+- Unsafe code is denied workspace-wide. Prefer a safe wrapper (`nix`, `rustix`); where a raw call is unavoidable, put a scoped `#[allow(unsafe_code)]` on the smallest enclosing item and a `// SAFETY:` comment on each block (see the [lint policy](docs/ci.md#lint-policy)).
 - Keep CLI code thin and business logic in library code where possible.
 - Do not introduce custom cryptography or weak secret-handling patterns.
 
@@ -112,7 +133,7 @@ This repository uses [Conventional Commits](https://www.conventionalcommits.org/
 
 Examples:
 
-- `fix(overlay): handle cleanup failure on deactivation`
+- `fix(session): detach a leftover next root on recover`
 - `docs(security): clarify public vulnerability reporting`
 - `test(state): cover rollback edge case`
 
@@ -120,6 +141,39 @@ Examples:
 
 - Use issues for bugs, feature requests, and contributor questions.
 - Use [SECURITY.md](SECURITY.md) for private vulnerability reports.
+
+## Developer Certificate of Origin (sign-off)
+
+Every commit must be signed off. The sign-off certifies that you wrote the
+patch, or otherwise have the right to submit it under the project's licence,
+per the [Developer Certificate of Origin](https://developercertificate.org/).
+
+Add the sign-off trailer by committing with `-s`:
+
+```bash
+git commit -s -m "fix(session): detach a leftover next root on recover"
+```
+
+This appends a line to the commit message:
+
+```
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+Use the same name and email as your Git `user.name` and `user.email`. Pull
+requests whose commits are missing the sign-off will be asked to amend them
+(`git commit --amend -s` for the last commit, or an interactive rebase for
+several).
+
+New source files carry the two SPDX header lines
+
+```
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+```
+
+and the whole tree is kept REUSE-compliant; `reuse lint` runs in the
+development shell, as a pre-commit hook and in CI.
 
 ## Licensing
 

@@ -1,14 +1,19 @@
-default_install_hook_types: [pre-commit, commit-msg]
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
 
 exclude: (hardware-configuration\.nix|flake\.lock)$
 
 repos:
-  # General file formatting and checks
+  # General file formatting and checks (fast, offline, changed files only)
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      # Kernel fixtures are verbatim /proc captures (the kernel writes trailing
+      # tabs and spaces) and the screenshots are generated CLI output, checked
+      # against a fresh generation: neither may be normalised.
       - id: trailing-whitespace
+        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/)
       - id: end-of-file-fixer
+        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/)
       - id: check-yaml
       - id: check-json
       - id: check-toml
@@ -16,8 +21,6 @@ repos:
         args: ["--maxkb=1000"]
       - id: check-case-conflict
       - id: check-merge-conflict
-      - id: debug-statements
-      - id: check-docstring-first
       - id: check-symlinks
 
   # Secret detection
@@ -28,7 +31,7 @@ repos:
         exclude: .*\.lock$
         additional_dependencies: ["pyyaml", "gibberish-detector"]
 
-  # Local hooks for Nix and project-specific checks
+  # Local hooks for Nix, shell and project-specific checks
   - repo: local
     hooks:
       - id: nixfmt
@@ -36,17 +39,6 @@ repos:
         entry: nixfmt
         language: system
         files: \.nix$
-
-      - id: nix-syntax-check
-        name: nix syntax check
-        entry: bash
-        language: system
-        files: \.nix$
-        exclude: '.*/tmp-.*\.nix$'
-        args:
-          - -c
-          - 'for file in "$@"; do nix-instantiate --parse "$file" > /dev/null || exit 1; done'
-          - --
 
       - id: deadnix
         name: deadnix (remove dead Nix code)
@@ -75,7 +67,9 @@ repos:
         exclude: '.*/tmp-.*\.nix$|^docs/.*$' # Allow store paths in docs (examples)
         args:
           - -c
-          - 'for file in "$@"; do if grep -q "/nix/store" "$file"; then echo "Hard-coded store paths found in $file!"; exit 1; fi; done'
+          # A store path with its hash pins one build; the bare /nix/store
+          # directory (a mount point in the VM tests) is fine.
+          - 'for file in "$@"; do if grep -qE "/nix/store/[0-9a-z]{32}-" "$file"; then echo "Hard-coded store paths found in $file!"; exit 1; fi; done'
           - --
 
       - id: shell-script-check
@@ -84,6 +78,25 @@ repos:
         language: system
         files: '.*\.sh$'
         args: [-e, SC1091, -e, SC2034]
+
+      # SPDX/REUSE licensing compliance: every file must carry copyright and
+      # licence information (via a header or REUSE.toml). Scans the whole tree.
+      - id: reuse
+        name: reuse lint (SPDX/REUSE compliance)
+        entry: reuse lint
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      # Link-check the Markdown docs and reject retired names. Runs whenever a
+      # Markdown file or the checker itself changes; it scans the whole doc set,
+      # so the changed file names are not passed through.
+      - id: docs-check
+        name: docs link check and retired-name guard
+        entry: scripts/docs-check.sh
+        language: system
+        files: '(\.md$|^scripts/docs-check\.sh$)'
+        pass_filenames: false
 
       - id: nails-config-validation
         name: validate NAILS configuration files
@@ -109,107 +122,44 @@ repos:
             done
           - --
 
-      # Rust testing and quality checks (TDD enforcement)
-      # Security auditing: Scans Cargo.lock for known vulnerabilities (AR50)
-      # Fails on high/critical severity vulnerabilities before commit
-      - id: cargo-audit
-        name: Cargo Security Audit
-        entry: cargo audit
+      # Rust formatting is checked (never rewritten) on every commit; the
+      # heavier lint and test gate runs on push through `just check` below.
+      - id: cargo-fmt-check
+        name: cargo fmt --check
+        entry: cargo fmt --all -- --check
         language: system
+        types: [rust]
         pass_filenames: false
 
-      # Comprehensive dependency policy enforcement (AR50)
-      # Checks licenses, bans, sources, and advisories
-      - id: cargo-deny
-        name: Cargo Dependency Policy Check
-        entry: cargo deny check
-        language: system
-        pass_filenames: false
-        files: (Cargo\.toml|Cargo\.lock|deny\.toml)$
-
+      # Rust file size limits: the script `just check` and CI run, well under
+      # a second, so it can run on every commit that touches Rust.
       - id: check-line-count
-        name: Enforce 500-line limit on Rust files
+        name: Rust file size limits
         entry: scripts/check-line-count.sh
-        language: script
-        types: [rust]
-        pass_filenames: false
-
-      - id: rust-fmt
-        name: Format Rust code
-        entry: cargo fmt --
         language: system
         types: [rust]
         pass_filenames: false
 
-      - id: rust-clippy
-        name: Lint Rust code with clippy
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+      # Every deny.toml advisory ignore needs a current "# expires:" date;
+      # this is offline and only runs when deny.toml changes.
+      - id: deny-ignores
+        name: deny.toml ignore expiry
+        entry: python3 ci/deny_ignores.py
         language: system
-        types: [rust]
         pass_filenames: false
+        files: ^deny\.toml$
 
-      - id: rust-test
-        name: Run Rust tests
-        entry: cargo test
+      # Push gate: formatting, clippy, file sizes and the full test suite.
+      - id: just-check
+        name: just check (fmt, lint, line-count, test)
+        entry: just check
         language: system
-        types: [rust]
         pass_filenames: false
-        stages: [pre-commit]
+        always_run: true
+        stages: [pre-push]
 
-      - id: rust-coverage
-        name: Enforce 85.5% Test Coverage (TDD)
-        entry: bash
-        language: system
-        types: [rust]
-        pass_filenames: false
-        stages: [pre-commit]
-        args:
-          - -c
-          - |
-            echo "🔍 Checking test coverage (85.5% required)..."
-
-            # Function to run coverage and produce cobertura XML
-            run_coverage() {
-              mkdir -p /tmp/nails-coverage
-              cargo llvm-cov --workspace --all-features --all-targets \
-                --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1
-            }
-
-            # Prefer the active flake dev shell; otherwise re-enter via nix develop.
-            if [ -n "$IN_NIX_SHELL" ]; then
-              coverage_output=$(run_coverage)
-              coverage_status=$?
-            else
-              coverage_output=$(nix develop --command bash -lc 'mkdir -p /tmp/nails-coverage && cargo llvm-cov --workspace --all-features --all-targets --cobertura --output-path /tmp/nails-coverage/cobertura.xml 2>&1')
-              coverage_status=$?
-            fi
-
-            if [ $coverage_status -ne 0 ]; then
-              echo "❌ Coverage check failed"
-              echo "$coverage_output"
-              exit 1
-            fi
-
-            # Extract line coverage from cobertura XML (same method as CI)
-            COVERAGE=$(grep -oP 'line-rate="\K[0-9.]+' /tmp/nails-coverage/cobertura.xml | head -1)
-            if [ -z "$COVERAGE" ]; then
-              echo "❌ Could not parse coverage percentage from cobertura XML"
-              echo "$coverage_output"
-              exit 1
-            fi
-            line_coverage=$(echo "$COVERAGE * 100" | bc)
-
-            # Check if coverage meets threshold (85.5%)
-            if (( $(echo "$line_coverage < 85.5" | bc -l) )); then
-              echo "❌ Test coverage below 85.5% (current: ${line_coverage}%) - commit blocked"
-              echo "💡 Run 'nix develop --command cargo llvm-cov --html' to see detailed coverage report"
-              exit 1
-            fi
-
-            echo "✅ Test coverage: ${line_coverage}%"
-
-      # Conventional commit message validation (AR20, AR21, AR22)
-      # Ensures commits follow "<type>[optional scope]: <description>" format
+      # Conventional commit message validation. Ensures commits follow
+      # "<type>[optional scope]: <description>" format.
       - id: commit-msg
         name: Validate Conventional Commits
         entry: bash
@@ -235,15 +185,10 @@ repos:
               echo "Valid types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert"
               echo ""
               echo "Examples:"
-              echo "  feat(story-1.5): add pre-commit hooks"
+              echo "  feat(config): add TOML loader"
               echo "  fix: correct state machine transition"
               echo "  docs: update README with installation steps"
               echo ""
               exit 1
             fi
           - --
-
-# CI-specific configuration
-ci:
-  autofix_prs: false
-  autoupdate_schedule: monthly

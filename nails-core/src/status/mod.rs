@@ -1,115 +1,263 @@
-//! # Status Command and Reporting
-//!
-//! Provides system status query functionality with overlay verification.
-//!
-//! ## Overview
-//!
-//! The `StatusCommand` queries the current system state from the state file
-//! and verifies that overlay mounts match the expected state. This provides
-//! observability and consistency validation for the NAILS system.
-//!
-//! ## Components
-//!
-//! - **[`StatusCommand`]**: Main command struct that executes status queries
-//! - **[`StatusReport`]**: Comprehensive report containing state, overlays, and verification results
-//! - **[`VerificationStatus`]**: Enum representing overlay verification outcomes
-//! - **[`SecurityPosture`]**: Enum representing security posture with graduated levels
-//!
-//! ## Example
-//!
-//! ```no_run
-//! use nails_core::{StatusCommand, Config, RealFilesystem};
-//! use std::path::PathBuf;
-//!
-//! let filesystem = RealFilesystem;
-//! let config = Config::default();
-//! let state_file_path = PathBuf::from("/mnt/hidden-volume/state.json");
-//!
-//! let cmd = StatusCommand::new(filesystem, config, state_file_path);
-//! let report = cmd.run()?;
-//!
-//! println!("State: {:?}", report.state);
-//! println!("Verification: {:?}", report.overlay_verification);
-//! println!("Posture: {}", report.security_posture());
-//! # Ok::<(), nails_core::NailsError>(())
-//! ```
-//!
-//! # Requirements
-//!
-//! - FR4: Status command
-//! - FR14: Overlay verification
-//! - FR26: Track current state
-//! - FR27: Track timestamp
-//! - FR28: Track overlay status
-//! - FR63: Status always succeeds (even on verification failure)
-//! - NFR23: State verification (overlays match reality)
-//! - NFR4: Status <500ms
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
 
+//! # Status
+//!
+//! Where the machine is, from live facts ([`crate::session::probe`]): the
+//! hidden root, an entry under way, an interrupted entry, or the plain decoy.
+//! A soft-reboot keeps the boot ID, so the state file cannot tell; it is
+//! reported next to the live view as a record.
+
+use crate::config::PersonaMode;
+use crate::session::{Paths, SessionView};
+use crate::state::LastActivation;
 use crate::{Config, Filesystem, LoadOutcome, Result, StateFile, SystemState};
 use chrono::{DateTime, Duration, Utc};
-use std::path::PathBuf;
+use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
+use nails_teardown::whole_root::plan::{Plan, PolicyMountKind};
+use serde::{Deserialize, Serialize};
+use std::fmt;
+use std::path::{Path, PathBuf};
 
-/// OpSec reminder with severity level
-///
-/// Represents an operational security reminder based on session uptime.
-/// Reminders help users make informed decisions about when to deactivate
-/// to minimize forensic traces.
-///
-/// # Fields
-///
-/// - **severity**: Reminder severity (Info, Warning, Critical)
-/// - **message**: Human-readable reminder message
-///
-/// # Example
-///
-/// ```
-/// use nails_core::status::{OpSecReminder, ReminderSeverity};
-///
-/// let reminder = OpSecReminder {
-///     severity: ReminderSeverity::Critical,
-///     message: "OPSEC WARNING: Session >24 hours - strongly recommend deactivation".to_string(),
-/// };
-/// ```
-pub mod report;
+mod reminders;
 
-// Re-export report types
-pub use report::{
-    OpSecReminder, OverlayMountStatus, ReminderSeverity, SecurityPosture, StatusReport,
-    VerificationStatus, format_uptime, generate_opsec_reminders,
-};
+pub use reminders::{OpSecReminder, ReminderSeverity, format_uptime, generate_opsec_reminders};
 
+/// The verdict `status` reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Posture {
+    /// The plain decoy.
+    Decoy,
+    /// In the hidden session.
+    Active,
+    /// An activation is entering the hidden root right now.
+    Transitioning,
+    /// Something needs the operator: an interrupted entry, or a hidden root
+    /// without a way back.
+    Degraded,
+    /// The state file cannot be read, so the record is unknown.
+    Unknown,
+}
+
+impl Posture {
+    /// Whether this posture is safe to leave as it is.
+    pub fn is_safe(&self) -> bool {
+        matches!(
+            self,
+            Posture::Decoy | Posture::Active | Posture::Transitioning
+        )
+    }
+
+    /// The output mark.
+    pub fn mark(&self) -> crate::output::Mark {
+        use crate::output::Mark;
+        match self {
+            Posture::Decoy | Posture::Transitioning => Mark::Neutral,
+            Posture::Active => Mark::Pass,
+            Posture::Degraded => Mark::Fail,
+            Posture::Unknown => Mark::Warn,
+        }
+    }
+
+    /// The upper-case level.
+    pub fn level(&self) -> &'static str {
+        match self {
+            Posture::Decoy => "DECOY",
+            Posture::Active => "ACTIVE",
+            Posture::Transitioning => "TRANSITIONING",
+            Posture::Degraded => "DEGRADED",
+            Posture::Unknown => "UNKNOWN",
+        }
+    }
+
+    /// The machine name.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Posture::Decoy => "decoy",
+            Posture::Active => "active",
+            Posture::Transitioning => "transitioning",
+            Posture::Degraded => "degraded",
+            Posture::Unknown => "unknown",
+        }
+    }
+
+    fn description(&self) -> &'static str {
+        match self {
+            Posture::Decoy => "Decoy system in use - no hidden session",
+            Posture::Active => "Hidden session active - the root is the hidden overlay",
+            Posture::Transitioning => "An activation is entering the hidden session",
+            Posture::Degraded => "The session needs attention",
+            Posture::Unknown => "State file could not be read - the record is unknown",
+        }
+    }
+
+    /// The plain-text rendering.
+    pub fn to_plain(&self) -> String {
+        format!("[{}] {}", self.level(), self.description())
+    }
+
+    /// The styled rendering.
+    pub fn render(&self, style: crate::output::Style) -> String {
+        if style.ascii {
+            self.to_plain()
+        } else {
+            format!(
+                "{} {}: {}",
+                style.mark(self.mark()),
+                self.level(),
+                self.description()
+            )
+        }
+    }
+}
+
+impl fmt::Display for Posture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.render(crate::output::Style::default()))
+    }
+}
+
+/// One mount the fstab policy placed in the hidden root.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PolicyMountView {
+    /// The mount point inside the hidden root.
+    pub target: PathBuf,
+    /// `read-only`, `overlay` or `hidden-volume`.
+    pub kind: &'static str,
+}
+
+/// What `status` reports.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StatusReport {
+    /// The verdict.
+    pub posture: Posture,
+    /// The live view: `decoy`, `hidden`, `entering`, `interrupted` or
+    /// `hidden_without_plan`.
+    pub session: &'static str,
+    /// Why the posture is degraded, if it is.
+    pub reason: Option<String>,
+    /// What to do about it.
+    pub remediation: Option<&'static str>,
+    /// The recorded state.
+    pub state: SystemState,
+    /// How the state file was read: `loaded`, `missing`, `unreadable` or
+    /// `corrupt`.
+    pub state_source: &'static str,
+    /// When the hidden root was entered.
+    pub entered_at: Option<DateTime<Utc>>,
+    /// How long the hidden session has run.
+    pub uptime: Option<Duration>,
+    /// The hidden NixOS toplevel the session runs.
+    pub hidden_system: Option<String>,
+    /// The decoy NixOS toplevel the way back returns to.
+    pub decoy_system: Option<String>,
+    /// The hidden volume root.
+    pub hidden_root: PathBuf,
+    /// Whether the hidden volume is mounted (at its own path).
+    pub hidden_root_mounted: bool,
+    /// The device the hidden volume is mounted from.
+    pub hidden_root_source: Option<String>,
+    /// The mounts the fstab policy placed in the hidden root.
+    pub policy_mounts: Vec<PolicyMountView>,
+    /// The decoy units masked in the hidden root.
+    pub masked_units: Vec<String>,
+    /// Whether `/run/nextroot` is populated.
+    pub nextroot_mounted: bool,
+    /// The last successful activation.
+    pub last_activation: Option<LastActivation>,
+    /// Whether the decoy keeps a persistent posture (journal, syslog).
+    pub decoy_persistent: bool,
+    /// The persona mode.
+    pub persona_mode: PersonaMode,
+    /// Uptime-based OpSec reminders.
+    pub opsec_reminders: Vec<OpSecReminder>,
+}
+
+impl StatusReport {
+    /// The verdict.
+    pub fn posture(&self) -> Posture {
+        self.posture
+    }
+}
+
+fn load_outcome_name(outcome: &LoadOutcome) -> &'static str {
+    match outcome {
+        LoadOutcome::Loaded => "loaded",
+        LoadOutcome::Missing => "missing",
+        LoadOutcome::Unreadable => "unreadable",
+        LoadOutcome::Corrupt => "corrupt",
+    }
+}
+
+fn kind_name(kind: PolicyMountKind) -> &'static str {
+    match kind {
+        PolicyMountKind::ReadOnlyBind => "read-only",
+        PolicyMountKind::Overlay => "overlay",
+        PolicyMountKind::HiddenVolume => "hidden-volume",
+    }
+}
+
+/// The posture, reason and remediation for a live view.
+pub fn posture_of(
+    view: &SessionView,
+    state_unknown: bool,
+) -> (Posture, Option<String>, Option<&'static str>) {
+    match view {
+        SessionView::Hidden(_) => (Posture::Active, None, None),
+        SessionView::Entering(_) => (Posture::Transitioning, None, None),
+        SessionView::Interrupted {
+            nextroot_mounted, ..
+        } => (
+            Posture::Degraded,
+            Some(if *nextroot_mounted {
+                "an interrupted activation left a populated /run/nextroot".to_string()
+            } else {
+                "an interrupted activation left its runtime files in /run".to_string()
+            }),
+            Some("Run `nails recover` to remove them"),
+        ),
+        SessionView::HiddenWithoutPlan(why) => (
+            Posture::Degraded,
+            Some(format!("in the hidden root without a way back: {why}")),
+            Some("Power off to end the session"),
+        ),
+        SessionView::Decoy if state_unknown => (
+            Posture::Unknown,
+            None,
+            Some("Run `nails verify` and check the hidden volume before activating again"),
+        ),
+        SessionView::Decoy => (Posture::Decoy, None, None),
+    }
+}
+
+fn view_name(view: &SessionView) -> &'static str {
+    match view {
+        SessionView::Decoy => "decoy",
+        SessionView::Hidden(_) => "hidden",
+        SessionView::HiddenWithoutPlan(_) => "hidden_without_plan",
+        SessionView::Entering(_) => "entering",
+        SessionView::Interrupted { .. } => "interrupted",
+    }
+}
+
+fn plan_of(view: &SessionView) -> Option<&Plan> {
+    match view {
+        SessionView::Hidden(plan) | SessionView::Entering(plan) => Some(plan),
+        SessionView::Interrupted { plan, .. } => plan.as_deref(),
+        _ => None,
+    }
+}
+
+/// Executes `nails status`.
 pub struct StatusCommand<F: Filesystem> {
-    /// Filesystem abstraction for testability
     filesystem: F,
-
-    /// Configuration (used for show_opsec_reminders setting)
     config: Config,
-
-    /// Path to the state file
     state_file_path: PathBuf,
 }
 
 impl<F: Filesystem> StatusCommand<F> {
-    /// Create a new StatusCommand
-    ///
-    /// # Arguments
-    ///
-    /// * `filesystem` - Filesystem trait implementation
-    /// * `config` - Configuration (reserved for future use)
-    /// * `state_file_path` - Path to the state file
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// use nails_core::{StatusCommand, Config, MockFilesystem};
-    /// use std::path::PathBuf;
-    ///
-    /// let fs = MockFilesystem::new();
-    /// let config = Config::default();
-    /// let state_path = PathBuf::from("/tmp/state.json");
-    ///
-    /// let cmd = StatusCommand::new(fs, config, state_path);
-    /// ```
+    /// A status query for `config`, reading the state file at `state_file_path`.
     pub fn new(filesystem: F, config: Config, state_file_path: PathBuf) -> Self {
         Self {
             filesystem,
@@ -118,266 +266,93 @@ impl<F: Filesystem> StatusCommand<F> {
         }
     }
 
-    /// Execute the status command
-    ///
-    /// Loads the state file, extracts system state, verifies overlay status,
-    /// calculates uptime, generates formatted uptime string, and creates
-    /// OpSec reminders based on uptime thresholds.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(StatusReport)` - Comprehensive status report
-    /// * `Err(NailsError)` - Error loading state file
-    ///
-    /// # Behavior
-    ///
-    /// - **Inactive**: Returns report with empty overlays, NotApplicable verification
-    /// - **Active**: Returns report with overlay list, verification result, uptime, formatted_uptime, and OpSec reminders
-    /// - **Transitional states**: Returns report with Skipped verification
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// use nails_core::{StatusCommand, Config, RealFilesystem};
-    /// use std::path::PathBuf;
-    ///
-    /// let cmd = StatusCommand::new(
-    ///     RealFilesystem,
-    ///     Config::default(),
-    ///     PathBuf::from("/mnt/hidden-volume/state.json"),
-    /// );
-    ///
-    /// let report = cmd.run()?;
-    /// println!("System state: {:?}", report.state);
-    /// println!("Uptime: {}", report.formatted_uptime);
-    /// println!("Reminders: {:?}", report.opsec_reminders);
-    /// # Ok::<(), nails_core::NailsError>(())
-    /// ```
+    /// Build the report from the live system.
     pub fn run(&self) -> Result<StatusReport> {
-        // Load state file with outcome metadata (P1-03)
-        let load_result = StateFile::load_with_outcome(&self.state_file_path)?;
-        let state_file = load_result.state_file;
-        let load_outcome = load_result.outcome;
-
-        tracing::debug!(state = ?state_file.state, phase = "status", "Status query executed");
-
-        // Extract data from state file
-        let (overlays, activated_at) = match &state_file.state {
-            SystemState::Inactive => (vec![], None),
-            SystemState::Active {
-                activated_at,
-                overlays,
-            } => (overlays.clone(), Some(*activated_at)),
-            SystemState::Activating { .. }
-            | SystemState::Deactivating { .. }
-            | SystemState::Emergency { .. } => (vec![], None),
-        };
-
-        // Calculate uptime if active
-        let uptime = self.calculate_uptime(activated_at);
-
-        // Format uptime as human-readable string
-        let formatted_uptime = match uptime {
-            Some(duration) => format_uptime(duration),
-            None => String::new(),
-        };
-
-        // Generate OpSec reminders based on uptime
-        let opsec_reminders = match uptime {
-            Some(duration) => generate_opsec_reminders(duration, self.config.show_opsec_reminders),
-            None => Vec::new(),
-        };
-
-        // Verify overlays
-        let overlay_verification = self.verify_overlays(&state_file)?;
-
-        tracing::debug!(
-            verification_result = ?overlay_verification,
-            phase = "status",
-            "Overlay verification performed"
+        let entries = read_mountinfo().unwrap_or_default();
+        let view = crate::session::probe::probe_with(
+            &Paths::system(),
+            &self.config.hidden_volume_root,
+            &entries,
         );
+        self.report(&view, &entries, Utc::now())
+    }
 
-        // Include overlay details for Active state (used by verbose mode)
-        let overlay_details = match &state_file.state {
-            SystemState::Active { .. } if !state_file.overlay_status.is_empty() => {
-                Some(state_file.overlay_status.clone())
-            }
-            _ => None,
-        };
-
-        // Build per-overlay mount statuses for Active state
-        let overlay_mount_statuses = match &state_file.state {
-            SystemState::Active { overlays, .. } => {
-                let mut statuses = Vec::new();
-                for overlay_path in overlays {
-                    if let Some(overlay_info) = state_file.overlay_status.get(overlay_path) {
-                        let actually_mounted = self
-                            .filesystem
-                            .is_mounted(&overlay_info.mount_path)
-                            .unwrap_or(false);
-                        statuses.push(OverlayMountStatus {
-                            path: overlay_path.clone(),
-                            expected_mounted: true,
-                            actually_mounted,
-                        });
-                    }
-                }
-                statuses
-            }
-            _ => vec![],
-        };
-
-        // Build report
-        let report = StatusReport {
-            state: state_file.state,
-            overlays,
-            overlay_verification,
-            nixos_generation: state_file.nixos_generation,
-            activated_at,
+    /// Build the report for a given live view and mount table.
+    pub fn report(
+        &self,
+        view: &SessionView,
+        entries: &[MountEntry],
+        now: DateTime<Utc>,
+    ) -> Result<StatusReport> {
+        let loaded = StateFile::load_with_outcome(&self.state_file_path)?;
+        let state_file = loaded.state_file;
+        let (posture, mut reason, mut remediation) = posture_of(view, loaded.outcome.is_unknown());
+        // A power loss or a reset in the session leaves the record at Active
+        // while the machine boots the plain decoy: say so, rather than show an
+        // active state next to a decoy posture without a word.
+        if posture == Posture::Decoy && matches!(state_file.state, SystemState::Active { .. }) {
+            reason = Some(
+                "the record still holds an active session, but none is running: it ended \
+                 without updating the record (a power loss, a reset or a failed hidden volume)"
+                    .to_string(),
+            );
+            remediation = Some("Run `nails recover` to reset the record");
+        }
+        let plan = plan_of(view);
+        let entered_at = plan
+            .and_then(|p| p.entered_at)
+            .and_then(|secs| DateTime::<Utc>::from_timestamp(i64::try_from(secs).ok()?, 0))
+            .or(match &state_file.state {
+                SystemState::Active { activated_at } if view.is_hidden() => Some(*activated_at),
+                _ => None,
+            });
+        let uptime = entered_at.filter(|_| view.is_hidden()).map(|t| now - t);
+        let hidden_root = &self.config.hidden_volume_root;
+        let hidden_mount =
+            top_mount_at(entries, hidden_root).filter(|m| m.mount_point == *hidden_root);
+        let opsec_reminders = uptime
+            .map(|u| generate_opsec_reminders(u, self.config.show_opsec_reminders))
+            .unwrap_or_default();
+        Ok(StatusReport {
+            posture,
+            session: view_name(view),
+            reason,
+            remediation,
+            state_source: load_outcome_name(&loaded.outcome),
+            entered_at,
             uptime,
-            formatted_uptime,
+            hidden_system: plan
+                .and_then(|p| p.hidden.system.as_ref())
+                .map(|p| p.display().to_string())
+                .or_else(|| state_file.hidden_toplevel().map(str::to_string)),
+            decoy_system: plan
+                .and_then(|p| p.decoy.system.as_ref())
+                .map(|p| p.display().to_string()),
+            hidden_root: hidden_root.clone(),
+            hidden_root_mounted: hidden_mount.is_some(),
+            hidden_root_source: hidden_mount.map(|m| m.source.display().to_string()),
+            policy_mounts: plan
+                .map(|p| {
+                    p.policy_mounts
+                        .iter()
+                        .map(|m| PolicyMountView {
+                            target: m.target.clone(),
+                            kind: kind_name(m.kind),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            masked_units: plan.map(|p| p.masks.clone()).unwrap_or_default(),
+            nextroot_mounted: entries.iter().any(|e| {
+                e.mount_point == Path::new(nails_teardown::whole_root::nextroot::NEXTROOT)
+            }),
+            last_activation: state_file.last_activation.clone(),
+            decoy_persistent: !view.is_hidden()
+                && crate::preflight::DecoyPersistenceCheck::decoy_is_persistent(&self.filesystem),
+            persona_mode: self.config.persona.mode,
             opsec_reminders,
-            overlay_details,
-            overlay_mount_statuses,
-            load_outcome,
-        };
-
-        Ok(report)
-    }
-
-    /// Execute the status command, converting unreadable state into a truthful report.
-    ///
-    /// Permission errors are surfaced to callers while preserving FR63 for other
-    /// recoverable state-file problems inside `run()`.
-    pub fn run_truthful(&self) -> Result<StatusReport> {
-        self.run()
-    }
-
-    /// Calculate uptime for active state
-    ///
-    /// Returns the duration since activation if the system is active,
-    /// otherwise returns None.
-    ///
-    /// # Arguments
-    ///
-    /// * `activated_at` - Optional activation timestamp
-    ///
-    /// # Returns
-    ///
-    /// * `Some(Duration)` - Time since activation (if active and timestamp is valid)
-    /// * `None` - System is inactive, transitional, or timestamp is in the future (clock skew)
-    fn calculate_uptime(&self, activated_at: Option<DateTime<Utc>>) -> Option<Duration> {
-        match activated_at {
-            Some(timestamp) => {
-                let now = Utc::now();
-                let duration = now.signed_duration_since(timestamp);
-
-                // Handle clock skew: if activated_at is in the future, return None
-                // This prevents negative durations from corrupted state files or clock issues
-                if duration.num_seconds() < 0 {
-                    None
-                } else {
-                    Some(duration)
-                }
-            }
-            None => None,
-        }
-    }
-
-    /// Verify overlay mounts match state file
-    ///
-    /// Checks that each overlay in the state file matches the actual mount status.
-    ///
-    /// # Arguments
-    ///
-    /// * `state_file` - Loaded state file
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(VerificationStatus::Verified)` - Overlays match expected state
-    /// * `Ok(VerificationStatus::Mismatch)` - Overlays don't match (with errors)
-    /// * `Ok(VerificationStatus::Skipped)` - Transitional state, verification skipped
-    /// * `Ok(VerificationStatus::NotApplicable)` - Inactive state, no overlays
-    ///
-    /// # Verification Logic
-    ///
-    /// - **Active**: All overlays in Active.overlays must be in overlay_status and mounted
-    /// - **Inactive**: No overlays should be mounted
-    /// - **Transitional**: Skip verification (partial state expected)
-    fn verify_overlays(&self, state_file: &StateFile) -> Result<VerificationStatus> {
-        match &state_file.state {
-            SystemState::Active { overlays, .. } => {
-                // Verify all overlays are mounted
-                let mut errors = Vec::new();
-
-                // First: Validate that Active.overlays matches overlay_status keys
-                // This ensures state file consistency
-                for overlay_path in overlays {
-                    if !state_file.overlay_status.contains_key(overlay_path) {
-                        errors.push(format!(
-                            "{} is listed in Active state but missing from overlay_status tracking",
-                            overlay_path.display()
-                        ));
-                    }
-                }
-
-                // Second: Check that all tracked overlays are actually mounted
-                for (path, overlay_info) in &state_file.overlay_status {
-                    // Only verify overlays that are supposed to be active
-                    if !overlays.contains(path) {
-                        errors.push(format!(
-                            "{} is in overlay_status but not listed in Active state",
-                            path.display()
-                        ));
-                        continue;
-                    }
-
-                    match self.filesystem.is_mounted(&overlay_info.mount_path) {
-                        Ok(true) => {
-                            // Overlay is mounted as expected
-                        }
-                        Ok(false) => {
-                            errors.push(format!("{} should be mounted but is not", path.display()));
-                        }
-                        Err(e) => {
-                            errors.push(format!(
-                                "Failed to check mount status for {}: {}",
-                                path.display(),
-                                e
-                            ));
-                        }
-                    }
-                }
-
-                if errors.is_empty() {
-                    Ok(VerificationStatus::Verified)
-                } else {
-                    Ok(VerificationStatus::Mismatch { errors })
-                }
-            }
-            SystemState::Inactive => Ok(VerificationStatus::NotApplicable),
-            SystemState::Activating { .. }
-            | SystemState::Deactivating { .. }
-            | SystemState::Emergency { .. } => Ok(VerificationStatus::Skipped),
-        }
-    }
-}
-
-impl Default for StatusReport {
-    fn default() -> Self {
-        Self {
-            state: SystemState::Inactive,
-            overlays: vec![],
-            overlay_verification: VerificationStatus::NotApplicable,
-            nixos_generation: None,
-            activated_at: None,
-            uptime: None,
-            formatted_uptime: String::new(),
-            opsec_reminders: vec![],
-            overlay_details: None,
-            overlay_mount_statuses: vec![],
-            load_outcome: LoadOutcome::FreshDefault,
-        }
+            state: state_file.state,
+        })
     }
 }
 

@@ -26,7 +26,7 @@
     import uuid
 
     def run_command_capture(label, command):
-        stem = f"/tmp/{label}-{uuid.uuid4().hex}"
+        stem = f"/run/{label}-{uuid.uuid4().hex}"
         machine.succeed(
             "bash -lc "
             + __import__("shlex").quote(
@@ -49,6 +49,11 @@
 
     def assert_command_succeeded(result):
         assert result["rc"] == 0, f"Expected command success, got: {result}"
+
+    def assert_exit_code(result, expected):
+        assert result["rc"] == expected, (
+            f"Expected exit code {expected}, got: {result}"
+        )
 
     def assert_result_contains(result, needles, stream="stderr"):
         haystack = result[stream]

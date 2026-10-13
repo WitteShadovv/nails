@@ -1,11 +1,15 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 //! Logging initialization for NAILS CLI
 //!
-//! This module provides functions to initialize the tracing subscriber with:
-//! - A stdout layer for human-readable output (filtered by verbosity level)
+//! This module initializes the tracing subscriber with:
+//! - A console layer (stderr, or NDJSON on stdout for `activate --json`)
+//!   filtered by the resolved verbosity
 //! - An optional file layer for JSON-formatted logs (captures all events)
 //!
 //! The file layer implements graceful fallback: if the hidden volume is not mounted
-//! or LoggingManager initialization fails, logging continues with stdout-only mode.
+//! or LoggingManager initialization fails, logging continues on the console only.
 
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::LevelFilter;
@@ -13,15 +17,10 @@ use tracing_subscriber::fmt;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
+use crate::cli::output::OutputSettings;
+
 #[cfg(test)]
 mod tests;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RenderMode {
-    Human,
-    NoColor,
-    Plain,
-}
 
 /// Stdout formatting mode for CLI command output.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,180 +34,61 @@ pub enum StdoutFormat {
     ActivateJsonStream,
 }
 
-/// Initialize tracing subscriber with stdout and optional file logging
+/// Initialize the tracing subscriber from the resolved output settings
 ///
 /// Sets up a two-layer subscriber:
-/// 1. **File layer** (JSON): Captures ALL events (TRACE+) to `{hidden_volume}/logs/nails.log`
-/// 2. **Stdout layer** (fmt): Human-readable output filtered by verbosity level
+/// 1. **File layer** (JSON): captures every event (TRACE+) to the configured
+///    log file on the hidden volume, unless `log_file` is false
+///    (`--no-log-file`) or the hidden volume is unavailable.
+/// 2. **Console layer**: human-readable on stderr, or NDJSON on stdout for
+///    [`StdoutFormat::ActivateJsonStream`], filtered by `settings.verbosity`
+///    (`-q` errors only, default INFO, `-v` DEBUG, `-vv` TRACE).
 ///
-/// Implements graceful fallback: if hidden volume is not mounted or LoggingManager
-/// initialization fails, continues with stdout-only logging (no errors raised).
-///
-/// # Arguments
-///
-/// * `verbose_count` - Number of `-v` flags passed (0, 1, 2+)
-///
-/// # Levels (Stdout Layer)
-///
-/// - 0 (normal): INFO and above (ERROR, WARN, INFO)
-/// - 1 (`-v`): DEBUG and above
-/// - 2+ (`-vv`): TRACE and above
-///
-/// # File Layer
-///
-/// Always captures TRACE+ regardless of user verbosity (full audit trail).
-///
-/// # Graceful Fallback (AC: Story 9.3, Task 2.4)
-///
-/// If hidden volume not mounted or LoggingManager fails:
-/// - Logs warning to stderr
-/// - Continues with stdout-only logging
-/// - Does NOT fail the command
-///
-/// # Parameters
-///
-/// - `verbose_count`: Verbosity level (0 = INFO, 1 = DEBUG, 2+ = TRACE)
-/// - `quiet`: Quiet mode - only show WARN and ERROR (AC: Story 9.3, AC #5)
-/// - `no_logs`: Skip file logging entirely (AC: Story 9.3, Task 2.5)
-/// - `config_override`: Optional explicit config file path (from `--config` flag)
-pub fn init_stdout_subscriber(
-    verbose_count: u8,
-    quiet: bool,
-    no_logs: bool,
-    config_override: Option<&std::path::Path>,
-) {
-    init_stdout_subscriber_with_mode(
-        verbose_count,
-        quiet,
-        no_logs,
-        false,
-        false,
-        config_override,
-        StdoutFormat::Human,
-    );
-}
-
-/// Initialize tracing subscriber with an explicit stdout formatting mode.
-pub fn init_stdout_subscriber_with_mode(
-    verbose_count: u8,
-    quiet: bool,
-    no_logs: bool,
-    no_color: bool,
-    plain: bool,
+/// ANSI colour on the console layer follows `settings.color_stderr`, so pipes
+/// and the journal never receive escape sequences unless `--color always` is
+/// given. A missing hidden volume never fails the command: logging continues
+/// on the console only.
+pub fn init_subscriber(
+    settings: &OutputSettings,
+    log_file: bool,
     config_override: Option<&std::path::Path>,
     stdout_format: StdoutFormat,
 ) {
-    let render_mode = render_mode(no_color, plain);
+    let console_level = settings.tracing_level();
+    let ansi = settings.color_stderr;
 
-    // Map CLI flags to tracing level (AC #5)
-    let stdout_level = if quiet {
-        LevelFilter::WARN // Quiet mode: only WARN and ERROR
+    let file_layer = if log_file {
+        init_file_layer(config_override, settings).ok().flatten()
     } else {
-        match verbose_count {
-            0 => LevelFilter::INFO,  // Normal mode: INFO, WARN, ERROR
-            1 => LevelFilter::DEBUG, // Verbose mode: DEBUG + INFO + WARN + ERROR
-            _ => LevelFilter::TRACE, // Debug mode: TRACE + all above
-        }
+        None
     };
 
-    // Skip file layer if --no-logs flag is set (AC: Story 9.3, Task 2.5)
-    if no_logs {
-        init_stdout_only_subscriber(stdout_level, stdout_format, render_mode);
-        return;
-    }
-
-    // Try to initialize LoggingManager for file logging (Task 2.1)
-    let file_layer_result = init_file_layer(config_override, render_mode);
-
-    match file_layer_result {
-        Ok(Some(file_layer)) => {
-            let subscriber = tracing_subscriber::registry().with(file_layer);
-
-            match stdout_format {
-                StdoutFormat::Human => {
-                    let stdout_layer = fmt::layer()
-                        .with_target(false)
-                        .with_thread_ids(false)
-                        .with_thread_names(false)
-                        .with_file(false)
-                        .with_line_number(false)
-                        .with_level(true)
-                        .with_ansi(matches!(render_mode, RenderMode::Human))
-                        .with_writer(std::io::stderr)
-                        .with_filter(stdout_level);
-
-                    subscriber.with(stdout_layer).init();
-                }
-                StdoutFormat::ActivateJsonStream => {
-                    let stdout_layer = fmt::layer()
-                        .json()
-                        .flatten_event(true)
-                        .with_current_span(false)
-                        .with_span_list(false)
-                        .with_target(false)
-                        .with_level(true)
-                        .with_ansi(false)
-                        .with_writer(std::io::stdout)
-                        .with_filter(stdout_level);
-
-                    subscriber.with(stdout_layer).init();
-                }
-            }
-        }
-        Ok(None) | Err(_) => {
-            // Graceful fallback: stdout-only logging (Task 2.4)
-            init_stdout_only_subscriber(stdout_level, stdout_format, render_mode);
-        }
-    }
-}
-
-fn render_mode(no_color: bool, plain: bool) -> RenderMode {
-    if plain {
-        RenderMode::Plain
-    } else if no_color
-        || std::env::var("NO_COLOR").is_ok()
-        || std::env::var(nails_core::obfuscate::env_no_color()).is_ok()
-    {
-        RenderMode::NoColor
-    } else {
-        RenderMode::Human
-    }
-}
-
-fn emit_logging_init_message(render_mode: RenderMode, is_error: bool, message: &str) {
-    let formatted = match (render_mode, is_error) {
-        (RenderMode::Plain, true) => format!("[FAIL] {message}"),
-        (RenderMode::Plain, false) => format!("[WARN] {message}"),
-        (RenderMode::NoColor, true) => format!("X {message}"),
-        (RenderMode::NoColor, false) => format!("! {message}"),
-        (RenderMode::Human, true) => nails_core::logging::format_early_error(message),
-        (RenderMode::Human, false) => nails_core::logging::format_early_warning(message),
-    };
-
-    eprintln!("{formatted}");
-}
-
-fn init_stdout_only_subscriber(
-    stdout_level: LevelFilter,
-    stdout_format: StdoutFormat,
-    render_mode: RenderMode,
-) {
+    // `Option<Layer>` is itself a layer, so a missing file layer is a no-op.
+    let registry = tracing_subscriber::registry().with(file_layer);
     match stdout_format {
         StdoutFormat::Human => {
-            tracing_subscriber::fmt()
+            // No timestamps on the human console: activation and teardown are
+            // interactive, the elapsed time is reported by the progress heartbeat,
+            // and a microsecond wall-clock stamp on every line only adds noise and
+            // widens the activity fingerprint if it is ever copied off-box. The
+            // JSON file layer still records a precise timestamp for forensics.
+            let console = fmt::layer()
+                .without_time()
                 .with_target(false)
                 .with_thread_ids(false)
                 .with_thread_names(false)
                 .with_file(false)
                 .with_line_number(false)
                 .with_level(true)
-                .with_ansi(matches!(render_mode, RenderMode::Human))
-                .with_writer(std::io::stderr)
-                .with_max_level(stdout_level)
-                .init();
+                .with_ansi(ansi)
+                // Lifts an activation spinner (when one is on screen) around each
+                // log line so the two never garble; a plain stderr write otherwise.
+                .with_writer(|| nails_core::reporter::progress::ProgressAwareStderr)
+                .with_filter(console_level);
+            registry.with(console).init();
         }
         StdoutFormat::ActivateJsonStream => {
-            tracing_subscriber::fmt()
+            let console = fmt::layer()
                 .json()
                 .flatten_event(true)
                 .with_current_span(false)
@@ -217,10 +97,29 @@ fn init_stdout_only_subscriber(
                 .with_level(true)
                 .with_ansi(false)
                 .with_writer(std::io::stdout)
-                .with_max_level(stdout_level)
-                .init();
+                .with_filter(console_level);
+            registry.with(console).init();
         }
     }
+}
+
+/// Print a notice about logging setup itself, before the subscriber exists.
+///
+/// Warnings are dropped under `--quiet`; errors are always shown.
+fn emit_logging_init_message(settings: &OutputSettings, is_error: bool, message: &str) {
+    if let Some(line) = logging_init_line(settings, is_error, message) {
+        eprintln!("{line}");
+    }
+}
+
+fn logging_init_line(settings: &OutputSettings, is_error: bool, message: &str) -> Option<String> {
+    use nails_core::output::Mark;
+
+    if !is_error && settings.is_quiet() {
+        return None;
+    }
+    let mark = if is_error { Mark::Fail } else { Mark::Warn };
+    Some(settings.stderr_style().marked(mark, message))
 }
 
 /// Initialize file logging layer with LoggingManager
@@ -233,17 +132,10 @@ fn init_stdout_only_subscriber(
 /// - `Ok(Some(layer))` - File layer successfully created
 /// - `Ok(None)` - Hidden volume not available, logged warning to stderr
 /// - `Err(_)` - Unexpected error during initialization
-///
-/// # Implementation (Task 2.1-2.4)
-///
-/// - Task 2.1: Create LoggingManager with config paths
-/// - Task 2.2: Call LoggingManager::init() for validation
-/// - Task 2.3: Build JSON file layer that captures ALL events
-/// - Task 2.4: Graceful fallback if hidden volume not mounted
 #[allow(clippy::type_complexity)]
 fn init_file_layer(
     config_override: Option<&std::path::Path>,
-    render_mode: RenderMode,
+    settings: &OutputSettings,
 ) -> Result<
     Option<
         tracing_subscriber::filter::Filtered<
@@ -262,29 +154,37 @@ fn init_file_layer(
     use nails_core::{LoggingManager, RealFilesystem};
     use std::fs::OpenOptions;
 
-    // Determine log path from config (P1-03: honor config.log_path)
-    let config_path = nails_core::config::discover_config_path(config_override);
-    let config = nails_core::config::Config::load_or_default(&config_path)
-        .unwrap_or_else(|_| nails_core::config::Config::default());
+    // Resolve the configuration through the one shared entry point every command
+    // uses (`commands::resolve_config`), so the log file is placed by exactly the
+    // configuration the command runs with. A configuration that fails to load is
+    // never silently replaced by binary-derived defaults: doing so would open a
+    // log file next to the binary even though the operator named a configuration
+    // that could not be read, and with an explicit `--config` the command itself
+    // exits non-zero. On any load error file logging simply stays off; the
+    // command surfaces the error on stderr.
+    let config = match crate::cli::commands::resolve_config(config_override) {
+        Ok(loaded) => loaded.into_config(),
+        Err(_) => return Ok(None),
+    };
 
     let log_dir = config.log_path.clone();
-    let hidden_volume_path = config.hidden_volume_root.clone();
+    let hidden_volume_root = config.hidden_volume_root.clone();
 
     // Create LoggingManager using configured log_path
-    let logging_manager = LoggingManager::new(log_dir, hidden_volume_path);
+    let logging_manager = LoggingManager::new(log_dir, hidden_volume_root);
 
-    // Initialize LoggingManager with validation (Task 2.2)
+    // Initialize LoggingManager with validation
     // Returns Ok(None) for graceful degradation (hidden volume not available)
     let fs = RealFilesystem;
     let logging_config = match logging_manager.init(&fs) {
         Ok(Some(config)) => config,
         Ok(None) => {
-            // Graceful degradation: hidden volume not available (Story 14.3, AC #3)
+            // Graceful degradation: hidden volume not available
             return Ok(None);
         }
         Err(e) => {
             emit_logging_init_message(
-                render_mode,
+                settings,
                 true,
                 &format!(
                     "Logging init failed: {}, continuing with stdout-only logging",
@@ -295,14 +195,16 @@ fn init_file_layer(
         }
     };
 
-    // Open log file for appending (Task 2.3)
+    // Open log file for appending. Mode 0600: the log lives on the hidden volume
+    // and names the operator's activity, so only its owner may read it, and a
+    // group- or world-readable log is never created even for a moment.
     #[cfg(unix)]
     let log_file_result = {
         use std::os::unix::fs::OpenOptionsExt;
         OpenOptions::new()
             .create(true)
             .append(true)
-            .mode(0o644) // Owner read/write, others read
+            .mode(0o600)
             .open(&logging_config.log_file_path)
     };
     #[cfg(not(unix))]
@@ -314,24 +216,34 @@ fn init_file_layer(
     let log_file = match log_file_result {
         Ok(file) => file,
         Err(e) => {
-            if matches!(render_mode, RenderMode::Human) {
-                emit_logging_init_message(
-                    render_mode,
-                    false,
-                    &format!(
-                        "Failed to open log file: {}, continuing without file logging",
-                        e
-                    ),
-                );
-            } else {
-                // Plain/no-color command output should stay focused on the command payload.
-                tracing::debug!(error = %e, "Failed to open log file; continuing without file logging");
-            }
+            emit_logging_init_message(
+                settings,
+                false,
+                &format!(
+                    "Failed to open log file: {}, continuing without file logging",
+                    e
+                ),
+            );
             return Ok(None);
         }
     };
 
-    // Build JSON file layer that captures ALL events (Task 2.3)
+    // `.mode()` above only applies when the file is created; a log left behind by
+    // an older build at 0644 would keep its looser mode. Tighten any existing
+    // file to 0600 on reopen so a group- or world-readable log never persists.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = log_file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+            emit_logging_init_message(
+                settings,
+                false,
+                &format!("Failed to tighten log file permissions to 0600: {e}"),
+            );
+        }
+    }
+
+    // Build JSON file layer that captures ALL events
     let file_writer = std::sync::Mutex::new(log_file);
     let file_layer = fmt::layer()
         .json()

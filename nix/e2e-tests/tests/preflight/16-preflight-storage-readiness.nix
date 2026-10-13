@@ -1,80 +1,56 @@
 # Test 16: Preflight Storage Readiness
+#
+# The storage-readiness check prepares the root overlay's directories on the
+# hidden volume: with root/upper and root/work missing, activation creates them
+# and enters the hidden session. A read-only work
+# directory (a read-only submount) is refused by name before anything is
+# prepared, and the machine stays on the plain decoy.
 
-{ self, ... }:
+_:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
-  assertions = import ./../../lib/assertions.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
 in
 {
   name = "preflight-storage-readiness";
   meta.tags = [ "preflight" ];
 
-  nodes.machine =
-    { ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
-    };
-
   testScript = _: ''
-    ${preflightHelpers.writeTextFileFn}
     ${preflightHelpers.runCommandCaptureFn}
     ${preflightHelpers.commandAssertionsFn}
+    ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
     ${testHelpers.readStatusJsonFn}
-    ${assertions.assertStatusStateFn}
-    ${assertions.assertOverlayMountedFn}
-    ${assertions.assertNoOverlaysFn}
 
-    def write_storage_config(path):
-        write_text_file(path, """
-    hidden_volume_root: /mnt/hidden-volume
-    overlay_mode: explicit
-    overlays:
-      - name: home
-        lower: /home
-        upper: /mnt/hidden-volume/home
-        work: /mnt/hidden-volume/.work/home
-        target: /home
-      - name: srv
-        lower: /srv
-        upper: /mnt/hidden-volume/srv
-        work: /mnt/hidden-volume/.work/srv
-        target: /srv
-    """.strip() + "\n")
+    from nails_e2e import session
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    config_path = "/tmp/preflight-storage-readiness.yaml"
-    write_storage_config(config_path)
-    machine.succeed("mkdir -p /srv")
+    config_path = "/tmp/preflight-storage-readiness.toml"
+    write_headless_config(config_path)
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
 
-    with subtest("missing overlay directories are auto-created and activation succeeds"):
-        machine.succeed("rm -rf /mnt/hidden-volume/srv /mnt/hidden-volume/.work/srv")
-        machine.succeed(f"nails --config {config_path} activate --overlay-only --no-kill-session -y")
-        machine.succeed("test -d /mnt/hidden-volume/srv")
-        machine.succeed("test -d /mnt/hidden-volume/.work/srv")
-        assert_overlay_mounted("/srv")
-        canonical_deactivate(config_path, unit_name="nails-deactivate-preflight-storage-pass")
-        assert_status_state("inactive")
+    with subtest("missing root overlay directories are created and activation succeeds"):
+        machine.succeed("rm -rf /mnt/data/root")
+        canonical_activate(config_path, "--overlay-only", "storage-activate")
+        canonical_deactivate(config_path, "storage-deactivate")
 
-    with subtest("read-only workdir submount blocks activation"):
-        machine.succeed("""${hiddenVolume.mountHiddenVolume}""")
-        machine.succeed("mount -t tmpfs tmpfs /mnt/hidden-volume/.work/home")
-        machine.succeed("mount -o remount,ro /mnt/hidden-volume/.work/home")
+    with subtest("a read-only work directory blocks activation"):
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        machine.succeed("mount -t tmpfs tmpfs /mnt/data/root/work")
+        machine.succeed("mount -o remount,ro /mnt/data/root/work")
         result = run_command_capture(
             "preflight-storage-readonly-work",
-            f"nails --config {config_path} activate --overlay-only --no-kill-session -y",
+            f"nails --config {config_path} activate --overlay-only -y",
         )
         assert_command_failed(result)
-        assert_result_contains(result, ["storage-readiness", ".work/home"], stream="stderr")
-        machine.succeed("umount /mnt/hidden-volume/.work/home")
+        assert_result_contains(result, ["storage-readiness", "root work"], stream="stderr")
+        session.assert_decoy_root(machine)
+        assert read_status_json(config_path=config_path)["posture"] == "decoy"
+        machine.succeed("umount /mnt/data/root/work")
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
-        assert_status_state("inactive")
-        assert_no_overlays(["/home", "/srv"])
   '';
 }

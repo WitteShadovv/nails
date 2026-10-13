@@ -1,28 +1,39 @@
 # Base VM Configuration for E2E Tests
 # Simplified: let NixOS test framework handle boot/filesystems
-# Secondary disk (/dev/vdb) is available for LUKS hidden volume testing
+# Secondary disk (serial "data", /dev/disk/by-id/virtio-data) is available for LUKS hidden volume testing
 
 { lib, pkgs, ... }:
-let
-  # CI computes a safe per-VM core count automatically and exports it through
-  # NAILS_E2E_VM_CORES before each NixOS test build. Because this value is read
-  # with builtins.getEnv, the corresponding flake build must opt into impure
-  # evaluation at that call site. Keep the local fallback at 4 cores so ad-hoc
-  # runs behave as they did previously.
-  vmCoresEnv = builtins.getEnv "NAILS_E2E_VM_CORES";
-  vmCores =
-    if builtins.match "[1-9][0-9]*" vmCoresEnv != null then builtins.fromJSON vmCoresEnv else 4;
-in
 {
+  # NAILS enters and leaves the hidden session with `systemctl soft-reboot`.
+  imports = [ ./soft-reboot-units.nix ];
+
   # Virtual hardware configuration
   virtualisation = {
-    memorySize = 4096; # 4GB RAM
-    cores = vmCores;
+    # Fixed rather than sized to the host, so that a test's derivation, and
+    # the cached result of a passed test, is the same on every machine and
+    # no build needs --impure. Two cores and 2 GB let two VMs share a
+    # four-vCPU, 16 GB hosted runner; graphical nodes get 4 GB in
+    # graphical-vm-config.nix.
+    memorySize = 2048;
+    cores = 2;
     diskSize = 20480; # 20GB primary disk
 
-    # Secondary disk for hidden volume simulation (2GB)
-    # Available as /dev/vdb inside the VM
-    emptyDiskImages = [ 2048 ];
+    # Secondary disk for hidden volume simulation (2GB). It carries the neutral
+    # serial "data", so the guest addresses it as /dev/disk/by-id/virtio-data:
+    # its /dev/vdX letter shifts when a profile adds a Nix store image disk.
+    emptyDiskImages = [
+      {
+        size = 2048;
+        driveConfig.deviceExtraOpts.serial = "data";
+      }
+    ];
+
+    # Most tests read the host Nix store over 9p. The 16 KiB default msize
+    # splits every larger read and readdir into many round trips, and QEMU's
+    # own 9p documentation recommends raising it. 256 KiB stays below the
+    # virtio transport's ceiling (PAGE_SIZE * (VIRTQUEUE_NUM - 3), about
+    # 500 KiB), so no kernel clamps it.
+    msize = 262144;
 
     # Keeping restrictNetwork = false is harmless and avoids the QEMU "-net none"
     # flag that can interfere with the test framework's own virtual network.
@@ -31,6 +42,12 @@ in
 
   # No swap for forensic safety
   swapDevices = lib.mkForce [ ];
+
+  # Model an amnesic decoy: journald keeps no persistent journal on the decoy
+  # disk, so the decoy-persistence pre-flight check passes and the E2E suite
+  # exercises the supported posture. A test that wants to exercise the refusal
+  # path overrides this back to "persistent".
+  services.journald.storage = lib.mkDefault "volatile";
 
   # Test user with sudo privileges
   users.users.testuser = {
@@ -51,31 +68,43 @@ in
     sleuthkit # For forensic analysis (fls, etc.)
     coreutils # Basic utilities
     util-linux # For mount operations
+    psmisc # fuser, for listing processes that keep a mount or backend busy
   ];
 
   # Provide a baseline /etc/nixos tree matching a normal NixOS install.
   # Several activation/preflight tests exercise the product's current
   # contract around base configuration discovery and hidden hardware-config
   # bootstrapping, so the VM fixture must expose these files up front.
+  #
+  # An explicit mode makes NixOS copy these as regular files into /etc. Without
+  # it, environment.etc stores the content under /etc/static and links /etc/nixos
+  # entries to it, which a real install never does and which some tests (and the
+  # forensic baseline) must not see: a stock /etc/nixos/*.nix is a plain file.
   environment.etc = {
-    "nixos/configuration.nix".text = ''
-      { ... }: {
-        imports = [ /etc/nixos/hardware-configuration.nix ];
-        boot.loader.grub.enable = false;
-        documentation.nixos.enable = false;
-        fileSystems."/" = {
-          device = "/dev/disk/by-label/nixos";
-          fsType = "ext4";
-        };
-        system.stateVersion = "25.11";
-      }
-    '';
+    "nixos/configuration.nix" = {
+      mode = "0644";
+      text = ''
+        { ... }: {
+          imports = [ /etc/nixos/hardware-configuration.nix ];
+          boot.loader.grub.enable = false;
+          documentation.nixos.enable = false;
+          fileSystems."/" = {
+            device = "/dev/disk/by-label/nixos";
+            fsType = "ext4";
+          };
+          system.stateVersion = "25.11";
+        }
+      '';
+    };
 
-    "nixos/hardware-configuration.nix".text = ''
-      { ... }: {
-        imports = [ ];
-      }
-    '';
+    "nixos/hardware-configuration.nix" = {
+      mode = "0644";
+      text = ''
+        { ... }: {
+          imports = [ ];
+        }
+      '';
+    };
   };
 
   # Mirror the normal legacy NixOS rebuild environment so tests exercising
@@ -91,10 +120,20 @@ in
     firewall.enable = false;
     usePredictableInterfaceNames = false;
     useDHCP = true;
+    # dhcpcd's default (wait = "any") holds multi-user.target until the QEMU
+    # user-mode network hands out a lease, which took about 6 s of every
+    # boot's 17 s in the driver logs. No test needs that address before
+    # multi-user: the test driver talks over its virtio-console backdoor and
+    # multi-machine tests use the static VLAN addresses on eth1. dhcpcd still
+    # runs and still configures eth0; it just no longer gates the boot.
+    dhcpcd.wait = "background";
   };
 
-  # Enable SSH for debugging (optional)
-  services.openssh.enable = true;
+  # No sshd: the driver reaches the guest over its backdoor shell (and
+  # `machine.shell_interact()` covers debugging), so sshd only cost a
+  # 4096-bit RSA host key generation on every first boot and a listening
+  # socket no test uses.
+  services.openssh.enable = false;
 
   # System configuration
   system.stateVersion = "25.11";

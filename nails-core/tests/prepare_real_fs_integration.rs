@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 use nails_core::{
     RealFilesystem, ensure_hidden_configuration_module, ensure_hidden_hardware_configuration,
     prepare_nixos_config_overlay, stage_hidden_config_symlink,
@@ -8,7 +11,7 @@ use std::os::unix::fs::PermissionsExt;
 fn prepare_nixos_config_overlay_real_filesystem_accepts_valid_staged_layout() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
-    let etc_nixos = hidden_root.join("etc/nixos");
+    let etc_nixos = hidden_root.join("root/upper/etc/nixos");
     let hardware = etc_nixos.join("hardware-configuration.nix");
     let hidden_config = hidden_root.join("config/nixos/configuration.nix");
 
@@ -48,7 +51,7 @@ fn ensure_hidden_configuration_module_real_filesystem_creates_secure_defaults() 
         .mode()
         & 0o777;
 
-    assert!(content.contains("pkgs.ripgrep"));
+    assert!(content.contains("Hidden-session configuration"));
     assert_eq!(dir_mode, 0o700);
     assert_eq!(file_mode, 0o600);
 }
@@ -108,7 +111,7 @@ fn ensure_hidden_hardware_configuration_real_filesystem_injects_import_into_exis
     let hidden_root = temp_dir.path().join("hidden");
     let base_hardware = temp_dir.path().join("hardware-configuration.nix");
 
-    std::fs::create_dir_all(hidden_root.join("etc/nixos")).unwrap();
+    std::fs::create_dir_all(hidden_root.join("root/upper/etc/nixos")).unwrap();
     std::fs::write(
         &base_hardware,
         "{ ... }: {\n  imports = [\n    ./foo.nix\n  ];\n}\n",
@@ -117,9 +120,11 @@ fn ensure_hidden_hardware_configuration_real_filesystem_injects_import_into_exis
 
     ensure_hidden_hardware_configuration(&RealFilesystem, &hidden_root, &base_hardware).unwrap();
 
-    let hidden_hardware = hidden_root.join("etc/nixos/hardware-configuration.nix");
+    let hidden_hardware = hidden_root.join("root/upper/etc/nixos/hardware-configuration.nix");
+    let hidden_base = hidden_root.join("root/upper/etc/nixos/hardware-configuration.base.nix");
     let content = std::fs::read_to_string(&hidden_hardware).unwrap();
-    let dir_mode = std::fs::metadata(hidden_root.join("etc/nixos"))
+    let base = std::fs::read_to_string(&hidden_base).unwrap();
+    let dir_mode = std::fs::metadata(hidden_root.join("root/upper/etc/nixos"))
         .unwrap()
         .permissions()
         .mode()
@@ -129,14 +134,26 @@ fn ensure_hidden_hardware_configuration_real_filesystem_injects_import_into_exis
         .permissions()
         .mode()
         & 0o777;
+    let base_mode = std::fs::metadata(&hidden_base)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
 
+    // The wrapper imports the hidden module and the preserved base; the original
+    // imports list is preserved verbatim in the base file.
     assert!(
         content.contains("./nails/configuration.nix"),
         "content={content}"
     );
-    assert!(content.contains("./foo.nix"), "content={content}");
+    assert!(
+        content.contains("./hardware-configuration.base.nix"),
+        "content={content}"
+    );
+    assert!(base.contains("./foo.nix"), "base={base}");
     assert_eq!(dir_mode, 0o700);
     assert_eq!(file_mode, 0o600);
+    assert_eq!(base_mode, 0o600);
 }
 
 #[test]
@@ -145,28 +162,35 @@ fn ensure_hidden_hardware_configuration_real_filesystem_bootstraps_missing_hidde
     let hidden_root = temp_dir.path().join("hidden");
     let base_hardware = temp_dir.path().join("hardware-configuration.nix");
 
-    std::fs::create_dir_all(hidden_root.join("etc/nixos")).unwrap();
+    std::fs::create_dir_all(hidden_root.join("root/upper/etc/nixos")).unwrap();
     std::fs::write(
         &base_hardware,
         "{ config, lib, pkgs, modulesPath, ... }:\n{\n  imports = [ (modulesPath + \"/installer/scan/not-detected.nix\") ];\n}\n",
     )
     .unwrap();
     std::fs::set_permissions(
-        hidden_root.join("etc/nixos"),
+        hidden_root.join("root/upper/etc/nixos"),
         std::fs::Permissions::from_mode(0o755),
     )
     .unwrap();
 
     ensure_hidden_hardware_configuration(&RealFilesystem, &hidden_root, &base_hardware).unwrap();
 
-    let hidden_hardware = hidden_root.join("etc/nixos/hardware-configuration.nix");
+    let hidden_hardware = hidden_root.join("root/upper/etc/nixos/hardware-configuration.nix");
+    let hidden_base = hidden_root.join("root/upper/etc/nixos/hardware-configuration.base.nix");
     let content = std::fs::read_to_string(&hidden_hardware).unwrap();
-    let dir_mode = std::fs::metadata(hidden_root.join("etc/nixos"))
+    let base = std::fs::read_to_string(&hidden_base).unwrap();
+    let dir_mode = std::fs::metadata(hidden_root.join("root/upper/etc/nixos"))
         .unwrap()
         .permissions()
         .mode()
         & 0o777;
     let file_mode = std::fs::metadata(&hidden_hardware)
+        .unwrap()
+        .permissions()
+        .mode()
+        & 0o777;
+    let base_mode = std::fs::metadata(&hidden_base)
         .unwrap()
         .permissions()
         .mode()
@@ -177,11 +201,16 @@ fn ensure_hidden_hardware_configuration_real_filesystem_bootstraps_missing_hidde
         "content={content}"
     );
     assert!(
-        content.contains("modulesPath + \"/installer/scan/not-detected.nix\""),
+        content.contains("./hardware-configuration.base.nix"),
         "content={content}"
+    );
+    assert!(
+        base.contains("modulesPath + \"/installer/scan/not-detected.nix\""),
+        "base={base}"
     );
     assert_eq!(dir_mode, 0o700);
     assert_eq!(file_mode, 0o600);
+    assert_eq!(base_mode, 0o600);
 }
 
 #[test]
@@ -191,7 +220,8 @@ fn ensure_hidden_hardware_configuration_real_filesystem_errors_when_hidden_paren
     let base_hardware = temp_dir.path().join("hardware-configuration.nix");
 
     std::fs::create_dir_all(&hidden_root).unwrap();
-    std::fs::write(hidden_root.join("etc"), "not a directory").unwrap();
+    std::fs::create_dir_all(hidden_root.join("root/upper")).unwrap();
+    std::fs::write(hidden_root.join("root/upper/etc"), "not a directory").unwrap();
     std::fs::write(&base_hardware, "{ ... }: { }\n").unwrap();
 
     let err = ensure_hidden_hardware_configuration(&RealFilesystem, &hidden_root, &base_hardware)
@@ -210,7 +240,7 @@ fn ensure_hidden_hardware_configuration_real_filesystem_errors_when_base_config_
     let hidden_root = temp_dir.path().join("hidden");
     let missing_base = temp_dir.path().join("missing-hardware-configuration.nix");
 
-    std::fs::create_dir_all(hidden_root.join("etc/nixos")).unwrap();
+    std::fs::create_dir_all(hidden_root.join("root/upper/etc/nixos")).unwrap();
 
     let err = ensure_hidden_hardware_configuration(&RealFilesystem, &hidden_root, &missing_base)
         .unwrap_err();
@@ -227,7 +257,7 @@ fn ensure_hidden_hardware_configuration_real_filesystem_errors_when_hidden_hardw
  {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().join("hidden");
-    let hidden_hardware = hidden_root.join("etc/nixos/hardware-configuration.nix");
+    let hidden_hardware = hidden_root.join("root/upper/etc/nixos/hardware-configuration.nix");
     let base_hardware = temp_dir.path().join("hardware-configuration.nix");
 
     std::fs::create_dir_all(&hidden_hardware).unwrap();
@@ -238,7 +268,7 @@ fn ensure_hidden_hardware_configuration_real_filesystem_errors_when_hidden_hardw
 
     assert!(
         err.to_string()
-            .contains("Failed to read hidden hardware-configuration.nix"),
+            .contains("Failed to stage hidden hardware-configuration wrapper"),
         "err={err}"
     );
 }
@@ -247,15 +277,15 @@ fn ensure_hidden_hardware_configuration_real_filesystem_errors_when_hidden_hardw
 fn stage_hidden_config_symlink_real_filesystem_is_idempotent() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
-    std::fs::create_dir_all(hidden_root.join("etc/nixos")).unwrap();
+    std::fs::create_dir_all(hidden_root.join("root/upper/etc/nixos")).unwrap();
 
     stage_hidden_config_symlink(&RealFilesystem, hidden_root).unwrap();
     stage_hidden_config_symlink(&RealFilesystem, hidden_root).unwrap();
 
-    let symlink_path = hidden_root.join("etc/nixos/nails/configuration.nix");
+    let symlink_path = hidden_root.join("root/upper/etc/nixos/nails/configuration.nix");
     let target = std::fs::read_link(&symlink_path).unwrap();
     let hidden_config = hidden_root.join("config/nixos/configuration.nix");
-    let symlink_parent_mode = std::fs::metadata(hidden_root.join("etc/nixos/nails"))
+    let symlink_parent_mode = std::fs::metadata(hidden_root.join("root/upper/etc/nixos/nails"))
         .unwrap()
         .permissions()
         .mode()
@@ -269,12 +299,12 @@ fn stage_hidden_config_symlink_real_filesystem_is_idempotent() {
 fn stage_hidden_config_symlink_real_filesystem_creates_hidden_config_with_secure_permissions() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
-    std::fs::create_dir_all(hidden_root.join("etc/nixos")).unwrap();
+    std::fs::create_dir_all(hidden_root.join("root/upper/etc/nixos")).unwrap();
 
     stage_hidden_config_symlink(&RealFilesystem, hidden_root).unwrap();
 
     let hidden_config = hidden_root.join("config/nixos/configuration.nix");
-    let nails_dir = hidden_root.join("etc/nixos/nails");
+    let nails_dir = hidden_root.join("root/upper/etc/nixos/nails");
     let symlink_path = nails_dir.join("configuration.nix");
     let target = std::fs::read_link(&symlink_path).unwrap();
     let config_mode = std::fs::metadata(&hidden_config)
@@ -288,7 +318,7 @@ fn stage_hidden_config_symlink_real_filesystem_creates_hidden_config_with_secure
     assert_eq!(target, hidden_config);
     assert_eq!(config_mode, 0o600);
     assert_eq!(nails_dir_mode, 0o700);
-    assert!(content.contains("pkgs.ripgrep"));
+    assert!(content.contains("Hidden-session configuration"));
 }
 
 #[test]
@@ -296,8 +326,8 @@ fn stage_hidden_config_symlink_real_filesystem_errors_when_parent_path_is_a_file
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
 
-    std::fs::create_dir_all(hidden_root.join("etc")).unwrap();
-    std::fs::write(hidden_root.join("etc/nixos"), "not a directory").unwrap();
+    std::fs::create_dir_all(hidden_root.join("root/upper/etc")).unwrap();
+    std::fs::write(hidden_root.join("root/upper/etc/nixos"), "not a directory").unwrap();
 
     let err = stage_hidden_config_symlink(&RealFilesystem, hidden_root).unwrap_err();
 
@@ -311,9 +341,9 @@ fn stage_hidden_config_symlink_real_filesystem_errors_when_parent_path_is_a_file
 fn stage_hidden_config_symlink_real_filesystem_errors_when_nails_path_is_a_file() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
-    let nails_path = hidden_root.join("etc/nixos/nails");
+    let nails_path = hidden_root.join("root/upper/etc/nixos/nails");
 
-    std::fs::create_dir_all(hidden_root.join("etc/nixos")).unwrap();
+    std::fs::create_dir_all(hidden_root.join("root/upper/etc/nixos")).unwrap();
     std::fs::write(&nails_path, "not a directory").unwrap();
 
     let err = stage_hidden_config_symlink(&RealFilesystem, hidden_root).unwrap_err();
@@ -328,7 +358,7 @@ fn stage_hidden_config_symlink_real_filesystem_errors_when_nails_path_is_a_file(
 fn prepare_nixos_config_overlay_real_filesystem_rejects_missing_import() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
-    let etc_nixos = hidden_root.join("etc/nixos");
+    let etc_nixos = hidden_root.join("root/upper/etc/nixos");
     let hardware = etc_nixos.join("hardware-configuration.nix");
     let hidden_config = hidden_root.join("config/nixos/configuration.nix");
 
@@ -345,7 +375,7 @@ fn prepare_nixos_config_overlay_real_filesystem_rejects_missing_import() {
 fn prepare_nixos_config_overlay_real_filesystem_rejects_missing_hidden_configuration() {
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path();
-    let etc_nixos = hidden_root.join("etc/nixos");
+    let etc_nixos = hidden_root.join("root/upper/etc/nixos");
     let hardware = etc_nixos.join("hardware-configuration.nix");
 
     std::fs::create_dir_all(&etc_nixos).unwrap();

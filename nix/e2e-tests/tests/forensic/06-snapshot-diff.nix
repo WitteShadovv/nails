@@ -1,114 +1,228 @@
-# Test 06: Snapshot Comparison
-# Tests that system returns to exact initial state after full workflow
+# Test 06: Decoy filesystem and disk image return to the baseline
+#
+# Two complementary views of the same activate/populate/deactivate workflow on
+# one disk lineage. The session is a soft-reboot into the whole-root overlay,
+# work in the hidden root (which must land in the upper on the hidden volume),
+# and a soft-reboot back. From inside the decoy afterwards, the live filesystem
+# is diffed against its baseline, so a stray artifact with no telltale keyword
+# still turns the test red. From outside, the powered-off decoy root is imaged
+# and its fls listing (deleted names included) is diffed against the baseline
+# image, catching anything that was unlinked before the live view could see it.
+#
+# Names alone miss a decoy file that was modified in place, or replaced under the
+# same name. So each image also yields a sleuthkit bodyfile (`fls -r -m /`, kept
+# in the test output under forensics/ and ready for `mactime -b`) and a content
+# hash of every file. A control run records which (path, field) pairs boot noise
+# changes: the session spans two soft-reboots (the decoy's shutdown and its
+# start again), so the control is one plain reboot, as in forensic/05. The
+# hidden-session run may change nothing beyond that and the volatile allowlist:
+# no inode, mode, owner, size, mtime, ctime or crtime of an existing decoy
+# inode, and no file contents. atime drift is reported, not asserted.
 
-{ self, ... }:
+{ self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
+  diskForensics = import ./../../lib/disk-forensics.nix { inherit pkgs; };
 in
 {
   name = "snapshot-diff";
   meta.tags = [ "forensic" ];
 
+  # Imaging the root disk three times (baseline, control, post), two extra
+  # reboots for the control run and three carve-and-hash passes; generous margin.
+  globalTimeout = 2700;
+
   nodes = {
     machine =
       { ... }:
       {
-        imports = [ ./../../lib/vm-config.nix ];
+        imports = [ ./../../lib/forensic-vm-config.nix ];
         environment.systemPackages = [ self.packages.x86_64-linux.nails ];
       };
   };
 
   testScript = _: ''
-    import json
+    import re
 
     ${testHelpers.writeHeadlessConfigFn}
+    ${testHelpers.readStatusJsonFn}
+    ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
+    ${diskForensics.pythonSetup}
+
+    from nails_e2e import session
+
+    UPPER = "/mnt/data/root/upper"
+
+    # Paths that legitimately change on their own across a reboot and the two
+    # soft-reboots of a session. Everything NOT matched here must be
+    # byte-identical before and after. /var is the decoy's own runtime state
+    # (journal, systemd, dhcp, nixos) written by its shutdown and start, so it
+    # is treated as wholly volatile; /home and /etc are diffed strictly.
+    volatile = re.compile(
+        "|".join(
+            [
+                r"^/var/",
+                r"^/etc/resolv\.conf$",
+                r"^/etc/machine-id$",
+                r"^/etc/ssh/ssh_host_",
+                r"^/etc/\.(updated|clean)$",
+                r"^/etc/nixos/",
+                r"^/home/[^/]+/\.bash_history$",
+            ]
+        )
+    )
+
+    # Image-side allowlist: the same volatile classes, on fls relative paths (no
+    # leading slash, deleted entries included); shared with the other image tests.
+    image_volatile = disk_forensics.DEFAULT_IMAGE_VOLATILE
+
+    def listed(scope):
+        out = machine.succeed(f"find {scope} -type f 2>/dev/null | sort")
+        return {line for line in out.splitlines() if line}
+
+    def summed(scope):
+        out = machine.succeed(f"find {scope} -type f -exec md5sum {{}} + 2>/dev/null || true")
+        sums = {}
+        for line in out.splitlines():
+            parts = line.split("  ", 1)
+            if len(parts) == 2:
+                digest, path = parts
+                sums[path] = digest
+        return sums
+
+    def kept(paths):
+        return sorted(path for path in paths if not volatile.search(path))
+
+    def kept_image(paths):
+        return sorted(path for path in paths if not image_volatile.search(path))
 
     machine.start()
     machine.wait_for_unit("multi-user.target")
-    headless_config = "/tmp/nails-headless.yaml"
+    headless_config = "/tmp/nails-headless.toml"
     write_headless_config(headless_config)
 
-    print("\n=== Capturing INITIAL Snapshot ===")
-    machine.succeed("find /home /etc /var -type f 2>/dev/null | sort > /tmp/snapshot-initial.txt || true")
-    machine.succeed("find /home -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-initial-home.txt || true")
-    machine.succeed("find /etc -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-initial-etc.txt || true")
-    machine.succeed("find /var -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-initial-var.txt || true")
-    machine.succeed("mount | sort > /tmp/mounts-initial.txt")
-    print("✓ Initial snapshot captured")
+    # The decoy's own root inode, the top-level entry list, and the /bin/sh and
+    # /usr/bin/env links must survive the workflow unchanged: a hidden switch that
+    # rewrote them on the decoy (instead of the overlay upper), or a stray write
+    # that created a new top-level directory, would move these.
+    def os_root_fingerprint():
+        root_stat = machine.succeed("stat -c '%i %Y %Z' /").strip()
+        top_level = machine.succeed("ls -1A / | sort").strip()
+        # readlink (not stat) so the recorded value is the decoy's own link target,
+        # which a rewrite to a hidden store path would change.
+        links = machine.succeed(
+            "for p in /bin/sh /usr/bin/env; do "
+            "printf '%s -> ' \"$p\"; readlink \"$p\" 2>/dev/null || echo '(absent)'; "
+            "done"
+        ).strip()
+        return (root_stat, top_level, links)
 
-    print("\n=== Running Full NAILS Workflow ===")
-    machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-    machine.succeed(f"nails --config {headless_config} activate --overlay-only --no-kill-session -y")
-    machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
-    print("✓ NAILS activated")
-    machine.succeed("su - testuser -c 'mkdir -p ~/work/project'")
-    machine.succeed("su - testuser -c 'for i in $(seq 1 50); do echo content > ~/work/project/file_$i.txt; done'")
-    print("✓ Created 50 files in ~/work/project/")
-    machine.succeed("su - testuser -c 'cd ~/work/project && git init 2>/dev/null || true'")
-    print("✓ Ran git init in project directory")
-    machine.succeed("su - testuser -c 'echo \"#!/bin/bash\" > ~/work/script.sh'")
-    machine.succeed("su - testuser -c 'echo \"echo test\" >> ~/work/script.sh'")
-    machine.succeed("su - testuser -c 'chmod +x ~/work/script.sh'")
-    print("✓ Created executable shell script")
-    canonical_deactivate(headless_config, unit_name="nails-deactivate-snapshot-diff")
-    print("✓ NAILS rebooted back to decoy state")
-    status = json.loads(machine.succeed("nails status --json"))
-    assert status["state"] == "Inactive", f"Expected Inactive status after reboot, got: {status}"
-    print("✓ NAILS status reports Inactive after reboot")
-    machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
-    print("✓ Hidden volume unmounted")
+    with subtest("capture the decoy baseline (live and image)"):
+        # Create the hidden-volume mount point before the baseline. It is a
+        # legitimate, permanent part of the decoy; setupHiddenVolume would
+        # otherwise create it after the baseline and the new /mnt entry (and the
+        # root mtime bump) would read as drift.
+        machine.succeed("mkdir -p /mnt/data")
+        initial_files = listed("/home /etc /var")
+        initial_sums = summed("/home /etc")
+        initial_os_root = os_root_fingerprint()
+        baseline_image = disk_forensics.snapshot(machine, "baseline")
+        baseline_fls = disk_forensics.fls_paths(disk_forensics.run_fls(baseline_image))
+        baseline_state = disk_forensics.image_state(baseline_image, "baseline", machine)
 
-    print("\n=== Capturing FINAL Snapshot ===")
-    machine.succeed("find /home /etc /var -type f 2>/dev/null | sort > /tmp/snapshot-final.txt || true")
-    machine.succeed("find /home -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-final-home.txt || true")
-    machine.succeed("find /etc -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-final-etc.txt || true")
-    machine.succeed("find /var -type f -exec md5sum {} \\; 2>/dev/null | sort > /tmp/checksums-final-var.txt || true")
-    machine.succeed("mount | sort > /tmp/mounts-final.txt")
-    print("✓ Final snapshot captured")
+    with subtest("control run: a plain reboot with no hidden session"):
+        # The workflow below spans the boot after the control snapshot and two
+        # soft-reboots (the decoy's shutdown and its start again), so the
+        # control is one plain reboot. Whatever changes here is boot noise.
+        machine.shutdown()
+        machine.start()
+        machine.wait_for_unit("multi-user.target")
+        control_image = disk_forensics.snapshot(machine, "control")
+        control_state = disk_forensics.image_state(control_image, "control", machine)
+        control_changes = disk_forensics.image_changes(baseline_state, control_state)
+        control_atime = disk_forensics.image_changes(
+            baseline_state, control_state, disk_forensics.MAC_FIELDS_OBSERVED
+        )
+        print(
+            f"control run: {len(control_changes)} path(s) changed by boot noise, "
+            f"{len(control_atime)} with atime drift"
+        )
 
-    print("\n=== Comparing Snapshots ===")
-    tree_diff = machine.succeed("diff /tmp/snapshot-initial.txt /tmp/snapshot-final.txt || echo 'DIFF_FOUND'")
-    filtered_diff = machine.succeed("""
-      diff /tmp/snapshot-initial.txt /tmp/snapshot-final.txt 2>/dev/null | \
-      grep '^>' | \
-      grep -v '/var/log/' | \
-      grep -v '/var/lib/systemd/' | \
-      grep -v '/tmp/' | \
-      grep -E '(work/project|secret|hidden|forensic)' || echo 'CLEAN'
-    """)
+    with subtest("run a full activate/populate/deactivate workflow"):
+        machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        canonical_activate(
+            headless_config, "--overlay-only --accept-persistent-decoy", "activate"
+        )
+        machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
+        machine.succeed("su - testuser -c 'mkdir -p ~/work/project'")
+        machine.succeed(
+            "su - testuser -c 'for i in $(seq 1 50); do echo content > ~/work/project/file_$i.txt; done'"
+        )
+        machine.succeed("su - testuser -c 'cd ~/work/project && git init 2>/dev/null || true'")
+        machine.succeed(
+            "su - testuser -c 'printf \"#!/bin/bash\\necho test\\n\" > ~/work/script.sh && chmod +x ~/work/script.sh'"
+        )
+        machine.succeed("sync")
+        # The work is in the hidden root's upper on the hidden volume.
+        machine.succeed(f"test -f {UPPER}/home/testuser/work/project/file_50.txt")
+        machine.succeed(f"test -x {UPPER}/home/testuser/work/script.sh")
+        canonical_deactivate(headless_config, "deactivate")
+        status = read_status_json(config_path=headless_config)
+        assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
+        machine.fail("test -e /home/testuser/work")
 
-    if "CLEAN" not in filtered_diff:
-        print("FAIL: Found unexpected NAILS-related paths in filesystem")
-        assert False, "Filesystem tree diff shows unexpected NAILS paths"
-    else:
-        print("✓ No NAILS-related changes in filesystem tree")
+    with subtest("the live decoy filesystem is byte-identical outside volatile paths"):
+        final_files = listed("/home /etc /var")
+        final_sums = summed("/home /etc")
 
-    print("\n=== Comparing Checksums ===")
-    home_diff = machine.succeed("diff /tmp/checksums-initial-home.txt /tmp/checksums-final-home.txt || echo 'DIFF'")
-    home_filtered = machine.succeed("""
-      grep -E '(secret|hidden|forensic)' /tmp/checksums-final-home.txt 2>/dev/null || echo 'CLEAN'
-    """)
+        appeared = kept(final_files - initial_files)
+        assert not appeared, f"files appeared after the workflow: {appeared}"
 
-    if "CLEAN" not in home_filtered:
-        print("FAIL: Checksums differ - unexpected NAILS artifacts remain")
-        assert False, "Home directory checksums show unexpected differences"
-    else:
-        print("✓ Home directory checksums match (or only expected transient changes)")
+        vanished = kept(initial_files - final_files)
+        assert not vanished, f"files disappeared after the workflow: {vanished}"
 
-    print("\n=== Comparing Mount States ===")
-    mount_check = machine.succeed(
-        "grep -E '(/mnt/hidden-volume|/mnt/nails-pivot|overlay on /(etc|home|root|srv|tmp|var|opt|boot)( |$)|hidden-volume)' /tmp/mounts-final.txt || echo 'CLEAN'"
-    )
+        changed = kept(
+            path
+            for path in (initial_sums.keys() & final_sums.keys())
+            if initial_sums[path] != final_sums[path]
+        )
+        assert not changed, f"file contents changed after the workflow: {changed}"
 
-    if "CLEAN" not in mount_check:
-        print(f"FAIL: Mount state shows NAILS-related entries: {mount_check}")
-        assert False, "Mount state contains overlay/hidden/nails entries"
-    else:
-        print("✓ Mount state returned to initial (no overlay/hidden/nails)")
+    with subtest("the decoy root, top-level entries and /bin/sh, /usr/bin/env are unchanged"):
+        final_os_root = os_root_fingerprint()
+        assert final_os_root[0] == initial_os_root[0], (
+            f"the decoy root inode/mtime/ctime changed: "
+            f"{initial_os_root[0]!r} -> {final_os_root[0]!r}"
+        )
+        assert final_os_root[1] == initial_os_root[1], (
+            "the top-level entry list changed after the workflow:\n"
+            f"before:\n{initial_os_root[1]}\nafter:\n{final_os_root[1]}"
+        )
+        assert final_os_root[2] == initial_os_root[2], (
+            "/bin/sh or /usr/bin/env was rewritten on the decoy:\n"
+            f"before:\n{initial_os_root[2]}\nafter:\n{final_os_root[2]}"
+        )
 
-    print("\n=== All Snapshot Comparison Tests Passed ===")
-    print("✓ System returned to exact initial state after full workflow")
+    with subtest("no overlay, next root or hidden-volume mount remains"):
+        session.assert_decoy_root(machine)
+        machine.fail("grep -E ' /mnt/data|/dev/mapper/data' /proc/mounts")
+        machine.fail("test -e /dev/mapper/data")
+
+    with subtest("the powered-off decoy image gained no non-volatile entries"):
+        post_image = disk_forensics.snapshot(machine, "post", restart=False)
+        post_fls = disk_forensics.fls_paths(disk_forensics.run_fls(post_image))
+        appeared_image = kept_image(disk_forensics.diff(baseline_fls, post_fls))
+        assert not appeared_image, (
+            f"the disk image gained entries outside volatile paths: "
+            f"{appeared_image[:40]}"
+        )
+
+    with subtest("existing decoy inodes keep their MAC times and contents"):
+        post_state = disk_forensics.image_state(post_image, "post", machine)
+        disk_forensics.assert_mac_unchanged(
+            machine, baseline_state, control_state, post_state, image_volatile
+        )
   '';
 }

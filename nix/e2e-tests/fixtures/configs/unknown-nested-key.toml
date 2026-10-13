@@ -1,0 +1,5 @@
+# A misspelt key inside a table ("enable" for "enabled") is rejected too.
+hidden_volume_root = "/mnt/data"
+
+[backend_watch]
+enable = false
