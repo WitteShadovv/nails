@@ -40,23 +40,27 @@ impl CrypttabEntry {
             .find_map(|o| o.strip_prefix(key).and_then(|rest| rest.strip_prefix('=')))
     }
 
-    /// A TrueCrypt or VeraCrypt volume: `tcrypt`, or an option that implies
-    /// it (`tcrypt-hidden`, `tcrypt-system`, `tcrypt-veracrypt`, Debian's
-    /// `veracrypt`).
+    /// A TrueCrypt or VeraCrypt volume: an option that makes
+    /// `systemd-cryptsetup` open the device as one. That is `tcrypt`,
+    /// `tcrypt-hidden` (or its alias `tcrypthidden`), `tcrypt-system`, a
+    /// `tcrypt-keyfile=`, or `tcrypt-veracrypt` (or its alias `veracrypt`).
+    /// Such an option counts wherever it stands, even before a `luks` or
+    /// `plain` that systemd would let win.
     pub fn is_tcrypt(&self) -> bool {
-        self.has_option("tcrypt")
-            || self.has_option("tcrypt-hidden")
-            || self.has_option("tcrypt-system")
+        self.options.iter().any(|option| {
+            matches!(option.as_str(), "tcrypt" | "tcrypt-system")
+                || option.starts_with("tcrypt-keyfile=")
+        }) || self.is_tcrypt_hidden()
             || self.is_veracrypt()
     }
 
-    /// The hidden volume of a TrueCrypt or VeraCrypt container.
+    /// The hidden volume of a TrueCrypt or VeraCrypt container:
+    /// `tcrypt-hidden` or its alias `tcrypthidden`.
     pub fn is_tcrypt_hidden(&self) -> bool {
-        self.has_option("tcrypt-hidden")
+        self.has_option("tcrypt-hidden") || self.has_option("tcrypthidden")
     }
 
-    /// A VeraCrypt volume: systemd's `tcrypt-veracrypt` or Debian's
-    /// `veracrypt`.
+    /// A VeraCrypt volume: `tcrypt-veracrypt` or its alias `veracrypt`.
     pub fn is_veracrypt(&self) -> bool {
         self.has_option("tcrypt-veracrypt") || self.has_option("veracrypt")
     }
@@ -181,6 +185,24 @@ mod tests {
         assert!(entry("veracrypt").is_tcrypt());
         assert!(!entry("luks,discard").is_tcrypt());
         assert!(!entry("tcrypt").is_tcrypt_hidden());
+
+        // systemd's alias for tcrypt-hidden opens the hidden volume too.
+        for hidden in [
+            "tcrypt-hidden",
+            "tcrypthidden",
+            "discard,tcrypthidden,veracrypt",
+        ] {
+            assert!(entry(hidden).is_tcrypt(), "{hidden}");
+            assert!(entry(hidden).is_tcrypt_hidden(), "{hidden}");
+        }
+        assert!(!entry("tcrypthidden").is_veracrypt());
+
+        // A TrueCrypt key file selects the type on its own; a PIM does not.
+        let keyfile = entry("tcrypt-keyfile=/etc/keys/vault.key");
+        assert!(keyfile.is_tcrypt());
+        assert!(!keyfile.is_tcrypt_hidden());
+        assert!(!entry("veracrypt-pim=485").is_tcrypt());
+        assert!(!entry("keyfile-offset=4096,keyfile-size=64").is_tcrypt());
     }
 
     #[test]
