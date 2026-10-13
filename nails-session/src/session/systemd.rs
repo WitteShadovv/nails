@@ -10,7 +10,8 @@
 //! | Debian 13 trixie | 257 | supported |
 //! | Ubuntu 22.04 jammy | 249 | refused |
 //! | Ubuntu 24.04 noble | 255 | supported |
-//! | NixOS (current) | 259 | supported; the pinned nixpkgs lacks the two units, see [`NIXOS_UNITS_SNIPPET`] |
+//! | NixOS 25.11 | 258 | supported; its nixpkgs lacks the two units, see [`NIXOS_UNITS_SNIPPET`] |
+//! | NixOS 26.05 and later | 260+ | supported |
 
 use crate::process::{ProcessCommand, ProcessRunner};
 use std::path::Path;

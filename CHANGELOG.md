@@ -87,10 +87,9 @@ config and CLI surfaces; there are no compatibility shims.
   interrupted entry exits 7 with "run `nails recover`".
 - Session VM tests under `nix/e2e-tests/tests/session/` (`session-lifecycle`, `session-emergency`,
   `session-interrupted-entry`, `session-fstab-policy`, `session-nixos-hidden-system`, and the
-  promoted soft-reboot spike as `soft-reboot-mechanics`), soft-reboot helpers in
-  `nix/e2e-tests/py/nails_e2e/session.py`, and `nix/e2e-tests/lib/soft-reboot-units.nix` for the
-  units the pinned nixpkgs lacks. The distribution smoke tests run the session on Debian 13 and
-  Ubuntu 24.04.
+  promoted soft-reboot spike as `soft-reboot-mechanics`) and soft-reboot helpers in
+  `nix/e2e-tests/py/nails_e2e/session.py`. The distribution smoke tests run the session on Debian 13
+  and Ubuntu 24.04.
 - Activation results reach the operator reliably. A committed activation pushes its queued
   result notifications straight into the operator's graphical session (`systemd-run --user
   --machine=<user>@.host`, falling back to `runuser`), removing each one delivered; with no

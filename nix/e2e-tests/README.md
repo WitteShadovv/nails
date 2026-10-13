@@ -96,11 +96,10 @@ redirects it to the hidden volume.
 
 ### VM profiles
 
-- `vm-config.nix`: base forensic-safe profile. It imports `soft-reboot-units.nix`,
-  which declares `soft-reboot.target` and `systemd-soft-reboot.service` (the
-  upstream v259 unit text): the pinned nixpkgs ships systemd 259 without them,
-  and every decoy and hidden NixOS configuration needs them. It is also the
-  module an operator on such a nixpkgs adds, as `nails check` prints it.
+- `vm-config.nix`: base forensic-safe profile. The pinned nixpkgs installs
+  `soft-reboot.target` and `systemd-soft-reboot.service` itself, so the decoy and
+  every hidden NixOS configuration can soft-reboot without the module that
+  `nails check` prints for an older nixpkgs.
 - `graphical-vm-config.nix`: LightDM + autologin + shell/notification tooling
 - `forensic-vm-config.nix` and `impermanent-decoy.nix`: an on-disk Nix store
   image (`useNixStoreImage`). The VM start script packs the whole closure into

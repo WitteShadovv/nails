@@ -81,9 +81,8 @@ in
       # /var/log/journal.
       services.journald.settings.Journal.Storage = lib.mkForce "persistent";
 
-      # soft-reboot.target and systemd-soft-reboot.service come from
-      # vm-config.nix (lib/soft-reboot-units.nix): the pinned nixpkgs does not
-      # install them.
+      # soft-reboot.target and systemd-soft-reboot.service are among the
+      # units the pinned nixpkgs installs from systemd.
 
       # The trivial offline build uses this bash as its builder, so it must be
       # in the system closure (and therefore registered in the VM's Nix DB).
