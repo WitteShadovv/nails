@@ -490,6 +490,23 @@ mod tests {
     }
 
     #[test]
+    fn a_one_field_crypttab_line_is_skipped_as_systemd_skips_it() {
+        // systemd ignores a line with fewer than two fields, so the full line
+        // after it is the swap's entry.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/mapper/cryptswap partition 8388604 0 -2"]),
+        );
+        fs.mock_add_file(
+            CRYPTTAB,
+            "cryptswap\ncryptswap /dev/sda2 /dev/urandom swap\n",
+        );
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_warn(), "{result:?}");
+    }
+
+    #[test]
     fn dmcrypt_without_crypttab_fails() {
         let fs = MockFilesystem::new();
         fs.mock_add_file(
