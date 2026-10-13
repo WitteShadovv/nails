@@ -27,9 +27,9 @@ in
 
     # Import after the tool paths are set: the module reads them at import time.
     # The path is only resolvable at runtime via the insert above, so the driver's
-    # static type check cannot find the module; silence its import error.
+    # static type check (ty) cannot find the module; silence its import error.
     _nails_sys.path.insert(0, "${module}")
-    import disk_forensics  # type: ignore[import-not-found]
+    import disk_forensics  # ty: ignore[unresolved-import]
 
 
     def load_registry_tokens():
