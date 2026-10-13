@@ -61,7 +61,16 @@ permissions:
   contents: read
 
 concurrency:
-  group: distro-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  # Every label added to a pull request to main starts a run, but only a run
+  # for an added 'distro-e2e' label tests anything (the Plan condition; the
+  # suffix below is its exact complement). Every other pull request run gets
+  # its run ID in the group, so it can neither cancel the suite nor be
+  # cancelled. Adding 'distro-e2e' again cancels the pull request's run in
+  # progress. A scheduled or dispatched run waits for an earlier run of the
+  # same event and ref instead; GitHub keeps one waiting run per group, so a
+  # newer run replaces one that has not started. A call counts as its
+  # caller's event.
+  group: distro-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && !(github.event.action == 'labeled' && github.event.label.name == 'distro-e2e') && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -71,8 +80,9 @@ defaults:
 jobs:
   plan:
     name: Plan
-    # On a pull request, run only when the added label is 'distro-e2e'.
-    if: ${{ github.event_name != 'pull_request' || github.event.label.name == 'distro-e2e' }}
+    # On a pull request, run only when the 'distro-e2e' label was added. The
+    # action is checked too, because a call sees its caller's event.
+    if: ${{ github.event_name != 'pull_request' || (github.event.action == 'labeled' && github.event.label.name == 'distro-e2e') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     outputs:
@@ -185,11 +195,11 @@ jobs:
           DISTRO_RESULT: ${{ needs.distro.result }}
         run: |
           echo "plan: $PLAN_RESULT, distro: $DISTRO_RESULT"
-          # Informational tier: a skipped plan (no label) is success, and a
-          # failure is surfaced but does not gate a merge until this lane is
-          # promoted to required.
+          # Informational tier: a skipped plan (not a 'distro-e2e' label
+          # event) is success, and a failure is surfaced but does not gate a
+          # merge until this lane is promoted to required.
           if [ "$PLAN_RESULT" = skipped ]; then
-            echo "No 'distro-e2e' label; nothing ran."
+            echo "Not a 'distro-e2e' label event; nothing ran."
             exit 0
           fi
           if [ "$PLAN_RESULT" != success ]; then
