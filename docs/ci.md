@@ -155,15 +155,9 @@ Merge queues are not available for a repository owned by a personal account, so 
 
 ## Pinned-input and dependency automation
 
-Dependabot covers the two ecosystems it understands, the Cargo workspace and the GitHub Actions in the workflows (`.github/dependabot.yml`): monthly, grouped into one pull request per ecosystem with the security updates kept separate, titled `build(deps):` / `ci(deps):` so the commit-msg hook and `pr-title.yml` accept them.
+Dependabot (`.github/dependabot.yml`) keeps the Cargo workspace, the GitHub Actions in the workflows, the Nix inputs in `flake.lock`, the pre-commit hook revisions and `rust-toolchain.toml` current: monthly, after a 7-day cooldown, grouped into one pull request per ecosystem with the security updates kept separate, titled `build(deps):` / `ci(deps):` so the commit-msg hook and `pr-title.yml` accept them. `rust-toolchain.toml` and the `rust-overlay` input share one pull request (a multi-ecosystem group), because the flake builds the pinned toolchain from `rust-overlay`: a new channel only evaluates with an overlay that knows it.
 
-The version sources Dependabot has no ecosystem for are refreshed by `scheduled.yml`, each on the first of the month and each opening its own pull request:
-
-- `lockfile` — `cargo update` moves every transitive dependency to its newest allowed version.
-- `flake-lock` — `nix flake update` refreshes the pinned Nix inputs.
-- `pre-commit` — `pre-commit autoupdate` bumps the hook revisions.
-
-`rust-toolchain.toml` is bumped by hand, because the `deny.toml` RUSTSEC ignores are tied to the exact pin. A pull request these jobs open under the default `GITHUB_TOKEN` does not start CI, so they open it under the `DEPENDENCY_UPDATE_TOKEN` secret (scoped to the `dependency-updates` environment) when it is set and fall back to printing the diff otherwise.
+Cargo.lock's transitive dependencies, which no Dependabot update touches, are refreshed by the `lockfile` task of `scheduled.yml` on the first of the month: `cargo update` moves every dependency to its newest allowed version. A pull request opened under the default `GITHUB_TOKEN` does not start CI, so the task opens it under the `DEPENDENCY_UPDATE_TOKEN` secret (scoped to the `dependency-updates` environment) when it is set and prints the diff otherwise.
 
 ## Nix setup and binary cache
 
@@ -232,7 +226,7 @@ The pre-overhaul layout had 14 workflows and about 38 jobs; the mapping below sa
 | The five standalone disk-forensics workflows | Removed; the decoy disk-image checks are now ordinary tests in the E2E suite's `forensic` group. |
 | `release.yml` (verify) + `publish-release.yml` + `release-core.yml` | One `release.yml` on the tag: build, rebuild, E2E, SBOM, attest, draft. |
 | `reproducibility.yml` with duplicated inputs | `reproducibility.yml` declares its inputs once (`workflow_call`) and also runs weekly from `scheduled.yml`. |
-| `update-flake-lock.yml` | The `flake-lock` and `pre-commit` tasks of `scheduled.yml`. |
+| `update-flake-lock.yml` | Dependabot's `nix` and `pre-commit` ecosystems (`.github/dependabot.yml`). |
 | Benchmarks and cargo-geiger in a PR job | `scheduled.yml` benchmarks (alerts, not budgets); geiger replaced by the compile-time `unsafe_code = "deny"` lint. |
 
 ## Local commands that mirror CI
@@ -271,7 +265,7 @@ GitHub settings that the workflows assume but cannot set themselves:
 ## Secrets and permissions
 
 - `CACHIX_AUTH_TOKEN` is optional. With it, `e2e.yml`, the `plan` and `distro` jobs of `distro-e2e.yml` and the `nix-build` job of `ci.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
-- `DEPENDENCY_UPDATE_TOKEN` is optional and used only by the pinned-input refresh jobs in `scheduled.yml`, so the pull requests they open start CI. Without it they print the diff to the run summary.
+- `DEPENDENCY_UPDATE_TOKEN` is optional and used only by the Cargo.lock refresh in `scheduled.yml`, so the pull request it opens starts CI. Without it the job prints the diff to the run summary.
 - The Hetzner lane's secrets (`HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID`, `RUNNER_REGISTRATION`) live in the `hetzner` environment and are used by no other lane.
 - No E2E lane on a hosted runner needs any other secret. The retired `hetzner-pr` approval environment is no longer used and can be deleted.
 - Release attestations are signed with the `attest` job's OIDC identity (`id-token: write`); no long-lived signing secret exists.
