@@ -187,6 +187,6 @@ mod tests {
     fn test_workspace_version_exists() {
         // Verify workspace version is accessible
         let version = env!("CARGO_PKG_VERSION");
-        assert_eq!(version, "0.2.0");
+        assert_eq!(version, "0.3.0-dev");
     }
 }

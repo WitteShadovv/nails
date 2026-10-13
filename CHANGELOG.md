@@ -521,6 +521,25 @@ config and CLI surfaces; there are no compatibility shims.
 - Preflight now skips hidden-volume-dependent checks with a clear reason instead of cascading
   failures, names the exact swap devices to disable, and activation reports an overlay rollback
   truthfully (only when one actually ran) after a failed activation.
+- The build and test inputs are current as of October 2026. The flake pins nixos-unstable of
+  2026-10-11 and a matching rust-overlay; the Rust toolchain stays at 1.93.0. The VM tests run
+  systemd 261 and take `soft-reboot.target` and `systemd-soft-reboot.service` from nixpkgs, which
+  installs them from NixOS 26.05 on; an older nixpkgs still needs the module `nails check` prints.
+  The repository's Python is 3.14: the ruff and mypy targets, the E2E helper package, the dev
+  shell and the flake checks.
+- CI runs on `ubuntu-26.04` with updated action pins (among them checkout v7, create-pull-request
+  v8, action-semantic-pull-request v6 and install-nix-action v31.11.1, whose Nix 2.35.2 is not
+  affected by GHSA-vh5x-56v6-4368 and GHSA-gr92-w2r5-qw5p) and with cargo-nextest 0.9.146,
+  cargo-llvm-cov 0.9.1, just 1.58.0, cargo-deny 0.20.2 and cyclonedx-cli 0.33.1. `just deny`
+  checks the two shipped targets one at a time, because cargo-deny 0.20 takes `--target` only
+  once. The self-hosted Hetzner runner is provisioned at runner 2.338.0 on Ubuntu 26.04.
+- Dependabot also updates `flake.lock`, the pre-commit hooks and `rust-toolchain.toml`, the
+  toolchain together with the `rust-overlay` input in one pull request, after the same 7-day
+  cooldown as the Cargo and Actions updates. It replaces the flake.lock and pre-commit refresh jobs
+  of `scheduled.yml`.
+- `deny.toml` allows the Zlib licence, which the dev-only `foldhash` carries, so the full-graph
+  dependency check passes again, and drops the licence clarifications for `ring` and `webpki`,
+  which are no longer dependencies.
 
 ### Removed
 

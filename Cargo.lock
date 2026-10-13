@@ -1114,7 +1114,7 @@ checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
 
 [[package]]
 name = "nails-base"
-version = "0.2.0"
+version = "0.3.0-dev"
 dependencies = [
  "chrono",
  "colored",
@@ -1137,7 +1137,7 @@ dependencies = [
 
 [[package]]
 name = "nails-cli"
-version = "0.2.0"
+version = "0.3.0-dev"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -1163,7 +1163,7 @@ dependencies = [
 
 [[package]]
 name = "nails-core"
-version = "0.2.0"
+version = "0.3.0-dev"
 dependencies = [
  "assert_cmd",
  "chrono",
@@ -1188,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "nails-forensics"
-version = "0.2.0"
+version = "0.3.0-dev"
 dependencies = [
  "chrono",
  "hex",
@@ -1207,7 +1207,7 @@ dependencies = [
 
 [[package]]
 name = "nails-platform"
-version = "0.2.0"
+version = "0.3.0-dev"
 dependencies = [
  "nails-base",
  "nails-platform",
@@ -1219,7 +1219,7 @@ dependencies = [
 
 [[package]]
 name = "nails-session"
-version = "0.2.0"
+version = "0.3.0-dev"
 dependencies = [
  "nails-base",
  "nails-platform",
@@ -1235,7 +1235,7 @@ dependencies = [
 
 [[package]]
 name = "nails-teardown"
-version = "0.2.0"
+version = "0.3.0-dev"
 dependencies = [
  "libc",
  "rustix",
