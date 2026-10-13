@@ -22,13 +22,21 @@
 #       stat, status and cgroup, and the systemd version in exactly the two
 #       invocations the code uses.
 #
+#   capture-kernel-fixtures.sh blockdev OUTDIR
+#       Run as root on a throwaway machine with cryptsetup and lvm2 (the
+#       research-blockdev-fixtures VM test). Builds an ext4 logical volume on
+#       a LUKS2 mapping of a GPT partition of a loop device over a file in a
+#       tmpfs, records the sysfs attributes the block-device walk reads for
+#       every device of that stack, and tears the stack down again. The
+#       scratch path is rewritten to /fixture.
+#
 # Re-run only when a kernel, systemd or NAILS change alters these formats, and
 # review the diff before committing: the VM capture is synthetic, but check it
 # anyway for anything that should not be published.
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 {userns|vm} OUTDIR" >&2
+  echo "usage: $0 {userns|vm|blockdev} OUTDIR" >&2
   exit 2
 }
 
@@ -139,9 +147,87 @@ capture_vm() {
   cat "/proc/$pid/cgroup" >"$out/proc-cgroup-journald.txt"
 }
 
+# An ext4 logical volume on a LUKS2 mapping of the first GPT partition of a
+# loop device over a file in a tmpfs. Nothing of it touches a disk: the
+# volume group skips LVM's metadata backups, the passphrase is a fixed word
+# and the LUKS uuid a fixed value, so the capture holds nothing of the host.
+capture_blockdev() {
+  local scene loop mnt dev
+  scene=$(mktemp -d /run/nails-blockdev.XXXXXX)
+  mount -t tmpfs -o size=96m,mode=0700 scene "$scene"
+  truncate -s 64M "$scene/disk.img"
+  loop=$(losetup --find --show --partscan "$scene/disk.img")
+  printf 'label: gpt\nsize=56MiB, name=scene\n' | sfdisk --quiet "$loop"
+  udevadm settle
+  printf scene | cryptsetup luksFormat --batch-mode --type luks2 \
+    --pbkdf pbkdf2 --pbkdf-force-iterations 1000 \
+    --uuid 6e61696c-7300-4000-8000-000000000001 --key-file - "${loop}p1"
+  printf scene | cryptsetup open --key-file - "${loop}p1" scenecrypt
+  pvcreate --quiet /dev/mapper/scenecrypt
+  vgcreate --quiet --autobackup n scenevg /dev/mapper/scenecrypt
+  lvcreate --quiet --yes --autobackup n --name data --extents 100%FREE scenevg
+  mkfs.ext4 -q /dev/scenevg/data
+  mnt=$scene/mnt
+  mkdir "$mnt"
+  mount /dev/scenevg/data "$mnt"
+
+  dev=$(mountpoint --fs-devno "$mnt")
+  {
+    echo "# capture-kernel-fixtures.sh blockdev on $(uname -sr)"
+    grep -F " $mnt " /proc/self/mountinfo | sed "s|$scene|/fixture|g; s|^|mount\t|"
+    record_link "/sys/dev/block/$dev"
+    record_stack "$(readlink -f "/sys/dev/block/$dev")"
+  } >"$out/blockdev-lvm-on-luks.txt"
+
+  umount "$mnt"
+  vgchange --quiet --activate n scenevg
+  cryptsetup close scenecrypt
+  losetup --detach "$loop"
+  umount "$scene"
+  rmdir "$scene"
+}
+
+# A symlink as a `link` record, with its target resolved.
+record_link() {
+  printf 'link\t%s\t%s\n' "$1" "$(readlink -f "$1")"
+}
+
+# A one-line `file` record: backslashes doubled, newlines written as \n.
+record_file() {
+  [ -r "$1" ] || return 0
+  printf 'file\t%s\t%s\n' "$1" "$(sed 's/\\/\\\\/g' "$1" | awk '{ printf "%s\\n", $0 }')"
+}
+
+# The attributes the walk reads for the device whose sysfs directory is $1, the
+# entries of its slaves/ and holders/, the disk of a partition, and the same
+# for every device below it.
+record_stack() {
+  local dir=$1 attribute sub entry
+  for attribute in dev uevent ro size partition start dm/name dm/uuid \
+    queue/discard_max_bytes loop/backing_file loop/offset loop/sizelimit \
+    loop/autoclear; do
+    record_file "$dir/$attribute"
+  done
+  for sub in slaves holders; do
+    [ -d "$dir/$sub" ] || continue # a partition has no slaves/
+    printf 'dir\t%s\t%s\n' "$dir/$sub" \
+      "$(find "$dir/$sub" -mindepth 1 -maxdepth 1 -printf '%f\n' | sort | tr '\n' ' ' | sed 's/ $//')"
+  done
+  if [ -r "$dir/partition" ]; then
+    record_file "${dir%/*}/dev"
+    record_file "${dir%/*}/uevent"
+  fi
+  for entry in "$dir"/slaves/*; do
+    [ -e "$entry" ] || continue
+    record_link "$entry"
+    record_stack "$(readlink -f "$entry")"
+  done
+}
+
 case $mode in
 userns) capture_userns && echo "fixtures written to $out" ;;
 userns-inner) capture_userns_inner ;;
 vm) capture_vm && echo "fixtures written to $out" ;;
+blockdev) capture_blockdev && echo "fixtures written to $out" ;;
 *) usage ;;
 esac

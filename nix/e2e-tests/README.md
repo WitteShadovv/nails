@@ -409,6 +409,10 @@ starting with `FINDING:` are research output, not assertions.
 - `research-dual-root-risks`: probes the dual-root design's risks (mount
   namespace copies, display and VT handling, shared-daemon writes)
   ([ADR 0009](../../docs/adr/0009-dual-root-emergency.md#risk-assessment)).
+- `research-blockdev-fixtures`: builds an LVM-on-LUKS stack on a loop device
+  and captures what sysfs says about it for the block-device walk's tests
+  (`scripts/capture-kernel-fixtures.sh blockdev`); copy the contents of its
+  `result/kernel-fixtures/` into `nails-base/tests/fixtures/kernel/vm/`.
 
 The spike that proved the whole-root soft-reboot, formerly
 `research-soft-reboot-whole-root`, is now the regular test

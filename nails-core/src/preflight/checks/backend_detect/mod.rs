@@ -8,10 +8,10 @@
 //! that are specific to that backend. `docs/backends.md` explains each one.
 
 use super::super::{CheckResult, PreFlightCheck};
+use crate::blockdev::{self, DmKind, LoopFollow};
 use crate::config::get_default_hidden_volume_root;
 use crate::filesystem::mountinfo::{MountEntry, parse_mountinfo};
 use crate::{Filesystem, Result};
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
 mod hazards;
@@ -24,16 +24,6 @@ const DEV_DIR: &str = "/dev";
 
 /// The mount table, which maps the hidden root to its backing device.
 const MOUNTINFO: &str = "/proc/self/mountinfo";
-/// Block devices by `major:minor`.
-const SYS_DEV_BLOCK: &str = "/sys/dev/block";
-/// Block devices (disks and partitions) by kernel name.
-const SYS_CLASS_BLOCK: &str = "/sys/class/block";
-/// Whole block devices by kernel name; device-mapper devices live here.
-const SYS_BLOCK: &str = "/sys/block";
-/// Upper bound on the devices visited in one stack. Real stacks are two or
-/// three deep (filesystem on dm-crypt on a loop device or partition); the
-/// bound only keeps a pathological sysfs from turning the walk into a loop.
-const MAX_STACK_DEVICES: usize = 16;
 /// Where the per-backend guidance lives, named in every warning.
 const BACKENDS_DOC: &str = "docs/backends.md";
 
@@ -52,6 +42,24 @@ enum CryptType {
 }
 
 impl CryptType {
+    /// The cryptsetup type of a device-mapper device, `None` for a mapping
+    /// cryptsetup did not make. The inner layers of a cipher chain and the
+    /// integrity and verity mappings keep their own type names here.
+    fn of(kind: &DmKind) -> Option<Self> {
+        match kind {
+            DmKind::Crypt(kind) => Some(match kind.as_str() {
+                "TCRYPT" => CryptType::Tcrypt,
+                "LUKS1" | "LUKS2" => CryptType::Luks,
+                "PLAIN" => CryptType::Plain,
+                other => CryptType::Other(other.to_string()),
+            }),
+            DmKind::CryptSubdev => Some(CryptType::Other("SUBDEV".into())),
+            DmKind::Integrity => Some(CryptType::Other("INTEGRITY".into())),
+            DmKind::Verity => Some(CryptType::Other("VERITY".into())),
+            DmKind::VeraCrypt | DmKind::Lvm | DmKind::Other => None,
+        }
+    }
+
     fn label(&self) -> String {
         match self {
             CryptType::Tcrypt => "VeraCrypt/TrueCrypt (tcrypt)".into(),
@@ -91,6 +99,24 @@ struct Layer {
 }
 
 impl Layer {
+    /// The check's view of one device of the stack `nails_base::blockdev`
+    /// read.
+    fn from_device(device: &blockdev::Layer) -> Self {
+        Layer {
+            name: device.name.clone(),
+            is_dm: device.dm.is_some(),
+            crypt: device.dm.as_ref().and_then(|dm| CryptType::of(&dm.kind)),
+            backing_file: device
+                .loop_device
+                .as_ref()
+                .map(|loop_device| loop_device.backing.path().to_path_buf()),
+            discard_max_bytes: device.discard_max_bytes,
+            dm_name: device.dm.as_ref().map(|dm| dm.name.clone()),
+            slaves: device.slaves.clone(),
+            luks2: None,
+        }
+    }
+
     /// Whether this is a Shufflecake (`dm-sflc`) volume, which the tool names
     /// `sflc_<device>_<volume>` in `/dev/mapper`.
     fn is_shufflecake(&self) -> bool {
@@ -142,9 +168,9 @@ impl Layer {
 /// (longest prefix in `/proc/self/mountinfo`) gives a device number, which
 /// resolves to `/sys/dev/block/<major:minor>`; btrfs reports an anonymous
 /// device there, so the mount source (`/dev/mapper/<name>`, `/dev/dm-N`,
-/// `/dev/loopN`) is the fallback. From that device the walk follows `slaves/`
-/// and reads `dm/uuid`, `loop/backing_file` and `queue/discard_max_bytes` on
-/// every layer.
+/// `/dev/loopN`) is the fallback. From that device the walk of
+/// `nails_base::blockdev` follows `slaves/` and reads `dm/uuid`,
+/// `loop/backing_file` and `queue/discard_max_bytes` on every layer.
 #[derive(Debug, Clone)]
 pub struct BackendDetectCheck {
     hidden_volume_root: PathBuf,
@@ -209,8 +235,8 @@ fn assess_with_dev_dir<F: Filesystem>(fs: &F, root: &Path, dev_dir: &Path) -> Ch
         );
     };
 
-    let mut layers = device_dir_for_mount(fs, mount)
-        .map(|top| device_stack(fs, top))
+    let mut layers = blockdev::device_of_mount(fs, mount)
+        .map(|top| device_layers(fs, &top))
         .unwrap_or_default();
     for layer in layers
         .iter_mut()
@@ -237,145 +263,17 @@ fn assess_with_dev_dir<F: Filesystem>(fs: &F, root: &Path, dev_dir: &Path) -> Ch
 }
 
 // ============================================================================
-// Device-stack discovery (Filesystem reads only)
+// Device-stack discovery and pure assessment seams
 // ============================================================================
 
-/// The sysfs directory of the block device the mount sits on, if any.
-fn device_dir_for_mount<F: Filesystem>(fs: &F, mount: &MountEntry) -> Option<PathBuf> {
-    // ext4, xfs and f2fs report the real block device's number.
-    let by_dev = Path::new(SYS_DEV_BLOCK).join(&mount.dev);
-    if is_block_device_dir(fs, &by_dev) {
-        return Some(by_dev);
-    }
-
-    // btrfs reports an anonymous `0:N` device, so fall back to the source.
-    let source_name = mount.source.file_name()?.to_str()?;
-    if mount.source.starts_with("/dev/mapper") {
-        return find_dm_by_name(fs, source_name);
-    }
-    if mount.source.starts_with("/dev") {
-        let by_name = Path::new(SYS_CLASS_BLOCK).join(source_name);
-        if is_block_device_dir(fs, &by_name) {
-            return Some(by_name);
-        }
-    }
-    None
-}
-
-/// Every block device's sysfs directory carries a `dev` attribute.
-fn is_block_device_dir<F: Filesystem>(fs: &F, dir: &Path) -> bool {
-    fs.read_file_content(&dir.join("dev")).is_ok()
-}
-
-/// Find the device-mapper device whose `dm/name` is `name`.
-fn find_dm_by_name<F: Filesystem>(fs: &F, name: &str) -> Option<PathBuf> {
-    let mut devices = fs.list_directory(Path::new(SYS_BLOCK)).ok()?;
-    devices.sort();
-    devices.into_iter().find(|dir| {
-        fs.read_file_content(&dir.join("dm/name"))
-            .is_ok_and(|dm_name| dm_name.trim() == name)
-    })
-}
-
-/// Walk from `top` down through `slaves/`, reading each layer once.
-fn device_stack<F: Filesystem>(fs: &F, top: PathBuf) -> Vec<Layer> {
-    let mut layers = Vec::new();
-    let mut pending = VecDeque::from([top]);
-    while let Some(dir) = pending.pop_front() {
-        if layers.len() >= MAX_STACK_DEVICES {
-            break;
-        }
-        let mut layer = read_layer(fs, &dir);
-        if let Ok(mut slaves) = fs.list_directory(&dir.join("slaves")) {
-            slaves.sort();
-            layer.slaves = slaves
-                .iter()
-                .filter_map(|slave| slave.file_name())
-                .map(|name| name.to_string_lossy().into_owned())
-                .collect();
-            pending.extend(slaves);
-        }
-        layers.push(layer);
-    }
-    layers
-}
-
-/// Read the attributes of one block device; every attribute is optional.
-fn read_layer<F: Filesystem>(fs: &F, dir: &Path) -> Layer {
-    let read = |attribute: &str| fs.read_file_content(&dir.join(attribute)).ok();
-
-    let dm_uuid = read("dm/uuid");
-    let dm_name = read("dm/name").map(|name| name.trim().to_string());
-    let name = read("uevent")
-        .as_deref()
-        .and_then(parse_devname)
-        .or_else(|| {
-            dir.file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
-        .unwrap_or_default();
-
-    Layer {
-        name,
-        is_dm: dm_uuid.is_some() || dm_name.is_some(),
-        crypt: dm_uuid.as_deref().and_then(classify_dm_uuid),
-        backing_file: read("loop/backing_file")
-            .as_deref()
-            .and_then(parse_backing_file),
-        discard_max_bytes: read("queue/discard_max_bytes")
-            .as_deref()
-            .and_then(parse_discard_max_bytes)
-            .unwrap_or(0),
-        dm_name,
-        slaves: Vec::new(),
-        luks2: None,
-    }
-}
-
-// ============================================================================
-// Pure parsing and assessment seams
-// ============================================================================
-
-/// Pure seam: the dm-crypt type encoded in a device-mapper uuid.
-///
-/// cryptsetup names its mappings `CRYPT-<TYPE>-[<uuid>-]<name>`, e.g.
-/// `CRYPT-LUKS2-<hex>-hidden` or `CRYPT-TCRYPT-hidden`. Anything without the
-/// `CRYPT-` prefix (LVM, multipath, a hand-made `dmsetup` table) is not a
-/// cryptsetup mapping.
-fn classify_dm_uuid(uuid: &str) -> Option<CryptType> {
-    let rest = uuid.trim().strip_prefix("CRYPT-")?;
-    let kind = rest.split('-').next().unwrap_or_default();
-    match kind {
-        "" => None,
-        "TCRYPT" => Some(CryptType::Tcrypt),
-        "LUKS1" | "LUKS2" => Some(CryptType::Luks),
-        "PLAIN" => Some(CryptType::Plain),
-        other => Some(CryptType::Other(other.to_string())),
-    }
-}
-
-/// Pure seam: the file behind a loop device, from `loop/backing_file`.
-///
-/// The attribute is absent for an unbound loop device and holds the path plus
-/// a newline otherwise.
-fn parse_backing_file(content: &str) -> Option<PathBuf> {
-    let path = content.trim_end_matches('\n');
-    (!path.is_empty()).then(|| PathBuf::from(path))
-}
-
-/// Pure seam: the value of `queue/discard_max_bytes`.
-fn parse_discard_max_bytes(content: &str) -> Option<u64> {
-    content.trim().parse().ok()
-}
-
-/// Pure seam: the kernel device name (`DEVNAME=`) from a sysfs `uevent`.
-fn parse_devname(uevent: &str) -> Option<String> {
-    uevent
-        .lines()
-        .find_map(|line| line.strip_prefix("DEVNAME="))
-        .map(str::trim)
-        .filter(|name| !name.is_empty())
-        .map(str::to_string)
+/// The stack below the device whose sysfs directory is `top`, as the check
+/// sees it. The check describes a loop device as a file container, so the
+/// walk stops at every loop device ([`LoopFollow::Never`]).
+fn device_layers<F: Filesystem>(fs: &F, top: &Path) -> Vec<Layer> {
+    blockdev::stack(fs, top, LoopFollow::Never)
+        .iter()
+        .map(Layer::from_device)
+        .collect()
 }
 
 /// Pure seam: the mount that contains `path` (longest mount-point prefix).

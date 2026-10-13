@@ -9,6 +9,20 @@ use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 use crate::filesystem::MockFilesystem;
 
 const ROOT: &str = "/mnt/hidden-volume";
+/// Whole block devices by kernel name; device-mapper devices live here.
+const SYS_BLOCK: &str = "/sys/block";
+
+/// [`assess`] with an empty device directory, so a LUKS layer's header is
+/// never read from the host's `/dev`.
+fn assess_offline(fs: &MockFilesystem, root: &Path) -> CheckResult {
+    let dev = tempfile::tempdir().unwrap();
+    assess_with_dev_dir(fs, root, dev.path())
+}
+
+/// The cryptsetup type the check gives a device-mapper uuid.
+fn classify_dm_uuid(uuid: &str) -> Option<CryptType> {
+    CryptType::of(&blockdev::classify_dm(uuid, ""))
+}
 
 /// A decoy root on LUKS, a decoy `/home` of type `home_fs`, and the hidden
 /// root mounted from `hidden_source` (device number `hidden_dev`).
@@ -168,33 +182,6 @@ fn classify_dm_uuid_rejects_non_cryptsetup_devices() {
 }
 
 #[test]
-fn parse_backing_file_strips_newline_and_rejects_empty() {
-    assert_eq!(
-        parse_backing_file("/home/alice/family photos\n"),
-        Some(PathBuf::from("/home/alice/family photos"))
-    );
-    assert_eq!(parse_backing_file("\n"), None);
-    assert_eq!(parse_backing_file(""), None);
-}
-
-#[test]
-fn parse_discard_max_bytes_handles_zero_value_and_garbage() {
-    assert_eq!(parse_discard_max_bytes("0\n"), Some(0));
-    assert_eq!(parse_discard_max_bytes("2147450880\n"), Some(2_147_450_880));
-    assert_eq!(parse_discard_max_bytes("not-a-number"), None);
-}
-
-#[test]
-fn parse_devname_reads_uevent() {
-    assert_eq!(
-        parse_devname("MAJOR=253\nMINOR=3\nDEVNAME=dm-3\nDEVTYPE=disk\n"),
-        Some("dm-3".into())
-    );
-    assert_eq!(parse_devname("MAJOR=7\nMINOR=0\n"), None);
-    assert_eq!(parse_devname("DEVNAME=\n"), None);
-}
-
-#[test]
 fn mount_containing_picks_longest_prefix_and_topmost_overmount() {
     let entries = parse_mountinfo(&format!(
         "{}50 40 0:50 / {ROOT} rw - tmpfs tmpfs rw\n",
@@ -224,9 +211,9 @@ fn detects_tcrypt_mapping_over_loop_container_from_fixtures() {
     let fs = tcrypt_container_fixture("ext4", "0");
     let entries = parse_mountinfo(&fs.read_file_content(Path::new(MOUNTINFO)).unwrap());
     let mount = mount_containing(&entries, Path::new(ROOT)).unwrap();
-    let top = device_dir_for_mount(&fs, mount).unwrap();
+    let top = blockdev::device_of_mount(&fs, mount).unwrap();
     assert_eq!(top, PathBuf::from("/sys/dev/block/253:3"));
-    let layers = device_stack(&fs, top);
+    let layers = device_layers(&fs, &top);
 
     assert_eq!(layers.len(), 2);
     assert_eq!(layers[0].name, "dm-3");
@@ -261,7 +248,7 @@ fn btrfs_anonymous_dev_falls_back_to_mapper_name() {
         "0",
     );
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(result.is_pass(), "{}", result.message());
     assert!(result.message().contains("btrfs on LUKS mapping dm-3"));
 }
@@ -288,7 +275,7 @@ fn captured_mountinfo_resolves_an_escaped_root_through_its_mapper_name() {
         "0",
     );
 
-    let result = assess(&fs, Path::new("/fixture/mnt/hidden root"));
+    let result = assess_offline(&fs, Path::new("/fixture/mnt/hidden root"));
     assert!(result.is_pass(), "{}", result.message());
     assert!(
         result.message().contains("tmpfs on LUKS mapping dm-2"),
@@ -310,7 +297,7 @@ fn kernel_name_source_resolves_through_class_block() {
         "4096",
     );
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(result.is_warn());
     assert!(
         result
@@ -324,7 +311,7 @@ fn unidentifiable_device_passes_with_fstype() {
     let fs = MockFilesystem::new();
     fs.mock_set_file_content(MOUNTINFO, &mountinfo("0:47", "zfs", "tank/hidden"));
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(result.is_pass());
     assert!(
         result
@@ -339,7 +326,7 @@ fn hidden_root_below_another_mount_is_skipped() {
     // described (or warned about) as if `/home` were the hidden backend.
     let fs = tcrypt_container_fixture("btrfs", "4096");
 
-    let result = assess(&fs, Path::new("/home/alice/hidden"));
+    let result = assess_offline(&fs, Path::new("/home/alice/hidden"));
     assert!(result.is_pass());
     assert!(result.message().contains("not a mount point"));
 }
@@ -352,7 +339,7 @@ fn hidden_root_on_decoy_root_is_skipped() {
         "23 1 254:0 / / rw,relatime shared:1 - ext4 /dev/mapper/cryptroot rw\n",
     );
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(result.is_pass());
     assert!(result.message().contains("not a mount point"));
 }
@@ -386,7 +373,7 @@ fn luks_on_whole_device_passes() {
         "0",
     );
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(result.is_pass(), "{}", result.message());
     assert_eq!(
         result.message(),
@@ -399,7 +386,7 @@ fn luks_on_whole_device_passes() {
 fn discard_enabled_tcrypt_mapping_warns() {
     let fs = tcrypt_container_fixture("ext4", "2147450880");
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(result.is_warn());
     assert!(!result.is_fail());
     let message = result.message();
@@ -414,7 +401,7 @@ fn discard_enabled_tcrypt_mapping_warns() {
 fn discard_disabled_tcrypt_mapping_has_no_discard_warning() {
     let fs = tcrypt_container_fixture("ext4", "0");
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     // Still a file container, so a timestamp warning remains.
     assert!(result.is_warn());
     assert!(!result.message().contains("Discards are enabled"));
@@ -455,7 +442,7 @@ fn discard_enabled_luks_mapping_is_not_a_hazard() {
 fn file_container_on_btrfs_warns_about_cow() {
     let fs = tcrypt_container_fixture("btrfs", "0");
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(result.is_warn());
     let message = result.message();
     assert!(message.contains("copy-on-write btrfs filesystem"));
@@ -467,7 +454,7 @@ fn file_container_on_btrfs_warns_about_cow() {
 fn file_container_on_zfs_warns_about_cow() {
     let fs = tcrypt_container_fixture("zfs", "0");
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(result.is_warn());
     assert!(result.message().contains("copy-on-write zfs filesystem"));
 }
@@ -476,7 +463,7 @@ fn file_container_on_zfs_warns_about_cow() {
 fn file_container_on_ext4_has_no_cow_warning() {
     let fs = tcrypt_container_fixture("ext4", "0");
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(!result.message().contains("copy-on-write"));
 }
 
@@ -484,7 +471,7 @@ fn file_container_on_ext4_has_no_cow_warning() {
 fn every_hazard_together_is_still_only_a_warning() {
     let fs = tcrypt_container_fixture("btrfs", "4096");
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(result.is_warn());
     let message = result.message();
     assert!(message.contains("Discards are enabled"));
@@ -657,7 +644,7 @@ fn a_shufflecake_volume_is_recognised() {
         "0",
     );
 
-    let result = assess(&fs, Path::new(ROOT));
+    let result = assess_offline(&fs, Path::new(ROOT));
     assert!(result.is_pass(), "{result:?}");
     assert!(
         result

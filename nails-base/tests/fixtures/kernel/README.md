@@ -62,8 +62,20 @@ with the first capture in a whole-root session. Re-copy the capture when a VM
 run changes a format; a test that finds its file missing prints so and
 returns (`nails_core::kernel_fixtures::vm`).
 
+`blockdev-lvm-on-luks.txt` comes from another VM test,
+`research-blockdev-fixtures` (`nix build .#e2e.research-blockdev-fixtures`),
+which runs `capture-kernel-fixtures.sh blockdev` as root: an ext4 logical
+volume on a LUKS2 mapping of a GPT partition of a loop device over a file in a
+tmpfs, with a fixed passphrase and LUKS uuid. It records the volume's mountinfo
+line and, for every device of the stack, the sysfs attributes and links the
+block-device walk reads, one record per line: `mount`, `link <path> <target>`,
+`file <path> <content>` (newlines written as `\n`) and `dir <path> <names>`.
+Copy the contents of `result/kernel-fixtures/` to `vm/`; until then the walk's
+test of it prints that the capture is missing and returns.
+
 | File | Used by |
 | --- | --- |
+| `blockdev-lvm-on-luks.txt` | the captured-scene test of `nails_base::blockdev` |
 | `mountinfo-host.txt` | the hidden-overlay-root test in `nails-teardown/src/mountinfo.rs` |
 | `proc-swaps.txt` | `classify_swap` fixture test |
 | `proc-stat-journald.txt`, `proc-status-journald.txt` | the `/proc/<pid>/stat` and `status` parser tests in `nails-teardown/src/proc.rs` |

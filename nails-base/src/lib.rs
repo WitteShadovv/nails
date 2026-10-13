@@ -77,6 +77,9 @@ pub mod naming;
 pub mod crypttab;
 pub mod fstab;
 
+// The stack of block devices under a filesystem, read from sysfs.
+pub mod blockdev;
+
 // Test-runtime guards for host interaction. Public for the other NAILS crates
 // only; not part of any interface.
 #[doc(hidden)]
