@@ -411,12 +411,13 @@ What to look for:
 
 ## virtiofs and host memory
 
-In October 2026 the flake's `nixpkgs` moved to `151fa4e8`, whose test VMs read
-the host store over virtiofs instead of 9p (roadmap item 4). The start script
-runs one `virtiofsd` per shared directory (the store, `xchg` and `shared`), and
-the guest RAM is a shared memfd (`memory-backend-memfd,share=on`) that the
-daemons map to reach the guest's buffers. `lib/vm-config.nix` lost its `msize`
-line, and `session-nixos-store-gc` its 4 GiB guest, which only 9p needed.
+In October 2026 the flake's `nixpkgs` moved to `7fd4004d` (nixos-unstable of
+2026-10-11), whose test VMs read the host store over virtiofs instead of 9p
+(roadmap item 4). The start script runs one `virtiofsd` per shared directory
+(the store, `xchg` and `shared`), and the guest RAM is a shared memfd
+(`memory-backend-memfd,share=on`) that the daemons map to reach the guest's
+buffers. `lib/vm-config.nix` lost its `msize` line, and `session-nixos-store-gc`
+its 4 GiB guest, which only 9p needed.
 
 `--jobs auto` budgets 3.5 GiB of host memory per test (`GIB_PER_TEST` in
 `ci/e2e/run.py`), so the switch was checked against that budget. During a full
@@ -551,7 +552,7 @@ showed up across revisions rather than as same-run flakes.
 | **VM memory/CPU sizing** | Yes | Keep 2 GiB and 2 cores. Size parallelism by host RAM (`--jobs auto`), not by shrinking guests. Free-page reporting needs `virtualisation.qemu.options` (`-device virtio-balloon-pci,free-page-reporting=on`). It returns freed guest pages but not page cache. |
 | **Evaluation memory** | — | Done: evaluate in batches of N in short-lived processes, then build by `.drv`. `nix-eval-jobs` (≥ 2.35.3 caps `workers × max-memory-size` for the whole run) is the next step if batch evaluation becomes the long pole. Setting `node.pkgs` to share one pkgs instance across nodes cuts per-test evaluation cost (`nixos/lib/testing/nodes.nix`). |
 | **9p msize** | Yes (`virtualisation.msize`, `qemu-vm.nix:414`) | Done (256 KiB). The virtio transport caps msize at `PAGE_SIZE*(VIRTQUEUE_NUM-3)`, about 500 KiB. |
-| **virtiofs** | No: the flake's `nixpkgs` (`4bd9165a`, 26.05) has 9p only (`-virtfs`, no `virtiofs` anywhere in `qemu-vm.nix`) | nixpkgs PR #552774 (merged 2026-09-08) switched the test VMs to virtiofs, measuring 1.08-1.44x per test. The lock already holds a revision with it: `nix-vm-test`'s own `nixpkgs` input (`151fa4e8`, 2026-10-06), whose `qemu-vm.nix` sets `useVirtiofs = isLinux` with no opt-out, starts one `virtiofsd` per share, turns on `virtualisation.qemu.enableSharedMemory` by default and removes `virtualisation.msize` and `nixStore9pCache` (`mkRemovedOptionModule`, an evaluation error). So the switch is gated on bumping the flake's `nixpkgs` to that revision or later, in the same change that drops the `msize` line from `lib/vm-config.nix`; then re-check `--jobs auto` against the shared guest memory (PR #563324). The store image cache keeps working there: the start script still prints the same two markers. **Done (2026-10):** the flake's `nixpkgs` is `151fa4e8`; the memory check is under [virtiofs and host memory](#virtiofs-and-host-memory). |
+| **virtiofs** | No: the flake's `nixpkgs` (`4bd9165a`, 26.05) has 9p only (`-virtfs`, no `virtiofs` anywhere in `qemu-vm.nix`) | nixpkgs PR #552774 (merged 2026-09-08) switched the test VMs to virtiofs, measuring 1.08-1.44x per test. The lock already holds a revision with it: `nix-vm-test`'s own `nixpkgs` input (`151fa4e8`, 2026-10-06), whose `qemu-vm.nix` sets `useVirtiofs = isLinux` with no opt-out, starts one `virtiofsd` per share, turns on `virtualisation.qemu.enableSharedMemory` by default and removes `virtualisation.msize` and `nixStore9pCache` (`mkRemovedOptionModule`, an evaluation error). So the switch is gated on bumping the flake's `nixpkgs` to that revision or later, in the same change that drops the `msize` line from `lib/vm-config.nix`; then re-check `--jobs auto` against the shared guest memory (PR #563324). The store image cache keeps working there: the start script still prints the same two markers. **Done (2026-10):** the flake's `nixpkgs` is `7fd4004d` (nixos-unstable of 2026-10-11); the memory check is under [virtiofs and host memory](#virtiofs-and-host-memory). |
 | **`useNixStoreImage` (erofs)** | Yes (`qemu-vm.nix:825`) | Boots about 4 s faster than 9p here. It removes slow store metadata access: PR #181746 measured gitlab at 1,000 s on 9p against 249 s. The image is rebuilt by every start; within one test it is now reused (Wave R), but every test still packs it once, it needs `writableStore = true` for tests that add to the store, and in-guest rebuilds see only the closure. A prebuilt image as a derivation would be shared by every test with the same closure and by the binary cache, at the price of a store path of about the closure's size per distinct node. Switch one plain group and measure before switching all. |
 | **`mountHostNixStore`** | Yes; it is the 9p default | Nothing to gain on its own. |
 | **Lighter guest** | — | Done: dhcpcd background and no sshd. systemd initrd is already the default in 26.05. Documentation off is deferred (see above). X only runs on the graphical profile already. |
