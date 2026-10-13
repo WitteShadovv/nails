@@ -409,6 +409,54 @@ What to look for:
   replace the estimated weights in `shard-durations.json` (`python3 -m ci.e2e
   regen-weights e2e-logs/durations.jsonl`).
 
+## virtiofs and host memory
+
+In October 2026 the flake's `nixpkgs` moved to `151fa4e8`, whose test VMs read
+the host store over virtiofs instead of 9p (roadmap item 4). The start script
+runs one `virtiofsd` per shared directory (the store, `xchg` and `shared`), and
+the guest RAM is a shared memfd (`memory-backend-memfd,share=on`) that the
+daemons map to reach the guest's buffers. `lib/vm-config.nix` lost its `msize`
+line, and `session-nixos-store-gc` its 4 GiB guest, which only 9p needed.
+
+`--jobs auto` budgets 3.5 GiB of host memory per test (`GIB_PER_TEST` in
+`ci/e2e/run.py`), so the switch was checked against that budget. During a full
+run with two VMs at once (`--jobs 2`, 59 tests, 56 min), a sampler read
+`/proc` every 5 s for every QEMU process, its virtiofsd daemons and its test
+driver:
+
+| At a test's peak | Largest | Typical |
+| --- | ---: | ---: |
+| Guest RAM the guest touched (QEMU's memfd, `RssShmem`) | 2.00 GiB, the whole guest | 0.5 GiB |
+| QEMU's own memory (`RssAnon`) | 0.04 GiB | 0.04 GiB |
+| The virtiofsd daemons (`RssAnon`) | 0.12 GiB | under 0.01 GiB |
+| Test driver (`RssAnon`) | 0.06 GiB | 0.06 GiB |
+| **The whole test** | **2.21 GiB** (`session-nixos-store-gc`) | **0.6 GiB** |
+
+- A test costs the host at most its guest's RAM plus about 0.2 GiB. The
+  daemons map the guest RAM but add almost nothing of their own; the most was
+  `session-nixos-store-gc`, which copies and verifies a whole system closure
+  through the store share.
+- The memfd counts as `Shmem` in `/proc/meminfo`: `free` lists it under
+  buff/cache, but `MemAvailable` does not count it as available.
+- Four tests filled their 2 GiB guest (the two NixOS session tests,
+  `examiner-audit` and `rehearse-canary`) and `soft-reboot-mechanics` came
+  close with 1.93 GiB. The two graphical tests touched less than 1 GiB of
+  their 4 GiB.
+- Host-side work stayed small. For the second half of the run the sampler
+  also summed each driver's whole process tree (22 tests, four of them
+  forensic): the largest helper, `mkfs.erofs` packing a store image, held
+  0.36 GiB, and no test held more than 0.42 GiB while its VM was not running.
+- The running tests held at most 4.4 GiB together (`session-nixos-hidden-system`
+  next to `session-nixos-store-gc`). `MemAvailable` never fell below 5.2 of
+  15.4 GiB, with the desktop and other work running next to the suite.
+
+So `GIB_PER_TEST` stays at 3.5 GiB: a test with a 2 GiB guest needs at most
+2.2 GiB, which leaves room in the budget for a 4 GiB graphical guest that
+fills its RAM, and a 15 GiB, 12-core host still runs three tests at once. In
+the same run `performance-validation` timed out waiting for the backdoor after
+its second soft-reboot into the hidden session, and passed when run again
+alone, as [Remaining risks](#remaining-risks) recommends.
+
 ## Robustness
 
 A faster suite only helps if it does not flake, so the failure history in
@@ -503,7 +551,7 @@ showed up across revisions rather than as same-run flakes.
 | **VM memory/CPU sizing** | Yes | Keep 2 GiB and 2 cores. Size parallelism by host RAM (`--jobs auto`), not by shrinking guests. Free-page reporting needs `virtualisation.qemu.options` (`-device virtio-balloon-pci,free-page-reporting=on`). It returns freed guest pages but not page cache. |
 | **Evaluation memory** | — | Done: evaluate in batches of N in short-lived processes, then build by `.drv`. `nix-eval-jobs` (≥ 2.35.3 caps `workers × max-memory-size` for the whole run) is the next step if batch evaluation becomes the long pole. Setting `node.pkgs` to share one pkgs instance across nodes cuts per-test evaluation cost (`nixos/lib/testing/nodes.nix`). |
 | **9p msize** | Yes (`virtualisation.msize`, `qemu-vm.nix:414`) | Done (256 KiB). The virtio transport caps msize at `PAGE_SIZE*(VIRTQUEUE_NUM-3)`, about 500 KiB. |
-| **virtiofs** | No: the flake's `nixpkgs` (`4bd9165a`, 26.05) has 9p only (`-virtfs`, no `virtiofs` anywhere in `qemu-vm.nix`) | nixpkgs PR #552774 (merged 2026-09-08) switched the test VMs to virtiofs, measuring 1.08-1.44x per test. The lock already holds a revision with it: `nix-vm-test`'s own `nixpkgs` input (`151fa4e8`, 2026-10-06), whose `qemu-vm.nix` sets `useVirtiofs = isLinux` with no opt-out, starts one `virtiofsd` per share, turns on `virtualisation.qemu.enableSharedMemory` by default and removes `virtualisation.msize` and `nixStore9pCache` (`mkRemovedOptionModule`, an evaluation error). So the switch is gated on bumping the flake's `nixpkgs` to that revision or later, in the same change that drops the `msize` line from `lib/vm-config.nix`; then re-check `--jobs auto` against the shared guest memory (PR #563324). The store image cache keeps working there: the start script still prints the same two markers. |
+| **virtiofs** | No: the flake's `nixpkgs` (`4bd9165a`, 26.05) has 9p only (`-virtfs`, no `virtiofs` anywhere in `qemu-vm.nix`) | nixpkgs PR #552774 (merged 2026-09-08) switched the test VMs to virtiofs, measuring 1.08-1.44x per test. The lock already holds a revision with it: `nix-vm-test`'s own `nixpkgs` input (`151fa4e8`, 2026-10-06), whose `qemu-vm.nix` sets `useVirtiofs = isLinux` with no opt-out, starts one `virtiofsd` per share, turns on `virtualisation.qemu.enableSharedMemory` by default and removes `virtualisation.msize` and `nixStore9pCache` (`mkRemovedOptionModule`, an evaluation error). So the switch is gated on bumping the flake's `nixpkgs` to that revision or later, in the same change that drops the `msize` line from `lib/vm-config.nix`; then re-check `--jobs auto` against the shared guest memory (PR #563324). The store image cache keeps working there: the start script still prints the same two markers. **Done (2026-10):** the flake's `nixpkgs` is `151fa4e8`; the memory check is under [virtiofs and host memory](#virtiofs-and-host-memory). |
 | **`useNixStoreImage` (erofs)** | Yes (`qemu-vm.nix:825`) | Boots about 4 s faster than 9p here. It removes slow store metadata access: PR #181746 measured gitlab at 1,000 s on 9p against 249 s. The image is rebuilt by every start; within one test it is now reused (Wave R), but every test still packs it once, it needs `writableStore = true` for tests that add to the store, and in-guest rebuilds see only the closure. A prebuilt image as a derivation would be shared by every test with the same closure and by the binary cache, at the price of a store path of about the closure's size per distinct node. Switch one plain group and measure before switching all. |
 | **`mountHostNixStore`** | Yes; it is the 9p default | Nothing to gain on its own. |
 | **Lighter guest** | — | Done: dhcpcd background and no sshd. systemd initrd is already the default in 26.05. Documentation off is deferred (see above). X only runs on the graphical profile already. |
@@ -523,7 +571,7 @@ Ranked by saving per unit of effort.
 | 1 | **Measure this branch** (commands above), then refresh `shard-durations.json` | Confirms about 1 h wall | 1 run | None |
 | 2 | **Done in Wave R** for 19 tests (7 batches). **Merge independent single-boot tests**, starting with the preflight (13), config/contract/init (9), notification (5) and smoke (5) tests: one boot per group of scenarios, with a cleanup helper (deactivate if active, wipe `/mnt/data`, reset failed units) between them | 49 single-boot tests spend 1,208 s booting. Folding them into about 10 boots saves about 15 min serial, or 5 min wall at 3 jobs | Medium | Medium: a scenario's leftovers can mask or cause another's failure. Each merged scenario must start with an assertion that the previous one left no state, and must keep its own `subtest` |
 | 3 | **Done in Wave R.** **Cache the erofs store image across starts of one forensic test**, or make the forensic VM boot from a prebuilt store disk (`useBootLoader`) | About 79 s per restart measured under load, 17 restarts per full run: 11-23 min serial | Low-medium | Low: the image contents do not change between starts |
-| 4 | **Gated on the nixpkgs bump** (checked in Wave R). **nixpkgs bump to virtiofs** (PR #552774); drop `virtualisation.msize` in the same change | 8-44% of guest IO time per test | Low (flake update) | Medium: shared memory raises host RAM per VM; re-check `--jobs auto` |
+| 4 | **Done (2026-10).** **nixpkgs bump to virtiofs** (PR #552774); `virtualisation.msize` dropped in the same change | 8-44% of guest IO time per test | Low (flake update) | Checked: a test needs at most its guest RAM plus about 0.2 GiB, so `--jobs auto` keeps 3.5 GiB per test ([virtiofs and host memory](#virtiofs-and-host-memory)) |
 | 5 | **Started in Wave R** (help/version and config parsing). **Tier config/contract tests to real-kernel tests**; the `nails init` scenarios are next | About 5 min serial, plus faster CI feedback | Medium | Low if the VM test remains for one end-to-end path |
 | 6 | **Soft-reboot or no-reboot deactivation mode** for tests that are not about the reboot (needs a product decision, and the whole-root mode) | About 25 s for each of 84 reboots, so up to 35 min serial | High | High: the power-off is the anti-forensic contract; a test-only mode must not weaken what the tests prove |
 | 7 | **`useNixStoreImage` for the plain profile** | About 4 s per boot (190 boots, about 13 min) plus faster store scans | Low to try | Medium: in-guest rebuilds see only the closure; needs `writableStore = true`; image rebuilt per start |
