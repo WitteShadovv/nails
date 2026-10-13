@@ -119,8 +119,8 @@ jobs:
         with:
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
-      # Built once here so the VM jobs substitute it from the cache instead of
-      # each compiling the static binary.
+      # Built once here, so the VM jobs substitute it from the cache instead
+      # of each compiling the static binary (when a cache is configured).
       - name: Build nails
         run: nix build -L --no-link .#nails
 
