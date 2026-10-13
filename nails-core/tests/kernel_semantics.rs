@@ -123,6 +123,47 @@ fn copy_tree_leaves_source_atimes_untouched_on_a_strictatime_fs() {
     });
 }
 
+#[test]
+fn reading_the_fstab_in_a_root_leaves_its_atime_on_a_relatime_fs() {
+    let _ = Rerun::new(test_path!(
+        reading_the_fstab_in_a_root_leaves_its_atime_on_a_relatime_fs
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        // relatime, the kernel's default: a read updates an atime older than a
+        // day, which the control below proves for this filesystem.
+        let scratch = ScratchTmpfs::new("");
+        let etc = scratch.mkdir("etc");
+        let fstab = etc.join("fstab");
+        let control = etc.join("control");
+        std::fs::write(&fstab, "UUID=0a1b / ext4 defaults 0 1\n").unwrap();
+        std::fs::write(&control, "read me plainly").unwrap();
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for path in [&fstab, &control] {
+            std::fs::File::open(path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_accessed(old))
+                .unwrap();
+        }
+        let atime = |p: &Path| std::fs::metadata(p).unwrap().accessed().unwrap();
+
+        std::fs::read(&control).unwrap();
+        assert_ne!(
+            atime(&control),
+            old,
+            "control: a plain read updates atime on this filesystem"
+        );
+
+        let text = nails_teardown::whole_root::nextroot::read_in_root(
+            scratch.path(),
+            Path::new("/etc/fstab"),
+        )
+        .expect("read the fstab in the root");
+        assert_eq!(text, b"UUID=0a1b / ext4 defaults 0 1\n");
+        assert_eq!(atime(&fstab), old, "the fstab's atime is untouched");
+    });
+}
+
 fn set_dir_atime(dir: &Path, when: SystemTime) {
     std::fs::File::open(dir)
         .unwrap()

@@ -280,7 +280,13 @@ pub fn exists_in_root(root: &Path, path: &Path) -> bool {
 
 /// Read the file at `path` as if `root` were `/` (absolute symlinks resolve
 /// inside `root`): the next root's `/etc/fstab`, which on NixOS is a link
-/// into the hidden store.
+/// into the hidden store, or the decoy's own.
+///
+/// The file is opened with `O_NOATIME`, so a check or an entry that reads the
+/// decoy's fstab does not stamp it with the time of the read on a `relatime`
+/// filesystem. The kernel grants the flag only to the file's owner or a
+/// caller with `CAP_FOWNER` (root has it); anyone else gets `EPERM`, and the
+/// read falls back to a plain open, which cannot avoid the update.
 pub fn read_in_root(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
     let dir = rustix::fs::open(
         root,
@@ -289,13 +295,19 @@ pub fn read_in_root(root: &Path, path: &Path) -> io::Result<Vec<u8>> {
     )
     .map_err(to_io)?;
     let relative = path.strip_prefix("/").unwrap_or(path);
-    let fd = rustix::fs::openat2(
-        &dir,
-        relative.as_os_str().as_bytes(),
-        OFlags::RDONLY | OFlags::CLOEXEC,
-        Mode::empty(),
-        ResolveFlags::IN_ROOT,
-    )
+    let open = |flags: OFlags| {
+        rustix::fs::openat2(
+            &dir,
+            relative.as_os_str().as_bytes(),
+            flags | OFlags::RDONLY | OFlags::CLOEXEC,
+            Mode::empty(),
+            ResolveFlags::IN_ROOT,
+        )
+    };
+    let fd = match open(OFlags::NOATIME) {
+        Err(rustix::io::Errno::PERM) => open(OFlags::empty()),
+        other => other,
+    }
     .map_err(to_io)?;
     let mut bytes = Vec::new();
     std::io::Read::read_to_end(&mut std::fs::File::from(fd), &mut bytes)?;
@@ -432,6 +444,16 @@ mod tests {
             b"inside\n"
         );
         assert!(read_in_root(root.path(), Path::new("/etc/absent")).is_err());
+    }
+
+    #[test]
+    fn a_file_the_caller_does_not_own_is_read_without_o_noatime() {
+        // The kernel refuses O_NOATIME (EPERM) on a file the caller neither
+        // owns nor holds CAP_FOWNER for, and the read falls back to a plain
+        // open. /proc/version is root's and has no access time to protect; as
+        // root the first open already succeeds.
+        let text = read_in_root(Path::new("/"), Path::new("/proc/version")).unwrap();
+        assert!(text.starts_with(b"Linux version"), "{text:?}");
     }
 
     #[test]

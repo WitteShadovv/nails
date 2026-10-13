@@ -587,6 +587,10 @@ config and CLI surfaces; there are no compatibility shims.
 
 ### Fixed
 
+- `check` and `activate` read the decoy's `/etc/fstab` without updating its access time. The file
+  was opened without `O_NOATIME`, so on a `relatime` decoy a check could stamp it with the time of
+  the check. Run as root, the read now leaves the access time alone; an unprivileged `check`
+  cannot, because the kernel grants `O_NOATIME` only to the file's owner and to root.
 - On NixOS, `activate`, `deactivate` and `emergency` work when a systemd unit starts them (a
   panic key, `systemd-run`). Such a unit has a minimal `PATH` and no `NIX_PATH`, so the entry
   failed with "nix-build not found on PATH" and then "file 'nixpkgs/nixos' was not found". The
