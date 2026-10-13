@@ -110,6 +110,14 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     // `nails_teardown::mountinfo::top_mount_at`): the last of several mounts
     // stacked on one point, and no mount at all where a later mount on a
     // parent directory covers the path.
+    //
+    // `MockFilesystem` answers so only from an explicit table
+    // (`mock_set_mount_table`). Without one, each query reads what a test set
+    // for that path, while `mount_table` renders `/` and every mounted path
+    // with defaults for what the test left unset, so the two can disagree: the
+    // rendered table lists `/`, which `is_mounted` denies unless a test marked
+    // it. A test of code that reads the table and a query together sets a
+    // table.
 
     /// The mount table of this process's mount namespace, in the order
     /// `/proc/self/mountinfo` lists it.

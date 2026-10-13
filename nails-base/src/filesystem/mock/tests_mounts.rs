@@ -65,15 +65,25 @@ fn the_default_table_is_the_root_and_every_mounted_path() {
     );
 }
 
+/// Without an explicit table the queries read what a test set for each path,
+/// and the rendered table can disagree with them, as `mock_set_mount_table`
+/// says: it lists `/` and fills in a type no test set.
 #[test]
 fn without_an_explicit_table_the_queries_read_their_own_maps() {
     let fs = MockFilesystem::new();
     fs.mock_set_mounted(Path::new("/mnt/data"), true);
     fs.mock_set_mounted(Path::new("/mnt"), true);
-    // Rendered, /mnt/data sits on /mnt and stays visible.
+    // A mount below another mounted path stays mounted.
     assert!(fs.is_mounted(Path::new("/mnt/data")).unwrap());
     assert!(!fs.is_mounted(Path::new("/")).unwrap(), "as before");
     assert_eq!(fs.get_filesystem_type(Path::new("/mnt")).unwrap(), None);
+
+    let table = fs.mount_table().unwrap();
+    assert!(top_mount_at(&table, Path::new("/")).is_some());
+    assert_eq!(
+        top_mount_at(&table, Path::new("/mnt")).unwrap().fstype,
+        "ext4"
+    );
 }
 
 /// `/mnt/data` holds two filesystems, the second stacked on the first, and

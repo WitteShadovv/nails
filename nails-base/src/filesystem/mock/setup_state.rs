@@ -41,6 +41,16 @@ impl MockFilesystem {
     /// filesystem does: a mount stacked on another wins, one covered by a later
     /// mount on its parent is not mounted. The source names a device-mapper
     /// device only as `/dev/mapper/<name>`, and no label is known.
+    ///
+    /// Without a table the mock has two views that can disagree. The queries
+    /// answer from what a test set for each path
+    /// ([`mock_set_mounted`](Self::mock_set_mounted),
+    /// [`mock_set_filesystem_type`](Self::mock_set_filesystem_type), …), with
+    /// no stacking, while `mount_table` renders `/` plus every mounted path and
+    /// fills in `ext4` and a `/dev/mock<N>` source where the test set none. So
+    /// the rendered table lists `/` while `is_mounted("/")` is false unless a
+    /// test marked it. A test of code that reads the table and a query
+    /// together sets a table here.
     pub fn mock_set_mount_table(&self, mountinfo: &str) {
         *self
             .mount_table

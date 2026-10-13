@@ -33,6 +33,8 @@ impl MockFilesystem {
     /// The explicit table, or one rendered from the mock's mounts: `/` plus
     /// every mounted path, each with a device of its own, the type, source and
     /// read-only flag the test set, else `ext4` from a `/dev/mock<N>` device.
+    /// The queries never read a rendered table, so it can disagree with them
+    /// (see [`mock_set_mount_table`](Self::mock_set_mount_table)).
     pub(super) fn mount_table_impl(&self) -> Vec<MountEntry> {
         if let Some(table) = self.explicit_mount_table() {
             return table;
