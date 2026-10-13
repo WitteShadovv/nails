@@ -78,7 +78,7 @@ jobs:
       - name: "Try combo 1: ccx33 @ nbg1"
         id: combo-1
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
+        uses: Cyclenerd/hcloud-github-runner@94a0a4aa750d832b48cc0f66d24ed56c3fe69448
         with:
           mode: create
           server_type: ccx33
@@ -95,7 +95,7 @@ jobs:
         id: combo-2
         if: steps.combo-1.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
+        uses: Cyclenerd/hcloud-github-runner@94a0a4aa750d832b48cc0f66d24ed56c3fe69448
         with:
           mode: create
           server_type: ccx33
@@ -112,7 +112,7 @@ jobs:
         id: combo-3
         if: steps.combo-1.outcome == 'failure' && steps.combo-2.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
+        uses: Cyclenerd/hcloud-github-runner@94a0a4aa750d832b48cc0f66d24ed56c3fe69448
         with:
           mode: create
           server_type: ccx33
@@ -132,7 +132,7 @@ jobs:
           steps.combo-2.outcome == 'failure' &&
           steps.combo-3.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
+        uses: Cyclenerd/hcloud-github-runner@94a0a4aa750d832b48cc0f66d24ed56c3fe69448
         with:
           mode: create
           server_type: ccx23
@@ -153,7 +153,7 @@ jobs:
           steps.combo-3.outcome == 'failure' &&
           steps.combo-4.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
+        uses: Cyclenerd/hcloud-github-runner@94a0a4aa750d832b48cc0f66d24ed56c3fe69448
         with:
           mode: create
           server_type: ccx23
@@ -175,7 +175,7 @@ jobs:
           steps.combo-4.outcome == 'failure' &&
           steps.combo-5.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
+        uses: Cyclenerd/hcloud-github-runner@94a0a4aa750d832b48cc0f66d24ed56c3fe69448
         with:
           mode: create
           server_type: ccx23
@@ -198,7 +198,7 @@ jobs:
           steps.combo-5.outcome == 'failure' &&
           steps.combo-6.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
+        uses: Cyclenerd/hcloud-github-runner@94a0a4aa750d832b48cc0f66d24ed56c3fe69448
         with:
           mode: create
           server_type: cpx41
@@ -222,7 +222,7 @@ jobs:
           steps.combo-6.outcome == 'failure' &&
           steps.combo-7.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
+        uses: Cyclenerd/hcloud-github-runner@94a0a4aa750d832b48cc0f66d24ed56c3fe69448
         with:
           mode: create
           server_type: cpx41
@@ -247,7 +247,7 @@ jobs:
           steps.combo-7.outcome == 'failure' &&
           steps.combo-8.outcome == 'failure'
         continue-on-error: true
-        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
+        uses: Cyclenerd/hcloud-github-runner@94a0a4aa750d832b48cc0f66d24ed56c3fe69448
         with:
           mode: create
           server_type: cpx41
@@ -543,7 +543,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Checkout repository at exact approved SHA
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ inputs.checkout-repository }}
           ref: ${{ inputs.checkout-sha }}
@@ -623,7 +623,7 @@ jobs:
           echo "::endgroup::"
 
       - name: Install Nix
-        uses: cachix/install-nix-action@ab739621df7a23f52766f9ccc97f38da6b7af14f
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24
         with:
           enable_kvm: true
           extra_nix_config: |
@@ -729,7 +729,7 @@ jobs:
           fi
 
       - name: Setup Cachix
-        uses: cachix/cachix-action@1eb2ef646ac0255473d23a5907ad7b04ce94065c
+        uses: cachix/cachix-action@38b082610b782e7e93e209c35fd730d399dee866
         with:
           name: nix-community
           skipPush: true
@@ -821,7 +821,7 @@ jobs:
 
       - name: Upload full E2E shard artifacts
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: full-e2e-shard-${{ inputs.shard-index }}-results
           if-no-files-found: warn
@@ -841,7 +841,7 @@ jobs:
     steps:
       - name: Delete Hetzner Cloud runner
         if: needs.create-runner.outputs.server_id != ''
-        uses: Cyclenerd/hcloud-github-runner@54da4707b01dfca5dd38cd15cde4afcd950f2b4a
+        uses: Cyclenerd/hcloud-github-runner@94a0a4aa750d832b48cc0f66d24ed56c3fe69448
         with:
           mode: delete
           delete_wait: '90'
