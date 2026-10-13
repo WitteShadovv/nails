@@ -4,6 +4,7 @@
 //! Filesystem trait definition and helper functions
 
 use crate::Result;
+use crate::filesystem::MountEntry;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
 
@@ -104,11 +105,21 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     // ------------------------------------------------------------------------
     // Mount Queries
     // ------------------------------------------------------------------------
+    //
+    // Every query answers for the mount a lookup of the path reaches (see
+    // `nails_teardown::mountinfo::top_mount_at`): the last of several mounts
+    // stacked on one point, and no mount at all where a later mount on a
+    // parent directory covers the path.
 
-    /// Check if a path is currently mounted.
+    /// The mount table of this process's mount namespace, in the order
+    /// `/proc/self/mountinfo` lists it.
+    fn mount_table(&self) -> Result<Vec<MountEntry>>;
+
+    /// Whether a mount is visible at `target`.
     fn is_mounted(&self, target: &Path) -> Result<bool>;
 
-    /// Get the filesystem type at a mount point. Returns `None` if not a mount point.
+    /// The filesystem type of the mount visible at `target`; `None` when
+    /// `target` is not a mount point.
     fn get_filesystem_type(&self, target: &Path) -> Result<Option<String>>;
 
     /// Whether the mount visible at `target` is mounted read-only.
@@ -125,7 +136,7 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     }
 
     /// Identify the device, device-mapper name and filesystem label backing the
-    /// mount at `mount_point`.
+    /// mount visible at `mount_point`.
     ///
     /// Returns `Ok(None)` when `mount_point` is not itself a mount point. This is
     /// a read-only query used to warn about names that hint at hidden storage; a

@@ -6,7 +6,8 @@
 //! The parser and the classifier of NAILS-created mounts live in
 //! [`nails_teardown::mountinfo`], so the emergency hot path and the rest of the
 //! crate read the mount table the same way. This module re-exports them and adds
-//! the two wrappers that speak this crate's error type.
+//! the two wrappers that speak this crate's error type, and the read-only rule
+//! the mount queries of both filesystems apply.
 
 pub use nails_teardown::mountinfo::{
     MountEntry, OverlayOpts, parse_mountinfo, parse_overlay_opts, root_is_hidden_overlay,
@@ -15,6 +16,14 @@ pub use nails_teardown::mountinfo::{
 
 use crate::{IoResultExt, NailsError, Result};
 use std::path::Path;
+
+/// Whether a mount is read-only: its per-mount flags say `ro`, or its
+/// superblock does. When the kernel remounts a filesystem read-only after an
+/// I/O error, only the superblock options flip to `ro`, so both must be read
+/// or a backend that failed in place reads as writable.
+pub fn mount_is_read_only(entry: &MountEntry) -> bool {
+    entry.read_only() || entry.super_opts.split(',').any(|opt| opt == "ro")
+}
 
 /// Read and parse `/proc/self/mountinfo` once.
 pub fn read_mountinfo() -> Result<Vec<MountEntry>> {

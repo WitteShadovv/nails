@@ -416,6 +416,54 @@ mod tests {
     }
 
     #[test]
+    fn a_root_covered_by_a_mount_on_its_parent_is_not_mounted() {
+        // The volume is still in the table, but a later mount on /mnt covers
+        // it: a lookup of the root ends on that mount instead.
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+        fs.mock_set_writable(NEUTRAL_ROOT, true);
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             30 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+             31 1 0:40 / /mnt rw - tmpfs tmpfs rw\n",
+        );
+
+        let result = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_fail(), "got {result:?}");
+        assert!(result.message().contains("is not mounted"));
+    }
+
+    #[test]
+    fn the_names_of_the_filesystem_on_top_of_the_root_are_audited() {
+        let fs = MockFilesystem::new();
+        let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
+        fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+        fs.mock_set_writable(NEUTRAL_ROOT, true);
+        let stacked = |below: &str, above: &str| {
+            format!(
+                "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+                 30 1 253:0 / /mnt/data rw - ext4 /dev/mapper/{below} rw\n\
+                 31 30 253:1 / /mnt/data rw - ext4 /dev/mapper/{above} rw\n"
+            )
+        };
+
+        fs.mock_set_mount_table(&stacked("data", "veracrypt1"));
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_warn(), "got {result:?}");
+        assert!(
+            result.message().contains("veracrypt1"),
+            "{}",
+            result.message()
+        );
+
+        fs.mock_set_mount_table(&stacked("veracrypt1", "data"));
+        let result = check.run(&fs).unwrap();
+        assert!(result.is_pass(), "got {result:?}");
+    }
+
+    #[test]
     fn passes_when_every_name_is_neutral() {
         let fs = MockFilesystem::new();
         let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));

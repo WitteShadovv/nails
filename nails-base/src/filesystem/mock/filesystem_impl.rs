@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::super::{Filesystem, MountSource};
+use super::super::{Filesystem, MountEntry, MountSource};
 use super::MockFilesystem;
 use crate::Result;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
 
 impl Filesystem for MockFilesystem {
+    fn mount_table(&self) -> Result<Vec<MountEntry>> {
+        Ok(self.mount_table_impl())
+    }
+
     fn is_mounted(&self, target: &Path) -> Result<bool> {
         self.is_mounted_impl(target)
     }

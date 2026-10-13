@@ -164,6 +164,54 @@ fn reading_the_fstab_in_a_root_leaves_its_atime_on_a_relatime_fs() {
     });
 }
 
+#[test]
+fn the_mount_queries_answer_for_the_mount_a_lookup_reaches() {
+    let _ = Rerun::new(test_path!(
+        the_mount_queries_answer_for_the_mount_a_lookup_reaches
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let scratch = ScratchTmpfs::new("");
+        let a = scratch.path().canonicalize().unwrap().join("a");
+        let x = a.join("x");
+        std::fs::create_dir_all(&x).unwrap();
+        let tmpfs = |source: &str, target: &Path, flags: nix::mount::MsFlags| {
+            nix::mount::mount(Some(source), target, Some("tmpfs"), flags, Some("size=1M"))
+                .expect("mount a tmpfs in the namespace");
+        };
+        let source = |path: &Path| {
+            RealFilesystem
+                .mount_source(path)
+                .unwrap()
+                .and_then(|source| source.device)
+        };
+        let fs = RealFilesystem;
+
+        // A tmpfs at a/x, then one at a: the first is covered.
+        tmpfs("first", &x, nix::mount::MsFlags::empty());
+        tmpfs("second", &a, nix::mount::MsFlags::empty());
+        assert!(
+            !fs.is_mounted(&x).unwrap(),
+            "the covered mount is not visible"
+        );
+        assert_eq!(fs.get_filesystem_type(&x).unwrap(), None);
+        assert!(
+            fs.mount_table()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.mount_point == x),
+            "though the kernel still lists it"
+        );
+        assert_eq!(source(&a).as_deref(), Some("second"));
+
+        // A read-only tmpfs stacked on a answers for a.
+        tmpfs("third", &a, nix::mount::MsFlags::MS_RDONLY);
+        assert_eq!(source(&a).as_deref(), Some("third"));
+        assert!(fs.is_mount_read_only(&a).unwrap());
+        assert!(fs.is_mounted(&a).unwrap());
+    });
+}
+
 fn set_dir_atime(dir: &Path, when: SystemTime) {
     std::fs::File::open(dir)
         .unwrap()

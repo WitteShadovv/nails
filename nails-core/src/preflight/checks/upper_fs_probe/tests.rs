@@ -177,6 +177,30 @@ fn a_missing_capability_names_the_filesystem_the_mount_table_reports() {
 }
 
 #[test]
+fn a_missing_capability_names_the_filesystem_on_top_of_the_hidden_root() {
+    // A FAT stick mounted over the hidden volume: the probe ran on the stick,
+    // so the message names its filesystem, not the volume's below it.
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         31 30 8:17 / /mnt/data rw - vfat /dev/sdb1 rw\n",
+    );
+    let check = UpperFsCapabilityCheck::new(PathBuf::from("/mnt/data"));
+    let result = check.verdict(
+        &fs,
+        Err(ProbeError::Missing(MissingCapability::TrustedXattr)),
+    );
+    assert!(
+        result
+            .message()
+            .contains("The hidden root is on a vfat filesystem."),
+        "{}",
+        result.message()
+    );
+}
+
+#[test]
 fn a_missing_capability_on_an_unknown_filesystem_leaves_the_type_out() {
     let check = UpperFsCapabilityCheck::new(PathBuf::from("/mnt/data"));
     let result = check.verdict(

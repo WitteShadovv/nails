@@ -340,8 +340,7 @@ fn a_backing_file_on_btrfs_is_followed_through_its_mount() {
     // back to the device of the mount that holds the file.
     let sysfs = Sysfs::new();
     loop_device(&sysfs, "/srv/vm/box.img");
-    sysfs.0.mock_set_file_content(
-        "/proc/self/mountinfo",
+    sysfs.0.mock_set_mount_table(
         "1 0 254:0 / / rw - ext4 /dev/mapper/root rw\n\
          40 1 0:52 /@srv /srv rw - btrfs /dev/mapper/pool rw,subvol=/@srv\n",
     );
@@ -364,8 +363,7 @@ fn a_backing_file_on_btrfs_is_followed_through_its_mount() {
 fn a_backing_file_in_ram_has_nothing_below() {
     let sysfs = Sysfs::new();
     loop_device(&sysfs, "/run/scratch.img");
-    sysfs.0.mock_set_file_content(
-        "/proc/self/mountinfo",
+    sysfs.0.mock_set_mount_table(
         "1 0 254:0 / / rw - ext4 /dev/vda2 rw\n\
          22 1 0:25 / /run rw - tmpfs tmpfs rw\n",
     );

@@ -34,6 +34,20 @@ impl MockFilesystem {
             .insert(path.to_path_buf());
     }
 
+    /// Make `mountinfo` (lines in `/proc/self/mountinfo` form) the mount table.
+    ///
+    /// From then on [`mount_table`](crate::Filesystem::mount_table) returns it
+    /// and every mount query answers from it for the visible mount, as the real
+    /// filesystem does: a mount stacked on another wins, one covered by a later
+    /// mount on its parent is not mounted. The source names a device-mapper
+    /// device only as `/dev/mapper/<name>`, and no label is known.
+    pub fn mock_set_mount_table(&self, mountinfo: &str) {
+        *self
+            .mount_table
+            .lock()
+            .expect("MockFilesystem mutex poisoned") = Some(mountinfo.to_string());
+    }
+
     /// Set whether a path is mounted.
     pub fn mock_set_mounted(&self, path: &Path, mounted: bool) {
         let mut mounts = self.mounted.lock().expect("MockFilesystem mutex poisoned");

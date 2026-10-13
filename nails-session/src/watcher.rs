@@ -432,6 +432,41 @@ mod tests {
         assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
     }
 
+    /// The hidden root and the overlay targets `/home` and `/srv/share`, plus
+    /// `extra` mount lines.
+    fn session_table(extra: &str) -> String {
+        format!(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             10 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+             20 1 0:40 / /home rw - overlay overlay rw\n\
+             30 1 8:2 / /srv rw - ext4 /dev/vda2 rw\n\
+             31 30 0:41 / /srv/share rw - overlay overlay rw\n{extra}"
+        )
+    }
+
+    #[test]
+    fn probe_fails_when_a_target_is_covered_by_a_mount_on_its_parent() {
+        let fs = MockFilesystem::new();
+        root_lists(&fs);
+        fs.mock_set_mount_table(&session_table(""));
+        assert!(probe_backend(&fs, &manifest(&["/home", "/srv/share"])));
+
+        // A later mount on /srv covers the target, which stays in the table.
+        fs.mock_set_mount_table(&session_table("32 30 0:42 / /srv rw - tmpfs tmpfs rw\n"));
+        assert!(!probe_backend(&fs, &manifest(&["/home", "/srv/share"])));
+    }
+
+    #[test]
+    fn probe_reads_the_flags_of_the_mount_on_top_of_the_hidden_root() {
+        let fs = MockFilesystem::new();
+        root_lists(&fs);
+        // A read-only mount stacked on the hidden root is what a write reaches.
+        fs.mock_set_mount_table(&session_table(
+            "11 10 253:1 / /mnt/data ro - ext4 /dev/mapper/data rw\n",
+        ));
+        assert!(!probe_backend(&fs, &manifest(&["/home"])));
+    }
+
     #[test]
     fn run_loop_stops_after_an_automatic_emergency() {
         // A fast poll so the test is quick; auto_emergency with a zero debounce so

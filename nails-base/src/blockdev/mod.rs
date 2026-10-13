@@ -41,9 +41,6 @@ const SYS_CLASS_BLOCK: &str = "/sys/class/block";
 const SYS_BLOCK: &str = "/sys/block";
 /// One directory per mounted btrfs filesystem, named by its fsid.
 const SYS_FS_BTRFS: &str = "/sys/fs/btrfs";
-/// The mount table, read when a loop device's backing file sits on a
-/// filesystem without a block device number of its own (btrfs).
-const MOUNTINFO: &str = "/proc/self/mountinfo";
 
 /// One block device in a stack, as sysfs reports it. Every attribute is
 /// optional: one that is missing or unreadable keeps its default.

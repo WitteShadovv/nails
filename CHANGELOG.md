@@ -587,6 +587,12 @@ config and CLI surfaces; there are no compatibility shims.
 
 ### Fixed
 
+- The mount queries answer for the mount a lookup of the path reaches. A mount covered by a later
+  mount on its parent directory no longer counts as mounted, and of two filesystems stacked on one
+  mount point the one on top gives the type, source and read-only flag, where the first or the last
+  listed did before. The hidden-volume check, the in-session watcher, the journald-storage check
+  and the upper-filesystem probe could judge a covered or a covering mount instead of the one in
+  use.
 - `check` and `activate` read the decoy's `/etc/fstab` without updating its access time. The file
   was opened without `O_NOATIME`, so on a `relatime` decoy a check could stamp it with the time of
   the check. Run as root, the read now leaves the access time alone; an unprivileged `check`

@@ -4,11 +4,11 @@
 //! Walking a device stack down through sysfs, one device at a time.
 
 use super::{
-    DeviceMapper, DmKind, Layer, LoopBacking, LoopDevice, LoopFollow, MAX_STACK_DEVICES, MOUNTINFO,
-    Partition, SYS_BLOCK, SYS_CLASS_BLOCK, SYS_DEV_BLOCK,
+    DeviceMapper, DmKind, Layer, LoopBacking, LoopDevice, LoopFollow, MAX_STACK_DEVICES, Partition,
+    SYS_BLOCK, SYS_CLASS_BLOCK, SYS_DEV_BLOCK,
 };
 use crate::Filesystem;
-use crate::filesystem::mountinfo::{MountEntry, parse_mountinfo, top_mount_at};
+use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 
@@ -253,11 +253,7 @@ fn below_loop<F: Filesystem>(
             block_dir(fs, &Path::new(SYS_CLASS_BLOCK).join(name))
         }
         LoopBacking::File(path) if follow >= LoopFollow::BackingFiles => {
-            let mounts = mounts.get_or_insert_with(|| {
-                fs.read_file_content(Path::new(MOUNTINFO))
-                    .map(|text| parse_mountinfo(&text))
-                    .unwrap_or_default()
-            });
+            let mounts = mounts.get_or_insert_with(|| fs.mount_table().unwrap_or_default());
             device_holding(fs, path, mounts)
         }
         _ => None,

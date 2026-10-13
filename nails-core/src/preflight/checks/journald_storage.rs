@@ -258,6 +258,31 @@ mod tests {
     }
 
     #[test]
+    fn the_journal_directory_is_judged_by_the_mount_a_lookup_reaches() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(MAIN, "[Journal]\nStorage=auto\n");
+        fs.mock_set_path_type(DIR, PathKind::Dir);
+
+        // A tmpfs stacked on the on-disk journal directory: the journal lands
+        // in RAM.
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             40 1 8:1 /var/log/journal /var/log/journal rw - ext4 /dev/vda1 rw\n\
+             41 40 0:50 / /var/log/journal rw - tmpfs tmpfs rw\n",
+        );
+        assert!(!journald_persists_to_decoy(&fs));
+
+        // A tmpfs on the journal directory that a later mount on /var/log
+        // covers: the journal lands on that disk.
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             41 1 0:50 / /var/log/journal rw - tmpfs tmpfs rw\n\
+             42 1 8:2 / /var/log rw - ext4 /dev/vda2 rw\n",
+        );
+        assert!(journald_persists_to_decoy(&fs));
+    }
+
+    #[test]
     fn volatile_drop_in_over_persistent_main_does_not_persist() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();

@@ -56,7 +56,7 @@ What runs in this tier:
 | --- | --- |
 | `nails-core/tests/whole_root_kernel.rs` | The session's own mechanics on real mounts: the root overlay and its upper, the read-only ESP, the fstab policy, the transition step against a live mount table, the way back, the cgroup kill, rollback of a failed entry, the chrooted NixOS activation and the kept store closure |
 | `nails-cli/tests/early_dispatch.rs` | `emergency` detaching a leftover next root before it reads the configuration |
-| `nails-core/tests/kernel_semantics.rs` | Mountinfo round trips of awkward layer paths; `copy_tree` leaving source atimes untouched on a `strictatime` filesystem; a root's `/etc/fstab` read without touching its atime on a `relatime` filesystem |
+| `nails-core/tests/kernel_semantics.rs` | Mountinfo round trips of awkward layer paths; `copy_tree` leaving source atimes untouched on a `strictatime` filesystem; a root's `/etc/fstab` read without touching its atime on a `relatime` filesystem; the mount queries answering for the mount a lookup reaches (a stacked one, none under a covering mount) |
 | `nails-core/tests/filesystem_contract.rs` | One file contract and one mount-query contract, run against `MockFilesystem` and `RealFilesystem` (tier d) |
 | `nails-core/tests/privileged_mounts.rs` | Overlay behaviour through `nix::mount`; all but the whiteout test run rootless |
 | `nails-cli/tests/broken_pipe.rs` | The stderr helpers surviving a reader that has gone |

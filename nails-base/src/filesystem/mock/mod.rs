@@ -18,6 +18,8 @@ mod state;
 
 #[cfg(test)]
 mod tests_basic;
+#[cfg(test)]
+mod tests_mounts;
 
 pub use setup_state::PathKind;
 pub use state::{MockFilesystem, MockOp};
