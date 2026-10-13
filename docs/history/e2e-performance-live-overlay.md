@@ -453,10 +453,13 @@ VMs, since three of the tests start two VMs each), a sampler read `/proc` every
 
 So `GIB_PER_TEST` stays at 3.5 GiB: a test with a 2 GiB guest needs at most
 2.2 GiB, which leaves room in the budget for a 4 GiB graphical guest that
-fills its RAM, and a 15 GiB, 12-core host still runs three tests at once. In
-the same run `performance-validation` timed out waiting for the backdoor after
-its second soft-reboot into the hidden session, and passed when run again
-alone, as [Remaining risks](#remaining-risks) recommends.
+fills its RAM, and a 15 GiB, 12-core host still runs three tests at once.
+
+The run's one failure was the soft-reboot re-entry hang, not an effect of host
+load: `performance-validation` entered the hidden session a second time in the
+same VM (`perf-activate-1`), the new userspace's console went quiet after
+`suid-sgid-wrappers.service`, and the driver gave up with
+`no backdoor 600 s after the soft-reboot`. The test passed when run again.
 
 ## Robustness
 
