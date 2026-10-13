@@ -151,12 +151,14 @@ jobs:
           test "$(result/nails --version)" = "nails $VERSION"
           (cd result && sha256sum --check --strict checksums.txt)
 
-      # musl is linked statically, so the SBOM names it; this is the musl of
-      # the nixpkgs revision that flake.lock pins.
+      # musl is linked statically, so the SBOM names it. The build links the
+      # musl of the nixpkgs revision that flake.lock pins, not the copy that
+      # ships with the Rust toolchain, and fails if the link took libc.a from
+      # anywhere else (flake.nix); .#nails.libc is that musl.
       - name: Read the musl version
         id: musl
         run: |
-          version=$(nix eval --raw --inputs-from . nixpkgs#pkgsCross.musl64.musl.version)
+          version=$(nix eval --raw .#nails.libc.version --option accept-flake-config false)
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Collect the release bundle

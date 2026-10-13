@@ -758,6 +758,10 @@ config and CLI surfaces; there are no compatibility shims.
   reference drops; `nails emergency`, `nails status` and `nails verify` now report "hidden root
   still mounted at <path>" as Critical whenever the hidden root is left mounted, and without the
   opt-in the exact manual close sequence is printed.
+- The release binary links the musl of the pinned nixpkgs (1.2.6, with nixpkgs' patches for
+  CVE-2026-6042 and CVE-2026-40200) instead of the musl 1.2.5 that ships with the Rust toolchain,
+  so the musl the release SBOM names is the one in the binary. The build fails if its linker map
+  shows `libc.a` or a crt start file from anywhere else.
 
 ## [0.2.0] - 2026-05-08
 

@@ -44,7 +44,7 @@ cargo cyclonedx --manifest-path nails-cli/Cargo.toml --format json --spec-versio
   --target x86_64-unknown-linux-musl --describe binaries --no-build-deps
 ```
 
-It writes `nails-cli/nails_bin.cdx.json`. The release workflow then adds musl, which the binary links statically and cargo cannot see, with `python3 -m ci.release sbom-libc`.
+It writes `nails-cli/nails_bin.cdx.json`. The release workflow then adds musl, which the binary links statically and cargo cannot see, with `python3 -m ci.release sbom-libc`. The version is that of `.#nails.libc`, the musl of the pinned nixpkgs, which the release build links instead of the copy that ships with the Rust toolchain.
 
 ### Validate format locally
 

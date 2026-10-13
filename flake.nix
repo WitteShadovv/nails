@@ -80,8 +80,24 @@
         ];
       };
 
+      # rustc links a +crt-static musl binary against the musl that ships with
+      # the Rust toolchain (1.2.5 in Rust 1.93), not the C toolchain's, unless
+      # self-contained linking is off. With it off, libc.a and the crt start
+      # files come from pkgsMusl's musl: the one nixpkgs patches and the one
+      # the release SBOM names (nails.libc). The link still needs the
+      # toolchain's libunwind.a; this directory holds it alone, so the bundled
+      # libc.a cannot come along.
+      rustLibunwind = pkgs.linkFarm "rust-libunwind-${rustChannel}" [
+        {
+          name = "libunwind.a";
+          path = "${rustToolchainMusl}/lib/rustlib/${targetTriple}/lib/self-contained/libunwind.a";
+        }
+      ];
+
       reproducibleRustFlags = lib.concatStringsSep " " [
         "-C target-feature=+crt-static"
+        "-C link-self-contained=no"
+        "-L native=${rustLibunwind}"
         "-C link-arg=-Wl,--build-id=none"
         "--remap-path-prefix=/build/source=."
       ];
@@ -130,6 +146,24 @@
         # the same from one commit to the next.
         SOURCE_DATE_EPOCH = "315532800";
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS = reproducibleRustFlags;
+
+        # The C library linked into the binary; release.yml puts its version
+        # into the SBOM.
+        passthru.libc = pkgsMusl.stdenv.cc.libc;
+
+        # The linker map lists every file the link loaded. The build fails
+        # unless libc.a and the crt start files all came from passthru.libc.
+        preBuild = ''
+          export NIX_LDFLAGS_AFTER_${pkgsMusl.stdenv.cc.suffixSalt}+=" -Map=$NIX_BUILD_TOP/nails.map"
+        '';
+        postBuild = ''
+          libc=${passthru.libc}/lib
+          loaded=$(grep -oE '[^ ()]+/(libc\.a|[rS]?crt1\.o|crt[in]\.o)' "$NIX_BUILD_TOP/nails.map" | sort -u) || true
+          if ! grep -qxF "$libc/libc.a" <<< "$loaded" || grep -vqF "$libc/" <<< "$loaded"; then
+            printf 'nails must link libc.a and the crt start files of %s only; the link loaded:\n%s\n' "$libc" "$loaded" >&2
+            exit 1
+          fi
+        '';
 
         doCheck = false;
 
