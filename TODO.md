@@ -3374,3 +3374,20 @@ Owns: `docs/adr/`, `docs/threat-model.md`, `nails-core/src/persona/`
 - Overlay `uuid=off` on current LTS kernels: its meaning differs between the supported kernels, and the origin data it would drop sits inside the encrypted backend anyway.
 - CRIU for the decoy session: it cannot checkpoint DRM masters or a compositor's client graph, and the image would need storage on the decoy or the hidden volume (ADR 0009).
 - Dual-root session mode (T-133): the hidden session on its own VT in a whole-root overlay, with an emergency by VT switch and `cgroup.kill` that keeps the decoy desktop logged in. Its core was VM-proven (`research/dual-root-vt-emergency.nix`, `research/dual-root-risks.nix`), but it needed a hidden user, runtime polkit and D-Bus denies, a pinned mount namespace and a real-hardware matrix. The whole-root soft-reboot was chosen as the only session mode instead, accepting that the emergency ends at the decoy's login screen. [ADR 0009](docs/adr/0009-dual-root-emergency.md) is kept as research.
+
+## Wave S: Setup (2026-10)
+
+The setup work: shared foundations, refusing a hidden root that lives on the decoy's own storage, the daily routine at `/mnt`, the backend guardrails, the offline readiness check, the VM prototypes and the separate `nails-setup` tool. One item per step group, ticked when the group lands.
+
+### WS-C1: Shared foundations
+
+Owns: `nails-base/src/naming.rs`, `nails-base/src/fstab.rs`, `nails-base/src/crypttab.rs`, `nails-base/src/blockdev/`, `nails-base/src/filesystem/` (the mount table), `nails-core/src/manager/preflight_runner.rs`
+
+- [ ] **T-156: Shared foundations for the setup work (phase 1a)** (medium · effort M)
+
+  _Status (2026-10-13): on `feat/setup`: one list of the words that give hidden storage away, the fstab and crypttab parsers and the hidden-overlay root test in the bottom crates (`nails-base`, `nails-teardown`), one block-device walk (`nails_base::blockdev`) that `backend-detect` uses, `PreflightOptions` instead of positional booleans, and `Filesystem::mount_table` with mount queries that answer for the visible mount. Two things are open._
+
+  - The block-device walk has no test on captured kernel output yet (`docs/testing-strategy.md`, rule 1): `the_captured_lvm_on_luks_scene_is_walked_to_its_partition` returns early until `nails-base/tests/fixtures/kernel/vm/blockdev-lvm-on-luks.txt` exists, and neither the `blockdev` capture mode nor the `research-blockdev-fixtures` VM test has run. The capture needs root and device-mapper, so it runs in a VM: `nix build .#e2e.research-blockdev-fixtures -L`, then review `result/kernel-fixtures/blockdev-lvm-on-luks.txt` and commit it to that directory.
+  - `check` and `activate` read the decoy's `/etc/fstab` with `O_NOATIME`, which covers the file alone. On NixOS `/etc/fstab` and `/etc/static` are links on the decoy's root, and the lookup that follows them updates their access times (under `relatime`, at most once a day). Avoiding that needs a view of the root mounted `noatime`; take that step or name the trace in `docs/threat-model.md`.
+
+  **Done when:** the capture is committed and its test runs and passes, and the links' access-time trace is avoided or named in the threat model.

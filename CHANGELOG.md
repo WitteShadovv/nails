@@ -593,10 +593,14 @@ config and CLI surfaces; there are no compatibility shims.
   listed did before. The hidden-volume check, the in-session watcher, the journald-storage check
   and the upper-filesystem probe could judge a covered or a covering mount instead of the one in
   use.
-- `check` and `activate` read the decoy's `/etc/fstab` without updating its access time. The file
-  was opened without `O_NOATIME`, so on a `relatime` decoy a check could stamp it with the time of
-  the check. Run as root, the read now leaves the access time alone; an unprivileged `check`
-  cannot, because the kernel grants `O_NOATIME` only to the file's owner and to root.
+- `check` and `activate` read the decoy's `/etc/fstab` without updating the file's access time.
+  It was opened without `O_NOATIME`, so on a `relatime` decoy a check could stamp it with the time
+  of the check. Run as root, the read now leaves the file's own access time alone; an unprivileged
+  `check` cannot, because the kernel grants `O_NOATIME` only to the file's owner and to root. That
+  covers a decoy whose `/etc/fstab` is a regular file (Debian, Ubuntu). On NixOS it is a link
+  through `/etc/static` into the store, which is mounted read-only, so the file's access time never
+  moved; the links lie on the decoy's root, and following them still updates their access times
+  (under `relatime`, at most once a day), which `O_NOATIME` does not cover.
 - The `swap` check skips a crypttab line with fewer than two fields, as systemd does. Such a line
   ended its search for the swap's entry, so a swap keyed from `/dev/urandom` on a later line of
   the same name failed the check instead of warning.
