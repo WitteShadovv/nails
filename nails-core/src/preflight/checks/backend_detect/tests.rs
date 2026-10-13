@@ -171,6 +171,22 @@ fn classify_dm_uuid_recognises_cryptsetup_types() {
         classify_dm_uuid("CRYPT-BITLK-0123-usb"),
         Some(CryptType::Other("BITLK".into()))
     );
+    // The inner layer of a cipher chain and the integrity and verity mappings
+    // keep their own type names.
+    for (uuid, kind) in [
+        ("CRYPT-SUBDEV-vault_1", "SUBDEV"),
+        ("CRYPT-INTEGRITY-data", "INTEGRITY"),
+        (
+            "CRYPT-VERITY-0123456789abcdef0123456789abcdef-usr",
+            "VERITY",
+        ),
+    ] {
+        assert_eq!(
+            classify_dm_uuid(uuid),
+            Some(CryptType::Other(kind.into())),
+            "{uuid}"
+        );
+    }
 }
 
 #[test]
