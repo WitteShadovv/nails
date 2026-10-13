@@ -42,8 +42,9 @@ _FINGERPRINT = f"stat -c '%s %.9Y' {_IMAGE}"
 def patch_start_script(text: str) -> str | None:
     """Return ``text`` with the store image build made conditional, or None.
 
-    None means the script builds no store image (a 9p-store VM) or the markers
-    are not where this code expects them, so it must be left alone.
+    None means the script builds no store image (the VM mounts the host store
+    over virtiofs instead) or the markers are not where this code expects
+    them, so it must be left alone.
     """
     lines = text.splitlines(keepends=True)
     begins = [i for i, line in enumerate(lines) if line.strip() == BEGIN_MARKER]
