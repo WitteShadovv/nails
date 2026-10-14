@@ -477,7 +477,7 @@ fn the_entries_check_alone_refuses_a_decoy_entry_for_the_volume() {
          5 1 8:16 / /mnt/hidden rw - ext4 /dev/sdb rw\n",
     );
     let manager = manager_with(fs);
-    manager.run_backend_entries_check().unwrap();
+    assert_eq!(manager.run_backend_entries_check().unwrap(), None);
 
     manager
         .filesystem()
@@ -490,4 +490,40 @@ fn the_entries_check_alone_refuses_a_decoy_entry_for_the_volume() {
         }
         other => panic!("expected the check to refuse, got {other:?}"),
     }
+}
+
+#[test]
+fn the_entries_check_alone_returns_its_warning() {
+    // Under --no-preflight no report shows the warning, so activation takes
+    // it from here: the volume is the whole of sdb, and the decoy opens a
+    // container on sdb1 of the same drive.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden", true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+         5 1 8:16 / /mnt/hidden rw - ext4 /dev/sdb rw\n",
+    );
+    let mut class = Vec::new();
+    for (dir, name, dev) in [
+        ("/sys/devices/usb/sdb", "sdb", "8:16"),
+        ("/sys/devices/usb/sdb/sdb1", "sdb1", "8:17"),
+    ] {
+        fs.mock_set_file_content(&format!("{dir}/dev"), &format!("{dev}\n"));
+        fs.mock_set_file_content(&format!("{dir}/uevent"), &format!("DEVNAME={name}\n"));
+        let link = format!("/sys/class/block/{name}");
+        fs.create_symlink(std::path::Path::new(dir), std::path::Path::new(&link))
+            .unwrap();
+        class.push(std::path::PathBuf::from(link));
+    }
+    fs.mock_set_file_content("/sys/devices/usb/sdb/sdb1/partition", "1\n");
+    fs.mock_set_directory_contents(std::path::Path::new("/sys/class/block"), class);
+    fs.mock_add_file("/etc/crypttab", "outer /dev/sdb1 none tcrypt,noauto\n");
+    let warning = manager_with(fs)
+        .run_backend_entries_check()
+        .expect("a warning does not refuse")
+        .expect("the check warns");
+    assert!(
+        warning.contains("the decoy is configured to open storage on this drive"),
+        "{warning}"
+    );
 }

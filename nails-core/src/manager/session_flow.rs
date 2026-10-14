@@ -168,14 +168,16 @@ impl<F: Filesystem> NailsManager<F> {
         // What the operator accepted holds for every write of this activation.
         self.allow = options.allow();
         let nixos = self.require_supported_host(machine)?;
-        if options.skip_preflight {
-            // A decoy entry that opens the hidden volume is refused in every
-            // case; --no-preflight skips the other checks only.
-            self.run_backend_entries_check()?;
+        // A decoy entry that opens the hidden volume is refused in every
+        // case; --no-preflight skips the other checks only. Without the
+        // pre-flight report, the entry carries the check's warning instead.
+        let entries_warning = if options.skip_preflight {
+            self.run_backend_entries_check()?
         } else {
             self.stage_hidden_config(options.overlay_only)?;
             self.run_preflight_checks(&options.preflight())?;
-        }
+            None
+        };
         let started = std::time::Instant::now();
         let hidden_root = self.config.hidden_volume_root.clone();
         let entries = machine
@@ -209,7 +211,8 @@ impl<F: Filesystem> NailsManager<F> {
             read_only_disks: self.config.session_mounts.read_only,
             accepted_not_separate,
         };
-        let prepared = entry::prepare(&machine.paths, &inputs, host)?;
+        let mut prepared = entry::prepare(&machine.paths, &inputs, host)?;
+        prepared.warnings.extend(entries_warning);
         if let Err(e) = self.record_entry(&prepared, started.elapsed()) {
             entry::rollback(&machine.paths);
             let _ = host.daemon_reload();
