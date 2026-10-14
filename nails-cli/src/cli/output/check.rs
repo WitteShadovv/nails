@@ -233,7 +233,13 @@ pub fn print_check_human(report: &CheckReport, style: Style) {
     for row in &report.checks {
         println!("  {} {}: {}", style.mark(row.mark()), row.name, row.message);
         if let Some(remediation) = &row.remediation {
-            println!("      {}", style.marked(Mark::Arrow, remediation));
+            let mut lines = remediation.lines();
+            if let Some(first) = lines.next() {
+                println!("      {}", style.marked(Mark::Arrow, first));
+            }
+            for line in lines {
+                println!("        {line}");
+            }
         }
     }
     println!();

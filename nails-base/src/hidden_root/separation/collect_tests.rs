@@ -320,8 +320,8 @@ fn the_gate_refuses_a_volume_in_the_decoys_group() {
             );
             assert_eq!(
                 refusal.reason,
-                "hidden root /mnt is not a volume of its own: it is stored inside cryptroot, \
-                 which also holds /"
+                "/mnt is not a volume of its own: it is stored inside /dev/dm-0, which also \
+                 holds /"
             );
         }
         other => panic!("{other:?}"),
@@ -395,7 +395,7 @@ fn an_unreadable_crypttab_refuses_a_disk_root_but_not_a_tmpfs() {
             );
             assert_eq!(
                 refusal.reason,
-                "could not read /etc/crypttab to tell where /mnt lives; run with sudo"
+                "could not read /etc/crypttab to tell where /mnt lives"
             );
         }
         other => panic!("{other:?}"),

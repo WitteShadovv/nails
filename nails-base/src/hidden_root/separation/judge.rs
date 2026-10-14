@@ -88,13 +88,8 @@ fn verdict(
         })
         .collect();
     if let Some((claim, node)) = sharing.first() {
-        let name = devices
-            .nodes
-            .get(*node)
-            .and_then(Node::dm_name)
-            .map_or_else(|| (*node).clone(), str::to_string);
         return Verdict::InsideDecoyStorage {
-            device: name,
+            device: (*node).clone(),
             holds: claim.what.clone(),
             noauto_only: sharing.iter().all(|(claim, _)| claim.noauto),
         };

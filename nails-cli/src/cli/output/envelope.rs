@@ -133,11 +133,12 @@ pub fn report_error(
 
 /// Write the human form of `error` to `writer`, tolerating a broken pipe: the
 /// failure being reported must never turn into a panic because the reader of
-/// stderr is gone (an emergency severs its own journal stream).
-fn write_human_error<W: std::io::Write>(writer: &mut W, error: &ErrorBody) {
+/// stderr is gone (an emergency severs its own journal stream). Every line of
+/// the hint is indented under the message.
+pub(crate) fn write_human_error<W: std::io::Write>(writer: &mut W, error: &ErrorBody) {
     let _ = super::write_line_tolerating_broken_pipe(writer, &format!("error: {}", error.message));
-    if let Some(hint) = &error.hint {
-        let _ = super::write_line_tolerating_broken_pipe(writer, &format!("  {hint}"));
+    for line in error.hint.iter().flat_map(|hint| hint.lines()) {
+        let _ = super::write_line_tolerating_broken_pipe(writer, &format!("  {line}"));
     }
 }
 
@@ -187,6 +188,19 @@ mod tests {
         let mut text = String::new();
         std::io::Read::read_to_string(&mut reader, &mut text).unwrap();
         assert_eq!(text, "error: boom\n  retry\n");
+    }
+
+    #[test]
+    fn every_hint_line_is_indented() {
+        let mut out = Vec::new();
+        write_human_error(
+            &mut out,
+            &ErrorBody::new("x", "boom").with_hint("first\nsecond"),
+        );
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "error: boom\n  first\n  second\n"
+        );
     }
 
     #[test]

@@ -1,0 +1,6 @@
+---
+source: nails-cli/src/cli/output/refusal.rs
+expression: "human(&refusal(kind), None)"
+---
+error: nothing shows that /mnt is a volume of its own: the mount table cannot be read (permission denied). Nothing was written.
+  Run the command where /proc is mounted and readable.

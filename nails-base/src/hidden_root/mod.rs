@@ -16,8 +16,10 @@
 //! them through [`HiddenRoot::verify_attached`]. It answers one question — is
 //! this path a mounted hidden volume we may write to? — and returns a
 //! [`Refusal`] when the answer is no, so the caller can degrade to stderr-only
-//! logging or refuse the operation with a message the operator can act on.
+//! logging or refuse the operation with a message the operator can act on
+//! (see [`refusal`] for its text and codes).
 
+pub mod refusal;
 pub mod separation;
 #[cfg(test)]
 mod tests;
@@ -72,7 +74,10 @@ pub enum RefusalKind {
     /// The path does not exist.
     Missing,
     /// The mount table could not be read, so nothing shows what is mounted.
-    MountTableUnreadable,
+    MountTableUnreadable {
+        /// Why it could not be read.
+        error: String,
+    },
     /// Nothing is mounted at the root: it is a folder on the filesystem
     /// mounted at `mount_point`.
     NotAMountPoint {
@@ -113,8 +118,10 @@ pub enum RefusalKind {
 pub struct Refusal {
     /// What is wrong.
     pub kind: RefusalKind,
-    /// Why, naming the paths involved.
+    /// Why, naming the paths involved (see [`refusal`]).
     pub reason: String,
+    /// The root that was refused, as the caller named it.
+    pub root: PathBuf,
 }
 
 /// The gate's answer for a hidden root.
@@ -137,8 +144,8 @@ impl Assessment {
     }
 }
 
-fn refuse(kind: RefusalKind, reason: String) -> Result<Assessment> {
-    Ok(Assessment::Refused(Refusal { kind, reason }))
+fn refuse(kind: RefusalKind, root: &Path) -> Result<Assessment> {
+    Ok(Assessment::Refused(Refusal::new(kind, root)))
 }
 
 /// The attach gate.
@@ -176,30 +183,19 @@ impl HiddenRoot {
     /// `fs`.
     pub fn assess<F: Filesystem>(fs: &F, root: &Path) -> Result<Assessment> {
         if root.as_os_str().is_empty() {
-            return refuse(
-                RefusalKind::NotConfigured,
-                "no hidden root is configured".to_string(),
-            );
+            return refuse(RefusalKind::NotConfigured, root);
         }
         if !fs.path_exists(root)? {
-            return refuse(
-                RefusalKind::Missing,
-                format!(
-                    "hidden root {} does not exist (mount the hidden volume there first)",
-                    root.display()
-                ),
-            );
+            return refuse(RefusalKind::Missing, root);
         }
         let table = match fs.mount_table() {
             Ok(table) => table,
             Err(error) => {
                 return refuse(
-                    RefusalKind::MountTableUnreadable,
-                    format!(
-                        "the mount table cannot be read ({error}), so nothing shows that a \
-                         volume is mounted at {}",
-                        root.display()
-                    ),
+                    RefusalKind::MountTableUnreadable {
+                        error: error.to_string(),
+                    },
+                    root,
                 );
             }
         };
@@ -210,14 +206,9 @@ impl HiddenRoot {
                 .map_or_else(|| PathBuf::from("/"), |m| m.mount_point.clone());
             return refuse(
                 RefusalKind::NotAMountPoint {
-                    mount_point: holder.clone(),
+                    mount_point: holder,
                 },
-                format!(
-                    "hidden root {} is not a mount point: it is a folder on the filesystem \
-                     mounted at {} (unlock and mount the hidden volume there before continuing)",
-                    root.display(),
-                    holder.display()
-                ),
+                root,
             );
         };
 
@@ -227,13 +218,7 @@ impl HiddenRoot {
                     below: below.source.clone(),
                     above: visible.source.clone(),
                 },
-                format!(
-                    "two filesystems are mounted at {}: {}, then {} over it (unmount the one \
-                     that is not the hidden volume)",
-                    root.display(),
-                    below.source.display(),
-                    visible.source.display()
-                ),
+                root,
             );
         }
 
@@ -250,12 +235,7 @@ impl HiddenRoot {
                 RefusalKind::NotTheSessionVolume {
                     source: visible.source.clone(),
                 },
-                format!(
-                    "the filesystem at {} ({}) is not the volume this session started from \
-                     (unmount what was mounted over it)",
-                    root.display(),
-                    visible.source.display()
-                ),
+                root,
             );
         }
 
@@ -264,29 +244,11 @@ impl HiddenRoot {
             let verdict = separation::judge_storage(fs, &table, visible, Path::new("/")).verdict;
             match (verdict.severity(), verdict) {
                 (_, separation::Verdict::CouldNotJudge { unreadable }) => {
-                    let files = unreadable
-                        .iter()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    return refuse(
-                        RefusalKind::StorageUnjudged { unreadable },
-                        format!(
-                            "could not read {files} to tell where {} lives; run with sudo",
-                            root.display()
-                        ),
-                    );
+                    return refuse(RefusalKind::StorageUnjudged { unreadable }, root);
                 }
                 (separation::Severity::Pass, _) => {}
                 (severity, verdict) => {
-                    let refusal = Refusal {
-                        reason: format!(
-                            "hidden root {} is not a volume of its own: {}",
-                            root.display(),
-                            verdict.reason()
-                        ),
-                        kind: RefusalKind::DecoyStorage { verdict },
-                    };
+                    let refusal = Refusal::new(RefusalKind::DecoyStorage { verdict }, root);
                     if severity == separation::Severity::Refuse {
                         return Ok(Assessment::Refused(refusal));
                     }
@@ -296,14 +258,7 @@ impl HiddenRoot {
         }
 
         if fs.device_id(root)? == fs.device_id(Path::new("/"))? {
-            return refuse(
-                RefusalKind::SameDeviceAsRoot,
-                format!(
-                    "hidden root {} shares a device with /, so nothing is mounted there \
-                     (unlock and mount the hidden volume before continuing)",
-                    root.display()
-                ),
-            );
+            return refuse(RefusalKind::SameDeviceAsRoot, root);
         }
 
         Ok(warning.map_or(Assessment::Attached, Assessment::Warned))

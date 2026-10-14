@@ -153,9 +153,9 @@ fn a_plain_directory_names_the_filesystem_it_is_on() {
         }
     );
     assert!(
-        refused
-            .reason
-            .contains("is not a mount point: it is a folder on the filesystem mounted at /home"),
+        refused.reason.contains(
+            "is not a volume of its own: it is a folder on the filesystem mounted at /home"
+        ),
         "{}",
         refused.reason
     );
@@ -221,7 +221,10 @@ fn an_unreadable_mount_table_refuses() {
     let fs = fs_with(&decoy_table(""));
     fs.mock_set_mount_table_error("permission denied");
     let refused = refusal(&fs, "/mnt/data");
-    assert_eq!(refused.kind, RefusalKind::MountTableUnreadable);
+    assert!(
+        matches!(refused.kind, RefusalKind::MountTableUnreadable { .. }),
+        "{refused:?}"
+    );
     assert!(
         refused.reason.contains("the mount table cannot be read"),
         "{}",
@@ -322,7 +325,12 @@ fn unattached_when_root_shares_device_with_slash() {
 
     let state = HiddenRoot::verify_attached(&fs, &root, false).unwrap();
     assert!(!state.is_attached());
-    assert!(state.reason().unwrap().contains("shares a device with /"));
+    assert!(
+        state
+            .reason()
+            .unwrap()
+            .contains("it is on the device that holds /")
+    );
     assert_eq!(
         refusal(&fs, "/mnt/data").kind,
         RefusalKind::SameDeviceAsRoot

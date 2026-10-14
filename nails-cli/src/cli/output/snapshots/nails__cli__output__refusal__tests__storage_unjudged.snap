@@ -1,0 +1,6 @@
+---
+source: nails-cli/src/cli/output/refusal.rs
+expression: "human(&refusal(kind), None)"
+---
+error: could not read /etc/crypttab to tell where /mnt lives. Nothing was written.
+  Run the command again with sudo.

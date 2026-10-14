@@ -48,7 +48,10 @@ fn the_state_is_refused_on_an_unmounted_hidden_root() {
     fs.mock_set_path_exists("/mnt/data/state.json", true);
 
     let err = save_state(&fs, root, &state(TOKEN)).unwrap_err();
-    assert!(err.to_string().contains("is not a mount point"), "{err}");
+    assert!(
+        err.to_string().contains("is not a volume of its own"),
+        "{err}"
+    );
     assert!(
         fs.get_written_content(&root.join(state_relative_path()))
             .is_none()

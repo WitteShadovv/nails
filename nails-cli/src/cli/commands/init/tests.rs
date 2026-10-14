@@ -337,7 +337,7 @@ fn same_device_target_reports_the_mount_reason() {
         Err(InitFailure::Preconditions(failures)) => assert!(
             failures
                 .iter()
-                .any(|reason| reason.contains("shares a device with /")),
+                .any(|reason| reason.contains("it is on the device that holds /")),
             "{failures:?}"
         ),
         other => panic!("expected a precondition failure, got {:?}", other.is_ok()),
