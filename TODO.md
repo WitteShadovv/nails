@@ -3435,3 +3435,18 @@ Owns: `nails-base/src/hidden_root/`, the attach-gate tests of `nails-cli`
   About 40 library tests write state through `RealFilesystem` into temp directories (`nails-core/src/manager/session_flow_tests.rs`, `nails-core/src/manager/state_management.rs`, `nails-core/src/status/tests.rs`, `nails-forensics/src/rehearse/tests.rs`), and a temp directory is no volume of its own. Move them to `MockFilesystem` with a mount table (`mock_set_mount_table`) that shows their state directory as a mounted volume, or to a tmpfs in a user + mount namespace, then delete the early return and `state_attach_probe`.
 
   **Done when:** `ensure_state_dir_attached` has no test-only branch, `state_attach_probe` is gone, and the library suites pass.
+
+## Release 0.3.0 follow-ups (2026-10)
+
+Problems found while preparing the 0.3.0 release that it does not fix.
+
+- [ ] **T-161: Find why a soft-reboot into the hidden session sometimes never reaches the backdoor** (medium · effort M)
+
+  _Status (2026-10-14): not started. Seen in full NixOS VM suite runs; each failing test passed when rerun on its own._
+
+  A test that follows a soft-reboot into the hidden session fails with "<label>: no backdoor 600 s after the soft-reboot" (`session.follow_soft_reboot`). It happened to `performance-validation` (`perf-activate-1`) during the version updates and to `faults-full-upper-teardown` (`activate-2`) during setup phase 1b; a `session-emergency` failure in a phase 1b rerun (`emergency-covered`, a soft-reboot back that the test has since replaced by a power-off) may have been the same. In the `performance-validation` log the new userspace starts journald, udevd and the SUID wrappers about 3 s after "Soft-rebooting." and then prints nothing more until the deadline, without reaching emergency mode or a PID 1 freeze, which `follow_soft_reboot` would report. All three ran with other VMs in parallel on the same host.
+
+  Evidence, under `/home/witteshadovv/git/nails/.worktrees/research/` on the development laptop: `versions-fixes/performance-validation-failed.log` (the failed run) and `versions-fixes/performance-validation-rerun.txt` (the pass alone); `setup-phase-1b/followup/vm-full.log`, `setup-phase-1b/followup/vm-full-logs/faults-full-upper-teardown.log` and `setup-phase-1b/followup/vm-rerun.log` (the failure and the pass alone); `setup-phase-1b/vm/rerun.log` and `setup-phase-1b/vm/rerun2-durations.jsonl` (`session-emergency`, failed, then passed on a second rerun).
+
+  **Done when:** the cause is known (a job of the new userspace that never finishes, the host's load, or the backdoor itself) and either fixed or the wait gives a diagnosis instead of a bare timeout, for example by printing `systemctl list-jobs` through the serial console when the backdoor does not come.
+
