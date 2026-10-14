@@ -264,7 +264,8 @@ rehearsal state all ask it first. It refuses:
 - a root whose storage cannot be judged because `/etc/fstab`, `/etc/crypttab`
   or the block devices in sysfs cannot be read (`storage_unjudged`; run the
   command with sudo), or because its filesystem shows no disk it stores its
-  data on: an overlay, a FUSE or network filesystem, or an image file on one
+  data on: an overlay, a FUSE, network or ZFS filesystem, or an image file on
+  one that is not mounted at `/` or a system folder such as `/home`
   (`storage_unjudged`).
 
 An encrypted container file on a decoy filesystem only warns: filesystem
@@ -286,7 +287,9 @@ probe onto a covered root.
 The gate's limits: it judges the storage this computer's mount table, fstab,
 crypttab and sysfs describe. It cannot see a decoy filesystem mounted only by
 hand and never listed, storage another operating system on the same machine
-uses, or a remote block device's other users. Nor can it see the traces that
+uses, or a remote block device's other users. It does not follow a ZFS
+dataset to the disks of its pool, so it refuses a hidden root on ZFS even on
+a pool of its own. Nor can it see the traces that
 creating the volume on this computer left behind (the setup tools' own files,
 shell history, a changed partition table): only preparing the volume elsewhere
 avoids them. A refusal names the storage and says nothing was written. The

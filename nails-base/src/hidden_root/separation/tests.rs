@@ -838,6 +838,65 @@ fn a_loop_file_on_a_disk_the_decoy_does_not_use_is_separate() {
     assert_eq!(world.verdict("/mnt"), Verdict::Separate);
 }
 
+// ZFS mounts a dataset from an anonymous device (`0:NN`) under the name
+// `pool/dataset`; neither leads to the disks of its pool, so a dataset is
+// followed no further than its mount. These scenes pin that until the pool's
+// disks can be read.
+
+#[test]
+fn a_zfs_dataset_on_an_external_pool_is_refused() {
+    let verdict = plain_decoy("5 1 0:60 / /mnt rw - zfs usbpool/vault rw\n")
+        .disk("sdb", "8:16")
+        .verdict("/mnt");
+    assert_eq!(
+        verdict,
+        Verdict::UntracedStorage {
+            fstype: "zfs".into()
+        }
+    );
+    assert_eq!(verdict.severity(), Severity::Refuse);
+}
+
+#[test]
+fn a_container_on_a_zfs_dataset_outside_the_system_mounts_is_refused() {
+    // zfs-mount mounts /data, and no fstab line names it: nothing shows
+    // whether its pool is on the decoy's disk.
+    let world = plain_decoy(
+        "4 1 0:50 / /data rw - zfs tank/data rw\n\
+         5 1 254:8 / /mnt rw - ext4 /dev/mapper/veracrypt1 rw\n",
+    )
+    .loop_file("loop0", "7:0", "/data/vault.hc")
+    .crypt("dm-8", "254:8", "veracrypt1", &["loop0"]);
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::UntracedStorage {
+            fstype: "zfs".into()
+        }
+    );
+}
+
+#[test]
+fn a_container_on_a_zfs_home_follows_the_container_setting() {
+    // /home is the decoy's wherever it is mounted from.
+    let world = World::new(
+        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+         2 1 0:51 / /home rw - zfs rpool/home rw\n\
+         5 1 254:8 / /mnt rw - ext4 /dev/mapper/veracrypt1 rw\n",
+    )
+    .disk("sda", "8:0")
+    .part("sda1", "8:1", "sda")
+    .fstab("/dev/sda1 / ext4 defaults 0 1\n")
+    .loop_file("loop0", "7:0", "/home/op/vault.hc")
+    .crypt("dm-8", "254:8", "veracrypt1", &["loop0"]);
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::ContainerOnDecoy {
+            file: PathBuf::from("/home/op/vault.hc"),
+            at: PathBuf::from("/home"),
+        }
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Inputs that cannot be read
 // ---------------------------------------------------------------------------

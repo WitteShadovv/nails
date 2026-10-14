@@ -29,7 +29,7 @@ config and CLI surfaces; there are no compatibility shims.
   configuration keys listed under "Removed" from `nails.toml`: they are rejected as unknown keys.
 - The attach gate now refuses hidden roots that were accepted before: a folder (no mount point), a
   btrfs subvolume or bind of a folder of a filesystem the decoy uses, a logical volume in the
-  decoy's volume group, an image file on a decoy filesystem, and an overlay, FUSE or network
+  decoy's volume group, an image file on a decoy filesystem, and an overlay, FUSE, network or ZFS
   filesystem. Move the hidden volume to a device of its own (see "Where setup happens" in the
   operator guide). An unprivileged `check` or `status` on a distribution whose `/etc/crypttab`
   only root can read gets `storage_unjudged` and logs to stderr only; run it with `sudo`.
@@ -620,26 +620,26 @@ config and CLI surfaces; there are no compatibility shims.
 
 - Nothing is written to a hidden root that is not a volume of its own. The attach gate behind
   `init`, `activate`, the state file, its `.lock`, the log file and `rehearse` compared only the
-  root's device with `/`'s, so a plain folder on a separate `/home` or `/boot` partition, or a
-  btrfs subvolume inside the decoy's filesystem, passed, and `init` wrote the layout onto the
-  decoy's own disk. The gate now
-  needs a mount point at the root, refuses a second filesystem mounted over it (naming both), and
-  in the hidden session accepts only the volume the session started from, whose device the entry
-  records in the session plan; a disk mounted over the hidden root during the session no longer
-  receives logs, the state file, `.lock` or the backend watcher's write probe, and the watcher
-  writes nothing while the root is covered. Outside the session the gate also refuses a root that
-  lives on the decoy's own storage although it is a mount point: a subvolume or a bind of a folder
-  of a filesystem the decoy mounts (per its mount table and `/etc/fstab`), a device the decoy's
-  root, system mounts, fstab, swap or crypttab also use (such as a logical volume in its encrypted
-  volume group), or an unencrypted image file on such a filesystem. An encrypted container file
-  there is accepted with a warning that the filesystem's journal and copy-on-write snapshots can
-  keep old copies of its changed parts; a device shared only with `noauto` entries also only
+  root's device with `/`'s, so a plain folder on a separate `/home` or `/boot` partition, or a btrfs
+  subvolume inside the decoy's filesystem, passed, and `init` wrote the layout onto the decoy's own
+  disk. The gate now needs a mount point at the root, refuses a second filesystem mounted over it
+  (naming both), and in the hidden session accepts only the volume the session started from, whose
+  device the entry records in the session plan; a disk mounted over the hidden root during the
+  session no longer receives logs, the state file, `.lock` or the backend watcher's write probe, and
+  the watcher writes nothing while the root is covered. Outside the session the gate also refuses a
+  root that lives on the decoy's own storage although it is a mount point: a subvolume or a bind of
+  a folder of a filesystem the decoy mounts (per its mount table and `/etc/fstab`), a device the
+  decoy's root, system mounts, fstab, swap or crypttab also use (such as a logical volume in its
+  encrypted volume group), or an unencrypted image file on such a filesystem. An encrypted container
+  file there is accepted with a warning that the filesystem's journal and copy-on-write snapshots
+  can keep old copies of its changed parts; a device shared only with `noauto` entries also only
   warns. When `/etc/fstab` or `/etc/crypttab` exists but cannot be read, as for a user other than
   root where crypttab is readable by root only, or `/sys/class/block` cannot be listed, the gate
   refuses a root that is not a tmpfs and asks for `sudo`. A root whose filesystem shows no disk it
-  stores its data on (an overlay, FUSE, a network filesystem, or an image file on one) is refused
-  as `storage_unjudged`, and a filesystem the boot mounted for an fstab line counts as the decoy's
-  even when the line's device name does not resolve.
+  stores its data on (an overlay, FUSE, a network filesystem or a ZFS dataset, or an image file on
+  one that is not mounted at `/` or a system folder such as `/home`) is refused as
+  `storage_unjudged`, and a filesystem the boot mounted for an fstab line counts as the decoy's even
+  when the line's device name does not resolve.
 - A refused root is no longer touched before the refusal. `init` probed the target for write and
   symlink support (creating and deleting a file in it, which changed its mtime and ctime) before it
   asked the attach gate; it now asks first and probes nothing on a refused target. The
