@@ -131,19 +131,30 @@ fn a_crypttab_line_that_opens_the_volume_fails() {
 }
 
 #[test]
-fn a_tcrypt_hidden_line_fails() {
+fn a_tcrypt_hidden_line_for_the_volumes_drive_fails() {
+    let result = decoy()
+        .file(
+            "/etc/crypttab",
+            "vault /dev/sdb none tcrypt-hidden,noauto\n",
+        )
+        .run();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result.message().contains("'vault /dev/sdb'"),
+        "{}",
+        result.message()
+    );
+}
+
+#[test]
+fn a_tcrypt_hidden_line_for_another_drive_passes() {
     let result = decoy()
         .file(
             "/etc/crypttab",
             "vault /dev/sdc none tcrypt-hidden,noauto\n",
         )
         .run();
-    assert!(result.is_fail(), "{result:?}");
-    assert!(
-        result.message().contains("'vault /dev/sdc'"),
-        "{}",
-        result.message()
-    );
+    assert!(result.is_pass(), "{result:?}");
 }
 
 #[test]

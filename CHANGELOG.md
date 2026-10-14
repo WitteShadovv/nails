@@ -309,9 +309,10 @@ config and CLI surfaces; there are no compatibility shims.
   residue baseline are written onto an accepted root.
 - A new blocking pre-flight check, `backend-entries`, refuses activation while the decoy's
   `/etc/crypttab` or `/etc/fstab` holds a line that opens or mounts the hidden volume or a device it
-  is stored on, or a crypttab line with `tcrypt-hidden`; a line that opens only another volume on
-  the same drive warns. An unreadable crypttab fails it. `activate --no-preflight` runs it on its
-  own and shows its warning with the activation's other warnings.
+  is stored on, or a crypttab line with `tcrypt-hidden` for a device on the hidden volume's drive or
+  one that cannot be found; a line that opens only another volume on the same drive warns. An
+  unreadable crypttab fails it. `activate --no-preflight` runs it on its own and shows its warning
+  with the activation's other warnings.
 - The library is split into crates along the session's boundaries (ADR 0010): `nails-base`,
   `nails-platform`, `nails-session` and `nails-forensics` below `nails-core`, which re-exports them.
   Tests pin the crate graph and keep verification read-only. No user-visible change.

@@ -690,7 +690,7 @@ fn entry_kinds(judgement: &Judgement) -> Vec<(EntryKind, &'static str)> {
 }
 
 #[test]
-fn a_tcrypt_hidden_line_blocks() {
+fn a_tcrypt_hidden_line_for_the_hidden_drive_blocks() {
     let judgement = external_veracrypt()
         .crypttab("vault /dev/sdb none tcrypt-hidden\n")
         .judge("/mnt");
@@ -700,6 +700,45 @@ fn a_tcrypt_hidden_line_blocks() {
         vec![(EntryKind::Blocking, CRYPTTAB)]
     );
     assert_eq!(judgement.entries[0].line, "vault /dev/sdb");
+}
+
+#[test]
+fn a_tcrypt_hidden_line_for_a_device_that_cannot_be_found_blocks() {
+    let judgement = external_veracrypt()
+        .crypttab("vault UUID=absent none tcrypt-hidden\n")
+        .judge("/mnt");
+    assert_eq!(
+        entry_kinds(&judgement),
+        vec![(EntryKind::Blocking, CRYPTTAB)]
+    );
+}
+
+#[test]
+fn a_tcrypt_hidden_line_for_another_partition_of_the_hidden_drive_blocks() {
+    let judgement = plain_decoy("5 1 254:9 / /mnt rw - ext4 /dev/mapper/veracrypt1 rw\n")
+        .disk("sdb", "8:16")
+        .part("sdb1", "8:17", "sdb")
+        .part("sdb2", "8:18", "sdb")
+        .crypt("dm-9", "254:9", "veracrypt1", &["sdb2"])
+        .crypttab("other /dev/sdb1 none tcrypt-hidden,noauto\n")
+        .judge("/mnt");
+    assert_eq!(
+        entry_kinds(&judgement),
+        vec![(EntryKind::Blocking, CRYPTTAB)]
+    );
+}
+
+#[test]
+fn a_tcrypt_hidden_line_for_another_drive_is_no_entry_for_this_one() {
+    // The decoy opens the hidden volume of a container on sdc at boot: that
+    // drive is the decoy's storage, and the hidden root on sdb shares none of
+    // it.
+    let judgement = external_veracrypt()
+        .disk("sdc", "8:32")
+        .crypttab("vault /dev/sdc none tcrypt-hidden,noauto\n")
+        .judge("/mnt");
+    assert_eq!(judgement.verdict, Verdict::Separate);
+    assert!(judgement.entries.is_empty(), "{:?}", judgement.entries);
 }
 
 #[test]

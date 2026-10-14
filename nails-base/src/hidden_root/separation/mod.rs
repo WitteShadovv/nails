@@ -19,8 +19,10 @@
 //!   `/boot/efi`, `/nix` and `/opt` that are not at or under the hidden root.
 //!
 //! An fstab or crypttab entry that resolves into the hidden mount's own device
-//! stack, names one of its mappings or carries `tcrypt-hidden` is an entry for
-//! the hidden drive, reported as an [`EntryFinding`]. Such an entry is an
+//! stack or names one of its mappings is an entry for the hidden drive,
+//! reported as an [`EntryFinding`]; so is a crypttab entry with
+//! `tcrypt-hidden` for a device on the hidden drive or one that cannot be
+//! found. Such an entry is an
 //! enabler stored on the decoy; the attach gate ignores the finding (writing to
 //! the root stays safe) and the `backend-entries` check reports it. It is no
 //! claim, except an fstab entry the boot mounts or swaps on: that device is the

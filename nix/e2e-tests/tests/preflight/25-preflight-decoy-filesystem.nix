@@ -24,9 +24,10 @@
 #   9. a tmpfs mounted over that volume is refused with root_covered, and
 #      neither the tmpfs nor the volume below receives anything;
 #  10. a decoy crypttab line that opens the data disk, then one with
-#      tcrypt-hidden, fails the backend-entries check (exit 4), and so does
-#      `activate --no-preflight`; a line for another device passes; a decoy
-#      fstab line for the data disk or its mapping fails it too.
+#      tcrypt-hidden for it or for a device that cannot be found, fails the
+#      backend-entries check (exit 4), and so does `activate --no-preflight`;
+#      a line for another device passes, tcrypt-hidden or not; a decoy fstab
+#      line for the data disk or its mapping fails it too.
 #
 # Every refused target keeps its mtime and ctime: no probe file was created
 # and deleted in it.
@@ -320,7 +321,8 @@ in
     with subtest("a decoy crypttab entry for the volume fails backend-entries"):
         for line in [
             "data /dev/disk/by-id/virtio-data none luks,noauto",
-            "vault /dev/disk/by-id/virtio-srv none tcrypt-hidden,noauto",
+            "vault /dev/disk/by-id/virtio-data none tcrypt-hidden,noauto",
+            "vault /dev/disk/by-id/virtio-absent none tcrypt-hidden,noauto",
         ]:
             write_text_file("/etc/crypttab", line + "\n")
             result = run_command_capture(
@@ -337,14 +339,16 @@ in
         )
         assert_exit_code(result, 4)
         assert '"backend-entries"' in result["stdout"], result
-        write_text_file(
-            "/etc/crypttab", "backup /dev/disk/by-id/virtio-pool none luks,noauto\n"
-        )
-        result = run_command_capture(
-            "gate-entries-other", f"nails --config {data_config} --json check --overlay-only"
-        )
-        row = check_row(last_json(result), "backend-entries")
-        assert row["status"] == "pass", row
+        for line in [
+            "backup /dev/disk/by-id/virtio-pool none luks,noauto",
+            "vault /dev/disk/by-id/virtio-pool none tcrypt-hidden,noauto",
+        ]:
+            write_text_file("/etc/crypttab", line + "\n")
+            result = run_command_capture(
+                "gate-entries-other", f"nails --config {data_config} --json check --overlay-only"
+            )
+            row = check_row(last_json(result), "backend-entries")
+            assert row["status"] == "pass", row
         machine.succeed("rm -f /etc/crypttab")
 
     with subtest("a decoy fstab entry for the volume fails backend-entries"):

@@ -231,10 +231,11 @@ How the code upholds this:
   bootloader is involved.
 - **No decoy entry opens the hidden volume.** A line in the decoy's
   `/etc/crypttab` or `/etc/fstab` that opens or mounts the hidden volume (or a
-  device it is stored on), or carries `tcrypt-hidden`, is such an enabler: the
-  `backend-entries` pre-flight check refuses activation while one exists, and
-  no flag overrides it: `activate --no-preflight` still runs it on its own. A
-  line that opens only another volume on the same drive warns.
+  device it is stored on), or carries `tcrypt-hidden` for a device on its drive
+  or one that cannot be found, is such an enabler: the `backend-entries`
+  pre-flight check refuses activation while one exists, and no flag overrides
+  it: `activate --no-preflight` still runs it on its own. A line that opens only
+  another volume on the same drive warns.
 
 This invariant is checked by the end-to-end tests `uefi-esp-nvram-invariant`
 and `soft-reboot-mechanics`: they hash the ESP file listing and capture the EFI

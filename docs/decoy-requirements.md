@@ -289,14 +289,15 @@ entry; the hidden backend never should. Open it by hand each time.
 
 The `backend-entries` pre-flight check enforces this for the mounted hidden
 volume: `nails check` and activation fail while a crypttab line opens it or a
-device it is stored on, while a crypttab line carries `tcrypt-hidden`, or while
-an fstab line mounts it or a device below it, `noauto` lines included. A
-crypttab line that opens only another volume on the same drive (a VeraCrypt
-outer volume on another partition) warns. Remove such a line long before the
-next use, since the decoy's configuration history can keep it. If the check
-cannot read `/etc/crypttab` (some distributions make it readable by root only),
-it fails and asks you to run the command with sudo. `--allow-decoy-storage` does
-not cover it, and `activate --no-preflight` runs it on its own.
+device it is stored on, while a crypttab line with `tcrypt-hidden` opens a
+device on the hidden volume's drive or one that cannot be found, or while an
+fstab line mounts it or a device below it, `noauto` lines included. A crypttab
+line that opens only another volume on the same drive (a VeraCrypt outer volume
+on another partition) warns. Remove such a line long before the next use, since
+the decoy's configuration history can keep it. If the check cannot read
+`/etc/crypttab` (some distributions make it readable by root only), it fails and
+asks you to run the command with sudo. `--allow-decoy-storage` does not cover
+it, and `activate --no-preflight` runs it on its own.
 
 ### Encryption headers, high-entropy space and containers
 

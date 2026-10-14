@@ -316,7 +316,13 @@ fn claims(
         let source = devices.node_of_spec(&entry.source);
         let mapping = devices.node_of_spec(&format!("/dev/mapper/{}", entry.name));
         let in_stack = |n: &Option<&str>| n.is_some_and(|n| stack.iter().any(|s| s == n));
-        if entry.is_tcrypt_hidden() {
+        // A line that opens the hidden volume of a container blocks when the
+        // container is on the hidden drive, or when its device cannot be
+        // found, so nothing shows it is not; one for another drive is that
+        // drive's business, and claims it like any other line.
+        if entry.is_tcrypt_hidden()
+            && source.is_none_or(|s| stack.iter().any(|n| n == s) || same_drive(devices, s, stack))
+        {
             entries.push(blocking(
                 CRYPTTAB,
                 line,
