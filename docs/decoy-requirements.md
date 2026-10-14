@@ -120,10 +120,16 @@ logind does not govern.
 
 For defence in depth, set `sleep_policy.mode` in `nails.toml`. `block` holds a
 sleep/idle inhibitor for the life of the session so the host cannot suspend while
-active; `teardown` holds a sleep *delay* inhibitor and powers the machine off
-when the host is about to sleep, within logind's `InhibitDelayMaxSec` window
-(default 5s). Both run as runtime units of the hidden session. The inhibitor is a runtime backstop — still fix the lid
-switch above, since a blocked suspend with the lid shut can overheat a laptop.
+active. logind ignores sleep inhibitors for the lid switch by default
+(`LidSwitchIgnoreInhibited=yes`), so when a closed lid would sleep, `block` also
+takes the lid switch from logind (a `handle-lid-switch` inhibitor): the closed lid
+then does nothing, and does not lock the screen either. `teardown` holds a sleep
+*delay* inhibitor, which logind honours for the lid too, and powers the machine
+off when the host is about to sleep, within logind's `InhibitDelayMaxSec` window
+(default 5s). Both run as runtime units of the hidden session. The inhibitors are
+a runtime backstop — still set the lid switch to `lock` above, since a laptop kept
+running with the lid shut can overheat and `block` leaves a lid that locks to
+logind.
 
 ## Satisfying the requirements per platform
 

@@ -127,12 +127,14 @@ pub enum SleepPolicyMode {
     #[default]
     Warn,
     /// Hold a sleep/idle *block* inhibitor for the life of the session so the
-    /// host cannot suspend or idle-sleep while the hidden environment is up. The
-    /// inhibitor is released at deactivation.
+    /// host cannot suspend or idle-sleep while the hidden environment is up,
+    /// and, when a closed lid would sleep, a `handle-lid-switch` block
+    /// inhibitor, because logind ignores sleep inhibitors for the lid by
+    /// default. The inhibitors are released at deactivation.
     Block,
     /// Hold a sleep *delay* inhibitor and, when the host is about to sleep, run
     /// the emergency (a power-off) inside logind's delay window before
-    /// releasing the inhibitor and letting the sleep proceed. Bounded by
+    /// releasing the inhibitor. Bounded by
     /// `InhibitDelayMaxSec` (logind default 5s), so it reuses the fast emergency
     /// path rather than a full deactivation.
     Teardown,
@@ -268,9 +270,10 @@ pub struct Config {
     /// What to do about system sleep (suspend/hibernate) while active.
     ///
     /// Suspending an active session leaves the hidden environment resident in RAM
-    /// behind the decoy lock screen. Warn-only by default; `block` holds a sleep
-    /// inhibitor for the session and `teardown` runs the bounded emergency
-    /// teardown when the host is about to sleep. See [`SleepPolicyConfig`].
+    /// behind the decoy lock screen. Warn-only by default; `block` holds sleep,
+    /// idle and lid-switch inhibitors for the session and `teardown` powers off
+    /// through the bounded emergency teardown when the host is about to sleep.
+    /// See [`SleepPolicyConfig`].
     #[serde(default)]
     pub sleep_policy: SleepPolicyConfig,
 

@@ -94,6 +94,20 @@ impl LogindSleepSettings {
     pub fn effective_idle_action(&self) -> &str {
         self.idle_action.as_deref().unwrap_or("ignore")
     }
+
+    /// Whether a closed lid sends the machine to sleep in any of the three
+    /// cases logind tells apart (on battery, on external power, docked or
+    /// with an external display). The sleep guard's `block` mode then takes
+    /// the lid switch from logind.
+    pub fn lid_switch_sleeps(&self) -> bool {
+        [
+            self.effective_lid_switch(),
+            self.effective_lid_switch_external_power(),
+            self.effective_lid_switch_docked(),
+        ]
+        .into_iter()
+        .any(action_sleeps)
+    }
 }
 
 /// Whether a logind `Handle*`/`IdleAction` value sends the machine to sleep.
@@ -238,11 +252,17 @@ impl<F: Filesystem> PreFlightCheck<F> for SleepPolicyCheck {
                  switch to ignore/lock (see docs/decoy-requirements.md), or set \
                  sleep_policy.mode = \"block\" or \"teardown\" in nails.toml."
             ),
+            SleepPolicyMode::Block if settings.lid_switch_sleeps() => format!(
+                "the host would suspend an active session: {findings}. sleep_policy.mode = \
+                 \"block\" holds sleep and idle inhibitors and takes the lid switch from logind \
+                 for the session, so the host stays awake while it is active, but a closed lid \
+                 then does nothing, not even lock the screen. Set the logind lid switch to lock \
+                 (see docs/decoy-requirements.md)."
+            ),
             SleepPolicyMode::Block => format!(
                 "the host would suspend an active session: {findings}. sleep_policy.mode = \
-                 \"block\" holds a sleep inhibitor for the session, so this is prevented while \
-                 active; the inhibitor is best-effort, so also set the logind lid switch to \
-                 ignore/lock (see docs/decoy-requirements.md)."
+                 \"block\" holds sleep and idle inhibitors for the session, so the host stays \
+                 awake while it is active."
             ),
             SleepPolicyMode::Teardown => format!(
                 "the host would suspend an active session: {findings}. sleep_policy.mode = \
@@ -314,6 +334,24 @@ mod tests {
         assert_eq!(settings.effective_lid_switch_external_power(), "suspend");
         assert_eq!(settings.effective_lid_switch_docked(), "ignore");
         assert_eq!(settings.effective_idle_action(), "ignore");
+    }
+
+    #[test]
+    fn the_lid_switch_sleeps_when_any_of_its_three_cases_does() {
+        assert!(LogindSleepSettings::default().lid_switch_sleeps());
+        let mut settings = LogindSleepSettings::default();
+        parse_logind_sleep(
+            "[Login]\nHandleLidSwitch=lock\nHandleLidSwitchExternalPower=ignore\n",
+            &mut settings,
+        );
+        assert!(!settings.lid_switch_sleeps(), "{settings:?}");
+        parse_logind_sleep("[Login]\nHandleLidSwitchDocked=suspend\n", &mut settings);
+        assert!(settings.lid_switch_sleeps(), "{settings:?}");
+        parse_logind_sleep(
+            "[Login]\nHandleLidSwitchDocked=poweroff\nIdleAction=suspend\n",
+            &mut settings,
+        );
+        assert!(!settings.lid_switch_sleeps(), "idle is not the lid");
     }
 
     #[test]
@@ -439,12 +477,38 @@ mod tests {
     }
 
     #[test]
-    fn block_mode_notes_the_inhibitor() {
+    fn block_mode_notes_the_inhibitors_and_what_a_closed_lid_then_does() {
         let fs = MockFilesystem::new();
         let check = SleepPolicyCheck::new(SleepPolicyMode::Block);
         let result = check.run(&fs).unwrap();
         assert!(result.is_warn());
-        assert!(result.message().contains("holds a sleep inhibitor"));
+        let message = result.message();
+        assert!(
+            message.contains("holds sleep and idle inhibitors"),
+            "{message}"
+        );
+        assert!(
+            message.contains("takes the lid switch from logind"),
+            "{message}"
+        );
+        assert!(message.contains("not even lock the screen"), "{message}");
+
+        // A lid that only locks stays with logind: the warning is about idle.
+        fs.mock_add_file(
+            MAIN,
+            "[Login]\nHandleLidSwitch=lock\nHandleLidSwitchExternalPower=lock\n\
+             IdleAction=suspend\n",
+        );
+        let message = check.run(&fs).unwrap().message().to_string();
+        assert!(
+            message.contains("idle inactivity suspends the host"),
+            "{message}"
+        );
+        assert!(
+            message.contains("holds sleep and idle inhibitors"),
+            "{message}"
+        );
+        assert!(!message.contains("lid switch from logind"), "{message}");
     }
 
     #[test]

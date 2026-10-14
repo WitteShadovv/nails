@@ -287,8 +287,9 @@ config and CLI surfaces; there are no compatibility shims.
   weekly mutation-testing job.
 - A `[sleep_policy]` configuration table (`warn` by default, `block` or `teardown`) with a
   `sleep-policy` pre-flight check that warns when logind would suspend an active session, and a
-  session sleep guard that holds a logind inhibitor (`block`) or runs the bounded emergency
-  teardown on `PrepareForSleep` (`teardown`).
+  session sleep guard: `block` holds sleep and idle block inhibitors, and the lid switch's when a
+  closed lid would sleep; `teardown` holds a sleep delay inhibitor and powers off through the
+  bounded emergency on `PrepareForSleep`. VM test `session-sleep-guard`.
 - A long NixOS build or switch now shows its most recent output line in the progress heartbeat, not
   just the elapsed time.
 - `nails status` (human and `--json`) now reports when the decoy keeps a persistent log/audit store

@@ -20,7 +20,7 @@ type InhibitCall = [String; 4];
 struct FakeLogind {
     calls: Arc<Mutex<Vec<InhibitCall>>>,
     kept: Arc<Mutex<Vec<UnixStream>>>,
-    refuse: bool,
+    refuse: fn(&str) -> bool,
 }
 
 #[zbus::interface(name = "org.freedesktop.login1.Manager")]
@@ -32,8 +32,9 @@ impl FakeLogind {
         why: String,
         mode: String,
     ) -> zbus::fdo::Result<zbus::zvariant::OwnedFd> {
+        let refused = (self.refuse)(&what);
         self.calls.lock().unwrap().push([what, who, why, mode]);
-        if self.refuse {
+        if refused {
             return Err(zbus::fdo::Error::AccessDenied("not allowed".into()));
         }
         let (ours, theirs) = UnixStream::pair().unwrap();
@@ -54,9 +55,10 @@ struct FakeSystemBus {
 }
 
 impl FakeSystemBus {
-    /// Start the bus and claim logind's name on it. Ends the (re-executed)
+    /// Start the bus and claim logind's name on it; the fake refuses each
+    /// `Inhibit` call whose `what` `refuse` picks. Ends the (re-executed)
     /// test as a host skip when `dbus-daemon` is not installed.
-    fn start(refuse: bool) -> Self {
+    fn start(refuse: fn(&str) -> bool) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let socket = dir.path().join("bus");
         let config = dir.path().join("bus.conf");
@@ -128,20 +130,32 @@ impl FakeSystemBus {
 
     /// Wait for the guard's first `Inhibit` call and return it.
     fn await_inhibit(&self) -> InhibitCall {
+        self.await_inhibits(1).remove(0)
+    }
+
+    /// Wait for the guard's first `count` `Inhibit` calls and return them.
+    fn await_inhibits(&self, count: usize) -> Vec<InhibitCall> {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
-            if let Some(call) = self.calls.lock().unwrap().first() {
-                return call.clone();
+            let calls = self.calls.lock().unwrap();
+            if calls.len() >= count {
+                return calls[..count].to_vec();
             }
+            drop(calls);
             assert!(Instant::now() < deadline, "the guard never called Inhibit");
             std::thread::sleep(Duration::from_millis(5));
         }
     }
 
-    /// Whether the guard still holds the inhibitor fd it was handed.
+    /// Whether the guard still holds the first inhibitor fd it was handed.
     fn inhibitor_held(&self) -> bool {
+        self.inhibitor_held_at(0)
+    }
+
+    /// Whether the guard still holds the `index`th inhibitor fd it was handed.
+    fn inhibitor_held_at(&self, index: usize) -> bool {
         let mut kept = self.kept.lock().unwrap();
-        let end = kept.first_mut().expect("an inhibitor was handed out");
+        let end = kept.get_mut(index).expect("an inhibitor was handed out");
         match end.read(&mut [0u8; 1]) {
             Ok(0) => false,
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => true,
@@ -174,11 +188,14 @@ impl Drop for FakeSystemBus {
 
 /// Run the guard on a thread; its result arrives on the returned channel
 /// and each run of the teardown callback on the second one.
-fn spawn_guard(mode: SleepPolicyMode) -> (mpsc::Receiver<Result<()>>, mpsc::Receiver<()>) {
+fn spawn_guard(
+    mode: SleepPolicyMode,
+    lid: LidSwitch,
+) -> (mpsc::Receiver<Result<()>>, mpsc::Receiver<()>) {
     let (result_tx, result_rx) = mpsc::channel();
     let (teardown_tx, teardown_rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let result = run_guard(mode, move || teardown_tx.send(()).unwrap());
+        let result = run_guard(mode, lid, move || teardown_tx.send(()).unwrap());
         let _ = result_tx.send(result);
     });
     (result_rx, teardown_rx)
@@ -246,7 +263,7 @@ fn inhibitor_strings_reveal_nothing() {
 #[test]
 fn warn_mode_is_a_noop_and_never_runs_the_callback() {
     let mut called = false;
-    run_guard(SleepPolicyMode::Warn, || called = true).unwrap();
+    run_guard(SleepPolicyMode::Warn, LidSwitch::Take, || called = true).unwrap();
     assert!(!called, "warn mode must not run the teardown callback");
 }
 
@@ -266,7 +283,7 @@ fn an_unreachable_system_bus_fails_both_guarding_modes() {
 
         for mode in [SleepPolicyMode::Block, SleepPolicyMode::Teardown] {
             let mut called = false;
-            let message = bus_error(run_guard(mode, || called = true));
+            let message = bus_error(run_guard(mode, LidSwitch::Take, || called = true));
             assert!(
                 message.starts_with("could not connect to the system D-Bus"),
                 "{message}"
@@ -277,24 +294,72 @@ fn an_unreachable_system_bus_fails_both_guarding_modes() {
 }
 
 #[test]
-fn block_mode_holds_a_neutral_sleep_and_idle_block_inhibitor() {
+fn block_mode_holds_neutral_sleep_idle_and_lid_switch_block_inhibitors() {
     let _ = Rerun::new(nails_base::test_path!(
-        block_mode_holds_a_neutral_sleep_and_idle_block_inhibitor
+        block_mode_holds_neutral_sleep_idle_and_lid_switch_block_inhibitors
     ))
     .run(|| {
-        let bus = FakeSystemBus::start(false);
-        let (result, _teardown) = spawn_guard(SleepPolicyMode::Block);
+        let bus = FakeSystemBus::start(|_| false);
+        let (result, _teardown) = spawn_guard(SleepPolicyMode::Block, LidSwitch::Take);
 
         assert_eq!(
-            bus.await_inhibit(),
-            ["sleep:idle", INHIBITOR_WHO, INHIBITOR_WHY_BLOCK, "block"].map(String::from)
+            bus.await_inhibits(2),
+            [
+                ["sleep:idle", INHIBITOR_WHO, INHIBITOR_WHY_BLOCK, "block"].map(String::from),
+                [
+                    "handle-lid-switch",
+                    INHIBITOR_WHO,
+                    INHIBITOR_WHY_BLOCK,
+                    "block"
+                ]
+                .map(String::from),
+            ]
         );
-        // The guard parks holding the inhibitor; it never returns on its own.
+        // The guard parks holding both; it never returns on its own.
         assert!(
             result.recv_timeout(Duration::from_millis(200)).is_err(),
             "block mode must not return while the session runs"
         );
+        assert!(bus.inhibitor_held_at(0));
+        assert!(bus.inhibitor_held_at(1));
+    });
+}
+
+#[test]
+fn block_mode_leaves_a_lid_switch_that_does_not_sleep_to_logind() {
+    let _ = Rerun::new(nails_base::test_path!(
+        block_mode_leaves_a_lid_switch_that_does_not_sleep_to_logind
+    ))
+    .run(|| {
+        let log = capture_log();
+        let bus = FakeSystemBus::start(|_| false);
+        let (result, _teardown) = spawn_guard(SleepPolicyMode::Block, LidSwitch::Leave);
+
+        await_log(&log, "Holding a sleep/idle block inhibitor");
+        assert!(result.recv_timeout(Duration::from_millis(200)).is_err());
+        assert_eq!(
+            *bus.calls.lock().unwrap(),
+            [["sleep:idle", INHIBITOR_WHO, INHIBITOR_WHY_BLOCK, "block"].map(String::from)]
+        );
         assert!(bus.inhibitor_held());
+    });
+}
+
+#[test]
+fn a_refused_lid_switch_inhibitor_still_blocks_sleep() {
+    let _ = Rerun::new(nails_base::test_path!(
+        a_refused_lid_switch_inhibitor_still_blocks_sleep
+    ))
+    .run(|| {
+        let log = capture_log();
+        let bus = FakeSystemBus::start(|what| what == "handle-lid-switch");
+        let (result, _teardown) = spawn_guard(SleepPolicyMode::Block, LidSwitch::Take);
+
+        await_log(&log, "Closing the lid can still suspend the session");
+        await_log(&log, "Holding a sleep/idle block inhibitor");
+        assert!(result.recv_timeout(Duration::from_millis(200)).is_err());
+        assert_eq!(bus.await_inhibits(2)[1][0], "handle-lid-switch");
+        assert!(bus.inhibitor_held(), "the sleep/idle inhibitor stays held");
     });
 }
 
@@ -304,8 +369,8 @@ fn teardown_mode_runs_the_teardown_on_sleep_then_releases_the_inhibitor() {
         teardown_mode_runs_the_teardown_on_sleep_then_releases_the_inhibitor
     ))
     .run(|| {
-        let bus = FakeSystemBus::start(false);
-        let (result, teardown) = spawn_guard(SleepPolicyMode::Teardown);
+        let bus = FakeSystemBus::start(|_| false);
+        let (result, teardown) = spawn_guard(SleepPolicyMode::Teardown, LidSwitch::Take);
 
         assert_eq!(
             bus.await_inhibit(),
@@ -339,8 +404,8 @@ fn teardown_mode_exits_without_a_teardown_when_the_bus_goes_away() {
     ))
     .run(|| {
         let log = capture_log();
-        let mut bus = FakeSystemBus::start(false);
-        let (result, teardown) = spawn_guard(SleepPolicyMode::Teardown);
+        let mut bus = FakeSystemBus::start(|_| false);
+        let (result, teardown) = spawn_guard(SleepPolicyMode::Teardown, LidSwitch::Take);
         // The fake records the call before its reply leaves: wait until the
         // guard holds the fd, or the kill would fail the Inhibit call instead.
         await_log(&log, "Holding a sleep delay inhibitor");
@@ -362,8 +427,8 @@ fn a_malformed_prepare_for_sleep_signal_is_an_error() {
         a_malformed_prepare_for_sleep_signal_is_an_error
     ))
     .run(|| {
-        let bus = FakeSystemBus::start(false);
-        let (result, teardown) = spawn_guard(SleepPolicyMode::Teardown);
+        let bus = FakeSystemBus::start(|_| false);
+        let (result, teardown) = spawn_guard(SleepPolicyMode::Teardown, LidSwitch::Take);
         bus.await_inhibit();
 
         bus.prepare_for_sleep(&("soon",));
@@ -387,9 +452,9 @@ fn a_refused_inhibitor_fails_both_guarding_modes() {
         a_refused_inhibitor_fails_both_guarding_modes
     ))
     .run(|| {
-        let _bus = FakeSystemBus::start(true);
+        let _bus = FakeSystemBus::start(|_| true);
 
-        let message = bus_error(run_guard(SleepPolicyMode::Block, || {}));
+        let message = bus_error(run_guard(SleepPolicyMode::Block, LidSwitch::Take, || {}));
         assert!(
             message.starts_with("logind Inhibit (block) failed"),
             "{message}"
@@ -397,7 +462,11 @@ fn a_refused_inhibitor_fails_both_guarding_modes() {
         assert!(message.contains("not allowed"), "{message}");
 
         let mut called = false;
-        let message = bus_error(run_guard(SleepPolicyMode::Teardown, || called = true));
+        let message = bus_error(run_guard(
+            SleepPolicyMode::Teardown,
+            LidSwitch::Take,
+            || called = true,
+        ));
         assert!(
             message.starts_with("logind Inhibit (delay) failed"),
             "{message}"

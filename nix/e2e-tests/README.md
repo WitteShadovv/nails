@@ -457,6 +457,11 @@ soft-reboots with `py/nails_e2e/session.py`:
   disk hot-plugged during the session made read-only by the udev rule alone,
   every write failing, and both disks writable again and unchanged after the
   way back;
+- `session-sleep-guard`: each `sleep_policy.mode` against a virtual lid switch
+  that logind watches like a laptop's: with `warn` a closed lid suspends the
+  session, with `block` the guard holds sleep, idle and lid-switch inhibitors
+  and a closed lid does not, and with `teardown` a closed lid powers the
+  machine off before the suspend runs;
 - `soft-reboot-mechanics`: the mechanism itself, described above.
 
 ## Adding a fixture

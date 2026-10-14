@@ -7,32 +7,44 @@
 //! `teardown`, the entry installs this guard as one of the hidden session's
 //! runtime units ([`crate::session::units`]), run from the RAM-backed copy of
 //! the binary like the backend watcher. The guard
-//! takes a logind inhibitor over the system D-Bus and holds it for the life of the
-//! session:
+//! takes logind inhibitors over the system D-Bus and holds them for the life of
+//! the session:
 //!
-//! * **block** — a `sleep:idle` *block* inhibitor. logind refuses to suspend or
-//!   idle-sleep while it is held, so a closed lid or an idle timeout cannot strand
-//!   the hidden session resident in RAM. The inhibitor is released when the unit
-//!   is stopped at the way back (the process exits and the kernel drops the fd).
-//! * **teardown** — a `sleep` *delay* inhibitor. logind lets the sleep begin but
-//!   blocks it for up to `InhibitDelayMaxSec` (default 5s) after emitting
-//!   `PrepareForSleep(true)`. In that window the guard runs the bounded emergency
-//!   teardown, then releases the inhibitor so the sleep proceeds — the machine
-//!   sleeps with the hidden session already torn down.
+//! * **block** — a `sleep:idle` *block* inhibitor, so logind refuses a suspend
+//!   that is asked for (a sleep key, a desktop's or a user's `Suspend` call) or
+//!   that an idle timeout starts. That alone does not cover the lid:
+//!   logind ignores sleep inhibitors for the lid switch unless
+//!   `LidSwitchIgnoreInhibited=no`, and the default is `yes`. So when the
+//!   session's logind would sleep on a closed lid ([`LidSwitch::Take`]), the
+//!   guard also takes a `handle-lid-switch` *block* inhibitor, which logind
+//!   always honours: it then takes no action at all on a closed lid, neither
+//!   the suspend nor a lock. When the lid action does not sleep (`lock`,
+//!   `ignore`, `poweroff`), the guard leaves the lid to logind
+//!   ([`LidSwitch::Leave`]) so that action still happens. Both inhibitors are
+//!   released together when the unit is stopped at the way back (the process
+//!   exits and the kernel closes the fds).
+//! * **teardown** — a `sleep` *delay* inhibitor. logind honours delay
+//!   inhibitors for every sleep, the lid switch's included: it emits
+//!   `PrepareForSleep(true)` and holds the sleep back for up to
+//!   `InhibitDelayMaxSec` (default 5s) while the inhibitor is held. In that
+//!   window the guard runs the callback it is given, then releases the
+//!   inhibitor. The `sleep-guard` command passes a teardown that powers the
+//!   machine off, so the machine powers off instead of sleeping.
 //!
 //! # Threat model
 //!
-//! The unit name and the inhibitor's `who`/`why` strings are neutral: they appear
+//! The unit name and the inhibitors' `who`/`why` strings are neutral: they appear
 //! in `systemd-inhibit --list`, `systemctl` and the journal, so they must reveal
 //! nothing about a hidden environment. Everything runs from the `/run` copy, so no
 //! artifact is written to the decoy disk.
 //!
 //! # Testability
 //!
-//! The D-Bus paths need a live logind on the system bus and cannot run in the
-//! unit-test sandbox (the bus socket is unavailable); they are exercised by the
-//! end-to-end VM suite. Only [`run_guard`] with [`SleepPolicyMode::Warn`] (a
-//! no-op) and the neutral-name invariant are checked here.
+//! The unit tests run the guard against a fake logind on a private bus: the
+//! inhibitors each mode takes, their release and the `PrepareForSleep`
+//! handling. What logind then does on a closed lid is checked by the NixOS VM
+//! test `session-sleep-guard`, which closes a virtual lid in a hidden session
+//! in each mode.
 
 use crate::config::SleepPolicyMode;
 use crate::{NailsError, Result};
@@ -66,20 +78,35 @@ fn dbus_error<E: std::fmt::Display>(context: &str, error: E) -> NailsError {
     )
 }
 
+/// Whether `block` also takes logind's handling of the lid switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LidSwitch {
+    /// The lid action would sleep: take a `handle-lid-switch` block inhibitor,
+    /// so logind does nothing on a closed lid.
+    Take,
+    /// The lid action does not sleep: leave it to logind.
+    Leave,
+}
+
 /// Run the sleep guard for the configured mode.
 ///
-/// Blocks for the life of the session: `block` parks holding the inhibitor until
-/// the process is stopped; `teardown` waits for the first `PrepareForSleep(true)`,
-/// runs `on_prepare_for_sleep` (the bounded emergency teardown), releases the
-/// inhibitor and returns. `warn` is a no-op. The `on_prepare_for_sleep` callback
-/// is only invoked in `teardown` mode.
-pub fn run_guard<F: FnOnce()>(mode: SleepPolicyMode, on_prepare_for_sleep: F) -> Result<()> {
+/// Blocks for the life of the session: `block` parks holding its inhibitors
+/// (the lid switch's too when `lid` is [`LidSwitch::Take`]) until the process
+/// is stopped; `teardown` waits for the first `PrepareForSleep(true)`, runs
+/// `on_prepare_for_sleep`, releases the inhibitor and returns. `warn` is a
+/// no-op. The `on_prepare_for_sleep` callback is only invoked in `teardown`
+/// mode, and `lid` only counts in `block` mode.
+pub fn run_guard<F: FnOnce()>(
+    mode: SleepPolicyMode,
+    lid: LidSwitch,
+    on_prepare_for_sleep: F,
+) -> Result<()> {
     match mode {
         SleepPolicyMode::Warn => {
             tracing::debug!("Sleep policy is warn-only; the guard has nothing to do");
             Ok(())
         }
-        SleepPolicyMode::Block => hold_block_inhibitor(),
+        SleepPolicyMode::Block => hold_block_inhibitors(lid),
         SleepPolicyMode::Teardown => wait_for_sleep_then(on_prepare_for_sleep),
     }
 }
@@ -90,28 +117,54 @@ fn logind_proxy(conn: &zbus::blocking::Connection) -> Result<zbus::blocking::Pro
         .map_err(|e| dbus_error("could not open the logind D-Bus proxy", e))
 }
 
-/// Take a sleep/idle *block* inhibitor and hold it until the process is stopped.
-fn hold_block_inhibitor() -> Result<()> {
+/// Take the sleep/idle *block* inhibitor, and the lid switch's when `lid` says
+/// so, and hold them until the process is stopped.
+fn hold_block_inhibitors(lid: LidSwitch) -> Result<()> {
     let conn = zbus::blocking::Connection::system()
         .map_err(|e| dbus_error("could not connect to the system D-Bus", e))?;
     let proxy = logind_proxy(&conn)?;
 
-    // The returned fd must stay open for the inhibitor to hold; it is released
-    // when the process exits (unit stopped at deactivation).
-    let _fd: zbus::zvariant::OwnedFd = proxy
+    // The returned fds must stay open for the inhibitors to hold; they are
+    // released together when the process exits (unit stopped at deactivation).
+    let _sleep: zbus::zvariant::OwnedFd = proxy
         .call(
             "Inhibit",
             &("sleep:idle", INHIBITOR_WHO, INHIBITOR_WHY_BLOCK, "block"),
         )
         .map_err(|e| dbus_error("logind Inhibit (block) failed", e))?;
 
+    // logind ignores the sleep inhibitor above for a closed lid by default
+    // (LidSwitchIgnoreInhibited=yes), but always honours this one.
+    let lid_fd: Option<zbus::zvariant::OwnedFd> = match lid {
+        LidSwitch::Leave => None,
+        LidSwitch::Take => match proxy.call(
+            "Inhibit",
+            &(
+                "handle-lid-switch",
+                INHIBITOR_WHO,
+                INHIBITOR_WHY_BLOCK,
+                "block",
+            ),
+        ) {
+            Ok(fd) => Some(fd),
+            Err(e) => {
+                tracing::warn!(
+                    error = %dbus_error("logind Inhibit (lid switch) failed", e),
+                    "Closing the lid can still suspend the session"
+                );
+                None
+            }
+        },
+    };
+
     tracing::info!(
         unit = SLEEP_GUARD_UNIT_NAME,
+        lid_switch = lid_fd.is_some(),
         "Holding a sleep/idle block inhibitor for the session"
     );
 
-    // Park forever. The inhibitor lives exactly as long as this process; systemd
-    // stops the unit at deactivation, which closes the fd and releases it.
+    // Park forever. The inhibitors live exactly as long as this process; systemd
+    // stops the unit at deactivation, which closes the fds and releases them.
     loop {
         std::thread::park();
     }

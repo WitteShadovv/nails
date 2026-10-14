@@ -821,8 +821,8 @@ open mapper and the master key — resident behind the hidden lock screen, and t
 decoy is not running at all. Do not suspend during a session. Set the decoy's
 logind lid switch to `ignore` or `lock`
 ([decoy-requirements.md](decoy-requirements.md)), and set `sleep_policy.mode` in
-`nails.toml`: `block` holds a sleep inhibitor for the session, `teardown` powers
-off when the host is about to sleep.
+`nails.toml`: `block` keeps the host awake for the session, a closed lid
+included, `teardown` powers off when the host is about to sleep.
 
 **Power loss / crash / hang.** On the next boot the decoy comes up normally:
 nothing of the session is installed on the decoy, and `/run` is gone. If

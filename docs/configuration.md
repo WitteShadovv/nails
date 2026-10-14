@@ -98,7 +98,7 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 | `backend_watch.poll_interval_secs` | integer (seconds) | `5` | Seconds between the watcher's probes of the hidden backend. |
 | `session_mounts.alert` | boolean | `true` | Alert when a disk outside the hidden volume is mounted read-write during the hidden session (a USB drive udisks automounts, a manual `mount`). The session watcher raises the alert, and runs for it even with `backend_watch.enabled = false`. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `session_mounts.read_only` | boolean | `false` | Opt-in: make every disk the hidden session does not use read-only at the block layer for the session, the disks present at entry and every disk attached during it, so a mount comes up read-only and writes fail. The way back makes them writable again. See [Disks mounted during the session](#disks-mounted-during-the-session). |
-| `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) during a session. Suspending keeps the whole session — the overlay, the open dm-crypt mapper and the master key — resident in RAM. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds a sleep/idle inhibitor for the life of the session so the host cannot suspend. `teardown` holds a sleep *delay* inhibitor and powers the machine off when it is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `ignore`/`lock`. See [Sleep policy](#sleep-policy). |
+| `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) during a session. Suspending keeps the whole session — the overlay, the open dm-crypt mapper and the master key — resident in RAM. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds sleep and idle block inhibitors for the life of the session so the host cannot suspend, and takes the lid switch from logind when a closed lid would sleep. `teardown` holds a sleep *delay* inhibitor and powers the machine off when it is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `lock`. See [Sleep policy](#sleep-policy). |
 <!-- END config-keys -->
 
 The Key and Default columns are generated from the code, and
@@ -309,19 +309,30 @@ hidden configuration changes it.
 
 `sleep_policy.mode` adds a runtime backstop: a sleep guard that runs from the RAM
 copy as a runtime unit of the hidden session (the same mechanism as the backend
-watcher) and holds a logind inhibitor for the life of the session:
+watcher) and holds logind inhibitors for the life of the session:
 
-- `warn` (default) — pre-flight warning only; nothing runs at runtime.
-- `block` — hold a sleep/idle **block** inhibitor, so logind refuses to suspend
-  or idle-sleep while the session is up. A suspend blocked with the lid shut can
-  overheat a laptop, so still fix the lid switch.
+- `warn` (default) — pre-flight warning only; nothing runs at runtime, and a
+  closed lid or an idle timeout suspends the session as logind is configured to.
+- `block` — hold a `sleep:idle` **block** inhibitor, so logind refuses a
+  suspend that is asked for (a sleep key, a desktop's or a user's suspend) or
+  that an idle timeout would start. logind ignores that inhibitor for the lid
+  switch by default (`LidSwitchIgnoreInhibited=yes`), so when the session's
+  logind would sleep on a closed lid, the guard also takes a
+  `handle-lid-switch` **block** inhibitor, which logind always honours: a
+  closed lid then does nothing at all, neither suspend nor lock the screen. A
+  lid switch set to `lock`, `ignore` or `poweroff` is left to logind and keeps
+  working. A laptop kept running with the lid shut can overheat, so still set
+  the lid switch to `lock`. Both inhibitors are released together at the way
+  back.
 - `teardown` — hold a sleep **delay** inhibitor and, on the host's
   `PrepareForSleep` signal, power the machine off within logind's
   `InhibitDelayMaxSec` window (default 5s) instead of letting it sleep with the
-  session in RAM.
+  session in RAM. logind honours delay inhibitors for every sleep, so this
+  covers a closed lid too.
 
-The inhibitor appears in `systemd-inhibit --list` under neutral, non-product
-names, and nothing is written to the decoy disk.
+The `session-sleep-guard` VM test closes a virtual lid in a hidden session in
+each mode. The inhibitors appear in `systemd-inhibit --list` under neutral,
+non-product names, and nothing is written to the decoy disk.
 
 ## Closing the backend
 
