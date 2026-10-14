@@ -465,3 +465,29 @@ fn backend_entries_runs_right_after_the_hidden_volume_check() {
         .names();
     assert_eq!(&names[..2], &["hidden-volume", "backend-entries"]);
 }
+
+#[test]
+fn the_entries_check_alone_refuses_a_decoy_entry_for_the_volume() {
+    // What activation runs under --no-preflight: the hidden volume is the
+    // whole of sdb, and the decoy's crypttab opens it.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden", true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+         5 1 8:16 / /mnt/hidden rw - ext4 /dev/sdb rw\n",
+    );
+    let manager = manager_with(fs);
+    manager.run_backend_entries_check().unwrap();
+
+    manager
+        .filesystem()
+        .mock_add_file("/etc/crypttab", "data /dev/sdb none luks,noauto\n");
+    match manager.run_backend_entries_check() {
+        Err(NailsError::PreFlightCheckFailed(failures)) => {
+            assert_eq!(failures.len(), 1, "{failures:?}");
+            assert_eq!(failures[0].0, "backend-entries");
+            assert!(failures[0].1.contains("data /dev/sdb"), "{failures:?}");
+        }
+        other => panic!("expected the check to refuse, got {other:?}"),
+    }
+}

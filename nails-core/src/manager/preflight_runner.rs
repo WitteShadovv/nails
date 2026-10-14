@@ -400,6 +400,35 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// Run `backend-entries` alone, as activation does under `--no-preflight`:
+    /// a decoy fstab or crypttab entry that opens the hidden volume refuses
+    /// activation whatever the flags say.
+    pub fn run_backend_entries_check(&self) -> Result<()> {
+        use crate::preflight::{CheckResult, PreFlightCheck};
+        let check = crate::preflight::checks::BackendEntriesCheck::new(
+            self.config.hidden_volume_root.clone(),
+        );
+        let name = PreFlightCheck::<F>::name(&check).to_string();
+        match check.run(&self.filesystem)? {
+            CheckResult::Fail {
+                message,
+                remediation,
+            } => {
+                tracing::error!(check = %name, result = "fail", msg = %message, "Preflight check failed");
+                Err(NailsError::PreFlightCheckFailed(vec![(
+                    name,
+                    message,
+                    remediation,
+                )]))
+            }
+            CheckResult::Warn(message) => {
+                tracing::warn!(check = %name, result = "warn", msg = %message, "Preflight check warning");
+                Ok(())
+            }
+            CheckResult::Pass(_) | CheckResult::Skipped(_) => Ok(()),
+        }
+    }
+
     fn ensure_state_file_exists(&self) -> Result<()> {
         if self.state_file_path.exists() {
             if !self.state_file_path.is_file() {

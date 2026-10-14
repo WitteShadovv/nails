@@ -12,7 +12,8 @@
 //! decoy requirements say the hidden backend never has one. The attach gate
 //! ignores these entries (writing to the root stays safe); this check reports
 //! them, from the same judge ([`separation`]), so `check` and activation share
-//! it. `--allow-unmounted` never covers it.
+//! it. `--allow-unmounted` never covers it, and `activate --no-preflight` runs
+//! it alone.
 //!
 //! An entry that opens only another volume on the same drive (a VeraCrypt
 //! outer volume of another partition) warns: the decoy is configured to open
