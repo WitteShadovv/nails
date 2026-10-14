@@ -13,13 +13,14 @@
 #      the decoy greeter (here: getty) comes back; nothing typed in the hidden
 #      session reaches the decoy's history file.
 #   3. A scratch disk mounted over the hidden root in the session: the
-#      session watcher polls it twice without writing a probe or raising an
-#      emergency, deactivate is refused with root_covered, emergency still
-#      ends the session (the
-#      mounts the way back needs sit under the covered root, so it powers off
-#      instead, as it does whenever the way back cannot be prepared), and the
-#      scratch disk received nothing: no logs/, state.json, .lock or write
-#      probe, and its root directory's mtime and ctime are unchanged.
+#      session watcher, polling every second with its automatic emergency on,
+#      keeps running past its debounce without writing a probe or ending the
+#      session, deactivate is refused with root_covered, emergency still ends
+#      the session (the mounts the way back needs sit under the covered root,
+#      so it powers off instead, as it does whenever the way back cannot be
+#      prepared), and the scratch disk received nothing: no logs/, state.json,
+#      .lock or write probe, and its root directory's mtime and ctime are
+#      unchanged.
 #   4. `nails emergency --poweroff` in the hidden session powers the machine
 #      off; the next cold boot is the plain decoy with the backend closed.
 { self, pkgs, ... }:
@@ -58,13 +59,15 @@ in
     ${testHelpers.canonicalActivateFn}
 
     CONFIG = "/mnt/data/config/nails.toml"
+    WATCH_UNIT = "overlay-runtime-monitor.service"
 
 
-    def write_config():
+    def write_config(extra=""):
         machine.succeed(
             f"cat > {CONFIG} <<'EOF'\n"
             "hidden_volume_root = \"/mnt/data\"\n"
             "minimum_space_mb = 100\n"
+            f"{extra}"
             "EOF"
         )
 
@@ -148,8 +151,19 @@ in
 
     with subtest("a disk mounted over the hidden root in the session receives nothing"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        # A watcher that took the cover for a failed backend would end the
+        # session on its own after the debounce: fast polls and a short
+        # debounce make that show within the wait below.
+        write_config(
+            "\n[backend_watch]\n"
+            "enabled = true\n"
+            "auto_emergency = true\n"
+            "poll_interval_secs = 1\n"
+            "debounce_secs = 2\n"
+        )
         canonical_activate(CONFIG, "--overlay-only", "activate-covered")
         session.assert_hidden_root(machine)
+        machine.wait_for_unit(WATCH_UNIT)
         # The configuration on the volume is hidden by the disk on top, so
         # the commands below read a copy in /run.
         covered_config = "/run/covered.toml"
@@ -159,14 +173,15 @@ in
             "mount /dev/disk/by-id/virtio-scratch /mnt/data"
         )
         scratch_times = machine.succeed("stat -c '%Y %Z' /mnt/data").strip()
-        # Let the session watcher poll the covered root at least twice (every
-        # 5 s by default): it must write no probe there, which would change
+        # Let the session watcher poll the covered root about ten times, well
+        # past its debounce: it must write no probe there, which would change
         # the disk's root directory times, and must not take the cover for a
-        # failed backend, which would raise an alert or an emergency. A
-        # covered poll leaves no trace by design, so there is no signal to
-        # wait on.
-        # sync-lint: allow sleep -- two watcher polls on a covered root leave nothing to wait for; the assertions below are the finding
-        machine.sleep(12)
+        # failed backend, whose automatic emergency would end the session and
+        # the watcher with it. A covered poll leaves no trace by design, so
+        # there is no signal to wait on.
+        # sync-lint: allow sleep -- watcher polls on a covered root leave nothing to wait for; the assertions below are the finding
+        machine.sleep(10)
+        machine.succeed(f"systemctl is-active {WATCH_UNIT}")
         session.assert_hidden_root(machine)
         assert machine.succeed("stat -c '%Y %Z' /mnt/data").strip() == scratch_times
         rc, out = machine.execute(
@@ -199,6 +214,7 @@ in
 
     with subtest("emergency --poweroff in the hidden session powers off"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        write_config()
         canonical_activate(CONFIG, "--overlay-only", "activate-poweroff")
         machine.execute(
             f"(nails --config {CONFIG} emergency --poweroff) </dev/null >/dev/null 2>&1 &",
