@@ -177,10 +177,10 @@ config and CLI surfaces; there are no compatibility shims.
 
 ### Changed
 
-- Configuration is strict TOML: unknown keys are rejected with a did-you-mean hint, a key of the old
-  live-overlay design says it was removed, configured paths are validated when the file is loaded
-  (relative, `..`, symlinked or out-of-root paths are rejected), and a missing or invalid `--config`
-  file exits 3.
+- Configuration is strict TOML: unknown keys are rejected with a did-you-mean hint, most keys of
+  the old live-overlay design say they were removed, configured paths are validated when the file
+  is loaded (relative, `..`, symlinked or out-of-root paths are rejected), and a missing or
+  invalid `--config` file exits 3.
 - One stable machine interface: a typed JSON envelope (`schema_version`, `command`, `ok`, and
   `data` or `error`; `activate --json` streams progress events before its result) and one
   exit-code table for every command (pre-flight refusals 4, not run as
@@ -208,8 +208,8 @@ config and CLI surfaces; there are no compatibility shims.
   `system.autoUpgrade.enable = false`.
 - Unsupported hosts are refused before any write, with exit 8: Debian before 12, Ubuntu before
   24.04, non-merged-`/usr` Debian-family layouts, ostree or image-based systems, systems without
-  systemd, and distributions not yet validated (Fedora, Arch). Debian 12 and other hosts with
-  systemd older than 254 fail the `systemd-version` check (exit 4). Derivatives whose `ID_LIKE`
+  systemd, and distributions not yet validated (Fedora, Arch). Hosts with systemd older than 254,
+  such as a stock Debian 12, fail the `systemd-version` check (exit 4). Derivatives whose `ID_LIKE`
   names debian or ubuntu are accepted provisionally.
 - A corrupt or unreadable state file is reported as an unknown state: `status` shows it and
   `activate` refuses, instead of treating it as inactive.
