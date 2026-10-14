@@ -646,13 +646,13 @@ config and CLI surfaces; there are no compatibility shims.
   for `sudo`; when `/sys/class/block` cannot be listed (no sysfs, as in some containers), it refuses
   such a root and asks for the command to run as root on the host with `/sys` mounted. A root whose
   filesystem shows no disk it stores its data on (an overlay, FUSE, a network filesystem or a ZFS
-  dataset, or an image file on one that is not mounted at `/` or a system folder such as `/home`) is
-  refused as `storage_unjudged`, and a filesystem the boot mounted for an fstab line counts as the
-  decoy's even when the line's device name does not resolve. The filesystem that holds an image file
-  is the one on the device the loop driver recorded for the file, not the one its path leads to, so
-  a filesystem mounted over the image's folder cannot make it look separate; an image no mounted
-  filesystem holds is refused as `storage_unjudged`, and so is one whose loop device cannot be read
-  (run with `sudo`).
+  dataset, or an image file on one that the decoy neither mounts at `/` or a system folder such as
+  `/home` nor lists in its fstab) is refused as `storage_unjudged`, and a filesystem the boot
+  mounted for an fstab line counts as the decoy's even when the line's device name does not resolve.
+  The filesystem that holds an image file is the one on the device the loop driver recorded for the
+  file, not the one its path leads to, so a filesystem mounted over the image's folder cannot make
+  it look separate; an image no mounted filesystem holds is refused as `storage_unjudged`, and so is
+  one whose loop device cannot be read (run with `sudo`).
 - A refused root is no longer touched before the refusal. `init` probed the target for write and
   symlink support (creating and deleting a file in it, which changed its mtime and ctime) before it
   asked the attach gate; it now asks first and probes nothing on a refused target. The

@@ -1010,6 +1010,25 @@ fn a_container_on_a_zfs_home_follows_the_container_setting() {
     );
 }
 
+#[test]
+fn a_container_on_a_zfs_dataset_the_fstab_lists_follows_the_container_setting() {
+    // A filesystem the decoy's fstab lists is the decoy's, ZFS or not.
+    let world = plain_decoy(
+        "4 1 0:50 / /data rw - zfs tank/data rw\n\
+         5 1 254:8 / /mnt rw - ext4 /dev/mapper/veracrypt1 rw\n",
+    )
+    .fstab("/dev/sda1 / ext4 defaults 0 1\ntank/data /data zfs defaults 0 0\n")
+    .loop_file("loop0", "7:0", "/data/vault.hc")
+    .crypt("dm-8", "254:8", "veracrypt1", &["loop0"]);
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::ContainerOnDecoy {
+            file: PathBuf::from("/data/vault.hc"),
+            at: PathBuf::from("/data"),
+        }
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Inputs that cannot be read
 // ---------------------------------------------------------------------------

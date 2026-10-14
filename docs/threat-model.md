@@ -262,13 +262,13 @@ rehearsal state all ask it first. It refuses:
 - a root with a second filesystem mounted over it (`root_covered`), and in the
   hidden session a root whose filesystem is not the one the session started
   from: the writes would reach the disk on top;
-- a root whose storage cannot be judged because `/etc/fstab` or
-  `/etc/crypttab` cannot be read (`storage_unjudged`; run the command with
-  sudo), or the block devices in `/sys/class/block` cannot be listed
-  (`storage_unjudged`; run it as root on the host, with `/sys` mounted), or
-  because its filesystem shows no disk it stores its data on: an overlay, a
-  FUSE, network or ZFS filesystem, or an image file on one that is not mounted
-  at `/` or a system folder such as `/home` (`storage_unjudged`);
+- a root whose storage cannot be judged because `/etc/fstab` or `/etc/crypttab`
+  cannot be read (`storage_unjudged`; run the command with sudo), or the block
+  devices in `/sys/class/block` cannot be listed (`storage_unjudged`; run it as
+  root on the host, with `/sys` mounted), or because its filesystem shows no
+  disk it stores its data on: an overlay, a FUSE, network or ZFS filesystem, or
+  an image file on one that the decoy neither mounts at `/` or a system folder
+  such as `/home` nor lists in its fstab (`storage_unjudged`);
 - a root on an image file that no filesystem mounted here holds
   (`storage_unjudged`). The filesystem that holds an image file is the one on
   the device the loop driver recorded for the file, not the one its path leads
@@ -298,15 +298,15 @@ file saved under the root goes to that disk until it is unmounted.
 The gate's limits: it judges the storage this computer's mount table, fstab,
 crypttab and sysfs describe. It cannot see a decoy filesystem mounted only by
 hand and never listed, storage another operating system on the same machine
-uses, or a remote block device's other users. It does not follow a ZFS
-dataset to the disks of its pool, so it refuses a hidden root on ZFS even on
-a pool of its own. Nor can it see the traces that
-creating the volume on this computer left behind (the setup tools' own files,
-shell history, a changed partition table): only preparing the volume elsewhere
-avoids them. A refusal names the storage and says nothing was written. The
-override is for storage the gate takes for the decoy's that the operator knows
-the decoy does not use (for example a disk its fstab lists but never mounts);
-everything written there lands on that storage.
+uses, or a remote block device's other users. It does not follow a ZFS dataset
+to the disks of its pool, so it refuses a hidden root on ZFS even on a pool of
+its own. Nor can it see the traces that creating the volume on this computer
+left behind (the setup tools' own files, shell history, a changed partition
+table): only preparing the volume elsewhere avoids them. A refusal names the
+storage and says nothing was written. The override is for storage the gate takes
+for the decoy's that the operator knows the decoy does not use (for example a
+disk its fstab lists but never mounts); everything written there lands on that
+storage.
 
 ## Residual channels
 
