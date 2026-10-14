@@ -128,11 +128,24 @@ fn a_dry_run_reports_the_refusal_and_opens_no_log() {
 }
 
 #[test]
-fn check_with_the_override_reports_no_refusal() {
+fn the_override_never_covers_a_folder() {
     let (_dir, root, config) = folder_root();
     let output = nails(&config, &["check", "--allow-unmounted", "--json"]);
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
     let value = last_json(&output);
-    assert!(value["data"].get("refusal").is_none(), "{value}");
+    assert_eq!(
+        value["data"]["refusal"]["code"], "not_separate_volume",
+        "{value}"
+    );
+    for extra in [&[][..], &["--no-preflight"][..]] {
+        let mut args = vec!["activate", "-y", "--overlay-only", "--allow-unmounted"];
+        args.extend_from_slice(extra);
+        let output = nails(&config, &args);
+        assert_eq!(output.status.code(), Some(4), "{extra:?}: {output:?}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!stderr.contains("warning: --allow-unmounted"), "{stderr}");
+        assert!(stderr.contains("Nothing was written."), "{stderr}");
+    }
     assert!(entries(&root).is_empty(), "{:?}", entries(&root));
 }
 
@@ -214,33 +227,6 @@ mod kernel_tests {
             assert!(entries(volume.path()).is_empty(), "the cover was written");
             nix::mount::umount(volume.path()).expect("unmount the cover");
             assert!(entries(volume.path()).is_empty(), "the root was written");
-        });
-    }
-
-    #[test]
-    fn the_override_lets_activation_use_a_folder_with_a_warning() {
-        let _ = Rerun::new(test_path!(
-            the_override_lets_activation_use_a_folder_with_a_warning
-        ))
-        .in_user_mount_ns()
-        .run(|| {
-            let (_dir, root, config) = folder_root();
-            let output = nails(
-                &config,
-                &["activate", "-y", "--overlay-only", "--allow-unmounted"],
-            );
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(
-                stderr.contains(&format!(
-                    "warning: --allow-unmounted: using {} although it is a folder on the \
-                     filesystem mounted at",
-                    root.display()
-                )),
-                "{stderr}"
-            );
-            assert!(!stderr.contains("Nothing was written."), "{stderr}");
-            // No residue baseline lands on the accepted folder.
-            assert!(!root.join("reports").exists());
         });
     }
 }

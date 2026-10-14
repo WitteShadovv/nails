@@ -32,6 +32,10 @@ pub const STORAGE_UNJUDGED: &str = "storage_unjudged";
 /// Where the operator guide explains where to set up.
 pub const GUIDE_SECTION: &str = "Where setup happens";
 
+/// What accepting a root with `--allow-unmounted` means, wherever it is shown
+/// (the warning, the logout confirmation, `status`).
+pub const OVERRIDE_CONSEQUENCE: &str = "everything written there lands on that storage";
+
 impl RefusalKind {
     /// The stable code a caller can branch on.
     pub fn code(&self) -> &'static str {
@@ -122,26 +126,23 @@ impl Refusal {
     /// refusal ([`Allow::NotSeparate`](super::Allow::NotSeparate)); a refusal
     /// that only warns by itself, such as a container file, is not.
     pub fn overridden(&self) -> bool {
-        match &self.kind {
-            RefusalKind::NotAMountPoint { .. } => true,
-            RefusalKind::DecoyStorage { verdict } => {
-                verdict.severity() == super::separation::Severity::Refuse
-            }
-            _ => false,
-        }
+        matches!(&self.kind, RefusalKind::DecoyStorage { verdict }
+            if verdict.severity() == super::separation::Severity::Refuse)
     }
 
     /// The warning of a root that attached with this refusal
-    /// ([`Assessment::Warned`](super::Assessment::Warned)).
+    /// ([`Assessment::Warned`](super::Assessment::Warned)). A root that only
+    /// warns by itself (a container file) is described, not refused.
     pub fn warning(&self) -> String {
-        let Some(why) = self.kind.why().filter(|_| self.overridden()) else {
+        let Some(why) = self.kind.why() else {
             return self.reason.clone();
         };
-        format!(
-            "--allow-unmounted: using {} although {why}; every file nails writes there lands \
-             on that storage",
-            self.root.display()
-        )
+        let root = self.root.display();
+        if self.overridden() {
+            format!("--allow-unmounted: using {root} although {why}; {OVERRIDE_CONSEQUENCE}")
+        } else {
+            format!("{root} {}", why.strip_prefix("it ").unwrap_or(&why))
+        }
     }
 
     /// What the operator does next, one line each. `exe` is the running
@@ -357,13 +358,10 @@ mod tests {
     }
 
     #[test]
-    fn the_override_covers_only_a_folder_and_the_decoys_storage() {
+    fn the_override_covers_only_the_decoys_storage() {
         use crate::hidden_root::Allow;
         for refusal in every_refusal(Path::new("/mnt")) {
-            let covered = matches!(
-                refusal.kind,
-                RefusalKind::NotAMountPoint { .. } | RefusalKind::DecoyStorage { .. }
-            );
+            let covered = matches!(refusal.kind, RefusalKind::DecoyStorage { .. });
             assert_eq!(
                 Allow::NotSeparate.covers(&refusal.kind),
                 covered,
@@ -381,12 +379,7 @@ mod tests {
             },
             Path::new("/srv/x"),
         );
-        assert!(folder.overridden());
-        assert_eq!(
-            folder.warning(),
-            "--allow-unmounted: using /srv/x although it is a folder on the filesystem mounted \
-             at /srv; every file nails writes there lands on that storage"
-        );
+        assert!(!folder.overridden());
         let subvolume = Refusal::new(
             RefusalKind::DecoyStorage {
                 verdict: Verdict::OnDecoyFilesystem {
@@ -397,12 +390,10 @@ mod tests {
             Path::new("/mnt"),
         );
         assert!(subvolume.overridden());
-        assert!(
-            subvolume
-                .warning()
-                .contains("although it is a subvolume of the btrfs filesystem at /pool;"),
-            "{}",
-            subvolume.warning()
+        assert_eq!(
+            subvolume.warning(),
+            "--allow-unmounted: using /mnt although it is a subvolume of the btrfs filesystem \
+             at /pool; everything written there lands on that storage"
         );
         // A container file only warns by itself: its warning is the reason.
         let container = Refusal::new(
@@ -415,11 +406,17 @@ mod tests {
             Path::new("/mnt"),
         );
         assert!(!container.overridden());
-        assert_eq!(container.warning(), container.reason);
+        assert!(
+            container
+                .warning()
+                .starts_with("/mnt is an encrypted container file (/home/u/files.bin) on /home;"),
+            "{}",
+            container.warning()
+        );
         let covered = Refusal::new(
             RefusalKind::Covered {
-                below: PathBuf::from("/dev/a"),
-                above: PathBuf::from("/dev/b"),
+                below: "/dev/a".into(),
+                above: "/dev/b".into(),
             },
             Path::new("/mnt"),
         );

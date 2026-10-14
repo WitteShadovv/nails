@@ -262,16 +262,18 @@ pub struct ActivateArgs {
     #[arg(long)]
     pub accept_persistent_decoy: bool,
 
-    /// Use a hidden root that is not a volume of its own
+    /// Use a hidden root that this computer's own storage seems to hold
     ///
-    /// By default activation refuses a root that is a folder rather than a
-    /// mount point, or that this computer's own storage holds (a subvolume or
-    /// a bind mount of one of its filesystems, a volume inside its storage, an
-    /// image file on it): everything the session writes there lands on this
-    /// computer's disk. This flag turns those refusals into a warning, adds a
-    /// line to the logout confirmation and records the choice for `status`.
-    /// A root with a second filesystem mounted over it, storage that cannot be
-    /// read, and a decoy entry that opens the volume are still refused.
+    /// By default activation refuses a root that this computer's own storage
+    /// holds (a subvolume or a bind mount of one of its filesystems, a volume
+    /// inside its storage, an image file on it): everything the session writes
+    /// there lands on this computer's disk. Use this flag only for storage you
+    /// know this computer does not use, such as a disk its fstab lists but
+    /// never mounts. It turns those refusals into a warning, adds a line to the
+    /// logout confirmation and records the choice for `status`. A folder that
+    /// is no mount point, a root with a second filesystem mounted over it,
+    /// storage that cannot be judged, and a decoy entry that opens the volume
+    /// are still refused.
     #[arg(long)]
     pub allow_unmounted: bool,
 }
@@ -508,11 +510,12 @@ pub struct CheckArgs {
     #[arg(long)]
     pub accept_persistent_decoy: bool,
 
-    /// Report a hidden root that is not a volume of its own as a warning
+    /// Report a hidden root on this computer's own storage as a warning
     ///
-    /// Mirrors `activate --allow-unmounted`: a folder, or a root on this
-    /// computer's own storage, then warns instead of failing. A covered root
-    /// and storage that cannot be read still fail.
+    /// Mirrors `activate --allow-unmounted`: a root this computer's own
+    /// storage seems to hold then warns instead of failing. A folder that is
+    /// no mount point, a covered root and storage that cannot be judged still
+    /// fail.
     #[arg(long)]
     pub allow_unmounted: bool,
 }
@@ -561,15 +564,16 @@ pub struct InitArgs {
     #[arg(value_hint = ValueHint::DirPath)]
     pub path: PathBuf,
 
-    /// Initialize a path that is not a volume of its own
+    /// Initialize a volume that this computer's own storage seems to hold
     ///
-    /// By default `init` refuses a target that is a folder rather than a mount
-    /// point, or that this computer's own storage holds (a subvolume or a bind
-    /// mount of one of its filesystems, a volume inside its storage, an image
-    /// file on it), because writing the NAILS layout there leaves an
-    /// identifying tree on this computer's disk. This flag turns those refusals
-    /// into a warning. A target with a second filesystem mounted over it, or
-    /// whose storage cannot be read, is still refused.
+    /// By default `init` refuses a target that this computer's own storage
+    /// holds (a subvolume or a bind mount of one of its filesystems, a volume
+    /// inside its storage, an image file on it), because writing the NAILS
+    /// layout there leaves an identifying tree on this computer's disk. Use
+    /// this flag only for storage you know this computer does not use; it
+    /// turns those refusals into a warning. A folder that is no mount point, a
+    /// target with a second filesystem mounted over it, and one whose storage
+    /// cannot be judged are still refused.
     #[arg(long)]
     pub allow_unmounted: bool,
 

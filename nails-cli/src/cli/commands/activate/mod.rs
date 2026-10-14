@@ -325,11 +325,7 @@ fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> bool
         "    Every program closes and you are logged out; unsaved work is lost."
     );
     if let Some(refusal) = accepted {
-        let _ = writeln!(
-            stderr,
-            "    --allow-unmounted: {}; everything the session writes lands there.",
-            refusal.reason
-        );
+        let _ = writeln!(stderr, "    {}.", refusal.warning());
     }
     let _ = write!(stderr, "    Continue? [y/N]: ");
     let _ = stderr.flush();

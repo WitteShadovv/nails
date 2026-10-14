@@ -31,10 +31,9 @@ pub struct EnterOptions {
     pub accept_persistent_decoy: bool,
     /// The running binary, copied to RAM for the panic path.
     pub binary: PathBuf,
-    /// Accept a hidden root that is not a volume of its own
-    /// (`--allow-unmounted`): a folder, or one on the decoy's storage. The
-    /// activation's own writes accept it, the pre-flight check warns, and the
-    /// plan records it.
+    /// Accept a hidden root on storage the attach gate takes for the decoy's
+    /// (`--allow-unmounted`). The activation's own writes accept it, the
+    /// pre-flight check warns, and the plan records it.
     pub allow_not_separate: bool,
 }
 

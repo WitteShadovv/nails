@@ -69,8 +69,8 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendEntriesCheck {
         let table = fs.mount_table()?;
         let canonical = fs.canonicalize(root).unwrap_or_else(|_| root.clone());
         let Some(hidden) = top_mount_at(&table, &canonical) else {
-            // A folder the operator accepted with --allow-unmounted: no
-            // volume of its own, so no entry can open one.
+            // No volume of its own, so no entry can open one; the attach
+            // gate refuses such a root before this check matters.
             return Ok(CheckResult::Pass(format!(
                 "No volume is mounted at {}, so no entry opens one",
                 root.display()

@@ -150,21 +150,17 @@ pub enum Allow {
     /// Every refusal stands.
     #[default]
     Nothing,
-    /// A root that is not a volume of its own attaches with a warning: a
-    /// folder that is no mount point, or a root the [`separation`] judge
-    /// places on the decoy's storage. A missing root, a covered one, storage
-    /// that cannot be judged and a root on `/`'s own device still refuse.
+    /// A root the [`separation`] judge places on the decoy's storage attaches
+    /// with a warning. Everything else still refuses: a missing root, a
+    /// folder that is no mount point, a covered one, storage that cannot be
+    /// judged and a root on `/`'s own device.
     NotSeparate,
 }
 
 impl Allow {
     /// Whether this override turns a refusal of `kind` into a warning.
     pub fn covers(self, kind: &RefusalKind) -> bool {
-        self == Allow::NotSeparate
-            && matches!(
-                kind,
-                RefusalKind::NotAMountPoint { .. } | RefusalKind::DecoyStorage { .. }
-            )
+        self == Allow::NotSeparate && matches!(kind, RefusalKind::DecoyStorage { .. })
     }
 }
 
@@ -228,20 +224,12 @@ impl HiddenRoot {
         let Some(visible) = top_mount_at(&table, &canonical) else {
             let holder = mount_holding(&table, &canonical)
                 .map_or_else(|| PathBuf::from("/"), |m| m.mount_point.clone());
-            let refusal = Refusal::new(
+            return refuse(
                 RefusalKind::NotAMountPoint {
                     mount_point: holder,
                 },
                 root,
             );
-            // The session of an operator who accepted a folder as the root
-            // (`activate --allow-unmounted`) keeps using it.
-            if root_is_hidden_overlay(&table, &canonical).is_some()
-                && recorded_plan(fs).is_some_and(|plan| plan.accepted_not_separate.is_some())
-            {
-                return Ok(Assessment::Warned(refusal));
-            }
-            return Ok(Assessment::Refused(refusal));
         };
 
         if let Some(below) = covered_mount(&table, visible) {
@@ -420,8 +408,8 @@ fn recorded_plan<F: Filesystem>(fs: &F) -> Option<nails_teardown::whole_root::pl
 /// hidden volume mounted at `root`.
 ///
 /// Every manager state write and every command's state lock goes through it.
-/// Only `init --allow-unmounted`, which the operator points at a directory on
-/// purpose, writes its first state file without it.
+/// Only `init` writes its first state file without it, once the attach gate
+/// (with `--allow-unmounted`, if the operator gave it) has passed the target.
 ///
 /// The state directory is the hidden root (or a directory inside it). When the
 /// hidden volume is not mounted the configured path is a bare mount-point
@@ -437,8 +425,8 @@ pub fn ensure_state_dir_attached<F: Filesystem>(fs: &F, root: &Path, dir: &Path)
 
 /// [`ensure_state_dir_attached`] with the refusals `allow` covers accepted: an
 /// activation the operator ran with `--allow-unmounted` keeps its state on the
-/// root it accepted. `dir` must still lie under the root, and, when the root
-/// is a mount point, on the root's own mount.
+/// root it accepted. `dir` must still lie under the root, on the root's own
+/// mount.
 pub fn ensure_state_dir_attached_allowing<F: Filesystem>(
     fs: &F,
     root: &Path,

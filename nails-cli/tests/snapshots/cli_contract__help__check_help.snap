@@ -35,9 +35,9 @@ Options:
           Print only errors and the final result
 
       --allow-unmounted
-          Report a hidden root that is not a volume of its own as a warning
+          Report a hidden root on this computer's own storage as a warning
 
-          Mirrors `activate --allow-unmounted`: a folder, or a root on this computer's own storage, then warns instead of failing. A covered root and storage that cannot be read still fail.
+          Mirrors `activate --allow-unmounted`: a root this computer's own storage seems to hold then warns instead of failing. A folder that is no mount point, a covered root and storage that cannot be judged still fail.
 
       --color <WHEN>
           When to use colour

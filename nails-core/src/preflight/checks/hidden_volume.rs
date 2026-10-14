@@ -26,15 +26,16 @@ use std::path::{Component, PathBuf};
 ///    betray hidden storage, and a match is reported as a non-blocking warning
 ///
 /// A root the gate only warns about (a container file on a decoy
-/// filesystem), or one the operator accepted with `--allow-unmounted`, passes
-/// with that warning.
+/// filesystem), or decoy storage the operator accepted with
+/// `--allow-unmounted`, passes with that warning. A refusal is reported in the
+/// gate's own words.
 ///
 /// # Failure Guidance
 ///
 /// Each failure mode provides actionable guidance with fix steps:
-/// - **Path not found**: Suggests mounting the hidden volume
-/// - **Refused by the gate**: the gate's own hint (prepare the volume where
-///   nothing reaches this disk, unmount the second filesystem, run with sudo)
+/// - **Missing, or refused by the gate**: the gate's own hint (mount the
+///   volume, prepare it where nothing reaches this disk, unmount the second
+///   filesystem, run with sudo)
 /// - **Not writable**: Suggests checking permissions
 ///
 /// # Example

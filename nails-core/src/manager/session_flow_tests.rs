@@ -689,20 +689,31 @@ fn the_plan_records_only_what_the_override_alone_accepted() {
     use crate::hidden_root::Allow;
     use std::path::Path;
 
+    // A folder of the decoy's /srv bound at /mnt/data.
     let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/srv/x", true);
-    fs.mock_set_mount_table("1 0 8:1 / / rw - ext4 /dev/vda1 rw\n");
-    let folder = Path::new("/srv/x");
+    fs.mock_set_path_exists("/mnt/data", true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         2 1 8:2 / /srv rw - ext4 /dev/vda2 rw\n\
+         3 1 8:2 /x /mnt/data rw - ext4 /dev/vda2 rw\n",
+    );
+    let bind = Path::new("/mnt/data");
     assert_eq!(
-        accepted_not_separate(&fs, folder, Allow::NotSeparate)
+        accepted_not_separate(&fs, bind, Allow::NotSeparate)
             .unwrap()
             .as_deref(),
-        Some("/srv/x is not a volume of its own: it is a folder on the filesystem mounted at /")
+        Some("/mnt/data is not a volume of its own: it is a bind mount of a folder of /srv")
     );
-    // Without the override the folder is refused, which the entry never
+    // Without the override the bind is refused, which the entry never
     // reaches; nothing is recorded either way.
     assert_eq!(
-        accepted_not_separate(&fs, folder, Allow::Nothing).unwrap(),
+        accepted_not_separate(&fs, bind, Allow::Nothing).unwrap(),
+        None
+    );
+    // A folder is refused with the override too.
+    fs.mock_set_path_exists("/srv/x", true);
+    assert_eq!(
+        accepted_not_separate(&fs, Path::new("/srv/x"), Allow::NotSeparate).unwrap(),
         None
     );
 

@@ -568,25 +568,44 @@ mod kernel_tests {
     }
 }
 
+/// A bind of the decoy's `/home/op/vault` at `/mnt/data`: on the decoy's
+/// storage, a refusal the override covers.
+const BIND_OF_HOME: &str = "13 1 8:2 /op/vault /mnt/data rw - ext4 /dev/vda2 rw\n";
+
 #[test]
-fn the_override_attaches_a_folder_with_a_warning_but_never_a_covered_root() {
-    let fs = fs_with(&decoy_table(""));
-    fs.mock_set_path_exists("/home/op/vault", true);
-    let folder = Path::new("/home/op/vault");
+fn the_override_attaches_decoy_storage_with_a_warning_but_never_a_folder_or_a_covered_root() {
+    let bind = fs_with(&format!(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n2 1 8:2 / /home rw - ext4 /dev/vda2 rw\n{BIND_OF_HOME}"
+    ));
+    let root = Path::new("/mnt/data");
     assert!(matches!(
-        HiddenRoot::assess_allowing(&fs, folder, Allow::Nothing).unwrap(),
+        HiddenRoot::assess_allowing(&bind, root, Allow::Nothing).unwrap(),
         Assessment::Refused(_)
     ));
-    match HiddenRoot::assess_allowing(&fs, folder, Allow::NotSeparate).unwrap() {
+    match HiddenRoot::assess_allowing(&bind, root, Allow::NotSeparate).unwrap() {
         Assessment::Warned(refusal) => assert!(refusal.overridden(), "{refusal:?}"),
+        other => panic!("{other:?}"),
+    }
+
+    // A folder is no volume of its own, whatever the operator says.
+    let fs = fs_with(&decoy_table(""));
+    fs.mock_set_path_exists("/home/op/vault", true);
+    match HiddenRoot::assess_allowing(&fs, Path::new("/home/op/vault"), Allow::NotSeparate).unwrap()
+    {
+        Assessment::Refused(refusal) => {
+            assert!(
+                matches!(refusal.kind, RefusalKind::NotAMountPoint { .. }),
+                "{refusal:?}"
+            );
+            assert!(!refusal.overridden());
+        }
         other => panic!("{other:?}"),
     }
 
     let covered = fs_with(&decoy_table(
         "11 10 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n",
     ));
-    match HiddenRoot::assess_allowing(&covered, Path::new("/mnt/data"), Allow::NotSeparate).unwrap()
-    {
+    match HiddenRoot::assess_allowing(&covered, root, Allow::NotSeparate).unwrap() {
         Assessment::Refused(refusal) => {
             assert_eq!(refusal.code(), super::refusal::ROOT_COVERED, "{refusal:?}");
         }
@@ -604,53 +623,46 @@ fn the_override_attaches_a_folder_with_a_warning_but_never_a_covered_root() {
 }
 
 #[test]
-fn in_the_session_a_folder_is_kept_only_when_the_plan_accepted_it() {
-    // The session of an activation run with --allow-unmounted on a folder:
-    // nothing is mounted at the root, `/` is the overlay with its upper there.
+fn in_the_session_a_folder_is_refused_even_when_the_plan_accepted_the_root() {
+    // Nothing is mounted at the root, `/` is the overlay with its upper there,
+    // and the plan says the activation was run with --allow-unmounted.
     let fs = fs_with(&session_table(""));
     write_plan(&fs, None);
     assert_eq!(super::recorded_acceptance(&fs), None);
+    let path = nails_teardown::whole_root::plan::default_plan_path();
+    let text = fs.read_file_content(&path).unwrap().replacen(
+        "\"hidden_root\"",
+        "\"accepted_not_separate\":\"it is a bind mount\",\"hidden_root\"",
+        1,
+    );
+    fs.mock_set_file_content(path.to_str().unwrap(), &text);
+    assert_eq!(
+        super::recorded_acceptance(&fs).as_deref(),
+        Some("it is a bind mount")
+    );
     assert!(matches!(
         refusal(&fs, "/mnt/data").kind,
         RefusalKind::NotAMountPoint { .. }
     ));
-
-    let text = fs
-        .read_file_content(&nails_teardown::whole_root::plan::default_plan_path())
-        .unwrap()
-        .replacen(
-            "\"hidden_root\"",
-            "\"accepted_not_separate\":\"it is a folder\",\"hidden_root\"",
-            1,
-        );
-    let path = nails_teardown::whole_root::plan::default_plan_path();
-    fs.mock_set_file_content(path.to_str().unwrap(), &text);
-    match HiddenRoot::assess(&fs, Path::new("/mnt/data")).unwrap() {
-        Assessment::Warned(refusal) => assert!(refusal.overridden(), "{refusal:?}"),
-        other => panic!("{other:?}"),
-    }
-    assert_eq!(
-        super::recorded_acceptance(&fs).as_deref(),
-        Some("it is a folder")
-    );
-    // The state of that session still goes onto the folder.
     let _gate = super::state_attach_probe::enforce();
-    super::ensure_state_dir_attached(&fs, Path::new("/mnt/data"), Path::new("/mnt/data")).unwrap();
+    assert!(
+        super::ensure_state_dir_attached(&fs, Path::new("/mnt/data"), Path::new("/mnt/data"))
+            .is_err()
+    );
 }
 
 #[test]
-fn outside_the_session_an_accepted_folder_needs_the_override() {
-    let fs = fs_with(&decoy_table(""));
-    fs.mock_set_path_exists("/srv/x", true);
-    let root = Path::new("/srv/x");
+fn outside_the_session_accepted_decoy_storage_needs_the_override() {
+    let table = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n2 1 8:2 / /home rw - ext4 /dev/vda2 rw\n";
+    let fs = fs_with(&format!("{table}{BIND_OF_HOME}"));
+    let root = Path::new("/mnt/data");
     let _gate = super::state_attach_probe::enforce();
     assert!(super::ensure_state_dir_attached(&fs, root, root).is_err());
     super::ensure_state_dir_attached_allowing(&fs, root, root, Allow::NotSeparate).unwrap();
-    // A directory below the folder on another filesystem is still refused.
-    let mounted_below = fs_with(&decoy_table(
-        "12 1 8:33 / /srv/x/state rw - ext4 /dev/sdc1 rw\n",
+    // A directory below the root on another filesystem is still refused.
+    let mounted_below = fs_with(&format!(
+        "{table}{BIND_OF_HOME}14 13 8:33 / /mnt/data/state rw - ext4 /dev/sdc1 rw\n"
     ));
-    mounted_below.mock_set_path_exists("/srv/x", true);
     assert!(
         super::ensure_state_dir_attached_allowing(
             &mounted_below,

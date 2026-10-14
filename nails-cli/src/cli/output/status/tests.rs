@@ -64,19 +64,17 @@ fn an_accepted_override_is_shown_in_both_forms() {
     let value = serde_json::to_value(status_envelope(&active)).unwrap();
     assert!(value["data"].get("accepted_not_separate").is_none());
 
-    active.accepted_not_separate = Some("it is a folder on the filesystem mounted at /".into());
+    let reason = "/mnt is not a volume of its own: it is a bind mount of a folder of /srv";
+    active.accepted_not_separate = Some(reason.into());
     let lines = status_lines(&active, false, Style::default()).join("\n");
     assert!(
-        lines.contains(
-            "accepted with --allow-unmounted: it is a folder on the filesystem mounted at /"
-        ),
+        lines.contains(&format!(
+            "--allow-unmounted: {reason}; everything written there lands on that storage"
+        )),
         "{lines}"
     );
     let value = serde_json::to_value(status_envelope(&active)).unwrap();
-    assert_eq!(
-        value["data"]["accepted_not_separate"],
-        "it is a folder on the filesystem mounted at /"
-    );
+    assert_eq!(value["data"]["accepted_not_separate"], reason);
 }
 
 #[test]
