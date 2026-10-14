@@ -27,7 +27,7 @@ struct Claim {
 /// Judge where the mount `hidden` (the visible mount at the hidden root)
 /// lives, against the decoy's storage in `scene`.
 pub fn judge(scene: &Scene<'_>, hidden: &MountEntry) -> Judgement {
-    if is_ram(&hidden.fstype) {
+    if is_ram(&hidden.fstype) || upper_in_ram(scene.mounts, hidden) {
         return Judgement {
             verdict: Verdict::Separate,
             entries: Vec::new(),
@@ -153,6 +153,18 @@ fn verdict(
 /// Whether `fstype` is a RAM filesystem, which keeps nothing on a disk.
 pub(super) fn is_ram(fstype: &str) -> bool {
     matches!(fstype, "tmpfs" | "ramfs")
+}
+
+/// Whether `mount` is an overlay whose upper layer, which takes every write,
+/// lies on a RAM filesystem.
+fn upper_in_ram(mounts: &[MountEntry], mount: &MountEntry) -> bool {
+    mount.fstype == "overlay"
+        && mount
+            .super_opts
+            .split(',')
+            .find_map(|opt| opt.strip_prefix("upperdir="))
+            .and_then(|upper| mount_holding(mounts, Path::new(upper)))
+            .is_some_and(|holder| is_ram(&holder.fstype))
 }
 
 /// Whether `fstype` is stacked on other filesystems or on a process (an

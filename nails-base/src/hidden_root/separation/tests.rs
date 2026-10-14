@@ -750,6 +750,16 @@ fn an_overlay_whose_upper_is_on_home_is_refused() {
 }
 
 #[test]
+fn an_overlay_whose_upper_is_in_ram_is_separate() {
+    let world = plain_decoy(
+        "3 1 0:25 / /run rw - tmpfs tmpfs rw\n\
+         5 1 0:77 / /mnt rw - overlay overlay rw,lowerdir=/home/u/low,upperdir=/run/up,\
+         workdir=/run/work\n",
+    );
+    assert_eq!(world.verdict("/mnt"), Verdict::Separate);
+}
+
+#[test]
 fn a_fuse_filesystem_is_refused_without_naming_its_program() {
     let verdict =
         plain_decoy("5 1 0:78 / /mnt rw - fuse.gocryptfs /home/u/cipher rw\n").verdict("/mnt");
