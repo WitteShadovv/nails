@@ -20,7 +20,8 @@
 //! paths of this computer, the root the operator typed and filesystem types. It
 //! names no device either: a device-mapper name (`/dev/mapper/<name>`) can name
 //! the tool that opened a volume, so a filesystem is named by where it is
-//! mounted and its type.
+//! mounted and its type, and a loop device whose record could not be read by
+//! what it is.
 
 use super::separation::{SYS_CLASS_BLOCK, Sharing, Verdict};
 use super::{Refusal, RefusalKind};
@@ -106,11 +107,22 @@ impl RefusalKind {
                 "could not read {} to tell where {root} lives",
                 unreadable
                     .iter()
-                    .map(|p| p.display().to_string())
+                    .map(|p| shown_input(p))
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
         }
+    }
+}
+
+/// An input the gate could not read, as the text names it: a file by its
+/// path, a device node (a loop device's record) by what it is, never by its
+/// name.
+fn shown_input(path: &Path) -> String {
+    if path.starts_with("/dev") {
+        "the record of a loop device".to_string()
+    } else {
+        path.display().to_string()
     }
 }
 
@@ -338,6 +350,9 @@ mod tests {
             RefusalKind::StorageUnjudged {
                 unreadable: vec![PathBuf::from("/etc/crypttab")],
             },
+            RefusalKind::StorageUnjudged {
+                unreadable: vec![PathBuf::from("/dev/loop0")],
+            },
             RefusalKind::StorageUntraced {
                 verdict: Verdict::UntracedStorage {
                     fstype: "fuse".into(),
@@ -362,7 +377,7 @@ mod tests {
             .collect();
         assert_eq!(&codes[..13], &[NOT_SEPARATE_VOLUME; 13]);
         assert_eq!(&codes[13..15], &[ROOT_COVERED; 2]);
-        assert_eq!(&codes[15..], &[STORAGE_UNJUDGED; 3]);
+        assert_eq!(&codes[15..], &[STORAGE_UNJUDGED; 4]);
     }
 
     #[test]
@@ -390,6 +405,20 @@ mod tests {
                 assert!(!text.contains(word), "{word} in {text}");
             }
         }
+    }
+
+    #[test]
+    fn an_unreadable_loop_device_is_named_by_what_it_is() {
+        let refusal = Refusal::new(
+            RefusalKind::StorageUnjudged {
+                unreadable: vec![PathBuf::from("/dev/loop0")],
+            },
+            Path::new("/mnt"),
+        );
+        assert_eq!(
+            refusal.reason,
+            "could not read the record of a loop device to tell where /mnt lives"
+        );
     }
 
     #[test]
@@ -457,6 +486,8 @@ mod tests {
              mounted.",
         ];
         assert_eq!(hint(&["/sys/class/block"]), sysfs);
+        // A loop device's record needs root as well.
+        assert_eq!(hint(&["/dev/loop0"]), ["Run the command again with sudo."]);
         assert_eq!(hint(&["/etc/crypttab", "/sys/class/block"]), sysfs);
     }
 
@@ -504,8 +535,8 @@ mod tests {
         );
         let covered = Refusal::new(
             RefusalKind::Covered {
-                below: "/dev/a".into(),
-                above: "/dev/b".into(),
+                below: "ext4".into(),
+                above: "vfat".into(),
             },
             Path::new("/mnt"),
         );
