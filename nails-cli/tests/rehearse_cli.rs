@@ -10,19 +10,36 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use nails_core::rehearse::{self, ChannelKind, ChannelRecord, Phase, RehearsalState, ScanSummary};
+use nails_core::test_support::ScratchTmpfs;
 
 const TOKEN: &str = "5a17c0ffee5a17c0ffee5a17c0ffee00";
 
 struct Harness {
+    // Declared first so a tmpfs hidden root is detached before the directories go.
+    _volume: Option<ScratchTmpfs>,
     dir: tempfile::TempDir,
     config: PathBuf,
+    hidden: PathBuf,
 }
 
 impl Harness {
+    /// A hidden root that is a plain directory: the attach gate refuses it.
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let hidden = dir.path().join("hidden");
         std::fs::create_dir_all(&hidden).unwrap();
+        Self::with_root(dir, hidden, None)
+    }
+
+    /// A hidden root that is a tmpfs of its own, which the attach gate accepts.
+    /// Build it only inside a [`Rerun::in_user_mount_ns`] body.
+    fn on_a_volume() -> Self {
+        let volume = ScratchTmpfs::new("");
+        let hidden = volume.path().to_path_buf();
+        Self::with_root(tempfile::tempdir().unwrap(), hidden, Some(volume))
+    }
+
+    fn with_root(dir: tempfile::TempDir, hidden: PathBuf, volume: Option<ScratchTmpfs>) -> Self {
         let config = dir.path().join("nails.toml");
         std::fs::write(
             &config,
@@ -34,7 +51,12 @@ impl Harness {
             ),
         )
         .unwrap();
-        Self { dir, config }
+        Self {
+            _volume: volume,
+            dir,
+            config,
+            hidden,
+        }
     }
 
     fn image(&self, name: &str, token_at: Option<u64>) -> PathBuf {
@@ -56,24 +78,19 @@ impl Harness {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        self.run_with(&[], args)
-    }
-
-    fn run_with(&self, envs: &[(&str, &str)], args: &[&str]) -> Output {
-        let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-        cmd.env_remove("NO_COLOR")
+        Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+            .env_remove("NO_COLOR")
             .arg("--no-log-file")
             .arg("--config")
-            .arg(&self.config);
-        for (key, value) in envs {
-            cmd.env(key, value);
-        }
-        cmd.args(args).output().expect("run nails")
+            .arg(&self.config)
+            .args(args)
+            .output()
+            .expect("run nails")
     }
 
     /// The hidden root, resolved the way the binary resolves it.
     fn hidden(&self) -> PathBuf {
-        self.dir.path().join("hidden").canonicalize().unwrap()
+        self.hidden.canonicalize().unwrap()
     }
 
     fn state_path(&self) -> PathBuf {
@@ -87,8 +104,8 @@ impl Harness {
         std::fs::write(&path, serde_json::to_string_pretty(state).unwrap()).unwrap();
     }
 
-    /// Mark the temp hidden root as a NAILS volume, so the attach check (with
-    /// `NAILS_TEST_FORCE_ATTACHED`) accepts it.
+    /// Mark the hidden root as a NAILS volume, so the attach check accepts it
+    /// once it is a volume of its own.
     fn write_marker(&self) {
         std::fs::write(self.hidden().join("state.json"), "{}").unwrap();
     }
@@ -421,28 +438,6 @@ fn an_offline_scan_with_the_state_token_records_the_scan_phase() {
 }
 
 #[test]
-fn a_device_scan_records_the_scan_in_the_state_on_an_attached_volume() {
-    let harness = Harness::new();
-    harness.write_marker();
-    harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), 0));
-    let clean = harness.image("clean.img", None);
-
-    let output = harness.run_with(
-        &[("NAILS_TEST_FORCE_ATTACHED", "1")],
-        &["--json", "rehearse", "scan", "--device", path(&clean)],
-    );
-
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(json(&output)["data"]["phase"], "scanned");
-    let saved: RehearsalState =
-        serde_json::from_str(&std::fs::read_to_string(harness.state_path()).unwrap()).unwrap();
-    assert_eq!(saved.phase, Phase::Scanned);
-    assert_eq!(saved.scans.len(), 1);
-    assert_eq!(saved.scans[0].devices, vec![clean.display().to_string()]);
-    assert_eq!(saved.scans[0].hits, 0);
-}
-
-#[test]
 fn a_scan_in_the_planting_session_is_refused_unless_allowed() {
     let harness = Harness::new();
     let (boot_id, soft_reboots) = this_boot();
@@ -574,35 +569,76 @@ fn reset_without_a_rehearsal_is_refused() {
     assert_eq!(value["error"]["message"], "no rehearsal to reset");
 }
 
-#[test]
-fn plant_on_an_attached_volume_without_a_session_names_the_missing_session() {
-    let harness = Harness::new();
-    harness.write_marker();
-    let output = harness.run_with(
-        &[("NAILS_TEST_FORCE_ATTACHED", "1")],
-        &["--json", "rehearse", "plant"],
-    );
-    assert_eq!(output.status.code(), Some(6), "{output:?}");
-    assert_eq!(json(&output)["error"]["code"], "not_active");
-    assert!(!harness.state_path().exists());
-}
+/// The tests that need the attach gate to accept the hidden root: each runs in
+/// an unprivileged user + mount namespace with a tmpfs as the hidden root, and
+/// the binary it spawns inherits that namespace.
+mod kernel_tests {
+    use super::*;
+    use nails_core::test_path;
+    use nails_core::test_support::Rerun;
 
-#[test]
-fn plant_on_an_unattached_volume_names_the_attach_problem() {
-    let harness = Harness::new();
-    // No marker: even with the device check bypassed, the root is no NAILS volume.
-    let output = harness.run_with(
-        &[("NAILS_TEST_FORCE_ATTACHED", "1")],
-        &["--json", "rehearse", "plant"],
-    );
-    assert_eq!(output.status.code(), Some(6), "{output:?}");
-    let value = json(&output);
-    assert_eq!(value["error"]["code"], "not_attached");
-    assert!(
-        value["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("holds no NAILS marker"),
-        "{value:#}"
-    );
+    #[test]
+    fn a_device_scan_records_the_scan_in_the_state_on_an_attached_volume() {
+        let _ = Rerun::new(test_path!(
+            a_device_scan_records_the_scan_in_the_state_on_an_attached_volume
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let harness = Harness::on_a_volume();
+            harness.write_marker();
+            harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), 0));
+            let clean = harness.image("clean.img", None);
+
+            let output = harness.run(&["--json", "rehearse", "scan", "--device", path(&clean)]);
+
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            assert_eq!(json(&output)["data"]["phase"], "scanned");
+            let saved: RehearsalState =
+                serde_json::from_str(&std::fs::read_to_string(harness.state_path()).unwrap())
+                    .unwrap();
+            assert_eq!(saved.phase, Phase::Scanned);
+            assert_eq!(saved.scans.len(), 1);
+            assert_eq!(saved.scans[0].devices, vec![clean.display().to_string()]);
+            assert_eq!(saved.scans[0].hits, 0);
+        });
+    }
+
+    #[test]
+    fn plant_on_an_attached_volume_without_a_session_names_the_missing_session() {
+        let _ = Rerun::new(test_path!(
+            plant_on_an_attached_volume_without_a_session_names_the_missing_session
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let harness = Harness::on_a_volume();
+            harness.write_marker();
+            let output = harness.run(&["--json", "rehearse", "plant"]);
+            assert_eq!(output.status.code(), Some(6), "{output:?}");
+            assert_eq!(json(&output)["error"]["code"], "not_active");
+            assert!(!harness.state_path().exists());
+        });
+    }
+
+    #[test]
+    fn plant_on_an_unattached_volume_names_the_attach_problem() {
+        let _ = Rerun::new(test_path!(
+            plant_on_an_unattached_volume_names_the_attach_problem
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let harness = Harness::on_a_volume();
+            // No marker: the root is a volume of its own, but no NAILS volume.
+            let output = harness.run(&["--json", "rehearse", "plant"]);
+            assert_eq!(output.status.code(), Some(6), "{output:?}");
+            let value = json(&output);
+            assert_eq!(value["error"]["code"], "not_attached");
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("holds no NAILS marker"),
+                "{value:#}"
+            );
+        });
+    }
 }

@@ -59,9 +59,9 @@ tempfile = "3"
 # Pull in nails-core's test-only extras for the CLI test builds. The
 # shipped binary (`cargo build`) never pulls in dev-dependencies, so neither
 # feature reaches release builds:
-#   - test-hooks: compile the test hooks (attach-gate bypass, runtime skip,
-#     override env vars) so the integration tests can drive real write paths
-#     against temp directories.
+#   - test-hooks: compile the test hooks (runtime skip, override env vars) so
+#     the integration tests can drive real write paths against temp
+#     directories.
 #   - test-support: the shared test fixtures (`Config::test_default`, `TestWorld`).
 nails-core = { path = "../nails-core", features = [
     "test-hooks",

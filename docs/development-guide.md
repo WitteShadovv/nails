@@ -93,10 +93,9 @@ let manager = NailsManager::new(fs, config, state_path)
     .with_runtime_env(env.clone());
 ```
 
-The test-only knobs (`NAILS_TEST_RUNTIME`, `NAILS_TEST_FORCE_ATTACHED` and
-`NAILS_TEST_ENFORCE_ROOT`) live in `RuntimeEnv::test_hooks`, compiled only with the `test-hooks`
-feature. A test that exercises a leaf helper scopes a snapshot to its own thread
-with `nails_core::runtime_env::ScopedRuntimeEnv`. A subprocess test sets the
+The test-only knobs (`NAILS_TEST_RUNTIME` and `NAILS_TEST_ENFORCE_ROOT`) live
+in `RuntimeEnv::test_hooks`, compiled only with the `test-hooks` feature. A
+test that exercises a leaf helper scopes a snapshot to its own thread with `nails_core::runtime_env::ScopedRuntimeEnv`. A subprocess test sets the
 child's variables on the `Command` and the child reads them once with
 `RuntimeEnv::from_process_env` and installs them, exactly as `main` does. Never
 call `std::env::set_var` or `remove_var`, and never change the working directory

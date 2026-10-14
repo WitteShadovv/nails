@@ -102,16 +102,14 @@ impl HiddenRoot {
             )));
         }
 
-        if !attach_device_check_bypassed() {
-            let root_device = fs.device_id(root)?;
-            let slash_device = fs.device_id(Path::new("/"))?;
-            if root_device == slash_device {
-                return Ok(AttachState::Unattached(format!(
-                    "hidden root {} shares a device with /, so nothing is mounted there \
-                     (unlock and mount the hidden volume before continuing)",
-                    root.display()
-                )));
-            }
+        let root_device = fs.device_id(root)?;
+        let slash_device = fs.device_id(Path::new("/"))?;
+        if root_device == slash_device {
+            return Ok(AttachState::Unattached(format!(
+                "hidden root {} shares a device with /, so nothing is mounted there \
+                 (unlock and mount the hidden volume before continuing)",
+                root.display()
+            )));
         }
 
         if require_marker && !Self::has_marker(fs, root)? {
@@ -194,28 +192,6 @@ pub mod state_attach_probe {
             ENFORCED.with(|cell| cell.set(false));
         }
     }
-}
-
-/// Test-only escape hatch for the device comparison.
-///
-/// Integration tests exercise the real write paths against a temp directory,
-/// which shares `/`'s device, so they could never look attached. When this build
-/// carries the test hooks *and* `NAILS_TEST_FORCE_ATTACHED` was set in the
-/// installed startup snapshot, the device comparison is skipped and existence
-/// (plus any required marker) decides. The hook is compiled out of release builds
-/// entirely, so production always runs the real device check regardless of the
-/// environment.
-#[cfg(any(test, feature = "test-hooks"))]
-fn attach_device_check_bypassed() -> bool {
-    crate::runtime_env::current()
-        .test_hooks
-        .force_attached
-        .is_some()
-}
-
-#[cfg(not(any(test, feature = "test-hooks")))]
-fn attach_device_check_bypassed() -> bool {
-    false
 }
 
 #[cfg(test)]

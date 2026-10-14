@@ -3391,3 +3391,15 @@ Owns: `nails-base/src/naming.rs`, `nails-base/src/fstab.rs`, `nails-base/src/cry
   - NAILS reads the decoy's files with `O_NOATIME` (`read_in_root`, and the `nails-base` noatime reads behind `RealFilesystem`), which covers the opened file alone. Any lookup that follows a symlink on the decoy's root, an existence test as much as a read, updates the link's access time (under `relatime`, at most once a day). On NixOS most files the system generates under `/etc` are links into `/etc/static`, itself a link, so `check` and `activate` leave this trace in the fstab read, in the systemd-configuration probe (`/etc/systemd/journald.conf`, `logind.conf`), in the platform detection's read of `/etc/os-release` and in other reads of a generated file. Other distributions have such links too: on Debian and Ubuntu `/etc/os-release` is a link to `../usr/lib/os-release`. Avoiding that needs every such lookup to go through a view of the root mounted `noatime`; take that step or name the trace in `docs/threat-model.md` for every lookup that follows a link, not the fstab read alone.
 
   **Done when:** the capture is committed and its test runs and passes, and the links' access-time trace is avoided or named in the threat model.
+
+### WS-C2: One attach gate
+
+Owns: `nails-base/src/hidden_root.rs`, the attach-gate tests of `nails-cli`
+
+- [ ] **T-157: Remove the unit-test seam from the state attach gate** (low · effort M)
+
+  _Status (2026-10-14): the integration tests' bypass of the attach gate (`NAILS_TEST_FORCE_ATTACHED`) is gone; the CLI suites that needed it run the real binary on a tmpfs hidden root in a user + mount namespace. One seam is left, by decision: `ensure_state_dir_attached` returns early in a library crate's unit-test binary (`runtime_safety::in_unit_tests`) unless the test arms `state_attach_probe`._
+
+  About 40 library tests write state through `RealFilesystem` into temp directories (`nails-core/src/manager/session_flow_tests.rs`, `nails-core/src/manager/state_management.rs`, `nails-core/src/status/tests.rs`, `nails-forensics/src/rehearse/tests.rs`), and a temp directory is no volume of its own. Move them to `MockFilesystem` with a mount table (`mock_set_mount_table`) that shows their state directory as a mounted volume, or to a tmpfs in a user + mount namespace, then delete the early return and `state_attach_probe`.
+
+  **Done when:** `ensure_state_dir_attached` has no test-only branch, `state_attach_probe` is gone, and the library suites pass.

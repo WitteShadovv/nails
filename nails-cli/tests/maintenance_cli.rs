@@ -6,19 +6,30 @@
 //!
 //! Neither path needs root: on a host with no interrupted activation `recover`
 //! only resets a stale record, and `reset-upper` only deletes directories below
-//! the temporary hidden root. `NAILS_TEST_FORCE_ATTACHED` lets the temp root
-//! pass the attach check, which otherwise refuses a directory that shares `/`'s
-//! device.
+//! the temporary hidden root. The attach gate accepts only a volume of its own,
+//! so each test runs in an unprivileged user + mount namespace with a tmpfs as
+//! the hidden root, and the binary it spawns inherits that namespace. Where user
+//! namespaces are unavailable the tests skip (`just kernel-tests` fails instead).
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use chrono::{TimeZone, Utc};
+use nails_core::test_path;
+use nails_core::test_support::{Rerun, ScratchTmpfs};
 use nails_core::{StateFile, SystemState};
 use serde_json::Value;
 
-/// An isolated hidden root plus a `nails.toml` pointing at it.
+/// Run `body` in a fresh user + mount namespace (see the module docs).
+fn in_namespace(test: &str, body: impl FnOnce()) {
+    let _ = Rerun::new(test).in_user_mount_ns().run(body);
+}
+
+/// A tmpfs hidden root plus a `nails.toml` pointing at it. Build it inside
+/// [`in_namespace`].
 struct Harness {
+    // Declared first so the tmpfs is detached before the directories go.
+    _volume: ScratchTmpfs,
     _dir: tempfile::TempDir,
     config: PathBuf,
     hidden_root: PathBuf,
@@ -27,11 +38,10 @@ struct Harness {
 
 impl Harness {
     fn new() -> Self {
+        let volume = ScratchTmpfs::new("");
         let dir = tempfile::tempdir().unwrap();
-        let hidden_root = dir.path().join("hidden");
-        std::fs::create_dir_all(&hidden_root).unwrap();
         // Resolved the way the binary resolves it, so reported paths compare.
-        let hidden_root = hidden_root.canonicalize().unwrap();
+        let hidden_root = volume.path().canonicalize().unwrap();
         let state_path = hidden_root.join("state.json");
         let config = dir.path().join("nails.toml");
         std::fs::write(
@@ -45,6 +55,7 @@ impl Harness {
         )
         .unwrap();
         Self {
+            _volume: volume,
             _dir: dir,
             config,
             hidden_root,
@@ -66,11 +77,10 @@ impl Harness {
         StateFile::load(&self.state_path).unwrap().state
     }
 
-    /// Run `nails` on this harness's config, with the temp root attached.
+    /// Run `nails` on this harness's config.
     fn run(&self, args: &[&str]) -> Output {
         Command::new(assert_cmd::cargo::cargo_bin!("nails"))
             .env_remove("NO_COLOR")
-            .env("NAILS_TEST_FORCE_ATTACHED", "1")
             .arg("--no-log-file")
             .arg("--config")
             .arg(&self.config)
@@ -104,36 +114,46 @@ fn path(p: &Path) -> &str {
 
 #[test]
 fn recover_on_a_clean_decoy_reports_nothing_to_do() {
-    let harness = Harness::new();
-    harness.write_state(SystemState::Inactive);
+    in_namespace(
+        test_path!(recover_on_a_clean_decoy_reports_nothing_to_do),
+        || {
+            let harness = Harness::new();
+            harness.write_state(SystemState::Inactive);
 
-    let output = harness.run(&["recover", "--json"]);
+            let output = harness.run(&["recover", "--json"]);
 
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let value = json(&output);
-    assert_eq!(value["command"], "recover");
-    assert_eq!(value["ok"], true);
-    assert_eq!(value["data"]["outcome"], "clean");
-    assert_eq!(value["data"]["remaining_mounts"], serde_json::json!([]));
-    assert_eq!(value["data"]["backend"], serde_json::json!([]));
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            let value = json(&output);
+            assert_eq!(value["command"], "recover");
+            assert_eq!(value["ok"], true);
+            assert_eq!(value["data"]["outcome"], "clean");
+            assert_eq!(value["data"]["remaining_mounts"], serde_json::json!([]));
+            assert_eq!(value["data"]["backend"], serde_json::json!([]));
+        },
+    );
 }
 
 #[test]
 fn recover_resets_a_stale_active_record_on_the_decoy() {
-    let harness = Harness::new();
-    harness.write_state(SystemState::Active {
-        activated_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
-    });
+    in_namespace(
+        test_path!(recover_resets_a_stale_active_record_on_the_decoy),
+        || {
+            let harness = Harness::new();
+            harness.write_state(SystemState::Active {
+                activated_at: Utc.timestamp_opt(1_700_000_000, 0).unwrap(),
+            });
 
-    let output = harness.run(&["--ascii", "recover"]);
+            let output = harness.run(&["--ascii", "recover"]);
 
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(
-        stdout.trim_end(),
-        "[PASS] Nothing to recover: no interrupted activation"
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                stdout.trim_end(),
+                "[PASS] Nothing to recover: no interrupted activation"
+            );
+            assert_eq!(harness.state(), SystemState::Inactive);
+        },
     );
-    assert_eq!(harness.state(), SystemState::Inactive);
 }
 
 // ---------------------------------------------------------------------------
@@ -142,106 +162,136 @@ fn recover_resets_a_stale_active_record_on_the_decoy() {
 
 #[test]
 fn reset_upper_removes_the_root_upper_copy_and_the_mount_layers() {
-    let harness = Harness::new();
-    harness.write_state(SystemState::Inactive);
-    let upper = harness.populate("root/upper/srv/data");
-    let layers = harness.populate("root/mounts/srv-data");
+    in_namespace(
+        test_path!(reset_upper_removes_the_root_upper_copy_and_the_mount_layers),
+        || {
+            let harness = Harness::new();
+            harness.write_state(SystemState::Inactive);
+            let upper = harness.populate("root/upper/srv/data");
+            let layers = harness.populate("root/mounts/srv-data");
 
-    let output = harness.run(&["reset-upper", "/srv/data", "-y", "--json"]);
+            let output = harness.run(&["reset-upper", "/srv/data", "-y", "--json"]);
 
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let value = json(&output);
-    assert_eq!(value["command"], "reset-upper");
-    assert_eq!(value["data"]["target"], "/srv/data");
-    assert_eq!(
-        value["data"]["removed"],
-        serde_json::json!([path(&upper), path(&layers)])
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            let value = json(&output);
+            assert_eq!(value["command"], "reset-upper");
+            assert_eq!(value["data"]["target"], "/srv/data");
+            assert_eq!(
+                value["data"]["removed"],
+                serde_json::json!([path(&upper), path(&layers)])
+            );
+            assert!(!upper.exists());
+            assert!(!layers.exists());
+            // Only the target's copy goes: its parent in the upper stays.
+            assert!(harness.hidden_root.join("root/upper/srv").is_dir());
+        },
     );
-    assert!(!upper.exists());
-    assert!(!layers.exists());
-    // Only the target's copy goes: its parent in the upper stays.
-    assert!(harness.hidden_root.join("root/upper/srv").is_dir());
 }
 
 #[test]
 fn reset_upper_in_human_form_lists_the_removals_and_the_fallback() {
-    let harness = Harness::new();
-    harness.write_state(SystemState::Inactive);
-    let upper = harness.populate("root/upper/srv/data");
+    in_namespace(
+        test_path!(reset_upper_in_human_form_lists_the_removals_and_the_fallback),
+        || {
+            let harness = Harness::new();
+            harness.write_state(SystemState::Inactive);
+            let upper = harness.populate("root/upper/srv/data");
 
-    let output = harness.run(&["--ascii", "reset-upper", "/srv/data", "--yes"]);
+            let output = harness.run(&["--ascii", "reset-upper", "/srv/data", "--yes"]);
 
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert_eq!(
-        stdout.lines().collect::<Vec<_>>(),
-        vec![
-            "[PASS] Reset the hidden upper for /srv/data".to_string(),
-            format!("  removed {}", upper.display()),
-            "  /srv/data falls back to its decoy on the next activation".to_string(),
-        ]
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert_eq!(
+                stdout.lines().collect::<Vec<_>>(),
+                vec![
+                    "[PASS] Reset the hidden upper for /srv/data".to_string(),
+                    format!("  removed {}", upper.display()),
+                    "  /srv/data falls back to its decoy on the next activation".to_string(),
+                ]
+            );
+        },
     );
 }
 
 #[test]
 fn reset_upper_with_nothing_to_remove_says_so() {
-    let harness = Harness::new();
-    harness.write_state(SystemState::Inactive);
+    in_namespace(
+        test_path!(reset_upper_with_nothing_to_remove_says_so),
+        || {
+            let harness = Harness::new();
+            harness.write_state(SystemState::Inactive);
 
-    let human = harness.run(&["--ascii", "reset-upper", "/srv/empty"]);
-    assert_eq!(human.status.code(), Some(0), "{human:?}");
-    assert_eq!(
-        String::from_utf8_lossy(&human.stdout).trim_end(),
-        "[INFO] Nothing to reset for /srv/empty"
+            let human = harness.run(&["--ascii", "reset-upper", "/srv/empty"]);
+            assert_eq!(human.status.code(), Some(0), "{human:?}");
+            assert_eq!(
+                String::from_utf8_lossy(&human.stdout).trim_end(),
+                "[INFO] Nothing to reset for /srv/empty"
+            );
+
+            let machine = harness.run(&["reset-upper", "/srv/empty", "--json"]);
+            assert_eq!(machine.status.code(), Some(0), "{machine:?}");
+            assert_eq!(json(&machine)["data"]["removed"], serde_json::json!([]));
+        },
     );
-
-    let machine = harness.run(&["reset-upper", "/srv/empty", "--json"]);
-    assert_eq!(machine.status.code(), Some(0), "{machine:?}");
-    assert_eq!(json(&machine)["data"]["removed"], serde_json::json!([]));
 }
 
 #[test]
 fn reset_upper_off_a_terminal_without_yes_needs_confirmation_and_keeps_the_upper() {
-    let harness = Harness::new();
-    harness.write_state(SystemState::Inactive);
-    let upper = harness.populate("root/upper/srv/data");
+    in_namespace(
+        test_path!(reset_upper_off_a_terminal_without_yes_needs_confirmation_and_keeps_the_upper),
+        || {
+            let harness = Harness::new();
+            harness.write_state(SystemState::Inactive);
+            let upper = harness.populate("root/upper/srv/data");
 
-    // `Command::output` gives the child a null stdin, never a terminal.
-    let output = harness.run(&["reset-upper", "/srv/data", "--json"]);
+            // `Command::output` gives the child a null stdin, never a terminal.
+            let output = harness.run(&["reset-upper", "/srv/data", "--json"]);
 
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    let value = json(&output);
-    assert_eq!(value["error"]["code"], "needs_confirmation");
-    assert!(upper.join("notes.txt").is_file());
+            assert_eq!(output.status.code(), Some(2), "{output:?}");
+            let value = json(&output);
+            assert_eq!(value["error"]["code"], "needs_confirmation");
+            assert!(upper.join("notes.txt").is_file());
+        },
+    );
 }
 
 #[test]
 fn reset_upper_refuses_a_path_that_is_not_below_root() {
-    let harness = Harness::new();
-    harness.write_state(SystemState::Inactive);
+    in_namespace(
+        test_path!(reset_upper_refuses_a_path_that_is_not_below_root),
+        || {
+            let harness = Harness::new();
+            harness.write_state(SystemState::Inactive);
 
-    for target in ["relative/path", "/", "/srv/../etc"] {
-        let output = harness.run(&["reset-upper", target, "-y", "--json"]);
-        assert_eq!(output.status.code(), Some(1), "{target}: {output:?}");
-        let value = json(&output);
-        assert_eq!(value["error"]["code"], "reset_upper");
-        assert!(
-            value["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("is not a resettable path"),
-            "{target}: {value:#}"
-        );
-    }
+            for target in ["relative/path", "/", "/srv/../etc"] {
+                let output = harness.run(&["reset-upper", target, "-y", "--json"]);
+                assert_eq!(output.status.code(), Some(1), "{target}: {output:?}");
+                let value = json(&output);
+                assert_eq!(value["error"]["code"], "reset_upper");
+                assert!(
+                    value["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("is not a resettable path"),
+                    "{target}: {value:#}"
+                );
+            }
+        },
+    );
 }
 
 #[test]
 fn reset_upper_with_an_unreadable_config_is_a_config_error() {
-    let harness = Harness::new();
-    std::fs::write(&harness.config, "hidden_volume_root = [unterminated").unwrap();
+    in_namespace(
+        test_path!(reset_upper_with_an_unreadable_config_is_a_config_error),
+        || {
+            let harness = Harness::new();
+            std::fs::write(&harness.config, "hidden_volume_root = [unterminated").unwrap();
 
-    let output = harness.run(&["reset-upper", "/srv/data", "-y", "--json"]);
+            let output = harness.run(&["reset-upper", "/srv/data", "-y", "--json"]);
 
-    assert_eq!(output.status.code(), Some(3), "{output:?}");
-    assert_eq!(json(&output)["ok"], false);
+            assert_eq!(output.status.code(), Some(3), "{output:?}");
+            assert_eq!(json(&output)["ok"], false);
+        },
+    );
 }

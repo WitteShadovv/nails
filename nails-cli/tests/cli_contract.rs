@@ -24,6 +24,7 @@ use std::process::{Command, Output};
 
 use chrono::{DateTime, TimeZone, Utc};
 use insta_cmd::assert_cmd_snapshot;
+use nails_core::test_support::ScratchTmpfs;
 use nails_core::{StateFile, SystemState};
 use serde_json::Value;
 
@@ -84,6 +85,8 @@ fn fixed_instant() -> DateTime<Utc> {
 
 /// An isolated hidden root plus a strict `nails.toml` pointing at it.
 struct Harness {
+    // Declared first so a tmpfs hidden root is detached before the directories go.
+    _volume: Option<ScratchTmpfs>,
     _dir: tempfile::TempDir,
     config: PathBuf,
     hidden_root: PathBuf,
@@ -92,10 +95,27 @@ struct Harness {
 }
 
 impl Harness {
+    /// A hidden root that is a plain directory: the attach gate refuses it.
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let hidden_root = dir.path().join("hidden-volume");
         std::fs::create_dir_all(&hidden_root).unwrap();
+        Self::with_root(dir, hidden_root, None)
+    }
+
+    /// A hidden root that is a tmpfs of its own, which the attach gate accepts.
+    /// Build it only inside a `Rerun::in_user_mount_ns` body.
+    fn on_a_volume() -> Self {
+        let volume = ScratchTmpfs::new("");
+        let hidden_root = volume.path().to_path_buf();
+        Self::with_root(tempfile::tempdir().unwrap(), hidden_root, Some(volume))
+    }
+
+    fn with_root(
+        dir: tempfile::TempDir,
+        hidden_root: PathBuf,
+        volume: Option<ScratchTmpfs>,
+    ) -> Self {
         let state_path = hidden_root.join("state.json");
         let log_path = hidden_root.join("logs");
         let config = dir.path().join("nails.toml");
@@ -113,6 +133,7 @@ impl Harness {
         )
         .unwrap();
         Self {
+            _volume: volume,
             _dir: dir,
             config,
             hidden_root,
@@ -152,7 +173,11 @@ fn active_state() -> SystemState {
 
 /// Persist [`active_state`].
 fn write_active_harness() -> Harness {
-    let harness = Harness::new();
+    write_active(Harness::new())
+}
+
+/// [`Harness`] with an active state record written to it.
+fn write_active(harness: Harness) -> Harness {
     let file = StateFile {
         state: active_state(),
         ..StateFile::default()
@@ -872,27 +897,6 @@ fn exit_code_5_needs_root_on_privileged_commands_run_unprivileged() {
 }
 
 #[test]
-fn reset_upper_follows_the_live_view_not_an_active_record() {
-    // reset-upper is refused only inside the hidden root. On the decoy an
-    // active record left behind does not block it.
-    let harness = write_active_harness();
-    // The temp hidden root shares `/`'s device; declare it attached so the state
-    // lock (which refuses an unmounted hidden root) lets the state check run.
-    let output = run(
-        &harness.config,
-        &[("NAILS_TEST_FORCE_ATTACHED", "1")],
-        &["reset-upper", CONTRACT_TARGET, "-y", "--json"],
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let value: Value = serde_json::from_str(stdout.trim().lines().next_back().unwrap_or(""))
-        .unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}): {stdout}"));
-    let code = output.status.code().unwrap_or(-1);
-    assert_eq!(code, 0, "{stdout}");
-    assert_eq!(value["command"], "reset-upper");
-    assert_eq!(value["ok"], true);
-}
-
-#[test]
 #[ignore = "verify exits 10 only when the live scan finds a warning and no \
             critical; under `cargo test` a concurrent process whose argv \
             contains the project path trips the process check (critical), so a \
@@ -948,5 +952,32 @@ fn collect_logs(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if path.file_name().and_then(|n| n.to_str()) == Some("nails.log") {
             out.push(path);
         }
+    }
+}
+
+/// The cases that need the attach gate to accept the hidden root: each runs in
+/// an unprivileged user + mount namespace with a tmpfs as the hidden root, and
+/// the binary it spawns inherits that namespace.
+mod kernel_tests {
+    use super::*;
+    use nails_core::test_path;
+    use nails_core::test_support::Rerun;
+
+    #[test]
+    fn reset_upper_follows_the_live_view_not_an_active_record() {
+        let _ = Rerun::new(test_path!(
+            reset_upper_follows_the_live_view_not_an_active_record
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            // reset-upper is refused only inside the hidden root. On the decoy
+            // an active record left behind does not block it. The state lock
+            // refuses an unmounted hidden root, so the root is a tmpfs.
+            let harness = write_active(Harness::on_a_volume());
+            let (code, value) = run_json(&harness.config, &["reset-upper", CONTRACT_TARGET, "-y"]);
+            assert_eq!(code, 0, "{value:#}");
+            assert_eq!(value["command"], "reset-upper");
+            assert_eq!(value["ok"], true);
+        });
     }
 }
