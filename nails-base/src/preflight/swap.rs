@@ -29,8 +29,9 @@
 //!
 //! Every probe reads the filesystem through the [`Filesystem`] trait; nothing
 //! here calls `swapoff` or mutates anything. The same classifier backs the
-//! pre-flight check, `verify`, and the post-switch re-check, so all three report
-//! identical verdicts.
+//! pre-flight check (which `nails check` runs too) and `verify`, so both report
+//! identical verdicts. Nothing re-checks swap during the session: swap enabled
+//! after activation shows only when `verify` or `check` is run.
 
 use super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result};

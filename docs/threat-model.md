@@ -359,7 +359,7 @@ the decoy's own storage would put every redirected write back on its disk.
 
 ## Known residual changes
 
-**`/var/lib/nixos` drift: settled by design, pending a VM run.**
+**`/var/lib/nixos` drift: settled by design and by a VM test.**
 
 On a NixOS decoy, `/var/lib/nixos` holds the declarative account bookkeeping
 (`declarative-users`, `declarative-groups`, `uid-map`, `gid-map`,
@@ -373,9 +373,9 @@ every later write go to the upper on the hidden volume. The VM test
 enters a hidden generation that declares a canary user and group
 (`hiddencanary`, uid/gid 64123), proves the canary is live in the hidden
 session, and asserts that after the way back the decoy's `/var/lib/nixos`,
-`/etc/passwd` and `/etc/group` are byte-identical to before. This section is
-closed once that test has run on a Nix host
-(`nix build .#legacyPackages.x86_64-linux.e2e.session-nixos-hidden-system`).
+`/etc/passwd` and `/etc/group` are byte-identical to before. The test passes
+(`nix build .#legacyPackages.x86_64-linux.e2e.session-nixos-hidden-system`), so
+no drift remains.
 
 ## Evaluation scope
 
