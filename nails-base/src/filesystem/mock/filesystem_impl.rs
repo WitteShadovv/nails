@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 
 impl Filesystem for MockFilesystem {
     fn mount_table(&self) -> Result<Vec<MountEntry>> {
-        Ok(self.mount_table_impl())
+        self.mount_table_result()
     }
 
     fn is_mounted(&self, target: &Path) -> Result<bool> {

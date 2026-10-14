@@ -91,6 +91,7 @@ mod kernel_tests {
             Plan {
                 version: PLAN_VERSION,
                 hidden_root: self.hidden.path().to_path_buf(),
+                hidden_dev: None,
                 upper: self.upper(),
                 work: self.hidden.path().join("root/work"),
                 owner: None,
@@ -810,6 +811,13 @@ mod entry_kernel_tests {
             let plan = Plan::load(&paths.plan()).unwrap();
             assert!(plan.armed_for(Direction::Enter, unix_now()));
             assert_eq!(plan.hidden.init, Path::new("/usr/lib/systemd/systemd"));
+            // The hidden volume's device, which the attach gate holds the
+            // session's hidden root to.
+            let hidden = world.hidden.path().canonicalize().unwrap();
+            let hidden_dev = top_mount_at(&read_mountinfo().unwrap(), &hidden)
+                .map(|mount| mount.dev.clone())
+                .expect("the hidden tmpfs is mounted");
+            assert_eq!(plan.hidden_dev.as_deref(), Some(hidden_dev.as_str()));
 
             // The transition consumes it: masks in place, entry recorded.
             let env = Env {

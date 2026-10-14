@@ -1188,6 +1188,7 @@ fn test_verify_flags_defaulted_root_when_attached_marked_volume() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(root.to_str().unwrap(), true);
     fs.mock_set_path_exists(marker.to_str().unwrap(), true);
+    fs.mock_set_mounted(&root, true);
     fs.mock_set_device_id(std::path::Path::new("/"), 1);
     fs.mock_set_device_id(&root, 42);
     let config = Config {

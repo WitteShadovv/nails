@@ -133,11 +133,12 @@ impl LoggingManager {
         // Validate log path is within hidden volume
         self.validate_log_path()?;
 
-        // Verify the hidden volume is positively attached: present and on its own
-        // device, not merely a directory that exists. A path that only exists —
-        // an unmounted mount point, or the binary's own directory on the system
-        // disk — would otherwise collect identifying logs, so degrade to
-        // stderr-only (Ok(None)) rather than writing there.
+        // Verify the hidden volume is positively attached: a volume of its own
+        // mounted at the root, not merely a directory that exists. A path that
+        // only exists — an unmounted mount point, the binary's own directory on
+        // the system disk, a root another disk was mounted over — would
+        // otherwise collect identifying logs, so degrade to stderr-only
+        // (Ok(None)) rather than writing there.
         match crate::hidden_root::HiddenRoot::verify_attached(fs, &self.hidden_volume_root, false)?
         {
             crate::hidden_root::AttachState::Attached => {}

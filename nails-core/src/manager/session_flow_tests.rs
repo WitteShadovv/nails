@@ -113,6 +113,7 @@ fn plan(hidden: &Path) -> Plan {
     Plan {
         version: PLAN_VERSION,
         hidden_root: hidden.to_path_buf(),
+        hidden_dev: None,
         upper: hidden.join("root/upper"),
         work: hidden.join("root/work"),
         owner: None,

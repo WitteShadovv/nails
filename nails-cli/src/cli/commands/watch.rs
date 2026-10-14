@@ -87,7 +87,9 @@ pub fn execute(
 
     watcher::run_loop(
         &watch_config,
-        || !watch_config.enabled || watcher::probe_backend(&filesystem, &manifest),
+        // A probe of a covered hidden root writes nothing and is no failure of
+        // the backend: it neither alerts as one nor leads to an emergency.
+        || !watch_config.enabled || !watcher::probe_backend(&filesystem, &manifest).is_failure(),
         || {
             if let Err(e) = send_immediate(&backend_alert(), env) {
                 tracing::warn!(error = %e, "Could not deliver the backend-failure alert");

@@ -3394,7 +3394,7 @@ Owns: `nails-base/src/naming.rs`, `nails-base/src/fstab.rs`, `nails-base/src/cry
 
 ### WS-C2: One attach gate
 
-Owns: `nails-base/src/hidden_root.rs`, the attach-gate tests of `nails-cli`
+Owns: `nails-base/src/hidden_root/`, the attach-gate tests of `nails-cli`
 
 - [ ] **T-157: Remove the unit-test seam from the state attach gate** (low · effort M)
 

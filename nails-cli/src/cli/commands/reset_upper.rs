@@ -64,11 +64,15 @@ pub fn execute(
 
     // Hold the exclusive state lock while we plan and delete, so a concurrent
     // activation cannot mount the target out from under the reset.
-    let _state_lock =
-        match super::acquire_state_lock_or_report(&lock_state_path, "reset-upper", json) {
-            Ok(lock) => lock,
-            Err(status) => return status,
-        };
+    let _state_lock = match super::acquire_state_lock_or_report(
+        &manager.config().hidden_volume_root,
+        &lock_state_path,
+        "reset-upper",
+        json,
+    ) {
+        Ok(lock) => lock,
+        Err(status) => return status,
+    };
 
     let plan = match manager.plan_reset_upper(&target) {
         Ok(plan) => plan,

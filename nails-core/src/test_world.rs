@@ -158,8 +158,9 @@ impl TestWorld {
         });
 
         // The hidden root is a real directory standing in for the mounted hidden
-        // volume; the mock world sees it as one too, so the state-write attach
-        // gate finds it.
+        // volume; the mock world sees it mounted there too, so the state-write
+        // attach gate finds it.
+        self.fs.mock_set_mounted(&config.hidden_volume_root, true);
         for root in [
             Some(config.hidden_volume_root.as_path()),
             config.state_file_path.parent(),

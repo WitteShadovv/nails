@@ -251,16 +251,18 @@ fn state_lock_dir(state_file_path: &Path) -> &Path {
 ///
 /// A concurrent `nails` operation holds this lock, so a second one fails fast
 /// with a message naming the holder PID rather than racing it over the mounts
-/// and the state file. The returned guard must be kept alive for the whole
-/// operation; dropping it (on exit) releases the lock.
+/// and the state file. The lock lies next to the state file and is created only
+/// on the volume mounted at `hidden_root`. The returned guard must be kept alive
+/// for the whole operation; dropping it (on exit) releases the lock.
 #[must_use = "the returned guard releases the lock when dropped"]
 pub(crate) fn acquire_state_lock_or_report(
+    hidden_root: &Path,
     state_file_path: &Path,
     command: &'static str,
     json: bool,
 ) -> Result<nails_core::StateLock, ExitStatus> {
     let dir = state_lock_dir(state_file_path);
-    nails_core::ensure_state_dir_attached(&nails_core::RealFilesystem, dir)
+    nails_core::ensure_state_dir_attached(&nails_core::RealFilesystem, hidden_root, dir)
         .and_then(|()| nails_core::StateLock::try_acquire(dir))
         .map_err(|error| {
             report_error(
@@ -279,12 +281,16 @@ pub(crate) fn acquire_state_lock_or_report(
 /// must be kept alive for the duration of the teardown.
 #[must_use = "the returned guard releases the lock when dropped"]
 pub(crate) fn acquire_state_lock_for_emergency(
+    hidden_root: &Path,
     state_file_path: &Path,
 ) -> Option<nails_core::StateLock> {
-    // Never create `.lock` in a bare mount-point directory on the decoy: with the
-    // hidden volume gone, emergency proceeds without the lock.
+    // Never create `.lock` in a bare mount-point directory on the decoy, nor on
+    // a disk mounted over the hidden volume: then emergency proceeds without
+    // the lock.
     let dir = state_lock_dir(state_file_path);
-    if let Err(error) = nails_core::ensure_state_dir_attached(&nails_core::RealFilesystem, dir) {
+    if let Err(error) =
+        nails_core::ensure_state_dir_attached(&nails_core::RealFilesystem, hidden_root, dir)
+    {
         tracing::warn!(%error, "Hidden volume not attached; proceeding with emergency teardown without the state lock");
         return None;
     }

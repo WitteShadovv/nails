@@ -334,6 +334,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
     Plan {
         version: PLAN_VERSION,
         hidden_root: inputs.hidden_root.to_path_buf(),
+        hidden_dev: None,
         upper: layout.upper(),
         work: layout.work(),
         owner,
@@ -359,6 +360,13 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
     }
 }
 
+/// The device (`major:minor`) of the mount a lookup of `hidden_root` reaches,
+/// which the attach gate holds the session's hidden root to.
+fn hidden_dev(mounts: &[MountEntry], hidden_root: &Path) -> Option<String> {
+    let root = std::fs::canonicalize(hidden_root).unwrap_or_else(|_| hidden_root.to_path_buf());
+    top_mount_at(mounts, &root).map(|mount| mount.dev.clone())
+}
+
 fn build(
     paths: &Paths,
     inputs: &EntryInputs<'_>,
@@ -377,6 +385,7 @@ fn build(
     write_runtime(paths, inputs, &snapshot)?;
     let layout = Layout::new(inputs.hidden_root);
     let mut plan = skeleton(paths, inputs, &layout);
+    plan.hidden_dev = hidden_dev(&mounts, inputs.hidden_root);
     plan.failed_at_entry = host.failed_units();
     // Recorded before it is cleared, so a rollback always knows to set it again.
     plan.run_noexec = nextroot::is_mount_point(&mounts, &paths.run)

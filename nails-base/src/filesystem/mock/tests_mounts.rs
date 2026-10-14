@@ -201,3 +201,16 @@ fn reset_forgets_the_explicit_table() {
     fs.reset();
     assert_eq!(fs.mount_table().unwrap().len(), 1);
 }
+
+#[test]
+fn a_mount_table_error_fails_the_table_until_reset() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_mounted(Path::new("/mnt/data"), true);
+    fs.mock_set_mount_table_error("permission denied");
+    let error = fs.mount_table().unwrap_err().to_string();
+    assert!(error.contains("permission denied"), "{error}");
+    // The other queries are unaffected.
+    assert!(fs.is_mounted(Path::new("/mnt/data")).unwrap());
+    fs.reset();
+    assert_eq!(fs.mount_table().unwrap().len(), 1);
+}

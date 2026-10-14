@@ -30,7 +30,8 @@ use std::time::{Duration, Instant};
 use crate::config::BackendWatchConfig;
 use crate::filesystem::Filesystem;
 use crate::runtime_copy::RuntimeManifest;
-use nails_teardown::mountinfo::MountEntry;
+use nails_base::hidden_root::{covered_mount, holds_the_session_volume};
+use nails_teardown::mountinfo::{MountEntry, top_mount_at};
 
 /// What the watcher should do in response to one probe result.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,13 +103,38 @@ impl BackendWatch {
     }
 }
 
+/// The result of one [`probe_backend`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendProbe {
+    /// The hidden root answers and takes writes; every target is mounted.
+    Healthy,
+    /// The backend has failed, or is no longer mounted at the hidden root.
+    Failed,
+    /// Another filesystem is mounted over the hidden volume. Nothing was
+    /// written: a write would land on that filesystem, not the hidden volume.
+    Covered,
+}
+
+impl BackendProbe {
+    /// Whether the backend failed. A covered root is not a failure of the
+    /// backend, so it raises no backend alert and never an emergency.
+    pub fn is_failure(self) -> bool {
+        self == BackendProbe::Failed
+    }
+}
+
 /// Probe the hidden backend's health from the recorded manifest.
 ///
-/// Returns `false` (unhealthy) when the hidden root has become unreachable or
-/// unreadable, or when any overlay target the manifest recorded is no longer
-/// mounted — the ways a lazily detached or failed backend shows up. A probe error
-/// is treated as unhealthy: the whole point is to react to a backend that can no
-/// longer answer.
+/// Returns [`BackendProbe::Failed`] when the hidden root has become unreachable
+/// or unreadable, is no longer a mount point, or when any overlay target the
+/// manifest recorded is no longer mounted — the ways a lazily detached or
+/// failed backend shows up. A probe error is treated as a failure: the whole
+/// point is to react to a backend that can no longer answer.
+///
+/// Before anything is written, the mount at the hidden root must be the volume
+/// the session entered with (the attach gate's session rule, see
+/// [`nails_base::hidden_root::holds_the_session_volume`]); when another
+/// filesystem covers it the probe stops at [`BackendProbe::Covered`].
 ///
 /// The health check reads the hidden root's *directory contents* rather than
 /// merely opening it. When the backing device fails in place — a yanked disk, a
@@ -117,13 +143,33 @@ impl BackendWatch {
 /// while every real access returns `EIO` and the filesystem shuts down. A
 /// `readdir` touches the backing store, so it surfaces exactly that failure;
 /// anything other than a successful listing is unhealthy.
-pub fn probe_backend<F: Filesystem>(filesystem: &F, manifest: &RuntimeManifest) -> bool {
-    match filesystem.path_exists(&manifest.hidden_root) {
+pub fn probe_backend<F: Filesystem>(filesystem: &F, manifest: &RuntimeManifest) -> BackendProbe {
+    let root = &manifest.hidden_root;
+    match filesystem.path_exists(root) {
         Ok(true) => {}
-        _ => return false,
+        _ => return BackendProbe::Failed,
     }
-    if filesystem.list_directory(&manifest.hidden_root).is_err() {
-        return false;
+    if filesystem.list_directory(root).is_err() {
+        return BackendProbe::Failed;
+    }
+    let Ok(table) = filesystem.mount_table() else {
+        return BackendProbe::Failed;
+    };
+    let canonical = filesystem
+        .canonicalize(root)
+        .unwrap_or_else(|_| root.clone());
+    let Some(visible) = top_mount_at(&table, &canonical) else {
+        return BackendProbe::Failed;
+    };
+    if covered_mount(&table, visible).is_some()
+        || !holds_the_session_volume(
+            filesystem,
+            &canonical,
+            visible,
+            manifest.hidden_dev.as_deref(),
+        )
+    {
+        return BackendProbe::Covered;
     }
     // A device that fails in place keeps its dentry cache, so the directory read
     // above still succeeds; the kernel's response to the I/O error is to remount
@@ -132,22 +178,21 @@ pub fn probe_backend<F: Filesystem>(filesystem: &F, manifest: &RuntimeManifest) 
     // written: an actual create-and-remove probe returns EROFS on a read-only
     // remount or EIO on a dead device, without depending on how the mount table
     // reports the flags. (The cheaper mount-table check is kept as a fast path.)
-    if filesystem
-        .is_mount_read_only(&manifest.hidden_root)
-        .unwrap_or(false)
-    {
-        return false;
+    if filesystem.is_mount_read_only(root).unwrap_or(false) {
+        return BackendProbe::Failed;
     }
-    if !filesystem
-        .is_writable(&manifest.hidden_root)
-        .unwrap_or(false)
-    {
-        return false;
+    if !filesystem.is_writable(root).unwrap_or(false) {
+        return BackendProbe::Failed;
     }
-    manifest
+    let mounted = manifest
         .overlay_targets
         .iter()
-        .all(|target| filesystem.is_mounted(target).unwrap_or(false))
+        .all(|target| filesystem.is_mounted(target).unwrap_or(false));
+    if mounted {
+        BackendProbe::Healthy
+    } else {
+        BackendProbe::Failed
+    }
 }
 
 /// Whether a mount is a read-write mount of a disk that the session does not
@@ -343,13 +388,19 @@ mod tests {
     fn manifest(targets: &[&str]) -> RuntimeManifest {
         RuntimeManifest {
             hidden_root: PathBuf::from("/mnt/data"),
+            hidden_dev: None,
             overlay_targets: targets.iter().map(PathBuf::from).collect(),
         }
     }
 
-    /// Make the hidden root list successfully, standing in for a backing store
-    /// that still answers a `readdir`.
+    /// Make the hidden root a mounted volume that lists successfully, standing
+    /// in for a backing store that still answers a `readdir`. With no recorded
+    /// device in the manifest, the root overlay's upper on the root's own device
+    /// shows it is the session's volume.
     fn root_lists(fs: &MockFilesystem) {
+        fs.mock_set_mounted(Path::new("/mnt/data"), true);
+        fs.mock_set_device_id(Path::new("/mnt/data"), 42);
+        fs.mock_set_device_id(Path::new("/mnt/data/root/upper"), 42);
         fs.mock_set_path_exists("/mnt/data", true);
         fs.mock_set_directory_contents(
             Path::new("/mnt/data"),
@@ -364,7 +415,10 @@ mod tests {
         mounted(&fs, "/home", true);
         mounted(&fs, "/etc", true);
 
-        assert!(probe_backend(&fs, &manifest(&["/home", "/etc"])));
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home", "/etc"])),
+            BackendProbe::Healthy
+        );
     }
 
     #[test]
@@ -374,7 +428,10 @@ mod tests {
         mounted(&fs, "/home", true);
         mounted(&fs, "/etc", false);
 
-        assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home", "/etc"])),
+            BackendProbe::Failed
+        );
     }
 
     #[test]
@@ -383,7 +440,10 @@ mod tests {
         fs.mock_set_path_exists("/mnt/data", false);
         mounted(&fs, "/home", true);
 
-        assert!(!probe_backend(&fs, &manifest(&["/home"])));
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home"])),
+            BackendProbe::Failed
+        );
     }
 
     #[test]
@@ -401,7 +461,10 @@ mod tests {
         mounted(&fs, "/home", true);
         mounted(&fs, "/etc", true);
 
-        assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home", "/etc"])),
+            BackendProbe::Failed
+        );
     }
 
     #[test]
@@ -414,7 +477,10 @@ mod tests {
         mounted(&fs, "/etc", true);
         fs.mock_set_writable("/mnt/data", false);
 
-        assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home", "/etc"])),
+            BackendProbe::Failed
+        );
     }
 
     #[test]
@@ -429,7 +495,10 @@ mod tests {
         mounted(&fs, "/etc", true);
         fs.mock_set_mount_read_only(Path::new("/mnt/data"));
 
-        assert!(!probe_backend(&fs, &manifest(&["/home", "/etc"])));
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home", "/etc"])),
+            BackendProbe::Failed
+        );
     }
 
     /// The hidden root and the overlay targets `/home` and `/srv/share`, plus
@@ -449,22 +518,103 @@ mod tests {
         let fs = MockFilesystem::new();
         root_lists(&fs);
         fs.mock_set_mount_table(&session_table(""));
-        assert!(probe_backend(&fs, &manifest(&["/home", "/srv/share"])));
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home", "/srv/share"])),
+            BackendProbe::Healthy
+        );
 
         // A later mount on /srv covers the target, which stays in the table.
         fs.mock_set_mount_table(&session_table("32 30 0:42 / /srv rw - tmpfs tmpfs rw\n"));
-        assert!(!probe_backend(&fs, &manifest(&["/home", "/srv/share"])));
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home", "/srv/share"])),
+            BackendProbe::Failed
+        );
     }
 
     #[test]
     fn probe_reads_the_flags_of_the_mount_on_top_of_the_hidden_root() {
         let fs = MockFilesystem::new();
         root_lists(&fs);
-        // A read-only mount stacked on the hidden root is what a write reaches.
+        // A read-only bind of the volume stacked on the hidden root is what a
+        // write reaches.
         fs.mock_set_mount_table(&session_table(
-            "11 10 253:1 / /mnt/data ro - ext4 /dev/mapper/data rw\n",
+            "11 10 253:0 / /mnt/data ro - ext4 /dev/mapper/data rw\n",
         ));
-        assert!(!probe_backend(&fs, &manifest(&["/home"])));
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home"])),
+            BackendProbe::Failed
+        );
+    }
+
+    fn recorded(targets: &[&str]) -> RuntimeManifest {
+        RuntimeManifest {
+            hidden_dev: Some("253:0".to_string()),
+            ..manifest(targets)
+        }
+    }
+
+    #[test]
+    fn probe_is_healthy_on_the_recorded_volume() {
+        let fs = MockFilesystem::new();
+        root_lists(&fs);
+        fs.mock_set_mount_table(&session_table(""));
+        assert_eq!(
+            probe_backend(&fs, &recorded(&["/home"])),
+            BackendProbe::Healthy
+        );
+    }
+
+    #[test]
+    fn probe_writes_nothing_while_another_disk_covers_the_hidden_root() {
+        let fs = MockFilesystem::new();
+        root_lists(&fs);
+        // A write probe would fail on this root: reaching it would give Failed.
+        fs.mock_set_writable("/mnt/data", false);
+        // A stick mounted over the hidden root.
+        let covered = session_table("11 10 8:16 / /mnt/data rw - vfat /dev/sdb1 rw\n");
+        fs.mock_set_mount_table(&covered);
+        assert_eq!(
+            probe_backend(&fs, &recorded(&["/home"])),
+            BackendProbe::Covered
+        );
+        // The same without a recorded device: the upper is not on the stick.
+        assert_eq!(
+            probe_backend(&fs, &manifest(&["/home"])),
+            BackendProbe::Covered
+        );
+        assert!(!BackendProbe::Covered.is_failure());
+    }
+
+    #[test]
+    fn probe_reports_a_replaced_volume_as_covered() {
+        // The hidden volume is gone from the table and another disk sits at its
+        // mount point alone: not the device the entry recorded.
+        let fs = MockFilesystem::new();
+        root_lists(&fs);
+        fs.mock_set_writable("/mnt/data", false);
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             12 1 8:16 / /mnt/data rw - vfat /dev/sdb1 rw\n\
+             20 1 0:40 / /home rw - overlay overlay rw\n",
+        );
+        assert_eq!(
+            probe_backend(&fs, &recorded(&["/home"])),
+            BackendProbe::Covered
+        );
+    }
+
+    #[test]
+    fn probe_fails_when_the_hidden_root_is_no_longer_a_mount_point() {
+        let fs = MockFilesystem::new();
+        root_lists(&fs);
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             20 1 0:40 / /home rw - overlay overlay rw\n",
+        );
+        assert_eq!(
+            probe_backend(&fs, &recorded(&["/home"])),
+            BackendProbe::Failed
+        );
     }
 
     #[test]

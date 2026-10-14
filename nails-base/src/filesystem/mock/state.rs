@@ -89,6 +89,9 @@ pub struct MockFilesystem {
     /// the mount table and every mount query answers from it; when unset, the
     /// table is rendered from `mounted` and the queries read their own maps.
     pub(super) mount_table: Arc<Mutex<Option<String>>>,
+    /// When set, [`mount_table`](crate::Filesystem::mount_table) fails with
+    /// this message, standing in for an unreadable `/proc/self/mountinfo`.
+    pub(super) mount_table_error: Arc<Mutex<Option<String>>>,
     /// Mounts [`Filesystem::is_mount_read_only`](crate::Filesystem::is_mount_read_only) reports read-only.
     pub(super) read_only_mounts: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) paths: Arc<Mutex<HashMap<PathBuf, PathInfo>>>,
@@ -158,6 +161,7 @@ impl MockFilesystem {
         Self {
             mounted: Arc::new(Mutex::new(HashSet::new())),
             mount_table: Arc::new(Mutex::new(None)),
+            mount_table_error: Arc::new(Mutex::new(None)),
             read_only_mounts: Arc::new(Mutex::new(HashSet::new())),
             paths: Arc::new(Mutex::new(HashMap::new())),
             is_mounted_errors: Arc::new(Mutex::new(HashMap::new())),
@@ -207,6 +211,10 @@ impl MockFilesystem {
             .clear();
         *self
             .mount_table
+            .lock()
+            .expect("MockFilesystem mutex poisoned") = None;
+        *self
+            .mount_table_error
             .lock()
             .expect("MockFilesystem mutex poisoned") = None;
         self.read_only_mounts

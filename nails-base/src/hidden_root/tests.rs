@@ -1,0 +1,481 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+use super::*;
+use crate::MockFilesystem;
+use std::path::{Path, PathBuf};
+
+const ROOT_DEVICE: u64 = 1;
+const VOLUME_DEVICE: u64 = 42;
+
+/// The decoy's `/` and `/home`, and the hidden volume at `/mnt/data`, plus
+/// `extra` mount lines.
+fn decoy_table(extra: &str) -> String {
+    format!(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         2 1 8:2 / /home rw - ext4 /dev/vda2 rw\n\
+         10 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n{extra}"
+    )
+}
+
+/// The hidden session's view: `/` is the overlay whose upper lies on the
+/// hidden volume, and `mnt_data` is the mount line at `/mnt/data`, if any.
+fn session_table(mnt_data: &str) -> String {
+    format!(
+        "1 0 0:30 / / rw - overlay overlay rw,lowerdir=/run/overlay-runtime/lower,\
+         upperdir=/mnt/data/root/upper,workdir=/mnt/data/root/work\n{mnt_data}"
+    )
+}
+
+const HIDDEN_MOUNT: &str = "10 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n";
+
+/// A mock where `/mnt/data` exists, with `table` as its mount table.
+fn fs_with(table: &str) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/data", true);
+    fs.mock_set_mount_table(table);
+    fs.mock_set_device_id(Path::new("/"), ROOT_DEVICE);
+    fs.mock_set_device_id(Path::new("/mnt/data"), VOLUME_DEVICE);
+    fs
+}
+
+/// Write a session plan to `/run`, recording `hidden_dev` when given.
+fn write_plan(fs: &MockFilesystem, hidden_dev: Option<&str>) {
+    let dev = hidden_dev
+        .map(|dev| format!(",\"hidden_dev\":\"{dev}\""))
+        .unwrap_or_default();
+    let text = format!(
+        "{{\"version\":{version},\"hidden_root\":\"/mnt/data\"{dev},\
+         \"upper\":\"/mnt/data/root/upper\",\"work\":\"/mnt/data/root/work\",\
+         \"decoy_root\":{{\"source\":\"/dev/vda1\",\"fstype\":\"ext4\"}},\
+         \"decoy\":{{\"init\":\"/sbin/init\"}},\"hidden\":{{\"init\":\"/sbin/init\"}}}}",
+        version = nails_teardown::whole_root::plan::PLAN_VERSION
+    );
+    let path = nails_teardown::whole_root::plan::default_plan_path();
+    fs.mock_set_file_content(path.to_str().unwrap(), &text);
+}
+
+fn refusal(fs: &MockFilesystem, root: &str) -> Refusal {
+    match HiddenRoot::assess(fs, Path::new(root)).unwrap() {
+        Assessment::Refused(refusal) => refusal,
+        Assessment::Attached => panic!("{root} was accepted"),
+    }
+}
+
+/// A mock where `/mnt/data` is a mounted volume of its own, in the default
+/// rendered mount table.
+fn attached_fs(root: &Path) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_mounted(root, true);
+    fs.mock_set_device_id(Path::new("/"), ROOT_DEVICE);
+    fs.mock_set_device_id(root, VOLUME_DEVICE);
+    fs
+}
+
+#[test]
+fn the_state_gate_refuses_a_directory_on_the_root_filesystem() {
+    let _gate = super::state_attach_probe::enforce();
+    let fs = crate::MockFilesystem::new();
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_path_exists("/mnt/data", true);
+    fs.mock_set_path_type("/mnt/data", crate::filesystem::PathKind::Dir);
+    let root = Path::new("/mnt/data");
+    assert!(super::ensure_state_dir_attached(&fs, root, root).is_err());
+}
+
+#[test]
+fn the_state_gate_accepts_a_directory_inside_the_volume() {
+    let _gate = super::state_attach_probe::enforce();
+    let fs = fs_with(&decoy_table(""));
+    let root = Path::new("/mnt/data");
+    super::ensure_state_dir_attached(&fs, root, root).unwrap();
+    super::ensure_state_dir_attached(&fs, root, &root.join("var/state")).unwrap();
+}
+
+#[test]
+fn the_state_gate_refuses_a_directory_on_a_mount_inside_the_volume() {
+    let _gate = super::state_attach_probe::enforce();
+    let fs = fs_with(&decoy_table(
+        "11 10 0:50 / /mnt/data/var rw - tmpfs tmpfs rw\n",
+    ));
+    let root = Path::new("/mnt/data");
+    let error = super::ensure_state_dir_attached(&fs, root, &root.join("var/state"))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("another filesystem (/mnt/data/var)"),
+        "{error}"
+    );
+}
+
+#[test]
+fn the_state_gate_refuses_a_directory_outside_the_root() {
+    let _gate = super::state_attach_probe::enforce();
+    let fs = fs_with(&decoy_table(""));
+    let error = super::ensure_state_dir_attached(&fs, Path::new("/mnt/data"), Path::new("/home"))
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("is not inside the hidden root"), "{error}");
+}
+
+#[test]
+fn the_state_gate_refuses_what_the_gate_refuses() {
+    let _gate = super::state_attach_probe::enforce();
+    let fs = fs_with(&decoy_table("11 10 0:50 / /mnt/data rw - tmpfs tmpfs rw\n"));
+    let root = Path::new("/mnt/data");
+    let error = super::ensure_state_dir_attached(&fs, root, root)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("two filesystems are mounted"), "{error}");
+}
+
+#[test]
+fn a_volume_mounted_at_the_root_is_attached() {
+    let fs = fs_with(&decoy_table(""));
+    assert_eq!(
+        HiddenRoot::assess(&fs, Path::new("/mnt/data")).unwrap(),
+        Assessment::Attached
+    );
+}
+
+#[test]
+fn a_plain_directory_names_the_filesystem_it_is_on() {
+    // A folder on a separate /home partition has a device of its own, which
+    // the old device-only test took for a mounted volume.
+    let fs = fs_with(&decoy_table(""));
+    fs.mock_set_path_exists("/home/op/vault", true);
+    let refused = refusal(&fs, "/home/op/vault");
+    assert_eq!(
+        refused.kind,
+        RefusalKind::NotAMountPoint {
+            mount_point: PathBuf::from("/home")
+        }
+    );
+    assert!(
+        refused
+            .reason
+            .contains("is not a mount point: it is a folder on the filesystem mounted at /home"),
+        "{}",
+        refused.reason
+    );
+
+    fs.mock_set_path_exists("/srv/vault", true);
+    assert_eq!(
+        refusal(&fs, "/srv/vault").kind,
+        RefusalKind::NotAMountPoint {
+            mount_point: PathBuf::from("/")
+        }
+    );
+}
+
+#[test]
+fn a_root_covered_by_a_mount_on_its_parent_is_no_mount_point() {
+    // The volume stays in the table, but a lookup of /mnt/data now ends in
+    // the tmpfs mounted on /mnt.
+    let fs = fs_with(&decoy_table("11 1 0:50 / /mnt rw - tmpfs tmpfs rw\n"));
+    assert_eq!(
+        refusal(&fs, "/mnt/data").kind,
+        RefusalKind::NotAMountPoint {
+            mount_point: PathBuf::from("/mnt")
+        }
+    );
+}
+
+#[test]
+fn two_filesystems_at_the_root_are_refused_naming_both() {
+    let fs = fs_with(&decoy_table(
+        "11 10 8:16 / /mnt/data rw - vfat /dev/sdb1 rw\n",
+    ));
+    let refused = refusal(&fs, "/mnt/data");
+    assert_eq!(
+        refused.kind,
+        RefusalKind::Covered {
+            below: PathBuf::from("/dev/mapper/data"),
+            above: PathBuf::from("/dev/sdb1"),
+        }
+    );
+    assert!(
+        refused.reason.contains(
+            "two filesystems are mounted at /mnt/data: /dev/mapper/data, then /dev/sdb1 over it"
+        ),
+        "{}",
+        refused.reason
+    );
+}
+
+#[test]
+fn a_bind_of_the_same_volume_stacked_on_the_root_is_one_filesystem() {
+    let fs = fs_with(&decoy_table(
+        "11 10 253:0 / /mnt/data ro - ext4 /dev/mapper/data rw\n",
+    ));
+    assert!(
+        HiddenRoot::assess(&fs, Path::new("/mnt/data"))
+            .unwrap()
+            .is_attached()
+    );
+}
+
+#[test]
+fn an_unreadable_mount_table_refuses() {
+    let fs = fs_with(&decoy_table(""));
+    fs.mock_set_mount_table_error("permission denied");
+    let refused = refusal(&fs, "/mnt/data");
+    assert_eq!(refused.kind, RefusalKind::MountTableUnreadable);
+    assert!(
+        refused.reason.contains("the mount table cannot be read"),
+        "{}",
+        refused.reason
+    );
+}
+
+#[test]
+fn in_the_session_the_recorded_volume_is_attached() {
+    let fs = fs_with(&session_table(HIDDEN_MOUNT));
+    write_plan(&fs, Some("253:0"));
+    assert_eq!(
+        HiddenRoot::assess(&fs, Path::new("/mnt/data")).unwrap(),
+        Assessment::Attached
+    );
+}
+
+#[test]
+fn in_the_session_a_disk_over_the_root_is_refused() {
+    let covered = format!("{HIDDEN_MOUNT}11 10 8:16 / /mnt/data rw - vfat /dev/sdb1 rw\n");
+    let fs = fs_with(&session_table(&covered));
+    write_plan(&fs, Some("253:0"));
+    assert!(matches!(
+        refusal(&fs, "/mnt/data").kind,
+        RefusalKind::Covered { .. }
+    ));
+}
+
+#[test]
+fn in_the_session_another_disk_in_place_of_the_volume_is_refused() {
+    // The hidden volume went away and a stick was mounted at its mount point.
+    let fs = fs_with(&session_table(
+        "12 1 8:16 / /mnt/data rw - vfat /dev/sdb1 rw\n",
+    ));
+    write_plan(&fs, Some("253:0"));
+    let refused = refusal(&fs, "/mnt/data");
+    assert_eq!(
+        refused.kind,
+        RefusalKind::NotTheSessionVolume {
+            source: PathBuf::from("/dev/sdb1")
+        }
+    );
+    assert!(
+        refused
+            .reason
+            .contains("is not the volume this session started from"),
+        "{}",
+        refused.reason
+    );
+}
+
+#[test]
+fn in_the_session_an_older_plan_falls_back_to_the_upper() {
+    let fs = fs_with(&session_table(HIDDEN_MOUNT));
+    write_plan(&fs, None);
+    // The upper sits on the root's device: the session's own volume.
+    fs.mock_set_device_id(Path::new("/mnt/data/root/upper"), VOLUME_DEVICE);
+    assert!(
+        HiddenRoot::assess(&fs, Path::new("/mnt/data"))
+            .unwrap()
+            .is_attached()
+    );
+
+    // No upper on the filesystem at the root: not the session's volume.
+    let fs = fs_with(&session_table(HIDDEN_MOUNT));
+    assert!(matches!(
+        refusal(&fs, "/mnt/data").kind,
+        RefusalKind::NotTheSessionVolume { .. }
+    ));
+}
+
+#[test]
+fn outside_the_session_no_plan_is_consulted() {
+    // A plan in /run that records another device does not matter on the decoy.
+    let fs = fs_with(&decoy_table(""));
+    write_plan(&fs, Some("8:99"));
+    assert!(
+        HiddenRoot::assess(&fs, Path::new("/mnt/data"))
+            .unwrap()
+            .is_attached()
+    );
+}
+
+#[test]
+fn attached_when_root_is_its_own_device() {
+    let root = PathBuf::from("/mnt/data");
+    let fs = attached_fs(&root);
+    let state = HiddenRoot::verify_attached(&fs, &root, false).unwrap();
+    assert_eq!(state, AttachState::Attached);
+}
+
+#[test]
+fn unattached_when_root_shares_device_with_slash() {
+    // A mount point whose filesystem is `/`'s own, as a bind of `/` is.
+    let root = PathBuf::from("/mnt/data");
+    let fs = attached_fs(&root);
+    fs.mock_set_device_id(&root, ROOT_DEVICE);
+
+    let state = HiddenRoot::verify_attached(&fs, &root, false).unwrap();
+    assert!(!state.is_attached());
+    assert!(state.reason().unwrap().contains("shares a device with /"));
+    assert_eq!(
+        refusal(&fs, "/mnt/data").kind,
+        RefusalKind::SameDeviceAsRoot
+    );
+}
+
+#[test]
+fn unattached_when_root_missing() {
+    let root = PathBuf::from("/mnt/data");
+    let fs = MockFilesystem::new();
+    let state = HiddenRoot::verify_attached(&fs, &root, false).unwrap();
+    assert!(!state.is_attached());
+    assert!(state.reason().unwrap().contains("does not exist"));
+    assert_eq!(refusal(&fs, "/mnt/data").kind, RefusalKind::Missing);
+}
+
+#[test]
+fn unattached_when_marker_required_but_absent() {
+    let root = PathBuf::from("/mnt/data");
+    let fs = attached_fs(&root);
+    let state = HiddenRoot::verify_attached(&fs, &root, true).unwrap();
+    assert!(!state.is_attached());
+    assert!(state.reason().unwrap().contains("no NAILS marker"));
+}
+
+#[test]
+fn attached_with_marker_via_state_file() {
+    let root = PathBuf::from("/mnt/data");
+    let fs = attached_fs(&root);
+    fs.mock_set_path_exists("/mnt/data/state.json", true);
+    let state = HiddenRoot::verify_attached(&fs, &root, true).unwrap();
+    assert_eq!(state, AttachState::Attached);
+}
+
+#[test]
+fn attached_with_marker_via_config_file() {
+    let root = PathBuf::from("/mnt/data");
+    let fs = attached_fs(&root);
+    fs.mock_set_path_exists("/mnt/data/config/nails.toml", true);
+    let state = HiddenRoot::verify_attached(&fs, &root, true).unwrap();
+    assert_eq!(state, AttachState::Attached);
+}
+
+#[test]
+fn init_bypasses_marker_requirement() {
+    // `init` runs with require_marker = false so a freshly mounted, empty
+    // volume can be initialised.
+    let root = PathBuf::from("/mnt/data");
+    let fs = attached_fs(&root);
+    let state = HiddenRoot::verify_attached(&fs, &root, false).unwrap();
+    assert_eq!(state, AttachState::Attached);
+}
+
+#[test]
+fn a_subdirectory_of_an_attached_volume_is_no_hidden_root() {
+    // A folder inside the volume is no mount point; the state gate accepts it
+    // as a state directory under the root instead.
+    let root = PathBuf::from("/mnt/data");
+    let fs = attached_fs(&root);
+    fs.mock_set_path_exists("/mnt/data/logs", true);
+    let state = HiddenRoot::verify_attached(&fs, &root.join("logs"), false).unwrap();
+    assert!(!state.is_attached());
+}
+
+#[test]
+fn empty_root_is_unattached() {
+    let fs = MockFilesystem::new();
+    let state = HiddenRoot::verify_attached(&fs, Path::new(""), false).unwrap();
+    assert!(!state.is_attached());
+    assert_eq!(refusal(&fs, "").kind, RefusalKind::NotConfigured);
+}
+
+/// The gate on the real kernel, in an unprivileged user + mount namespace.
+mod kernel_tests {
+    use super::super::{Assessment, HiddenRoot, RefusalKind};
+    use crate::RealFilesystem;
+    use crate::test_support::{Rerun, ScratchTmpfs};
+    use std::path::Path;
+
+    fn kind(root: &Path) -> Option<RefusalKind> {
+        match HiddenRoot::assess(&RealFilesystem, root).unwrap() {
+            Assessment::Attached => None,
+            Assessment::Refused(refusal) => Some(refusal.kind),
+        }
+    }
+
+    #[test]
+    fn a_tmpfs_is_attached_and_a_second_one_over_it_is_refused() {
+        let _ = Rerun::new(crate::test_path!(
+            a_tmpfs_is_attached_and_a_second_one_over_it_is_refused
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let volume = ScratchTmpfs::new("");
+            assert_eq!(kind(volume.path()), None);
+
+            nix::mount::mount(
+                Some("other"),
+                volume.path(),
+                Some("tmpfs"),
+                nix::mount::MsFlags::empty(),
+                Some("mode=0755"),
+            )
+            .expect("mount a second tmpfs over the first");
+            assert!(
+                matches!(kind(volume.path()), Some(RefusalKind::Covered { .. })),
+                "{:?}",
+                kind(volume.path())
+            );
+        });
+    }
+
+    #[test]
+    fn a_plain_directory_is_refused() {
+        let _ = Rerun::new(crate::test_path!(a_plain_directory_is_refused))
+            .in_user_mount_ns()
+            .run(|| {
+                let volume = ScratchTmpfs::new("");
+                let folder = volume.mkdir("folder");
+                assert_eq!(
+                    kind(&folder),
+                    Some(RefusalKind::NotAMountPoint {
+                        mount_point: volume.path().canonicalize().unwrap()
+                    })
+                );
+                // A temp directory on whatever backs TMPDIR is no volume either.
+                let plain = tempfile::tempdir().unwrap();
+                assert!(matches!(
+                    kind(plain.path()),
+                    Some(RefusalKind::NotAMountPoint { .. })
+                ));
+            });
+    }
+
+    #[test]
+    fn a_bind_of_the_root_filesystem_is_refused_by_the_backstop() {
+        let _ = Rerun::new(crate::test_path!(
+            a_bind_of_the_root_filesystem_is_refused_by_the_backstop
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let target = tempfile::tempdir().unwrap();
+            nix::mount::mount(
+                Some("/"),
+                target.path(),
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
+                None::<&str>,
+            )
+            .expect("bind / at a scratch path");
+            let refused = kind(target.path());
+            let _ = nix::mount::umount2(target.path(), nix::mount::MntFlags::MNT_DETACH);
+            assert_eq!(refused, Some(RefusalKind::SameDeviceAsRoot));
+        });
+    }
+}

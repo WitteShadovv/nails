@@ -14,6 +14,7 @@ fn plan(root: &Path) -> Plan {
     Plan {
         version: PLAN_VERSION,
         hidden_root: root.to_path_buf(),
+        hidden_dev: None,
         upper: root.join("root/upper"),
         work: root.join("root/work"),
         owner: None,

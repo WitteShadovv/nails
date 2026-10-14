@@ -51,8 +51,9 @@ fn attached_mock(root: &Path) -> MockFilesystem {
     fs.mock_set_path_type(root.to_str().unwrap(), PathKind::Dir);
     fs.mock_set_writable(root.to_str().unwrap(), true);
     fs.mock_set_supports_symlinks(root, true);
-    // The default mock device id for an unmapped path is distinct from `/`'s, so
-    // `root` already reads as a mounted volume of its own.
+    // A volume mounted there; the default mock device id for an unmapped path
+    // is distinct from `/`'s, so it is a filesystem of its own.
+    fs.mock_set_mounted(root, true);
     fs
 }
 

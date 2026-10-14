@@ -99,6 +99,23 @@ impl MockFilesystem {
         table
     }
 
+    /// [`mount_table_impl`](Self::mount_table_impl), or the error a test set
+    /// with [`mock_set_mount_table_error`](Self::mock_set_mount_table_error).
+    pub(super) fn mount_table_result(&self) -> Result<Vec<MountEntry>> {
+        if let Some(message) = self
+            .mount_table_error
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clone()
+        {
+            return Err(NailsError::io(
+                Path::new("/proc/self/mountinfo"),
+                std::io::Error::other(message),
+            ));
+        }
+        Ok(self.mount_table_impl())
+    }
+
     pub(super) fn is_mounted_impl(&self, target: &Path) -> Result<bool> {
         if let Some(message) = self
             .is_mounted_errors

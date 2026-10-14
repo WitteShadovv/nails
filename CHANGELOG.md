@@ -587,6 +587,15 @@ config and CLI surfaces; there are no compatibility shims.
 
 ### Fixed
 
+- Nothing is written to a hidden root that is not a volume of its own. The attach gate behind
+  `init`, `activate`, the state file, its `.lock`, the log file and `rehearse` compared only the
+  root's device with `/`'s, so a plain folder on a separate `/home` or `/boot` partition, or a
+  btrfs subvolume inside the decoy's filesystem, passed, and `init` wrote the layout onto the decoy's own disk. The gate now
+  needs a mount point at the root, refuses a second filesystem mounted over it (naming both), and
+  in the hidden session accepts only the volume the session started from, whose device the entry
+  records in the session plan; a disk mounted over the hidden root during the session no longer
+  receives logs, the state file, `.lock` or the backend watcher's write probe, and the watcher
+  writes nothing while the root is covered.
 - The mount queries answer for the mount a lookup of the path reaches. A mount covered by a later
   mount on its parent directory no longer counts as mounted, and of two filesystems stacked on one
   mount point the one on top gives the type, source and read-only flag, where the first or the last

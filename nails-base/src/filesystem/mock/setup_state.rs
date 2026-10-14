@@ -58,6 +58,16 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned") = Some(mountinfo.to_string());
     }
 
+    /// Make [`mount_table`](crate::Filesystem::mount_table) fail with
+    /// `message`, as a mount table that cannot be read does. The other mount
+    /// queries are unaffected.
+    pub fn mock_set_mount_table_error(&self, message: &str) {
+        *self
+            .mount_table_error
+            .lock()
+            .expect("MockFilesystem mutex poisoned") = Some(message.to_string());
+    }
+
     /// Set whether a path is mounted.
     pub fn mock_set_mounted(&self, path: &Path, mounted: bool) {
         let mut mounts = self.mounted.lock().expect("MockFilesystem mutex poisoned");
@@ -192,10 +202,10 @@ impl MockFilesystem {
     /// Set the device id reported for a path by
     /// [`Filesystem::device_id`](crate::Filesystem::device_id).
     ///
-    /// Map a path onto the same id as `/` to make the attach gate treat it as an
-    /// unmounted mount point; give it a distinct id to simulate a mounted hidden
-    /// volume. Unset paths already report distinct ids, so only the "shares a
-    /// device with /" case needs an explicit call.
+    /// Unset paths report distinct ids. The attach gate needs a mount at the
+    /// hidden root ([`mock_set_mounted`](Self::mock_set_mounted) or an explicit
+    /// table); mapping that root onto `/`'s id makes it a mount of `/`'s own
+    /// filesystem, which the gate's backstop refuses.
     pub fn mock_set_device_id(&self, path: &Path, device_id: u64) {
         self.device_ids
             .lock()

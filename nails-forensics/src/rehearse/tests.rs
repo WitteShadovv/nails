@@ -46,11 +46,9 @@ fn the_state_is_refused_on_an_unmounted_hidden_root() {
     let root = Path::new("/mnt/data");
     fs.mock_set_path_exists("/mnt/data", true);
     fs.mock_set_path_exists("/mnt/data/state.json", true);
-    let slash = fs.device_id(Path::new("/")).unwrap();
-    fs.mock_set_device_id(root, slash);
 
     let err = save_state(&fs, root, &state(TOKEN)).unwrap_err();
-    assert!(err.to_string().contains("shares a device with /"), "{err}");
+    assert!(err.to_string().contains("is not a mount point"), "{err}");
     assert!(
         fs.get_written_content(&root.join(state_relative_path()))
             .is_none()

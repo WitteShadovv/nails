@@ -44,6 +44,9 @@ pub fn plan_path() -> PathBuf {
 pub struct RuntimeManifest {
     /// The configured hidden volume root at activation.
     pub hidden_root: PathBuf,
+    /// The device of the hidden volume's mount at entry (see
+    /// [`Plan::hidden_dev`](nails_teardown::whole_root::plan::Plan::hidden_dev)).
+    pub hidden_dev: Option<String>,
     /// The overlay targets that were mounted, in activation order.
     pub overlay_targets: Vec<PathBuf>,
 }
@@ -55,6 +58,7 @@ impl RuntimeManifest {
     pub fn from_plan(plan: &nails_teardown::whole_root::plan::Plan) -> Self {
         Self {
             hidden_root: plan.hidden_root.clone(),
+            hidden_dev: plan.hidden_dev.clone(),
             overlay_targets: Vec::new(),
         }
     }
@@ -121,6 +125,7 @@ mod tests {
         let plan = nails_teardown::whole_root::plan::Plan {
             version: nails_teardown::whole_root::plan::PLAN_VERSION,
             hidden_root: config.hidden_volume_root.clone(),
+            hidden_dev: Some("253:0".to_string()),
             upper: config.hidden_volume_root.join("root/upper"),
             work: config.hidden_volume_root.join("root/work"),
             owner: None,
@@ -148,6 +153,7 @@ mod tests {
 
         let manifest = read_manifest(&fs).unwrap().expect("plan present");
         assert_eq!(manifest.hidden_root, config.hidden_volume_root);
+        assert_eq!(manifest.hidden_dev.as_deref(), Some("253:0"));
         assert!(manifest.overlay_targets.is_empty());
     }
 

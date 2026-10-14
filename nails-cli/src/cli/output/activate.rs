@@ -272,6 +272,7 @@ mod tests {
             plan: Plan {
                 version: PLAN_VERSION,
                 hidden_root: "/mnt/data".into(),
+                hidden_dev: None,
                 upper: "/mnt/data/root/upper".into(),
                 work: "/mnt/data/root/work".into(),
                 owner: None,

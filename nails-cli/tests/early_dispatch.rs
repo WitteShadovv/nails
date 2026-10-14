@@ -145,6 +145,7 @@ mod kernel_tests {
             let plan = Plan {
                 version: PLAN_VERSION,
                 hidden_root: hidden.path().to_path_buf(),
+                hidden_dev: None,
                 upper,
                 work,
                 owner: None,

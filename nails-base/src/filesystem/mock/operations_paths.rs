@@ -23,9 +23,9 @@ impl MockFilesystem {
         {
             return Ok(id);
         }
-        // Default: a stable, per-path distinct id so an unmapped path reads as a
-        // mounted filesystem of its own (different from `/`). A test that wants a
-        // path to look unattached maps it onto `/`'s id with `mock_set_device_id`.
+        // Default: a stable, per-path distinct id, different from `/`'s. A test
+        // that wants two paths on one filesystem maps them onto one id with
+        // `mock_set_device_id`.
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();

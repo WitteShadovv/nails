@@ -181,6 +181,13 @@ pub struct Plan {
     pub version: u32,
     /// The hidden volume root.
     pub hidden_root: PathBuf,
+    /// The device (`major:minor`, as the mount table shows it) of the mount at
+    /// the hidden root when the entry began. In the session the attach gate
+    /// accepts the root only while this device is mounted there, so a disk
+    /// mounted over the hidden root receives no write. Absent from a plan
+    /// written before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_dev: Option<String>,
     /// The root overlay's upper directory on the hidden volume.
     pub upper: PathBuf,
     /// The root overlay's work directory on the hidden volume.
@@ -344,6 +351,7 @@ pub(crate) fn sample() -> Plan {
     Plan {
         version: PLAN_VERSION,
         hidden_root: PathBuf::from("/mnt/data"),
+        hidden_dev: None,
         upper: PathBuf::from("/mnt/data/root/upper"),
         work: PathBuf::from("/mnt/data/root/work"),
         owner: Some(Owner {
@@ -391,6 +399,22 @@ mod tests {
     fn a_plan_round_trips_through_its_file_format() {
         let plan = sample();
         assert_eq!(Plan::from_json(&plan.to_json()).unwrap(), plan);
+    }
+
+    #[test]
+    fn the_hidden_device_is_kept_and_a_plan_without_it_still_loads() {
+        let recorded = Plan {
+            hidden_dev: Some("253:0".to_string()),
+            ..sample()
+        };
+        let text = recorded.to_json();
+        assert!(text.contains("\"hidden_dev\":\"253:0\""), "{text}");
+        assert_eq!(Plan::from_json(&text).unwrap(), recorded);
+
+        // A plan written before the field existed has no key at all.
+        let older = sample().to_json();
+        assert!(!older.contains("hidden_dev"), "{older}");
+        assert_eq!(Plan::from_json(&older).unwrap().hidden_dev, None);
     }
 
     #[test]

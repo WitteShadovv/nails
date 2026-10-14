@@ -196,7 +196,12 @@ pub fn execute(
         }
     }
 
-    let _state_lock = match super::acquire_state_lock_or_report(&state_path, "activate", json) {
+    let _state_lock = match super::acquire_state_lock_or_report(
+        &manager.config().hidden_volume_root,
+        &state_path,
+        "activate",
+        json,
+    ) {
         Ok(lock) => lock,
         Err(status) => return status,
     };
