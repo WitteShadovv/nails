@@ -3390,6 +3390,8 @@ Owns: `nails-base/src/naming.rs`, `nails-base/src/fstab.rs`, `nails-base/src/cry
   - The block-device walk has no test on captured kernel output yet (`docs/testing-strategy.md`, rule 1): `the_captured_lvm_on_luks_scene_is_walked_to_its_partition` returns early until `nails-base/tests/fixtures/kernel/vm/blockdev-lvm-on-luks.txt` exists, and neither the `blockdev` capture mode nor the `research-blockdev-fixtures` VM test has run. The capture needs root and device-mapper, so it runs in a VM: `nix build .#e2e.research-blockdev-fixtures -L`, then review `result/kernel-fixtures/blockdev-lvm-on-luks.txt` and commit it to that directory.
   - NAILS reads the decoy's files with `O_NOATIME` (`read_in_root`, and the `nails-base` noatime reads behind `RealFilesystem`), which covers the opened file alone. Any lookup that follows a symlink on the decoy's root, an existence test as much as a read, updates the link's access time (under `relatime`, at most once a day). On NixOS most files the system generates under `/etc` are links into `/etc/static`, itself a link, so `check` and `activate` leave this trace in the fstab read, in the systemd-configuration probe (`/etc/systemd/journald.conf`, `logind.conf`), in the platform detection's read of `/etc/os-release` and in other reads of a generated file. Other distributions have such links too: on Debian and Ubuntu `/etc/os-release` is a link to `../usr/lib/os-release`. Avoiding that needs every such lookup to go through a view of the root mounted `noatime`; take that step or name the trace in `docs/threat-model.md` for every lookup that follows a link, not the fstab read alone.
 
+  - Every command that consults the attach gate runs its storage judge, `status` and `verify` included (owner decision, 2026-10-14: keep it). The judge reads `/etc/fstab` and `/etc/crypttab` with `O_NOATIME` and walks sysfs, so on NixOS it adds to the link access-time trace above, and an unprivileged `status` or `verify` on a distribution whose crypttab only root may read logs to stderr only. Decide together with the trace whether read-only commands should skip the judge.
+
   **Done when:** the capture is committed and its test runs and passes, and the links' access-time trace is avoided or named in the threat model.
 
 ### WS-C2: One attach gate
@@ -3402,7 +3404,25 @@ Owns: `nails-base/src/hidden_root/`, the attach-gate tests of `nails-cli`
 
   The attach gate (`HiddenRoot::assess`) needs a mount point at the root, one filesystem there, the session's own volume in the session, and, outside it, storage the decoy does not use: the judge in `hidden_root/separation/` reads the mount table, `/etc/fstab`, `/etc/crypttab` and sysfs. Every refusal is reported with one neutral text and a code (`not_separate_volume`, `root_covered`, `storage_unjudged`, exit 4) by `init`, `activate`, `check`, `rehearse plant`, `deactivate` and `reset-upper`, before anything is written or probed. `--allow-decoy-storage` (`init`, `activate`, `check`) turns decoy storage into a warning, recorded in the session plan and shown by `status`; a folder is always refused, and so is a filesystem that shows no disk it stores its data on (an overlay, FUSE, a network filesystem). The `backend-entries` check refuses a decoy crypttab or fstab line for the hidden volume, `activate --no-preflight` included. VM coverage: `preflight-decoy-filesystem`, the covered-root subtest of `session-emergency`, scenarios 47 and 13, and the distro smoke.
 
-  **Done when:** merged to `next` with the full NixOS VM suite and the Debian 13 and Ubuntu 24.04 smoke tests green, and the owner's open questions from phase 1b answered (see the phase 1b report).
+  The owner's answers to the phase 1b questions are applied (2026-10-14): the flag is `--allow-decoy-storage`; a loop image's filesystem is found by device; refusals name no device; `check` says the refusal first; the open points are T-159 and T-160, and the judge on read-only commands is part of T-156.
+
+  **Done when:** merged to `next` with the full NixOS VM suite and the Debian 13 and Ubuntu 24.04 smoke tests green.
+
+- [ ] **T-159: Let a tcrypt line for the outer volume of the hidden drive only warn once P1 has verified the size rule** (medium · effort S)
+
+  _Status (2026-10-14): waiting for P1. A decoy crypttab line with `tcrypt` (not `tcrypt-hidden`) for the very device the hidden mapping is opened from, such as the outer volume of the same VeraCrypt drive, is a Blocking `backend-entries` finding: until setup step 1c.10's size rule is verified, the open mapping cannot be told from the outer volume (owner decision, 2026-10-14)._
+
+  In `nails-base/src/hidden_root/separation/judge.rs` (`claims`, the crypttab loop), turn that finding into `EntryKind::OuterWarning` once P1 shows that the size rule tells the outer volume from the hidden one, and only for a line the rule places on the outer volume. Update the judge's and `backend-entries`' tests, `docs/decoy-requirements.md` and the threat model.
+
+  **Done when:** P1's result is recorded, and the line warns or the reason it keeps blocking is written down.
+
+- [ ] **T-160: Follow a ZFS dataset to the disks of its pool** (low · effort M)
+
+  _Status (2026-10-14): not started. A hidden root on a ZFS dataset, and an image file on one the decoy does not mount at `/`, a system folder or an fstab line, are refused as `storage_unjudged` ("is on a filesystem of type zfs, which shows no disk it stores its data on"), even on a pool of its own; an overlay at the root is refused the same way. Both stay refused, with that message, until this is done (owner decision, 2026-10-14)._
+
+  A dataset's mount shows only an anonymous device and `pool/dataset`. Read the pool's vdevs (from `/sys/fs/zfs` or `/proc/spl/kstat/zfs/<pool>`, without running `zpool`), add them to the judge's `DeviceMap` as the dataset's devices, and judge the root as any other block-device filesystem; a container file on a decoy dataset then follows `CONTAINER_VERDICT`.
+
+  **Done when:** the judge follows a dataset to its pool's disks, with scene tests for a pool of its own and one shared with the decoy.
 
 - [ ] **T-157: Remove the unit-test seam from the state attach gate** (low · effort M)
 
