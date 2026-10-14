@@ -19,7 +19,7 @@
 //! of the words that say what the program is for; the only names in it are the
 //! paths of this computer and the root the operator typed.
 
-use super::separation::{Sharing, Verdict};
+use super::separation::{SYS_CLASS_BLOCK, Sharing, Verdict};
 use super::{Refusal, RefusalKind};
 use std::path::Path;
 
@@ -159,6 +159,17 @@ impl Refusal {
             }
             RefusalKind::NotTheSessionVolume { .. } => {
                 vec!["Unmount what was mounted over it, then run the command again.".into()]
+            }
+            // sudo alone does not bring back a list of block devices that
+            // is missing because /sys is not mounted.
+            RefusalKind::StorageUnjudged { unreadable }
+                if unreadable.iter().any(|p| p == Path::new(SYS_CLASS_BLOCK)) =>
+            {
+                vec![
+                    "Run the command again as root, on the host rather than in a container, \
+                     with /sys mounted."
+                        .into(),
+                ]
             }
             RefusalKind::StorageUnjudged { .. } => {
                 vec!["Run the command again with sudo.".into()]
@@ -407,6 +418,26 @@ mod tests {
             );
             assert!(!Allow::Nothing.covers(&refusal.kind), "{refusal:?}");
         }
+    }
+
+    #[test]
+    fn an_unlisted_sysfs_asks_for_the_host_not_only_for_sudo() {
+        let hint = |unreadable: &[&str]| {
+            Refusal::new(
+                RefusalKind::StorageUnjudged {
+                    unreadable: unreadable.iter().map(PathBuf::from).collect(),
+                },
+                Path::new("/mnt"),
+            )
+            .hint(None)
+        };
+        assert_eq!(hint(&["/etc/crypttab"]), ["Run the command again with sudo."]);
+        let sysfs = [
+            "Run the command again as root, on the host rather than in a container, with /sys \
+             mounted.",
+        ];
+        assert_eq!(hint(&["/sys/class/block"]), sysfs);
+        assert_eq!(hint(&["/etc/crypttab", "/sys/class/block"]), sysfs);
     }
 
     #[test]

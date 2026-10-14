@@ -77,6 +77,8 @@ const SYSTEM_MOUNTS: &[&str] = &[
 pub const FSTAB: &str = "/etc/fstab";
 /// The file the crypttab entries come from.
 pub const CRYPTTAB: &str = "/etc/crypttab";
+/// Where the kernel lists every block device.
+pub const SYS_CLASS_BLOCK: &str = "/sys/class/block";
 
 /// Upper bound on the devices visited below one device.
 const MAX_WALK: usize = 32;

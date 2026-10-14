@@ -22,7 +22,7 @@
 #[path = "collect_tests.rs"]
 mod tests;
 
-use super::DeviceMap;
+use super::{DeviceMap, SYS_CLASS_BLOCK};
 use super::{Judgement, Node, NodeKind, Scene, judge};
 use crate::Filesystem;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow};
@@ -31,9 +31,6 @@ use crate::filesystem::mountinfo::MountEntry;
 use crate::fstab::{FstabEntry, parse_fstab};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-
-/// Where the kernel lists every block device.
-const SYS_CLASS_BLOCK: &str = "/sys/class/block";
 
 /// Everything the judge reads besides the mount table.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

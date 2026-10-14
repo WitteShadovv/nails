@@ -261,12 +261,13 @@ rehearsal state all ask it first. It refuses:
 - a root with a second filesystem mounted over it (`root_covered`), and in the
   hidden session a root whose filesystem is not the one the session started
   from: the writes would reach the disk on top;
-- a root whose storage cannot be judged because `/etc/fstab`, `/etc/crypttab`
-  or the block devices in sysfs cannot be read (`storage_unjudged`; run the
-  command with sudo), or because its filesystem shows no disk it stores its
-  data on: an overlay, a FUSE, network or ZFS filesystem, or an image file on
-  one that is not mounted at `/` or a system folder such as `/home`
-  (`storage_unjudged`).
+- a root whose storage cannot be judged because `/etc/fstab` or
+  `/etc/crypttab` cannot be read (`storage_unjudged`; run the command with
+  sudo), or the block devices in `/sys/class/block` cannot be listed
+  (`storage_unjudged`; run it as root on the host, with `/sys` mounted), or
+  because its filesystem shows no disk it stores its data on: an overlay, a
+  FUSE, network or ZFS filesystem, or an image file on one that is not mounted
+  at `/` or a system folder such as `/home` (`storage_unjudged`).
 
 An encrypted container file on a decoy filesystem only warns: filesystem
 journals and copy-on-write snapshots of that filesystem can keep old copies of
