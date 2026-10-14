@@ -149,7 +149,8 @@ config and CLI surfaces; there are no compatibility shims.
 - `nails emergency --countdown <SECS>` (opt-in, with a Ctrl+C hint) and `--poweroff`/`--reboot`
   in place of the soft-reboot back; the result names the action enqueued and any fallback, the
   mappings marked for closing, the cgroups and processes killed, the timed phases and any mount
-  left behind, and an emergency that leaves a mount behind exits 7.
+  left behind, and an emergency that leaves a mount behind, or can only ask the kernel to power
+  off, exits 7.
 - Root `--help` explains the workflow and lists exit codes, every command has EXAMPLES, and path
   arguments carry shell value hints.
 - Fault-injection E2E group (`faults`) and a strict hidden-volume teardown helper that fails and
