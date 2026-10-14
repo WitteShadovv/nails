@@ -122,11 +122,14 @@ in
         with subtest("log files on an attached hidden volume are mode 0600"):
             # A writing command on a positively attached, writable volume creates its
             # log file. It lives on the hidden volume and must be owner-only so it is
-            # never group- or world-readable.
-            run_command_capture(
+            # never group- or world-readable. A dry run is `check` and opens no log;
+            # activate without -y opens it and then refuses, off a terminal, before
+            # anything else.
+            result = run_command_capture(
                 "preflight-hidden-log-mode",
-                "nails --config /tmp/preflight-readonly.toml activate --dry-run --overlay-only --ascii",
+                "nails --config /tmp/preflight-readonly.toml activate --overlay-only --ascii < /dev/null",
             )
+            assert_exit_code(result, 2)
             machine.succeed("test -f /mnt/data/logs/nails.log")
             log_mode = machine.succeed("stat -c %a /mnt/data/logs/nails.log").strip()
             assert log_mode == "600", f"log file mode is {log_mode}, expected 600"

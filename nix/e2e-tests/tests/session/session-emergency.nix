@@ -146,13 +146,17 @@ in
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         canonical_activate(CONFIG, "--overlay-only", "activate-covered")
         session.assert_hidden_root(machine)
+        # The configuration on the volume is hidden by the disk on top, so
+        # the commands below read a copy in /run.
+        covered_config = "/run/covered.toml"
+        machine.succeed(f"cp {CONFIG} {covered_config}")
         machine.succeed(
             "mkfs.ext4 -q -L scratch /dev/disk/by-id/virtio-scratch && "
             "mount /dev/disk/by-id/virtio-scratch /mnt/data"
         )
         scratch_times = machine.succeed("stat -c '%Y %Z' /mnt/data").strip()
         rc, out = machine.execute(
-            f"nails --config {CONFIG} --json deactivate -y 2>/dev/null"
+            f"nails --config {covered_config} --json deactivate -y 2>/dev/null"
         )
         assert rc == 4, (rc, out)
         assert '"code":"root_covered"' in out, out
@@ -160,7 +164,7 @@ in
         # The state lock refuses the covered root, but emergency proceeds
         # without it and leaves anyway.
         timings = session.follow_soft_reboot(
-            machine, f"nails --config {CONFIG} emergency", "emergency-covered"
+            machine, f"nails --config {covered_config} emergency", "emergency-covered"
         )
         machine.log(f"emergency timings: {timings}")
         session.assert_decoy_root(machine)

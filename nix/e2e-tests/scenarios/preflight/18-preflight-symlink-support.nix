@@ -37,8 +37,10 @@ in
         machine.wait_for_unit("multi-user.target")
 
         with subtest("fat hidden volume is rejected before staging config symlinks"):
+            # The image lives on the /run tmpfs: an image file on the decoy's own
+            # disk is refused by the attach gate before the symlink check runs.
             machine.succeed(
-                    "bash -lc 'truncate -s 96M /tmp/fat-hidden.img && mkfs.vfat /tmp/fat-hidden.img && mkdir -p /mnt/fat-hidden && mount -o loop /tmp/fat-hidden.img /mnt/fat-hidden'"
+                    "bash -lc 'truncate -s 96M /run/fat-hidden.img && mkfs.vfat /run/fat-hidden.img && mkdir -p /mnt/fat-hidden && mount -o loop /run/fat-hidden.img /mnt/fat-hidden'"
                 )
             write_fat_hidden_config("/tmp/preflight-symlink-support.toml")
             result = run_command_capture(
