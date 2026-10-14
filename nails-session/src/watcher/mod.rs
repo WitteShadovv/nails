@@ -26,7 +26,7 @@
 
 mod cover;
 
-pub use cover::{CoverWatch, shadowing_mount};
+pub use cover::CoverWatch;
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use crate::config::BackendWatchConfig;
 use crate::filesystem::Filesystem;
 use crate::runtime_copy::RuntimeManifest;
-use nails_base::hidden_root::{covered_mount, holds_the_session_volume};
+use nails_base::hidden_root::{covered_mount, holds_the_session_volume, shadowing_mount};
 use nails_teardown::mountinfo::{MountEntry, top_mount_at};
 
 /// What the watcher should do in response to one probe result.
@@ -128,6 +128,14 @@ impl BackendProbe {
     }
 }
 
+/// The manifest's hidden root with its symlinks resolved, as the mount table
+/// names it; the recorded path when it cannot be resolved.
+pub fn resolved_root<F: Filesystem>(filesystem: &F, manifest: &RuntimeManifest) -> PathBuf {
+    filesystem
+        .canonicalize(&manifest.hidden_root)
+        .unwrap_or_else(|_| manifest.hidden_root.clone())
+}
+
 /// Probe the hidden backend's health from the recorded manifest.
 ///
 /// Returns [`BackendProbe::Failed`] when the hidden root has become unreachable
@@ -139,7 +147,8 @@ impl BackendProbe {
 /// Before anything is written, the mount at the hidden root must be the volume
 /// the session entered with (the attach gate's session rule, see
 /// [`nails_base::hidden_root::holds_the_session_volume`]); when another
-/// filesystem covers it the probe stops at [`BackendProbe::Covered`].
+/// filesystem covers it, at the root or on one of its parents, the probe stops
+/// at [`BackendProbe::Covered`].
 ///
 /// The health check reads the hidden root's *directory contents* rather than
 /// merely opening it. When the backing device fails in place — a yanked disk, a
@@ -160,11 +169,14 @@ pub fn probe_backend<F: Filesystem>(filesystem: &F, manifest: &RuntimeManifest) 
     let Ok(table) = filesystem.mount_table() else {
         return BackendProbe::Failed;
     };
-    let canonical = filesystem
-        .canonicalize(root)
-        .unwrap_or_else(|_| root.clone());
+    let canonical = resolved_root(filesystem, manifest);
     let Some(visible) = top_mount_at(&table, &canonical) else {
-        return BackendProbe::Failed;
+        // A mount on a parent of the root hides a volume that is still
+        // mounted: a cover, not a failure.
+        return match shadowing_mount(&table, &canonical, manifest.hidden_dev.as_deref()) {
+            Some(_) => BackendProbe::Covered,
+            None => BackendProbe::Failed,
+        };
     };
     if covered_mount(&table, visible).is_some()
         || !holds_the_session_volume(

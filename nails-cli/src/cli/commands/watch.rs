@@ -83,8 +83,10 @@ pub fn execute(
     .ok()
     .filter(|plan| mounts_config.read_only && plan.read_only_disks);
     let sysfs = disk_guard::Sysfs::system();
-    let mut mount_watch = watcher::MountWatch::new(&manifest.hidden_root);
-    let mut cover_watch = watcher::CoverWatch::default();
+    // The mount table names the root with its symlinks resolved.
+    let hidden_root = watcher::resolved_root(&filesystem, &manifest);
+    let mut mount_watch = watcher::MountWatch::new(&hidden_root);
+    let mut cover_watch = watcher::CoverWatch::new(&hidden_root, manifest.hidden_dev.as_deref());
     let is_block = |mount: &MountEntry| disk_guard::mount_device(mount).is_some();
 
     watcher::run_loop(
@@ -119,17 +121,24 @@ pub fn execute(
             // A mount stacked on the hidden root takes every file saved there
             // from now on; the gate refuses NAILS' own writes, the operator is
             // told once per mount.
-            if let Some(cover) = cover_watch.observe(&mounts, &manifest) {
+            if let Some(cover) = cover_watch.observe(&mounts) {
                 tracing::warn!(
-                    mount_point = %manifest.hidden_root.display(),
+                    mount_point = %cover.mount_point.display(),
                     "A disk is mounted over the folder in use"
                 );
-                if let Err(e) = send_immediate(&cover_alert(&cover, &manifest.hidden_root), env) {
+                if let Err(e) = send_immediate(&cover_alert(&cover), env) {
                     tracing::warn!(error = %e, "Could not deliver the cover alert");
                 }
             }
             if mounts_config.alert {
-                for mount in mount_watch.observe(&mounts, &is_block) {
+                // A cover on a parent of the root lies outside it; its own
+                // alert above already names it.
+                let cover = cover_watch.cover(&mounts).map(|m| m.mount_id);
+                for mount in mount_watch
+                    .observe(&mounts, &is_block)
+                    .into_iter()
+                    .filter(|m| Some(m.mount_id) != cover)
+                {
                     tracing::warn!(
                         mount_point = %mount.mount_point.display(),
                         "A disk is mounted read-write"
@@ -162,10 +171,11 @@ fn mount_alert(mount: &MountEntry) -> Notification {
 }
 
 /// The neutral desktop alert raised when a disk is mounted over the hidden
-/// root, `root`: it names the disk and how to take it off again.
-fn cover_alert(cover: &MountEntry, root: &Path) -> Notification {
+/// root, or over one of its parents: it names the disk and how to take it off
+/// again (at the root, the cover's mount point is the root).
+fn cover_alert(cover: &MountEntry) -> Notification {
     let source = cover.source.display();
-    let root = root.display();
+    let root = cover.mount_point.display();
     Notification {
         title: "Disk mounted over a folder in use".to_string(),
         body: format!(
@@ -234,7 +244,7 @@ mod tests {
             source: "/dev/sdc1".into(),
             super_opts: "rw".to_string(),
         };
-        let alert = cover_alert(&cover, Path::new("/mnt"));
+        let alert = cover_alert(&cover);
         assert_eq!(alert.title, "Disk mounted over a folder in use");
         assert_eq!(
             alert.body,

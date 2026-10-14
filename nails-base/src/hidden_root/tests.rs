@@ -183,6 +183,28 @@ fn a_root_covered_by_a_mount_on_its_parent_is_no_mount_point() {
 }
 
 #[test]
+fn a_mount_on_the_roots_parent_is_a_cover() {
+    use crate::filesystem::mountinfo::parse_mountinfo;
+    let table = parse_mountinfo(&decoy_table("11 1 8:33 / /mnt rw - vfat /dev/sdc1 rw\n"));
+    let root = Path::new("/mnt/data");
+    for recorded in [Some("253:0"), None] {
+        let cover = shadowing_mount(&table, root, recorded).expect("/mnt covers the volume");
+        assert_eq!(cover.mount_id, 11);
+    }
+    // Another device recorded: the mount at /mnt/data is not the volume, so
+    // the volume is gone rather than covered.
+    assert_eq!(shadowing_mount(&table, root, Some("8:99")), None);
+    // Nothing at /mnt/data at all: gone, not covered.
+    let gone = parse_mountinfo("1 0 8:1 / / rw - ext4 /dev/vda1 rw\n");
+    assert_eq!(shadowing_mount(&gone, root, Some("253:0")), None);
+    // The volume reachable under a parent mount of its own: no cover.
+    assert_eq!(
+        shadowing_mount(&parse_mountinfo(&decoy_table("")), root, None),
+        None
+    );
+}
+
+#[test]
 fn two_filesystems_at_the_root_are_refused_naming_both() {
     let fs = fs_with(&decoy_table(
         "11 10 8:16 / /mnt/data rw - vfat /dev/sdb1 rw\n",

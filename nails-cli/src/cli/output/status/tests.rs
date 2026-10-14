@@ -6,7 +6,7 @@ use super::json::status_envelope;
 use nails_core::SystemState;
 use nails_core::config::PersonaMode;
 use nails_core::output::Style;
-use nails_core::status::{PolicyMountView, Posture, StatusReport};
+use nails_core::status::{CoverView, PolicyMountView, Posture, StatusReport};
 use std::path::PathBuf;
 
 fn report(posture: Posture, session: &'static str) -> StatusReport {
@@ -63,7 +63,10 @@ fn a_cover_is_shown_in_both_forms() {
     let value = serde_json::to_value(status_envelope(&active)).unwrap();
     assert!(value["data"].get("hidden_root_covered_by").is_none());
 
-    active.hidden_root_covered_by = Some("/dev/sdc1".into());
+    active.hidden_root_covered_by = Some(CoverView {
+        source: "/dev/sdc1".into(),
+        mount_point: "/mnt/data".into(),
+    });
     let lines = status_lines(&active, false, Style::default()).join("\n");
     assert!(
         lines.contains(

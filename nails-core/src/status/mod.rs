@@ -127,6 +127,16 @@ pub struct PolicyMountView {
     pub kind: &'static str,
 }
 
+/// A filesystem mounted over the hidden volume, at the hidden root or on one
+/// of its parents.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverView {
+    /// Its source, which now receives every file saved under the hidden root.
+    pub source: String,
+    /// Where it is mounted: what `umount` takes.
+    pub mount_point: PathBuf,
+}
+
 /// What `status` reports.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StatusReport {
@@ -161,10 +171,9 @@ pub struct StatusReport {
     /// Why the hidden root is not a volume of its own, when the session's
     /// activation accepted that with `--allow-decoy-storage`.
     pub accepted_not_separate: Option<String>,
-    /// The source of a filesystem mounted over the hidden volume, which now
-    /// receives every file saved under the hidden root (see
+    /// A filesystem mounted over the hidden volume (see
     /// [`shadowing_mount`](crate::hidden_root::shadowing_mount)).
-    pub hidden_root_covered_by: Option<String>,
+    pub hidden_root_covered_by: Option<CoverView>,
     /// The mounts the fstab policy placed in the hidden root.
     pub policy_mounts: Vec<PolicyMountView>,
     /// The decoy units masked in the hidden root.
@@ -315,8 +324,12 @@ impl<F: Filesystem> StatusCommand<F> {
             });
         let uptime = entered_at.filter(|_| view.is_hidden()).map(|t| now - t);
         let hidden_root = &self.config.hidden_volume_root;
-        let hidden_mount =
-            top_mount_at(entries, hidden_root).filter(|m| m.mount_point == *hidden_root);
+        // The mount table names the root with its symlinks resolved.
+        let resolved = self
+            .filesystem
+            .canonicalize(hidden_root)
+            .unwrap_or_else(|_| hidden_root.clone());
+        let hidden_mount = top_mount_at(entries, &resolved);
         let opsec_reminders = uptime
             .map(|u| generate_opsec_reminders(u, self.config.show_opsec_reminders))
             .unwrap_or_default();
@@ -341,10 +354,13 @@ impl<F: Filesystem> StatusCommand<F> {
             accepted_not_separate: plan.and_then(|p| p.accepted_not_separate.clone()),
             hidden_root_covered_by: crate::hidden_root::shadowing_mount(
                 entries,
-                hidden_root,
+                &resolved,
                 plan.and_then(|p| p.hidden_dev.as_deref()),
             )
-            .map(|cover| cover.source.display().to_string()),
+            .map(|cover| CoverView {
+                source: cover.source.display().to_string(),
+                mount_point: cover.mount_point.clone(),
+            }),
             policy_mounts: plan
                 .map(|p| {
                     p.policy_mounts

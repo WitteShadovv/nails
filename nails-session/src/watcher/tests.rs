@@ -318,6 +318,45 @@ fn probe_reports_a_replaced_volume_as_covered() {
 }
 
 #[test]
+fn a_mount_on_the_roots_parent_is_a_cover_not_a_failure() {
+    let fs = MockFilesystem::new();
+    root_lists(&fs);
+    fs.mock_set_writable("/mnt/data", false);
+    // A stick mounted on /mnt: the volume stays in the table at /mnt/data,
+    // but a lookup of the root ends on the stick.
+    let covered = session_table("12 1 8:16 / /mnt rw - vfat /dev/sdb1 rw\n");
+    fs.mock_set_mount_table(&covered);
+    assert_eq!(
+        probe_backend(&fs, &recorded(&["/home"])),
+        BackendProbe::Covered
+    );
+    assert_eq!(
+        probe_backend(&fs, &manifest(&["/home"])),
+        BackendProbe::Covered
+    );
+}
+
+#[test]
+fn a_symlinked_root_is_watched_where_the_mount_table_names_it() {
+    let fs = MockFilesystem::new();
+    root_lists(&fs);
+    fs.create_symlink(Path::new("/mnt/data"), Path::new("/srv/hidden"))
+        .unwrap();
+    let linked = RuntimeManifest {
+        hidden_root: PathBuf::from("/srv/hidden"),
+        ..recorded(&["/home"])
+    };
+    let resolved = resolved_root(&fs, &linked);
+    assert_eq!(resolved, Path::new("/mnt/data"));
+    let covered = nails_teardown::mountinfo::parse_mountinfo(&session_table(
+        "11 10 8:16 / /mnt/data rw - vfat /dev/sdb1 rw\n",
+    ));
+    let mut watch = CoverWatch::new(&resolved, linked.hidden_dev.as_deref());
+    let cover = watch.observe(&covered).expect("the stick covers the root");
+    assert_eq!(cover.mount_id, 11);
+}
+
+#[test]
 fn probe_fails_when_the_hidden_root_is_no_longer_a_mount_point() {
     let fs = MockFilesystem::new();
     root_lists(&fs);

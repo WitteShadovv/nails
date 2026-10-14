@@ -98,7 +98,10 @@ fn data(report: &StatusReport) -> StatusData<'_> {
         hidden_root: report.hidden_root.display().to_string(),
         hidden_root_mounted: report.hidden_root_mounted,
         accepted_not_separate: report.accepted_not_separate.as_deref(),
-        hidden_root_covered_by: report.hidden_root_covered_by.as_deref(),
+        hidden_root_covered_by: report
+            .hidden_root_covered_by
+            .as_ref()
+            .map(|cover| cover.source.as_str()),
         policy_mounts: &report.policy_mounts,
         masked_units: &report.masked_units,
         nextroot_mounted: report.nextroot_mounted,

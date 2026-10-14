@@ -369,19 +369,40 @@ pub fn covered_mount<'a>(table: &'a [MountEntry], top: &'a MountEntry) -> Option
 /// `recorded` is the volume's device as the session plan records it
 /// (`hidden_dev`); a mount with another device is not the volume, while a
 /// second bind of the volume itself is. Without a record, the visible mount
-/// counts when another filesystem lies below it at `root`. `None` when nothing
-/// is mounted at `root`, which is no cover but a volume that is gone.
+/// counts when another filesystem lies below it at `root`.
+///
+/// A mount on a parent of `root` hides the volume as well (`mount /dev/sdc1
+/// /mnt` over a root at `/mnt/data`): when the volume is still in the table at
+/// `root` but a lookup ends in a mount on one of its parents, that mount is the
+/// cover. `None` when the volume is not mounted at `root` at all, which is no
+/// cover but a volume that is gone. `root` is the resolved path.
 pub fn shadowing_mount<'a>(
     table: &'a [MountEntry],
     root: &Path,
     recorded: Option<&str>,
 ) -> Option<&'a MountEntry> {
-    let visible = top_mount_at(table, root)?;
+    let Some(visible) = top_mount_at(table, root) else {
+        return covering_parent(table, root, recorded);
+    };
     let covered = match recorded {
         Some(dev) => visible.dev != dev,
         None => covered_mount(table, visible).is_some(),
     };
     covered.then_some(visible)
+}
+
+/// The mount on a parent of `root` that a lookup of `root` ends in, when it
+/// hides the volume still mounted at `root` (the recorded device, if there is
+/// a record).
+fn covering_parent<'a>(
+    table: &'a [MountEntry],
+    root: &Path,
+    recorded: Option<&str>,
+) -> Option<&'a MountEntry> {
+    let volume = table
+        .iter()
+        .find(|m| m.mount_point == root && recorded.is_none_or(|dev| m.dev == dev))?;
+    mount_holding(table, root).filter(|holder| holder.dev != volume.dev)
 }
 
 /// The mounts stacked under `top` at its own mount point, nearest first.

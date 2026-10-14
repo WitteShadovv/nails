@@ -259,8 +259,9 @@ and a read-write mount of it takes the hidden session's writes.
   read-only bind, and the carried decoy filesystems are inside the hidden
   volume. A mount made inside another mount namespace (a service with private
   mounts) is not in the watcher's table. A disk mounted over the hidden root
-  itself always raises its own alert ("Disk mounted over a folder in use"),
-  whatever this setting, while the watcher runs.
+  itself, or over one of its parents, always raises its own alert ("Disk
+  mounted over a folder in use") instead, whatever this setting, while the
+  watcher runs.
 - **Read-only** (`session_mounts.read_only`, opt-in). Every disk the session
   does not use is made read-only at the block layer for the session. The kernel
   then refuses a read-write mount: `mount` falls back to read-only with a

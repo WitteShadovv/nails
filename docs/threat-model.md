@@ -292,8 +292,10 @@ without the state lock; when the mounts the way back needs are covered too, it
 powers off instead of returning to the decoy. The session watcher writes no
 probe onto a covered root and raises no emergency for it; it raises one neutral
 desktop alert per covering mount ("Disk mounted over a folder in use", naming
-the disk and `sudo umount <root>`), and `status` names the disk, since every
-file saved under the root goes to that disk until it is unmounted.
+the disk and `sudo umount` on its mount point), and `status` names the disk,
+since every file saved under the root goes to that disk until it is unmounted.
+A disk mounted on a parent of the root (`/mnt` over a root at `/mnt/data`)
+hides the volume the same way and counts as a cover, not as a failed backend.
 
 The gate's limits: it judges the storage this computer's mount table, fstab,
 crypttab and sysfs describe. It cannot see a decoy filesystem mounted only by

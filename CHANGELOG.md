@@ -48,9 +48,10 @@ config and CLI surfaces; there are no compatibility shims.
 ### Added
 
 - A disk mounted over the hidden root during the session (an ordinary `mount /dev/sdc1 /mnt` with
-  `/mnt` as the root) is no longer silent: the session watcher raises one neutral desktop alert per
-  covering mount ("Disk mounted over a folder in use", naming the disk and `sudo umount <root>`),
-  and `status` names it (`hidden_root_covered_by` in `--json`, a warning under the hidden volume).
+  `/mnt` as the root), or over one of its parents (`/mnt` with the root at `/mnt/data`), is no
+  longer silent: the session watcher raises one neutral desktop alert per covering mount ("Disk
+  mounted over a folder in use", naming the disk and `sudo umount <its mount point>`), and `status`
+  names it (`hidden_root_covered_by` in `--json`, a warning under the hidden volume).
   Every file saved under the root goes to that disk until it is unmounted. A cover raises no
   automatic emergency.
 - The whole-root session (ADR 0008). `nails activate` builds one overlay over the whole decoy root at
