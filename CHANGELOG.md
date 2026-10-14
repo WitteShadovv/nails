@@ -15,7 +15,8 @@ of this changelog for that version becomes the release notes word for word, and
 
 NAILS 0.3.0 replaces the per-directory live overlays of 0.2 with one design: the hidden session is
 an overlay over the whole decoy root, entered and left with `systemctl soft-reboot` (ADR 0008).
-Debian 13 and Ubuntu 24.04 or newer join NixOS as decoys.
+Debian 13 or newer, Ubuntu 24.04 or newer and, provisionally, their derivatives join NixOS as
+decoys.
 
 ### Upgrade notes
 
@@ -24,7 +25,7 @@ ends it too) before replacing the binary. This release breaks compatibility with
 config and CLI surfaces; there are no compatibility shims.
 
 - The decoy needs systemd 254 or newer. The hidden root lives under `<hidden-root>/root/`
-  (`upper`, `work`, `mounts`, `cache`); the uppers of the 0.2 per-directory overlays
+  (among them `upper`, `work` and `mounts`); the uppers of the 0.2 per-directory overlays
   (`<hidden-root>/<name>`, `<hidden-root>/.work`) are not read. Move what you need into a hidden
   session and delete them. On NixOS the hidden hardware configuration now lives in
   `<hidden-root>/root/upper/etc/nixos/`; run `nails init` again to place it.
@@ -35,16 +36,20 @@ config and CLI surfaces; there are no compatibility shims.
   happens" in the operator guide). An unprivileged `check` or `status` on a distribution whose
   `/etc/crypttab` only root can read gets `storage_unjudged` and logs to stderr only; run it with
   `sudo`.
-- Configuration moves from `nails.yaml` (YAML) to strict `config/nails.toml` (TOML) next to the
-  binary. Convert each key by hand: `hidden_volume_path` is now `hidden_volume_root` (leave it
-  unset to derive it from the binary's location), unknown keys are rejected, and the keys listed
-  under "Removed" must be deleted. `nails init` writes a documented template and
+- Configuration moves from `config/nails.yaml` (YAML) to strict `config/nails.toml` (TOML) next to
+  the binary. 0.3 never reads `config/nails.yaml` and does not warn about it: an unconverted setup
+  runs with the defaults. Convert each key by hand: `hidden_volume_path` is now `hidden_volume_root`
+  (leave it unset to derive it from the binary's location), unknown keys are rejected, and the keys
+  listed under "Removed" must be deleted. `nails init` writes a documented template and
   `nails config show --example` prints every key.
 - Invoke the binary from the hidden volume by full path (`sudo "$ROOT/nails" …`); nails is never on
   the decoy `PATH`. `activate --flake` is now `--nixos-flake`, `status -v` is now
   `status --details`, `--plain` and `--no-color` are replaced by `--ascii` and
   `--color auto|always|never`, and `--no-logs` by `--no-log-file`; see "Removed" for the flags
   that are gone.
+- `activate` and `deactivate` now ask for confirmation, and without a terminal they refuse with
+  exit 2 (`needs_confirmation`); 0.2 skipped the prompt unless `--interactive` was given. Add `-y`
+  to every script, keybinding or unit that runs them; `emergency` never prompts.
 - Exit codes and JSON output changed. JSON output carries `schema_version = 1`; scripts that
   parsed the old output must be updated against the exit-code table in `nails --help` and the
   schemas under `docs/schemas/`.
@@ -61,8 +66,9 @@ config and CLI surfaces; there are no compatibility shims.
   entries masked), binds `/run` and the hidden volume into it, writes the session plan with a RAM
   copy of the binary and configuration to `/run/overlay-runtime`, and soft-reboots. Every process
   of the hidden session starts inside the overlay. Activation logs you out after a confirmation
-  (`-y` skips it) and, as its last step, kills the decoy's interactive shells, so the activation
-  command never reaches a history file.
+  (`-y` skips it) and, as its last step, kills the decoy's interactive shells, so a shell that saves
+  history on exit never writes the activation command (the `incremental-history-flush` check warns
+  about shells that save after every command).
 - On NixOS the hidden system is built into the next root's store (`nix build --store
   /run/nextroot`, the evaluation cache on the hidden volume), activated chrooted, and entered by
   repointing `/run/current-system` after every decoy unit has stopped: one soft-reboot, no
@@ -79,10 +85,10 @@ config and CLI surfaces; there are no compatibility shims.
   session keeps working with `blk-availability.service` (Debian, Ubuntu), Ubuntu 26.04's D-Bus
   units and NixOS static addresses (`networking.interfaces`), whose stop would otherwise unmount
   the hidden volume, stall the login screen or drop the network.
-- `nails deactivate` runs in the hidden session and soft-reboots back to the plain decoy;
-  `--poweroff` powers off instead. The hidden volume is unmounted and its device-mapper stack
-  closed by the switch itself, so dm-crypt wipes the master key from RAM; a backend that is not
-  device-mapper based is unmounted but not closed.
+- `nails deactivate` runs in the hidden session and soft-reboots back to the plain decoy after a
+  confirmation (`-y` skips it); `--poweroff` powers off instead. The hidden volume is unmounted and
+  its device-mapper stack closed by the switch itself, so dm-crypt wipes the master key from RAM; a
+  backend that is not device-mapper based is unmounted but not closed.
 - `nails emergency` acts at once, before argument parsing, configuration and logging: in the
   hidden session it prepares the way back, marks the backend for closing, enqueues the soft-reboot
   with PID 1 and kills every hidden cgroup (`cgroup.kill`); the machine returns to the decoy's
@@ -107,19 +113,19 @@ config and CLI surfaces; there are no compatibility shims.
   `--allow-decoy-storage` (`init`, `activate`, `check`) turns a refusal of decoy storage into a
   warning for storage the operator knows the decoy does not use; `status` shows the choice. Run as
   root, the gate reads `/etc/fstab` and `/etc/crypttab` without updating their access time.
-- New pre-flight checks: `systemd-version`, `soft-reboot-units` (prints the module an older
-  nixpkgs needs), `decoy-root` (refuses a tmpfs, ZFS or overlay decoy root), `session-state`,
+- New pre-flight checks: `systemd-version`, `soft-reboot-units` (prints the module an older nixpkgs
+  needs), `decoy-root` (refuses a tmpfs, ZFS or overlay decoy root), `session-state`,
   `fstab-policy`, `mount-namespace` (activation must share PID 1's mount namespace),
   `upper-fs-capability` (the hidden filesystem can host an overlay upper), `host-tools` (names any
   missing tool and its package), `backend-entries` (refuses a decoy crypttab or fstab line that
-  opens or mounts the hidden volume), `decoy-persistence` (refuses a persistent journal or an
-  active rsyslog, syslog-ng or auditd unless `accept_persistent_decoy` or
-  `--accept-persistent-decoy` is set; warns about a persistent root filesystem, atime, crash-dump
-  channels and the NixOS auto-upgrade timer), and the warn-only `backend-detect` (discard, file
-  container timestamps, copy-on-write hosts), `binary-location`, `inherited-autostart`,
-  `incremental-history-flush`, `memory-wipe` (`init_on_free=1`), `sleep-policy` and
-  `residue-catalog`. Failures end with one ordered list of fixes, and checks that depend on a failed
-  one are skipped with a reason.
+  opens or mounts the hidden volume), `decoy-persistence` (refuses a persistent journal or an active
+  rsyslog, syslog-ng or auditd unless `accept_persistent_decoy` or `--accept-persistent-decoy` is
+  set; warns about a persistent root filesystem, atime, crash-dump channels and the NixOS
+  auto-upgrade timer), and the warn-only `backend-detect` (discard, file container timestamps,
+  copy-on-write hosts), `binary-location`, `inherited-autostart`, `incremental-history-flush`,
+  `sleep-policy` and `residue-catalog`, and the informational `memory-wipe` (`init_on_free=1`).
+  Failures end with one ordered list of fixes, and checks that depend on a failed one are skipped
+  with a reason.
 - Disks during the session (`[session_mounts]`): the session watcher raises a neutral desktop alert
   for every read-write mount of a disk outside the hidden volume and for a disk mounted over the
   hidden root or one of its parents, which `status` also names (`hidden_root_covered_by`);
@@ -131,10 +137,10 @@ config and CLI surfaces; there are no compatibility shims.
 - `[sleep_policy]` (`warn` by default, `block` or `teardown`): `block` holds sleep and idle block
   inhibitors, and the lid switch's when a closed lid would sleep; `teardown` powers off through the
   emergency before the machine sleeps.
-- Persona options (`[persona]`): `mode = "fresh-home"` gives the operator an empty home in the
-  upper instead of the decoy home, and `mask_inherited` hides inherited decoy autostart entries and
-  user units from the hidden session. An optional NixOS module and NetworkManager drop-in give the
-  hidden session its own MAC addresses and hostname.
+- Persona options (`[persona]`): `mode = "fresh-home"` gives the operator an empty home in the upper
+  instead of the decoy home, and `mask_inherited` lists inherited decoy autostart entries and user
+  units to hide from the hidden session (`["*"]` hides all; empty by default). An optional NixOS
+  module and NetworkManager drop-in give the hidden session its own MAC addresses and hostname.
 - `nails rehearse`: `plant` puts a random canary into a hidden session, and after the way back
   `scan` searches the raw decoy devices (or disk images with `--offline`) for it; `status` and
   `reset` follow the rehearsal. The scan exits 0 when the canary is not found, 11 when it is and 9
@@ -171,12 +177,13 @@ config and CLI surfaces; there are no compatibility shims.
 
 ### Changed
 
-- Configuration is strict TOML: unknown keys are rejected with a did-you-mean hint, a removed key
-  says so, configured paths are validated when the file is loaded (relative, `..`, symlinked or
-  out-of-root paths are rejected), and a missing or invalid `--config` file exits 3.
+- Configuration is strict TOML: unknown keys are rejected with a did-you-mean hint, a key of the old
+  live-overlay design says it was removed, configured paths are validated when the file is loaded
+  (relative, `..`, symlinked or out-of-root paths are rejected), and a missing or invalid `--config`
+  file exits 3.
 - One stable machine interface: a typed JSON envelope (`schema_version`, `command`, `ok`, and
   `data` or `error`; `activate --json` streams progress events before its result) and one
-  exit-code table for every command (pre-flight refusals 4, missing
+  exit-code table for every command (pre-flight refusals 4, not run as
   root 5, untrusted state 6, degraded or interrupted 7, unsupported host 8, completed with
   warnings 9, `verify` warnings and critical findings 10 and 11, cancelled 130).
 - Output flags (`-c`, `-v`/`-q`, `--color`, `--ascii`, `--json`, `--no-log-file`) are global.
@@ -199,13 +206,15 @@ config and CLI surfaces; there are no compatibility shims.
   rejects an unparseable configuration, the base-configuration check scans every `.nix` file under
   `/etc/nixos` for references to the hidden volume, and the hidden NixOS module forces
   `system.autoUpgrade.enable = false`.
-- Unsupported hosts are refused before any write, with exit 8: Debian before 13, Ubuntu before
-  24.04, non-merged-`/usr` layouts, ostree or image-based systems, systems without systemd, and
-  distributions not yet validated (Fedora, Arch).
+- Unsupported hosts are refused before any write, with exit 8: Debian before 12, Ubuntu before
+  24.04, non-merged-`/usr` Debian-family layouts, ostree or image-based systems, systems without
+  systemd, and distributions not yet validated (Fedora, Arch). Debian 12 and other hosts with
+  systemd older than 254 fail the `systemd-version` check (exit 4). Derivatives whose `ID_LIKE`
+  names debian or ubuntu are accepted provisionally.
 - A corrupt or unreadable state file is reported as an unknown state: `status` shows it and
   `activate` refuses, instead of treating it as inactive.
-- The project describes itself with one platform-neutral tagline ("Overlay environment manager");
-  sources carry SPDX headers, and `REUSE.toml`, `NOTICE` and DCO sign-off guidance are added.
+- `nails --help` now describes the tool as "Run a hidden session on a decoy Linux system". Sources
+  carry SPDX headers, and `REUSE.toml`, `NOTICE` and DCO sign-off guidance are added.
 - Vulnerabilities are reported through GitHub private vulnerability reporting first, with
   `security@nails.run` as the fallback; conduct reports go to `contact@nails.run`.
 - Releases come from one tag-triggered workflow that checks the tag against the version,
@@ -246,7 +255,8 @@ config and CLI surfaces; there are no compatibility shims.
   caller's `PATH` lacks them, and a legacy build without `NIX_PATH` takes `nixpkgs` from root's
   `nixos` channel.
 - Pre-flight results are reported once and honour `--quiet` and `--json`.
-- Resolved the RUSTSEC advisories in the dependency graph and restored the Nix release build
+- Updated dependencies to clear the RUSTSEC advisories that affect the shipped binary (anyhow,
+  crossbeam-epoch) and restored the Nix release build
   ([#54](https://github.com/WitteShadovv/nails/pull/54)).
 
 ### Security
