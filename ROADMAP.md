@@ -33,11 +33,11 @@ Planned once the current line is stable.
 
 - **Fedora backend.** A validated backend for the Fedora family, covering its usr-merge layout
   and dnf/rpm package-drift scanning. It ships only after the attach gate refuses a hidden root on
-  the decoy's own storage (setup plan item #1): Fedora's default btrfs layout makes a subvolume of
-  the decoy an easy mistake.
+  the decoy's own storage (a subvolume, a bind of a folder, a volume in its volume group): Fedora's
+  default btrfs layout makes a subvolume of the decoy an easy mistake.
 - **Arch backend.** A validated backend for Arch and close derivatives, with pacman-based drift
-  scanning. Like Fedora, it ships after the attach gate's decoy-storage refusal. The platform layer is built so a new distribution is a backend plus a detection-table
-  entry, not a rewrite.
+  scanning. Like Fedora, it ships after the attach gate's decoy-storage refusal. The platform
+  layer is built so a new distribution is a backend plus a detection-table entry, not a rewrite.
 - **aarch64 support.** Build, test and release the binary for 64-bit ARM alongside x86-64, and
   exercise it in the E2E suite.
 

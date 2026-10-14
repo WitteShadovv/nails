@@ -45,6 +45,12 @@ The claims below hold only when all of these are true:
   around each soft-reboot (the activation command, the decoy's shutdown before
   the switch and its start after the way back; see
   [Residual channels](#residual-channels)) never reaches disk.
+- **Storage of its own, prepared elsewhere.** The hidden volume is a device,
+  partition or encrypted volume the decoy does not use, created on another
+  computer or from a setup medium, never on the decoy itself. NAILS refuses a
+  root on the decoy's storage ([the attach gate](#the-attach-gate)) but cannot
+  see what creating a volume on the decoy left behind; see
+  [Where setup happens](operator-guide.md#where-setup-happens).
 - **Trusted root.** The NAILS binary, its configuration and the hidden flake on
   the hidden volume are intact. NAILS runs as root and performs no runtime
   self-integrity check.
@@ -227,8 +233,8 @@ How the code upholds this:
   `/etc/crypttab` or `/etc/fstab` that opens or mounts the hidden volume (or a
   device it is stored on), or carries `tcrypt-hidden`, is such an enabler: the
   `backend-entries` pre-flight check refuses activation while one exists, and
-  no flag overrides it. A line that opens only another volume on the same
-  drive warns.
+  no flag overrides it: `activate --no-preflight` still runs it on its own. A
+  line that opens only another volume on the same drive warns.
 
 This invariant is checked by the end-to-end tests `uefi-esp-nvram-invariant`
 and `soft-reboot-mechanics`: they hash the ESP file listing and capture the EFI
@@ -257,15 +263,17 @@ rehearsal state all ask it first. It refuses:
   from: the writes would reach the disk on top;
 - a root whose storage cannot be judged because `/etc/fstab`, `/etc/crypttab`
   or the block devices in sysfs cannot be read (`storage_unjudged`; run the
-  command with sudo).
+  command with sudo), or because its filesystem shows no disk it stores its
+  data on: an overlay, a FUSE or network filesystem, or an image file on one
+  (`storage_unjudged`).
 
 An encrypted container file on a decoy filesystem only warns: filesystem
 journals and copy-on-write snapshots of that filesystem can keep old copies of
 the parts of the container that changed. `--allow-unmounted` (on `init`,
-`activate` and `check`) turns the refusal of a folder or of the decoy's storage
-into a warning; activation then repeats it in the logout confirmation, the
-session plan records it for `status`, and `rehearse plant` refuses, since a
-rehearsal on that storage cannot pass. The override never covers a covered
+`activate` and `check`) turns the refusal of the decoy's storage into a
+warning; activation then repeats it in the logout confirmation, the session
+plan records it for `status`, and `rehearse plant` refuses, since a rehearsal
+on that storage cannot pass. The override never covers a folder, a covered
 root, storage that cannot be judged, or `backend-entries`. `--no-preflight`
 does not skip the gate.
 
@@ -278,9 +286,13 @@ probe onto a covered root.
 The gate's limits: it judges the storage this computer's mount table, fstab,
 crypttab and sysfs describe. It cannot see a decoy filesystem mounted only by
 hand and never listed, storage another operating system on the same machine
-uses, or a remote block device's other users. A refusal names the storage and
-says nothing was written; an override is the operator's statement that the
-storage is not the decoy's.
+uses, or a remote block device's other users. Nor can it see the traces that
+creating the volume on this computer left behind (the setup tools' own files,
+shell history, a changed partition table): only preparing the volume elsewhere
+avoids them. A refusal names the storage and says nothing was written. The
+override is for storage the gate takes for the decoy's that the operator knows
+the decoy does not use (for example a disk its fstab lists but never mounts);
+everything written there lands on that storage.
 
 ## Residual channels
 

@@ -27,6 +27,13 @@ config and CLI surfaces; there are no compatibility shims.
   hidden session and delete them. On NixOS the hidden hardware configuration now lives in
   `<hidden-root>/root/upper/etc/nixos/`; run `nails init` again to place it. Remove the deleted
   configuration keys listed under "Removed" from `nails.toml`: they are rejected as unknown keys.
+- The attach gate now refuses hidden roots that were accepted before: a folder (no mount point), a
+  btrfs subvolume or bind of a folder of a filesystem the decoy uses, a logical volume in the
+  decoy's volume group, an image file on a decoy filesystem, and an overlay, FUSE or network
+  filesystem. Move the hidden volume to a device of its own (see "Where setup happens" in the
+  operator guide). An unprivileged `check` or `status` on a distribution whose `/etc/crypttab`
+  only root can read gets `storage_unjudged` and logs to stderr only; run it with `sudo`.
+  `rehearse plant` on a refused root exits 4 (`not_separate_volume`) instead of 6.
 - Configuration moves from `nails.yaml` (YAML) to strict `config/nails.toml` (TOML): convert each
   key by hand, unknown keys are now rejected, and `nails init` regenerates a documented template.
 - Invoke the binary from the hidden volume by full path (`sudo "$ROOT/nails" …`); nails is never on
@@ -290,10 +297,13 @@ config and CLI surfaces; there are no compatibility shims.
   `sudo`). `init`, `activate`, `rehearse plant` (exit 6 and `not_attached` before; a volume without
   a NAILS marker keeps them), `deactivate` and `reset-upper` (exit 1 and `state_locked` before)
   report it; `check --json` carries it as `refusal`. The text names no storage tool and no volume
-  type. `--no-preflight` no longer skips the attach gate.
+  type, and shows a covering mount by its kernel device (`/dev/dm-0`). `--no-preflight` no longer
+  skips the attach gate. A refused root no longer also prints a `File logging disabled` notice;
+  `--verbose` shows it.
 - `--allow-unmounted` is accepted by `init`, `activate` and `check` (and `activate --dry-run`). It
-  turns the refusal of a folder, or of a root on the decoy's own storage, into a warning, and never
-  covers a covered root, storage that cannot be judged or a decoy entry for the hidden volume.
+  turns the refusal of a root on the decoy's own storage into a warning, for storage the operator
+  knows the decoy does not use, and never covers a folder, a covered root, storage that cannot be
+  judged or a decoy entry for the hidden volume.
   `activate` repeats it in the logout confirmation and records it in the session plan
   (`accepted_not_separate`), which `status` shows; `rehearse plant` refuses such a session, since a
   rehearsal on that storage cannot pass. No log file and no residue baseline are written onto an
@@ -301,7 +311,8 @@ config and CLI surfaces; there are no compatibility shims.
 - A new blocking pre-flight check, `backend-entries`, refuses activation while the decoy's
   `/etc/crypttab` or `/etc/fstab` holds a line that opens or mounts the hidden volume or a device
   it is stored on, or a crypttab line with `tcrypt-hidden`; a line that opens only another volume
-  on the same drive warns. An unreadable crypttab fails it.
+  on the same drive warns. An unreadable crypttab fails it. `activate --no-preflight` runs it on its
+  own.
 - The library is split into crates along the session's boundaries (ADR 0010): `nails-base`,
   `nails-platform`, `nails-session` and `nails-forensics` below `nails-core`, which re-exports them.
   Tests pin the crate graph and keep verification read-only. No user-visible change.
@@ -610,7 +621,8 @@ config and CLI surfaces; there are no compatibility shims.
 - Nothing is written to a hidden root that is not a volume of its own. The attach gate behind
   `init`, `activate`, the state file, its `.lock`, the log file and `rehearse` compared only the
   root's device with `/`'s, so a plain folder on a separate `/home` or `/boot` partition, or a
-  btrfs subvolume inside the decoy's filesystem, passed, and `init` wrote the layout onto the decoy's own disk. The gate now
+  btrfs subvolume inside the decoy's filesystem, passed, and `init` wrote the layout onto the
+  decoy's own disk. The gate now
   needs a mount point at the root, refuses a second filesystem mounted over it (naming both), and
   in the hidden session accepts only the volume the session started from, whose device the entry
   records in the session plan; a disk mounted over the hidden root during the session no longer
@@ -622,9 +634,12 @@ config and CLI surfaces; there are no compatibility shims.
   volume group), or an unencrypted image file on such a filesystem. An encrypted container file
   there is accepted with a warning that the filesystem's journal and copy-on-write snapshots can
   keep old copies of its changed parts; a device shared only with `noauto` entries also only
-  warns. When `/etc/fstab`, `/etc/crypttab` or `/sys/class/block` exists but cannot be read, as
-  for a user other than root where crypttab is readable by root only, the gate refuses a root that
-  is not a tmpfs and asks for `sudo`.
+  warns. When `/etc/fstab` or `/etc/crypttab` exists but cannot be read, as for a user other than
+  root where crypttab is readable by root only, or `/sys/class/block` cannot be listed, the gate
+  refuses a root that is not a tmpfs and asks for `sudo`. A root whose filesystem shows no disk it
+  stores its data on (an overlay, FUSE, a network filesystem, or an image file on one) is refused
+  as `storage_unjudged`, and a filesystem the boot mounted for an fstab line counts as the decoy's
+  even when the line's device name does not resolve.
 - A refused root is no longer touched before the refusal. `init` probed the target for write and
   symlink support (creating and deleting a file in it, which changed its mtime and ctime) before it
   asked the attach gate; it now asks first and probes nothing on a refused target. The

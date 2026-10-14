@@ -20,8 +20,8 @@ Every instruction in this guide belongs to exactly one of three places. Keeping
 them straight is the difference between a clean session and a decoy that records
 what you did.
 
-1. **A separate machine** — building, verifying and copying the release onto the
-   hidden volume. The decoy never sees this work.
+1. **A separate machine** — creating the hidden volume, building, verifying and
+   copying the release onto it. The decoy never sees this work.
 2. **Inside the hidden session** — everything after activation's soft-reboot and
    before the way back. The whole root is an overlay whose upper is on the hidden
    volume, so every write lands there, not on the decoy.
@@ -77,19 +77,25 @@ The refusal reads `<root> is not a volume of its own: <reason>. Nothing was
 written.` (code `not_separate_volume`, exit 4), names the storage, and says so
 too when the running `nails` binary is itself on this computer's disk. A root
 with a second filesystem mounted over it is refused with `root_covered`, and
-one whose storage cannot be judged (an unprivileged run on a distribution
-whose `/etc/crypttab` only root can read) with `storage_unjudged`; run the
-command with sudo. A decoy `/etc/crypttab` or `/etc/fstab` line that opens or
-mounts the hidden volume fails the `backend-entries` check: remove it long
-before the next use and open the volume by hand each time.
+one whose storage cannot be judged with `storage_unjudged`: on an unprivileged
+run on a distribution whose `/etc/crypttab` only root can read, run the command
+with sudo; a filesystem that shows no disk it stores its data on (an overlay,
+FUSE, a network filesystem) is never accepted. A decoy `/etc/crypttab` or
+`/etc/fstab` line that opens or mounts the hidden volume fails the
+`backend-entries` check, which `--no-preflight` does not skip: remove it long
+before the next use and open the volume by hand each time. If the boot mounts
+the volume through such a line, the gate refuses it as the decoy's own
+filesystem and says to remove the line.
 
 An encrypted container file on a decoy filesystem only warns: the filesystem's
 journal and copy-on-write snapshots (btrfs, snapper) can keep old copies of the
 parts of the container that changed. `--allow-unmounted` (on `init`,
-`activate` and `check`) turns the refusal of a folder or of the decoy's own
-storage into a warning; use it only for storage you know the decoy does not
-use. It never covers a covered root, storage that cannot be judged or a decoy
-entry for the volume. See [the attach gate](threat-model.md#the-attach-gate).
+`activate` and `check`) turns the refusal of the decoy's own storage into a
+warning; use it only for storage the gate takes for the decoy's that you know
+the decoy does not use (for example a disk its fstab lists but never mounts),
+since everything written there lands on it. It never covers a folder, a
+covered root, storage that cannot be judged or a decoy entry for the volume.
+See [the attach gate](threat-model.md#the-attach-gate).
 
 Read this guide on another device, not on the decoy: opening it there leaves
 viewer traces such as `~/.lesshst`. The guide ships in the release bundle.
@@ -159,8 +165,8 @@ Keep all of it `root`-owned on the hidden volume.
    installed), `decoy-root` (the decoy root can be mounted again by device for
    the way back), `session-state` (no session and no leftovers of an
    interrupted one), `fstab-policy`, `hidden-volume`, `upper-fs-capability`,
-   `backend-detect`, `storage-readiness`, `swap`, `memory-wipe`,
-   `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
+   `backend-entries`, `backend-detect`, `storage-readiness`, `swap`,
+   `memory-wipe`, `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
    `incremental-history-flush` and `space`. `nails check` runs the same checks
    and changes nothing.
 2. It snapshots `/run` and writes the session plan to `/run/overlay-runtime`,

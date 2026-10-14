@@ -140,12 +140,14 @@ Also refused by the pre-flight checks:
   (`decoy-persistence`);
 - a hidden volume that is not storage of its own: a folder, a btrfs subvolume
   or bind mount of a filesystem the decoy uses, a volume stacked on the
-  decoy's storage, an image file on a decoy filesystem, or a root with a second
-  filesystem mounted over it. The attach gate refuses these before anything is
-  written, `--no-preflight` included; `--allow-unmounted` turns a folder or the
-  decoy's storage into a warning, never a covered root (`hidden-volume`);
+  decoy's storage, an image file on a decoy filesystem, a filesystem that shows
+  no disk it stores its data on (an overlay, FUSE, a network filesystem), or a
+  root with a second filesystem mounted over it. The attach gate refuses these
+  before anything is written, `--no-preflight` included; `--allow-unmounted`
+  turns the refusal of the decoy's storage into a warning, and never covers a
+  folder, a covered root or storage that cannot be judged (`hidden-volume`);
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
-  volume (`backend-entries`);
+  volume (`backend-entries`, which `--no-preflight` does not skip either);
 - a hidden volume whose filesystem cannot host an overlayfs upper: NFS,
   CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS (`upper-fs-capability`);
 - running inside a container or another mount namespace than PID 1's
