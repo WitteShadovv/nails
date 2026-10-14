@@ -31,8 +31,11 @@
 //! itself); no block device of the root can be found, so its storage cannot
 //! be followed (an overlay, FUSE, a network filesystem); it shares a device
 //! with a claim; it is an image file, or an encrypted container file, on a
-//! claimed filesystem, or on one whose device cannot be found; else it is
-//! separate. A tmpfs or ramfs root is always separate.
+//! claimed filesystem, or on one whose device cannot be found, or on none
+//! mounted here; else it is separate. A tmpfs or ramfs root is always
+//! separate. The filesystem that holds an image file is the one on the device
+//! the loop driver recorded for the file ([`FileHolder`]), not the one its
+//! path leads to today.
 //!
 //! The inputs are the mount table, the parsed files and a [`DeviceMap`] of
 //! the block devices; [`judge`] reads no file. [`collect`] reads them through
@@ -107,8 +110,36 @@ pub enum NodeKind {
     Loop {
         /// The regular file it is bound to; `None` for a loop over a block
         /// device, which appears in `below` instead.
-        file: Option<PathBuf>,
+        file: Option<LoopFile>,
     },
+}
+
+/// The regular file behind a loop device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoopFile {
+    /// The path the loop driver reports (`loop/backing_file`).
+    pub path: PathBuf,
+    /// The filesystem that holds it, found by device.
+    pub holder: FileHolder,
+}
+
+/// Which filesystem holds a loop device's backing file.
+///
+/// It is found by the device the loop driver recorded for the file, never by
+/// the path alone: a filesystem mounted over a folder on that path later
+/// leads a lookup to another filesystem, which would make an image on the
+/// decoy's disk look like one on that filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileHolder {
+    /// The filesystem the mounts with this `major:minor` show.
+    Mount(String),
+    /// The loop driver's record could not be read (the device node, which
+    /// most systems let only root read).
+    Unreadable(PathBuf),
+    /// No filesystem mounted here is on the recorded device, and the path no
+    /// longer leads to it: the file lies under another mount, or on a
+    /// filesystem unmounted or out of view.
+    Unplaced,
 }
 
 /// One block device: what it is and the devices directly below it.
@@ -284,6 +315,12 @@ pub enum Verdict {
         /// The type of that filesystem.
         fstype: String,
     },
+    /// The root is an image file that no filesystem mounted here holds (see
+    /// [`FileHolder::Unplaced`]). Where its writes land cannot be told.
+    UnplacedImageFile {
+        /// The image file, as the loop driver names it.
+        file: PathBuf,
+    },
     /// The root is separate from everything the decoy claims.
     Separate,
 }
@@ -357,6 +394,10 @@ impl Verdict {
                     "it is on a filesystem of type {fstype}, which shows no disk it stores its data on"
                 )
             }
+            Verdict::UnplacedImageFile { file } => format!(
+                "it is an image file ({}) that no filesystem mounted here holds",
+                file.display()
+            ),
             Verdict::Separate => "it is separate from this computer's own storage".to_string(),
         }
     }

@@ -213,6 +213,16 @@ impl MockFilesystem {
             .insert(path.to_path_buf(), device_id);
     }
 
+    /// Set the device of the file the loop device `node` is bound to, as
+    /// [`Filesystem::loop_backing_device`](crate::Filesystem::loop_backing_device)
+    /// reports it. Unset, the node cannot be read, as without root.
+    pub fn mock_set_loop_backing_device(&self, node: &Path, device_id: u64) {
+        self.loop_backing_devices
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(node.to_path_buf(), device_id);
+    }
+
     /// Set whether copy_tree should fail for a source path
     pub fn mock_set_copy_tree_should_fail(&self, src: &Path) {
         self.copy_tree_should_fail

@@ -267,7 +267,13 @@ rehearsal state all ask it first. It refuses:
   (`storage_unjudged`; run it as root on the host, with `/sys` mounted), or
   because its filesystem shows no disk it stores its data on: an overlay, a
   FUSE, network or ZFS filesystem, or an image file on one that is not mounted
-  at `/` or a system folder such as `/home` (`storage_unjudged`).
+  at `/` or a system folder such as `/home` (`storage_unjudged`);
+- a root on an image file that no filesystem mounted here holds
+  (`storage_unjudged`). The filesystem that holds an image file is the one on
+  the device the loop driver recorded for the file, not the one its path leads
+  to now, so a filesystem mounted over the image's folder cannot make it look
+  separate. Reading that record needs root (`storage_unjudged`; run the
+  command with sudo).
 
 An encrypted container file on a decoy filesystem only warns: filesystem
 journals and copy-on-write snapshots of that filesystem can keep old copies of

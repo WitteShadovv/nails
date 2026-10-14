@@ -40,6 +40,10 @@ impl Filesystem for MockFilesystem {
         self.device_id_impl(path)
     }
 
+    fn loop_backing_device(&self, node: &Path) -> Result<u64> {
+        self.loop_backing_device_impl(node)
+    }
+
     fn is_symlink(&self, path: &Path) -> Result<bool> {
         self.is_symlink_impl(path)
     }

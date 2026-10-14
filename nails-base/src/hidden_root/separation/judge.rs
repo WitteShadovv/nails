@@ -4,8 +4,8 @@
 //! The judge: the decoy's claims, then the first verdict that matches.
 
 use super::{
-    CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, FSTAB, Judgement, Node, NodeKind,
-    SYSTEM_MOUNTS, Scene, Sharing, Verdict,
+    CRYPTTAB, Claimed, DeviceMap, EntryFinding, EntryKind, FSTAB, FileHolder, Judgement, LoopFile,
+    Node, NodeKind, SYSTEM_MOUNTS, Scene, Sharing, Verdict,
 };
 use crate::filesystem::mountinfo::{MountEntry, top_mount_at};
 use crate::hidden_root::mount_holding;
@@ -111,18 +111,33 @@ fn verdict(
 
     for node in stack {
         let Some(Node {
-            kind: NodeKind::Loop { file: Some(file) },
+            kind:
+                NodeKind::Loop {
+                    file: Some(LoopFile { path: file, holder }),
+                },
             ..
         }) = devices.nodes.get(node)
         else {
             continue;
         };
-        let Some(at) = claimed_holder(scene, claims, file) else {
+        // The filesystem holding the file, by the device the loop driver
+        // recorded, never by where its path leads today.
+        let holder = match holder {
+            FileHolder::Unreadable(path) => {
+                return Verdict::CouldNotJudge {
+                    unreadable: vec![path.clone()],
+                };
+            }
+            FileHolder::Mount(dev) => scene.mounts.iter().find(|m| &m.dev == dev),
+            FileHolder::Unplaced => None,
+        };
+        let Some(holder) = holder else {
+            return Verdict::UnplacedImageFile { file: file.clone() };
+        };
+        let Some(at) = claimed_holder(claims, devices, holder) else {
             // The image file lies on a filesystem that is not the decoy's;
             // that filesystem must itself be on a device that can be traced.
-            if let Some(holder) = mount_holding(scene.mounts, file)
-                .filter(|holder| !is_ram(&holder.fstype) && untraced(devices, holder))
-            {
+            if !is_ram(&holder.fstype) && untraced(devices, holder) {
                 return Verdict::UntracedStorage {
                     fstype: shown_fstype(&holder.fstype),
                 };
@@ -197,11 +212,9 @@ fn sharing(hidden: &MountEntry) -> Sharing {
     }
 }
 
-/// Where the decoy mounts the claimed filesystem that holds `file`, if a
-/// claimed filesystem holds it.
-fn claimed_holder(scene: &Scene<'_>, claims: &[Claim], file: &Path) -> Option<PathBuf> {
-    let holder = mount_holding(scene.mounts, file)?;
-    let node = scene.devices.node_of_mount(holder);
+/// Where the decoy mounts the filesystem of `holder`, if it is claimed.
+fn claimed_holder(claims: &[Claim], devices: &DeviceMap, holder: &MountEntry) -> Option<PathBuf> {
+    let node = devices.node_of_mount(holder);
     claims.iter().find_map(|claim| match &claim.what {
         Claimed::Mount(at)
             if claim.superblocks.contains(&holder.dev)

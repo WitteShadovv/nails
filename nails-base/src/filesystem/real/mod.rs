@@ -17,6 +17,7 @@
 
 mod dir_ops;
 mod file_ops;
+mod loop_ops;
 mod mount_ops;
 mod noatime;
 mod system_ops;
@@ -93,6 +94,10 @@ impl Filesystem for RealFilesystem {
 
     fn device_id(&self, path: &Path) -> Result<u64> {
         file_ops::device_id(path)
+    }
+
+    fn loop_backing_device(&self, node: &Path) -> Result<u64> {
+        loop_ops::loop_backing_device(node)
     }
 
     fn is_symlink(&self, path: &Path) -> Result<bool> {

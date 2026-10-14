@@ -111,10 +111,11 @@ pub enum RefusalKind {
         unreadable: Vec<PathBuf>,
     },
     /// Nothing shows on which disk the root's storage lies (see
-    /// [`separation::Verdict::UntracedStorage`]).
+    /// [`separation::Verdict::UntracedStorage`] and
+    /// [`separation::Verdict::UnplacedImageFile`]).
     StorageUntraced {
-        /// The type of the filesystem whose device cannot be found.
-        fstype: String,
+        /// Why it cannot be followed.
+        verdict: separation::Verdict,
     },
     /// The root reports the same device as `/`.
     SameDeviceAsRoot,
@@ -274,8 +275,12 @@ impl HiddenRoot {
                 (_, separation::Verdict::CouldNotJudge { unreadable }) => {
                     return refuse(RefusalKind::StorageUnjudged { unreadable }, root);
                 }
-                (_, separation::Verdict::UntracedStorage { fstype }) => {
-                    return refuse(RefusalKind::StorageUntraced { fstype }, root);
+                (
+                    _,
+                    verdict @ (separation::Verdict::UntracedStorage { .. }
+                    | separation::Verdict::UnplacedImageFile { .. }),
+                ) => {
+                    return refuse(RefusalKind::StorageUntraced { verdict }, root);
                 }
                 (separation::Severity::Pass, _) => {}
                 (severity, verdict) => {

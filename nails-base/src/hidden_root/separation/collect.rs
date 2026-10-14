@@ -17,13 +17,21 @@
 //! `/sys/class/block` is listed as unreadable when it cannot be listed or is
 //! missing (no sysfs, as in some containers): every block device is listed
 //! there, so without it no claim can be followed to a device.
+//!
+//! The filesystem that holds a loop device's backing file is found by the
+//! device the loop driver recorded for it (see [`FileHolder`]): a mount with
+//! that `major:minor`, or, on btrfs, whose files report a subvolume's own
+//! device that no mount line shows, the mount the path leads to when the file
+//! there is on that device. A loop whose record cannot be read (its node is
+//! readable by root only) is marked so, and only counts when the hidden root
+//! is stored on it.
 
 #[cfg(test)]
 #[path = "collect_tests.rs"]
 mod tests;
 
 use super::{DeviceMap, SYS_CLASS_BLOCK};
-use super::{Judgement, Node, NodeKind, Scene, judge};
+use super::{FileHolder, Judgement, LoopFile, Node, NodeKind, Scene, judge};
 use crate::Filesystem;
 use crate::blockdev::{self, DmKind, Layer, LoopBacking, LoopFollow};
 use crate::crypttab::{CrypttabEntry, parse_crypttab};
@@ -94,7 +102,7 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
         Ok(entries) => {
             for entry in entries {
                 for layer in blockdev::stack(fs, &entry, LoopFollow::BlockDevices) {
-                    add_layer(devices, &layer);
+                    add_layer(fs, mounts, devices, &layer);
                 }
             }
         }
@@ -167,7 +175,7 @@ fn read_optional<F: Filesystem>(
 }
 
 /// Record one device of a walked stack.
-fn add_layer(devices: &mut DeviceMap, layer: &Layer) {
+fn add_layer<F: Filesystem>(fs: &F, mounts: &[MountEntry], devices: &mut DeviceMap, layer: &Layer) {
     let name = file_name(&layer.sysfs).unwrap_or_else(|| layer.name.clone());
     if devices.nodes.contains_key(&name) {
         return;
@@ -188,7 +196,10 @@ fn add_layer(devices: &mut DeviceMap, layer: &Layer) {
     } else if let Some(loop_device) = &layer.loop_device {
         match &loop_device.backing {
             LoopBacking::File(file) => NodeKind::Loop {
-                file: Some(file.clone()),
+                file: Some(LoopFile {
+                    path: file.clone(),
+                    holder: file_holder(fs, mounts, &name, file),
+                }),
             },
             LoopBacking::Block { name: backing, .. } => {
                 below.push(backing.clone());
@@ -207,6 +218,28 @@ fn add_layer(devices: &mut DeviceMap, layer: &Layer) {
     }
     devices.by_spec.insert(format!("/dev/{name}"), name.clone());
     devices.nodes.insert(name, Node { kind, below });
+}
+
+/// The filesystem that holds `file`, the backing file of the loop device
+/// `name`, found by the device the loop driver recorded (see the module docs).
+fn file_holder<F: Filesystem>(
+    fs: &F,
+    mounts: &[MountEntry],
+    name: &str,
+    file: &Path,
+) -> FileHolder {
+    let node = Path::new("/dev").join(name);
+    let Ok(dev) = fs.loop_backing_device(&node) else {
+        return FileHolder::Unreadable(node);
+    };
+    let number = format!("{}:{}", rustix::fs::major(dev), rustix::fs::minor(dev));
+    if mounts.iter().any(|m| m.dev == number) {
+        return FileHolder::Mount(number);
+    }
+    match crate::hidden_root::mount_holding(mounts, file) {
+        Some(mount) if fs.device_id(file).ok() == Some(dev) => FileHolder::Mount(mount.dev.clone()),
+        _ => FileHolder::Unplaced,
+    }
 }
 
 fn file_name(path: &Path) -> Option<String> {

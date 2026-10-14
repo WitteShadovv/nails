@@ -132,6 +132,10 @@ pub struct MockFilesystem {
     /// and only reads as unattached when a test maps it onto `/`'s id with
     /// [`mock_set_device_id`](Self::mock_set_device_id).
     pub(super) device_ids: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    /// Backing-file devices reported by
+    /// [`Filesystem::loop_backing_device`](crate::Filesystem::loop_backing_device),
+    /// keyed by loop device node. An unset node cannot be read.
+    pub(super) loop_backing_devices: Arc<Mutex<HashMap<PathBuf, u64>>>,
     pub(super) written_files: Arc<Mutex<HashMap<PathBuf, String>>>,
     pub(super) remove_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) directory_contents: Arc<Mutex<HashMap<PathBuf, Vec<PathBuf>>>>,
@@ -186,6 +190,7 @@ impl MockFilesystem {
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mount_sources: Arc::new(Mutex::new(HashMap::new())),
             device_ids: Arc::new(Mutex::new(HashMap::new())),
+            loop_backing_devices: Arc::new(Mutex::new(HashMap::new())),
             written_files: Arc::new(Mutex::new(HashMap::new())),
             remove_should_fail: Arc::new(Mutex::new(HashSet::new())),
             directory_contents: Arc::new(Mutex::new(HashMap::new())),
@@ -253,6 +258,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.device_ids
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.loop_backing_devices
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();

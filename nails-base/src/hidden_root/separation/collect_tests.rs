@@ -8,7 +8,7 @@
 //! directory under `/sys/devices`, and `/sys/class/block/<name>` and every
 //! `slaves/` entry are symlinks to it.
 
-use super::super::{NodeKind, Verdict};
+use super::super::{FileHolder, LoopFile, NodeKind, Verdict};
 use super::collect;
 use crate::filesystem::mountinfo::parse_mountinfo;
 use crate::filesystem::{Filesystem, MockFilesystem};
@@ -243,6 +243,9 @@ fn the_collector_reads_btrfs_members_and_loop_files() {
         &fsid.join("devices"),
         vec![fsid.join("devices/nvme0n1p3"), fsid.join("devices/sdb")],
     );
+    decoy
+        .fs
+        .mock_set_loop_backing_device(Path::new("/dev/loop0"), rustix::fs::makedev(0, 30));
     let mounts = decoy.fs.mount_table().unwrap();
     let devices = collect(&decoy.fs, &mounts, Path::new("/")).devices;
     // One filesystem on two devices is listed once.
@@ -257,10 +260,15 @@ fn the_collector_reads_btrfs_members_and_loop_files() {
     // A loop over a block device sits on that device.
     assert_eq!(devices.nodes["loop1"].kind, NodeKind::Loop { file: None });
     assert_eq!(devices.nodes["loop1"].below, vec!["sdb".to_string()]);
+    // A loop over a file is held by the filesystem on the device the loop
+    // driver recorded.
     assert_eq!(
         devices.nodes["loop0"].kind,
         NodeKind::Loop {
-            file: Some(PathBuf::from("/home/op/vault.hc"))
+            file: Some(LoopFile {
+                path: PathBuf::from("/home/op/vault.hc"),
+                holder: FileHolder::Mount("0:30".into()),
+            })
         }
     );
 }
@@ -337,13 +345,15 @@ fn the_gate_accepts_an_external_whole_device_volume() {
     assert_eq!(external_veracrypt().assess(), Assessment::Attached);
 }
 
-#[test]
-fn the_gate_warns_for_a_container_file_on_the_decoys_home() {
-    let decoy = Decoy::new(
+/// A VeraCrypt container file on the decoy's `/home` (`259:4`), opened
+/// through `loop0` and mounted at `/mnt`, with `extra` mount lines. The loop
+/// driver's record of the file's device is left to the test.
+fn container_on_home(extra: &str) -> Decoy {
+    let decoy = Decoy::new(&format!(
         "1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n\
          2 1 259:4 / /home rw - ext4 /dev/nvme0n1p4 rw\n\
-         5 1 254:8 / /mnt rw - ext4 /dev/mapper/veracrypt1 rw\n",
-    )
+         5 1 254:8 / /mnt rw - ext4 /dev/mapper/veracrypt1 rw\n{extra}"
+    ))
     .device(NVME, "nvme0n1", "259:0", &[])
     .partition(P3, "nvme0n1p3", "259:3")
     .partition(
@@ -365,6 +375,12 @@ fn the_gate_warns_for_a_container_file_on_the_decoys_home() {
         "loop/backing_file",
         "/home/op/vault.hc",
     );
+    decoy
+}
+
+const LOOP0_NODE: &str = "/dev/loop0";
+
+fn assert_container_warning(decoy: &Decoy) {
     match decoy.assess() {
         Assessment::Warned(warning) => {
             assert!(
@@ -382,8 +398,90 @@ fn the_gate_warns_for_a_container_file_on_the_decoys_home() {
         }
         other => panic!("{other:?}"),
     }
+}
+
+#[test]
+fn the_gate_warns_for_a_container_file_on_the_decoys_home() {
+    let decoy = container_on_home("");
+    decoy
+        .fs
+        .mock_set_loop_backing_device(Path::new(LOOP0_NODE), rustix::fs::makedev(259, 4));
+    assert_container_warning(&decoy);
     let state = HiddenRoot::verify_attached(&decoy.fs, Path::new("/mnt"), false).unwrap();
     assert!(state.is_attached());
+}
+
+#[test]
+fn a_mount_over_the_containers_folder_does_not_hide_where_it_lives() {
+    // A tmpfs mounted over /home/op later leads the path elsewhere; the loop
+    // driver's device still names /home's filesystem.
+    let decoy = container_on_home(
+        "6 2 0:90 / /home/op rw - tmpfs tmpfs rw
+",
+    );
+    decoy
+        .fs
+        .mock_set_loop_backing_device(Path::new(LOOP0_NODE), rustix::fs::makedev(259, 4));
+    assert_container_warning(&decoy);
+}
+
+#[test]
+fn a_file_on_a_subvolume_device_is_placed_through_its_path() {
+    // btrfs gives the files of a subvolume a device of their own, which no
+    // mount line shows; the path still leads to a file on that device.
+    let decoy = container_on_home("");
+    let subvolume = rustix::fs::makedev(0, 77);
+    decoy
+        .fs
+        .mock_set_loop_backing_device(Path::new(LOOP0_NODE), subvolume);
+    decoy
+        .fs
+        .mock_set_device_id(Path::new("/home/op/vault.hc"), subvolume);
+    assert_container_warning(&decoy);
+}
+
+#[test]
+fn an_image_no_mounted_filesystem_holds_is_refused() {
+    // The recorded device is mounted nowhere here, and the path now leads to
+    // a file on another device.
+    let decoy = container_on_home("");
+    decoy
+        .fs
+        .mock_set_loop_backing_device(Path::new(LOOP0_NODE), rustix::fs::makedev(8, 99));
+    match decoy.assess() {
+        Assessment::Refused(refusal) => {
+            assert_eq!(refusal.code(), "storage_unjudged");
+            assert_eq!(
+                refusal.reason,
+                "/mnt is an image file (/home/op/vault.hc) that no filesystem mounted here \
+                 holds, so where it lives cannot be told"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn an_unreadable_loop_record_refuses_only_the_root_stored_on_it() {
+    let decoy = container_on_home("");
+    match decoy.assess() {
+        Assessment::Refused(refusal) => assert_eq!(
+            refusal.kind,
+            RefusalKind::StorageUnjudged {
+                unreadable: vec![PathBuf::from(LOOP0_NODE)]
+            }
+        ),
+        other => panic!("{other:?}"),
+    }
+    // An unrelated loop device whose record cannot be read changes nothing.
+    let other =
+        external_veracrypt().device("/sys/devices/virtual/block/loop5", "loop5", "7:5", &[]);
+    other.attr(
+        "/sys/devices/virtual/block/loop5",
+        "loop/backing_file",
+        "/var/lib/snapd/snaps/core.snap",
+    );
+    assert_eq!(other.assess(), Assessment::Attached);
 }
 
 #[test]

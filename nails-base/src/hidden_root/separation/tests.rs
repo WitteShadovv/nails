@@ -93,9 +93,22 @@ impl World {
         self.node(name, dev, kind, below)
     }
 
+    /// A loop device over `file`, which the filesystem its path leads to in
+    /// the mount table holds (as the loop driver's device for it shows).
     fn loop_file(self, name: &str, dev: &str, file: &str) -> Self {
+        let mounts = parse_mountinfo(&self.mountinfo);
+        let holder = crate::hidden_root::mount_holding(&mounts, Path::new(file))
+            .map_or(FileHolder::Unplaced, |m| FileHolder::Mount(m.dev.clone()));
+        self.loop_file_held(name, dev, file, holder)
+    }
+
+    /// A loop device over `file`, held as `holder` says.
+    fn loop_file_held(self, name: &str, dev: &str, file: &str, holder: FileHolder) -> Self {
         let kind = NodeKind::Loop {
-            file: Some(PathBuf::from(file)),
+            file: Some(LoopFile {
+                path: PathBuf::from(file),
+                holder,
+            }),
         };
         self.node(name, dev, kind, &[])
     }
@@ -385,6 +398,67 @@ fn an_unencrypted_image_file_on_home_is_refused() {
     assert_eq!(
         verdict.reason(),
         "it is an unencrypted image file (/home/op/disk.img) on /home"
+    );
+}
+
+#[test]
+fn an_image_under_a_mount_over_its_folder_is_judged_by_its_device() {
+    // A tmpfs mounted over /home/op after the image was attached leads its
+    // path into RAM; the loop driver's device for the file is still /home's.
+    let world = plain_decoy(
+        "4 2 0:90 / /home/op rw - tmpfs tmpfs rw\n\
+         5 1 7:0 / /mnt rw - ext4 /dev/loop0 rw\n",
+    )
+    .loop_file_held(
+        "loop0",
+        "7:0",
+        "/home/op/disk.img",
+        FileHolder::Mount("8:2".into()),
+    );
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::ImageFileOnDecoy {
+            file: PathBuf::from("/home/op/disk.img"),
+            at: PathBuf::from("/home"),
+        }
+    );
+}
+
+#[test]
+fn an_image_no_mounted_filesystem_holds_is_refused() {
+    let world = plain_decoy("5 1 7:0 / /mnt rw - ext4 /dev/loop0 rw\n").loop_file_held(
+        "loop0",
+        "7:0",
+        "/media/gone/disk.img",
+        FileHolder::Unplaced,
+    );
+    let verdict = world.verdict("/mnt");
+    assert_eq!(
+        verdict,
+        Verdict::UnplacedImageFile {
+            file: PathBuf::from("/media/gone/disk.img"),
+        }
+    );
+    assert_eq!(verdict.severity(), Severity::Refuse);
+    assert_eq!(
+        verdict.reason(),
+        "it is an image file (/media/gone/disk.img) that no filesystem mounted here holds"
+    );
+}
+
+#[test]
+fn an_image_whose_loop_record_cannot_be_read_cannot_be_judged() {
+    let world = plain_decoy("5 1 7:0 / /mnt rw - ext4 /dev/loop0 rw\n").loop_file_held(
+        "loop0",
+        "7:0",
+        "/home/op/disk.img",
+        FileHolder::Unreadable(PathBuf::from("/dev/loop0")),
+    );
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::CouldNotJudge {
+            unreadable: vec![PathBuf::from("/dev/loop0")],
+        }
     );
 }
 

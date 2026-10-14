@@ -14,7 +14,8 @@
 #      (the judge relies on the first);
 #   3. a bind mount of a folder of /srv is refused;
 #   4. /srv itself, the filesystem the decoy's fstab mounts there, is refused;
-#   5. an unencrypted ext4 image on /srv, loop-mounted, is refused;
+#   5. an unencrypted ext4 image on /srv, loop-mounted, is refused, also with a
+#      tmpfs mounted over the image's folder;
 #   6. `init --allow-decoy-storage` uses the bind of the /srv folder with a
 #      warning, while the folder itself stays refused;
 #   7. a LUKS container file on /srv passes the hidden-volume check with a
@@ -212,17 +213,27 @@ in
 
     with subtest("an unencrypted image file on a decoy filesystem is refused"):
         machine.succeed(
-            "truncate -s 64M /srv/disk.img && mkfs.ext4 -q -F /srv/disk.img && "
-            "mkdir -p /mnt/img && mount -o loop /srv/disk.img /mnt/img && "
+            "mkdir -p /srv/imgs && truncate -s 64M /srv/imgs/disk.img && "
+            "mkfs.ext4 -q -F /srv/imgs/disk.img && "
+            "mkdir -p /mnt/img && mount -o loop /srv/imgs/disk.img /mnt/img && "
             "touch -m -d '2001-02-03 04:05:06' /mnt/img"
         )
         refused_untouched(
             "gate-image",
             "/mnt/img",
             "nails init --no-hardware-config /mnt/img",
-            ["it is an unencrypted image file (/srv/disk.img) on /srv"],
+            ["it is an unencrypted image file (/srv/imgs/disk.img) on /srv"],
         )
-        machine.succeed("umount /mnt/img && rm -f /srv/disk.img")
+        # A tmpfs mounted over the image's folder leads its path into RAM; the
+        # loop driver's record still names /srv's filesystem.
+        machine.succeed("mount -t tmpfs cover /srv/imgs")
+        refused_untouched(
+            "gate-image-covered",
+            "/mnt/img",
+            "nails init --no-hardware-config /mnt/img",
+            ["it is an unencrypted image file (/srv/imgs/disk.img) on /srv"],
+        )
+        machine.succeed("umount /srv/imgs && umount /mnt/img && rm -rf /srv/imgs")
 
     with subtest("--allow-decoy-storage uses decoy storage with a warning, never a folder"):
         refused_untouched(

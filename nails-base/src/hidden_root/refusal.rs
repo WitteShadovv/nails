@@ -95,10 +95,13 @@ impl RefusalKind {
                 "the filesystem at {root} (of type {fstype}) is not the volume this session \
                  started from"
             ),
-            RefusalKind::StorageUntraced { fstype } => format!(
-                "{root} is on a filesystem of type {fstype}, which shows no disk it stores its data on, \
-                 so where it lives cannot be told"
-            ),
+            RefusalKind::StorageUntraced { verdict } => {
+                let reason = verdict.reason();
+                format!(
+                    "{root} {}, so where it lives cannot be told",
+                    reason.strip_prefix("it ").unwrap_or(&reason)
+                )
+            }
             RefusalKind::StorageUnjudged { unreadable } => format!(
                 "could not read {} to tell where {root} lives",
                 unreadable
@@ -336,7 +339,14 @@ mod tests {
                 unreadable: vec![PathBuf::from("/etc/crypttab")],
             },
             RefusalKind::StorageUntraced {
-                fstype: "fuse".into(),
+                verdict: Verdict::UntracedStorage {
+                    fstype: "fuse".into(),
+                },
+            },
+            RefusalKind::StorageUntraced {
+                verdict: Verdict::UnplacedImageFile {
+                    file: PathBuf::from("/home/u/disk.img"),
+                },
             },
         ]
         .into_iter()
@@ -352,7 +362,7 @@ mod tests {
             .collect();
         assert_eq!(&codes[..13], &[NOT_SEPARATE_VOLUME; 13]);
         assert_eq!(&codes[13..15], &[ROOT_COVERED; 2]);
-        assert_eq!(&codes[15..], &[STORAGE_UNJUDGED; 2]);
+        assert_eq!(&codes[15..], &[STORAGE_UNJUDGED; 3]);
     }
 
     #[test]

@@ -34,6 +34,20 @@ impl MockFilesystem {
         Ok(hasher.finish() | 1)
     }
 
+    pub(super) fn loop_backing_device_impl(&self, node: &Path) -> Result<u64> {
+        self.loop_backing_devices
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(node)
+            .copied()
+            .ok_or_else(|| {
+                crate::NailsError::io(
+                    node,
+                    std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                )
+            })
+    }
+
     pub(super) fn is_directory_impl(&self, path: &Path) -> Result<bool> {
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths

@@ -170,6 +170,16 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// table has shown a volume mounted there.
     fn device_id(&self, path: &Path) -> Result<u64>;
 
+    /// The device (`st_dev`) of the file the loop device `node` is bound to,
+    /// as the loop driver recorded it when the file was attached
+    /// (`LOOP_GET_STATUS64`'s `lo_device`).
+    ///
+    /// The path in `loop/backing_file` is only a name: a filesystem mounted
+    /// over a folder on that path later leads a lookup elsewhere. The device
+    /// is what the file is really on. Reading it opens the device node, which
+    /// most systems let only root and the `disk` group do.
+    fn loop_backing_device(&self, node: &Path) -> Result<u64>;
+
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;
 
