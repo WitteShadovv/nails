@@ -315,7 +315,7 @@ fn a_luks_volume_in_the_decoys_encrypted_volume_group_is_refused() {
     );
     assert_eq!(
         verdict.reason(),
-        "it is stored inside /dev/dm-0, which also holds /"
+        "it is stored on a device that also holds the filesystem at /"
     );
 }
 
@@ -337,7 +337,7 @@ fn the_decoys_swap_partition_reused_is_refused() {
     );
     assert_eq!(
         verdict.reason(),
-        "it is stored inside /dev/sda3, which this computer uses as swap"
+        "it is stored on a device this computer uses as swap"
     );
     assert_eq!(entry_kinds(&judgement), vec![(EntryKind::Blocking, FSTAB)]);
 }
@@ -450,7 +450,7 @@ fn a_logical_volume_beside_an_encrypted_one_the_decoy_opens_is_refused() {
     );
     assert_eq!(
         verdict.reason(),
-        "it is stored inside /dev/sdb, which this computer unlocks through /etc/crypttab"
+        "it is stored on a device this computer unlocks through /etc/crypttab"
     );
 }
 

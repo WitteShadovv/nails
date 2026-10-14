@@ -253,9 +253,9 @@ pub enum Verdict {
     },
     /// The root shares a device with the decoy's storage.
     InsideDecoyStorage {
-        /// The topmost shared device, by kernel name (`dm-0`, `sda3`). A
-        /// mapping's own name can name the tool that opened it, so the
-        /// operator is shown the kernel name.
+        /// The topmost shared device, by kernel name (`dm-0`, `sda3`), for
+        /// tests and logs. The operator is never shown it: the sentence names
+        /// what else the device holds instead.
         device: String,
         /// What of the decoy's storage also lies on it.
         holds: Claimed,
@@ -326,20 +326,19 @@ impl Verdict {
                     at.display()
                 ),
             },
-            Verdict::InsideDecoyStorage { device, holds, .. } => match holds {
+            Verdict::InsideDecoyStorage { holds, .. } => match holds {
                 Claimed::Swap(_) => {
-                    format!("it is stored inside /dev/{device}, which this computer uses as swap")
+                    "it is stored on a device this computer uses as swap".to_string()
                 }
                 Claimed::Mount(at) => {
                     format!(
-                        "it is stored inside /dev/{device}, which also holds {}",
+                        "it is stored on a device that also holds the filesystem at {}",
                         at.display()
                     )
                 }
-                Claimed::Encrypted(_) => format!(
-                    "it is stored inside /dev/{device}, which this computer unlocks through \
-                     {CRYPTTAB}"
-                ),
+                Claimed::Encrypted(_) => {
+                    format!("it is stored on a device this computer unlocks through {CRYPTTAB}")
+                }
             },
             Verdict::ImageFileOnDecoy { file, at } => format!(
                 "it is an unencrypted image file ({}) on {}",

@@ -188,18 +188,17 @@ fn two_filesystems_at_the_root_are_refused_naming_both() {
         "11 10 8:16 / /mnt/data rw - vfat /dev/sdb1 rw\n",
     ));
     let refused = refusal(&fs, "/mnt/data");
-    // The mock knows no device-mapper device, so the lower mount is shown by
-    // its type; the stick by its kernel name.
+    // Each filesystem is shown by its type, never by its source.
     assert_eq!(
         refused.kind,
         RefusalKind::Covered {
-            below: "a filesystem of type ext4".into(),
-            above: "/dev/sdb1".into(),
+            below: "ext4".into(),
+            above: "vfat".into(),
         }
     );
     assert!(
         refused.reason.contains(
-            "two filesystems are mounted at /mnt/data: a filesystem of type ext4, then /dev/sdb1 \
+            "two filesystems are mounted at /mnt/data: one of type ext4, then one of type vfat \
              over it"
         ),
         "{}",
@@ -208,9 +207,9 @@ fn two_filesystems_at_the_root_are_refused_naming_both() {
 }
 
 #[test]
-fn a_covered_root_names_mappings_by_their_kernel_device_only() {
+fn a_covered_root_names_no_device_of_either_mapping() {
     // The volume and the cover are both mappings whose names say what opened
-    // them; the operator is shown /dev/dm-N.
+    // them; the operator is shown neither those names nor /dev/dm-N.
     let fs = fs_with(
         "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
          10 1 253:0 / /mnt/data rw - ext4 /dev/mapper/veracrypt1 rw\n\
@@ -226,13 +225,13 @@ fn a_covered_root_names_mappings_by_their_kernel_device_only() {
     assert_eq!(
         refused.kind,
         RefusalKind::Covered {
-            below: "/dev/dm-0".into(),
-            above: "/dev/dm-1".into(),
+            below: "ext4".into(),
+            above: "ext4".into(),
         }
     );
     let text = refused.message().to_lowercase();
     assert!(
-        !text.contains("veracrypt") && !text.contains("hidden"),
+        !text.contains("veracrypt") && !text.contains("hidden") && !text.contains("/dev/"),
         "{text}"
     );
 }
@@ -297,7 +296,7 @@ fn in_the_session_another_disk_in_place_of_the_volume_is_refused() {
     assert_eq!(
         refused.kind,
         RefusalKind::NotTheSessionVolume {
-            source: "/dev/sdb1".into()
+            fstype: "vfat".into()
         }
     );
     assert!(

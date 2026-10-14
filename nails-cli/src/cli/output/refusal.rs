@@ -142,14 +142,14 @@ mod tests {
             (
                 "covered",
                 RefusalKind::Covered {
-                    below: "/dev/dm-0".into(),
-                    above: "/dev/sdc1".into(),
+                    below: "ext4".into(),
+                    above: "vfat".into(),
                 },
             ),
             (
                 "not_the_session_volume",
                 RefusalKind::NotTheSessionVolume {
-                    source: "/dev/sdc1".into(),
+                    fstype: "vfat".into(),
                 },
             ),
             (

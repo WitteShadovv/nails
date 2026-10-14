@@ -324,8 +324,8 @@ fn the_gate_refuses_a_volume_in_the_decoys_group() {
             );
             assert_eq!(
                 refusal.reason,
-                "/mnt is not a volume of its own: it is stored inside /dev/dm-0, which also \
-                 holds /"
+                "/mnt is not a volume of its own: it is stored on a device that also holds the \
+                 filesystem at /"
             );
         }
         other => panic!("{other:?}"),

@@ -85,19 +85,19 @@ pub enum RefusalKind {
         mount_point: PathBuf,
     },
     /// Two filesystems are mounted at the root: `below`, then `above` over it.
-    /// A write reaches `above`. Each is shown by its kernel device (see
-    /// [`shown_device`]).
+    /// A write reaches `above`. Each is shown by its type only: a source or a
+    /// device-mapper name can name the tool that opened the volume.
     Covered {
-        /// The lower mount.
+        /// The type of the lower filesystem.
         below: String,
-        /// The mount on top, which a lookup reaches.
+        /// The type of the filesystem on top, which a lookup reaches.
         above: String,
     },
     /// In the hidden session, the filesystem at the root is not the volume the
     /// session entered with.
     NotTheSessionVolume {
-        /// The mount a lookup reaches, shown by its kernel device.
-        source: String,
+        /// The type of the filesystem a lookup reaches.
+        fstype: String,
     },
     /// The root lives on storage the decoy uses (see [`separation`]).
     DecoyStorage {
@@ -243,8 +243,8 @@ impl HiddenRoot {
         if let Some(below) = covered_mount(&table, visible) {
             return refuse(
                 RefusalKind::Covered {
-                    below: shown_device(fs, below),
-                    above: shown_device(fs, visible),
+                    below: separation::shown_fstype(&below.fstype),
+                    above: separation::shown_fstype(&visible.fstype),
                 },
                 root,
             );
@@ -261,7 +261,7 @@ impl HiddenRoot {
         {
             return refuse(
                 RefusalKind::NotTheSessionVolume {
-                    source: shown_device(fs, visible),
+                    fstype: separation::shown_fstype(&visible.fstype),
                 },
                 root,
             );
@@ -343,23 +343,6 @@ impl HiddenRoot {
         }
         fs.path_exists(&root.join(MARKER_CONFIG_DIR).join(MARKER_CONFIG_FILE))
     }
-}
-
-/// How the operator is shown the filesystem of `mount`: by its kernel device
-/// (`/dev/dm-0`, `/dev/sdb1`), never by its source, since a mapping's own
-/// name can name the tool that opened it; else by its type.
-pub fn shown_device<F: Filesystem>(fs: &F, mount: &MountEntry) -> String {
-    crate::blockdev::device_of_mount(fs, mount)
-        .and_then(|dir| {
-            dir.file_name()
-                .map(|name| format!("/dev/{}", name.to_string_lossy()))
-        })
-        .unwrap_or_else(|| {
-            format!(
-                "a filesystem of type {}",
-                separation::shown_fstype(&mount.fstype)
-            )
-        })
 }
 
 /// The mount a lookup of `path` ends in: the visible mount at the deepest

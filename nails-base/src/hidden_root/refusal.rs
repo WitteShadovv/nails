@@ -17,7 +17,10 @@
 //! The text is printed on the terminal of the computer it protects, where
 //! anyone may read it. It names no storage tool and no volume type, and none
 //! of the words that say what the program is for; the only names in it are the
-//! paths of this computer and the root the operator typed.
+//! paths of this computer, the root the operator typed and filesystem types. It
+//! names no device either: a device-mapper name (`/dev/mapper/<name>`) can name
+//! the tool that opened a volume, so a filesystem is named by where it is
+//! mounted and its type.
 
 use super::separation::{SYS_CLASS_BLOCK, Sharing, Verdict};
 use super::{Refusal, RefusalKind};
@@ -84,11 +87,13 @@ impl RefusalKind {
                 "{root} is not a volume of its own: {}",
                 self.why().unwrap_or_default()
             ),
-            RefusalKind::Covered { below, above } => {
-                format!("two filesystems are mounted at {root}: {below}, then {above} over it")
-            }
-            RefusalKind::NotTheSessionVolume { source } => format!(
-                "the filesystem at {root} ({source}) is not the volume this session started from"
+            RefusalKind::Covered { below, above } => format!(
+                "two filesystems are mounted at {root}: one of type {below}, then one of type \
+                 {above} over it"
+            ),
+            RefusalKind::NotTheSessionVolume { fstype } => format!(
+                "the filesystem at {root} (of type {fstype}) is not the volume this session \
+                 started from"
             ),
             RefusalKind::StorageUntraced { fstype } => format!(
                 "{root} is on a filesystem of type {fstype}, which shows no disk it stores its data on, \
@@ -321,11 +326,11 @@ mod tests {
             },
             RefusalKind::SameDeviceAsRoot,
             RefusalKind::Covered {
-                below: "/dev/dm-0".into(),
-                above: "/dev/sdc1".into(),
+                below: "ext4".into(),
+                above: "vfat".into(),
             },
             RefusalKind::NotTheSessionVolume {
-                source: "/dev/sdc1".into(),
+                fstype: "vfat".into(),
             },
             RefusalKind::StorageUnjudged {
                 unreadable: vec![PathBuf::from("/etc/crypttab")],
@@ -369,6 +374,8 @@ mod tests {
                 "veracrypt",
                 "tcrypt",
                 "cryptsetup",
+                // No device either: a mapping's name can name what opened it.
+                "/dev/",
             ] {
                 assert!(!text.contains(word), "{word} in {text}");
             }

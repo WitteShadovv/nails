@@ -488,8 +488,8 @@ mod tests {
             assert!(result.is_fail(), "got {result:?}");
             assert!(
                 result.message().contains(
-                    "two filesystems are mounted at /mnt/data: a filesystem of type ext4, then \
-                     a filesystem of type ext4 over it"
+                    "two filesystems are mounted at /mnt/data: one of type ext4, then one of type \
+                     ext4 over it"
                 ),
                 "{}",
                 result.message()

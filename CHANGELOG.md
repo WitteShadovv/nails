@@ -296,8 +296,8 @@ config and CLI surfaces; there are no compatibility shims.
   `root_covered` (a second filesystem is mounted over the root) and `storage_unjudged` (run with
   `sudo`). `init`, `activate`, `rehearse plant` (exit 6 and `not_attached` before; a volume without
   a NAILS marker keeps them), `deactivate` and `reset-upper` (exit 1 and `state_locked` before)
-  report it; `check --json` carries it as `refusal`. The text names no storage tool and no volume
-  type, and shows a covering mount by its kernel device (`/dev/dm-0`). `--no-preflight` no longer
+  report it; `check --json` carries it as `refusal`. The text names no storage tool, no volume type
+  and no device: a filesystem is named by its mount point and its type. `--no-preflight` no longer
   skips the attach gate. A refused root no longer also prints a `File logging disabled` notice;
   `--verbose` shows it.
 - `--allow-decoy-storage` is accepted by `init`, `activate` and `check` (and `activate --dry-run`).
