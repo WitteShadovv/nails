@@ -19,6 +19,7 @@
 //! of the words that say what the program is for; the only names in it are the
 //! paths of this computer and the root the operator typed.
 
+use super::separation::{Sharing, Verdict};
 use super::{Refusal, RefusalKind};
 use std::path::Path;
 
@@ -83,14 +84,11 @@ impl RefusalKind {
                 "{root} is not a volume of its own: {}",
                 self.why().unwrap_or_default()
             ),
-            RefusalKind::Covered { below, above } => format!(
-                "two filesystems are mounted at {root}: {}, then {} over it",
-                below.display(),
-                above.display()
-            ),
+            RefusalKind::Covered { below, above } => {
+                format!("two filesystems are mounted at {root}: {below}, then {above} over it")
+            }
             RefusalKind::NotTheSessionVolume { source } => format!(
-                "the filesystem at {root} ({}) is not the volume this session started from",
-                source.display()
+                "the filesystem at {root} ({source}) is not the volume this session started from"
             ),
             RefusalKind::StorageUntraced { fstype } => format!(
                 "{root} is on a {fstype} filesystem, which shows no disk it stores its data on, \
@@ -176,10 +174,36 @@ impl Refusal {
             RefusalKind::MountTableUnreadable { .. } => {
                 vec!["Run the command where /proc is mounted and readable.".into()]
             }
-            RefusalKind::Missing
-            | RefusalKind::NotAMountPoint { .. }
-            | RefusalKind::DecoyStorage { .. }
-            | RefusalKind::SameDeviceAsRoot => self.redirect(exe),
+            RefusalKind::Missing | RefusalKind::NotAMountPoint { .. } => {
+                // Most often the volume is simply not unlocked yet, or the
+                // path has a typo.
+                let mut lines = vec![format!(
+                    "If the volume is already prepared, unlock it, mount it at {} and run the \
+                     command again.",
+                    self.root.display()
+                )];
+                lines.extend(self.redirect(exe));
+                lines
+            }
+            RefusalKind::DecoyStorage {
+                verdict:
+                    Verdict::OnDecoyFilesystem {
+                        how: Sharing::Filesystem,
+                        ..
+                    },
+            } => {
+                // A volume prepared elsewhere that the boot mounts through
+                // fstab is the computer's storage too, until its line goes.
+                let mut lines = vec![format!(
+                    "If {} is the volume you prepared, remove its line from {} long before the \
+                     next use, and mount it by hand each time.",
+                    self.root.display(),
+                    super::separation::FSTAB
+                )];
+                lines.extend(self.redirect(exe));
+                lines
+            }
+            RefusalKind::DecoyStorage { .. } | RefusalKind::SameDeviceAsRoot => self.redirect(exe),
         }
     }
 
@@ -453,5 +477,46 @@ mod tests {
             );
             assert_eq!(redirects, expected, "{refusal:?}: {hint}");
         }
+    }
+
+    #[test]
+    fn a_folder_or_a_missing_root_first_asks_to_mount_the_volume() {
+        for kind in [
+            RefusalKind::Missing,
+            RefusalKind::NotAMountPoint {
+                mount_point: PathBuf::from("/"),
+            },
+        ] {
+            let hint = Refusal::new(kind, Path::new("/mnt")).hint(None);
+            assert_eq!(
+                hint[0],
+                "If the volume is already prepared, unlock it, mount it at /mnt and run the \
+                 command again."
+            );
+            assert!(hint[1].starts_with("Setting up here"), "{hint:?}");
+        }
+    }
+
+    #[test]
+    fn a_filesystem_the_boot_mounts_first_asks_to_drop_its_fstab_line() {
+        let refusal = Refusal::new(
+            RefusalKind::DecoyStorage {
+                verdict: Verdict::OnDecoyFilesystem {
+                    how: Sharing::Filesystem,
+                    at: PathBuf::from("/srv"),
+                },
+            },
+            Path::new("/srv"),
+        );
+        let hint = refusal.hint(None);
+        assert_eq!(
+            hint[0],
+            "If /srv is the volume you prepared, remove its line from /etc/fstab long before the \
+             next use, and mount it by hand each time."
+        );
+        assert!(
+            hint.iter().any(|line| line.contains(GUIDE_SECTION)),
+            "{hint:?}"
+        );
     }
 }

@@ -3,6 +3,7 @@ source: nails-cli/src/cli/output/refusal.rs
 expression: "human(&refusal(kind), None)"
 ---
 error: /mnt does not exist. Nothing was written.
+  If the volume is already prepared, unlock it, mount it at /mnt and run the command again.
   Setting up here would leave files on this computer's own disk, where an examination can find them.
   Prepare the volume where nothing reaches this disk: on an external drive prepared on another computer (recommended), or from a setup medium (a live system started from a USB stick).
   Then unlock and mount it here, and run the program from it.

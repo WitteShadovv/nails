@@ -45,7 +45,7 @@ mod judge;
 mod tests;
 
 pub use collect::{Collected, collect, judge_storage};
-pub use judge::judge;
+pub use judge::{judge, shown_fstype};
 
 use crate::crypttab::CrypttabEntry;
 use crate::filesystem::mountinfo::MountEntry;

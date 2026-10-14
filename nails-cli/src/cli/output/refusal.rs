@@ -142,14 +142,14 @@ mod tests {
             (
                 "covered",
                 RefusalKind::Covered {
-                    below: PathBuf::from("/dev/mapper/data"),
-                    above: PathBuf::from("/dev/sdc1"),
+                    below: "/dev/dm-0".into(),
+                    above: "/dev/sdc1".into(),
                 },
             ),
             (
                 "not_the_session_volume",
                 RefusalKind::NotTheSessionVolume {
-                    source: PathBuf::from("/dev/sdc1"),
+                    source: "/dev/sdc1".into(),
                 },
             ),
             (
@@ -175,8 +175,8 @@ mod tests {
             ),
             (
                 RefusalKind::Covered {
-                    below: PathBuf::from("/dev/a"),
-                    above: PathBuf::from("/dev/b"),
+                    below: "/dev/a".into(),
+                    above: "/dev/b".into(),
                 },
                 "root_covered",
             ),

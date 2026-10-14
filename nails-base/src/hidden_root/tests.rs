@@ -188,19 +188,52 @@ fn two_filesystems_at_the_root_are_refused_naming_both() {
         "11 10 8:16 / /mnt/data rw - vfat /dev/sdb1 rw\n",
     ));
     let refused = refusal(&fs, "/mnt/data");
+    // The mock knows no device-mapper device, so the lower mount is shown by
+    // its type; the stick by its kernel name.
     assert_eq!(
         refused.kind,
         RefusalKind::Covered {
-            below: PathBuf::from("/dev/mapper/data"),
-            above: PathBuf::from("/dev/sdb1"),
+            below: "a filesystem of type ext4".into(),
+            above: "/dev/sdb1".into(),
         }
     );
     assert!(
         refused.reason.contains(
-            "two filesystems are mounted at /mnt/data: /dev/mapper/data, then /dev/sdb1 over it"
+            "two filesystems are mounted at /mnt/data: a filesystem of type ext4, then /dev/sdb1 \
+             over it"
         ),
         "{}",
         refused.reason
+    );
+}
+
+#[test]
+fn a_covered_root_names_mappings_by_their_kernel_device_only() {
+    // The volume and the cover are both mappings whose names say what opened
+    // them; the operator is shown /dev/dm-N.
+    let fs = fs_with(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         10 1 253:0 / /mnt/data rw - ext4 /dev/mapper/veracrypt1 rw\n\
+         11 10 253:1 / /mnt/data rw - ext4 /dev/mapper/hidden rw\n",
+    );
+    for (dev, name) in [("253:0", "dm-0"), ("253:1", "dm-1")] {
+        let dir = format!("/sys/devices/virtual/block/{name}");
+        fs.create_symlink(Path::new(&dir), Path::new(&format!("/sys/dev/block/{dev}")))
+            .unwrap();
+        fs.mock_add_file(&format!("{dir}/dev"), &format!("{dev}\n"));
+    }
+    let refused = refusal(&fs, "/mnt/data");
+    assert_eq!(
+        refused.kind,
+        RefusalKind::Covered {
+            below: "/dev/dm-0".into(),
+            above: "/dev/dm-1".into(),
+        }
+    );
+    let text = refused.message().to_lowercase();
+    assert!(
+        !text.contains("veracrypt") && !text.contains("hidden"),
+        "{text}"
     );
 }
 
@@ -264,7 +297,7 @@ fn in_the_session_another_disk_in_place_of_the_volume_is_refused() {
     assert_eq!(
         refused.kind,
         RefusalKind::NotTheSessionVolume {
-            source: PathBuf::from("/dev/sdb1")
+            source: "/dev/sdb1".into()
         }
     );
     assert!(

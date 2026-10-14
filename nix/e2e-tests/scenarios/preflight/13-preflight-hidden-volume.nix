@@ -57,7 +57,7 @@ in
                 result,
                 [
                     "hidden-volume",
-                    "is not mounted: it is a folder on the filesystem mounted at /",
+                    "is not a volume of its own: it is a folder on the filesystem mounted at /",
                     "Where setup happens",
                 ],
                 stream="stdout",

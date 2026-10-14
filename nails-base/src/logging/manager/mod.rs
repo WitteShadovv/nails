@@ -130,6 +130,21 @@ impl LoggingManager {
     /// - Log directory is a symlink (security bypass attempt)
     /// - Log directory cannot be created
     pub fn init<F: Filesystem>(&self, fs: &F) -> Result<Option<LoggingConfig>> {
+        Ok(self.init_or_explain(fs)?.ok())
+    }
+
+    /// [`init`](Self::init), saying why file logging stays off: `Ok(Err(reason))`
+    /// when the hidden root does not pass the attach gate. Nothing is printed;
+    /// every command that writes logs reports a refused root itself, so the
+    /// caller decides whether the reason is worth a line.
+    ///
+    /// # Errors
+    ///
+    /// As [`init`](Self::init).
+    pub fn init_or_explain<F: Filesystem>(
+        &self,
+        fs: &F,
+    ) -> Result<std::result::Result<LoggingConfig, String>> {
         // Validate log path is within hidden volume
         self.validate_log_path()?;
 
@@ -142,10 +157,7 @@ impl LoggingManager {
         match crate::hidden_root::HiddenRoot::verify_attached(fs, &self.hidden_volume_root, false)?
         {
             crate::hidden_root::AttachState::Attached => {}
-            crate::hidden_root::AttachState::Unattached(reason) => {
-                output::warn(&format!("File logging disabled: {reason}"));
-                return Ok(None);
-            }
+            crate::hidden_root::AttachState::Unattached(reason) => return Ok(Err(reason)),
         }
 
         if fs.path_exists(&self.log_path)? {
@@ -163,7 +175,7 @@ impl LoggingManager {
 
         let log_file_path = self.log_path.join(LOG_FILE_NAME);
 
-        Ok(Some(LoggingConfig { log_file_path }))
+        Ok(Ok(LoggingConfig { log_file_path }))
     }
 
     /// Check if log rotation should be triggered

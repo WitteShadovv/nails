@@ -6,7 +6,7 @@
 //! Validates that the hidden volume is mounted and writable before activation.
 
 use super::super::{CheckResult, PreFlightCheck};
-use crate::hidden_root::{Allow, Assessment, HiddenRoot, Refusal, RefusalKind};
+use crate::hidden_root::{Allow, Assessment, HiddenRoot, Refusal};
 use crate::naming::suspicious_token;
 use crate::{Filesystem, Result, config::get_default_hidden_volume_root};
 use std::path::{Component, PathBuf};
@@ -91,19 +91,15 @@ impl Default for HiddenVolumeCheck {
     }
 }
 
-/// The failure of a root the attach gate refused, with the gate's hint as the
+/// The failure of a root the attach gate refused: the gate's own sentence, as
+/// `init`, `activate` and `rehearse` print it, with its hint as the
 /// remediation.
-fn gate_failure(root: &std::path::Path, refusal: &Refusal) -> CheckResult {
-    let root = root.display();
-    let message = match (&refusal.kind, refusal.kind.why()) {
-        (RefusalKind::DecoyStorage { .. }, Some(why)) => {
-            format!("Hidden volume at {root} is not a volume of its own: {why}")
-        }
-        (_, Some(why)) => format!("Hidden volume at {root} is not mounted: {why}"),
-        (_, None) => format!("Hidden volume at {root}: {}", refusal.reason),
-    };
+fn gate_failure(refusal: &Refusal) -> CheckResult {
     let exe = std::env::current_exe().ok();
-    CheckResult::fail_with(message, refusal.hint(exe.as_deref()).join("\n"))
+    CheckResult::fail_with(
+        refusal.reason.clone(),
+        refusal.hint(exe.as_deref()).join("\n"),
+    )
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
@@ -120,22 +116,13 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        // Step 1: Check path exists
-        if !fs.path_exists(&self.hidden_volume_root)? {
-            return Ok(CheckResult::fail(format!(
-                "Hidden volume not found at {}. Mount volume before activation.",
-                self.hidden_volume_root.display()
-            )));
-        }
-
-        // Step 2: the attach gate, before anything is probed.
+        // Steps 1 and 2: the attach gate, which also finds a missing root,
+        // before anything is probed.
         let mut warnings = Vec::new();
         match HiddenRoot::assess_allowing(fs, &self.hidden_volume_root, self.allow)? {
             Assessment::Attached => {}
             Assessment::Warned(refusal) => warnings.push(refusal.warning()),
-            Assessment::Refused(refusal) => {
-                return Ok(gate_failure(&self.hidden_volume_root, &refusal));
-            }
+            Assessment::Refused(refusal) => return Ok(gate_failure(&refusal)),
         }
 
         // Step 3: Check path is writable
@@ -300,12 +287,13 @@ mod tests {
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
+        assert_eq!(result.message(), "/mnt/data does not exist");
         assert!(
             result
-                .message()
-                .contains("Hidden volume not found at /mnt/data")
+                .remediation()
+                .unwrap()
+                .starts_with("If the volume is already prepared, unlock it, mount it at /mnt/data")
         );
-        assert!(result.message().contains("Mount volume before activation"));
     }
 
     #[test]
@@ -321,7 +309,7 @@ mod tests {
         assert!(result.is_fail());
         assert!(
             result.message().starts_with(
-                "Hidden volume at /mnt/data is not mounted: it is a folder on the filesystem \
+                "/mnt/data is not a volume of its own: it is a folder on the filesystem \
                  mounted at /"
             ),
             "{}",
@@ -461,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn a_root_covered_by_a_mount_on_its_parent_is_not_mounted() {
+    fn a_root_covered_by_a_mount_on_its_parent_is_no_volume_of_its_own() {
         // The volume is still in the table, but a later mount on /mnt covers
         // it: a lookup of the root ends on that mount instead.
         let fs = MockFilesystem::new();
@@ -477,7 +465,7 @@ mod tests {
             .run(&fs)
             .unwrap();
         assert!(result.is_fail(), "got {result:?}");
-        assert!(result.message().contains("is not mounted"));
+        assert!(result.message().contains("is not a volume of its own"));
     }
 
     #[test]
@@ -500,10 +488,15 @@ mod tests {
             let result = check.run(&fs).unwrap();
             assert!(result.is_fail(), "got {result:?}");
             assert!(
-                result.message().contains(&format!(
-                    "two filesystems are mounted at /mnt/data: /dev/mapper/{below}, then \
-                     /dev/mapper/{above} over it"
-                )),
+                result.message().contains(
+                    "two filesystems are mounted at /mnt/data: a filesystem of type ext4, then \
+                     a filesystem of type ext4 over it"
+                ),
+                "{}",
+                result.message()
+            );
+            assert!(
+                !result.message().contains("veracrypt"),
                 "{}",
                 result.message()
             );
@@ -536,8 +529,7 @@ mod tests {
         assert!(result.is_fail(), "got {result:?}");
         assert_eq!(
             result.message(),
-            "Hidden volume at /mnt/data is not a volume of its own: it is a bind mount of a \
-             folder of /"
+            "/mnt/data is not a volume of its own: it is a bind mount of a folder of /"
         );
         assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
     }

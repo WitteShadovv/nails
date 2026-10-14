@@ -101,12 +101,9 @@ fn activate_refuses_a_folder_in_plain_words() {
         "{stderr}"
     );
     assert!(stderr.contains("Nothing was written."), "{stderr}");
-    // The log manager's notice is one line.
-    let notices: Vec<&str> = stderr
-        .lines()
-        .filter(|line| line.contains("File logging disabled"))
-        .collect();
-    assert_eq!(notices.len(), 1, "{stderr}");
+    assert!(stderr.contains("Where setup happens"), "{stderr}");
+    // The refusal is said once: the log manager stays silent about it.
+    assert!(!stderr.contains("File logging disabled"), "{stderr}");
     assert!(entries(&root).is_empty(), "{:?}", entries(&root));
 }
 

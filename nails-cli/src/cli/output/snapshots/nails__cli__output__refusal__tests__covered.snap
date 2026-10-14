@@ -2,5 +2,5 @@
 source: nails-cli/src/cli/output/refusal.rs
 expression: "human(&refusal(kind), None)"
 ---
-error: two filesystems are mounted at /mnt: /dev/mapper/data, then /dev/sdc1 over it. Nothing was written.
+error: two filesystems are mounted at /mnt: /dev/dm-0, then /dev/sdc1 over it. Nothing was written.
   Unmount the one that is not the volume, then run the command again.

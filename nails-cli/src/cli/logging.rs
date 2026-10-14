@@ -176,10 +176,19 @@ fn init_file_layer(
     // Initialize LoggingManager with validation
     // Returns Ok(None) for graceful degradation (hidden volume not available)
     let fs = RealFilesystem;
-    let logging_config = match logging_manager.init(&fs) {
-        Ok(Some(config)) => config,
-        Ok(None) => {
-            // Graceful degradation: hidden volume not available
+    let logging_config = match logging_manager.init_or_explain(&fs) {
+        Ok(Ok(config)) => config,
+        Ok(Err(reason)) => {
+            // Graceful degradation: the hidden root did not pass the attach
+            // gate. The command reports a refused root itself, so the reason
+            // is repeated only on request.
+            if settings.verbosity >= nails_core::Verbosity::Verbose {
+                emit_logging_init_message(
+                    settings,
+                    false,
+                    &format!("File logging disabled: {reason}"),
+                );
+            }
             return Ok(None);
         }
         Err(e) => {
