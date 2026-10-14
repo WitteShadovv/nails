@@ -130,8 +130,9 @@ pub fn action_sleeps(value: &str) -> bool {
 /// Apply one `[Login]` assignment to `settings`.
 ///
 /// Keys match case-sensitively, as logind does. A `Handle*=`/`IdleAction=`
-/// value logind would reject leaves the previous value in place; an empty one
-/// resets the setting to logind's default. `IdleActionSec=` is kept verbatim.
+/// value logind would reject leaves the previous value in place, and logind
+/// rejects an empty one too: unlike most systemd settings these do not reset
+/// to the default. `IdleActionSec=` is kept verbatim, and an empty one resets it.
 fn apply_logind(settings: &mut LogindSleepSettings, assignment: &Assignment) {
     let field = match assignment.key.as_str() {
         "HandleLidSwitch" => &mut settings.handle_lid_switch,
@@ -146,9 +147,7 @@ fn apply_logind(settings: &mut LogindSleepSettings, assignment: &Assignment) {
         _ => return,
     };
     let value = assignment.value.as_str();
-    if value.is_empty() {
-        *field = None;
-    } else if HANDLE_ACTIONS.contains(&value) {
+    if HANDLE_ACTIONS.contains(&value) {
         *field = Some(value.to_string());
     }
 }
@@ -329,8 +328,41 @@ mod tests {
             &mut settings,
         );
         assert_eq!(settings.handle_lid_switch.as_deref(), Some("lock"));
-        parse_logind_sleep("[Login]\nHandleLidSwitch=\n", &mut settings);
-        assert_eq!(settings.effective_lid_switch(), "suspend");
+    }
+
+    #[test]
+    fn an_empty_action_keeps_the_previous_one_as_logind_does() {
+        // logind parses Handle*= and IdleAction= without a reset-to-default
+        // case, so it rejects an empty value and keeps what was there.
+        let mut settings = LogindSleepSettings::default();
+        parse_logind_sleep(
+            "[Login]\nHandleLidSwitch=lock\nHandleLidSwitchExternalPower=ignore\n\
+             HandleLidSwitchDocked=lock\nIdleAction=lock\nIdleActionSec=300\n",
+            &mut settings,
+        );
+        parse_logind_sleep(
+            "[Login]\nHandleLidSwitch=\nHandleLidSwitchExternalPower=\n\
+             HandleLidSwitchDocked=\nIdleAction=\nIdleActionSec=\n",
+            &mut settings,
+        );
+        assert_eq!(settings.effective_lid_switch(), "lock");
+        assert_eq!(settings.effective_lid_switch_external_power(), "ignore");
+        assert_eq!(settings.effective_lid_switch_docked(), "lock");
+        assert_eq!(settings.effective_idle_action(), "lock");
+        assert!(!settings.lid_switch_sleeps(), "{settings:?}");
+        // IdleActionSec= is a time span, and an empty one does reset it.
+        assert_eq!(settings.idle_action_sec, None);
+
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(MAIN, "[Login]\nHandleLidSwitch=lock\n");
+        let drop_in = format!("{DROP_IN_DIR}/10-lid.conf");
+        fs.mock_add_file(&drop_in, "[Login]\nHandleLidSwitch=\n");
+        fs.mock_set_directory_contents(Path::new(DROP_IN_DIR), vec![PathBuf::from(&drop_in)]);
+        let result = SleepPolicyCheck::new(SleepPolicyMode::Block)
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_pass(), "{}", result.message());
+        assert!(result.message().contains("HandleLidSwitch=lock"));
     }
 
     #[test]
