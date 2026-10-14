@@ -28,8 +28,8 @@ The release workflow adds:
 - the canonical Nix build of `.#nails-release`, compiled from source with `--locked`
 - an independent rebuild on a fresh runner, compared byte for byte via `reproducibility.yml`
 - the whole E2E suite on the tagged commit
-- the release SBOM, musl included
-- GitHub artifact attestations for the archive, the binary and the SBOM, created only after every gate passed
+- the release SBOM, musl included, and an OpenVEX document for musl's patched CVEs
+- GitHub artifact attestations for the archive, the binary, the SBOM and the VEX document, created only after every gate passed
 
 [ci.md](ci.md#release-workflow) describes the jobs.
 
@@ -44,7 +44,7 @@ cargo cyclonedx --manifest-path nails-cli/Cargo.toml --format json --spec-versio
   --target x86_64-unknown-linux-musl --describe binaries --no-build-deps
 ```
 
-It writes `nails-cli/nails_bin.cdx.json`. The release workflow then adds musl, which the binary links statically and cargo cannot see, with `python3 -m ci.release sbom-libc`. The version is that of `.#nails.libc`, the musl of the pinned nixpkgs, which the release build links instead of the copy that ships with the Rust toolchain. The CVEs that nixpkgs patches that musl against, read from the names of its patches, are recorded as backported fixes in the component's `pedigree`.
+It writes `nails-cli/nails_bin.cdx.json`. The release workflow then adds musl, which the binary links statically and cargo cannot see, with `python3 -m ci.release sbom-libc`. The version is that of `.#nails.libc`, the musl of the pinned nixpkgs, which the release build links instead of the copy that ships with the Rust toolchain. The CVEs that nixpkgs patches that musl against, read from the names of its patches, are recorded as backported fixes in the component's `pedigree`. The component also carries musl's CPE, so scanners check it against vulnerability data. Scanners such as grype ignore `pedigree`, so the release also publishes `musl.openvex.json`, an OpenVEX document that marks the same CVEs as fixed in musl, written by `python3 -m ci.release musl-vex`. Without it, a scan reports the patched CVEs as open.
 
 ### Validate format locally
 
@@ -58,12 +58,12 @@ Without `--fail-on-errors`, `cyclonedx validate` reports problems but still exit
 
 | Source | Asset | Notes |
 |---|---|---|
-| Published GitHub releases and prereleases | `sbom.cdx.json` | Produced and attested by `release.yml` |
+| Published GitHub releases and prereleases | `sbom.cdx.json`, `musl.openvex.json` | Produced and attested by `release.yml` |
 
 ### Example downstream use
 
 ```bash
-grype sbom:sbom.cdx.json
+grype sbom:sbom.cdx.json --vex musl.openvex.json
 ```
 
 ## Dependency policy
@@ -125,7 +125,7 @@ For PRs and pushes, the `nix-build` job of `ci.yml` validates the same release d
 
 ## Provenance and verification
 
-The release workflow creates GitHub artifact attestations: Sigstore-signed SLSA build provenance for the archive and the binary, and an SBOM attestation that binds `sbom.cdx.json` to them. They meet SLSA v1.0 Build Level 2, signed provenance from a hosted build platform; the build does not run in an isolated reusable workflow, so the project does not claim Build Level 3.
+The release workflow creates GitHub artifact attestations: Sigstore-signed SLSA build provenance for the archive and the binary, an SBOM attestation that binds `sbom.cdx.json` to them, and an OpenVEX attestation for `musl.openvex.json`. They meet SLSA v1.0 Build Level 2, signed provenance from a hosted build platform; the build does not run in an isolated reusable workflow, so the project does not claim Build Level 3.
 
 [verify-release.md](verify-release.md) is the one description of how to check a release: the checksum, the attestation, and where to do it without leaving a trace on the decoy system.
 

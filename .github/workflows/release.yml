@@ -11,7 +11,8 @@ name: Release
 #                  byte
 #   e2e            the whole E2E suite (e2e.yml) on the tagged commit
 #   sbom           CycloneDX SBOM of the binary for the musl target, musl
-#                  included
+#                  included, and an OpenVEX document that marks the CVEs
+#                  nixpkgs patches musl against as fixed
 #   attest         build provenance for the archive and the binary, and the
 #                  SBOM as an attestation of its own
 #   draft-release  a draft whose notes are the CHANGELOG.md section
@@ -238,7 +239,9 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
           MUSL_VERSION: ${{ needs.build.outputs.musl-version }}
           MUSL_CVES: ${{ needs.build.outputs.musl-cves }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
+          mkdir "$RUNNER_TEMP/release-sbom"
           cargo metadata --locked --format-version 1 > /dev/null
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) cargo cyclonedx \
             --manifest-path nails-cli/Cargo.toml --format json --spec-version 1.5 \
@@ -247,18 +250,23 @@ jobs:
           for cve in $MUSL_CVES; do cve_args+=(--musl-cve "$cve"); done
           python3 -m ci.release sbom-libc --sbom nails-cli/nails_bin.cdx.json \
             --version "$VERSION" --musl-version "$MUSL_VERSION" "${cve_args[@]}" \
-            --output "$RUNNER_TEMP/sbom.cdx.json"
+            --output "$RUNNER_TEMP/release-sbom/sbom.cdx.json"
+          # Scanners ignore the SBOM's record of the patches; this document
+          # tells them (grype --vex) that the patched CVEs are fixed.
+          python3 -m ci.release musl-vex --musl-version "$MUSL_VERSION" "${cve_args[@]}" \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --epoch "$(git log -1 --format=%ct)" \
+            --output "$RUNNER_TEMP/release-sbom/musl.openvex.json"
 
       - name: Validate the SBOM
         run: |
-          cyclonedx validate --input-file "$RUNNER_TEMP/sbom.cdx.json" \
+          cyclonedx validate --input-file "$RUNNER_TEMP/release-sbom/sbom.cdx.json" \
             --input-format json --input-version v1_5 --fail-on-errors
 
-      - name: Upload the SBOM
+      - name: Upload the SBOM and the VEX document
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-sbom
-          path: ${{ runner.temp }}/sbom.cdx.json
+          path: ${{ runner.temp }}/release-sbom/
           if-no-files-found: error
           retention-days: 14
 
@@ -280,7 +288,7 @@ jobs:
           name: release-bundle
           path: dist
 
-      - name: Download the SBOM
+      - name: Download the SBOM and the VEX document
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: release-sbom
@@ -299,6 +307,13 @@ jobs:
           subject-checksums: dist/checksums.txt
           sbom-path: sbom/sbom.cdx.json
 
+      - name: Attest the VEX document
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/checksums.txt
+          predicate-type: https://openvex.dev/ns/v0.2.0
+          predicate-path: sbom/musl.openvex.json
+
   draft-release:
     name: Draft release
     needs: [version, attest]
@@ -314,7 +329,7 @@ jobs:
           name: release-bundle
           path: dist
 
-      - name: Download the SBOM
+      - name: Download the SBOM and the VEX document
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: release-sbom

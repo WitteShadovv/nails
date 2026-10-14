@@ -769,8 +769,9 @@ config and CLI surfaces; there are no compatibility shims.
   now read `/rustc/<commit>/library/…`, as in upstream Rust builds, and the build fails if the
   binary refers to the toolchain again.
 - The release SBOM records the CVEs that nixpkgs patches musl against (read from its patch names)
-  as backported fixes in the musl component's `pedigree`, so the SBOM no longer presents the
-  patched musl as plain upstream 1.2.6.
+  as backported fixes in the musl component's `pedigree`, and gives musl its CPE, so scanners
+  check it at all. A new attested release asset, `musl.openvex.json`, marks those CVEs as fixed;
+  scanners ignore `pedigree`, so scan with `grype sbom:sbom.cdx.json --vex musl.openvex.json`.
 
 ## [0.2.0] - 2026-05-08
 

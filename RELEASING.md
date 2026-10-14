@@ -35,8 +35,8 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
 5. **Watch the run.** The first job fails within seconds when the tag, `Cargo.lock` or the
    changelog section is wrong; the whole run takes about as long as the E2E suite. A failed run
    opens or comments on the `CI red: Release` issue.
-6. **Review the draft** on the Releases page: the notes, and the four assets (the archive,
-   `nails`, `checksums.txt`, `sbom.cdx.json`). Drafts are visible to maintainers only. Download
+6. **Review the draft** on the Releases page: the notes, and the five assets (the archive,
+   `nails`, `checksums.txt`, `sbom.cdx.json`, `musl.openvex.json`). Drafts are visible to maintainers only. Download
    `nails` and `checksums.txt` from the draft and follow
    [docs/verify-release.md](docs/verify-release.md).
 7. **Publish** the draft. Once published, a release, its assets and its tag never change. For a
