@@ -477,7 +477,7 @@ fn the_entries_check_alone_refuses_a_decoy_entry_for_the_volume() {
          5 1 8:16 / /mnt/hidden rw - ext4 /dev/sdb rw\n",
     );
     let manager = manager_with(fs);
-    assert_eq!(manager.run_backend_entries_check().unwrap(), None);
+    manager.run_backend_entries_check().unwrap();
 
     manager
         .filesystem()
@@ -493,10 +493,10 @@ fn the_entries_check_alone_refuses_a_decoy_entry_for_the_volume() {
 }
 
 #[test]
-fn the_entries_check_alone_returns_its_warning() {
-    // Under --no-preflight no report shows the warning, so activation takes
-    // it from here: the volume is the whole of sdb, and the decoy opens a
-    // container on sdb1 of the same drive.
+fn the_entries_check_alone_only_logs_its_warning() {
+    // The volume is the whole of sdb, and the decoy opens a container on sdb1
+    // of the same drive: a warning, reported as the pre-flight run reports
+    // one, which does not refuse activation.
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists("/mnt/hidden", true);
     fs.mock_set_mount_table(
@@ -518,12 +518,17 @@ fn the_entries_check_alone_returns_its_warning() {
     fs.mock_set_file_content("/sys/devices/usb/sdb/sdb1/partition", "1\n");
     fs.mock_set_directory_contents(std::path::Path::new("/sys/class/block"), class);
     fs.mock_add_file("/etc/crypttab", "outer /dev/sdb1 none tcrypt,noauto\n");
-    let warning = manager_with(fs)
+    let manager = manager_with(fs);
+    let check =
+        crate::preflight::checks::BackendEntriesCheck::new(std::path::PathBuf::from("/mnt/hidden"));
+    match crate::preflight::PreFlightCheck::run(&check, manager.filesystem()).unwrap() {
+        CheckResult::Warn(message) => assert!(
+            message.contains("the decoy is configured to open storage on this drive"),
+            "{message}"
+        ),
+        other => panic!("expected a warning, got {other:?}"),
+    }
+    manager
         .run_backend_entries_check()
-        .expect("a warning does not refuse")
-        .expect("the check warns");
-    assert!(
-        warning.contains("the decoy is configured to open storage on this drive"),
-        "{warning}"
-    );
+        .expect("a warning does not refuse");
 }

@@ -402,10 +402,10 @@ impl<F: Filesystem> NailsManager<F> {
 
     /// Run `backend-entries` alone, as activation does under `--no-preflight`:
     /// a decoy fstab or crypttab entry that opens the hidden volume refuses
-    /// activation whatever the flags say. Returns the check's warning, which
-    /// no pre-flight report shows under `--no-preflight`, for the caller to
-    /// show the operator.
-    pub fn run_backend_entries_check(&self) -> Result<Option<String>> {
+    /// activation whatever the flags say. A warning is reported as the
+    /// pre-flight run reports one, once, as a tracing event that the CLI's
+    /// subscriber shows, and it does not change the activation's exit status.
+    pub fn run_backend_entries_check(&self) -> Result<()> {
         use crate::preflight::{CheckResult, PreFlightCheck};
         let check = crate::preflight::checks::BackendEntriesCheck::new(
             self.config.hidden_volume_root.clone(),
@@ -425,9 +425,9 @@ impl<F: Filesystem> NailsManager<F> {
             }
             CheckResult::Warn(message) => {
                 tracing::warn!(check = %name, result = "warn", msg = %message, "Preflight check warning");
-                Ok(Some(message))
+                Ok(())
             }
-            CheckResult::Pass(_) | CheckResult::Skipped(_) => Ok(None),
+            CheckResult::Pass(_) | CheckResult::Skipped(_) => Ok(()),
         }
     }
 
