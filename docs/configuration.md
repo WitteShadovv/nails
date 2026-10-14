@@ -142,11 +142,12 @@ directly.
 The hidden volume must be storage of its own, because everything nails writes
 there would otherwise land on the decoy disk. The attach gate refuses a plain
 directory, a btrfs subvolume or bind mount of a filesystem the decoy uses, a
-volume stacked on the decoy's storage, an image file on a decoy filesystem, and
-a root with a second filesystem mounted over it; it runs before `init`,
-`activate` and `check` write or probe anything, and `--no-preflight` does not
-skip it. `--allow-unmounted` turns the refusal of the decoy's storage into a
-warning; a folder is always refused (see
+volume stacked on the decoy's storage, an image file on a decoy filesystem, a
+filesystem that shows no disk it stores its data on (an overlay, FUSE, a network
+filesystem or a ZFS dataset), and a root with a second filesystem mounted over
+it; it runs before `init`, `activate` and `check` write or probe anything, and
+`--no-preflight` does not skip it. `--allow-unmounted` turns the refusal of the
+decoy's storage into a warning; a folder is always refused (see
 [the attach gate](threat-model.md#the-attach-gate)). The decoy root must be a disk
 filesystem that can be mounted again by its device for the way back (the
 `decoy-root` check refuses a tmpfs, ZFS or overlay root).
