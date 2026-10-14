@@ -431,7 +431,10 @@ mod tests {
             )
             .hint(None)
         };
-        assert_eq!(hint(&["/etc/crypttab"]), ["Run the command again with sudo."]);
+        assert_eq!(
+            hint(&["/etc/crypttab"]),
+            ["Run the command again with sudo."]
+        );
         let sysfs = [
             "Run the command again as root, on the host rather than in a container, with /sys \
              mounted.",
