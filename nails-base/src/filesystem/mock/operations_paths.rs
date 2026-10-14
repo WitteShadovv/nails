@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::MockFilesystem;
-use super::state::DEFAULT_MOCK_FREE_SPACE_BYTES;
+use super::state::{DEFAULT_MOCK_FREE_SPACE_BYTES, MockOp};
 use crate::filesystem::DiskUsage;
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
@@ -89,6 +89,12 @@ impl MockFilesystem {
     }
 
     pub(super) fn supports_symlinks_impl(&self, dir: &Path) -> Result<bool> {
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::SymlinkProbe {
+                dir: dir.to_path_buf(),
+            });
         let support = self
             .symlink_support
             .lock()
@@ -280,6 +286,12 @@ impl MockFilesystem {
     }
 
     pub(super) fn is_writable_impl(&self, path: &Path) -> Result<bool> {
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::WritableProbe {
+                path: path.to_path_buf(),
+            });
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths
             .get(path)

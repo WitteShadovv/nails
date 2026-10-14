@@ -22,8 +22,8 @@ fn write_test_base_hardware_config(tmp: &TempDir) -> PathBuf {
     path
 }
 
-/// Arguments that initialize a real temp directory: the target is not a separate
-/// mount (a `TempDir` shares `/`'s device), so `--allow-unmounted` is required,
+/// Arguments that initialize a real temp directory: the target is a folder, not
+/// a mount point, so `--allow-unmounted` is required,
 /// and the base hardware config is pinned so the run never consults the host.
 fn real_init_args(path: &Path, base_hardware_config: &Path) -> InitArgs {
     InitArgs {
@@ -243,6 +243,7 @@ fn unmounted_target_refused_with_zero_writes() {
 
     let status = run(&OutputSettings::default(), &fs, &args);
     assert_eq!(status, ExitStatus::PreflightRefused);
+    assert!(probes(&fs).is_empty(), "{:?}", fs.mock_ops());
 
     for rel in COMMON_SUBDIRS.iter().chain(NIXOS_SUBDIRS) {
         assert!(
@@ -334,22 +335,72 @@ fn same_device_target_reports_the_mount_reason() {
     };
 
     match plan(&fs, &args) {
-        Err(InitFailure::Preconditions(failures)) => assert!(
-            failures
-                .iter()
-                .any(|reason| reason.contains("it is on the device that holds /")),
-            "{failures:?}"
-        ),
-        other => panic!("expected a precondition failure, got {:?}", other.is_ok()),
+        Err(InitFailure::NotSeparate(refusal)) => {
+            assert_eq!(refusal.code(), "not_separate_volume");
+            assert!(
+                refusal.reason.contains("it is on the device that holds /"),
+                "{refusal:?}"
+            );
+        }
+        other => panic!("expected a refusal, got {:?}", other.is_ok()),
     }
+}
+
+/// A mock where `root` is a folder of the `/` filesystem: it exists, is a
+/// writable directory, and nothing is mounted there.
+fn folder_mock(root: &Path) -> MockFilesystem {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_path_type(root.to_str().unwrap(), PathKind::Dir);
+    fs.mock_set_writable(root.to_str().unwrap(), true);
+    fs.mock_set_mount_table("1 0 8:1 / / rw - ext4 /dev/vda1 rw\n");
+    fs
+}
+
+fn probes(fs: &MockFilesystem) -> Vec<nails_core::filesystem::MockOp> {
+    fs.mock_ops()
+        .into_iter()
+        .filter(|op| {
+            matches!(
+                op,
+                nails_core::filesystem::MockOp::WritableProbe { .. }
+                    | nails_core::filesystem::MockOp::SymlinkProbe { .. }
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn refused_target_is_never_probed() {
+    let root = Path::new("/srv/x");
+    let fs = folder_mock(root);
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: true,
+    };
+
+    let status = run(&OutputSettings::default(), &fs, &args);
+    assert_eq!(status, ExitStatus::PreflightRefused);
+    assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+
+    // The same target passes the gate once overridden, and only then is probed.
+    let plan = plan(
+        &fs,
+        &InitArgs {
+            allow_unmounted: true,
+            ..args
+        },
+    );
+    assert!(plan.is_ok());
+    assert_eq!(probes(&fs).len(), 2, "{:?}", fs.mock_ops());
 }
 
 #[test]
 fn allow_unmounted_proceeds_with_a_warning() {
-    let root = Path::new("/mnt/data");
-    let fs = attached_mock(root);
-    fs.mock_set_device_id(Path::new("/"), 7);
-    fs.mock_set_device_id(root, 7);
+    let root = Path::new("/srv/x");
+    let fs = folder_mock(root);
 
     let args = InitArgs {
         path: root.to_path_buf(),
@@ -359,13 +410,83 @@ fn allow_unmounted_proceeds_with_a_warning() {
     };
 
     let plan = plan(&fs, &args).expect("--allow-unmounted should pass validation");
-    assert!(
-        plan.warnings
-            .iter()
-            .any(|warning| warning.contains("--allow-unmounted")),
-        "{:?}",
-        plan.warnings
+    assert_eq!(
+        plan.warnings,
+        vec![
+            "--allow-unmounted: using /srv/x although it is a folder on the filesystem mounted \
+             at /; every file nails writes there lands on that storage"
+                .to_string()
+        ]
     );
+}
+
+#[test]
+fn allow_unmounted_never_covers_a_covered_root_or_unjudged_storage() {
+    let args = |root: &Path| InitArgs {
+        path: root.to_path_buf(),
+        allow_unmounted: true,
+        hardware_config: None,
+        no_hardware_config: true,
+    };
+
+    let root = Path::new("/mnt/data");
+    let covered = attached_mock(root);
+    covered.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         10 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         11 10 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n",
+    );
+    match plan(&covered, &args(root)) {
+        Err(InitFailure::NotSeparate(refusal)) => assert_eq!(refusal.code(), "root_covered"),
+        other => panic!("expected a refusal, got {:?}", other.is_ok()),
+    }
+    assert!(probes(&covered).is_empty());
+
+    let unjudged = attached_mock(root);
+    unjudged.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         10 1 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n",
+    );
+    // A crypttab that exists but cannot be read.
+    unjudged.mock_set_path_exists("/etc/crypttab", true);
+    match plan(&unjudged, &args(root)) {
+        Err(InitFailure::NotSeparate(refusal)) => assert_eq!(refusal.code(), "storage_unjudged"),
+        other => panic!("expected a refusal, got {:?}", other.is_ok()),
+    }
+    assert!(probes(&unjudged).is_empty());
+}
+
+#[test]
+fn a_refused_real_directory_keeps_its_timestamps_and_stays_empty() {
+    use std::os::unix::fs::MetadataExt;
+    // A TempDir is a folder, never a mount point, so the gate refuses it.
+    let tmp = TempDir::new().unwrap();
+    let past = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    fs::File::open(tmp.path())
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(past))
+        .unwrap();
+    let before = fs::metadata(tmp.path()).unwrap();
+
+    let args = InitArgs {
+        path: tmp.path().to_path_buf(),
+        allow_unmounted: false,
+        hardware_config: None,
+        no_hardware_config: true,
+    };
+    let status = run(&OutputSettings::default(), &RealFilesystem, &args);
+    assert_eq!(status, ExitStatus::PreflightRefused);
+
+    let after = fs::metadata(tmp.path()).unwrap();
+    assert_eq!(
+        (after.mtime(), after.mtime_nsec()),
+        (before.mtime(), before.mtime_nsec())
+    );
+    assert_eq!(
+        (after.ctime(), after.ctime_nsec()),
+        (before.ctime(), before.ctime_nsec())
+    );
+    assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 0);
 }
 
 #[test]

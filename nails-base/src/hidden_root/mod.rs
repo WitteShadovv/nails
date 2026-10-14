@@ -144,6 +144,30 @@ impl Assessment {
     }
 }
 
+/// The refusals the operator overrode (`--allow-unmounted`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Allow {
+    /// Every refusal stands.
+    #[default]
+    Nothing,
+    /// A root that is not a volume of its own attaches with a warning: a
+    /// folder that is no mount point, or a root the [`separation`] judge
+    /// places on the decoy's storage. A missing root, a covered one, storage
+    /// that cannot be judged and a root on `/`'s own device still refuse.
+    NotSeparate,
+}
+
+impl Allow {
+    /// Whether this override turns a refusal of `kind` into a warning.
+    pub fn covers(self, kind: &RefusalKind) -> bool {
+        self == Allow::NotSeparate
+            && matches!(
+                kind,
+                RefusalKind::NotAMountPoint { .. } | RefusalKind::DecoyStorage { .. }
+            )
+    }
+}
+
 fn refuse(kind: RefusalKind, root: &Path) -> Result<Assessment> {
     Ok(Assessment::Refused(Refusal::new(kind, root)))
 }
@@ -262,6 +286,17 @@ impl HiddenRoot {
         }
 
         Ok(warning.map_or(Assessment::Attached, Assessment::Warned))
+    }
+
+    /// [`assess`](Self::assess), with the refusals `allow` covers turned into
+    /// [`Assessment::Warned`].
+    pub fn assess_allowing<F: Filesystem>(fs: &F, root: &Path, allow: Allow) -> Result<Assessment> {
+        Ok(match Self::assess(fs, root)? {
+            Assessment::Refused(refusal) if allow.covers(&refusal.kind) => {
+                Assessment::Warned(refusal)
+            }
+            other => other,
+        })
     }
 
     /// Decide whether `root` is a mounted hidden volume NAILS may write to:

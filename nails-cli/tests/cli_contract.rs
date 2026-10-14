@@ -853,6 +853,28 @@ fn exit_code_4_preflight_refused_on_check() {
 }
 
 #[test]
+fn init_refuses_a_folder_with_not_separate_volume_and_writes_nothing() {
+    // A TempDir is a folder, never a mount point: the attach gate refuses it.
+    let dir = tempfile::tempdir().unwrap();
+    let output = nails()
+        .args(["--no-log-file", "init", "--no-hardware-config", "--json"])
+        .arg(dir.path())
+        .output()
+        .expect("run nails");
+    assert_eq!(output.status.code(), Some(4));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "not_separate_volume", "{value}");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("Nothing was written."),
+        "{value}"
+    );
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn exit_code_5_needs_root_on_privileged_commands_run_unprivileged() {
     // The integration binary carries `test-hooks`, so the root gate is off by
     // default (the rest of the suite drives activate/deactivate/emergency

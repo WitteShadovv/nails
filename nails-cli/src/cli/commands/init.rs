@@ -5,13 +5,16 @@
 //!
 //! Bootstraps the NAILS directory structure on a hidden volume.
 //!
-//! Every precondition is checked *before* the first write: the target must be a
-//! directory, a mounted volume of its own (so the layout never lands on the
-//! decoy disk where the real volume later hides it), writable, able to hold
-//! symlinks, and free of a file where the layout needs a directory or the
-//! reverse; the base hardware configuration must be readable whenever the
-//! hidden NixOS layout will be bootstrapped. A refusal therefore leaves the
-//! target untouched. Writes then go through the [`Filesystem`] trait, except the
+//! The attach gate decides first: the target must be a volume of its own,
+//! mounted there and not stored on this computer's own storage, so the layout
+//! never lands on the decoy disk where the real volume later hides it. Only
+//! then is anything probed. The probes for a writable target and for symlink
+//! support create and delete a file, which would change a refused directory's
+//! timestamps. Every other precondition is checked *before* the first write:
+//! the target must be a directory, writable, able to hold symlinks, and free
+//! of a file where the layout needs a directory or the reverse; the base
+//! hardware configuration must be readable whenever the hidden NixOS layout
+//! will be bootstrapped. A refusal therefore leaves the target untouched. Writes then go through the [`Filesystem`] trait, except the
 //! state file, which the core state module writes atomically under its lock.
 //! Each item is reported as created or already present, and the run ends with
 //! the numbered next steps the operator takes to activate.
@@ -23,12 +26,13 @@ use serde::Serialize;
 
 use crate::cli::args::InitArgs;
 use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
+use crate::cli::output::refusal::report_refusal;
 use crate::cli::output::{ExitStatus, OutputSettings};
 use nails_core::config::CONFIG_FILE_NAME;
+use nails_core::hidden_root::{Allow, Assessment, Refusal};
 use nails_core::{
-    AttachState, Config, Filesystem, HiddenRoot, HostProfile, NailsError, RealFilesystem, Result,
-    StateFile, StateLock, detect, ensure_hidden_hardware_configuration,
-    stage_hidden_config_symlink,
+    Config, Filesystem, HiddenRoot, HostProfile, NailsError, RealFilesystem, Result, StateFile,
+    StateLock, detect, ensure_hidden_hardware_configuration, stage_hidden_config_symlink,
 };
 
 /// Platform-agnostic subdirectories to create, each with 0700 permissions.
@@ -119,6 +123,8 @@ enum HardwareBootstrap {
 /// Why init refused, so the caller can map it to an exit status and a message.
 #[derive(Debug)]
 enum InitFailure {
+    /// The attach gate refused the target; nothing was probed or written.
+    NotSeparate(Refusal),
     /// One or more preconditions were not met; nothing was written.
     Preconditions(Vec<String>),
     /// A filesystem query or write failed.
@@ -143,7 +149,8 @@ impl From<NailsError> for InitFailure {
 ///
 /// - [`ExitStatus::Ok`] once the layout exists
 /// - [`ExitStatus::Config`] when the global `--config` was passed
-/// - [`ExitStatus::PreflightRefused`] when a precondition is not met
+/// - [`ExitStatus::PreflightRefused`] when the attach gate refuses the target
+///   or a precondition is not met
 /// - [`ExitStatus::Failed`] when a filesystem operation fails
 pub fn execute(
     settings: &OutputSettings,
@@ -178,6 +185,9 @@ fn run<F: Filesystem>(settings: &OutputSettings, fs: &F, args: &InitArgs) -> Exi
 
     let plan = match plan(fs, args) {
         Ok(plan) => plan,
+        Err(InitFailure::NotSeparate(refusal)) => {
+            return report_refusal(json, "init", &refusal);
+        }
         Err(InitFailure::Preconditions(failures)) => {
             return report_error(
                 json,
@@ -214,39 +224,28 @@ fn run<F: Filesystem>(settings: &OutputSettings, fs: &F, args: &InitArgs) -> Exi
 
 /// Check every precondition and resolve the hardware bootstrap source.
 ///
-/// On any precondition failure this returns [`InitFailure::Preconditions`] with
-/// every failing reason and performs no write, so a refusal leaves the target
+/// The attach gate runs first and alone: a refused target returns
+/// [`InitFailure::NotSeparate`] before any probe touches it. On any other
+/// precondition failure this returns [`InitFailure::Preconditions`] with every
+/// failing reason and performs no write, so a refusal leaves the target
 /// untouched.
 fn plan<F: Filesystem>(fs: &F, args: &InitArgs) -> std::result::Result<InitPlan, InitFailure> {
     let base = &args.path;
-    let mut failures = Vec::new();
-
-    if !fs.path_exists(base)? {
-        return Err(InitFailure::Preconditions(vec![format!(
-            "target {} does not exist (mount the hidden volume there first)",
-            base.display()
-        )]));
+    let allow = if args.allow_unmounted {
+        Allow::NotSeparate
+    } else {
+        Allow::Nothing
+    };
+    let mut warnings = Vec::new();
+    match HiddenRoot::assess_allowing(fs, base, allow)? {
+        Assessment::Attached => {}
+        Assessment::Warned(refusal) => warnings.push(refusal.warning()),
+        Assessment::Refused(refusal) => return Err(InitFailure::NotSeparate(refusal)),
     }
 
+    let mut failures = Vec::new();
     if !fs.is_directory(base)? {
         failures.push(format!("target {} is not a directory", base.display()));
-    }
-
-    let mut warnings = Vec::new();
-    if args.allow_unmounted {
-        warnings.push(format!(
-            "--allow-unmounted: initializing {} without verifying it is a mounted volume; \
-             use this only for a directory-style backend",
-            base.display()
-        ));
-    } else {
-        match HiddenRoot::verify_attached(fs, base, false)? {
-            AttachState::Attached => {}
-            AttachState::Unattached(reason) => failures.push(format!(
-                "{reason}; mount the hidden volume first, \
-                 or pass --allow-unmounted for a directory-style backend"
-            )),
-        }
     }
 
     if !fs.is_writable(base)? {

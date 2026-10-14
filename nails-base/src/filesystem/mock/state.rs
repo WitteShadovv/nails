@@ -60,6 +60,17 @@ pub enum MockOp {
     OverwriteInPlace {
         path: PathBuf,
     },
+    /// A write probe (`is_writable`). The real filesystem creates and deletes
+    /// a file to answer it, which changes the directory's timestamps, so tests
+    /// assert where it must not run.
+    WritableProbe {
+        path: PathBuf,
+    },
+    /// A symlink probe (`supports_symlinks`), which on the real filesystem
+    /// creates and deletes a symlink in `dir`.
+    SymlinkProbe {
+        dir: PathBuf,
+    },
 }
 
 /// Mock filesystem for testing (no root privileges required)

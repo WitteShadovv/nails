@@ -19,9 +19,9 @@ Arguments:
 
 Options:
       --allow-unmounted
-          Initialize a path that is not a mounted volume of its own
+          Initialize a path that is not a volume of its own
 
-          By default `init` refuses a target that shares a device with `/`, because writing the NAILS layout onto the decoy disk is exactly the mistake that leaves an identifying tree where the real volume later hides it. Pass this for a directory-style backend that is deliberately not a separate mount.
+          By default `init` refuses a target that is a folder rather than a mount point, or that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it), because writing the NAILS layout there leaves an identifying tree on this computer's disk. This flag turns those refusals into a warning. A target with a second filesystem mounted over it, or whose storage cannot be read, is still refused.
 
   -c, --config <PATH>
           Path to the configuration file (overrides binary-relative discovery)

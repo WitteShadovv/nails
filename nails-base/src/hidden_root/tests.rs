@@ -567,3 +567,38 @@ mod kernel_tests {
         });
     }
 }
+
+#[test]
+fn the_override_attaches_a_folder_with_a_warning_but_never_a_covered_root() {
+    let fs = fs_with(&decoy_table(""));
+    fs.mock_set_path_exists("/home/op/vault", true);
+    let folder = Path::new("/home/op/vault");
+    assert!(matches!(
+        HiddenRoot::assess_allowing(&fs, folder, Allow::Nothing).unwrap(),
+        Assessment::Refused(_)
+    ));
+    match HiddenRoot::assess_allowing(&fs, folder, Allow::NotSeparate).unwrap() {
+        Assessment::Warned(refusal) => assert!(refusal.overridden(), "{refusal:?}"),
+        other => panic!("{other:?}"),
+    }
+
+    let covered = fs_with(&decoy_table(
+        "11 10 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n",
+    ));
+    match HiddenRoot::assess_allowing(&covered, Path::new("/mnt/data"), Allow::NotSeparate).unwrap()
+    {
+        Assessment::Refused(refusal) => {
+            assert_eq!(refusal.code(), super::refusal::ROOT_COVERED, "{refusal:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+
+    let missing = MockFilesystem::new();
+    assert!(matches!(
+        HiddenRoot::assess_allowing(&missing, Path::new("/srv/x"), Allow::NotSeparate).unwrap(),
+        Assessment::Refused(Refusal {
+            kind: RefusalKind::Missing,
+            ..
+        })
+    ));
+}

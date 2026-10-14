@@ -108,6 +108,37 @@ impl Refusal {
         format!("{}. Nothing was written.", self.reason)
     }
 
+    /// Whether the root is used only because the operator overrode this
+    /// refusal ([`Allow::NotSeparate`](super::Allow::NotSeparate)); a refusal
+    /// that only warns by itself, such as a container file, is not.
+    pub fn overridden(&self) -> bool {
+        match &self.kind {
+            RefusalKind::NotAMountPoint { .. } => true,
+            RefusalKind::DecoyStorage { verdict } => {
+                verdict.severity() == super::separation::Severity::Refuse
+            }
+            _ => false,
+        }
+    }
+
+    /// The warning of a root that attached with this refusal
+    /// ([`Assessment::Warned`](super::Assessment::Warned)).
+    pub fn warning(&self) -> String {
+        let why = match &self.kind {
+            RefusalKind::NotAMountPoint { mount_point } => format!(
+                "it is a folder on the filesystem mounted at {}",
+                mount_point.display()
+            ),
+            RefusalKind::DecoyStorage { verdict } if self.overridden() => verdict.reason(),
+            _ => return self.reason.clone(),
+        };
+        format!(
+            "--allow-unmounted: using {} although {why}; every file nails writes there lands \
+             on that storage",
+            self.root.display()
+        )
+    }
+
     /// What the operator does next, one line each. `exe` is the running
     /// program; when it lies under a root that is not a volume of its own,
     /// that copy is on this computer's disk too, and the first line says so.
@@ -318,6 +349,76 @@ mod tests {
         assert_eq!(refusal.hint(None), outside);
         // A root that shares only a prefix of the name does not hold it.
         assert_eq!(refusal.hint(Some(Path::new("/mnt2/nails"))), outside);
+    }
+
+    #[test]
+    fn the_override_covers_only_a_folder_and_the_decoys_storage() {
+        use crate::hidden_root::Allow;
+        for refusal in every_refusal(Path::new("/mnt")) {
+            let covered = matches!(
+                refusal.kind,
+                RefusalKind::NotAMountPoint { .. } | RefusalKind::DecoyStorage { .. }
+            );
+            assert_eq!(
+                Allow::NotSeparate.covers(&refusal.kind),
+                covered,
+                "{refusal:?}"
+            );
+            assert!(!Allow::Nothing.covers(&refusal.kind), "{refusal:?}");
+        }
+    }
+
+    #[test]
+    fn the_override_warning_names_the_storage() {
+        let folder = Refusal::new(
+            RefusalKind::NotAMountPoint {
+                mount_point: PathBuf::from("/srv"),
+            },
+            Path::new("/srv/x"),
+        );
+        assert!(folder.overridden());
+        assert_eq!(
+            folder.warning(),
+            "--allow-unmounted: using /srv/x although it is a folder on the filesystem mounted \
+             at /srv; every file nails writes there lands on that storage"
+        );
+        let subvolume = Refusal::new(
+            RefusalKind::DecoyStorage {
+                verdict: Verdict::OnDecoyFilesystem {
+                    how: Sharing::Subvolume,
+                    at: PathBuf::from("/pool"),
+                },
+            },
+            Path::new("/mnt"),
+        );
+        assert!(subvolume.overridden());
+        assert!(
+            subvolume
+                .warning()
+                .contains("although it is a subvolume of the btrfs filesystem at /pool;"),
+            "{}",
+            subvolume.warning()
+        );
+        // A container file only warns by itself: its warning is the reason.
+        let container = Refusal::new(
+            RefusalKind::DecoyStorage {
+                verdict: Verdict::ContainerOnDecoy {
+                    file: PathBuf::from("/home/u/files.bin"),
+                    at: PathBuf::from("/home"),
+                },
+            },
+            Path::new("/mnt"),
+        );
+        assert!(!container.overridden());
+        assert_eq!(container.warning(), container.reason);
+        let covered = Refusal::new(
+            RefusalKind::Covered {
+                below: PathBuf::from("/dev/a"),
+                above: PathBuf::from("/dev/b"),
+            },
+            Path::new("/mnt"),
+        );
+        assert!(!covered.overridden());
     }
 
     #[test]
