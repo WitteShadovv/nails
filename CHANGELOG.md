@@ -147,9 +147,9 @@ config and CLI surfaces; there are no compatibility shims.
 - Emergency ends the hidden graphical session and stops the services the hidden configuration
   started, then restarts the display manager so the decoy greeter returns.
 - `nails emergency --countdown <SECS>` (opt-in, with a Ctrl+C hint) and `--poweroff`/`--reboot`
-  after teardown; the result lists detached and force-detached overlays, cleanup errors, the
-  page-cache and history results and the backend-close commands, and a degraded teardown prints
-  REBOOT REQUIRED and exits 7.
+  in place of the soft-reboot back; the result names the action enqueued and any fallback, the
+  mappings marked for closing, the cgroups and processes killed, the timed phases and any mount
+  left behind, and an emergency that leaves a mount behind exits 7.
 - Root `--help` explains the workflow and lists exit codes, every command has EXAMPLES, and path
   arguments carry shell value hints.
 - Fault-injection E2E group (`faults`) and a strict hidden-volume teardown helper that fails and
@@ -290,6 +290,21 @@ config and CLI surfaces; there are no compatibility shims.
   session sleep guard: `block` holds sleep and idle block inhibitors, and the lid switch's when a
   closed lid would sleep; `teardown` holds a sleep delay inhibitor and powers off through the
   bounded emergency on `PrepareForSleep`. VM test `session-sleep-guard`.
+- NAILS disables its own core dumps before it parses its arguments (`PR_SET_DUMPABLE=0`, and
+  `RLIMIT_CORE` 0 for every child it starts), so a crash cannot write its memory to the decoy as a
+  `core` file or a systemd-coredump entry.
+- A `memory-wipe` pre-flight report: whether the decoy kernel command line sets `init_on_free=1`,
+  which zeroes the pages the hidden session frees. It is informational and always passes, because a
+  kernel built to wipe by default needs no parameter; the operator guide recommends it.
+- `nails rehearse`: `plant` puts a random canary into a hidden session (its files, the log, a
+  process, recent files and a notification), and after the way back `scan` searches the raw decoy
+  devices, or disk images with `--offline`, for it; `status` and `reset` follow the rehearsal. The
+  scan exits 0 when the canary is not found, 11 when it is and 9 when a device could not be read in
+  full.
+- `nails verify --offline --root <mount> --examiner` reports the setup traces an examiner looks for
+  on a mounted decoy image (encryption headers, containers, crypttab, LVM archives, tooling and
+  history), grouped by what they suggest, and `--disk <device>` adds the partition-level checks on
+  the raw disk behind it (LUKS headers, random-looking space). It reports only.
 - A long NixOS build or switch now shows its most recent output line in the progress heartbeat, not
   just the elapsed time.
 - `nails status` (human and `--json`) now reports when the decoy keeps a persistent log/audit store
@@ -374,9 +389,9 @@ config and CLI surfaces; there are no compatibility shims.
   versions, and ROADMAP.md is organised as Now/Next/Later.
 - Overlay-only activation reports that no rebuild step was requested and writes no rebuild
   notification.
-- Emergency teardown starts immediately, detaches the overlays first and runs cleanup afterwards;
-  it drops only clean page cache after unmount (no global `sync`, no secure-delete of the encrypted
-  upper) and no longer claims memory sanitization or a decoy switch. `--no-countdown` is removed.
+- Emergency starts immediately (`--countdown` opts into a wait; `--no-countdown` is removed). It
+  runs no secure-delete of the encrypted upper and no global `sync` (only before a power-off it has
+  to ask the kernel for), and no longer claims memory sanitization.
 - Internal commands (`notify-dispatch`, `watch`) are hidden from help.
 
 - Processes blocking an overlay target are now classified by write capability rather than mere
@@ -541,10 +556,11 @@ config and CLI surfaces; there are no compatibility shims.
   under the hidden root, so a planted symlink or `..` cannot redirect them onto the decoy.
 - `--allow-persistent-journal` is replaced by `--accept-persistent-decoy`; the hidden NixOS module
   now forces `system.autoUpgrade.enable = false`.
-- The swap pre-flight classifies each device: RAM-only zram is allowed, disk or file swap,
-  fixed-key encrypted swap and hibernation are refused, the check is repeated after the hidden
-  switch and before deactivation, `verify` reports swap as a warning or critical finding, and the
-  decoy's `swapDevices`/`resumeDevice` are no longer copied into the hidden configuration.
+- The swap pre-flight classifies each device: RAM-only zram is allowed, swap on dm-crypt with a
+  random key warns, disk or file swap, fixed-key encrypted swap and hibernation are refused,
+  `verify` reports swap as a warning or critical finding, and a hidden NixOS hardware configuration
+  that NAILS seeds has the decoy's `swapDevices`/`resumeDevice` commented out. Nothing re-checks
+  swap during the session: swap enabled after activation shows only in `verify` or `check`.
 - The disk-space pre-flight is a single hard floor (500 MB by default); a new `rebuild_space_mb`
   key (4096 MB by default) is checked after mounting and before a hidden NixOS rebuild, a
   post-switch notification warns when the hidden volume is nearly full, and a full volume during
@@ -855,12 +871,11 @@ config and CLI surfaces; there are no compatibility shims.
   decoy filesystem; on a kernel without `openat2` activation fails closed.
 - The self-hosted E2E runner tarball is verified against a pinned SHA-256 during Hetzner
   provisioning, so a tampered or truncated download aborts before it runs as root.
-- Opt-in emergency backend close/lock (`[emergency] lock_backend` or `nails emergency
-  --lock-backend`, with an optional `close_command` for non-dm backends) lazy-unmounts the hidden
-  root and defers device-mapper removal so the encryption key is wiped from RAM once the last
-  reference drops; `nails emergency`, `nails status` and `nails verify` now report "hidden root
-  still mounted at <path>" as Critical whenever the hidden root is left mounted, and without the
-  opt-in the exact manual close sequence is printed.
+- The hidden backend is always closed at the end of a session, with nothing to opt into:
+  `deactivate` and `emergency` mark its device-mapper stack for deferred removal, and when the
+  switch back drops the last reference the kernel removes the mapping and dm-crypt wipes the master
+  key from RAM. A backend that is not device-mapper based is unmounted by the switch but not
+  closed.
 - The release binary links the musl of the pinned nixpkgs (1.2.6, with nixpkgs' patches for
   CVE-2026-6042 and CVE-2026-40200) instead of the musl 1.2.5 that ships with the Rust toolchain,
   so the musl the release SBOM names is the one in the binary. The build fails if its linker map
