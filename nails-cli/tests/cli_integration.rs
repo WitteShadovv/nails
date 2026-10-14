@@ -33,7 +33,7 @@ fn test_version_from_cargo_toml() {
     cmd.arg("--version")
         .assert()
         .success()
-        .stdout(predicates::str::contains("nails 0.3.0-dev"));
+        .stdout(predicates::str::contains("nails 0.3.0-rc.1"));
 }
 
 /// Test that --help flag works
