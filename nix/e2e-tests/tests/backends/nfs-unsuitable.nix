@@ -1,9 +1,11 @@
-# Backend refusal: NFS cannot host an overlayfs upper layer
+# Backend refusal: NFS as the hidden root
 #
-# A network filesystem exports no trusted xattrs and no reliable readdir d_type,
-# so the kernel cannot use it as the upper of the root overlay. An unusable
-# backend found while building /run/nextroot, or after the soft-reboot, is found
-# too late, so the upper-fs-capability pre-flight check must refuse activation
+# A network filesystem shows no disk it stores its data on, so the attach gate
+# cannot tell where the session's writes land and refuses it before anything
+# is written (storage_unjudged). It also exports no trusted xattrs and no
+# reliable readdir d_type, so the kernel could not use it as the upper of the
+# root overlay either (the upper-fs-capability check; the preflight
+# upper-fs-capability scenario proves that probe). Activation must be refused
 # up front, naming the cause, and leave the machine on the plain decoy with no
 # next root and no overlay.
 #
@@ -76,7 +78,7 @@ in
         assert fstype.startswith("nfs"), f"hidden root is {fstype!r}, expected nfs"
         client.succeed("mkdir -p /mnt/data/root/work /mnt/data/config")
 
-    with subtest("activation is refused with the upper-fs capability error"):
+    with subtest("activation is refused by the attach gate"):
         write_text_file(
             "/run/backend-nfs-unsuitable.toml",
             'hidden_volume_root = "/mnt/data"\nminimum_space_mb = 100\n',
@@ -85,12 +87,16 @@ in
             "backend-nfs-unsuitable",
             "nails --config /run/backend-nfs-unsuitable.toml activate -y --overlay-only",
         )
-        assert_command_failed(result)
+        assert_exit_code(result, 4)
         assert_result_contains(
             result,
-            ["cannot host an overlayfs upper layer", "NFS"],
+            [
+                "/mnt/data is on a filesystem of type nfs4, which shows no disk it stores its data on",
+                "Nothing was written.",
+            ],
             stream="stderr",
         )
+        client.succeed("test -z \"$(find /mnt/data/root/work /mnt/data/config -mindepth 1)\"")
 
     with subtest("the refusal built no next root and left the plain decoy"):
         # Pre-flight runs before /run/nextroot is built; the backdoor answering

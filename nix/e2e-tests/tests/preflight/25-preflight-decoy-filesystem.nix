@@ -6,18 +6,29 @@
 # the decoy's disk:
 #
 #   1. a folder of /srv: init, `activate -y --overlay-only` (with and without
-#      --no-preflight) and check refuse it with not_separate_volume (exit 4),
-#      and the folder stays empty with its mtime and ctime unchanged;
+#      --no-preflight, with and without --allow-unmounted) and check refuse it
+#      with not_separate_volume (exit 4), and the folder stays empty with its
+#      mtime and ctime unchanged;
 #   2. a btrfs subvolume of /pool mounted on its own is refused; its mount
 #      table line shows the same device as /pool's, while stat shows another
 #      (the judge relies on the first);
 #   3. a bind mount of a folder of /srv is refused;
-#   4. `init --allow-unmounted` uses the folder of /srv with a warning;
-#   5. a LUKS volume on the separate data disk passes the hidden-volume check;
-#   6. a tmpfs mounted over that volume is refused with root_covered;
-#   7. a decoy crypttab line that opens the data disk, then one with
-#      tcrypt-hidden, fails the backend-entries check (exit 4); a line for
-#      another device passes it.
+#   4. /srv itself, the filesystem the decoy's fstab mounts there, is refused;
+#   5. an unencrypted ext4 image on /srv, loop-mounted, is refused;
+#   6. `init --allow-unmounted` uses the bind of the /srv folder with a
+#      warning, while the folder itself stays refused;
+#   7. a LUKS container file on /srv passes the hidden-volume check with a
+#      warning that names /srv and its copy-on-write snapshots;
+#   8. a LUKS volume on the separate data disk passes the hidden-volume check;
+#   9. a tmpfs mounted over that volume is refused with root_covered, and
+#      neither the tmpfs nor the volume below receives anything;
+#  10. a decoy crypttab line that opens the data disk, then one with
+#      tcrypt-hidden, fails the backend-entries check (exit 4), and so does
+#      `activate --no-preflight`; a line for another device passes; a decoy
+#      fstab line for the data disk or its mapping fails it too.
+#
+# Every refused target keeps its mtime and ctime: no probe file was created
+# and deleted in it.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -85,6 +96,17 @@ in
         return machine.succeed(f"stat -c '%Y %Z' {path}").strip()
 
 
+    def refused_untouched(label, target, command, needles):
+        before = times(target)
+        listing = machine.succeed(f"ls -A {target}")
+        result = run_command_capture(label, command)
+        assert_exit_code(result, 4)
+        assert_result_contains(result, needles)
+        assert machine.succeed(f"ls -A {target}") == listing, target
+        assert times(target) == before, (target, before, times(target))
+        return result
+
+
     def check_row(report, name):
         rows = [row for row in report["data"]["checks"] if row["name"] == name]
         assert len(rows) == 1, report
@@ -101,23 +123,39 @@ in
         before = times("/srv/x")
         config = config_for("/srv/x")
 
-        result = run_command_capture("gate-init", "nails init --no-hardware-config /srv/x")
-        assert_exit_code(result, 4)
-        assert_result_contains(
-            result,
-            [
-                "error: /srv/x is not a volume of its own: it is a folder on the filesystem "
-                "mounted at /srv. Nothing was written.",
-                "Where setup happens",
-            ],
-        )
-        for flags in ["", " --no-preflight"]:
+        for flags in ["", " --allow-unmounted"]:
+            result = run_command_capture(
+                "gate-init", f"nails init --no-hardware-config{flags} /srv/x"
+            )
+            assert_exit_code(result, 4)
+            assert_result_contains(
+                result,
+                [
+                    "error: /srv/x is not a volume of its own: it is a folder on the "
+                    "filesystem mounted at /srv. Nothing was written.",
+                    "Where setup happens",
+                ],
+            )
+            assert_result_not_contains(result, ["warning: --allow-unmounted"])
+        for flags in ["", " --no-preflight", " --allow-unmounted"]:
             result = run_command_capture(
                 "gate-activate",
                 f"nails --config {config} --json activate -y --overlay-only{flags}",
             )
             assert_exit_code(result, 4)
             assert last_json(result)["error"]["code"] == "not_separate_volume", result
+        result = run_command_capture(
+            "gate-activate-human", f"nails --config {config} activate -y --overlay-only"
+        )
+        assert_exit_code(result, 4)
+        assert_result_contains(
+            result,
+            [
+                "If the volume is already prepared, unlock it, mount it at /srv/x",
+                "Where setup happens",
+            ],
+        )
+        assert_result_not_contains(result, ["File logging disabled"])
         result = run_command_capture(
             "gate-check", f"nails --config {config} --json check --overlay-only"
         )
@@ -141,36 +179,94 @@ in
         pool_dev = machine.succeed("findmnt -no MAJ:MIN /pool").strip()
         assert sub_dev == pool_dev, (sub_dev, pool_dev)
         assert machine.succeed("stat -c %d /mnt/sub") != machine.succeed("stat -c %d /pool")
-        result = run_command_capture("gate-subvol", "nails init --no-hardware-config /mnt/sub")
-        assert_exit_code(result, 4)
-        assert_result_contains(
-            result, ["it is a subvolume of the btrfs filesystem at /pool"]
+        machine.succeed("touch -m -d '2001-02-03 04:05:06' /mnt/sub")
+        refused_untouched(
+            "gate-subvol",
+            "/mnt/sub",
+            "nails init --no-hardware-config /mnt/sub",
+            ["it is a subvolume of the btrfs filesystem at /pool"],
         )
-        machine.succeed('test -z "$(ls -A /mnt/sub)"')
         machine.succeed("umount /mnt/sub")
 
     with subtest("a bind mount of a decoy folder is refused"):
         machine.succeed("mkdir -p /mnt/bind && mount --bind /srv/x /mnt/bind")
-        result = run_command_capture("gate-bind", "nails init --no-hardware-config /mnt/bind")
-        assert_exit_code(result, 4)
-        assert_result_contains(result, ["it is a bind mount of a folder of /srv"])
+        refused_untouched(
+            "gate-bind",
+            "/mnt/bind",
+            "nails init --no-hardware-config /mnt/bind",
+            ["it is a bind mount of a folder of /srv"],
+        )
         machine.succeed("umount /mnt/bind")
         machine.succeed('test -z "$(ls -A /srv/x)"')
 
-    with subtest("--allow-unmounted uses a decoy folder with a warning"):
+    with subtest("the filesystem the decoy's fstab mounts is refused"):
+        refused_untouched(
+            "gate-fstab-filesystem",
+            "/srv",
+            "nails init --no-hardware-config /srv",
+            [
+                "it is the filesystem this computer mounts at /srv per /etc/fstab",
+                "If /srv is the volume you prepared, remove its line from /etc/fstab",
+            ],
+        )
+
+    with subtest("an unencrypted image file on a decoy filesystem is refused"):
+        machine.succeed(
+            "truncate -s 64M /srv/disk.img && mkfs.ext4 -q -F /srv/disk.img && "
+            "mkdir -p /mnt/img && mount -o loop /srv/disk.img /mnt/img && "
+            "touch -m -d '2001-02-03 04:05:06' /mnt/img"
+        )
+        refused_untouched(
+            "gate-image",
+            "/mnt/img",
+            "nails init --no-hardware-config /mnt/img",
+            ["it is an unencrypted image file (/srv/disk.img) on /srv"],
+        )
+        machine.succeed("umount /mnt/img && rm -f /srv/disk.img")
+
+    with subtest("--allow-unmounted uses decoy storage with a warning, never a folder"):
+        refused_untouched(
+            "gate-allow-folder",
+            "/srv/x",
+            "nails init --no-hardware-config --allow-unmounted /srv/x",
+            ["it is a folder on the filesystem mounted at /srv"],
+        )
+        machine.succeed("mount --bind /srv/x /mnt/bind")
         result = run_command_capture(
-            "gate-allow", "nails init --no-hardware-config --allow-unmounted /srv/x"
+            "gate-allow", "nails init --no-hardware-config --allow-unmounted /mnt/bind"
         )
         assert_exit_code(result, 0)
         assert_result_contains(
             result,
             [
-                "warning: --allow-unmounted: using /srv/x although it is a folder on the "
-                "filesystem mounted at /srv; every file nails writes there lands on that storage"
+                "warning: --allow-unmounted: using /mnt/bind although it is a bind mount of "
+                "a folder of /srv; everything written there lands on that storage"
             ],
         )
         machine.succeed("test -f /srv/x/state.json")
-        machine.succeed("rm -rf /srv/x")
+        machine.succeed("umount /mnt/bind && rm -rf /srv/x")
+
+    with subtest("an encrypted container file on a decoy filesystem only warns"):
+        machine.succeed(
+            "truncate -s 64M /srv/files.bin && "
+            "echo -n pw | cryptsetup luksFormat -q --iter-time=1 /srv/files.bin - && "
+            "echo -n pw | cryptsetup open --key-file - /srv/files.bin box && "
+            "mkfs.ext4 -q /dev/mapper/box && mkdir -p /mnt/box && "
+            "mount /dev/mapper/box /mnt/box"
+        )
+        result = run_command_capture(
+            "gate-container",
+            f"nails --config {config_for('/mnt/box')} --json check --overlay-only",
+        )
+        report = last_json(result)
+        assert "refusal" not in report["data"], report
+        row = check_row(report, "hidden-volume")
+        assert row["status"] == "warn", row
+        assert "an encrypted container file (/srv/files.bin) on /srv" in row["message"], row
+        assert "copy-on-write snapshots" in row["message"], row
+        machine.succeed(
+            "umount /mnt/box && cryptsetup close box && rm -f /srv/files.bin"
+        )
 
     machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
     data_config = config_for("/mnt/data")
@@ -185,7 +281,11 @@ in
         assert check_row(report, "backend-entries")["status"] == "pass", report
 
     with subtest("a second filesystem over the volume is refused"):
+        volume_listing = machine.succeed("ls -A /mnt/data")
+        volume_times = times("/mnt/data")
         machine.succeed("mount -t tmpfs cover /mnt/data")
+        machine.succeed("touch -m -d '2001-02-03 04:05:06' /mnt/data")
+        cover_times = times("/mnt/data")
         result = run_command_capture(
             "gate-covered", f"nails --config {data_config} --json check --overlay-only"
         )
@@ -200,7 +300,11 @@ in
         assert_exit_code(result, 4)
         assert last_json(result)["error"]["code"] == "root_covered", result
         machine.succeed('test -z "$(ls -A /mnt/data)"')
+        assert times("/mnt/data") == cover_times, (cover_times, times("/mnt/data"))
         machine.succeed("umount /mnt/data")
+        # The volume below received nothing either.
+        assert machine.succeed("ls -A /mnt/data") == volume_listing
+        assert times("/mnt/data") == volume_times, (volume_times, times("/mnt/data"))
 
     with subtest("a decoy crypttab entry for the volume fails backend-entries"):
         for line in [
@@ -215,6 +319,13 @@ in
             row = check_row(last_json(result), "backend-entries")
             assert row["status"] == "fail", row
             assert line.split()[0] + " /dev/" in row["message"], row
+        # --no-preflight skips the other checks, never this one.
+        result = run_command_capture(
+            "gate-entries-no-preflight",
+            f"nails --config {data_config} --json activate -y --overlay-only --no-preflight",
+        )
+        assert_exit_code(result, 4)
+        assert '"backend-entries"' in result["stdout"], result
         write_text_file(
             "/etc/crypttab", "backup /dev/disk/by-id/virtio-pool none luks,noauto\n"
         )
@@ -224,6 +335,25 @@ in
         row = check_row(last_json(result), "backend-entries")
         assert row["status"] == "pass", row
         machine.succeed("rm -f /etc/crypttab")
+
+    with subtest("a decoy fstab entry for the volume fails backend-entries"):
+        # /etc/fstab is a link into the store; keep the link to put it back.
+        machine.succeed("cp -P /etc/fstab /run/fstab.orig")
+        original = machine.succeed("cat /etc/fstab")
+        for line in [
+            "/dev/disk/by-id/virtio-data /mnt/data ext4 noauto 0 0",
+            "/dev/mapper/data /mnt/data ext4 noauto 0 0",
+        ]:
+            write_text_file("/run/fstab.gate", original + line + "\n")
+            machine.succeed("rm -f /etc/fstab && cp /run/fstab.gate /etc/fstab")
+            result = run_command_capture(
+                "gate-fstab-entry", f"nails --config {data_config} --json check --overlay-only"
+            )
+            assert_exit_code(result, 4)
+            row = check_row(last_json(result), "backend-entries")
+            assert row["status"] == "fail", row
+            assert line.split()[0] + " /mnt/data" in row["message"], row
+        machine.succeed("rm -f /etc/fstab && mv /run/fstab.orig /etc/fstab")
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
