@@ -99,8 +99,8 @@ the code never branches on "is this NixOS?" directly.
    - `FhsPlatform` — the backend for Debian-family hosts: Debian 13 and newer,
      Ubuntu 24.04 and newer, and provisionally derivatives whose `ID_LIKE`
      names `debian` or `ubuntu`. The hidden configuration is whatever the
-     upper's `/etc` holds. (A Debian 12 host is detected as FHS and then
-     refused by the systemd version check: it cannot soft-reboot.)
+     upper's `/etc` holds. (A Debian 12 host is refused by the support table;
+     its systemd could not soft-reboot either.)
    - `UnsupportedPlatform` — refuses every other host with a typed error:
      ostree and image-based hosts, non-systemd init, Fedora, Arch and unknown
      distributions. For those hosts the refusal *is* the behaviour.

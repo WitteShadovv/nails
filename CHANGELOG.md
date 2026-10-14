@@ -206,11 +206,11 @@ config and CLI surfaces; there are no compatibility shims.
   rejects an unparseable configuration, the base-configuration check scans every `.nix` file under
   `/etc/nixos` for references to the hidden volume, and the hidden NixOS module forces
   `system.autoUpgrade.enable = false`.
-- Unsupported hosts are refused before any write, with exit 8: Debian before 12, Ubuntu before
+- Unsupported hosts are refused before any write, with exit 8: Debian before 13, Ubuntu before
   24.04, non-merged-`/usr` Debian-family layouts, ostree or image-based systems, systems without
-  systemd, and distributions not yet validated (Fedora, Arch). Hosts with systemd older than 254,
-  such as a stock Debian 12, fail the `systemd-version` check (exit 4). Derivatives whose `ID_LIKE`
-  names debian or ubuntu are accepted provisionally.
+  systemd, and distributions not yet validated (Fedora, Arch). Hosts with systemd older than 254
+  fail the `systemd-version` check (exit 4). Derivatives whose `ID_LIKE` names debian or ubuntu are
+  accepted provisionally.
 - A corrupt or unreadable state file is reported as an unknown state: `status` shows it and
   `activate` refuses, instead of treating it as inactive.
 - `nails --help` now describes the tool as "Run a hidden session on a decoy Linux system". Sources
