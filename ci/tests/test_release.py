@@ -351,6 +351,63 @@ class MuslTest(unittest.TestCase):
                 with self.assertRaisesRegex(ReleaseError, "is not X.Y.Z"):
                     release.add_musl(sbom(), "0.3.0", version)
 
+    def test_without_cves_musl_has_no_pedigree(self) -> None:
+        bom = sbom()
+        release.add_musl(bom, "0.3.0", "1.2.6")
+        self.assertNotIn("pedigree", bom["components"][-1])
+
+    def test_each_cve_becomes_a_backported_security_fix(self) -> None:
+        bom = sbom()
+        cves = ["CVE-2026-6042", "CVE-2026-40200", "CVE-2026-6042"]
+        release.add_musl(bom, "0.3.0", "1.2.6", cves)
+        patches = bom["components"][-1]["pedigree"]["patches"]
+        self.assertEqual([p["type"] for p in patches], ["backport", "backport"])
+        resolves = [r for p in patches for r in p["resolves"]]
+        self.assertEqual(
+            [r["id"] for r in resolves], ["CVE-2026-40200", "CVE-2026-6042"]
+        )
+        self.assertEqual({r["type"] for r in resolves}, {"security"})
+        self.assertEqual(
+            resolves[1]["source"],
+            {"name": "NVD", "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-6042"},
+        )
+
+    def test_malformed_cve_fails_before_the_sbom_changes(self) -> None:
+        for cve in ("", "CVE-2026-1", "cve-2026-6042", "CVE-2026-6042\n", "GHSA-x"):
+            with self.subTest(cve=cve):
+                bom = sbom()
+                before = copy.deepcopy(bom)
+                with self.assertRaisesRegex(ReleaseError, "is not a CVE ID"):
+                    release.add_musl(bom, "0.3.0", "1.2.6", [cve])
+                self.assertEqual(bom, before)
+
+    def test_command_records_repeated_musl_cves(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        source, output = root / "in.cdx.json", root / "sbom.cdx.json"
+        source.write_text(json.dumps(sbom()))
+        argv = [
+            "sbom-libc",
+            "--sbom",
+            str(source),
+            "--version",
+            "0.3.0",
+            "--musl-version",
+            "1.2.6",
+            "--musl-cve",
+            "CVE-2026-6042",
+            "--musl-cve",
+            "CVE-2026-40200",
+            "--output",
+            str(output),
+        ]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(release.main(argv), 0)
+        musl = json.loads(output.read_text())["components"][-1]
+        ids = [r["id"] for p in musl["pedigree"]["patches"] for r in p["resolves"]]
+        self.assertEqual(ids, ["CVE-2026-40200", "CVE-2026-6042"])
+        self.assertIn("with fixes for CVE-2026-6042, CVE-2026-40200", err.getvalue())
+
     def test_command_writes_the_completed_sbom(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         source, output = root / "in.cdx.json", root / "sbom.cdx.json"

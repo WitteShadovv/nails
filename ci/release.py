@@ -14,6 +14,9 @@ sbom-libc
     Adds musl to the CycloneDX SBOM of the nails binary. cargo-cyclonedx only
     sees crates, but the release binary links musl statically, so the C
     library it ships would otherwise be missing from the bill of materials.
+    Each ``--musl-cve`` names a vulnerability that the linked musl is patched
+    against on top of its release; the SBOM records it as a backport, so a
+    scanner does not report it as open.
 
 Every check runs before the first build, so a mistake costs one short job
 instead of a release run.
@@ -29,6 +32,7 @@ import json
 import re
 import sys
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -46,6 +50,7 @@ _SECTION = re.compile(r"##\s+\[(?P<version>[^\]]+)\](?:\s+-\s+\S.*)?\s*")
 _SECTION_END = re.compile(r"(##\s|\[[^\]]+\]:\s)")
 _LIST_ITEM = re.compile(r"([-*+]|\d+[.)])\s")
 _MUSL_VERSION = re.compile(r"\d+\.\d+\.\d+")
+_CVE = re.compile(r"CVE-\d{4}-\d{4,}")
 
 TARGET_TRIPLE = "x86_64-unknown-linux-musl"
 BINARY = "nails"
@@ -203,10 +208,22 @@ def check_release(source: Path, tag: str) -> tuple[Release, str]:
     return release, changelog_section(changelog, release.version)
 
 
-def add_musl(sbom: dict[str, Any], version: str, musl_version: str) -> None:
-    """Record musl as a statically linked dependency of the nails binary."""
+def add_musl(
+    sbom: dict[str, Any],
+    version: str,
+    musl_version: str,
+    cves: Sequence[str] = (),
+) -> None:
+    """Record musl as a statically linked dependency of the nails binary.
+
+    ``cves`` are the vulnerabilities the linked musl carries fixes for on top
+    of ``musl_version``; each becomes a backported patch in its pedigree.
+    """
     if not _MUSL_VERSION.fullmatch(musl_version):
         raise ReleaseError(f"musl version {musl_version!r} is not X.Y.Z")
+    for cve in cves:
+        if not _CVE.fullmatch(cve):
+            raise ReleaseError(f"{cve!r} is not a CVE ID")
     root = sbom.get("metadata", {}).get("component", {})
     if root.get("name") != BINARY or root.get("version") != version:
         raise ReleaseError(
@@ -228,29 +245,49 @@ def add_musl(sbom: dict[str, Any], version: str, musl_version: str) -> None:
         raise ReleaseError("the SBOM already lists musl")
 
     ref = f"pkg:generic/musl@{musl_version}"
-    components.append(
-        {
-            "type": "library",
-            "bom-ref": ref,
-            "name": "musl",
-            "version": musl_version,
-            "description": (
-                f"C standard library, statically linked into {BINARY} ({TARGET_TRIPLE})"
-            ),
-            "scope": "required",
-            "licenses": [{"license": {"id": "MIT"}}],
-            "purl": ref,
-            "externalReferences": [
-                {"type": "website", "url": "https://musl.libc.org"},
+    component: dict[str, Any] = {
+        "type": "library",
+        "bom-ref": ref,
+        "name": "musl",
+        "version": musl_version,
+        "description": (
+            f"C standard library, statically linked into {BINARY} ({TARGET_TRIPLE})"
+        ),
+        "scope": "required",
+        "licenses": [{"license": {"id": "MIT"}}],
+        "purl": ref,
+        "externalReferences": [
+            {"type": "website", "url": "https://musl.libc.org"},
+            {
+                "type": "distribution",
+                "url": f"https://musl.libc.org/releases/musl-{musl_version}.tar.gz",
+            },
+        ],
+    }
+    if cves:
+        component["pedigree"] = {
+            "patches": [
                 {
-                    "type": "distribution",
-                    "url": (
-                        f"https://musl.libc.org/releases/musl-{musl_version}.tar.gz"
-                    ),
-                },
+                    "type": "backport",
+                    "resolves": [
+                        {
+                            "type": "security",
+                            "id": cve,
+                            "source": {
+                                "name": "NVD",
+                                "url": f"https://nvd.nist.gov/vuln/detail/{cve}",
+                            },
+                        }
+                    ],
+                }
+                for cve in sorted(set(cves))
             ],
+            "notes": (
+                f"The release links musl {musl_version} as nixpkgs builds it, "
+                "with these fixes applied on top of the release."
+            ),
         }
-    )
+    components.append(component)
     dependencies = sbom.setdefault("dependencies", [])
     entry = next((d for d in dependencies if d.get("ref") == root["bom-ref"]), None)
     if entry is None:
@@ -276,9 +313,10 @@ def _sbom_libc(args: argparse.Namespace) -> int:
         sbom = json.loads(args.sbom.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
         raise OSError(f"cannot read {args.sbom}: {err}") from err
-    add_musl(sbom, args.version, args.musl_version)
+    add_musl(sbom, args.version, args.musl_version, args.musl_cve)
     args.output.write_text(json.dumps(sbom, indent=2) + "\n", encoding="utf-8")
-    print(f"{args.output}: added musl {args.musl_version}", file=sys.stderr)
+    fixes = f" with fixes for {', '.join(args.musl_cve)}" if args.musl_cve else ""
+    print(f"{args.output}: added musl {args.musl_version}{fixes}", file=sys.stderr)
     return 0
 
 
@@ -301,6 +339,12 @@ def main(argv: list[str] | None = None) -> int:
     libc.add_argument("--sbom", type=Path, required=True, help="cargo-cyclonedx output")
     libc.add_argument("--version", required=True, help="the nails version")
     libc.add_argument("--musl-version", required=True, help="the linked musl")
+    libc.add_argument(
+        "--musl-cve",
+        action="append",
+        default=[],
+        help="a CVE the linked musl is patched against; repeatable",
+    )
     libc.add_argument("--output", type=Path, required=True, help="completed SBOM")
     libc.set_defaults(run=_sbom_libc)
 
