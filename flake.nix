@@ -49,10 +49,13 @@
         targets = [ targetTriple ];
       };
 
-      # Dedicated musl cross toolchain for the canonical release build.
+      # Dedicated musl cross toolchain for the canonical release build. It has
+      # no rust-src: with the sources installed, rustc writes their store path
+      # into std's panic locations, and the binary then keeps this whole
+      # toolchain alive at run time. Without them the locations keep rustc's
+      # own /rustc/<commit> prefix.
       pkgsMusl = pkgs.pkgsCross.musl64;
       rustToolchainMusl = pkgsMusl.buildPackages.rust-bin.stable.${rustChannel}.default.override {
-        extensions = [ "rust-src" ];
         targets = [ targetTriple ];
       };
       rustPlatformMusl = pkgsMusl.makeRustPlatform {
@@ -167,6 +170,9 @@
             exit 1
           fi
         '';
+
+        # The binary must not name the toolchain that built it.
+        disallowedReferences = [ rustToolchainMusl ];
 
         doCheck = false;
 

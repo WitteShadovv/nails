@@ -763,6 +763,11 @@ config and CLI surfaces; there are no compatibility shims.
   so the musl the release SBOM names is the one in the binary. The build fails if its linker map
   shows `libc.a` or one of musl's crt files (`crt1.o`, `rcrt1.o`, `Scrt1.o`, `crti.o`, `crtn.o`)
   from anywhere else.
+- The release binary no longer refers to the Rust toolchain that built it. Its musl toolchain
+  drops `rust-src`, whose store path rustc wrote into std's panic locations, so installing the
+  `nails` package through Nix kept the whole toolchain (about 2.6 GB) alive. Panic locations in std
+  now read `/rustc/<commit>/library/…`, as in upstream Rust builds, and the build fails if the
+  binary refers to the toolchain again.
 
 ## [0.2.0] - 2026-05-08
 
