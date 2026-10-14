@@ -305,6 +305,13 @@ config and CLI surfaces; there are no compatibility shims.
   on a mounted decoy image (encryption headers, containers, crypttab, LVM archives, tooling and
   history), grouped by what they suggest, and `--disk <device>` adds the partition-level checks on
   the raw disk behind it (LUKS headers, random-looking space). It reports only.
+- A residue catalog: one row per class of trace a session or its setup can leave where an
+  examiner looks, with where it lands, its platforms, the probes that warn about it before
+  activation and detect it afterwards, the mitigation, the docs section and the VM test. The new
+  `residue-catalog` pre-flight check runs its pre-flight probes, `verify` runs its verify probes and
+  lists the rows it could not cover as areas not checked, `verify --examiner` groups its findings
+  by the rows, and the residue tables in `docs/decoy-requirements.md` and `docs/threat-model.md`
+  are generated from it.
 - A long NixOS build or switch now shows its most recent output line in the progress heartbeat, not
   just the elapsed time.
 - `nails status` (human and `--json`) now reports when the decoy keeps a persistent log/audit store
