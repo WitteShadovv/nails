@@ -11,16 +11,25 @@
 
 use std::path::{Path, PathBuf};
 
-/// Calls that write, create, remove or start something.
+/// Calls that write, create, remove or start something. `is_writable` and
+/// `supports_symlinks` create and delete a probe file, which changes the
+/// directory's times.
 const FORBIDDEN: &[&str] = &[
     "ProcessCommand",
     "std::process::Command",
     "process::Command",
     "write_file_content",
+    "write_hidden_file",
+    "create_hidden_dir",
     "create_directory",
     "create_dir",
     "remove_",
+    "rename",
     "set_permissions",
+    "is_writable",
+    "supports_symlinks",
+    "fs::write",
+    "File::create",
     ".write(true)",
     ".append(true)",
     ".create(true)",
@@ -86,6 +95,13 @@ fn probe(fs: &RealFilesystem, root: &Path) {
     std::process::Command::new(\"blkid\");
     std::fs::OpenOptions::new().write(true).open(root);
     fs.remove_file(root);
+    fs.is_writable(root);
+    fs.supports_symlinks(root);
+    fs.create_hidden_dir_all(root, root);
+    fs.write_hidden_file_atomic(root, root, \"\");
+    std::fs::write(root, \"\");
+    std::fs::File::create(root);
+    std::fs::rename(root, root);
 }
 ";
     assert_eq!(
@@ -96,6 +112,13 @@ fn probe(fs: &RealFilesystem, root: &Path) {
             "4: process::Command",
             "5: .write(true)",
             "6: remove_",
+            "7: is_writable",
+            "8: supports_symlinks",
+            "9: create_hidden_dir",
+            "10: write_hidden_file",
+            "11: fs::write",
+            "12: File::create",
+            "13: rename",
         ]
     );
 }
