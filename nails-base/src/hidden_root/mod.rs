@@ -18,6 +18,7 @@
 //! [`Refusal`] when the answer is no, so the caller can degrade to stderr-only
 //! logging or refuse the operation with a message the operator can act on.
 
+pub mod separation;
 #[cfg(test)]
 mod tests;
 
