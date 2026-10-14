@@ -203,6 +203,13 @@ mod kernel_tests {
                 last_json(&output)["data"]["refusal"]["code"],
                 "root_covered"
             );
+            // Every command that takes the state lock reports the same refusal.
+            let output = nails(
+                &config,
+                &["reset-upper", "/opt/nails-gate-target", "-y", "--json"],
+            );
+            assert_eq!(output.status.code(), Some(4), "{output:?}");
+            assert_eq!(last_json(&output)["error"]["code"], "root_covered");
 
             assert!(entries(volume.path()).is_empty(), "the cover was written");
             nix::mount::umount(volume.path()).expect("unmount the cover");
