@@ -60,7 +60,7 @@ pub struct LogindSleepSettings {
     /// powered. logind default: `suspend`.
     pub handle_lid_switch: Option<String>,
     /// `HandleLidSwitchExternalPower`: action on lid close when on external
-    /// power. logind default: `suspend`.
+    /// power. logind default: unset, so the `HandleLidSwitch` action applies.
     pub handle_lid_switch_external_power: Option<String>,
     /// `HandleLidSwitchDocked`: action on lid close when docked / with an
     /// external monitor. logind default: `ignore`.
@@ -78,11 +78,14 @@ impl LogindSleepSettings {
         self.handle_lid_switch.as_deref().unwrap_or("suspend")
     }
 
-    /// Effective lid-close action on external power (default `suspend`).
+    /// Effective lid-close action on external power.
+    ///
+    /// logind ignores this setting unless it is assigned: unset, a closed lid on
+    /// external power does what [`Self::effective_lid_switch`] says.
     pub fn effective_lid_switch_external_power(&self) -> &str {
         self.handle_lid_switch_external_power
             .as_deref()
-            .unwrap_or("suspend")
+            .unwrap_or_else(|| self.effective_lid_switch())
     }
 
     /// Effective lid-close action when docked (default `ignore`).
@@ -202,11 +205,14 @@ impl SleepPolicyCheck {
                 settings.effective_lid_switch()
             ));
         }
-        if action_sleeps(settings.effective_lid_switch_external_power()) {
+        // Unset, the external-power case follows HandleLidSwitch, which the
+        // line above already reports.
+        if let Some(external) = settings.handle_lid_switch_external_power.as_deref()
+            && action_sleeps(external)
+        {
             risks.push(format!(
                 "closing the lid on external power suspends the host \
-                 (HandleLidSwitchExternalPower={})",
-                settings.effective_lid_switch_external_power()
+                 (HandleLidSwitchExternalPower={external})"
             ));
         }
         if action_sleeps(settings.effective_idle_action()) {
@@ -334,6 +340,16 @@ mod tests {
         assert_eq!(settings.effective_lid_switch_external_power(), "suspend");
         assert_eq!(settings.effective_lid_switch_docked(), "ignore");
         assert_eq!(settings.effective_idle_action(), "ignore");
+
+        // Unset, the external-power case follows HandleLidSwitch, as in logind.
+        let mut settings = LogindSleepSettings::default();
+        parse_logind_sleep("[Login]\nHandleLidSwitch=lock\n", &mut settings);
+        assert_eq!(settings.effective_lid_switch_external_power(), "lock");
+        parse_logind_sleep(
+            "[Login]\nHandleLidSwitchExternalPower=suspend\n",
+            &mut settings,
+        );
+        assert_eq!(settings.effective_lid_switch_external_power(), "suspend");
     }
 
     #[test]
@@ -352,6 +368,50 @@ mod tests {
             &mut settings,
         );
         assert!(!settings.lid_switch_sleeps(), "idle is not the lid");
+    }
+
+    #[test]
+    fn a_lid_that_only_locks_also_locks_on_external_power() {
+        let mut settings = LogindSleepSettings::default();
+        parse_logind_sleep("[Login]\nHandleLidSwitch=lock\n", &mut settings);
+        assert!(!settings.lid_switch_sleeps(), "{settings:?}");
+
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(MAIN, "[Login]\nHandleLidSwitch=lock\n");
+        for mode in [SleepPolicyMode::Warn, SleepPolicyMode::Block] {
+            let result = SleepPolicyCheck::new(mode).run(&fs).unwrap();
+            assert!(result.is_pass(), "{}", result.message());
+            assert!(!result.message().contains("external power"));
+        }
+    }
+
+    #[test]
+    fn an_unset_external_power_action_is_reported_once_with_the_lid() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(MAIN, "[Login]\nHandleLidSwitch=suspend\n");
+        let result = SleepPolicyCheck::new(SleepPolicyMode::Warn)
+            .run(&fs)
+            .unwrap();
+        let message = result.message();
+        assert!(message.contains("HandleLidSwitch=suspend"), "{message}");
+        assert!(
+            !message.contains("HandleLidSwitchExternalPower"),
+            "{message}"
+        );
+
+        fs.mock_add_file(
+            MAIN,
+            "[Login]\nHandleLidSwitch=lock\nHandleLidSwitchExternalPower=hibernate\n",
+        );
+        let result = SleepPolicyCheck::new(SleepPolicyMode::Warn)
+            .run(&fs)
+            .unwrap();
+        let message = result.message();
+        assert!(
+            message.contains("HandleLidSwitchExternalPower=hibernate"),
+            "{message}"
+        );
+        assert!(!message.contains("HandleLidSwitch=lock"), "{message}");
     }
 
     #[test]

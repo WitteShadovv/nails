@@ -83,8 +83,9 @@ leaves the whole hidden environment — the root overlay, the open dm-crypt
 mapper and the master key — resident in RAM behind the hidden session's lock
 screen. The decoy is not running at all, and whoever unlocks that screen is in
 the live hidden session. logind's defaults make this the normal
-case: `HandleLidSwitch` and `HandleLidSwitchExternalPower` both default to
-`suspend`, and desktops add their own idle auto-suspend.
+case: `HandleLidSwitch` defaults to `suspend`, `HandleLidSwitchExternalPower`
+takes `HandleLidSwitch`'s value unless it is set, and desktops add their own
+idle auto-suspend.
 
 The `sleep-policy` pre-flight check parses `/etc/systemd/logind.conf` and its
 `logind.conf.d/*.conf` drop-ins and warns (never blocks) when the effective lid
