@@ -114,7 +114,7 @@ fn plan(hidden: &Path) -> Plan {
         version: PLAN_VERSION,
         hidden_root: hidden.to_path_buf(),
         hidden_dev: None,
-        accepted_not_separate: None,
+        accepted_decoy_storage: None,
         upper: hidden.join("root/upper"),
         work: hidden.join("root/work"),
         owner: None,
@@ -699,7 +699,7 @@ fn the_plan_records_only_what_the_override_alone_accepted() {
     );
     let bind = Path::new("/mnt/data");
     assert_eq!(
-        accepted_not_separate(&fs, bind, Allow::DecoyStorage)
+        accepted_decoy_storage(&fs, bind, Allow::DecoyStorage)
             .unwrap()
             .as_deref(),
         Some("/mnt/data is not a volume of its own: it is a bind mount of a folder of /srv")
@@ -707,13 +707,13 @@ fn the_plan_records_only_what_the_override_alone_accepted() {
     // Without the override the bind is refused, which the entry never
     // reaches; nothing is recorded either way.
     assert_eq!(
-        accepted_not_separate(&fs, bind, Allow::Nothing).unwrap(),
+        accepted_decoy_storage(&fs, bind, Allow::Nothing).unwrap(),
         None
     );
     // A folder is refused with the override too.
     fs.mock_set_path_exists("/srv/x", true);
     assert_eq!(
-        accepted_not_separate(&fs, Path::new("/srv/x"), Allow::DecoyStorage).unwrap(),
+        accepted_decoy_storage(&fs, Path::new("/srv/x"), Allow::DecoyStorage).unwrap(),
         None
     );
 
@@ -723,7 +723,7 @@ fn the_plan_records_only_what_the_override_alone_accepted() {
     mounted.mock_set_path_exists("/mnt/data", true);
     mounted.mock_set_mounted(volume, true);
     assert_eq!(
-        accepted_not_separate(&mounted, volume, Allow::DecoyStorage).unwrap(),
+        accepted_decoy_storage(&mounted, volume, Allow::DecoyStorage).unwrap(),
         None
     );
 }

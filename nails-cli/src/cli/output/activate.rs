@@ -273,7 +273,7 @@ mod tests {
                 version: PLAN_VERSION,
                 hidden_root: "/mnt/data".into(),
                 hidden_dev: None,
-                accepted_not_separate: None,
+                accepted_decoy_storage: None,
                 upper: "/mnt/data/root/upper".into(),
                 work: "/mnt/data/root/work".into(),
                 owner: None,

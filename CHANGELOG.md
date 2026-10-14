@@ -313,7 +313,7 @@ config and CLI surfaces; there are no compatibility shims.
   It turns the refusal of a root on the decoy's own storage into a warning, for storage the operator
   knows the decoy does not use, and never covers a folder, a covered root, storage that cannot be
   judged or a decoy entry for the hidden volume. `activate` repeats it in the logout confirmation
-  and records it in the session plan (`accepted_not_separate`), which `status` shows; `rehearse
+  and records it in the session plan (`accepted_decoy_storage`), which `status` shows; `rehearse
   plant` refuses such a session, since a rehearsal on that storage cannot pass. No log file and no
   residue baseline are written onto an accepted root.
 - A new blocking pre-flight check, `backend-entries`, refuses activation while the decoy's

@@ -181,8 +181,8 @@ pub struct EntryInputs<'a> {
     /// (`[session_mounts] read_only`).
     pub read_only_disks: bool,
     /// Why the hidden root is not a volume of its own, when the operator
-    /// overrode that (recorded in the plan as `accepted_not_separate`).
-    pub accepted_not_separate: Option<String>,
+    /// overrode that (recorded in the plan as `accepted_decoy_storage`).
+    pub accepted_decoy_storage: Option<String>,
 }
 
 /// The prepared entry.
@@ -338,7 +338,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         version: PLAN_VERSION,
         hidden_root: inputs.hidden_root.to_path_buf(),
         hidden_dev: None,
-        accepted_not_separate: inputs.accepted_not_separate.clone(),
+        accepted_decoy_storage: inputs.accepted_decoy_storage.clone(),
         upper: layout.upper(),
         work: layout.work(),
         owner,

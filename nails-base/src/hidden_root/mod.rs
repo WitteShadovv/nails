@@ -452,7 +452,7 @@ pub fn recorded_hidden_dev<F: Filesystem>(fs: &F) -> Option<String> {
 /// Why the session's hidden root is not a volume of its own, when its
 /// activation accepted that with `--allow-decoy-storage` (the plan in `/run`).
 pub fn recorded_acceptance<F: Filesystem>(fs: &F) -> Option<String> {
-    recorded_plan(fs)?.accepted_not_separate
+    recorded_plan(fs)?.accepted_decoy_storage
 }
 
 /// The session plan in `/run`, if one can be read.

@@ -92,7 +92,7 @@ mod kernel_tests {
                 version: PLAN_VERSION,
                 hidden_root: self.hidden.path().to_path_buf(),
                 hidden_dev: None,
-                accepted_not_separate: None,
+                accepted_decoy_storage: None,
                 upper: self.upper(),
                 work: self.hidden.path().join("root/work"),
                 owner: None,
@@ -596,7 +596,7 @@ mod entry_kernel_tests {
                 operator: None,
                 rebuild_space_mb: 0,
                 read_only_disks: false,
-                accepted_not_separate: None,
+                accepted_decoy_storage: None,
             }
         }
     }

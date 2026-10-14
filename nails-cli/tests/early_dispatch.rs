@@ -146,7 +146,7 @@ mod kernel_tests {
                 version: PLAN_VERSION,
                 hidden_root: hidden.path().to_path_buf(),
                 hidden_dev: None,
-                accepted_not_separate: None,
+                accepted_decoy_storage: None,
                 upper,
                 work,
                 owner: None,

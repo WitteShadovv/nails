@@ -15,7 +15,7 @@ fn plan(root: &Path) -> Plan {
         version: PLAN_VERSION,
         hidden_root: root.to_path_buf(),
         hidden_dev: None,
-        accepted_not_separate: None,
+        accepted_decoy_storage: None,
         upper: root.join("root/upper"),
         work: root.join("root/work"),
         owner: None,

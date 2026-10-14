@@ -78,7 +78,7 @@ pub(super) fn status_lines(report: &StatusReport, details: bool, style: Style) -
             "not mounted"
         }
     ));
-    if let Some(reason) = &report.accepted_not_separate {
+    if let Some(reason) = &report.accepted_decoy_storage {
         out.push(format!(
             "  {} --allow-decoy-storage: {reason}; {}",
             style.mark(Mark::Warn),

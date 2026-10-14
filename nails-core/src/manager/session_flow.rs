@@ -111,7 +111,7 @@ impl Machine {
 
 /// Why `hidden_root` is not a volume of its own, when only the operator's
 /// override (`allow`) lets the entry use it: what the plan records.
-fn accepted_not_separate<F: Filesystem>(
+fn accepted_decoy_storage<F: Filesystem>(
     fs: &F,
     hidden_root: &std::path::Path,
     allow: crate::hidden_root::Allow,
@@ -188,8 +188,8 @@ impl<F: Filesystem> NailsManager<F> {
             .map(|chain| chain.dm_names)
             .unwrap_or_default();
         let config_toml = toml::to_string(&self.config).ok();
-        let accepted_not_separate =
-            accepted_not_separate(&self.filesystem, &hidden_root, self.allow)?;
+        let accepted_decoy_storage =
+            accepted_decoy_storage(&self.filesystem, &hidden_root, self.allow)?;
         let builder = self
             .nixos_builder
             .as_ref()
@@ -207,7 +207,7 @@ impl<F: Filesystem> NailsManager<F> {
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
             rebuild_space_mb: self.config.rebuild_space_mb,
             read_only_disks: self.config.session_mounts.read_only,
-            accepted_not_separate,
+            accepted_decoy_storage,
         };
         let prepared = entry::prepare(&machine.paths, &inputs, host)?;
         if let Err(e) = self.record_entry(&prepared, started.elapsed()) {

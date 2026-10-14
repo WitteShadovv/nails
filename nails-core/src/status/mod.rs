@@ -170,7 +170,7 @@ pub struct StatusReport {
     pub hidden_root_source: Option<String>,
     /// Why the hidden root is not a volume of its own, when the session's
     /// activation accepted that with `--allow-decoy-storage`.
-    pub accepted_not_separate: Option<String>,
+    pub accepted_decoy_storage: Option<String>,
     /// A filesystem mounted over the hidden volume (see
     /// [`shadowing_mount`](crate::hidden_root::shadowing_mount)).
     pub hidden_root_covered_by: Option<CoverView>,
@@ -351,7 +351,7 @@ impl<F: Filesystem> StatusCommand<F> {
             hidden_root: hidden_root.clone(),
             hidden_root_mounted: hidden_mount.is_some(),
             hidden_root_source: hidden_mount.map(|m| m.source.display().to_string()),
-            accepted_not_separate: plan.and_then(|p| p.accepted_not_separate.clone()),
+            accepted_decoy_storage: plan.and_then(|p| p.accepted_decoy_storage.clone()),
             hidden_root_covered_by: crate::hidden_root::shadowing_mount(
                 entries,
                 &resolved,

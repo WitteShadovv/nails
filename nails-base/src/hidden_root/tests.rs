@@ -687,7 +687,7 @@ fn in_the_session_a_folder_is_refused_even_when_the_plan_accepted_the_root() {
     let path = nails_teardown::whole_root::plan::default_plan_path();
     let text = fs.read_file_content(&path).unwrap().replacen(
         "\"hidden_root\"",
-        "\"accepted_not_separate\":\"it is a bind mount\",\"hidden_root\"",
+        "\"accepted_decoy_storage\":\"it is a bind mount\",\"hidden_root\"",
         1,
     );
     fs.mock_set_file_content(path.to_str().unwrap(), &text);
