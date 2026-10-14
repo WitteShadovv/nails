@@ -18,6 +18,8 @@ filesystem label free of anything that hints at hidden storage: they surface in
 |---|---|---|
 | **Tested** | LUKS2 + ext4 on a whole block device | Every E2E run: `nix/e2e-tests/lib/hidden-volume.nix` formats a dedicated virtual disk with `cryptsetup luksFormat`, opens it and creates ext4 inside. |
 | **Tested** | VeraCrypt hidden volume, opened with `cryptsetup open --type tcrypt --tcrypt-hidden`, ext4 inside | The VeraCrypt VM test in `nix/e2e-tests/tests/backends/` creates an outer and a hidden VeraCrypt volume with the `veracrypt` console tool, opens the hidden one with `cryptsetup`, runs a session over it and images the decoy root. It runs in every E2E run that rebuilds the tests (each pull request that changes the code, each push to `main`) and nightly. The whole configuration on real hardware was evaluated by hand once. |
+| **Tested** | A directory on a separate local disk, bind-mounted at the hidden root | The `bind-mounted-root` VM test: an ext4 disk that the decoy does not mount or list in its fstab, with a directory of it bound at `/mnt/data`. A bind of a folder of a filesystem the decoy uses is refused (see below). |
+| **Refused** | A folder; a btrfs subvolume or a bind mount of a filesystem the decoy uses; a logical volume or other device stacked on the decoy's storage or swap; an unencrypted image file on a decoy filesystem | Not storage of its own: everything written there lands on the decoy's disk. Refused by the attach gate before anything is written; the `preflight-decoy-filesystem` VM test covers the folder, subvolume and bind cases. `--allow-unmounted` turns the refusal into a warning. |
 | **Expected to work** | Any local Linux filesystem that passes the preflight probes (ext4, xfs, btrfs, f2fs) on any kernel block device, including iSCSI and NBD devices | Untested. The preflight probes decide. Network traffic to a remote block device is outside the host-side threat model, and the connection must survive the soft-reboots, which stop every userspace daemon (an iSCSI or NBD client among them). |
 | **Unsupported** | NFS, CIFS/SMB, sshfs, 9p and most FUSE filesystems as the hidden root; FAT, exFAT, NTFS | Cannot host an overlayfs upper layer. Refused by the `upper-fs-capability` preflight check. |
 | **Not evaluated** | Shufflecake; volumes mounted by the VeraCrypt application itself | No claims. `backend-detect` names a Shufflecake (`sflc_<dev>_<vol>`) volume in its summary, but no Shufflecake-specific hazards are checked. A cross-backend E2E matrix is not part of the suite yet. |
@@ -26,8 +28,15 @@ filesystem label free of anything that hints at hidden storage: they surface in
 
 Whatever the backend, the filesystem at the hidden root must:
 
-- **be mounted and writable** at `hidden_volume_root` (preflight check
-  `hidden-volume`);
+- **be storage of its own**, mounted and writable at `hidden_volume_root`
+  (preflight check `hidden-volume`, which asks the attach gate): a mount point,
+  with no second filesystem mounted over it, on no storage the decoy uses (see
+  [the attach gate](threat-model.md#the-attach-gate)). An encrypted container
+  file on a filesystem the decoy uses is accepted with a warning: that
+  filesystem's journal and copy-on-write snapshots (btrfs, snapper) can keep old
+  copies of the parts of the container that changed, so a whole device or a
+  partition the decoy does not use is better. `--allow-unmounted` accepts a
+  folder or the decoy's storage with a warning;
 - **support symbolic links** (`symlink-support`);
 - **support `trusted.*` xattrs, report a file type (`d_type`) from readdir, and
   store overlayfs whiteouts** (`upper-fs-capability`). The check proves this

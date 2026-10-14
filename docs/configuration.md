@@ -82,7 +82,7 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 <!-- BEGIN config-keys -->
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `hidden_volume_root` | path | derived from the binary location | Root of the hidden volume; the hidden root's layers (`root/upper`, `root/work`, `root/mounts`, `root/cache`), the state file and logs live under it. Unset, it is the directory holding the `nails` binary (symlinks resolved). nails writes nothing under it until a separate volume is mounted there. Leave it unset so the file keeps working when the volume is mounted somewhere else. See [Path rules](#path-rules). |
+| `hidden_volume_root` | path | derived from the binary location | Root of the hidden volume; the hidden root's layers (`root/upper`, `root/work`, `root/mounts`, `root/cache`), the state file and logs live under it. Unset, it is the directory holding the `nails` binary (symlinks resolved). nails writes nothing under it until a volume of its own is mounted there: not a folder, not a subvolume or bind mount of a filesystem the computer uses, and not a volume inside its storage (see [the attach gate](threat-model.md#the-attach-gate)). Leave it unset so the file keeps working when the volume is mounted somewhere else. See [Path rules](#path-rules). |
 | `state_file_path` | path | `<hidden_volume_root>/state.json` | Activation state file. Must lie inside `hidden_volume_root`. |
 | `log_path` | path | `<hidden_volume_root>/logs` | Directory of `nails.log`. Must lie inside `hidden_volume_root`. `--no-log-file` turns file logging off for one run. |
 | `minimum_space_mb` | integer (MB) | `500` | Base free-space floor for the hidden volume. The pre-flight check fails below this value (no warn band); `activate --no-preflight` skips the check. |
@@ -139,9 +139,15 @@ the decision for every entry (the `fstab-policy` check). A decoy partition you
 mount by hand inside the hidden session is outside this policy and is written
 directly.
 
-The hidden volume must be a mount point of its own (the `hidden-volume`
-pre-flight check refuses a plain directory), because everything nails writes
-there would otherwise land on the decoy disk. The decoy root must be a disk
+The hidden volume must be storage of its own, because everything nails writes
+there would otherwise land on the decoy disk. The attach gate refuses a plain
+directory, a btrfs subvolume or bind mount of a filesystem the decoy uses, a
+volume stacked on the decoy's storage, an image file on a decoy filesystem, and
+a root with a second filesystem mounted over it; it runs before `init`,
+`activate` and `check` write or probe anything, and `--no-preflight` does not
+skip it. `--allow-unmounted` turns the refusal of a folder or of the decoy's
+storage into a warning (see
+[the attach gate](threat-model.md#the-attach-gate)). The decoy root must be a disk
 filesystem that can be mounted again by its device for the way back (the
 `decoy-root` check refuses a tmpfs, ZFS or overlay root).
 

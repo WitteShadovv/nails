@@ -3396,6 +3396,14 @@ Owns: `nails-base/src/naming.rs`, `nails-base/src/fstab.rs`, `nails-base/src/cry
 
 Owns: `nails-base/src/hidden_root/`, the attach-gate tests of `nails-cli`
 
+- [ ] **T-158: Refuse and redirect a hidden root that is not storage of its own (setup plan phase 1b, #1)** (high · effort L)
+
+  _Status (2026-10-14): implemented on the setup branch, not yet merged. Follows up T-054, whose "separate device" test compared only the root's device with `/`'s, so a folder on a separate `/home` partition or a btrfs subvolume of the decoy passed._
+
+  The attach gate (`HiddenRoot::assess`) needs a mount point at the root, one filesystem there, the session's own volume in the session, and, outside it, storage the decoy does not use: the judge in `hidden_root/separation/` reads the mount table, `/etc/fstab`, `/etc/crypttab` and sysfs. Every refusal is reported with one neutral text and a code (`not_separate_volume`, `root_covered`, `storage_unjudged`, exit 4) by `init`, `activate`, `check`, `rehearse plant`, `deactivate` and `reset-upper`, before anything is written or probed. `--allow-unmounted` (`init`, `activate`, `check`) turns a folder or decoy storage into a warning, recorded in the session plan and shown by `status`. The `backend-entries` check refuses a decoy crypttab or fstab line for the hidden volume. VM coverage: `preflight-decoy-filesystem`, the covered-root subtest of `session-emergency`, scenarios 47 and 13, and the distro smoke.
+
+  **Done when:** merged to `next` with the full NixOS VM suite and the Debian 13 and Ubuntu 24.04 smoke tests green, and the owner's open questions from phase 1b answered (see the phase 1b report).
+
 - [ ] **T-157: Remove the unit-test seam from the state attach gate** (low · effort M)
 
   _Status (2026-10-14): the integration tests' bypass of the attach gate (`NAILS_TEST_FORCE_ATTACHED`) is gone; the CLI suites that needed it run the real binary on a tmpfs hidden root in a user + mount namespace. One seam is left, by decision: `ensure_state_dir_attached` returns early in a library crate's unit-test binary (`runtime_safety::in_unit_tests`) unless the test arms `state_attach_probe`._

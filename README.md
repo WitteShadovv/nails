@@ -111,7 +111,7 @@ model is written down; read it before relying on NAILS.
 | A supported host | NixOS, Debian 13 or newer, or Ubuntu 24.04 or newer, with **systemd 254 or newer**. Other hosts are refused (see below). |
 | An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no disk swap. Activation fails closed otherwise (`--accept-persistent-decoy` overrides it). See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
-| A hidden volume | Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
+| A hidden volume | Storage of its own: not a folder, a subvolume or a bind mount of a filesystem the computer uses, nor a volume inside its storage. Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
 | Root (`sudo`) | `activate`, `deactivate`, `emergency`, `recover` and the writing `rehearse` steps refuse to run without it. Run `init`, `check`, `verify` and `reset-upper` with `sudo` too, as the examples do, so they can read and write root-owned files. |
 | A local account | The account you run `sudo` from must be in `/etc/passwd`: the static binary does not use NSS, so LDAP or SSSD accounts cannot be resolved. |
 
@@ -138,9 +138,16 @@ Also refused by the pre-flight checks:
 - active disk swap; only RAM-backed zram is allowed (`swap`);
 - a persistent journal or an active syslog or audit daemon, unless overridden
   (`decoy-persistence`);
-- a hidden volume that is not mounted, or whose filesystem cannot host an
-  overlayfs upper: NFS, CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS
-  (`hidden-volume`, `upper-fs-capability`);
+- a hidden volume that is not storage of its own: a folder, a btrfs subvolume
+  or bind mount of a filesystem the decoy uses, a volume stacked on the
+  decoy's storage, an image file on a decoy filesystem, or a root with a second
+  filesystem mounted over it. The attach gate refuses these before anything is
+  written, `--no-preflight` included; `--allow-unmounted` turns a folder or the
+  decoy's storage into a warning, never a covered root (`hidden-volume`);
+- a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden
+  volume (`backend-entries`);
+- a hidden volume whose filesystem cannot host an overlayfs upper: NFS,
+  CIFS/SMB, 9p, most FUSE mounts, FAT, exFAT and NTFS (`upper-fs-capability`);
 - running inside a container or another mount namespace than PID 1's
   (`mount-namespace`).
 
@@ -230,10 +237,12 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    sudo /mnt/data/nails init /mnt/data
    ```
 
-   `init` refuses a directory that is not a mounted volume of its own, so the
-   layout never lands on the decoy disk. On NixOS it seeds the hidden NixOS layout
-   from `/etc/nixos/hardware-configuration.nix`. It ends by printing the next
-   steps.
+   `init` refuses a directory that is not a volume of its own (a folder, or a
+   subvolume, bind mount or image file on the computer's own storage) before it
+   writes or probes anything, so the layout never lands on the decoy disk; see
+   [Where setup happens](docs/operator-guide.md#where-setup-happens). On NixOS
+   it seeds the hidden NixOS layout from
+   `/etc/nixos/hardware-configuration.nix`. It ends by printing the next steps.
 
 3. **Optionally review the configuration**, but not on the decoy: an editor
    leaves its own traces there (swap and backup files, `~/.viminfo`, recent-file

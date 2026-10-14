@@ -54,6 +54,48 @@ invoke it by its absolute path.
 
 ---
 
+## Where setup happens
+
+Everything NAILS writes goes to the hidden root, so the hidden root must be
+storage of its own: a whole device, a partition or an encrypted volume that the
+decoy does not use. A folder, a btrfs subvolume or a bind mount of a filesystem
+the decoy uses, a logical volume or other device stacked on the decoy's own
+storage or swap, or an image file on a decoy filesystem is not: everything
+written there lands on the decoy's disk, where an examination can find it.
+
+Prepare the volume where nothing reaches the decoy's disk:
+
+- **on an external drive prepared on another computer** (recommended): create
+  and format the volume there, then attach the drive to this computer, unlock
+  and mount it, and run `nails` from it;
+- **or from a setup medium**: a live system started from a USB stick on this
+  computer, which writes nothing to its internal disk.
+
+`init`, `activate`, `check` and the other commands that write ask the attach
+gate first and refuse anything else before they write or probe a single file.
+The refusal reads `<root> is not a volume of its own: <reason>. Nothing was
+written.` (code `not_separate_volume`, exit 4), names the storage, and says so
+too when the running `nails` binary is itself on this computer's disk. A root
+with a second filesystem mounted over it is refused with `root_covered`, and
+one whose storage cannot be judged (an unprivileged run on a distribution
+whose `/etc/crypttab` only root can read) with `storage_unjudged`; run the
+command with sudo. A decoy `/etc/crypttab` or `/etc/fstab` line that opens or
+mounts the hidden volume fails the `backend-entries` check: remove it long
+before the next use and open the volume by hand each time.
+
+An encrypted container file on a decoy filesystem only warns: the filesystem's
+journal and copy-on-write snapshots (btrfs, snapper) can keep old copies of the
+parts of the container that changed. `--allow-unmounted` (on `init`,
+`activate` and `check`) turns the refusal of a folder or of the decoy's own
+storage into a warning; use it only for storage you know the decoy does not
+use. It never covers a covered root, storage that cannot be judged or a decoy
+entry for the volume. See [the attach gate](threat-model.md#the-attach-gate).
+
+Read this guide on another device, not on the decoy: opening it there leaves
+viewer traces such as `~/.lesshst`. The guide ships in the release bundle.
+
+---
+
 ## What NAILS does
 
 NAILS runs the hidden session in one OverlayFS over the whole decoy root. The
@@ -460,7 +502,10 @@ never land on the decoy. See the "Common host traces" guidance in
 ### Pre-activation checklist
 
 ```
-[ ] Hidden volume mounted and writable at its own mount point (e.g. under /mnt)
+[ ] Hidden volume mounted and writable at its own mount point (e.g. under /mnt),
+    on storage of its own (see "Where setup happens"), with nothing mounted
+    over it
+[ ] No line in the decoy's /etc/crypttab or /etc/fstab opens or mounts it
 [ ] Neither the outer nor the hidden volume opened with --allow-discards
 [ ] Hidden backend is a local Linux filesystem that can host an overlayfs upper
     (ext4/xfs/btrfs/f2fs; NOT NFS/SMB/9p/FUSE or FAT/exFAT/NTFS)

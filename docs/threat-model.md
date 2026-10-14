@@ -223,6 +223,12 @@ How the code upholds this:
 - **Deactivation never installs.** It soft-reboots back into the plain decoy
   root, repointing `/run/current-system` to the decoy's toplevel; no firmware or
   bootloader is involved.
+- **No decoy entry opens the hidden volume.** A line in the decoy's
+  `/etc/crypttab` or `/etc/fstab` that opens or mounts the hidden volume (or a
+  device it is stored on), or carries `tcrypt-hidden`, is such an enabler: the
+  `backend-entries` pre-flight check refuses activation while one exists, and
+  no flag overrides it. A line that opens only another volume on the same
+  drive warns.
 
 This invariant is checked by the end-to-end tests `uefi-esp-nvram-invariant`
 and `soft-reboot-mechanics`: they hash the ESP file listing and capture the EFI
@@ -230,6 +236,50 @@ variable list (`efibootmgr -v` / efivarfs) before activation and after
 deactivation, and assert both are unchanged relative to a plain-reboot control
 (apart from `loader/random-seed`, which the decoy's own start refreshes, as any
 boot does).
+
+## The attach gate
+
+Every write NAILS makes goes to the hidden root, so every claim above assumes
+that the hidden root is storage of its own. One gate decides that before
+anything is written: `init`, `activate`, `check`, the log file, the state file
+and its lock, the staged NixOS configuration, the residue baseline and the
+rehearsal state all ask it first. It refuses:
+
+- a root that is not a mount point (a folder of `/`, `/home` or any other
+  filesystem): `init` refuses before it probes the folder, so its timestamps do
+  not change either;
+- a root that this computer's own storage holds: a btrfs subvolume or a bind
+  mount of a filesystem the decoy mounts, the filesystem the decoy's fstab
+  mounts there, a logical volume or other device stacked on the decoy's
+  storage or swap, or an unencrypted image file on a decoy filesystem;
+- a root with a second filesystem mounted over it (`root_covered`), and in the
+  hidden session a root whose filesystem is not the one the session started
+  from: the writes would reach the disk on top;
+- a root whose storage cannot be judged because `/etc/fstab`, `/etc/crypttab`
+  or the block devices in sysfs cannot be read (`storage_unjudged`; run the
+  command with sudo).
+
+An encrypted container file on a decoy filesystem only warns: filesystem
+journals and copy-on-write snapshots of that filesystem can keep old copies of
+the parts of the container that changed. `--allow-unmounted` (on `init`,
+`activate` and `check`) turns the refusal of a folder or of the decoy's storage
+into a warning; activation then repeats it in the logout confirmation, the
+session plan records it for `status`, and `rehearse plant` refuses, since a
+rehearsal on that storage cannot pass. The override never covers a covered
+root, storage that cannot be judged, or `backend-entries`. `--no-preflight`
+does not skip the gate.
+
+In the hidden session, `deactivate` refuses a covered root with `root_covered`:
+it would write its state onto the disk on top. `emergency` always runs, with or
+without the state lock, and the session watcher writes no probe onto a covered
+root.
+
+The gate's limits: it judges the storage this computer's mount table, fstab,
+crypttab and sysfs describe. It cannot see a decoy filesystem mounted only by
+hand and never listed, storage another operating system on the same machine
+uses, or a remote block device's other users. A refusal names the storage and
+says nothing was written; an override is the operator's statement that the
+storage is not the decoy's.
 
 ## Residual channels
 
@@ -274,7 +324,9 @@ bypass the mount layer?", and that set is small and enumerable: the residual
 channels listed above, and the decoy filesystems the fstab policy has to
 handle. Residual risk is limited to those channels and
 to the shared state in the previous section, which the overlay does not claim to
-isolate.
+isolate. All of this assumes the upper is on storage of its own, which
+[the attach gate](#the-attach-gate) checks before the first write; an upper on
+the decoy's own storage would put every redirected write back on its disk.
 
 ## Known residual changes
 
