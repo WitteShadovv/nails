@@ -284,15 +284,19 @@ fn an_absent_crypttab_is_empty_but_an_unreadable_one_is_listed() {
 }
 
 #[test]
-fn an_unlistable_sysfs_is_listed_as_unreadable() {
-    // The mock has no listing for a directory it was never given.
-    let fs = MockFilesystem::new();
-    fs.mock_set_path_exists("/sys/class/block", true);
+fn an_unlistable_or_missing_sysfs_is_listed_as_unreadable() {
+    // Without the list of block devices nothing can be followed to a device.
     let mounts = parse_mountinfo("1 0 259:3 / / rw - ext4 /dev/nvme0n1p3 rw\n");
-    assert_eq!(
-        collect(&fs, &mounts, Path::new("/")).unreadable,
-        vec![PathBuf::from("/sys/class/block")]
-    );
+    for exists in [true, false] {
+        let fs = MockFilesystem::new();
+        fs.mock_hide_block_devices();
+        fs.mock_set_path_exists("/sys/class/block", exists);
+        assert_eq!(
+            collect(&fs, &mounts, Path::new("/")).unreadable,
+            vec![PathBuf::from("/sys/class/block")],
+            "{exists}"
+        );
+    }
 }
 
 #[test]

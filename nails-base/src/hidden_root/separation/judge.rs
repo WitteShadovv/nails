@@ -27,14 +27,19 @@ struct Claim {
 /// Judge where the mount `hidden` (the visible mount at the hidden root)
 /// lives, against the decoy's storage in `scene`.
 pub fn judge(scene: &Scene<'_>, hidden: &MountEntry) -> Judgement {
-    if matches!(hidden.fstype.as_str(), "tmpfs" | "ramfs") {
+    if is_ram(&hidden.fstype) {
         return Judgement {
             verdict: Verdict::Separate,
             entries: Vec::new(),
         };
     }
     let devices = scene.devices;
-    let top = devices.node_of_mount(hidden).map(str::to_string);
+    // A stacked filesystem names no device of its own: whatever its source
+    // says, its storage is elsewhere.
+    let top = (!is_stacked(&hidden.fstype))
+        .then(|| devices.node_of_mount(hidden))
+        .flatten()
+        .map(str::to_string);
     let stack: Vec<String> = top.as_deref().map(|t| devices.stack(t)).unwrap_or_default();
     let (claims, entries) = claims(scene, hidden, &stack);
     let verdict = if scene.unreadable.is_empty() {
@@ -78,6 +83,15 @@ fn verdict(
         }
     }
 
+    // Every rule below follows the root's device down to what stores it; a
+    // root with no device found (an overlay, FUSE, a network filesystem)
+    // cannot be followed, so where its writes land cannot be told.
+    if top.is_none() {
+        return Verdict::UntracedStorage {
+            fstype: shown_fstype(&hidden.fstype),
+        };
+    }
+
     let sharing: Vec<(&Claim, &String)> = claims
         .iter()
         .filter_map(|claim| {
@@ -104,6 +118,15 @@ fn verdict(
             continue;
         };
         let Some(at) = claimed_holder(scene, claims, file) else {
+            // The image file lies on a filesystem that is not the decoy's;
+            // that filesystem must itself be on a device that can be traced.
+            if let Some(holder) = mount_holding(scene.mounts, file)
+                .filter(|holder| !is_ram(&holder.fstype) && untraced(devices, holder))
+            {
+                return Verdict::UntracedStorage {
+                    fstype: shown_fstype(&holder.fstype),
+                };
+            }
             continue;
         };
         let encrypted = stack.iter().any(|above| {
@@ -125,6 +148,33 @@ fn verdict(
         };
     }
     Verdict::Separate
+}
+
+/// Whether `fstype` is a RAM filesystem, which keeps nothing on a disk.
+pub(super) fn is_ram(fstype: &str) -> bool {
+    matches!(fstype, "tmpfs" | "ramfs")
+}
+
+/// Whether `fstype` is stacked on other filesystems or on a process (an
+/// overlay, an encrypting stack, FUSE), so a device in its source names
+/// nothing it stores data on. `fuseblk` sits on a block device of its own.
+fn is_stacked(fstype: &str) -> bool {
+    matches!(fstype, "overlay" | "aufs" | "ecryptfs" | "fuse") || fstype.starts_with("fuse.")
+}
+
+/// Whether nothing shows on which block device `mount` stores its data.
+fn untraced(devices: &DeviceMap, mount: &MountEntry) -> bool {
+    is_stacked(&mount.fstype) || devices.node_of_mount(mount).is_none()
+}
+
+/// The filesystem type to show the operator: a FUSE subtype can name the
+/// program behind it, so only "fuse" is shown.
+pub fn shown_fstype(fstype: &str) -> String {
+    if fstype.starts_with("fuse.") {
+        "fuse".to_string()
+    } else {
+        fstype.to_string()
+    }
 }
 
 /// How a mount on a claimed filesystem was made: its root inside the
@@ -224,6 +274,16 @@ fn claims(
                 claims.push(mount_claim(scene, holder, noauto));
             }
             continue;
+        }
+        // What the boot mounted at the entry's mount point is the decoy's,
+        // whether or not its spec leads to a device here (a label with an
+        // escaped space, a missing udev link).
+        if !entry.is_swap()
+            && !noauto
+            && !entry.file.starts_with(&hidden.mount_point)
+            && let Some(live) = top_mount_at(scene.mounts, &entry.file)
+        {
+            claims.push(mount_claim(scene, live, false));
         }
         let what = if entry.is_swap() {
             Claimed::Swap(entry.spec.clone())

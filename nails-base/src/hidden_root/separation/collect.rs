@@ -10,11 +10,13 @@
 //! running decoy; another root lets an offline scan judge a decoy's files.
 //!
 //! A file that does not exist is empty: a system without a crypttab opens no
-//! encrypted volume at boot. A file (or `/sys/class/block`) that exists but
-//! cannot be read is listed as unreadable and never taken as empty: init and
-//! check run without root, some distributions keep crypttab readable by root
-//! only, and an unread entry could hide the decoy's claim on the hidden
-//! root's device.
+//! encrypted volume at boot. A file that exists but cannot be read is listed as
+//! unreadable and never taken as empty: init and check run without root, some
+//! distributions keep crypttab readable by root only, and an unread entry
+//! could hide the decoy's claim on the hidden root's device.
+//! `/sys/class/block` is listed as unreadable when it cannot be listed or is
+//! missing (no sysfs, as in some containers): every block device is listed
+//! there, so without it no claim can be followed to a device.
 
 #[cfg(test)]
 #[path = "collect_tests.rs"]
@@ -67,7 +69,7 @@ pub fn judge_storage<F: Filesystem>(
     hidden: &MountEntry,
     etc_root: &Path,
 ) -> Judgement {
-    let collected = if matches!(hidden.fstype.as_str(), "tmpfs" | "ramfs") {
+    let collected = if super::judge::is_ram(&hidden.fstype) {
         Collected::default()
     } else {
         collect(fs, mounts, etc_root)
@@ -88,18 +90,18 @@ pub fn collect<F: Filesystem>(fs: &F, mounts: &[MountEntry], etc_root: &Path) ->
     }
 
     let devices = &mut collected.devices;
+    // Without the list of block devices no claim can be followed to a device,
+    // so a missing list is as unreadable as one that cannot be listed.
     let class = Path::new(SYS_CLASS_BLOCK);
-    if fs.path_exists(class).unwrap_or(false) {
-        match fs.list_directory(class) {
-            Ok(entries) => {
-                for entry in entries {
-                    for layer in blockdev::stack(fs, &entry, LoopFollow::BlockDevices) {
-                        add_layer(devices, &layer);
-                    }
+    match fs.list_directory(class) {
+        Ok(entries) => {
+            for entry in entries {
+                for layer in blockdev::stack(fs, &entry, LoopFollow::BlockDevices) {
+                    add_layer(devices, &layer);
                 }
             }
-            Err(_) => collected.unreadable.push(class.to_path_buf()),
         }
+        Err(_) => collected.unreadable.push(class.to_path_buf()),
     }
 
     // The names the files and the mount table use for devices.

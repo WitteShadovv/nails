@@ -28,9 +28,11 @@
 //!
 //! The [`Verdict`], first match wins: the inputs could not all be read; the
 //! root is on a claimed filesystem (a bind, a subvolume, the filesystem
-//! itself); it shares a device with a claim; it is an image file, or an
-//! encrypted container file, on a claimed filesystem; else it is separate. A
-//! tmpfs or ramfs root is always separate.
+//! itself); no block device of the root can be found, so its storage cannot
+//! be followed (an overlay, FUSE, a network filesystem); it shares a device
+//! with a claim; it is an image file, or an encrypted container file, on a
+//! claimed filesystem, or on one whose device cannot be found; else it is
+//! separate. A tmpfs or ramfs root is always separate.
 //!
 //! The inputs are the mount table, the parsed files and a [`DeviceMap`] of
 //! the block devices; [`judge`] reads no file. [`collect`] reads them through
@@ -273,6 +275,13 @@ pub enum Verdict {
         /// Where the decoy mounts the filesystem holding it.
         at: PathBuf,
     },
+    /// Nothing shows on which block device the root's filesystem (or the
+    /// filesystem holding its image file) stores its data: an overlay, FUSE,
+    /// a network filesystem. Where its writes land cannot be told.
+    UntracedStorage {
+        /// The type of that filesystem.
+        fstype: String,
+    },
     /// The root is separate from everything the decoy claims.
     Separate,
 }
@@ -342,6 +351,9 @@ impl Verdict {
                 file.display(),
                 at.display()
             ),
+            Verdict::UntracedStorage { fstype } => {
+                format!("it is on a {fstype} filesystem, which shows no disk it stores its data on")
+            }
             Verdict::Separate => "it is separate from this computer's own storage".to_string(),
         }
     }

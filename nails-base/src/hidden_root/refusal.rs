@@ -41,7 +41,9 @@ impl RefusalKind {
     pub fn code(&self) -> &'static str {
         match self {
             RefusalKind::Covered { .. } | RefusalKind::NotTheSessionVolume { .. } => ROOT_COVERED,
-            RefusalKind::StorageUnjudged { .. } => STORAGE_UNJUDGED,
+            RefusalKind::StorageUnjudged { .. } | RefusalKind::StorageUntraced { .. } => {
+                STORAGE_UNJUDGED
+            }
             RefusalKind::NotConfigured
             | RefusalKind::Missing
             | RefusalKind::MountTableUnreadable { .. }
@@ -89,6 +91,10 @@ impl RefusalKind {
             RefusalKind::NotTheSessionVolume { source } => format!(
                 "the filesystem at {root} ({}) is not the volume this session started from",
                 source.display()
+            ),
+            RefusalKind::StorageUntraced { fstype } => format!(
+                "{root} is on a {fstype} filesystem, which shows no disk it stores its data on, \
+                 so where it lives cannot be told"
             ),
             RefusalKind::StorageUnjudged { unreadable } => format!(
                 "could not read {} to tell where {root} lives",
@@ -159,6 +165,11 @@ impl Refusal {
             RefusalKind::StorageUnjudged { .. } => {
                 vec!["Run the command again with sudo.".into()]
             }
+            RefusalKind::StorageUntraced { .. } => vec![
+                "Use a volume on a disk or partition of its own, or an encrypted volume opened \
+                 from one: only such a volume can be told apart from this computer's own storage."
+                    .into(),
+            ],
             RefusalKind::NotConfigured => {
                 vec!["Set the root folder in the configuration file.".into()]
             }
@@ -275,14 +286,17 @@ mod tests {
             },
             RefusalKind::SameDeviceAsRoot,
             RefusalKind::Covered {
-                below: PathBuf::from("/dev/mapper/data"),
-                above: PathBuf::from("/dev/sdc1"),
+                below: "/dev/dm-0".into(),
+                above: "/dev/sdc1".into(),
             },
             RefusalKind::NotTheSessionVolume {
-                source: PathBuf::from("/dev/sdc1"),
+                source: "/dev/sdc1".into(),
             },
             RefusalKind::StorageUnjudged {
                 unreadable: vec![PathBuf::from("/etc/crypttab")],
+            },
+            RefusalKind::StorageUntraced {
+                fstype: "fuse".into(),
             },
         ]
         .into_iter()
@@ -298,7 +312,7 @@ mod tests {
             .collect();
         assert_eq!(&codes[..13], &[NOT_SEPARATE_VOLUME; 13]);
         assert_eq!(&codes[13..15], &[ROOT_COVERED; 2]);
-        assert_eq!(codes[15], STORAGE_UNJUDGED);
+        assert_eq!(&codes[15..], &[STORAGE_UNJUDGED; 2]);
     }
 
     #[test]
@@ -433,6 +447,7 @@ mod tests {
                 RefusalKind::Covered { .. }
                     | RefusalKind::NotTheSessionVolume { .. }
                     | RefusalKind::StorageUnjudged { .. }
+                    | RefusalKind::StorageUntraced { .. }
                     | RefusalKind::NotConfigured
                     | RefusalKind::MountTableUnreadable { .. }
             );

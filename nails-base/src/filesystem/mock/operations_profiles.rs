@@ -38,20 +38,21 @@ impl MockFilesystem {
     }
 
     pub(super) fn read_file_content_impl(&self, path: &Path) -> Result<String> {
-        self.file_contents
+        let content = self
+            .file_contents
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .get(path)
-            .cloned()
-            .ok_or_else(|| {
-                NailsError::io(
-                    path,
-                    std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("File not found in mock: {}", path.display()),
-                    ),
-                )
-            })
+            .cloned();
+        content.or_else(|| self.rendered_file(path)).ok_or_else(|| {
+            NailsError::io(
+                path,
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("File not found in mock: {}", path.display()),
+                ),
+            )
+        })
     }
 
     pub(super) fn find_files_with_pattern_impl(
@@ -336,6 +337,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned");
         if let Some(entries) = contents.get(&dir.to_path_buf()) {
             return Ok(entries.clone());
+        }
+        drop(contents);
+        if let Some(entries) = self.rendered_listing(dir) {
+            return Ok(entries);
         }
 
         Err(NailsError::io(

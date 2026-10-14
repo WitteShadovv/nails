@@ -109,6 +109,12 @@ pub enum RefusalKind {
         /// The inputs that could not be read.
         unreadable: Vec<PathBuf>,
     },
+    /// Nothing shows on which disk the root's storage lies (see
+    /// [`separation::Verdict::UntracedStorage`]).
+    StorageUntraced {
+        /// The type of the filesystem whose device cannot be found.
+        fstype: String,
+    },
     /// The root reports the same device as `/`.
     SameDeviceAsRoot,
 }
@@ -192,9 +198,10 @@ impl HiddenRoot {
     ///    sit on the same device as the root.
     /// 5. **Not the decoy's storage** — outside the session, the
     ///    [`separation`] judge: not a subvolume, bind or image file on a
-    ///    filesystem the decoy uses, no device shared with it, and every input
-    ///    it needs readable (a tmpfs or ramfs root needs none). A verdict that
-    ///    only warns attaches with [`Assessment::Warned`].
+    ///    filesystem the decoy uses, no device shared with it, a block device
+    ///    the judge can follow, and every input it needs readable (a tmpfs or
+    ///    ramfs root needs none). A verdict that only warns attaches with
+    ///    [`Assessment::Warned`].
     /// 6. **Not `/`'s device** — a backstop for a bind of `/`'s own filesystem
     ///    at the root.
     ///
@@ -265,6 +272,9 @@ impl HiddenRoot {
             match (verdict.severity(), verdict) {
                 (_, separation::Verdict::CouldNotJudge { unreadable }) => {
                     return refuse(RefusalKind::StorageUnjudged { unreadable }, root);
+                }
+                (_, separation::Verdict::UntracedStorage { fstype }) => {
+                    return refuse(RefusalKind::StorageUntraced { fstype }, root);
                 }
                 (separation::Severity::Pass, _) => {}
                 (severity, verdict) => {

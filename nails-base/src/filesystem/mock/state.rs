@@ -103,6 +103,9 @@ pub struct MockFilesystem {
     /// When set, [`mount_table`](crate::Filesystem::mount_table) fails with
     /// this message, standing in for an unreadable `/proc/self/mountinfo`.
     pub(super) mount_table_error: Arc<Mutex<Option<String>>>,
+    /// When set, no block device is rendered in `/sys/class/block` (see
+    /// [`mock_hide_block_devices`](Self::mock_hide_block_devices)).
+    pub(super) block_devices_hidden: Arc<Mutex<bool>>,
     /// Mounts [`Filesystem::is_mount_read_only`](crate::Filesystem::is_mount_read_only) reports read-only.
     pub(super) read_only_mounts: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) paths: Arc<Mutex<HashMap<PathBuf, PathInfo>>>,
@@ -173,6 +176,7 @@ impl MockFilesystem {
             mounted: Arc::new(Mutex::new(HashSet::new())),
             mount_table: Arc::new(Mutex::new(None)),
             mount_table_error: Arc::new(Mutex::new(None)),
+            block_devices_hidden: Arc::new(Mutex::new(false)),
             read_only_mounts: Arc::new(Mutex::new(HashSet::new())),
             paths: Arc::new(Mutex::new(HashMap::new())),
             is_mounted_errors: Arc::new(Mutex::new(HashMap::new())),
@@ -228,6 +232,10 @@ impl MockFilesystem {
             .mount_table_error
             .lock()
             .expect("MockFilesystem mutex poisoned") = None;
+        *self
+            .block_devices_hidden
+            .lock()
+            .expect("MockFilesystem mutex poisoned") = false;
         self.read_only_mounts
             .lock()
             .expect("MockFilesystem mutex poisoned")

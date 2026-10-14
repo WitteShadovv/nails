@@ -706,6 +706,120 @@ fn an_entry_for_another_device_is_no_finding() {
     assert!(judgement.entries.is_empty());
 }
 
+#[test]
+fn a_bind_of_a_data_mount_whose_fstab_spec_does_not_resolve_is_refused() {
+    // The label has an escaped space and no /dev/disk link leads to it; the
+    // boot still mounted sdc1 at /data.
+    let world = plain_decoy(
+        "4 1 8:33 / /data rw - ext4 /dev/sdc1 rw\n\
+         5 1 8:33 /x /mnt rw - ext4 /dev/sdc1 rw\n",
+    )
+    .disk("sdc", "8:32")
+    .part("sdc1", "8:33", "sdc")
+    .fstab(
+        "/dev/sda1 / ext4 defaults 0 1\n/dev/sda2 /home ext4 defaults 0 2\n\
+         LABEL=My\\040Data /data ext4 defaults 0 2\n",
+    );
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::OnDecoyFilesystem {
+            how: Sharing::Bind,
+            at: PathBuf::from("/data"),
+        }
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Storage that cannot be followed to a device
+// ---------------------------------------------------------------------------
+
+#[test]
+fn an_overlay_whose_upper_is_on_home_is_refused() {
+    let verdict = plain_decoy(
+        "5 1 0:77 / /mnt rw - overlay overlay rw,lowerdir=/home/u/low,upperdir=/home/u/up,\
+         workdir=/home/u/work\n",
+    )
+    .verdict("/mnt");
+    assert_eq!(
+        verdict,
+        Verdict::UntracedStorage {
+            fstype: "overlay".into()
+        }
+    );
+    assert_eq!(verdict.severity(), Severity::Refuse);
+}
+
+#[test]
+fn a_fuse_filesystem_is_refused_without_naming_its_program() {
+    let verdict =
+        plain_decoy("5 1 0:78 / /mnt rw - fuse.gocryptfs /home/u/cipher rw\n").verdict("/mnt");
+    assert_eq!(
+        verdict,
+        Verdict::UntracedStorage {
+            fstype: "fuse".into()
+        }
+    );
+    assert_eq!(
+        verdict.reason(),
+        "it is on a fuse filesystem, which shows no disk it stores its data on"
+    );
+}
+
+#[test]
+fn a_stacked_filesystem_is_refused_whatever_its_source_names() {
+    // The source of a stacked filesystem is any string; one that names an
+    // external disk says nothing about where the data lies.
+    let verdict = plain_decoy("5 1 0:79 / /mnt rw - ecryptfs /dev/sdb rw\n")
+        .disk("sdb", "8:16")
+        .verdict("/mnt");
+    assert_eq!(
+        verdict,
+        Verdict::UntracedStorage {
+            fstype: "ecryptfs".into()
+        }
+    );
+}
+
+#[test]
+fn a_network_filesystem_is_refused() {
+    let verdict = plain_decoy("5 1 0:80 / /mnt rw - nfs4 server:/export rw\n").verdict("/mnt");
+    assert_eq!(
+        verdict,
+        Verdict::UntracedStorage {
+            fstype: "nfs4".into()
+        }
+    );
+}
+
+#[test]
+fn a_loop_file_on_a_fuse_filesystem_is_refused() {
+    // A container opened without kernel crypto: a loop device over the file
+    // a FUSE process serves, whose own storage is somewhere else.
+    let world = plain_decoy(
+        "4 1 0:81 / /tmp/.aux1 rw - fuse.veracrypt veracrypt rw\n\
+         5 1 7:3 / /mnt rw - ext4 /dev/loop3 rw\n",
+    )
+    .loop_file("loop3", "7:3", "/tmp/.aux1/volume");
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::UntracedStorage {
+            fstype: "fuse".into()
+        }
+    );
+}
+
+#[test]
+fn a_loop_file_on_a_disk_the_decoy_does_not_use_is_separate() {
+    let world = plain_decoy(
+        "4 1 8:17 / /media/usb rw - ext4 /dev/sdb1 rw\n\
+         5 1 7:3 / /mnt rw - ext4 /dev/loop3 rw\n",
+    )
+    .disk("sdb", "8:16")
+    .part("sdb1", "8:17", "sdb")
+    .loop_file("loop3", "7:3", "/media/usb/disk.img");
+    assert_eq!(world.verdict("/mnt"), Verdict::Separate);
+}
+
 // ---------------------------------------------------------------------------
 // Inputs that cannot be read
 // ---------------------------------------------------------------------------
