@@ -27,7 +27,11 @@
 #      tcrypt-hidden for it or for a device that cannot be found, fails the
 #      backend-entries check (exit 4), and so does `activate --no-preflight`;
 #      a line for another device passes, tcrypt-hidden or not; a decoy fstab
-#      line for the data disk or its mapping fails it too.
+#      line for the data disk or its mapping fails it too;
+#  11. the accepted case: a whole session runs on a LUKS container file on
+#      /srv (activate warns, naming /srv and its copy-on-write snapshots), a
+#      hidden write lands in the container, and deactivate returns to a decoy
+#      that does not see it.
 #
 # Every refused target keeps its mtime and ctime: no probe file was created
 # and deleted in it.
@@ -35,6 +39,7 @@
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   preflightHelpers = import ./../../lib/preflight-helpers.nix;
+  testHelpers = import ./../../lib/test-helpers.nix;
 in
 {
   name = "preflight-decoy-filesystem";
@@ -53,7 +58,7 @@ in
       ];
       virtualisation.emptyDiskImages = [
         {
-          size = 256;
+          size = 768;
           driveConfig.deviceExtraOpts.serial = "srv";
         }
         {
@@ -79,6 +84,10 @@ in
   testScript = _: ''
     import json
 
+    from nails_e2e import session
+
+    ${testHelpers.canonicalActivateFn}
+    ${testHelpers.canonicalDeactivateFn}
     ${preflightHelpers.writeTextFileFn}
     ${preflightHelpers.runCommandCaptureFn}
     ${preflightHelpers.commandAssertionsFn}
@@ -371,5 +380,32 @@ in
         machine.succeed("rm -f /etc/fstab && mv /run/fstab.orig /etc/fstab")
 
     machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
+
+    with subtest("a session runs on an encrypted container file on a decoy filesystem"):
+        # The container carries the neutral names of every other hidden volume
+        # in the suite: the mapping "data" at /mnt/data.
+        machine.succeed(
+            "truncate -s 512M /srv/vault.bin && "
+            "echo -n pw | cryptsetup luksFormat -q --iter-time=1 /srv/vault.bin - && "
+            "echo -n pw | cryptsetup open --key-file - /srv/vault.bin data && "
+            "mkfs.ext4 -q -L data /dev/mapper/data && mkdir -p /mnt/data && "
+            "mount /dev/mapper/data /mnt/data && "
+            "mkdir -p /mnt/data/root/work /mnt/data/config/nixos"
+        )
+        canonical_activate(data_config, "--overlay-only", "container-activate")
+        session.assert_hidden_root(machine, "/mnt/data/root/upper")
+        output = machine.succeed("cat /mnt/data/container-activate.log")
+        assert "an encrypted container file (/srv/vault.bin) on /srv" in output, output
+        assert "copy-on-write snapshots" in output, output
+        machine.succeed("echo container-ok > /root/container-note && sync")
+        machine.succeed("grep -qx container-ok /mnt/data/root/upper/root/container-note")
+        canonical_deactivate(data_config, "container-deactivate")
+        machine.fail("test -e /root/container-note")
+        machine.succeed(
+            "echo -n pw | cryptsetup open --key-file - /srv/vault.bin data && "
+            "mount /dev/mapper/data /mnt/data && "
+            "grep -qx container-ok /mnt/data/root/upper/root/container-note && "
+            "umount /mnt/data && cryptsetup close data && rm -f /srv/vault.bin"
+        )
   '';
 }
