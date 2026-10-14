@@ -214,6 +214,13 @@ impl SleepPolicyCheck {
                  (HandleLidSwitchExternalPower={external})"
             ));
         }
+        // Unset, the docked case ignores the lid, so only an assignment counts.
+        if action_sleeps(settings.effective_lid_switch_docked()) {
+            risks.push(format!(
+                "closing the lid while docked suspends the host (HandleLidSwitchDocked={})",
+                settings.effective_lid_switch_docked()
+            ));
+        }
         if action_sleeps(settings.effective_idle_action()) {
             let idle = match &settings.idle_action_sec {
                 Some(sec) => format!(
@@ -363,6 +370,38 @@ mod tests {
             .unwrap();
         assert!(result.is_pass(), "{}", result.message());
         assert!(result.message().contains("HandleLidSwitch=lock"));
+    }
+
+    #[test]
+    fn a_lid_that_sleeps_only_when_docked_is_reported() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            MAIN,
+            "[Login]\nHandleLidSwitch=lock\nHandleLidSwitchDocked=suspend\n",
+        );
+        let result = SleepPolicyCheck::new(SleepPolicyMode::Warn)
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_warn(), "{}", result.message());
+        let message = result.message();
+        assert!(
+            message.contains(
+                "closing the lid while docked suspends the host (HandleLidSwitchDocked=suspend)"
+            ),
+            "{message}"
+        );
+        assert!(!message.contains("HandleLidSwitch=lock"), "{message}");
+
+        let result = SleepPolicyCheck::new(SleepPolicyMode::Block)
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_warn(), "{}", result.message());
+        let message = result.message();
+        assert!(
+            message.contains("takes the lid switch from logind"),
+            "{message}"
+        );
+        assert!(message.contains("not even lock the screen"), "{message}");
     }
 
     #[test]
