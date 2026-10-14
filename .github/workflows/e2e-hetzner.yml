@@ -1,11 +1,17 @@
 name: E2E (Hetzner)
 
 # The one manual lane for the E2E suite on a self-hosted Hetzner Cloud runner,
-# for when a hosted runner is too small or too slow for a full run. It is
+# meant for when a hosted runner is too small or too slow for a full run. It is
 # dispatch-only and gates nothing: `provision` creates one throwaway server as
 # a single-use runner, `e2e` calls the reusable e2e.yml on it, and `teardown`
 # deletes the server even when the run failed. There is no approval environment
 # and no workflow-budget logic.
+#
+# It cannot run the VM tests as written: Hetzner Cloud servers expose no
+# hardware virtualisation to the guest (tested 2026-10-14 on ccx13, cpx22 and
+# cx23: no svm or vmx CPU flag, kvm_amd does not load), so the NixOS VM tests
+# find no /dev/kvm on the runner. T-162 in TODO.md tracks moving the lane to a
+# dedicated (Robot) server or removing it.
 #
 # A reusable workflow call always runs the caller's commit, so dispatch this
 # workflow at the ref you want to test (`gh workflow run e2e-hetzner.yml
@@ -60,7 +66,7 @@ env:
   RUNNER_SHA256: "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32"  # pragma: allowlist secret
   HCLOUD_IMAGE: ubuntu-26.04
   # Candidate (server type, location) pairs, tried in order until one is
-  # available. Nested KVM needs a dedicated-vCPU (ccx) type.
+  # available. None of them offers nested KVM (see the header).
   HCLOUD_CANDIDATES: >-
     ccx13:fsn1 ccx13:nbg1 ccx13:hel1 ccx23:fsn1 ccx23:nbg1
 

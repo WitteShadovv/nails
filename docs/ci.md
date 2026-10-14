@@ -121,13 +121,15 @@ The target is that `mode=all` finishes in at most 10 shards and about 20 minutes
 
 ### The manual Hetzner lane
 
-`e2e-hetzner.yml` is the one lane that runs the suite on a self-hosted Hetzner Cloud server, for when a hosted runner is too small or too slow. It is dispatch-only and gates nothing.
+`e2e-hetzner.yml` is the one lane meant to run the suite on a self-hosted Hetzner Cloud server, for when a hosted runner is too small or too slow. It is dispatch-only and gates nothing.
+
+It cannot run the VM tests as written. Hetzner Cloud servers expose no hardware virtualisation to the guest: on 2026-10-14 a `ccx13`, a `cpx22` and a `cx23` showed no `svm` or `vmx` CPU flag, and `kvm_amd` did not load. The NixOS VM tests need `/dev/kvm`, so the lane provisions a server that cannot run them. TODO T-162 tracks the choice between a dedicated Hetzner (Robot) server and removing the lane.
 
 - **Trigger.** `workflow_dispatch` with an exact `ref` input; `provision` refuses a `ref` that does not match the dispatched revision, because a reusable-workflow call always runs the caller's commit. Dispatch at the ref to test: `gh workflow run e2e-hetzner.yml --ref <ref> -f ref=<ref>`.
-- **Provisioning.** One job loops over a short ladder of `(server type, location)` candidates, checks the API is reachable, and creates the first available dedicated-vCPU server (nested KVM needs the `ccx` line). The server boots as a **single-use, ephemeral** GitHub runner from a just-in-time config minted through the API, so no reusable registration token sits in cloud-init.
+- **Provisioning.** One job loops over a short ladder of `(server type, location)` candidates, checks the API is reachable, and creates the first available dedicated-vCPU (`ccx`) server, on the assumption, now known to be wrong, that this line offers nested KVM. The server boots as a **single-use, ephemeral** GitHub runner from a just-in-time config minted through the API, so no reusable registration token sits in cloud-init.
 - **Run and teardown.** The `e2e` job calls `e2e.yml` with the provisioned runner label; `teardown` deletes the server with `if: always()`, even when the run failed. There is no six-hour budget check and no approval environment.
 - **Secrets.** `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID` and `RUNNER_REGISTRATION` (a fine-grained PAT with repository `administration: write`) live in a `hetzner` deployment environment for secret scoping; the environment carries no required reviewers, so it is not an approval gate. `CACHIX_AUTH_TOKEN` is passed on to `e2e.yml` as usual.
-- **Status.** The server-type ladder, the pinned runner version and KVM nesting need a live dispatch to confirm against current Hetzner inventory; adjust `HCLOUD_CANDIDATES` and `RUNNER_VERSION` in the workflow if a run reports none available.
+- **Status.** Not usable for the VM tests (see above). The server-type ladder and the pinned runner version have not been confirmed by a live dispatch either; adjust `HCLOUD_CANDIDATES` and `RUNNER_VERSION` in the workflow if a run reports none available.
 
 ### The portable distribution lane
 

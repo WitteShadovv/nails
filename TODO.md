@@ -3450,3 +3450,10 @@ Problems found while preparing the 0.3.0 release that it does not fix.
 
   **Done when:** the cause is known (a job of the new userspace that never finishes, the host's load, or the backdoor itself) and either fixed or the wait gives a diagnosis instead of a bare timeout, for example by printing `systemctl list-jobs` through the serial console when the backdoor does not come.
 
+- [ ] **T-162: Give the manual Hetzner E2E lane a host with KVM, or remove it** (low · effort S)
+
+  _Status (2026-10-14): not started. `.github/workflows/e2e-hetzner.yml` provisions a Hetzner Cloud `ccx` server as a runner for the VM suite, but Hetzner Cloud exposes no hardware virtualisation to its servers: a `ccx13`, a `cpx22` and a `cx23` tested on 2026-10-14 showed no `svm` or `vmx` CPU flag, and `kvm_amd` did not load. The NixOS VM tests need `/dev/kvm`, so the lane cannot run them. The workflow is unchanged; its header comment and `docs/ci.md` say so._
+
+  Options: run the lane on a dedicated Hetzner (Robot) server, which has KVM, as a long-lived self-hosted runner (the provisioning through the Cloud API, the single-use JIT runner and the teardown job do not carry over), or remove the workflow and its `hetzner` environment and secrets, since `e2e.yml` covers the suite on hosted runners. Update `docs/ci.md` and the CHANGELOG either way.
+
+  **Done when:** the lane runs the VM suite on a host with KVM, or it is gone.

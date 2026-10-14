@@ -233,7 +233,8 @@ config and CLI surfaces; there are no compatibility shims.
 - `docs/distribution.md` (supported and unsupported install channels and platform tiers),
   `docs/verify-release.md` (the single release verification guide) and `RELEASING.md` (the release
   checklist).
-- A manual `e2e-hetzner.yml` workflow that runs the E2E suite on one single-use Hetzner runner.
+- A manual `e2e-hetzner.yml` workflow meant to run the E2E suite on one single-use Hetzner Cloud
+  runner. It cannot run the VM tests yet: Hetzner Cloud servers offer no nested KVM.
 - An opt-in `persona.mode = "fresh-home"` that bind-mounts a clean home from the hidden volume over
   the operator's home, so the decoy home stays hidden during a session; the default `shared-home`
   now warns at activation, and `nails status` and `nails check` report the persona mode.
