@@ -12,8 +12,10 @@
 #      session included), the machine soft-reboots back to the plain decoy and
 #      the decoy greeter (here: getty) comes back; nothing typed in the hidden
 #      session reaches the decoy's history file.
-#   3. A scratch disk mounted over the hidden root in the session: deactivate
-#      is refused with root_covered, emergency still ends the session (the
+#   3. A scratch disk mounted over the hidden root in the session: the
+#      session watcher polls it twice without writing a probe or raising an
+#      emergency, deactivate is refused with root_covered, emergency still
+#      ends the session (the
 #      mounts the way back needs sit under the covered root, so it powers off
 #      instead, as it does whenever the way back cannot be prepared), and the
 #      scratch disk received nothing: no logs/, state.json, .lock or write
@@ -157,6 +159,16 @@ in
             "mount /dev/disk/by-id/virtio-scratch /mnt/data"
         )
         scratch_times = machine.succeed("stat -c '%Y %Z' /mnt/data").strip()
+        # Let the session watcher poll the covered root at least twice (every
+        # 5 s by default): it must write no probe there, which would change
+        # the disk's root directory times, and must not take the cover for a
+        # failed backend, which would raise an alert or an emergency. A
+        # covered poll leaves no trace by design, so there is no signal to
+        # wait on.
+        # sync-lint: allow sleep -- two watcher polls on a covered root leave nothing to wait for; the assertions below are the finding
+        machine.sleep(12)
+        session.assert_hidden_root(machine)
+        assert machine.succeed("stat -c '%Y %Z' /mnt/data").strip() == scratch_times
         rc, out = machine.execute(
             f"nails --config {covered_config} --json deactivate -y 2>/dev/null"
         )
