@@ -3457,3 +3457,19 @@ Problems found while preparing the 0.3.0 release that it does not fix.
   Options: run the lane on a dedicated Hetzner (Robot) server, which has KVM, as a long-lived self-hosted runner (the provisioning through the Cloud API, the single-use JIT runner and the teardown job do not carry over), or remove the workflow and its `hetzner` environment and secrets, since `e2e.yml` covers the suite on hosted runners. Update `docs/ci.md` and the CHANGELOG either way.
 
   **Done when:** the lane runs the VM suite on a host with KVM, or it is gone.
+
+- [ ] **T-163: Read logind's effective lid and idle actions over D-Bus** (medium · effort S)
+
+  _Status (2026-10-14): not started; target 0.4.0. Two mistakes in the configuration parsing were found and fixed on 2026-10-14: an empty `HandleLidSwitch=`, `HandleLidSwitchExternalPower=`, `HandleLidSwitchDocked=` or `IdleAction=` in a drop-in reset the value to logind's default, where logind keeps the previous one, and the `sleep-policy` check ignored `HandleLidSwitchDocked`._
+
+  The sleep guard (`nails-cli/src/cli/commands/sleep_guard.rs`) decides once, when it starts, whether `block` takes the lid switch from logind, by re-implementing logind's reading of `logind.conf` and its drop-ins (`effective_logind_sleep` in `nails-core/src/preflight/checks/sleep_policy.rs`, which the `sleep-policy` pre-flight check also uses). Every rule of logind's own parser that this copy gets wrong decides the lid wrongly, and a logind reloaded with other settings during the session is not seen. Read the values logind actually uses instead: the `HandleLidSwitch`, `HandleLidSwitchExternalPower`, `HandleLidSwitchDocked` and `IdleAction` properties of `org.freedesktop.login1.Manager`, over the bus connection the guard already holds for its inhibitors. Keep the file parsing only where there is no running logind to ask, such as an offline check, or drop it.
+
+  **Done when:** the sleep guard, and the `sleep-policy` check on a running host, take the lid and idle actions from logind's D-Bus properties, with a test against a logind whose drop-ins hold the two cases fixed on 2026-10-14.
+
+- [ ] **T-164: Record real per-test durations when the E2E runner builds the tests** (low · effort S)
+
+  _Status (2026-10-14): not started. `python3 -m ci.e2e run` in build mode records 0 s for every test, so the nightly regeneration of `nix/e2e-tests/shard-durations.json` never gets real data and the shard weights stay as they are._
+
+  `_build_once` in `ci/e2e/run.py` collects the `--log-format internal-json` lines of `nix build` and passes them to `durations_from_internal_json` only after the build has exited. That function reads the clock when it parses a build's start and its stop, so both readings fall within the same instant and every duration rounds to 0. Take the time as each line arrives (parse the stream while `nix build` runs, or stamp each line when it is read), and add a test that feeds lines with a clock that advances between them as the real stream does.
+
+  **Done when:** a build-mode run writes each test's real build time to the durations file, and the weight regeneration and drift report work from it.
