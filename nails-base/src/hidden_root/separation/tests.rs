@@ -750,13 +750,21 @@ fn an_overlay_whose_upper_is_on_home_is_refused() {
 }
 
 #[test]
-fn an_overlay_whose_upper_is_in_ram_is_separate() {
+fn an_overlay_whose_upper_is_in_ram_is_refused() {
+    // An overlay names its upper directory as the path was when it was
+    // mounted, and another filesystem may be mounted there since: even an
+    // upper that looks to be in RAM is not followed.
     let world = plain_decoy(
         "3 1 0:25 / /run rw - tmpfs tmpfs rw\n\
          5 1 0:77 / /mnt rw - overlay overlay rw,lowerdir=/home/u/low,upperdir=/run/up,\
          workdir=/run/work\n",
     );
-    assert_eq!(world.verdict("/mnt"), Verdict::Separate);
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::UntracedStorage {
+            fstype: "overlay".into()
+        }
+    );
 }
 
 #[test]

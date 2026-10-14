@@ -32,8 +32,7 @@
 //! be followed (an overlay, FUSE, a network filesystem); it shares a device
 //! with a claim; it is an image file, or an encrypted container file, on a
 //! claimed filesystem, or on one whose device cannot be found; else it is
-//! separate. A tmpfs or ramfs root is always separate, and so is an overlay
-//! whose upper layer lies on one.
+//! separate. A tmpfs or ramfs root is always separate.
 //!
 //! The inputs are the mount table, the parsed files and a [`DeviceMap`] of
 //! the block devices; [`judge`] reads no file. [`collect`] reads them through
