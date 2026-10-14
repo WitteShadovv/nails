@@ -14,11 +14,13 @@
 #      inhibitors for the lid switch (LidSwitchIgnoreInhibited=yes).
 #   2. `block`: `check` says what the guard does; the guard holds a
 #      `sleep:idle` and a `handle-lid-switch` block inhibitor under neutral
-#      names, and a closed lid does not suspend. Stopping the guard, as the way
-#      back does, releases both, after which a closed lid suspends again.
+#      names, a closed lid does not suspend and logind refuses a suspend that
+#      is asked for. Stopping the guard releases both, after which a closed lid
+#      suspends again; started again, the guard is gone after the way back and
+#      the decoy holds no inhibitor of it.
 #   3. `teardown`: the guard holds a sleep delay inhibitor; a closed lid powers
 #      the machine off and the stubbed suspend never runs; the next cold boot
-#      is the plain decoy with the backend closed.
+#      is the plain decoy.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -252,6 +254,15 @@ in
         machine.succeed(f"systemctl is-active {GUARD}")
         session.assert_hidden_root(machine)
 
+    with subtest("block: logind refuses a suspend that is asked for"):
+        # As root without a terminal, systemctl leaves the inhibitor check to
+        # logind, which refuses any caller while a block inhibitor is held.
+        rc, out = machine.execute("systemctl suspend 2>&1")
+        machine.log(out)
+        assert rc != 0, f"suspend was accepted under the guard: {out}"
+        assert "inhibitor" in out.lower(), out
+        machine.fail(f"test -e {MARKER}")
+
     with subtest("block: stopping the guard releases both inhibitors"):
         machine.succeed(f"systemctl stop {GUARD}")
         machine.wait_until_succeeds(
@@ -261,7 +272,18 @@ in
         )
         close_lid_expect_suspend()
         machine.succeed("systemctl stop lid-switch.service")
+
+    with subtest("block: the way back ends the guard and its inhibitors"):
+        machine.succeed(f"systemctl start {GUARD}")
+        machine.wait_until_succeeds(
+            "busctl --json=short call org.freedesktop.login1 /org/freedesktop/login1 "
+            "org.freedesktop.login1.Manager ListInhibitors | grep -q handle-lid-switch",
+            timeout=60,
+        )
         canonical_deactivate(CONFIG, "deactivate-block")
+        session.assert_decoy_root(machine)
+        machine.fail(f"systemctl is-active {GUARD}")
+        assert guard_inhibitors() == [], inhibitors()
 
     with subtest("teardown: a closed lid powers the machine off instead"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
@@ -283,7 +305,7 @@ in
         console = machine.get_console_log()
         assert console.count(STUB_LINE) == stubs_before, "the suspend ran before the power-off"
 
-    with subtest("teardown: the next cold boot is the plain decoy with the backend closed"):
+    with subtest("teardown: the next cold boot is the plain decoy"):
         machine.start()
         machine.wait_for_unit("multi-user.target")
         session.assert_decoy_root(machine)
