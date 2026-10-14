@@ -35,8 +35,11 @@ Whatever the backend, the filesystem at the hidden root must:
   file on a filesystem the decoy uses is accepted with a warning: that
   filesystem's journal and copy-on-write snapshots (btrfs, snapper) can keep old
   copies of the parts of the container that changed, so a whole device or a
-  partition the decoy does not use is better. `--allow-decoy-storage` accepts
-  the decoy's storage with a warning, never a folder;
+  partition the decoy does not use is better. Only root can read the loop
+  device's record of where the container file lives, so run `init` and
+  `check` on a root in a file container with sudo: unprivileged they refuse it
+  with `storage_unjudged` (and `status` and `verify` log to stderr only). `--allow-decoy-storage` accepts the
+  decoy's storage with a warning, never a folder;
 - **support symbolic links** (`symlink-support`);
 - **support `trusted.*` xattrs, report a file type (`d_type`) from readdir, and
   store overlayfs whiteouts** (`upper-fs-capability`). The check proves this
@@ -105,7 +108,10 @@ sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden \
 sudo mount /dev/mapper/data /mnt/data
 ```
 
-cryptsetup attaches the container to a free loop device itself.
+cryptsetup attaches the container to a free loop device itself. Run
+`nails init` and `nails check` on such a root with sudo: the attach gate reads
+the loop device's record of the container's filesystem, which only root can
+read.
 
 - **Discard policy:** never pass `--allow-discards`, neither for the hidden
   volume nor for the outer volume. See [Discards](#discards-trim).

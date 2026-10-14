@@ -463,14 +463,25 @@ fn an_image_no_mounted_filesystem_holds_is_refused() {
 
 #[test]
 fn an_unreadable_loop_record_refuses_only_the_root_stored_on_it() {
+    // Unprivileged, the node of the loop device under a container file cannot
+    // be read: the container that would only warn is refused, with the sudo
+    // hint, and the override does not cover it.
     let decoy = container_on_home("");
     match decoy.assess() {
-        Assessment::Refused(refusal) => assert_eq!(
-            refusal.kind,
-            RefusalKind::StorageUnjudged {
-                unreadable: vec![PathBuf::from(LOOP0_NODE)]
-            }
-        ),
+        Assessment::Refused(refusal) => {
+            assert_eq!(
+                refusal.kind,
+                RefusalKind::StorageUnjudged {
+                    unreadable: vec![PathBuf::from(LOOP0_NODE)]
+                }
+            );
+            assert_eq!(
+                refusal.reason,
+                "could not read the record of a loop device to tell where /mnt lives"
+            );
+            assert_eq!(refusal.hint(None), ["Run the command again with sudo."]);
+            assert!(!crate::hidden_root::Allow::DecoyStorage.covers(&refusal.kind));
+        }
         other => panic!("{other:?}"),
     }
     // An unrelated loop device whose record cannot be read changes nothing.

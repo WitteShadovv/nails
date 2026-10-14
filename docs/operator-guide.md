@@ -78,8 +78,9 @@ written.` (code `not_separate_volume`, exit 4), names the storage, and says so
 too when the running `nails` binary is itself on this computer's disk. A root
 with a second filesystem mounted over it is refused with `root_covered`, and
 one whose storage cannot be judged with `storage_unjudged`: on an unprivileged
-run on a distribution whose `/etc/crypttab` only root can read, run the command
-with sudo; a filesystem that shows no disk it stores its data on (an overlay,
+run on a distribution whose `/etc/crypttab` only root can read, or on a root in
+a file container (only root can read the loop device's record of where the file
+lives), run the command with sudo; a filesystem that shows no disk it stores its data on (an overlay,
 FUSE, a network filesystem) is never accepted. A decoy `/etc/crypttab` or
 `/etc/fstab` line that opens or mounts the hidden volume fails the
 `backend-entries` check, which `--no-preflight` does not skip: remove it long
