@@ -71,12 +71,25 @@ fn report_filename(generated_at: &str) -> String {
 /// `<hidden_root>/reports/activation-residue-<timestamp>.json`, created through
 /// the symlink- and traversal-safe hidden-directory API so a planted symlink
 /// under the hidden root cannot redirect the write.
+///
+/// It asks the attach gate first and writes nothing on a root the gate
+/// refuses. A root the operator accepted with `--allow-unmounted` gets no
+/// report either: the baseline is a convenience, not worth another file on
+/// storage the decoy uses.
 pub fn write_activation_residue_report<F: Filesystem>(
     fs: &F,
     hidden_root: &Path,
     result: &VerifyResult,
     generated_at: &str,
 ) -> Result<ResidueReportSummary> {
+    if let crate::hidden_root::Assessment::Refused(refusal) =
+        crate::HiddenRoot::assess(fs, hidden_root)?
+    {
+        return Err(NailsError::InvalidState(format!(
+            "refusing to write the residue report: {}",
+            refusal.reason
+        )));
+    }
     fs.create_hidden_dir_all(hidden_root, Path::new(RESIDUE_REPORT_DIR))?;
 
     let relative = Path::new(RESIDUE_REPORT_DIR).join(report_filename(generated_at));
@@ -127,6 +140,27 @@ mod tests {
     fn writable_hidden_root(fs: &MockFilesystem, root: &str) {
         fs.mock_set_path_exists(root, true);
         fs.mock_set_writable(root, true);
+        fs.mock_set_mounted(Path::new(root), true);
+    }
+
+    #[test]
+    fn writes_nothing_on_a_root_the_gate_refuses() {
+        let fs = MockFilesystem::new();
+        // A folder on `/`: it exists and is writable, but nothing is mounted.
+        fs.mock_set_path_exists("/mnt/usb", true);
+        fs.mock_set_writable("/mnt/usb", true);
+        let error = write_activation_residue_report(
+            &fs,
+            Path::new("/mnt/usb"),
+            &secure_result(),
+            "2026-10-04T12:00:00Z",
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("is not a volume of its own"),
+            "{error}"
+        );
+        assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
     }
 
     #[test]

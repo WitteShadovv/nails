@@ -50,6 +50,10 @@ pub struct StatusData<'a> {
     hidden_root: String,
     /// Whether the hidden volume is mounted at its own path.
     hidden_root_mounted: bool,
+    /// Why the hidden root is not a volume of its own, when the session's
+    /// activation accepted that with `--allow-unmounted`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accepted_not_separate: Option<&'a str>,
     /// The decoy filesystems placed in the hidden root.
     policy_mounts: &'a [PolicyMountView],
     /// The decoy units masked in the hidden root.
@@ -90,6 +94,7 @@ fn data(report: &StatusReport) -> StatusData<'_> {
         decoy_system: report.decoy_system.as_deref(),
         hidden_root: report.hidden_root.display().to_string(),
         hidden_root_mounted: report.hidden_root_mounted,
+        accepted_not_separate: report.accepted_not_separate.as_deref(),
         policy_mounts: &report.policy_mounts,
         masked_units: &report.masked_units,
         nextroot_mounted: report.nextroot_mounted,

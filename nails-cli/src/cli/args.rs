@@ -261,6 +261,19 @@ pub struct ActivateArgs {
     /// `accept_persistent_decoy` in `nails.toml`).
     #[arg(long)]
     pub accept_persistent_decoy: bool,
+
+    /// Use a hidden root that is not a volume of its own
+    ///
+    /// By default activation refuses a root that is a folder rather than a
+    /// mount point, or that this computer's own storage holds (a subvolume or
+    /// a bind mount of one of its filesystems, a volume inside its storage, an
+    /// image file on it): everything the session writes there lands on this
+    /// computer's disk. This flag turns those refusals into a warning, adds a
+    /// line to the logout confirmation and records the choice for `status`.
+    /// A root with a second filesystem mounted over it, storage that cannot be
+    /// read, and a decoy entry that opens the volume are still refused.
+    #[arg(long)]
+    pub allow_unmounted: bool,
 }
 
 /// `nails deactivate` arguments
@@ -494,6 +507,14 @@ pub struct CheckArgs {
     /// reflects what activation would do.
     #[arg(long)]
     pub accept_persistent_decoy: bool,
+
+    /// Report a hidden root that is not a volume of its own as a warning
+    ///
+    /// Mirrors `activate --allow-unmounted`: a folder, or a root on this
+    /// computer's own storage, then warns instead of failing. A covered root
+    /// and storage that cannot be read still fail.
+    #[arg(long)]
+    pub allow_unmounted: bool,
 }
 
 /// `nails config` subcommands

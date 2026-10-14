@@ -15,6 +15,7 @@ use std::path::Path;
 
 use crate::Result;
 use crate::filesystem::Filesystem;
+use crate::hidden_root::Allow;
 use crate::nixos::{stage_hidden_config_symlink, stage_hidden_nixos_config};
 use crate::preflight::{NixOSConfigCheck, PreFlightCheck, SuspiciousNailsReferenceCheck};
 
@@ -28,7 +29,14 @@ pub trait ConfigLayer<F: Filesystem>: std::fmt::Debug + Send + Sync {
     fn preflight_checks(&self, hidden_volume_root: &Path) -> Vec<Box<dyn PreFlightCheck<F>>>;
 
     /// Stage the hidden configuration on the hidden volume.
-    fn stage(&self, fs: &F, hidden_volume_root: &Path, overlay_only: bool) -> Result<()>;
+    /// `allow` is what the operator accepted of the attach gate's refusals.
+    fn stage(
+        &self,
+        fs: &F,
+        hidden_volume_root: &Path,
+        overlay_only: bool,
+        allow: Allow,
+    ) -> Result<()>;
 
     /// Stage only the link from the hidden `/etc/nixos` to the hidden module.
     fn stage_symlink(&self, fs: &F, hidden_volume_root: &Path) -> Result<()>;
@@ -51,8 +59,14 @@ impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
         ))]
     }
 
-    fn stage(&self, fs: &F, hidden_volume_root: &Path, overlay_only: bool) -> Result<()> {
-        stage_hidden_nixos_config(fs, hidden_volume_root, overlay_only)
+    fn stage(
+        &self,
+        fs: &F,
+        hidden_volume_root: &Path,
+        overlay_only: bool,
+        allow: Allow,
+    ) -> Result<()> {
+        stage_hidden_nixos_config(fs, hidden_volume_root, overlay_only, allow)
     }
 
     fn stage_symlink(&self, fs: &F, hidden_volume_root: &Path) -> Result<()> {

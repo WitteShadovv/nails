@@ -78,6 +78,12 @@ pub(super) fn status_lines(report: &StatusReport, details: bool, style: Style) -
             "not mounted"
         }
     ));
+    if let Some(reason) = &report.accepted_not_separate {
+        out.push(format!(
+            "  {} accepted with --allow-unmounted: {reason}",
+            style.mark(Mark::Warn)
+        ));
+    }
     if report.decoy_persistent && report.posture != Posture::Active {
         out.push(style.marked(
             Mark::Warn,

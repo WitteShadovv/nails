@@ -180,6 +180,9 @@ pub struct EntryInputs<'a> {
     /// Keep the disks the session does not use read-only for the session
     /// (`[session_mounts] read_only`).
     pub read_only_disks: bool,
+    /// Why the hidden root is not a volume of its own, when the operator
+    /// overrode that (recorded in the plan as `accepted_not_separate`).
+    pub accepted_not_separate: Option<String>,
 }
 
 /// The prepared entry.
@@ -335,6 +338,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         version: PLAN_VERSION,
         hidden_root: inputs.hidden_root.to_path_buf(),
         hidden_dev: None,
+        accepted_not_separate: inputs.accepted_not_separate.clone(),
         upper: layout.upper(),
         work: layout.work(),
         owner,

@@ -14,8 +14,10 @@
 
 use crate::cli::args::ActivateArgs;
 use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::refusal::report_refusal;
 use crate::cli::output::{self, ActivateResult, ExitStatus, OutputSettings};
 
+use nails_core::hidden_root::{Assessment, Refusal};
 use nails_core::manager::{EnterOptions, EnterOutcome};
 use nails_core::session::{RealEntryHost, RealTargetHost};
 use nails_core::{CliOverrides, NailsError, Verbosity};
@@ -105,6 +107,7 @@ fn dry_run_check_args(args: &ActivateArgs) -> crate::cli::args::CheckArgs {
         overlay_only: args.overlay_only,
         nixos_flake: args.nixos_flake.clone(),
         accept_persistent_decoy: args.accept_persistent_decoy,
+        allow_unmounted: args.allow_unmounted,
     }
 }
 
@@ -115,6 +118,7 @@ fn enter_options(args: &ActivateArgs) -> EnterOptions {
         overlay_only: args.overlay_only,
         accept_persistent_decoy: args.accept_persistent_decoy,
         binary: std::env::current_exe().unwrap_or_default(),
+        allow_not_separate: args.allow_unmounted,
     }
 }
 
@@ -124,8 +128,8 @@ fn enter_options(args: &ActivateArgs) -> EnterOptions {
 ///
 /// [`ExitStatus::Ok`] once the soft-reboot is enqueued (or the session was
 /// already active), [`ExitStatus::SuccessWithWarnings`] when it is enqueued
-/// with warnings, [`ExitStatus::PreflightRefused`] when a pre-flight check
-/// refuses, [`ExitStatus::Unsupported`] on an unsupported host,
+/// with warnings, [`ExitStatus::PreflightRefused`] when the attach gate or a
+/// pre-flight check refuses, [`ExitStatus::Unsupported`] on an unsupported host,
 /// [`ExitStatus::Usage`] without confirmation off a terminal,
 /// [`ExitStatus::InvalidState`] when the state file cannot be trusted,
 /// [`ExitStatus::Config`] for a bad configuration and [`ExitStatus::Failed`]
@@ -172,19 +176,25 @@ pub fn execute(
         return ExitStatus::Ok;
     }
 
-    match nails_core::HiddenRoot::verify_attached(
+    // The attach gate decides before anything is written: the state lock, the
+    // residue baseline and the staged configuration all land on the root.
+    // --no-preflight does not skip it.
+    let options = enter_options(args);
+    let accepted = match nails_core::HiddenRoot::assess_allowing(
         manager.filesystem(),
         &manager.config().hidden_volume_root,
-        false,
+        options.allow(),
     ) {
-        Ok(nails_core::AttachState::Attached) => {}
-        Ok(nails_core::AttachState::Unattached(reason)) => {
-            return report_error(
-                json,
-                "activate",
-                ExitStatus::PreflightRefused,
-                ErrorBody::new("preflight", format!("hidden-root: {reason}")),
-            );
+        Ok(Assessment::Attached) => None,
+        Ok(Assessment::Warned(refusal)) => {
+            crate::cli::output::eprintln_tolerating_broken_pipe(&format!(
+                "warning: {}",
+                refusal.warning()
+            ));
+            refusal.overridden().then_some(refusal)
+        }
+        Ok(Assessment::Refused(refusal)) => {
+            return report_refusal(json, "activate", &refusal);
         }
         Err(e) => {
             return report_error(
@@ -194,10 +204,11 @@ pub fn execute(
                 ErrorBody::new("preflight", e.to_string()),
             );
         }
-    }
+    };
 
     let _state_lock = match super::acquire_state_lock_or_report(
         &manager.config().hidden_volume_root,
+        options.allow(),
         &state_path,
         "activate",
         json,
@@ -220,7 +231,7 @@ pub fn execute(
         );
     }
 
-    if !args.yes && !confirm_logout(settings) {
+    if !args.yes && !confirm_logout(settings, accepted.as_ref()) {
         return report_error(
             json,
             "activate",
@@ -238,7 +249,6 @@ pub fn execute(
             "Preparing the hidden session (pre-flight, hidden system, next root)...",
         );
     }
-    let options = enter_options(args);
     let start = Instant::now();
     let result = manager.enter_session(&options, &RealEntryHost);
     let duration = start.elapsed().as_secs_f64();
@@ -295,8 +305,9 @@ fn print_result(settings: &OutputSettings, result: &ActivateResult<'_>, duration
     }
 }
 
-/// Ask on the terminal before logging the operator out.
-fn confirm_logout(settings: &OutputSettings) -> bool {
+/// Ask on the terminal before logging the operator out. `accepted` is the
+/// refusal the operator overrode with `--allow-unmounted`, repeated here.
+fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> bool {
     use nails_core::output::Mark;
     use std::io::{BufRead, Write};
     let style = settings.stderr_style();
@@ -313,6 +324,13 @@ fn confirm_logout(settings: &OutputSettings) -> bool {
         stderr,
         "    Every program closes and you are logged out; unsaved work is lost."
     );
+    if let Some(refusal) = accepted {
+        let _ = writeln!(
+            stderr,
+            "    --allow-unmounted: {}; everything the session writes lands there.",
+            refusal.reason
+        );
+    }
     let _ = write!(stderr, "    Continue? [y/N]: ");
     let _ = stderr.flush();
     let mut input = String::new();

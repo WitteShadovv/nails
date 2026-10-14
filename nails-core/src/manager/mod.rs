@@ -45,6 +45,9 @@ pub struct NailsManager<F: Filesystem> {
     verbosity: crate::verbosity::Verbosity,
     /// The startup environment snapshot.
     runtime_env: crate::RuntimeEnv,
+    /// The attach-gate refusals this activation's own writes accept (set from
+    /// [`EnterOptions::allow_not_separate`]).
+    allow: crate::hidden_root::Allow,
 }
 
 impl<F: Filesystem> std::fmt::Debug for NailsManager<F> {
@@ -79,6 +82,7 @@ impl<F: Filesystem> NailsManager<F> {
             platform_override: None,
             verbosity: crate::verbosity::Verbosity::default(),
             runtime_env: (*crate::runtime_env::current()).clone(),
+            allow: crate::hidden_root::Allow::Nothing,
         }
     }
 
@@ -186,7 +190,12 @@ impl<F: Filesystem> NailsManager<F> {
     /// only; `overlay_only` stages nothing).
     pub fn stage_hidden_config(&self, overlay_only: bool) -> Result<()> {
         if let Some(layer) = self.config_layer().filter(|_| !overlay_only) {
-            layer.stage(&self.filesystem, &self.config.hidden_volume_root, false)?;
+            layer.stage(
+                &self.filesystem,
+                &self.config.hidden_volume_root,
+                false,
+                self.allow,
+            )?;
         }
         Ok(())
     }

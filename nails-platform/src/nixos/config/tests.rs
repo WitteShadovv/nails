@@ -1476,3 +1476,32 @@ fn generated_hidden_module_keeps_shell_history_in_memory_only() {
     }
     assert!(!AUTO_GENERATED_HIDDEN_CONFIGURATION.contains("HISTSIZE=0"));
 }
+
+#[test]
+fn staging_asks_the_attach_gate_first() {
+    use crate::hidden_root::Allow;
+    // A folder on `/`: it exists and is writable, but nothing is mounted.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden", true);
+    fs.mock_set_path_type("/mnt/hidden", PathKind::Dir);
+    fs.mock_set_writable("/mnt/hidden", true);
+    fs.mock_set_mount_table("1 0 8:1 / / rw - ext4 /dev/vda1 rw\n");
+    let root = std::path::Path::new("/mnt/hidden");
+
+    let error = stage_hidden_nixos_config(&fs, root, true, Allow::Nothing).unwrap_err();
+    assert!(
+        error.to_string().contains("is not a volume of its own"),
+        "{error}"
+    );
+    assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+
+    // The folder the operator accepted is staged.
+    stage_hidden_nixos_config(&fs, root, true, Allow::NotSeparate).unwrap();
+    assert!(
+        <MockFilesystem as Filesystem>::path_exists(
+            &fs,
+            &root.join("config/nixos/configuration.nix")
+        )
+        .unwrap()
+    );
+}

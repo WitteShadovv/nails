@@ -126,6 +126,7 @@ mod tests {
             version: nails_teardown::whole_root::plan::PLAN_VERSION,
             hidden_root: config.hidden_volume_root.clone(),
             hidden_dev: Some("253:0".to_string()),
+            accepted_not_separate: None,
             upper: config.hidden_volume_root.join("root/upper"),
             work: config.hidden_volume_root.join("root/work"),
             owner: None,

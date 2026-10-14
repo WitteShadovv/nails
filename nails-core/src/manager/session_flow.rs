@@ -31,6 +31,11 @@ pub struct EnterOptions {
     pub accept_persistent_decoy: bool,
     /// The running binary, copied to RAM for the panic path.
     pub binary: PathBuf,
+    /// Accept a hidden root that is not a volume of its own
+    /// (`--allow-unmounted`): a folder, or one on the decoy's storage. The
+    /// activation's own writes accept it, the pre-flight check warns, and the
+    /// plan records it.
+    pub allow_not_separate: bool,
 }
 
 impl EnterOptions {
@@ -41,7 +46,17 @@ impl EnterOptions {
         PreflightOptions {
             overlay_only: self.overlay_only,
             accept_persistent_decoy: self.accept_persistent_decoy,
+            allow_not_separate: self.allow_not_separate,
             ..PreflightOptions::default()
+        }
+    }
+
+    /// The attach-gate override these options ask for.
+    pub fn allow(&self) -> crate::hidden_root::Allow {
+        if self.allow_not_separate {
+            crate::hidden_root::Allow::NotSeparate
+        } else {
+            crate::hidden_root::Allow::Nothing
         }
     }
 }
@@ -95,6 +110,20 @@ impl Machine {
     }
 }
 
+/// Why `hidden_root` is not a volume of its own, when only the operator's
+/// override (`allow`) lets the entry use it: what the plan records.
+fn accepted_not_separate<F: Filesystem>(
+    fs: &F,
+    hidden_root: &std::path::Path,
+    allow: crate::hidden_root::Allow,
+) -> Result<Option<String>> {
+    use crate::hidden_root::{Assessment, HiddenRoot};
+    Ok(match HiddenRoot::assess_allowing(fs, hidden_root, allow)? {
+        Assessment::Warned(refusal) if refusal.overridden() => Some(refusal.reason),
+        _ => None,
+    })
+}
+
 impl<F: Filesystem> NailsManager<F> {
     /// Where the machine is right now.
     pub fn session_view(&self) -> SessionView {
@@ -137,6 +166,8 @@ impl<F: Filesystem> NailsManager<F> {
         if self.session_view_on(machine).is_hidden() {
             return Ok(EnterOutcome::AlreadyActive);
         }
+        // What the operator accepted holds for every write of this activation.
+        self.allow = options.allow();
         let nixos = self.require_supported_host(machine)?;
         if !options.skip_preflight {
             self.stage_hidden_config(options.overlay_only)?;
@@ -154,6 +185,8 @@ impl<F: Filesystem> NailsManager<F> {
             .map(|chain| chain.dm_names)
             .unwrap_or_default();
         let config_toml = toml::to_string(&self.config).ok();
+        let accepted_not_separate =
+            accepted_not_separate(&self.filesystem, &hidden_root, self.allow)?;
         let builder = self
             .nixos_builder
             .as_ref()
@@ -171,6 +204,7 @@ impl<F: Filesystem> NailsManager<F> {
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
             rebuild_space_mb: self.config.rebuild_space_mb,
             read_only_disks: self.config.session_mounts.read_only,
+            accepted_not_separate,
         };
         let prepared = entry::prepare(&machine.paths, &inputs, host)?;
         if let Err(e) = self.record_entry(&prepared, started.elapsed()) {

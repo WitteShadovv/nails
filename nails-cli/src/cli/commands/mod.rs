@@ -252,26 +252,33 @@ fn state_lock_dir(state_file_path: &Path) -> &Path {
 /// A concurrent `nails` operation holds this lock, so a second one fails fast
 /// with a message naming the holder PID rather than racing it over the mounts
 /// and the state file. The lock lies next to the state file and is created only
-/// on the volume mounted at `hidden_root`. The returned guard must be kept alive
+/// on the volume mounted at `hidden_root`, or on the root the operator accepted
+/// with `allow` (`activate --allow-unmounted`). The returned guard must be kept alive
 /// for the whole operation; dropping it (on exit) releases the lock.
 #[must_use = "the returned guard releases the lock when dropped"]
 pub(crate) fn acquire_state_lock_or_report(
     hidden_root: &Path,
+    allow: nails_core::hidden_root::Allow,
     state_file_path: &Path,
     command: &'static str,
     json: bool,
 ) -> Result<nails_core::StateLock, ExitStatus> {
     let dir = state_lock_dir(state_file_path);
-    nails_core::ensure_state_dir_attached(&nails_core::RealFilesystem, hidden_root, dir)
-        .and_then(|()| nails_core::StateLock::try_acquire(dir))
-        .map_err(|error| {
-            report_error(
-                json,
-                command,
-                ExitStatus::Failed,
-                ErrorBody::new("state_locked", error.to_string()),
-            )
-        })
+    nails_core::hidden_root::ensure_state_dir_attached_allowing(
+        &nails_core::RealFilesystem,
+        hidden_root,
+        dir,
+        allow,
+    )
+    .and_then(|()| nails_core::StateLock::try_acquire(dir))
+    .map_err(|error| {
+        report_error(
+            json,
+            command,
+            ExitStatus::Failed,
+            ErrorBody::new("state_locked", error.to_string()),
+        )
+    })
 }
 
 /// Take the state lock for emergency teardown, proceeding without it on timeout.

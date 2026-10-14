@@ -22,17 +22,16 @@ fn stdout_format_for(command: &Commands, settings: &OutputSettings) -> StdoutFor
 /// Whether a command may write a log file onto the hidden volume.
 ///
 /// Only the commands that act on an attached hidden volume do. Read-only
-/// commands (`status`, `verify`, `check`, `config`, `transition`) and `init` — which
+/// commands (`status`, `verify`, `check` and its alias `activate --dry-run`,
+/// `config`, `transition`) and `init` — which
 /// runs before the volume holds any NAILS structure — never create a log
 /// directory or file, so running them from the decoy or a download directory
 /// leaves nothing behind there. The attach gate is still the backstop: even a
 /// writing command logs to a file only when the hidden volume is really mounted.
 fn command_writes_logs(command: &Commands) -> bool {
     match command {
-        Commands::Activate(_)
-        | Commands::Deactivate(_)
-        | Commands::Emergency(_)
-        | Commands::ResetUpper(_) => true,
+        Commands::Activate(args) => !args.dry_run,
+        Commands::Deactivate(_) | Commands::Emergency(_) | Commands::ResetUpper(_) => true,
         // The rehearsal steps act on the attached hidden volume; the status view
         // only reads.
         Commands::Rehearse(args) => !matches!(
@@ -155,6 +154,10 @@ mod tests {
         use nails::cli::args::InitArgs;
         use std::path::PathBuf;
 
+        assert!(!command_writes_logs(&Commands::Activate(ActivateArgs {
+            dry_run: true,
+            ..ActivateArgs::default()
+        })));
         assert!(!command_writes_logs(&Commands::Verify(
             VerifyArgs::default()
         )));

@@ -228,12 +228,20 @@ impl HiddenRoot {
         let Some(visible) = top_mount_at(&table, &canonical) else {
             let holder = mount_holding(&table, &canonical)
                 .map_or_else(|| PathBuf::from("/"), |m| m.mount_point.clone());
-            return refuse(
+            let refusal = Refusal::new(
                 RefusalKind::NotAMountPoint {
                     mount_point: holder,
                 },
                 root,
             );
+            // The session of an operator who accepted a folder as the root
+            // (`activate --allow-unmounted`) keeps using it.
+            if root_is_hidden_overlay(&table, &canonical).is_some()
+                && recorded_plan(fs).is_some_and(|plan| plan.accepted_not_separate.is_some())
+            {
+                return Ok(Assessment::Warned(refusal));
+            }
+            return Ok(Assessment::Refused(refusal));
         };
 
         if let Some(below) = covered_mount(&table, visible) {
@@ -392,11 +400,14 @@ pub fn holds_the_session_volume<F: Filesystem>(
 
 /// The hidden volume's device as the session plan in `/run` records it.
 pub fn recorded_hidden_dev<F: Filesystem>(fs: &F) -> Option<String> {
+    recorded_plan(fs)?.hidden_dev
+}
+
+/// The session plan in `/run`, if one can be read.
+fn recorded_plan<F: Filesystem>(fs: &F) -> Option<nails_teardown::whole_root::plan::Plan> {
     let path = nails_teardown::whole_root::plan::default_plan_path();
     let text = fs.read_file_content(&path).ok()?;
-    nails_teardown::whole_root::plan::Plan::from_json(&text)
-        .ok()?
-        .hidden_dev
+    nails_teardown::whole_root::plan::Plan::from_json(&text).ok()
 }
 
 /// Refuse a state write (the state file or its `.lock`) unless `dir` lies on the
@@ -415,6 +426,19 @@ pub fn recorded_hidden_dev<F: Filesystem>(fs: &F) -> Option<String> {
 /// mounted inside it. No marker is required, since `state.json` is itself the
 /// marker.
 pub fn ensure_state_dir_attached<F: Filesystem>(fs: &F, root: &Path, dir: &Path) -> Result<()> {
+    ensure_state_dir_attached_allowing(fs, root, dir, Allow::Nothing)
+}
+
+/// [`ensure_state_dir_attached`] with the refusals `allow` covers accepted: an
+/// activation the operator ran with `--allow-unmounted` keeps its state on the
+/// root it accepted. `dir` must still lie under the root, and, when the root
+/// is a mount point, on the root's own mount.
+pub fn ensure_state_dir_attached_allowing<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    dir: &Path,
+    allow: Allow,
+) -> Result<()> {
     #[cfg(any(test, feature = "test-hooks"))]
     if crate::runtime_safety::in_unit_tests() && !state_attach_probe::enforced() {
         return Ok(());
@@ -424,7 +448,7 @@ pub fn ensure_state_dir_attached<F: Filesystem>(fs: &F, root: &Path, dir: &Path)
             "refusing to write state outside the mounted hidden volume: {reason}"
         )))
     };
-    if let Assessment::Refused(refusal) = HiddenRoot::assess(fs, root)? {
+    if let Assessment::Refused(refusal) = HiddenRoot::assess_allowing(fs, root, allow)? {
         return refused(refusal.reason);
     }
     let root = fs.canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
@@ -437,7 +461,7 @@ pub fn ensure_state_dir_attached<F: Filesystem>(fs: &F, root: &Path, dir: &Path)
         ));
     }
     let table = fs.mount_table()?;
-    let root_mount = top_mount_at(&table, &root).map(|m| m.mount_id);
+    let root_mount = mount_holding(&table, &root).map(|m| m.mount_id);
     match mount_holding(&table, &dir) {
         Some(mount) if Some(mount.mount_id) == root_mount => Ok(()),
         holder => refused(format!(

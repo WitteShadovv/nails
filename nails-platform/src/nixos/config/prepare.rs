@@ -353,11 +353,23 @@ fn neutralize_swap_in_hardware_config(content: &str) -> (String, bool) {
 /// produced instead of creating files itself. The hardware wrapper is skipped in
 /// overlay-only mode, where no NixOS profile switch happens and
 /// `/etc/nixos/hardware-configuration.nix` may not exist.
+///
+/// It asks the attach gate first, with the refusals the operator accepted in
+/// `allow`, and stages nothing on a refused root.
 pub fn stage_hidden_nixos_config<F: Filesystem>(
     fs: &F,
     hidden_path: &Path,
     overlay_only: bool,
+    allow: crate::hidden_root::Allow,
 ) -> Result<()> {
+    if let crate::hidden_root::Assessment::Refused(refusal) =
+        crate::hidden_root::HiddenRoot::assess_allowing(fs, hidden_path, allow)?
+    {
+        return Err(NailsError::InvalidState(format!(
+            "refusing to stage the hidden configuration: {}",
+            refusal.reason
+        )));
+    }
     stage_hidden_config_symlink(fs, hidden_path)?;
 
     if !overlay_only {

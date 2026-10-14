@@ -33,6 +33,11 @@ pub struct PreflightOptions {
     /// the decoy-persistence check then warns instead of failing. The effective
     /// value is this flag OR the `accept_persistent_decoy` config key.
     pub accept_persistent_decoy: bool,
+    /// Accept a hidden root that is not a volume of its own (the
+    /// `--allow-unmounted` flag): the hidden-volume check warns instead of
+    /// failing for a folder or a root on the decoy's storage. It never covers
+    /// a covered root, storage that cannot be judged, or `backend-entries`.
+    pub allow_not_separate: bool,
 }
 
 impl Default for PreflightOptions {
@@ -42,6 +47,7 @@ impl Default for PreflightOptions {
             overlay_only: false,
             read_only: true,
             accept_persistent_decoy: false,
+            allow_not_separate: false,
         }
     }
 }

@@ -114,6 +114,7 @@ fn plan(hidden: &Path) -> Plan {
         version: PLAN_VERSION,
         hidden_root: hidden.to_path_buf(),
         hidden_dev: None,
+        accepted_not_separate: None,
         upper: hidden.join("root/upper"),
         work: hidden.join("root/work"),
         owner: None,
@@ -680,4 +681,38 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         assert!(!machine.paths.runtime().exists());
         assert_eq!(recorded(hidden.path()).state, SystemState::Inactive);
     });
+}
+
+#[test]
+fn the_plan_records_only_what_the_override_alone_accepted() {
+    use crate::filesystem::MockFilesystem;
+    use crate::hidden_root::Allow;
+    use std::path::Path;
+
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/srv/x", true);
+    fs.mock_set_mount_table("1 0 8:1 / / rw - ext4 /dev/vda1 rw\n");
+    let folder = Path::new("/srv/x");
+    assert_eq!(
+        accepted_not_separate(&fs, folder, Allow::NotSeparate)
+            .unwrap()
+            .as_deref(),
+        Some("/srv/x is not a volume of its own: it is a folder on the filesystem mounted at /")
+    );
+    // Without the override the folder is refused, which the entry never
+    // reaches; nothing is recorded either way.
+    assert_eq!(
+        accepted_not_separate(&fs, folder, Allow::Nothing).unwrap(),
+        None
+    );
+
+    // A volume of its own needs no override.
+    let volume = Path::new("/mnt/data");
+    let mounted = MockFilesystem::new();
+    mounted.mock_set_path_exists("/mnt/data", true);
+    mounted.mock_set_mounted(volume, true);
+    assert_eq!(
+        accepted_not_separate(&mounted, volume, Allow::NotSeparate).unwrap(),
+        None
+    );
 }

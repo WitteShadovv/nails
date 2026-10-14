@@ -22,7 +22,9 @@ use crate::cli::output::check::{
     print_check_json,
 };
 use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::refusal::refusal_error;
 use crate::cli::output::{ExitStatus, OutputSettings};
+use nails_core::hidden_root::{Allow, Assessment};
 
 /// The command name used in the JSON envelope and error reports.
 const COMMAND: &str = "check";
@@ -97,7 +99,8 @@ pub fn execute(
     );
     let inherited = inherited_summary(config, manager.filesystem(), env);
 
-    let report = CheckReport::finalize(checks, config_summary, filesystems, profile, inherited);
+    let mut report = CheckReport::finalize(checks, config_summary, filesystems, profile, inherited);
+    report.refusal = refusal(manager.filesystem(), &config.hidden_volume_root, args);
 
     if json {
         print_check_json(&report);
@@ -119,7 +122,25 @@ pub(super) fn preflight_options(args: &CheckArgs) -> PreflightOptions {
     PreflightOptions {
         overlay_only: args.overlay_only,
         accept_persistent_decoy: args.accept_persistent_decoy,
+        allow_not_separate: args.allow_unmounted,
         ..PreflightOptions::default()
+    }
+}
+
+/// The attach gate's refusal of the hidden root, as `activate` would report
+/// it, for the JSON report's `refusal` (the gate only reads).
+fn refusal<F: Filesystem>(fs: &F, root: &Path, args: &CheckArgs) -> Option<ErrorBody> {
+    let allow = if args.allow_unmounted {
+        Allow::NotSeparate
+    } else {
+        Allow::Nothing
+    };
+    match nails_core::HiddenRoot::assess_allowing(fs, root, allow) {
+        Ok(Assessment::Refused(refusal)) => {
+            let exe = std::env::current_exe().ok();
+            Some(refusal_error(&refusal, exe.as_deref()))
+        }
+        _ => None,
     }
 }
 

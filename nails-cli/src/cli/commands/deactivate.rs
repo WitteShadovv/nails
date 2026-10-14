@@ -82,6 +82,7 @@ pub fn execute(
 
     let _state_lock = match super::acquire_state_lock_or_report(
         &manager.config().hidden_volume_root,
+        nails_core::hidden_root::Allow::Nothing,
         &state_path,
         "deactivate",
         json,

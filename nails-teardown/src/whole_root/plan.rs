@@ -188,6 +188,12 @@ pub struct Plan {
     /// written before it was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hidden_dev: Option<String>,
+    /// Why the hidden root is not a volume of its own, when the operator
+    /// accepted that with `activate --allow-unmounted`. In the session the
+    /// attach gate then accepts a root that is no mount point; `status` shows
+    /// it and `rehearse plant` refuses. Absent when nothing was overridden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_not_separate: Option<String>,
     /// The root overlay's upper directory on the hidden volume.
     pub upper: PathBuf,
     /// The root overlay's work directory on the hidden volume.
@@ -352,6 +358,7 @@ pub(crate) fn sample() -> Plan {
         version: PLAN_VERSION,
         hidden_root: PathBuf::from("/mnt/data"),
         hidden_dev: None,
+        accepted_not_separate: None,
         upper: PathBuf::from("/mnt/data/root/upper"),
         work: PathBuf::from("/mnt/data/root/work"),
         owner: Some(Owner {
@@ -415,6 +422,21 @@ mod tests {
         let older = sample().to_json();
         assert!(!older.contains("hidden_dev"), "{older}");
         assert_eq!(Plan::from_json(&older).unwrap().hidden_dev, None);
+    }
+
+    #[test]
+    fn an_accepted_override_is_kept_and_a_plan_without_it_still_loads() {
+        let accepted = Plan {
+            accepted_not_separate: Some("it is a folder on the filesystem mounted at /".into()),
+            ..sample()
+        };
+        let text = accepted.to_json();
+        assert!(text.contains("\"accepted_not_separate\":"), "{text}");
+        assert_eq!(Plan::from_json(&text).unwrap(), accepted);
+
+        let plain = sample().to_json();
+        assert!(!plain.contains("accepted_not_separate"), "{plain}");
+        assert_eq!(Plan::from_json(&plain).unwrap().accepted_not_separate, None);
     }
 
     #[test]

@@ -24,7 +24,7 @@ nails_base::unit_test_mode!();
 use nails_base::{Filesystem, NailsError, Result};
 #[cfg(test)]
 use nails_base::{RealFilesystem, kernel_fixtures};
-use nails_base::{artifacts, constants, error, filesystem, process, runtime_safety};
+use nails_base::{artifacts, constants, error, filesystem, hidden_root, process, runtime_safety};
 
 // Platform seam: host detection and per-platform behaviour (NixOS / FHS / refused).
 pub mod platform;

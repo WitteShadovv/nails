@@ -602,3 +602,57 @@ fn the_override_attaches_a_folder_with_a_warning_but_never_a_covered_root() {
         })
     ));
 }
+
+#[test]
+fn in_the_session_a_folder_is_kept_only_when_the_plan_accepted_it() {
+    // The session of an activation run with --allow-unmounted on a folder:
+    // nothing is mounted at the root, `/` is the overlay with its upper there.
+    let fs = fs_with(&session_table(""));
+    write_plan(&fs, None);
+    assert!(matches!(
+        refusal(&fs, "/mnt/data").kind,
+        RefusalKind::NotAMountPoint { .. }
+    ));
+
+    let text = fs
+        .read_file_content(&nails_teardown::whole_root::plan::default_plan_path())
+        .unwrap()
+        .replacen(
+            "\"hidden_root\"",
+            "\"accepted_not_separate\":\"it is a folder\",\"hidden_root\"",
+            1,
+        );
+    let path = nails_teardown::whole_root::plan::default_plan_path();
+    fs.mock_set_file_content(path.to_str().unwrap(), &text);
+    match HiddenRoot::assess(&fs, Path::new("/mnt/data")).unwrap() {
+        Assessment::Warned(refusal) => assert!(refusal.overridden(), "{refusal:?}"),
+        other => panic!("{other:?}"),
+    }
+    // The state of that session still goes onto the folder.
+    let _gate = super::state_attach_probe::enforce();
+    super::ensure_state_dir_attached(&fs, Path::new("/mnt/data"), Path::new("/mnt/data")).unwrap();
+}
+
+#[test]
+fn outside_the_session_an_accepted_folder_needs_the_override() {
+    let fs = fs_with(&decoy_table(""));
+    fs.mock_set_path_exists("/srv/x", true);
+    let root = Path::new("/srv/x");
+    let _gate = super::state_attach_probe::enforce();
+    assert!(super::ensure_state_dir_attached(&fs, root, root).is_err());
+    super::ensure_state_dir_attached_allowing(&fs, root, root, Allow::NotSeparate).unwrap();
+    // A directory below the folder on another filesystem is still refused.
+    let mounted_below = fs_with(&decoy_table(
+        "12 1 8:33 / /srv/x/state rw - ext4 /dev/sdc1 rw\n",
+    ));
+    mounted_below.mock_set_path_exists("/srv/x", true);
+    assert!(
+        super::ensure_state_dir_attached_allowing(
+            &mounted_below,
+            root,
+            &root.join("state"),
+            Allow::NotSeparate
+        )
+        .is_err()
+    );
+}

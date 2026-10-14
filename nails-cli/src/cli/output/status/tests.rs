@@ -24,6 +24,7 @@ fn report(posture: Posture, session: &'static str) -> StatusReport {
         hidden_root: PathBuf::from("/mnt/data"),
         hidden_root_mounted: true,
         hidden_root_source: None,
+        accepted_not_separate: None,
         policy_mounts: Vec::new(),
         masked_units: Vec::new(),
         nextroot_mounted: false,
@@ -53,6 +54,29 @@ fn an_active_session_lists_its_policy_mounts_and_system() {
     assert!(lines.contains("dev-vda3.swap"), "{lines}");
     assert!(lines.contains("/nix/store/bbb-nixos-system"), "{lines}");
     assert!(lines.is_ascii());
+}
+
+#[test]
+fn an_accepted_override_is_shown_in_both_forms() {
+    let mut active = report(Posture::Active, "hidden");
+    let lines = status_lines(&active, false, Style::default()).join("\n");
+    assert!(!lines.contains("--allow-unmounted"), "{lines}");
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert!(value["data"].get("accepted_not_separate").is_none());
+
+    active.accepted_not_separate = Some("it is a folder on the filesystem mounted at /".into());
+    let lines = status_lines(&active, false, Style::default()).join("\n");
+    assert!(
+        lines.contains(
+            "accepted with --allow-unmounted: it is a folder on the filesystem mounted at /"
+        ),
+        "{lines}"
+    );
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert_eq!(
+        value["data"]["accepted_not_separate"],
+        "it is a folder on the filesystem mounted at /"
+    );
 }
 
 #[test]

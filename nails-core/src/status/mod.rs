@@ -158,6 +158,9 @@ pub struct StatusReport {
     pub hidden_root_mounted: bool,
     /// The device the hidden volume is mounted from.
     pub hidden_root_source: Option<String>,
+    /// Why the hidden root is not a volume of its own, when the session's
+    /// activation accepted that with `--allow-unmounted`.
+    pub accepted_not_separate: Option<String>,
     /// The mounts the fstab policy placed in the hidden root.
     pub policy_mounts: Vec<PolicyMountView>,
     /// The decoy units masked in the hidden root.
@@ -331,6 +334,7 @@ impl<F: Filesystem> StatusCommand<F> {
             hidden_root: hidden_root.clone(),
             hidden_root_mounted: hidden_mount.is_some(),
             hidden_root_source: hidden_mount.map(|m| m.source.display().to_string()),
+            accepted_not_separate: plan.and_then(|p| p.accepted_not_separate.clone()),
             policy_mounts: plan
                 .map(|p| {
                     p.policy_mounts

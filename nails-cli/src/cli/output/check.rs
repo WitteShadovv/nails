@@ -174,6 +174,11 @@ pub struct CheckReport {
     pub profile: ProfileSummary,
     /// The decoy persona state the hidden session would inherit.
     pub inherited: InheritedSummary,
+    /// Why the attach gate refused the hidden root, with its code
+    /// (`not_separate_volume`, `root_covered` or `storage_unjudged`); the
+    /// hidden-volume row reports the same failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<super::envelope::ErrorBody>,
 }
 
 impl CheckReport {
@@ -200,6 +205,7 @@ impl CheckReport {
             }
         }
         Self {
+            refusal: None,
             ready: summary.failed == 0,
             checks,
             summary,

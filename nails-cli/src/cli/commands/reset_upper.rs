@@ -66,6 +66,7 @@ pub fn execute(
     // activation cannot mount the target out from under the reset.
     let _state_lock = match super::acquire_state_lock_or_report(
         &manager.config().hidden_volume_root,
+        nails_core::hidden_root::Allow::Nothing,
         &lock_state_path,
         "reset-upper",
         json,
