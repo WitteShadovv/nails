@@ -353,7 +353,9 @@ impl Verdict {
                 at.display()
             ),
             Verdict::UntracedStorage { fstype } => {
-                format!("it is on a {fstype} filesystem, which shows no disk it stores its data on")
+                format!(
+                    "it is on a filesystem of type {fstype}, which shows no disk it stores its data on"
+                )
             }
             Verdict::Separate => "it is separate from this computer's own storage".to_string(),
         }

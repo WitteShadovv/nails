@@ -771,7 +771,7 @@ fn a_fuse_filesystem_is_refused_without_naming_its_program() {
     );
     assert_eq!(
         verdict.reason(),
-        "it is on a fuse filesystem, which shows no disk it stores its data on"
+        "it is on a filesystem of type fuse, which shows no disk it stores its data on"
     );
 }
 

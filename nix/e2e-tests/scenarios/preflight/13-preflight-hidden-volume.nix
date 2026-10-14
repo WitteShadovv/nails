@@ -87,14 +87,20 @@ in
             after = machine.succeed("stat -c '%Y %Z' /mnt/preflight-empty").strip()
             assert after == before, (before, after)
 
-        with subtest("nix store hidden volume is rejected as non-writable"):
+        with subtest("nix store hidden volume is rejected"):
+            # The VM's store is an overlay, which shows no disk it stores its
+            # data on, so the attach gate refuses it before any probe.
             write_hidden_volume_config("/tmp/preflight-store.toml", "${builtins.storeDir}")
             result = run_command_capture(
                 "preflight-hidden-store",
                 "nails --config /tmp/preflight-store.toml activate --dry-run --overlay-only --ascii",
             )
             assert_exit_code(result, 4)
-            assert_result_contains(result, ["hidden-volume", "${builtins.storeDir}", "not writable"], stream="stdout")
+            assert_result_contains(
+                result,
+                ["hidden-volume", "${builtins.storeDir}", "which shows no disk it stores its data on"],
+                stream="stdout",
+            )
 
         with subtest("read-only hidden volume is rejected"):
             machine.succeed("""${hiddenVolume.setupHiddenVolume}""")

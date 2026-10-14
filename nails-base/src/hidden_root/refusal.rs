@@ -91,7 +91,7 @@ impl RefusalKind {
                 "the filesystem at {root} ({source}) is not the volume this session started from"
             ),
             RefusalKind::StorageUntraced { fstype } => format!(
-                "{root} is on a {fstype} filesystem, which shows no disk it stores its data on, \
+                "{root} is on a filesystem of type {fstype}, which shows no disk it stores its data on, \
                  so where it lives cannot be told"
             ),
             RefusalKind::StorageUnjudged { unreadable } => format!(
