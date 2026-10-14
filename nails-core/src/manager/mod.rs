@@ -234,7 +234,7 @@ mod platform_wiring_tests {
     /// needs no real /etc files.
     fn fhs_host() -> MockFilesystem {
         let fs = MockFilesystem::new();
-        fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\n");
+        fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"13\"\n");
         fs.mock_add_file("/proc/1/comm", "systemd");
         fs
     }

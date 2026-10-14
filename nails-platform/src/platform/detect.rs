@@ -286,12 +286,12 @@ mod tests {
     }
 
     #[test]
-    fn debian_12_is_fhs() {
+    fn debian_12_is_refused() {
+        // Below the supported minimum: its systemd cannot soft-reboot.
         let profile = detect(&host(DEBIAN12, "systemd")).unwrap();
-        assert_eq!(profile.kind, PlatformKind::Fhs);
-        assert_eq!(profile.id.as_deref(), Some("debian"));
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
         assert_eq!(profile.version_id.as_deref(), Some("12"));
-        assert!(profile.is_debian_like());
+        assert!(profile.require_supported().is_err());
     }
 
     #[test]
@@ -361,8 +361,8 @@ mod tests {
     #[test]
     fn non_merged_debian_layout_is_refused() {
         // A supported release whose /bin is a real directory is not usr-merged,
-        // so the /usr leak guard does not cover it: refuse.
-        let fs = host(DEBIAN12, "systemd");
+        // a layout NAILS is not tested on: refuse.
+        let fs = host(DEBIAN13, "systemd");
         fs.mock_set_path_type("/bin", crate::filesystem::PathKind::Dir);
         let profile = detect(&fs).unwrap();
         assert_eq!(profile.kind, PlatformKind::Unsupported);
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn merged_debian_layout_passes() {
         // Core roots present as symlinks into /usr are a merged layout.
-        let fs = host(DEBIAN12, "systemd");
+        let fs = host(DEBIAN13, "systemd");
         for dir in ["/bin", "/sbin", "/lib"] {
             fs.mock_set_path_type(dir, crate::filesystem::PathKind::Symlink);
         }
@@ -396,7 +396,7 @@ mod tests {
 
     #[test]
     fn non_systemd_pid1_refuses() {
-        let profile = detect(&host(DEBIAN12, "openrc-init")).unwrap();
+        let profile = detect(&host(DEBIAN13, "openrc-init")).unwrap();
         assert_eq!(profile.kind, PlatformKind::Unsupported);
         assert!(!profile.is_systemd);
         let err = profile.require_supported().unwrap_err();
@@ -408,7 +408,7 @@ mod tests {
     fn unreadable_pid1_refuses() {
         // No /proc/1/comm at all: cannot confirm systemd, so decline.
         let fs = MockFilesystem::new();
-        fs.mock_add_file(OS_RELEASE, DEBIAN12);
+        fs.mock_add_file(OS_RELEASE, DEBIAN13);
         let profile = detect(&fs).unwrap();
         assert_eq!(profile.kind, PlatformKind::Unsupported);
         assert!(profile.require_supported().is_err());

@@ -66,7 +66,7 @@ fn mark_host_nixos(fs: &MockFilesystem) {
 fn mark_host_debian(fs: &MockFilesystem) {
     fs.mock_set_file_content(
         "/etc/os-release",
-        "ID=debian\nID_LIKE=debian\nVERSION_ID=\"12\"\n",
+        "ID=debian\nID_LIKE=debian\nVERSION_ID=\"13\"\n",
     );
     fs.mock_set_file_content("/proc/1/comm", "systemd\n");
 }
@@ -462,7 +462,7 @@ fn unsupported_host_is_refused_before_any_write() {
     let root = Path::new("/mnt/data");
     let fs = attached_mock(root);
     // A non-systemd PID 1: an unsupported host the platform seam refuses.
-    fs.mock_set_file_content("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\n");
+    fs.mock_set_file_content("/etc/os-release", "ID=debian\nVERSION_ID=\"13\"\n");
     fs.mock_set_file_content("/proc/1/comm", "openrc-init\n");
 
     let args = InitArgs {
