@@ -108,6 +108,30 @@ fn activate_refuses_a_folder_in_plain_words() {
 }
 
 #[test]
+fn check_says_the_refusal_first_in_activates_words() {
+    let (_dir, root, config) = folder_root();
+    let activate = nails(&config, &["activate", "-y", "--overlay-only"]);
+    let check = nails(&config, &["check", "--overlay-only"]);
+    assert_eq!(check.status.code(), Some(4), "{check:?}");
+    let refusal = String::from_utf8_lossy(&activate.stderr);
+    let first = refusal
+        .lines()
+        .find(|line| line.starts_with("error: "))
+        .expect("activate names the refusal");
+    let stderr = String::from_utf8_lossy(&check.stderr);
+    assert_eq!(
+        stderr.lines().find(|line| line.starts_with("error: ")),
+        Some(first),
+        "{stderr}"
+    );
+    assert!(stderr.contains("Where setup happens"), "{stderr}");
+    // The readiness report follows on stdout.
+    let stdout = String::from_utf8_lossy(&check.stdout);
+    assert!(stdout.contains("hidden-volume"), "{stdout}");
+    assert!(entries(&root).is_empty(), "{:?}", entries(&root));
+}
+
+#[test]
 fn a_dry_run_reports_the_refusal_and_opens_no_log() {
     let (_dir, root, config) = folder_root();
     let output = nails(

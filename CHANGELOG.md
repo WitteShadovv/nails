@@ -289,17 +289,17 @@ config and CLI surfaces; there are no compatibility shims.
 
 ### Changed
 
-- Every command that refuses a hidden root says so in the same words, under one of three codes,
-  with exit 4: `not_separate_volume` (`<root> is not a volume of its own: <reason>. Nothing was
-  written.`, with a hint to prepare the volume on an external drive from another computer or from
-  a setup medium, and to read "Where setup happens" in the operator guide on another device),
+- Every command that refuses a hidden root says so in the same words, under one of three codes, with
+  exit 4: `not_separate_volume` (`<root> is not a volume of its own: <reason>. Nothing was
+  written.`, with a hint to prepare the volume on an external drive from another computer or from a
+  setup medium, and to read "Where setup happens" in the operator guide on another device),
   `root_covered` (a second filesystem is mounted over the root) and `storage_unjudged` (run with
   `sudo`). `init`, `activate`, `rehearse plant` (exit 6 and `not_attached` before; a volume without
   a NAILS marker keeps them), `deactivate` and `reset-upper` (exit 1 and `state_locked` before)
-  report it; `check --json` carries it as `refusal`. The text names no storage tool, no volume type
-  and no device: a filesystem is named by its mount point and its type. `--no-preflight` no longer
-  skips the attach gate. A refused root no longer also prints a `File logging disabled` notice;
-  `--verbose` shows it.
+  report it; `check` says it first, then its readiness report, and `check --json` carries it as
+  `refusal`. The text names no storage tool, no volume type and no device: a filesystem is named by
+  its mount point and its type. `--no-preflight` no longer skips the attach gate. A refused root no
+  longer also prints a `File logging disabled` notice; `--verbose` shows it.
 - `--allow-decoy-storage` is accepted by `init`, `activate` and `check` (and `activate --dry-run`).
   It turns the refusal of a root on the decoy's own storage into a warning, for storage the operator
   knows the decoy does not use, and never covers a folder, a covered root, storage that cannot be

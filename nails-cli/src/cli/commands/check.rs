@@ -10,6 +10,10 @@
 //! effective configuration, the overlay targets, how the session would be handled
 //! and which NixOS profile would be built. `activate --dry-run` is a thin alias
 //! for this command, so the two always agree.
+//!
+//! A root the attach gate refuses is reported first, on stderr and in the words
+//! `init` and `activate` use, then the readiness report follows; under `--json`
+//! the refusal is the report's `refusal`.
 
 use std::io::Write;
 use std::path::Path;
@@ -21,7 +25,7 @@ use crate::cli::output::check::{
     CheckReport, CheckRow, ConfigSummary, InheritedSummary, ProfileSummary, print_check_human,
     print_check_json,
 };
-use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::envelope::{ErrorBody, report_error, write_human_error};
 use crate::cli::output::refusal::refusal_error;
 use crate::cli::output::{ExitStatus, OutputSettings};
 use nails_core::hidden_root::{Allow, Assessment};
@@ -60,6 +64,15 @@ pub fn execute(
     // its pre-flight registry. The registry is read-only to run; staging of the
     // hidden NixOS layout only happens on the activation path, never here.
     let manager = super::build_nixos_manager(config, state_path, overlay_only, env);
+
+    let refusal = refusal(
+        manager.filesystem(),
+        &manager.config().hidden_volume_root,
+        args,
+    );
+    if let Some(error) = refusal.as_ref().filter(|_| !json) {
+        write_human_error(&mut std::io::stderr().lock(), error);
+    }
 
     let registry = match manager.preflight_registry(&preflight_options(args)) {
         Ok(registry) => registry,
@@ -100,7 +113,7 @@ pub fn execute(
     let inherited = inherited_summary(config, manager.filesystem(), env);
 
     let mut report = CheckReport::finalize(checks, config_summary, filesystems, profile, inherited);
-    report.refusal = refusal(manager.filesystem(), &config.hidden_volume_root, args);
+    report.refusal = refusal;
 
     if json {
         print_check_json(&report);
