@@ -719,6 +719,12 @@ writes its superblock).
 - The session watcher raises a desktop alert ("Disk mounted with write access")
   for every read-write mount of a disk outside the hidden volume
   (`session_mounts.alert`, on by default).
+- A disk mounted over the hidden root itself (with `/mnt` as the root, an
+  ordinary `mount /dev/sdc1 /mnt`) takes every file saved under `/mnt` from
+  then on. The watcher raises "Disk mounted over a folder in use", naming the
+  disk, and `nails status` shows it under the hidden volume; `sudo umount
+  /mnt` takes it off. NAILS writes nothing there meanwhile, and the cover
+  triggers no emergency.
 - With `session_mounts.read_only = true`, every disk the session does not use is
   read-only for the session, from the hidden boot on and for every disk attached
   later: mounts come up read-only (`mount` warns "write-protected, mounted

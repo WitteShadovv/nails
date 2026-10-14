@@ -363,6 +363,27 @@ pub fn covered_mount<'a>(table: &'a [MountEntry], top: &'a MountEntry) -> Option
     stack_below(table, top).find(|m| m.dev != top.dev)
 }
 
+/// The mount stacked on the hidden volume at `root`: the mount a lookup of
+/// `root` reaches, when it is not the volume.
+///
+/// `recorded` is the volume's device as the session plan records it
+/// (`hidden_dev`); a mount with another device is not the volume, while a
+/// second bind of the volume itself is. Without a record, the visible mount
+/// counts when another filesystem lies below it at `root`. `None` when nothing
+/// is mounted at `root`, which is no cover but a volume that is gone.
+pub fn shadowing_mount<'a>(
+    table: &'a [MountEntry],
+    root: &Path,
+    recorded: Option<&str>,
+) -> Option<&'a MountEntry> {
+    let visible = top_mount_at(table, root)?;
+    let covered = match recorded {
+        Some(dev) => visible.dev != dev,
+        None => covered_mount(table, visible).is_some(),
+    };
+    covered.then_some(visible)
+}
+
 /// The mounts stacked under `top` at its own mount point, nearest first.
 fn stack_below<'a>(
     table: &'a [MountEntry],

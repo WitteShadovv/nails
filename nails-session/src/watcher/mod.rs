@@ -20,8 +20,13 @@
 //!
 //! [`BackendWatch`] is the debounce/alert decision, kept free of clocks and I/O
 //! so it can be exercised deterministically; [`probe_backend`] is the health
-//! check; [`run_loop`] ties them together around a real sleep for the CLI's
-//! hidden `watch` subcommand.
+//! check; [`CoverWatch`] reports a mount stacked on the hidden root; [`run_loop`]
+//! ties them together around a real sleep for the CLI's hidden `watch`
+//! subcommand.
+
+mod cover;
+
+pub use cover::{CoverWatch, shadowing_mount};
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};

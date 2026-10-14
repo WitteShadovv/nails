@@ -86,6 +86,44 @@ fn the_hidden_session_reports_active_with_its_uptime_policy_and_system() {
 }
 
 #[test]
+fn a_disk_mounted_over_the_hidden_volume_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let cmd = command(dir.path());
+    let mut recorded = plan(dir.path());
+    recorded.hidden_dev = Some("253:0".into());
+    let view = SessionView::Hidden(Box::new(recorded));
+    let root = dir.path().display();
+    let volume = format!(
+        "1 0 0:40 / / rw - overlay overlay rw,upperdir={root}/root/upper
+\
+         2 1 253:0 / {root} rw - ext4 /dev/mapper/data rw
+"
+    );
+    let report = cmd
+        .report(&view, &parse_mountinfo(&volume), Utc::now())
+        .unwrap();
+    assert_eq!(report.hidden_root_covered_by, None);
+
+    let covered = format!(
+        "{volume}3 2 8:33 / {root} rw - vfat /dev/sdc1 rw
+"
+    );
+    let report = cmd
+        .report(&view, &parse_mountinfo(&covered), Utc::now())
+        .unwrap();
+    assert_eq!(report.hidden_root_covered_by.as_deref(), Some("/dev/sdc1"));
+    // A plan without the device still loads; the stack shows the cover.
+    let report = cmd
+        .report(
+            &SessionView::Hidden(Box::new(plan(dir.path()))),
+            &parse_mountinfo(&covered),
+            Utc::now(),
+        )
+        .unwrap();
+    assert_eq!(report.hidden_root_covered_by.as_deref(), Some("/dev/sdc1"));
+}
+
+#[test]
 fn every_live_view_maps_to_its_posture_and_remedy() {
     let (p, _, r) = posture_of(
         &SessionView::Interrupted {

@@ -161,6 +161,10 @@ pub struct StatusReport {
     /// Why the hidden root is not a volume of its own, when the session's
     /// activation accepted that with `--allow-decoy-storage`.
     pub accepted_not_separate: Option<String>,
+    /// The source of a filesystem mounted over the hidden volume, which now
+    /// receives every file saved under the hidden root (see
+    /// [`shadowing_mount`](crate::hidden_root::shadowing_mount)).
+    pub hidden_root_covered_by: Option<String>,
     /// The mounts the fstab policy placed in the hidden root.
     pub policy_mounts: Vec<PolicyMountView>,
     /// The decoy units masked in the hidden root.
@@ -335,6 +339,12 @@ impl<F: Filesystem> StatusCommand<F> {
             hidden_root_mounted: hidden_mount.is_some(),
             hidden_root_source: hidden_mount.map(|m| m.source.display().to_string()),
             accepted_not_separate: plan.and_then(|p| p.accepted_not_separate.clone()),
+            hidden_root_covered_by: crate::hidden_root::shadowing_mount(
+                entries,
+                hidden_root,
+                plan.and_then(|p| p.hidden_dev.as_deref()),
+            )
+            .map(|cover| cover.source.display().to_string()),
             policy_mounts: plan
                 .map(|p| {
                     p.policy_mounts

@@ -290,7 +290,10 @@ In the hidden session, `deactivate` refuses a covered root with `root_covered`:
 it would write its state onto the disk on top. `emergency` always runs, with or
 without the state lock; when the mounts the way back needs are covered too, it
 powers off instead of returning to the decoy. The session watcher writes no
-probe onto a covered root.
+probe onto a covered root and raises no emergency for it; it raises one neutral
+desktop alert per covering mount ("Disk mounted over a folder in use", naming
+the disk and `sudo umount <root>`), and `status` names the disk, since every
+file saved under the root goes to that disk until it is unmounted.
 
 The gate's limits: it judges the storage this computer's mount table, fstab,
 crypttab and sysfs describe. It cannot see a decoy filesystem mounted only by

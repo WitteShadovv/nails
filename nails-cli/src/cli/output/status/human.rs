@@ -85,6 +85,14 @@ pub(super) fn status_lines(report: &StatusReport, details: bool, style: Style) -
             nails_core::hidden_root::refusal::OVERRIDE_CONSEQUENCE
         ));
     }
+    if let Some(source) = &report.hidden_root_covered_by {
+        out.push(format!(
+            "  {} {source} is mounted over it: files saved there go to that disk \
+             (`sudo umount {}` takes it off)",
+            style.mark(Mark::Warn),
+            report.hidden_root.display()
+        ));
+    }
     if report.decoy_persistent && report.posture != Posture::Active {
         out.push(style.marked(
             Mark::Warn,

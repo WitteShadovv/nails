@@ -7,8 +7,9 @@
 //! copy as a runtime unit of the hidden session (installed in `/run` by the
 //! entry transition) for the life of the session, polling the hidden backend
 //! and alerting the operator the moment it fails, alerting on every disk
-//! mounted read-write outside the hidden volume (`[session_mounts] alert`), and
-//! sweeping unused disks read-only when that is opted into. It is marked
+//! mounted read-write outside the hidden volume (`[session_mounts] alert`) and
+//! on every mount stacked on the hidden root, and sweeping unused disks
+//! read-only when that is opted into. It is marked
 //! `hide = true` so it never appears in help, and it keeps all of its state in the
 //! `/run` copy so it keeps working even after the hidden volume is gone.
 
@@ -83,6 +84,7 @@ pub fn execute(
     .filter(|plan| mounts_config.read_only && plan.read_only_disks);
     let sysfs = disk_guard::Sysfs::system();
     let mut mount_watch = watcher::MountWatch::new(&manifest.hidden_root);
+    let mut cover_watch = watcher::CoverWatch::default();
     let is_block = |mount: &MountEntry| disk_guard::mount_device(mount).is_some();
 
     watcher::run_loop(
@@ -114,6 +116,18 @@ pub fn execute(
                     tracing::info!(devices = set.len(), "Unused disks set read-only");
                 }
             }
+            // A mount stacked on the hidden root takes every file saved there
+            // from now on; the gate refuses NAILS' own writes, the operator is
+            // told once per mount.
+            if let Some(cover) = cover_watch.observe(&mounts, &manifest) {
+                tracing::warn!(
+                    mount_point = %manifest.hidden_root.display(),
+                    "A disk is mounted over the folder in use"
+                );
+                if let Err(e) = send_immediate(&cover_alert(&cover, &manifest.hidden_root), env) {
+                    tracing::warn!(error = %e, "Could not deliver the cover alert");
+                }
+            }
             if mounts_config.alert {
                 for mount in mount_watch.observe(&mounts, &is_block) {
                     tracing::warn!(
@@ -140,6 +154,23 @@ fn mount_alert(mount: &MountEntry) -> Notification {
             "{} ({}) is mounted read-write. Files written there stay on that disk.",
             mount.mount_point.display(),
             mount.source.display()
+        ),
+        urgency: "critical".to_string(),
+        icon: Some("drive-removable-media".to_string()),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+/// The neutral desktop alert raised when a disk is mounted over the hidden
+/// root, `root`: it names the disk and how to take it off again.
+fn cover_alert(cover: &MountEntry, root: &Path) -> Notification {
+    let source = cover.source.display();
+    let root = root.display();
+    Notification {
+        title: "Disk mounted over a folder in use".to_string(),
+        body: format!(
+            "{source} is mounted over {root}, a folder in use. Files saved there now go to \
+             {source}. To undo it, run: sudo umount {root}"
         ),
         urgency: "critical".to_string(),
         icon: Some("drive-removable-media".to_string()),
@@ -187,6 +218,30 @@ mod tests {
         assert_eq!(alert.icon.as_deref(), Some("drive-harddisk"));
         chrono::DateTime::parse_from_rfc3339(&alert.created_at)
             .expect("the alert carries an RFC 3339 timestamp");
+        assert_neutral(&alert);
+    }
+
+    #[test]
+    fn the_cover_alert_names_the_disk_and_how_to_unmount_it() {
+        let cover = MountEntry {
+            mount_id: 91,
+            parent_id: 10,
+            dev: "8:33".to_string(),
+            root: "/".into(),
+            mount_point: "/mnt".into(),
+            mount_opts: "rw,relatime".to_string(),
+            fstype: "vfat".to_string(),
+            source: "/dev/sdc1".into(),
+            super_opts: "rw".to_string(),
+        };
+        let alert = cover_alert(&cover, Path::new("/mnt"));
+        assert_eq!(alert.title, "Disk mounted over a folder in use");
+        assert_eq!(
+            alert.body,
+            "/dev/sdc1 is mounted over /mnt, a folder in use. Files saved there now go to \
+             /dev/sdc1. To undo it, run: sudo umount /mnt"
+        );
+        assert_eq!(alert.urgency, "critical");
         assert_neutral(&alert);
     }
 

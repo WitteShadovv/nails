@@ -25,6 +25,7 @@ fn report(posture: Posture, session: &'static str) -> StatusReport {
         hidden_root_mounted: true,
         hidden_root_source: None,
         accepted_not_separate: None,
+        hidden_root_covered_by: None,
         policy_mounts: Vec::new(),
         masked_units: Vec::new(),
         nextroot_mounted: false,
@@ -54,6 +55,36 @@ fn an_active_session_lists_its_policy_mounts_and_system() {
     assert!(lines.contains("dev-vda3.swap"), "{lines}");
     assert!(lines.contains("/nix/store/bbb-nixos-system"), "{lines}");
     assert!(lines.is_ascii());
+}
+
+#[test]
+fn a_cover_is_shown_in_both_forms() {
+    let mut active = report(Posture::Active, "hidden");
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert!(value["data"].get("hidden_root_covered_by").is_none());
+
+    active.hidden_root_covered_by = Some("/dev/sdc1".into());
+    let lines = status_lines(&active, false, Style::default()).join("\n");
+    assert!(
+        lines.contains(
+            "/dev/sdc1 is mounted over it: files saved there go to that disk \
+             (`sudo umount /mnt/data` takes it off)"
+        ),
+        "{lines}"
+    );
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert_eq!(value["data"]["hidden_root_covered_by"], "/dev/sdc1");
+    // The committed schema the contract tests share admits it.
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../docs/schemas/status.schema.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("the schema compiles");
+    let errors: Vec<String> = validator
+        .iter_errors(&value)
+        .map(|e| e.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{errors:#?}\n{value:#}");
 }
 
 #[test]

@@ -54,6 +54,9 @@ pub struct StatusData<'a> {
     /// activation accepted that with `--allow-decoy-storage`.
     #[serde(skip_serializing_if = "Option::is_none")]
     accepted_not_separate: Option<&'a str>,
+    /// The source of a filesystem mounted over the hidden volume.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hidden_root_covered_by: Option<&'a str>,
     /// The decoy filesystems placed in the hidden root.
     policy_mounts: &'a [PolicyMountView],
     /// The decoy units masked in the hidden root.
@@ -95,6 +98,7 @@ fn data(report: &StatusReport) -> StatusData<'_> {
         hidden_root: report.hidden_root.display().to_string(),
         hidden_root_mounted: report.hidden_root_mounted,
         accepted_not_separate: report.accepted_not_separate.as_deref(),
+        hidden_root_covered_by: report.hidden_root_covered_by.as_deref(),
         policy_mounts: &report.policy_mounts,
         masked_units: &report.masked_units,
         nextroot_mounted: report.nextroot_mounted,
