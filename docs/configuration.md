@@ -302,7 +302,7 @@ does (the main file from `/etc`, `/run`, `/usr/local/lib` or `/usr/lib`, then
 every `logind.conf.d/*.conf` drop-in by file name, `/etc` shadowing the others)
 and **warns** (never blocks) when the effective
 lid-switch or idle settings would suspend an active session. Fix the host
-first: set the decoy's logind lid switch to `ignore` or `lock` and disable
+first: set the decoy's logind lid switch to `lock` and disable
 desktop auto-suspend (see [decoy-requirements.md](decoy-requirements.md)). The
 hidden session starts from the decoy's `/etc`, so it inherits the fix unless the
 hidden configuration changes it.

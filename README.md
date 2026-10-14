@@ -358,7 +358,7 @@ Every command accepts `--json` and prints one line with a versioned envelope
   Power off after a session when that matters. A warm reboot does not clear RAM
   either.
 - **Do not suspend during a session.** Suspend keeps the whole hidden session
-  and the volume key in RAM. Set the lid switch to `ignore` or `lock` and
+  and the volume key in RAM. Set the lid switch to `lock` and
   consider `sleep_policy` (see [docs/configuration.md](docs/configuration.md#sleep-policy)).
 - **Do not start the decoy's sync and account clients** in the hidden session
   for sensitive work: what they send stays on the remote side, and a decoy client

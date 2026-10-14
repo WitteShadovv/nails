@@ -91,9 +91,9 @@ The `sleep-policy` pre-flight check parses `/etc/systemd/logind.conf` and its
 `logind.conf.d/*.conf` drop-ins and warns (never blocks) when the effective lid
 or idle settings would suspend an active session.
 
-Set the decoy's lid switch so a closed lid does not suspend. The neutral choice
-is `lock` (lock the screen, stay running) or `ignore`; add a drop-in rather than
-editing the main file:
+Set the decoy's lid switch so a closed lid does not suspend. Use `lock` (lock the
+screen, stay running): `ignore` also keeps the host awake but leaves the screen
+unlocked behind a closed lid. Add a drop-in rather than editing the main file:
 
 ```ini
 # /etc/systemd/logind.conf.d/10-lid.conf
@@ -119,8 +119,8 @@ services.logind.settings.Login = {
 Also disable any desktop-level auto-suspend (GNOME/KDE power settings), which
 logind does not govern.
 
-For defence in depth, set `sleep_policy.mode` in `nails.toml`. `block` holds a
-sleep/idle inhibitor for the life of the session so the host cannot suspend while
+For defence in depth, set `sleep_policy.mode` in `nails.toml`. `block` holds
+sleep and idle block inhibitors for the life of the session so the host cannot suspend while
 active. logind ignores sleep inhibitors for the lid switch by default
 (`LidSwitchIgnoreInhibited=yes`), so when a closed lid would sleep, `block` also
 takes the lid switch from logind (a `handle-lid-switch` inhibitor): the closed lid

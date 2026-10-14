@@ -299,12 +299,14 @@ fn render_template(root: &Path, title: &str) -> String {
 # decoy lock screen, so on resume the decoy login unlocks a still-live session.
 #   "warn" (default): pre-flight warns when the host would suspend an active
 #     session (lid switch, idle auto-suspend); nothing runs at runtime.
-#   "block": hold a sleep/idle inhibitor for the whole session so the host cannot
-#     suspend while active; released at deactivation. A blocked suspend with the
-#     lid shut can overheat a laptop.
+#   "block": hold sleep and idle block inhibitors for the whole session so the
+#     host cannot suspend while active, and take the lid switch from logind when
+#     a closed lid would sleep (the lid then does nothing, not even lock the
+#     screen); released at deactivation. A laptop kept running with the lid shut
+#     can overheat.
 #   "teardown": hold a sleep *delay* inhibitor and power off when the host is
 #     about to sleep, within logind's InhibitDelayMaxSec.
-# Also set the logind lid switch to "ignore" or "lock" on the decoy; see
+# Also set the logind lid switch to "lock" on the decoy; see
 # docs/decoy-requirements.md.
 # [sleep_policy]
 # mode = "warn"

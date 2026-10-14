@@ -819,7 +819,7 @@ default); `emergency` does not wait for it.
 **Suspend / resume.** Suspend keeps the whole hidden session — the overlay, the
 open mapper and the master key — resident behind the hidden lock screen, and the
 decoy is not running at all. Do not suspend during a session. Set the decoy's
-logind lid switch to `ignore` or `lock`
+logind lid switch to `lock`
 ([decoy-requirements.md](decoy-requirements.md)), and set `sleep_policy.mode` in
 `nails.toml`: `block` keeps the host awake for the session, a closed lid
 included, `teardown` powers off when the host is about to sleep.

@@ -255,7 +255,7 @@ impl<F: Filesystem> PreFlightCheck<F> for SleepPolicyCheck {
             SleepPolicyMode::Warn => format!(
                 "the host would suspend an active session: {findings}. A suspend leaves the \
                  hidden session resident in RAM behind the decoy lock screen. Set the logind lid \
-                 switch to ignore/lock (see docs/decoy-requirements.md), or set \
+                 switch to lock (see docs/decoy-requirements.md), or set \
                  sleep_policy.mode = \"block\" or \"teardown\" in nails.toml."
             ),
             SleepPolicyMode::Block if settings.lid_switch_sleeps() => format!(
