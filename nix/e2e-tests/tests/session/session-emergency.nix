@@ -13,8 +13,10 @@
 #      the decoy greeter (here: getty) comes back; nothing typed in the hidden
 #      session reaches the decoy's history file.
 #   3. A scratch disk mounted over the hidden root in the session: deactivate
-#      is refused with root_covered, emergency still returns to the decoy, and
-#      the scratch disk received nothing: no logs/, state.json, .lock or write
+#      is refused with root_covered, emergency still ends the session (the
+#      mounts the way back needs sit under the covered root, so it powers off
+#      instead, as it does whenever the way back cannot be prepared), and the
+#      scratch disk received nothing: no logs/, state.json, .lock or write
 #      probe, and its root directory's mtime and ctime are unchanged.
 #   4. `nails emergency --poweroff` in the hidden session powers the machine
 #      off; the next cold boot is the plain decoy with the backend closed.
@@ -162,11 +164,16 @@ in
         assert '"code":"root_covered"' in out, out
         session.assert_hidden_root(machine)
         # The state lock refuses the covered root, but emergency proceeds
-        # without it and leaves anyway.
-        timings = session.follow_soft_reboot(
-            machine, f"nails --config {covered_config} emergency", "emergency-covered"
+        # without it. The way back's mounts are under the covered root, so it
+        # cannot be prepared and emergency powers off instead.
+        machine.execute(
+            f"(nails --config {covered_config} emergency) </dev/null >/dev/null 2>&1 &",
+            check_return=False,
+            check_output=False,
         )
-        machine.log(f"emergency timings: {timings}")
+        session.wait_for_power_off(machine, 300)
+        machine.start()
+        machine.wait_for_unit("multi-user.target")
         session.assert_decoy_root(machine)
         machine.succeed(
             "mkdir -p /run/scratch && "

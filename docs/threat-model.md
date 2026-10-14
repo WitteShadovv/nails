@@ -271,8 +271,9 @@ does not skip the gate.
 
 In the hidden session, `deactivate` refuses a covered root with `root_covered`:
 it would write its state onto the disk on top. `emergency` always runs, with or
-without the state lock, and the session watcher writes no probe onto a covered
-root.
+without the state lock; when the mounts the way back needs are covered too, it
+powers off instead of returning to the decoy. The session watcher writes no
+probe onto a covered root.
 
 The gate's limits: it judges the storage this computer's mount table, fstab,
 crypttab and sysfs describe. It cannot see a decoy filesystem mounted only by
