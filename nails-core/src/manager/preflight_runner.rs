@@ -131,7 +131,15 @@ pub fn build_registry<F: Filesystem>(
     let hidden_root = config.hidden_volume_root.clone();
     let paths = crate::session::Paths::system();
 
-    registry.add_check(Box::new(HiddenVolumeCheck::new(hidden_root.clone())));
+    registry.add_check(Box::new(
+        HiddenVolumeCheck::new(hidden_root.clone()).allowing(
+            if inputs.options.allow_not_separate {
+                crate::hidden_root::Allow::NotSeparate
+            } else {
+                crate::hidden_root::Allow::Nothing
+            },
+        ),
+    ));
 
     // Neither already in the hidden root nor with the leftovers of an
     // interrupted entry (a populated /run/nextroot must never be entered by a

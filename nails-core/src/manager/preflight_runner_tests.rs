@@ -376,3 +376,82 @@ fn host_without_config_layer_agrees_there_is_no_target() {
     );
     assert!(build_target_result(&manager).is_none());
 }
+
+/// Every refusal of the attach gate fails the hidden-volume check, skips the
+/// checks that inspect the volume, and leaves no write probe behind.
+#[test]
+fn every_gate_refusal_fails_the_hidden_volume_check_and_skips_its_dependents() {
+    use crate::filesystem::MockOp;
+    let config = explicit_config();
+    let root = config.hidden_volume_root.display().to_string();
+    let decoy = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n";
+    let scenes = [
+        ("folder", decoy.to_string(), false),
+        (
+            "covered",
+            format!(
+                "{decoy}30 1 253:0 / {root} rw - ext4 /dev/mapper/data rw\n\
+                 31 30 8:17 / {root} rw - ext4 /dev/sdb1 rw\n"
+            ),
+            false,
+        ),
+        (
+            "bind of a decoy folder",
+            format!("{decoy}30 1 8:1 /srv/x {root} rw - ext4 /dev/vda1 rw\n"),
+            false,
+        ),
+        (
+            "unjudged",
+            format!("{decoy}30 1 8:17 / {root} rw - ext4 /dev/sdb1 rw\n"),
+            true,
+        ),
+    ];
+    let inputs = RegistryInputs {
+        options: PreflightOptions::default(),
+        current_state: SystemState::Inactive,
+        flake_target_already_validated: false,
+        selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
+        operator: None,
+        caller_path: None,
+    };
+    for (scene, table, unreadable_crypttab) in scenes {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(&root, true);
+        fs.mock_set_writable(&root, true);
+        fs.mock_set_mount_table(&table);
+        if unreadable_crypttab {
+            fs.mock_set_path_exists("/etc/crypttab", true);
+        }
+        let registry = build_registry(&fs, &config, &inputs, None).expect("registry builds");
+        let (results, passed) = registry.run_all_detailed(&fs);
+        assert!(!passed, "{scene}");
+        let result = |name: &str| {
+            results
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, r)| r.clone())
+                .unwrap_or_else(|| panic!("{scene}: no {name}"))
+        };
+        assert!(result("hidden-volume").is_fail(), "{scene}");
+        for dependent in [
+            "symlink-support",
+            "upper-fs-capability",
+            "storage-readiness",
+            "space",
+        ] {
+            assert!(result(dependent).is_skipped(), "{scene}: {dependent}");
+        }
+        let probes: Vec<MockOp> = fs
+            .mock_ops()
+            .into_iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    MockOp::WritableProbe { .. } | MockOp::SymlinkProbe { .. }
+                )
+            })
+            .collect();
+        assert!(probes.is_empty(), "{scene}: {probes:?}");
+    }
+}

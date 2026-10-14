@@ -59,6 +59,37 @@ fn the_state_is_refused_on_an_unmounted_hidden_root() {
 }
 
 #[test]
+fn reset_on_an_unattached_root_deletes_nothing() {
+    // The state and a planted copy exist on disk, but the gate sees the root
+    // as a folder on `/`: nothing may be removed from it.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(REHEARSE_DIR)).unwrap();
+    std::fs::write(root.join(state_relative_path()), "{}").unwrap();
+    let copy = root.join(format!("home/{FILE_PREFIX}{TOKEN}.txt"));
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    std::fs::write(&copy, TOKEN).unwrap();
+    let mut st = state(TOKEN);
+    st.channels = vec![ChannelRecord {
+        kind: ChannelKind::OverlayFile,
+        location: "/home".to_string(),
+        upper_copy: Some(copy.clone()),
+        skipped: None,
+    }];
+
+    let fs = crate::MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_mount_table("1 0 8:1 / / rw - ext4 /dev/vda1 rw\n");
+    let error = reset(&fs, root, &st).unwrap_err();
+    assert!(
+        error.to_string().contains("is not a volume of its own"),
+        "{error}"
+    );
+    assert!(root.join(state_relative_path()).exists());
+    assert!(copy.exists());
+}
+
+#[test]
 fn the_state_round_trips_on_a_mounted_hidden_volume() {
     let _ = Rerun::new(crate::test_path!(
         the_state_round_trips_on_a_mounted_hidden_volume
@@ -75,7 +106,7 @@ fn the_state_round_trips_on_a_mounted_hidden_volume() {
         let loaded = load_state(&fs, hidden.path()).unwrap().unwrap();
         assert_eq!(loaded, state(TOKEN));
 
-        let removed = reset(hidden.path(), &loaded).unwrap();
+        let removed = reset(&fs, hidden.path(), &loaded).unwrap();
         assert_eq!(removed, vec![hidden.path().join(state_relative_path())]);
         assert_eq!(load_state(&fs, hidden.path()).unwrap(), None);
     });
@@ -269,7 +300,7 @@ fn planting_writes_only_into_the_overlay_upper() {
         st.channels = records.clone();
         std::fs::create_dir_all(hidden_root.join(REHEARSE_DIR)).unwrap();
         std::fs::write(hidden_root.join(state_relative_path()), "{}").unwrap();
-        reset(&hidden_root, &st).unwrap();
+        reset(&crate::RealFilesystem, &hidden_root, &st).unwrap();
         assert!(!upper.join(&name).exists());
         let upper_xbel =
             std::fs::read_to_string(upper.join("alice/.local/share/recently-used.xbel")).unwrap();

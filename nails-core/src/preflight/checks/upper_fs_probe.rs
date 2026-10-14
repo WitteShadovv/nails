@@ -128,12 +128,12 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
         // volume: a probe on an unmounted mount point would drop a `.probe-*`
         // directory onto the decoy disk, the exact forensic leak the attach gate
         // exists to prevent. The registry already short-circuits this check once
-        // the `hidden-volume` gate fails, but that gate asks only whether
-        // something is mounted there, while the attach gate also refuses a
-        // second filesystem over the volume and a bind of `/`'s own. Consult the
-        // single write-path gate here too so the probe writes nothing unless the
-        // root is genuinely attached. The hidden-volume check owns the operator
-        // message, so an unattached root is a silent skip, not a second failure.
+        // the `hidden-volume` check, which asks the same attach gate, fails.
+        // Asking the gate here too keeps the probe safe however this check is
+        // run. A root the operator accepted with `--allow-unmounted` is not
+        // probed either: the gate without the override refuses it. The
+        // hidden-volume check owns the operator message, so an unattached root
+        // is a silent skip, not a second failure.
         match crate::hidden_root::HiddenRoot::verify_attached(fs, &self.hidden_volume_root, false)?
         {
             crate::hidden_root::AttachState::Attached => {}

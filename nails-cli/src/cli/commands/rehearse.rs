@@ -15,8 +15,10 @@ use serde::Serialize;
 
 use crate::cli::args::{RehearseArgs, RehearsePlantArgs, RehearseScanArgs, RehearseStep};
 use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
+use crate::cli::output::refusal::report_refusal;
 use crate::cli::output::rehearse::{print_channels, print_scan};
 use crate::cli::output::{ExitStatus, OutputSettings};
+use nails_core::hidden_root::{Assessment, refusal};
 
 const COMMAND: &str = "rehearse";
 
@@ -190,6 +192,25 @@ fn plant(
 ) -> ExitStatus {
     let json = settings.is_json();
     let hidden_root = &config.hidden_volume_root;
+    match nails_core::HiddenRoot::assess(&RealFilesystem, hidden_root) {
+        Ok(Assessment::Refused(refusal)) => return report_refusal(json, COMMAND, &refusal),
+        Ok(_) => {}
+        Err(e) => return fail(json, ExitStatus::Failed, "not_attached", e.to_string()),
+    }
+    // A session that runs on storage the decoy uses, because its activation
+    // accepted that, leaves the canary on the decoy's disk: the rehearsal
+    // cannot pass there, and no override changes that.
+    if let Some(reason) = nails_core::hidden_root::recorded_acceptance(&RealFilesystem) {
+        return fail(
+            json,
+            ExitStatus::PreflightRefused,
+            refusal::NOT_SEPARATE_VOLUME,
+            format!(
+                "a rehearsal on this storage cannot pass: {reason} (accepted with \
+                 --allow-unmounted). Nothing was written."
+            ),
+        );
+    }
     match nails_core::HiddenRoot::verify_attached(&RealFilesystem, hidden_root, true) {
         Ok(attach) if attach.is_attached() => {}
         Ok(attach) => {
@@ -430,7 +451,7 @@ fn reset(settings: &OutputSettings, config: &Config) -> ExitStatus {
     };
     let root = &config.hidden_volume_root;
     let hidden = root.canonicalize().unwrap_or_else(|_| root.clone());
-    let removed = match rehearse::reset(&hidden, &state) {
+    let removed = match rehearse::reset(&RealFilesystem, &hidden, &state) {
         Ok(removed) => removed,
         Err(e) => return fail(json, ExitStatus::Failed, "reset", e.to_string()),
     };

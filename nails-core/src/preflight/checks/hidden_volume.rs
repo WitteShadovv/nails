@@ -6,6 +6,7 @@
 //! Validates that the hidden volume is mounted and writable before activation.
 
 use super::super::{CheckResult, PreFlightCheck};
+use crate::hidden_root::{Allow, Assessment, HiddenRoot, Refusal, RefusalKind};
 use crate::naming::suspicious_token;
 use crate::{Filesystem, Result, config::get_default_hidden_volume_root};
 use std::path::{Component, PathBuf};
@@ -14,17 +15,26 @@ use std::path::{Component, PathBuf};
 ///
 /// This check performs three-step validation and then one name audit:
 /// 1. **Path Existence**: Hidden volume path must exist
-/// 2. **Mount Status**: Path must be mounted (not just exist as an empty directory)
+/// 2. **The attach gate**: a volume of its own must be mounted at the path
+///    ([`HiddenRoot::assess`]): not a folder, not a root covered by a second
+///    filesystem, not storage the decoy uses, and storage that can be judged.
+///    Nothing is probed before it passes, so `check` writes no probe file onto
+///    the decoy's storage.
 /// 3. **Write Permission**: Path must be writable to store overlay directories
 /// 4. **Neutral naming**: once mounted and writable, the mount path, the
 ///    device-mapper name and the filesystem label are scanned for words that
 ///    betray hidden storage, and a match is reported as a non-blocking warning
 ///
+/// A root the gate only warns about (a container file on a decoy
+/// filesystem), or one the operator accepted with `--allow-unmounted`, passes
+/// with that warning.
+///
 /// # Failure Guidance
 ///
 /// Each failure mode provides actionable guidance with fix steps:
 /// - **Path not found**: Suggests mounting the hidden volume
-/// - **Not mounted**: Suggests unlocking the backend and mounting it there
+/// - **Refused by the gate**: the gate's own hint (prepare the volume where
+///   nothing reaches this disk, unmount the second filesystem, run with sudo)
 /// - **Not writable**: Suggests checking permissions
 ///
 /// # Example
@@ -48,6 +58,7 @@ use std::path::{Component, PathBuf};
 #[derive(Debug, Clone)]
 pub struct HiddenVolumeCheck {
     hidden_volume_root: PathBuf,
+    allow: Allow,
 }
 
 impl HiddenVolumeCheck {
@@ -57,17 +68,41 @@ impl HiddenVolumeCheck {
     ///
     /// * `hidden_volume_root` - Path to the hidden volume mount point
     pub fn new(hidden_volume_root: PathBuf) -> Self {
-        Self { hidden_volume_root }
+        Self {
+            hidden_volume_root,
+            allow: Allow::Nothing,
+        }
+    }
+
+    /// Accept the gate refusals `allow` covers (`--allow-unmounted`) with a
+    /// warning.
+    #[must_use]
+    pub fn allowing(mut self, allow: Allow) -> Self {
+        self.allow = allow;
+        self
     }
 }
 
 impl Default for HiddenVolumeCheck {
     /// Create check with default hidden volume path
     fn default() -> Self {
-        Self {
-            hidden_volume_root: PathBuf::from(get_default_hidden_volume_root()),
-        }
+        Self::new(PathBuf::from(get_default_hidden_volume_root()))
     }
+}
+
+/// The failure of a root the attach gate refused, with the gate's hint as the
+/// remediation.
+fn gate_failure(root: &std::path::Path, refusal: &Refusal) -> CheckResult {
+    let root = root.display();
+    let message = match (&refusal.kind, refusal.kind.why()) {
+        (RefusalKind::DecoyStorage { .. }, Some(why)) => {
+            format!("Hidden volume at {root} is not a volume of its own: {why}")
+        }
+        (_, Some(why)) => format!("Hidden volume at {root} is not mounted: {why}"),
+        (_, None) => format!("Hidden volume at {root}: {}", refusal.reason),
+    };
+    let exe = std::env::current_exe().ok();
+    CheckResult::fail_with(message, refusal.hint(exe.as_deref()).join("\n"))
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
@@ -92,12 +127,14 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
             )));
         }
 
-        // Step 2: Check path is mounted
-        if !fs.is_mounted(&self.hidden_volume_root)? {
-            return Ok(CheckResult::fail(format!(
-                "Hidden volume at {} is not mounted. Unlock the hidden storage backend and mount its filesystem at this path before activation (see docs/backends.md).",
-                self.hidden_volume_root.display()
-            )));
+        // Step 2: the attach gate, before anything is probed.
+        let mut warnings = Vec::new();
+        match HiddenRoot::assess_allowing(fs, &self.hidden_volume_root, self.allow)? {
+            Assessment::Attached => {}
+            Assessment::Warned(refusal) => warnings.push(refusal.warning()),
+            Assessment::Refused(refusal) => {
+                return Ok(gate_failure(&self.hidden_volume_root, &refusal));
+            }
         }
 
         // Step 3: Check path is writable
@@ -113,7 +150,7 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
         // operator can rename before the name leaks off the box.
         let hints = self.naming_hints(fs);
         if !hints.is_empty() {
-            return Ok(CheckResult::Warn(format!(
+            warnings.push(format!(
                 "Hidden volume mounted at {}, but a name here hints at hidden storage: {}. \
                  Such a name survives in the leftover mount-point directory, in generated \
                  mount unit names, in /dev/disk/by-label and in kernel and sudo journal \
@@ -123,7 +160,10 @@ impl<F: Filesystem> PreFlightCheck<F> for HiddenVolumeCheck {
                  docs/operator-guide.md.",
                 self.hidden_volume_root.display(),
                 hints.join("; ")
-            )));
+            ));
+        }
+        if !warnings.is_empty() {
+            return Ok(CheckResult::Warn(warnings.join(" ")));
         }
 
         Ok(CheckResult::Pass(format!(
@@ -278,18 +318,22 @@ mod tests {
 
         let result = check.run(&fs).unwrap();
         assert!(result.is_fail());
-        assert!(result.message().contains("is not mounted"));
         assert!(
-            result
-                .message()
-                .contains("Unlock the hidden storage backend and mount its filesystem")
+            result.message().starts_with(
+                "Hidden volume at /mnt/data is not mounted: it is a folder on the filesystem \
+                 mounted at /"
+            ),
+            "{}",
+            result.message()
         );
-        // The guidance applies to every backend, so it names none of them.
+        // The remediation is the gate's redirect, which names no backend.
         // Matched case-insensitively so any spelling of a backend name trips it.
-        let message = result.message().to_lowercase();
+        let remediation = result.remediation().unwrap().to_lowercase();
+        assert!(remediation.contains("where setup happens"), "{remediation}");
         for backend in ["luks", "veracrypt", "tcrypt", "cryptsetup"] {
-            assert!(!message.contains(backend), "names {backend}");
+            assert!(!remediation.contains(backend), "names {backend}");
         }
+        assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
     }
 
     #[test]
@@ -436,9 +480,10 @@ mod tests {
     }
 
     #[test]
-    fn the_names_of_the_filesystem_on_top_of_the_root_are_audited() {
+    fn two_filesystems_at_the_root_fail_before_any_audit_or_probe() {
         let fs = MockFilesystem::new();
-        let check = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT));
+        let check =
+            HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT)).allowing(Allow::NotSeparate);
         fs.mock_set_path_exists(NEUTRAL_ROOT, true);
         fs.mock_set_writable(NEUTRAL_ROOT, true);
         let stacked = |below: &str, above: &str| {
@@ -448,19 +493,98 @@ mod tests {
                  31 30 253:1 / /mnt/data rw - ext4 /dev/mapper/{above} rw\n"
             )
         };
+        // Neither order is accepted, not even with the override.
+        for (below, above) in [("data", "veracrypt1"), ("veracrypt1", "data")] {
+            fs.mock_set_mount_table(&stacked(below, above));
+            let result = check.run(&fs).unwrap();
+            assert!(result.is_fail(), "got {result:?}");
+            assert!(
+                result.message().contains(&format!(
+                    "two filesystems are mounted at /mnt/data: /dev/mapper/{below}, then \
+                     /dev/mapper/{above} over it"
+                )),
+                "{}",
+                result.message()
+            );
+            assert_eq!(
+                result.remediation(),
+                Some("Unmount the one that is not the volume, then run the command again.")
+            );
+        }
+        assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+    }
 
-        fs.mock_set_mount_table(&stacked("data", "veracrypt1"));
-        let result = check.run(&fs).unwrap();
+    /// A root that is a bind of a folder of `/`: decoy storage.
+    fn bind_of_a_decoy_folder() -> MockFilesystem {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+        fs.mock_set_writable(NEUTRAL_ROOT, true);
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             30 1 8:1 /srv/x /mnt/data rw - ext4 /dev/vda1 rw\n",
+        );
+        fs
+    }
+
+    #[test]
+    fn decoy_storage_fails_without_a_write_probe() {
+        let fs = bind_of_a_decoy_folder();
+        let result = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_fail(), "got {result:?}");
+        assert_eq!(
+            result.message(),
+            "Hidden volume at /mnt/data is not a volume of its own: it is a bind mount of a \
+             folder of /"
+        );
+        assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
+    }
+
+    #[test]
+    fn the_override_turns_decoy_storage_into_a_warning() {
+        let fs = bind_of_a_decoy_folder();
+        let result = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
+            .allowing(Allow::NotSeparate)
+            .run(&fs)
+            .unwrap();
         assert!(result.is_warn(), "got {result:?}");
         assert!(
-            result.message().contains("veracrypt1"),
+            result.message().starts_with(
+                "--allow-unmounted: using /mnt/data although it is a bind mount of a folder of /"
+            ),
             "{}",
             result.message()
         );
+    }
 
-        fs.mock_set_mount_table(&stacked("veracrypt1", "data"));
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_pass(), "got {result:?}");
+    #[test]
+    fn unjudged_storage_fails_even_with_the_override() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(NEUTRAL_ROOT, true);
+        fs.mock_set_writable(NEUTRAL_ROOT, true);
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             30 1 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n",
+        );
+        // A crypttab that exists but cannot be read.
+        fs.mock_set_path_exists("/etc/crypttab", true);
+        let result = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
+            .allowing(Allow::NotSeparate)
+            .run(&fs)
+            .unwrap();
+        assert!(result.is_fail(), "got {result:?}");
+        assert!(
+            result
+                .message()
+                .contains("could not read /etc/crypttab to tell where /mnt/data lives"),
+            "{}",
+            result.message()
+        );
+        assert_eq!(
+            result.remediation(),
+            Some("Run the command again with sudo.")
+        );
     }
 
     #[test]

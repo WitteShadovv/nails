@@ -609,6 +609,7 @@ fn in_the_session_a_folder_is_kept_only_when_the_plan_accepted_it() {
     // nothing is mounted at the root, `/` is the overlay with its upper there.
     let fs = fs_with(&session_table(""));
     write_plan(&fs, None);
+    assert_eq!(super::recorded_acceptance(&fs), None);
     assert!(matches!(
         refusal(&fs, "/mnt/data").kind,
         RefusalKind::NotAMountPoint { .. }
@@ -628,6 +629,10 @@ fn in_the_session_a_folder_is_kept_only_when_the_plan_accepted_it() {
         Assessment::Warned(refusal) => assert!(refusal.overridden(), "{refusal:?}"),
         other => panic!("{other:?}"),
     }
+    assert_eq!(
+        super::recorded_acceptance(&fs).as_deref(),
+        Some("it is a folder")
+    );
     // The state of that session still goes onto the folder.
     let _gate = super::state_attach_probe::enforce();
     super::ensure_state_dir_attached(&fs, Path::new("/mnt/data"), Path::new("/mnt/data")).unwrap();

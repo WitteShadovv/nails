@@ -255,10 +255,25 @@ pub fn save_state<F: Filesystem>(fs: &F, hidden_root: &Path, state: &RehearsalSt
 /// bookmark lines in an upper `recently-used.xbel`, and the state file.
 /// Returns the paths removed or rewritten.
 ///
+/// The attach gate decides first: on a root it refuses (an unmounted mount
+/// point, a disk mounted over the volume) nothing is removed or rewritten.
+///
 /// # Errors
 ///
-/// Fails when the state file cannot be removed.
-pub fn reset(hidden_root: &Path, state: &RehearsalState) -> Result<Vec<PathBuf>> {
+/// Fails when the gate refuses the root or the state file cannot be removed.
+pub fn reset<F: Filesystem>(
+    fs: &F,
+    hidden_root: &Path,
+    state: &RehearsalState,
+) -> Result<Vec<PathBuf>> {
+    if let crate::hidden_root::Assessment::Refused(refusal) =
+        crate::HiddenRoot::assess(fs, hidden_root)?
+    {
+        return Err(NailsError::InvalidState(format!(
+            "refusing to reset the rehearsal: {}",
+            refusal.reason
+        )));
+    }
     let mut touched = Vec::new();
     for record in &state.channels {
         let Some(upper) = &record.upper_copy else {

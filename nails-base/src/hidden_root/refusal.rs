@@ -47,6 +47,20 @@ impl RefusalKind {
         }
     }
 
+    /// Why a root is not a volume of its own, as a phrase that completes
+    /// "<root> is not a volume of its own:"; `None` for the other kinds.
+    pub fn why(&self) -> Option<String> {
+        match self {
+            RefusalKind::NotAMountPoint { mount_point } => Some(format!(
+                "it is a folder on the filesystem mounted at {}",
+                mount_point.display()
+            )),
+            RefusalKind::DecoyStorage { verdict } => Some(verdict.reason()),
+            RefusalKind::SameDeviceAsRoot => Some("it is on the device that holds /".to_string()),
+            _ => None,
+        }
+    }
+
     /// The sentence that says why `root` was refused, without a full stop.
     fn sentence(&self, root: &Path) -> String {
         let root = root.display();
@@ -57,16 +71,12 @@ impl RefusalKind {
                 "nothing shows that {root} is a volume of its own: the mount table cannot be \
                  read ({error})"
             ),
-            RefusalKind::NotAMountPoint { mount_point } => format!(
-                "{root} is not a volume of its own: it is a folder on the filesystem mounted at {}",
-                mount_point.display()
+            RefusalKind::NotAMountPoint { .. }
+            | RefusalKind::DecoyStorage { .. }
+            | RefusalKind::SameDeviceAsRoot => format!(
+                "{root} is not a volume of its own: {}",
+                self.why().unwrap_or_default()
             ),
-            RefusalKind::DecoyStorage { verdict } => {
-                format!("{root} is not a volume of its own: {}", verdict.reason())
-            }
-            RefusalKind::SameDeviceAsRoot => {
-                format!("{root} is not a volume of its own: it is on the device that holds /")
-            }
             RefusalKind::Covered { below, above } => format!(
                 "two filesystems are mounted at {root}: {}, then {} over it",
                 below.display(),
@@ -124,13 +134,8 @@ impl Refusal {
     /// The warning of a root that attached with this refusal
     /// ([`Assessment::Warned`](super::Assessment::Warned)).
     pub fn warning(&self) -> String {
-        let why = match &self.kind {
-            RefusalKind::NotAMountPoint { mount_point } => format!(
-                "it is a folder on the filesystem mounted at {}",
-                mount_point.display()
-            ),
-            RefusalKind::DecoyStorage { verdict } if self.overridden() => verdict.reason(),
-            _ => return self.reason.clone(),
+        let Some(why) = self.kind.why().filter(|_| self.overridden()) else {
+            return self.reason.clone();
         };
         format!(
             "--allow-unmounted: using {} although {why}; every file nails writes there lands \

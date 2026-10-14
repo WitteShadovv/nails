@@ -403,6 +403,12 @@ pub fn recorded_hidden_dev<F: Filesystem>(fs: &F) -> Option<String> {
     recorded_plan(fs)?.hidden_dev
 }
 
+/// Why the session's hidden root is not a volume of its own, when its
+/// activation accepted that with `--allow-unmounted` (the plan in `/run`).
+pub fn recorded_acceptance<F: Filesystem>(fs: &F) -> Option<String> {
+    recorded_plan(fs)?.accepted_not_separate
+}
+
 /// The session plan in `/run`, if one can be read.
 fn recorded_plan<F: Filesystem>(fs: &F) -> Option<nails_teardown::whole_root::plan::Plan> {
     let path = nails_teardown::whole_root::plan::default_plan_path();

@@ -290,12 +290,13 @@ fn a_scan_without_a_token_source_is_refused() {
 }
 
 #[test]
-fn plant_outside_an_active_session_is_refused() {
+fn plant_on_a_folder_is_refused_by_the_attach_gate() {
     let harness = Harness::new();
-    let output = harness.run(&["rehearse", "plant"]);
-    // The tempdir hidden root is not a mounted volume, or no session is active;
-    // either way nothing is planted.
-    assert_eq!(output.status.code(), Some(6), "{output:?}");
+    let output = harness.run(&["--json", "rehearse", "plant"]);
+    // The tempdir hidden root is a folder, not a volume of its own: the gate
+    // refuses it before anything is planted.
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    assert_eq!(json(&output)["error"]["code"], "not_separate_volume");
     assert!(!harness.dir.path().join("hidden/rehearse").exists());
 }
 
@@ -510,7 +511,7 @@ fn a_token_file_without_a_valid_token_is_refused() {
 }
 
 #[test]
-fn reset_removes_the_planted_copy_and_the_state_with_the_token_redacted() {
+fn reset_on_a_folder_is_refused_and_removes_nothing() {
     let harness = Harness::new();
     let state = planted(&harness, Some(OTHER_BOOT.to_string()), 0);
     let upper = state.channels[0].upper_copy.clone().unwrap();
@@ -520,43 +521,11 @@ fn reset_removes_the_planted_copy_and_the_state_with_the_token_redacted() {
 
     let output = harness.run(&["--json", "rehearse", "reset"]);
 
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert_no_token(&output);
-    let value = json(&output);
-    assert_eq!(value["data"]["phase"], "none");
-    let hidden = harness.hidden().display().to_string();
-    assert_eq!(
-        value["data"]["removed"],
-        serde_json::json!([
-            format!("{hidden}/root/upper/home/op/rehearse-<canary>"),
-            format!("{hidden}/rehearse/state.json"),
-        ])
-    );
-    assert!(!upper.exists());
-    assert!(!harness.state_path().exists());
-}
-
-#[test]
-fn reset_in_human_form_lists_what_it_removed() {
-    let harness = Harness::new();
-    harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), 0));
-
-    let output = harness.run(&["--ascii", "rehearse", "reset"]);
-
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("[PASS] Removed rehearsal 5a17c0"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains(&format!("  removed {}", harness.state_path().display())),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("-> Step 1 of 3: activate a hidden session"),
-        "{stdout}"
-    );
+    assert_eq!(json(&output)["error"]["code"], "reset");
+    assert!(upper.exists());
+    assert!(harness.state_path().exists());
 }
 
 #[test]
@@ -576,6 +545,68 @@ mod kernel_tests {
     use super::*;
     use nails_core::test_path;
     use nails_core::test_support::Rerun;
+
+    #[test]
+    fn reset_removes_the_planted_copy_and_the_state_with_the_token_redacted() {
+        let _ = Rerun::new(test_path!(
+            reset_removes_the_planted_copy_and_the_state_with_the_token_redacted
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let harness = Harness::on_a_volume();
+            harness.write_marker();
+            let state = planted(&harness, Some(OTHER_BOOT.to_string()), 0);
+            let upper = state.channels[0].upper_copy.clone().unwrap();
+            std::fs::create_dir_all(upper.parent().unwrap()).unwrap();
+            std::fs::write(&upper, TOKEN).unwrap();
+            harness.write_state(&state);
+
+            let output = harness.run(&["--json", "rehearse", "reset"]);
+
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            assert_no_token(&output);
+            let value = json(&output);
+            assert_eq!(value["data"]["phase"], "none");
+            let hidden = harness.hidden().display().to_string();
+            assert_eq!(
+                value["data"]["removed"],
+                serde_json::json!([
+                    format!("{hidden}/root/upper/home/op/rehearse-<canary>"),
+                    format!("{hidden}/rehearse/state.json"),
+                ])
+            );
+            assert!(!upper.exists());
+            assert!(!harness.state_path().exists());
+        });
+    }
+
+    #[test]
+    fn reset_in_human_form_lists_what_it_removed() {
+        let _ = Rerun::new(test_path!(reset_in_human_form_lists_what_it_removed))
+            .in_user_mount_ns()
+            .run(|| {
+                let harness = Harness::on_a_volume();
+                harness.write_marker();
+                harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), 0));
+
+                let output = harness.run(&["--ascii", "rehearse", "reset"]);
+
+                assert_eq!(output.status.code(), Some(0), "{output:?}");
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    stdout.contains("[PASS] Removed rehearsal 5a17c0"),
+                    "{stdout}"
+                );
+                assert!(
+                    stdout.contains(&format!("  removed {}", harness.state_path().display())),
+                    "{stdout}"
+                );
+                assert!(
+                    stdout.contains("-> Step 1 of 3: activate a hidden session"),
+                    "{stdout}"
+                );
+            });
+    }
 
     #[test]
     fn a_device_scan_records_the_scan_in_the_state_on_an_attached_volume() {
