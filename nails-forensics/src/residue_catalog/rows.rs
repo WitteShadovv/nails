@@ -500,7 +500,7 @@ pub const CATALOG: &[ResidueClass] = &[
         verify: Probe::Check("examiner-config"),
         mitigation: "Never add the hidden backend to the decoy's crypttab or fstab; open it by hand each time. Activation refuses an entry that opens or mounts the hidden volume; the decoy's own entries are reviewed with verify --examiner.",
         doc_anchor: "decoy-requirements.md#crypttab-and-fstab",
-        e2e: E2e::Test("examiner-audit"),
+        e2e: E2e::Test("preflight-decoy-filesystem"),
         residual: false,
         conclusion: Some("The decoy is configured to open encrypted storage"),
     },

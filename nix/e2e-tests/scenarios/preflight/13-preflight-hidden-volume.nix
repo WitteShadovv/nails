@@ -53,7 +53,15 @@ in
             # command refuses while still reporting the failure in the readiness
             # report on stdout.
             assert_exit_code(result, 4)
-            assert_result_contains(result, ["hidden-volume", "is not mounted"], stream="stdout")
+            assert_result_contains(
+                result,
+                [
+                    "hidden-volume",
+                    "is not mounted: it is a folder on the filesystem mounted at /",
+                    "Where setup happens",
+                ],
+                stream="stdout",
+            )
 
         with subtest("an unmounted hidden root is never written to"):
             # The directory exists but nothing is mounted there, so it sits on the
@@ -61,6 +69,8 @@ in
             # must all leave it byte-for-byte empty: no log, no staged config, no
             # state file may be dropped onto what is really the persistent disk.
             machine.succeed("mkdir -p /mnt/preflight-empty")
+            machine.succeed("touch -m -d '2001-02-03 04:05:06' /mnt/preflight-empty")
+            before = machine.succeed("stat -c '%Y %Z' /mnt/preflight-empty").strip()
             write_hidden_volume_config("/tmp/preflight-empty.toml", "/mnt/preflight-empty")
             for args in [
                 "status --ascii",
@@ -73,6 +83,9 @@ in
                 "find /mnt/preflight-empty -mindepth 1 | wc -l"
             ).strip()
             assert entries == "0", f"unmounted hidden root was written to ({entries} entries)"
+            # Not even probed: a write probe would have changed its timestamps.
+            after = machine.succeed("stat -c '%Y %Z' /mnt/preflight-empty").strip()
+            assert after == before, (before, after)
 
         with subtest("nix store hidden volume is rejected as non-writable"):
             write_hidden_volume_config("/tmp/preflight-store.toml", "${builtins.storeDir}")

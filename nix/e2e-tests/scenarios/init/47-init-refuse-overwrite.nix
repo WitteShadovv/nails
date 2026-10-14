@@ -61,17 +61,25 @@ in
             assert contents == "do-not-overwrite\n", contents
             machine.fail("test -e /mnt/data/config/nails.toml")
 
-        with subtest("init refuses an unmounted target and leaves it empty"):
-            # A plain directory on the root filesystem shares /'s device, so nothing
-            # is mounted there. init must refuse before writing anything.
+        with subtest("init refuses an unmounted target and leaves it untouched"):
+            # A plain directory on the root filesystem: nothing is mounted there.
+            # init must refuse before writing or probing anything, so even the
+            # directory's mtime and ctime stay as they were.
             machine.succeed("rm -rf /root/nails-unmounted && mkdir -p /root/nails-unmounted")
+            machine.succeed("touch -m -d '2001-02-03 04:05:06' /root/nails-unmounted")
+            before = machine.succeed("stat -c '%Y %Z' /root/nails-unmounted").strip()
             machine.succeed(
                 "bash -lc 'set +e; nails init /root/nails-unmounted > /run/init-unmounted.stdout 2>/run/init-unmounted.stderr; printf \"%s\" \"$?\" > /run/init-unmounted.rc'"
             )
             rc = int(machine.succeed("cat /run/init-unmounted.rc").strip())
             combined = machine.succeed("cat /run/init-unmounted.stdout /run/init-unmounted.stderr")
-            assert rc != 0, f"init unexpectedly accepted an unmounted directory: {combined!r}"
-            assert "mount the hidden volume first" in combined, combined
+            assert rc == 4, f"init did not refuse the unmounted directory: {rc} {combined!r}"
+            assert (
+                "/root/nails-unmounted is not a volume of its own: it is a folder on the "
+                "filesystem mounted at /. Nothing was written."
+            ) in combined, combined
             machine.succeed('test -z "$(ls -A /root/nails-unmounted)"')
+            after = machine.succeed("stat -c '%Y %Z' /root/nails-unmounted").strip()
+            assert after == before, (before, after)
   '';
 }

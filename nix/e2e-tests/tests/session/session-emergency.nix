@@ -12,9 +12,13 @@
 #      session included), the machine soft-reboots back to the plain decoy and
 #      the decoy greeter (here: getty) comes back; nothing typed in the hidden
 #      session reaches the decoy's history file.
-#   3. `nails emergency --poweroff` in the hidden session powers the machine
+#   3. A scratch disk mounted over the hidden root in the session: deactivate
+#      is refused with root_covered, emergency still returns to the decoy, and
+#      the scratch disk received nothing: no logs/, state.json, .lock or write
+#      probe, and its root directory's mtime and ctime are unchanged.
+#   4. `nails emergency --poweroff` in the hidden session powers the machine
 #      off; the next cold boot is the plain decoy with the backend closed.
-_:
+{ self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -26,7 +30,21 @@ in
     "shell"
     "session"
   ];
-  globalTimeout = 1500;
+  globalTimeout = 1800;
+
+  nodes.machine =
+    { ... }:
+    {
+      imports = [ ./../../lib/vm-config.nix ];
+      environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.nails ];
+      # The disk a covered-root subtest mounts over the hidden root.
+      virtualisation.emptyDiskImages = [
+        {
+          size = 64;
+          driveConfig.deviceExtraOpts.serial = "scratch";
+        }
+      ];
+    };
 
   testScript = _: ''
     import secrets
@@ -123,6 +141,38 @@ in
         assert activation_token not in history, history
         assert hidden_token not in history, history
         assert "emergency" not in history, history
+
+    with subtest("a disk mounted over the hidden root in the session receives nothing"):
+        machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
+        canonical_activate(CONFIG, "--overlay-only", "activate-covered")
+        session.assert_hidden_root(machine)
+        machine.succeed(
+            "mkfs.ext4 -q -L scratch /dev/disk/by-id/virtio-scratch && "
+            "mount /dev/disk/by-id/virtio-scratch /mnt/data"
+        )
+        scratch_times = machine.succeed("stat -c '%Y %Z' /mnt/data").strip()
+        rc, out = machine.execute(
+            f"nails --config {CONFIG} --json deactivate -y 2>/dev/null"
+        )
+        assert rc == 4, (rc, out)
+        assert '"code":"root_covered"' in out, out
+        session.assert_hidden_root(machine)
+        # The state lock refuses the covered root, but emergency proceeds
+        # without it and leaves anyway.
+        timings = session.follow_soft_reboot(
+            machine, f"nails --config {CONFIG} emergency", "emergency-covered"
+        )
+        machine.log(f"emergency timings: {timings}")
+        session.assert_decoy_root(machine)
+        machine.succeed(
+            "mkdir -p /run/scratch && "
+            "mount -o ro,noload /dev/disk/by-id/virtio-scratch /run/scratch"
+        )
+        for name in ["logs", "state.json", ".lock", ".nails_write_test"]:
+            machine.fail(f"test -e /run/scratch/{name}")
+        after = machine.succeed("stat -c '%Y %Z' /run/scratch").strip()
+        assert after == scratch_times, (scratch_times, after)
+        machine.succeed("umount /run/scratch")
 
     with subtest("emergency --poweroff in the hidden session powers off"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
