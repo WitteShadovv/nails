@@ -382,6 +382,10 @@ fn an_unencrypted_image_file_on_home_is_refused() {
         }
     );
     assert_eq!(verdict.severity(), Severity::Refuse);
+    assert_eq!(
+        verdict.reason(),
+        "it is an unencrypted image file (/home/op/disk.img) on /home"
+    );
 }
 
 #[test]
@@ -483,6 +487,36 @@ fn the_separate_reason_and_several_unreadable_files_read_well() {
         verdict.reason(),
         "/etc/fstab, /etc/crypttab could not be read, so where it lives cannot be told"
     );
+}
+
+#[test]
+fn another_member_of_a_btrfs_filesystem_the_decoy_mounts_by_hand_is_refused() {
+    // A two-disk btrfs pool the decoy lists as noauto at /pool, mounted at the
+    // root through its second member.
+    let world = plain_decoy("5 1 0:40 / /mnt rw - btrfs /dev/sdc rw,subvol=/\n")
+        .disk("sdb", "8:16")
+        .disk("sdc", "8:32")
+        .btrfs(&["sdb", "sdc"])
+        .fstab("/dev/sda1 / ext4 defaults 0 1\nUUID=p1 /pool btrfs noauto 0 0\n")
+        .spec("UUID=p1", "sdb");
+    assert_eq!(
+        world.verdict("/mnt"),
+        Verdict::OnDecoyFilesystem {
+            how: Sharing::Filesystem,
+            at: PathBuf::from("/pool"),
+        }
+    );
+}
+
+#[test]
+fn a_device_reached_twice_is_walked_once() {
+    let devices = World::default()
+        .lv("dm-2", "254:2", "a", &["dm-0", "dm-1"])
+        .lv("dm-0", "254:0", "b", &["sda1"])
+        .lv("dm-1", "254:1", "c", &["sda1"])
+        .part("sda1", "8:1", "sda")
+        .devices;
+    assert_eq!(devices.stack("dm-2"), vec!["dm-2", "dm-0", "sda1", "dm-1"]);
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +678,18 @@ fn a_tcrypt_line_for_another_volume_on_the_same_drive_warns() {
         .crypttab("outer /dev/sdb1 none tcrypt-veracrypt\n");
     let judgement = world.judge("/mnt");
     assert_eq!(judgement.verdict, Verdict::Separate);
+    assert_eq!(
+        entry_kinds(&judgement),
+        vec![(EntryKind::OuterWarning, CRYPTTAB)]
+    );
+}
+
+#[test]
+fn a_tcrypt_line_for_a_partition_of_the_disk_the_volume_uses_whole_warns() {
+    let judgement = external_veracrypt()
+        .part("sdb1", "8:17", "sdb")
+        .crypttab("old /dev/sdb1 none tcrypt\n")
+        .judge("/mnt");
     assert_eq!(
         entry_kinds(&judgement),
         vec![(EntryKind::OuterWarning, CRYPTTAB)]

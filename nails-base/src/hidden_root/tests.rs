@@ -58,7 +58,7 @@ fn write_plan(fs: &MockFilesystem, hidden_dev: Option<&str>) {
 fn refusal(fs: &MockFilesystem, root: &str) -> Refusal {
     match HiddenRoot::assess(fs, Path::new(root)).unwrap() {
         Assessment::Refused(refusal) => refusal,
-        Assessment::Attached => panic!("{root} was accepted"),
+        other => panic!("{root} was accepted: {other:?}"),
     }
 }
 
@@ -397,6 +397,7 @@ fn empty_root_is_unattached() {
 
 /// The gate on the real kernel, in an unprivileged user + mount namespace.
 mod kernel_tests {
+    use super::super::separation::Verdict;
     use super::super::{Assessment, HiddenRoot, RefusalKind};
     use crate::RealFilesystem;
     use crate::test_support::{Rerun, ScratchTmpfs};
@@ -404,7 +405,7 @@ mod kernel_tests {
 
     fn kind(root: &Path) -> Option<RefusalKind> {
         match HiddenRoot::assess(&RealFilesystem, root).unwrap() {
-            Assessment::Attached => None,
+            Assessment::Attached | Assessment::Warned(_) => None,
             Assessment::Refused(refusal) => Some(refusal.kind),
         }
     }
@@ -458,24 +459,103 @@ mod kernel_tests {
     }
 
     #[test]
-    fn a_bind_of_the_root_filesystem_is_refused_by_the_backstop() {
+    fn a_bind_of_the_root_filesystem_is_refused() {
+        let _ = Rerun::new(crate::test_path!(a_bind_of_the_root_filesystem_is_refused))
+            .in_user_mount_ns()
+            .run(|| {
+                let target = tempfile::tempdir().unwrap();
+                nix::mount::mount(
+                    Some("/"),
+                    target.path(),
+                    None::<&str>,
+                    nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
+                    None::<&str>,
+                )
+                .expect("bind / at a scratch path");
+                let refused = kind(target.path());
+                let _ = nix::mount::umount2(target.path(), nix::mount::MntFlags::MNT_DETACH);
+                // On a disk root the decoy-storage judge refuses it as the
+                // filesystem at / (or cannot judge it, when crypttab is
+                // readable by root only); on a RAM root (a live system) the
+                // judge has nothing to say and the device backstop refuses it.
+                assert!(
+                    matches!(
+                        refused,
+                        Some(
+                            RefusalKind::SameDeviceAsRoot
+                                | RefusalKind::DecoyStorage {
+                                    verdict: Verdict::OnDecoyFilesystem { .. }
+                                }
+                                | RefusalKind::StorageUnjudged { .. }
+                        )
+                    ),
+                    "{refused:?}"
+                );
+            });
+    }
+
+    /// Make `/etc/crypttab` exist but fail to read, inside the namespace: a
+    /// tmpfs over `/etc` holding a directory of that name.
+    fn unreadable_crypttab() {
+        nix::mount::mount(
+            Some("etc"),
+            "/etc",
+            Some("tmpfs"),
+            nix::mount::MsFlags::empty(),
+            Some("mode=0755"),
+        )
+        .expect("a private /etc");
+        std::fs::create_dir("/etc/crypttab").unwrap();
+    }
+
+    #[test]
+    fn an_unreadable_crypttab_leaves_a_tmpfs_root_attached() {
         let _ = Rerun::new(crate::test_path!(
-            a_bind_of_the_root_filesystem_is_refused_by_the_backstop
+            an_unreadable_crypttab_leaves_a_tmpfs_root_attached
         ))
         .in_user_mount_ns()
         .run(|| {
+            let volume = ScratchTmpfs::new("");
+            unreadable_crypttab();
+            assert_eq!(kind(volume.path()), None);
+        });
+    }
+
+    #[test]
+    fn an_unreadable_crypttab_refuses_a_root_on_a_disk() {
+        let _ = Rerun::new(crate::test_path!(
+            an_unreadable_crypttab_refuses_a_root_on_a_disk
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            // A folder of the filesystem behind TMPDIR, bound at a scratch path.
+            let backing = tempfile::tempdir().unwrap();
             let target = tempfile::tempdir().unwrap();
             nix::mount::mount(
-                Some("/"),
+                Some(backing.path()),
                 target.path(),
                 None::<&str>,
-                nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
+                nix::mount::MsFlags::MS_BIND,
                 None::<&str>,
             )
-            .expect("bind / at a scratch path");
+            .expect("bind a folder at a scratch path");
+            let mounts = crate::filesystem::mountinfo::read_mountinfo().unwrap();
+            let fstype = super::super::mount_holding(&mounts, target.path())
+                .map(|mount| mount.fstype.clone())
+                .unwrap_or_default();
+            if matches!(fstype.as_str(), "tmpfs" | "ramfs") {
+                let _ = nix::mount::umount2(target.path(), nix::mount::MntFlags::MNT_DETACH);
+                crate::test_support::skip_host("TMPDIR is on a RAM filesystem");
+            }
+            unreadable_crypttab();
             let refused = kind(target.path());
             let _ = nix::mount::umount2(target.path(), nix::mount::MntFlags::MNT_DETACH);
-            assert_eq!(refused, Some(RefusalKind::SameDeviceAsRoot));
+            assert_eq!(
+                refused,
+                Some(RefusalKind::StorageUnjudged {
+                    unreadable: vec![std::path::PathBuf::from("/etc/crypttab")]
+                })
+            );
         });
     }
 }

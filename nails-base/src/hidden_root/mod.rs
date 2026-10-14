@@ -93,6 +93,17 @@ pub enum RefusalKind {
         /// The source of the mount a lookup reaches.
         source: PathBuf,
     },
+    /// The root lives on storage the decoy uses (see [`separation`]).
+    DecoyStorage {
+        /// Where it lives.
+        verdict: separation::Verdict,
+    },
+    /// Where the root lives cannot be told: these inputs exist but could not
+    /// be read.
+    StorageUnjudged {
+        /// The inputs that could not be read.
+        unreadable: Vec<PathBuf>,
+    },
     /// The root reports the same device as `/`.
     SameDeviceAsRoot,
 }
@@ -111,14 +122,18 @@ pub struct Refusal {
 pub enum Assessment {
     /// A volume of its own is mounted at the root; writing to it is safe.
     Attached,
+    /// The root may be written to, but it lives on the decoy's storage in a
+    /// way that only warns (see [`separation::Severity::Warn`]); the refusal
+    /// says what to tell the operator.
+    Warned(Refusal),
     /// Nothing may be written to the root.
     Refused(Refusal),
 }
 
 impl Assessment {
-    /// `true` only for [`Assessment::Attached`].
+    /// `true` for [`Assessment::Attached`] and [`Assessment::Warned`].
     pub fn is_attached(&self) -> bool {
-        matches!(self, Assessment::Attached)
+        !matches!(self, Assessment::Refused(_))
     }
 }
 
@@ -148,11 +163,17 @@ impl HiddenRoot {
     ///    device the entry recorded in the session plan (`hidden_dev`). For a
     ///    plan without it, or none that can be read, `<root>/root/upper` must
     ///    sit on the same device as the root.
-    /// 5. **Not `/`'s device** — a backstop for a bind of `/`'s own filesystem
+    /// 5. **Not the decoy's storage** — outside the session, the
+    ///    [`separation`] judge: not a subvolume, bind or image file on a
+    ///    filesystem the decoy uses, no device shared with it, and every input
+    ///    it needs readable (a tmpfs or ramfs root needs none). A verdict that
+    ///    only warns attaches with [`Assessment::Warned`].
+    /// 6. **Not `/`'s device** — a backstop for a bind of `/`'s own filesystem
     ///    at the root.
     ///
-    /// No subprocess, no write, no cache: it reads the mount table and, in the
-    /// session, the plan through `fs`.
+    /// No subprocess, no write, no cache: it reads the mount table, `fstab`,
+    /// `crypttab` and sysfs on the decoy, and the plan in the session, through
+    /// `fs`.
     pub fn assess<F: Filesystem>(fs: &F, root: &Path) -> Result<Assessment> {
         if root.as_os_str().is_empty() {
             return refuse(
@@ -216,7 +237,8 @@ impl HiddenRoot {
             );
         }
 
-        if root_is_hidden_overlay(&table, &canonical).is_some()
+        let in_session = root_is_hidden_overlay(&table, &canonical).is_some();
+        if in_session
             && !holds_the_session_volume(
                 fs,
                 &canonical,
@@ -237,6 +259,42 @@ impl HiddenRoot {
             );
         }
 
+        let mut warning = None;
+        if !in_session {
+            let verdict = separation::judge_storage(fs, &table, visible, Path::new("/")).verdict;
+            match (verdict.severity(), verdict) {
+                (_, separation::Verdict::CouldNotJudge { unreadable }) => {
+                    let files = unreadable
+                        .iter()
+                        .map(|p| p.display().to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    return refuse(
+                        RefusalKind::StorageUnjudged { unreadable },
+                        format!(
+                            "could not read {files} to tell where {} lives; run with sudo",
+                            root.display()
+                        ),
+                    );
+                }
+                (separation::Severity::Pass, _) => {}
+                (severity, verdict) => {
+                    let refusal = Refusal {
+                        reason: format!(
+                            "hidden root {} is not a volume of its own: {}",
+                            root.display(),
+                            verdict.reason()
+                        ),
+                        kind: RefusalKind::DecoyStorage { verdict },
+                    };
+                    if severity == separation::Severity::Refuse {
+                        return Ok(Assessment::Refused(refusal));
+                    }
+                    warning = Some(refusal);
+                }
+            }
+        }
+
         if fs.device_id(root)? == fs.device_id(Path::new("/"))? {
             return refuse(
                 RefusalKind::SameDeviceAsRoot,
@@ -248,7 +306,7 @@ impl HiddenRoot {
             );
         }
 
-        Ok(Assessment::Attached)
+        Ok(warning.map_or(Assessment::Attached, Assessment::Warned))
     }
 
     /// Decide whether `root` is a mounted hidden volume NAILS may write to:

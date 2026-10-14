@@ -526,7 +526,7 @@ fn file_container_on_btrfs_warns_about_cow() {
     let message = result.message();
     assert!(message.contains("copy-on-write btrfs filesystem"));
     assert!(message.contains("disable automatic snapshots"));
-    assert!(message.contains("on a btrfs filesystem"));
+    assert!(message.contains("on the btrfs filesystem mounted at /home"));
 }
 
 #[test]

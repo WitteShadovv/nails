@@ -595,7 +595,16 @@ config and CLI surfaces; there are no compatibility shims.
   in the hidden session accepts only the volume the session started from, whose device the entry
   records in the session plan; a disk mounted over the hidden root during the session no longer
   receives logs, the state file, `.lock` or the backend watcher's write probe, and the watcher
-  writes nothing while the root is covered.
+  writes nothing while the root is covered. Outside the session the gate also refuses a root that
+  lives on the decoy's own storage although it is a mount point: a subvolume or a bind of a folder
+  of a filesystem the decoy mounts (per its mount table and `/etc/fstab`), a device the decoy's
+  root, system mounts, fstab, swap or crypttab also use (such as a logical volume in its encrypted
+  volume group), or an unencrypted image file on such a filesystem. An encrypted container file
+  there is accepted with a warning that the filesystem's journal and copy-on-write snapshots can
+  keep old copies of its changed parts; a device shared only with `noauto` entries also only
+  warns. When `/etc/fstab`, `/etc/crypttab` or `/sys/class/block` exists but cannot be read, as
+  for a user other than root where crypttab is readable by root only, the gate refuses a root that
+  is not a tmpfs and asks for `sudo`.
 - The mount queries answer for the mount a lookup of the path reaches. A mount covered by a later
   mount on its parent directory no longer counts as mounted, and of two filesystems stacked on one
   mount point the one on top gives the type, source and read-only flag, where the first or the last

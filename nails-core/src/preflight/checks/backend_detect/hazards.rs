@@ -34,7 +34,8 @@ pub(super) fn hazards(layers: &[Layer], entries: &[MountEntry]) -> Vec<String> {
         let Some(backing_file) = &layer.backing_file else {
             continue;
         };
-        let host_fstype = mount_containing(entries, backing_file).map(|m| m.fstype.as_str());
+        let host = mount_containing(entries, backing_file);
+        let host_fstype = host.map(|m| m.fstype.as_str());
 
         // A FUSE-provided file (for example VeraCrypt's aux mount without
         // kernel crypto) is not the container itself, so the container
@@ -49,7 +50,7 @@ pub(super) fn hazards(layers: &[Layer], entries: &[MountEntry]) -> Vec<String> {
             continue;
         }
 
-        found.push(container_timestamp_hazard(layer, host_fstype));
+        found.push(container_timestamp_hazard(layer, host));
         if let Some(fstype) = host_fstype.filter(|fs| COW_FILESYSTEMS.contains(fs)) {
             found.push(format!(
                 "The container sits on a copy-on-write {fstype} filesystem, which writes \
@@ -120,9 +121,13 @@ fn discard_hazard(crypt: &CryptType, layer: &Layer) -> String {
     )
 }
 
-fn container_timestamp_hazard(layer: &Layer, host_fstype: Option<&str>) -> String {
-    let host = match host_fstype {
-        Some(fstype) => format!(" on a {fstype} filesystem"),
+fn container_timestamp_hazard(layer: &Layer, host: Option<&MountEntry>) -> String {
+    let host = match host {
+        Some(mount) => format!(
+            " on the {} filesystem mounted at {}",
+            mount.fstype,
+            mount.mount_point.display()
+        ),
         None => String::new(),
     };
     format!(

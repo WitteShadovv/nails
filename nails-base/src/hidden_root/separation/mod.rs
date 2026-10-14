@@ -33,12 +33,16 @@
 //! tmpfs or ramfs root is always separate.
 //!
 //! The inputs are the mount table, the parsed files and a [`DeviceMap`] of
-//! the block devices; nothing here reads a file.
+//! the block devices; [`judge`] reads no file. [`collect`] reads them through
+//! the [`Filesystem`](crate::Filesystem) trait, and [`judge_storage`] does
+//! both for the attach gate.
 
+mod collect;
 mod judge;
 #[cfg(test)]
 mod tests;
 
+pub use collect::{Collected, collect, judge_storage};
 pub use judge::judge;
 
 use crate::crypttab::CrypttabEntry;
