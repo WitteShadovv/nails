@@ -167,7 +167,7 @@ fn device_mapper_uuids_and_names_are_classified() {
     assert_eq!(kind("", "veracryptX"), DmKind::Other);
     assert_eq!(
         kind(
-            "LVM-Xo3dKq0f2l8Nn6VhR6x8V0Z3eY3QxVQkq6l9q7f3M2a3W2vR1nS7vB2ZqE4yT1aA",
+            "LVM-Xo3dKq0f2l8Nn6VhR6x8V0Z3eY3QxVQkq6l9q7f3M2a3W2vR1nS7vB2ZqE4yT1aA", // pragma: allowlist secret
             "vg-lv"
         ),
         DmKind::Lvm
