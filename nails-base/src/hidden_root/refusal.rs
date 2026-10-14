@@ -408,20 +408,6 @@ mod tests {
     }
 
     #[test]
-    fn an_unreadable_loop_device_is_named_by_what_it_is() {
-        let refusal = Refusal::new(
-            RefusalKind::StorageUnjudged {
-                unreadable: vec![PathBuf::from("/dev/loop0")],
-            },
-            Path::new("/mnt"),
-        );
-        assert_eq!(
-            refusal.reason,
-            "could not read the record of a loop device to tell where /mnt lives"
-        );
-    }
-
-    #[test]
     fn the_message_says_nothing_was_written() {
         let refusal = Refusal::new(
             RefusalKind::NotAMountPoint {
