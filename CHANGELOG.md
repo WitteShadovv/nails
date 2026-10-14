@@ -299,7 +299,9 @@ config and CLI surfaces; there are no compatibility shims.
   report it; `check` says it first, then its readiness report, and `check --json` carries it as
   `refusal`. The text names no storage tool, no volume type and no device: a filesystem is named by
   its mount point and its type. `--no-preflight` no longer skips the attach gate. A refused root no
-  longer also prints a `File logging disabled` notice; `--verbose` shows it.
+  longer also prints a `File logging disabled` notice; `--verbose` shows it. For a root that does
+  not exist or is a folder, the hint first says to unlock the volume and mount it there, which is
+  the usual cause, then redirects.
 - `--allow-decoy-storage` is accepted by `init`, `activate` and `check` (and `activate --dry-run`).
   It turns the refusal of a root on the decoy's own storage into a warning, for storage the operator
   knows the decoy does not use, and never covers a folder, a covered root, storage that cannot be

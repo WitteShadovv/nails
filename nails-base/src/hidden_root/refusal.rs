@@ -197,7 +197,7 @@ impl Refusal {
                 // Most often the volume is simply not unlocked yet, or the
                 // path has a typo.
                 let mut lines = vec![format!(
-                    "If the volume is already prepared, unlock it, mount it at {} and run the \
+                    "If the volume is already prepared, unlock and mount it at {}, then run the \
                      command again.",
                     self.root.display()
                 )];
@@ -541,7 +541,7 @@ mod tests {
             let hint = Refusal::new(kind, Path::new("/mnt")).hint(None);
             assert_eq!(
                 hint[0],
-                "If the volume is already prepared, unlock it, mount it at /mnt and run the \
+                "If the volume is already prepared, unlock and mount it at /mnt, then run the \
                  command again."
             );
             assert!(hint[1].starts_with("Setting up here"), "{hint:?}");

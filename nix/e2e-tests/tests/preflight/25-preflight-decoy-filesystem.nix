@@ -153,7 +153,7 @@ in
         assert_result_contains(
             result,
             [
-                "If the volume is already prepared, unlock it, mount it at /srv/x",
+                "If the volume is already prepared, unlock and mount it at /srv/x",
                 "Where setup happens",
             ],
         )

@@ -291,7 +291,7 @@ mod tests {
             result
                 .remediation()
                 .unwrap()
-                .starts_with("If the volume is already prepared, unlock it, mount it at /mnt/data")
+                .starts_with("If the volume is already prepared, unlock and mount it at /mnt/data")
         );
     }
 
