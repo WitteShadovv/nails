@@ -89,7 +89,7 @@ filesystem and says to remove the line.
 
 An encrypted container file on a decoy filesystem only warns: the filesystem's
 journal and copy-on-write snapshots (btrfs, snapper) can keep old copies of the
-parts of the container that changed. `--allow-unmounted` (on `init`,
+parts of the container that changed. `--allow-decoy-storage` (on `init`,
 `activate` and `check`) turns the refusal of the decoy's own storage into a
 warning; use it only for storage the gate takes for the decoy's that you know
 the decoy does not use (for example a disk its fstab lists but never mounts),

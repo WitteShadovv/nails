@@ -207,7 +207,7 @@ fn plant(
             refusal::NOT_SEPARATE_VOLUME,
             format!(
                 "a rehearsal on this storage cannot pass: {reason} (accepted with \
-                 --allow-unmounted). Nothing was written."
+                 --allow-decoy-storage). Nothing was written."
             ),
         );
     }

@@ -159,7 +159,7 @@ pub struct StatusReport {
     /// The device the hidden volume is mounted from.
     pub hidden_root_source: Option<String>,
     /// Why the hidden root is not a volume of its own, when the session's
-    /// activation accepted that with `--allow-unmounted`.
+    /// activation accepted that with `--allow-decoy-storage`.
     pub accepted_not_separate: Option<String>,
     /// The mounts the fstab policy placed in the hidden root.
     pub policy_mounts: Vec<PolicyMountView>,

@@ -127,7 +127,7 @@ fn a_dry_run_reports_the_refusal_and_opens_no_log() {
 #[test]
 fn the_override_never_covers_a_folder() {
     let (_dir, root, config) = folder_root();
-    let output = nails(&config, &["check", "--allow-unmounted", "--json"]);
+    let output = nails(&config, &["check", "--allow-decoy-storage", "--json"]);
     assert_eq!(output.status.code(), Some(4), "{output:?}");
     let value = last_json(&output);
     assert_eq!(
@@ -135,12 +135,15 @@ fn the_override_never_covers_a_folder() {
         "{value}"
     );
     for extra in [&[][..], &["--no-preflight"][..]] {
-        let mut args = vec!["activate", "-y", "--overlay-only", "--allow-unmounted"];
+        let mut args = vec!["activate", "-y", "--overlay-only", "--allow-decoy-storage"];
         args.extend_from_slice(extra);
         let output = nails(&config, &args);
         assert_eq!(output.status.code(), Some(4), "{extra:?}: {output:?}");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(!stderr.contains("warning: --allow-unmounted"), "{stderr}");
+        assert!(
+            !stderr.contains("warning: --allow-decoy-storage"),
+            "{stderr}"
+        );
         assert!(stderr.contains("Nothing was written."), "{stderr}");
     }
     assert!(entries(&root).is_empty(), "{:?}", entries(&root));
@@ -207,7 +210,7 @@ mod kernel_tests {
                 assert_eq!(output.status.code(), Some(4), "{args:?}: {output:?}");
                 assert_eq!(last_json(&output)["error"]["code"], "root_covered");
             }
-            let output = nails(&config, &["check", "--allow-unmounted", "--json"]);
+            let output = nails(&config, &["check", "--allow-decoy-storage", "--json"]);
             assert_eq!(output.status.code(), Some(4), "{output:?}");
             assert_eq!(
                 last_json(&output)["data"]["refusal"]["code"],

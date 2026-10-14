@@ -246,7 +246,7 @@ fn a_dry_run_checks_with_the_options_activation_uses() {
         let args = ActivateArgs {
             overlay_only: bits & 1 != 0,
             accept_persistent_decoy: bits & 2 != 0,
-            allow_unmounted: bits & 4 != 0,
+            allow_decoy_storage: bits & 4 != 0,
             dry_run: true,
             ..ActivateArgs::default()
         };

@@ -151,7 +151,7 @@ impl Assessment {
     }
 }
 
-/// The refusals the operator overrode (`--allow-unmounted`).
+/// The refusals the operator overrode (`--allow-decoy-storage`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Allow {
     /// Every refusal stands.
@@ -161,13 +161,13 @@ pub enum Allow {
     /// with a warning. Everything else still refuses: a missing root, a
     /// folder that is no mount point, a covered one, storage that cannot be
     /// judged and a root on `/`'s own device.
-    NotSeparate,
+    DecoyStorage,
 }
 
 impl Allow {
     /// Whether this override turns a refusal of `kind` into a warning.
     pub fn covers(self, kind: &RefusalKind) -> bool {
-        self == Allow::NotSeparate && matches!(kind, RefusalKind::DecoyStorage { .. })
+        self == Allow::DecoyStorage && matches!(kind, RefusalKind::DecoyStorage { .. })
     }
 }
 
@@ -420,7 +420,7 @@ pub fn recorded_hidden_dev<F: Filesystem>(fs: &F) -> Option<String> {
 }
 
 /// Why the session's hidden root is not a volume of its own, when its
-/// activation accepted that with `--allow-unmounted` (the plan in `/run`).
+/// activation accepted that with `--allow-decoy-storage` (the plan in `/run`).
 pub fn recorded_acceptance<F: Filesystem>(fs: &F) -> Option<String> {
     recorded_plan(fs)?.accepted_not_separate
 }
@@ -437,7 +437,8 @@ fn recorded_plan<F: Filesystem>(fs: &F) -> Option<nails_teardown::whole_root::pl
 ///
 /// Every manager state write and every command's state lock goes through it.
 /// Only `init` writes its first state file without it, once the attach gate
-/// (with `--allow-unmounted`, if the operator gave it) has passed the target.
+/// (with `--allow-decoy-storage`, if the operator gave it) has passed the
+/// target.
 ///
 /// The state directory is the hidden root (or a directory inside it). When the
 /// hidden volume is not mounted the configured path is a bare mount-point
@@ -452,8 +453,8 @@ pub fn ensure_state_dir_attached<F: Filesystem>(fs: &F, root: &Path, dir: &Path)
 }
 
 /// [`ensure_state_dir_attached`] with the refusals `allow` covers accepted: an
-/// activation the operator ran with `--allow-unmounted` keeps its state on the
-/// root it accepted. `dir` must still lie under the root, on the root's own
+/// activation the operator ran with `--allow-decoy-storage` keeps its state on
+/// the root it accepted. `dir` must still lie under the root, on the root's own
 /// mount.
 pub fn ensure_state_dir_attached_allowing<F: Filesystem>(
     fs: &F,

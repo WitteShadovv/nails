@@ -25,7 +25,7 @@ fn write_test_base_hardware_config(root: &Path) -> PathBuf {
 fn real_init_args(path: &Path, base_hardware_config: &Path) -> InitArgs {
     InitArgs {
         path: path.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: Some(base_hardware_config.to_path_buf()),
         no_hardware_config: false,
     }
@@ -105,7 +105,7 @@ fn unmounted_target_refused_with_zero_writes() {
 
     let args = InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: None,
         no_hardware_config: true,
     };
@@ -136,7 +136,7 @@ fn obstructing_file_refused_before_any_write() {
 
     let args = InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: None,
         no_hardware_config: true,
     };
@@ -173,7 +173,7 @@ fn directory_in_place_of_the_state_file_is_refused() {
 
     let args = InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: None,
         no_hardware_config: true,
     };
@@ -198,7 +198,7 @@ fn same_device_target_reports_the_mount_reason() {
 
     let args = InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: None,
         no_hardware_config: true,
     };
@@ -243,16 +243,20 @@ fn probes(fs: &MockFilesystem) -> Vec<nails_core::filesystem::MockOp> {
 fn refused_target_is_never_probed() {
     let root = Path::new("/srv/x");
     let fs = folder_mock(root);
-    for allow_unmounted in [false, true] {
+    for allow_decoy_storage in [false, true] {
         let args = InitArgs {
             path: root.to_path_buf(),
-            allow_unmounted,
+            allow_decoy_storage,
             hardware_config: None,
             no_hardware_config: true,
         };
         // A folder is no volume of its own, whatever the operator says.
         let status = run(&OutputSettings::default(), &fs, &args);
-        assert_eq!(status, ExitStatus::PreflightRefused, "{allow_unmounted}");
+        assert_eq!(
+            status,
+            ExitStatus::PreflightRefused,
+            "{allow_decoy_storage}"
+        );
         assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
     }
 }
@@ -272,12 +276,12 @@ fn bind_mock(root: &Path) -> MockFilesystem {
 }
 
 #[test]
-fn allow_unmounted_proceeds_on_decoy_storage_with_a_warning() {
+fn allow_decoy_storage_proceeds_on_decoy_storage_with_a_warning() {
     let root = Path::new("/mnt/data");
     let fs = bind_mock(root);
     let args = InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: None,
         no_hardware_config: true,
     };
@@ -293,15 +297,15 @@ fn allow_unmounted_proceeds_on_decoy_storage_with_a_warning() {
     let plan = plan(
         &fs,
         &InitArgs {
-            allow_unmounted: true,
+            allow_decoy_storage: true,
             ..args
         },
     )
-    .expect("--allow-unmounted should pass validation");
+    .expect("--allow-decoy-storage should pass validation");
     assert_eq!(
         plan.warnings,
         vec![
-            "--allow-unmounted: using /mnt/data although it is a bind mount of a folder of \
+            "--allow-decoy-storage: using /mnt/data although it is a bind mount of a folder of \
              /srv; everything written there lands on that storage"
                 .to_string()
         ]
@@ -310,10 +314,10 @@ fn allow_unmounted_proceeds_on_decoy_storage_with_a_warning() {
 }
 
 #[test]
-fn allow_unmounted_never_covers_a_covered_root_or_unjudged_storage() {
+fn allow_decoy_storage_never_covers_a_covered_root_or_unjudged_storage() {
     let args = |root: &Path| InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: true,
+        allow_decoy_storage: true,
         hardware_config: None,
         no_hardware_config: true,
     };
@@ -354,7 +358,7 @@ fn missing_hardware_config_fails_before_any_write() {
 
     let args = InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: None,
         no_hardware_config: false,
     };
@@ -379,7 +383,7 @@ fn non_nixos_host_skips_the_layout() {
 
     let args = InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: None,
         no_hardware_config: false,
     };
@@ -405,7 +409,7 @@ fn debian_host_init_creates_no_nixos_paths() {
 
     let args = InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: None,
         no_hardware_config: false,
     };
@@ -463,7 +467,7 @@ fn unsupported_host_is_refused_before_any_write() {
 
     let args = InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: None,
         no_hardware_config: false,
     };
@@ -498,7 +502,7 @@ fn full_validation_passes_on_a_mock_nixos_volume() {
 
     let args = InitArgs {
         path: root.to_path_buf(),
-        allow_unmounted: false,
+        allow_decoy_storage: false,
         hardware_config: None,
         no_hardware_config: false,
     };
@@ -704,15 +708,19 @@ mod kernel_tests {
                     .unwrap();
                 let before = fs::metadata(&folder).unwrap();
 
-                for allow_unmounted in [false, true] {
+                for allow_decoy_storage in [false, true] {
                     let args = InitArgs {
                         path: folder.clone(),
-                        allow_unmounted,
+                        allow_decoy_storage,
                         hardware_config: None,
                         no_hardware_config: true,
                     };
                     let status = run(&OutputSettings::default(), &RealFilesystem, &args);
-                    assert_eq!(status, ExitStatus::PreflightRefused, "{allow_unmounted}");
+                    assert_eq!(
+                        status,
+                        ExitStatus::PreflightRefused,
+                        "{allow_decoy_storage}"
+                    );
                 }
 
                 let after = fs::metadata(&folder).unwrap();
@@ -736,7 +744,7 @@ mod kernel_tests {
             |root| {
                 let args = InitArgs {
                     path: root.to_path_buf(),
-                    allow_unmounted: false,
+                    allow_decoy_storage: false,
                     hardware_config: None,
                     no_hardware_config: true,
                 };
@@ -782,7 +790,7 @@ mod kernel_tests {
             |root| {
                 let args = InitArgs {
                     path: root.to_path_buf(),
-                    allow_unmounted: false,
+                    allow_decoy_storage: false,
                     hardware_config: None,
                     no_hardware_config: true,
                 };

@@ -146,9 +146,9 @@ volume stacked on the decoy's storage, an image file on a decoy filesystem, a
 filesystem that shows no disk it stores its data on (an overlay, FUSE, a network
 filesystem or a ZFS dataset), and a root with a second filesystem mounted over
 it; it runs before `init`, `activate` and `check` write or probe anything, and
-`--no-preflight` does not skip it. `--allow-unmounted` turns the refusal of the
-decoy's storage into a warning; a folder is always refused (see
-[the attach gate](threat-model.md#the-attach-gate)). The decoy root must be a disk
+`--no-preflight` does not skip it. `--allow-decoy-storage` turns the refusal of
+the decoy's storage into a warning; a folder is always refused (see [the attach
+gate](threat-model.md#the-attach-gate)). The decoy root must be a disk
 filesystem that can be mounted again by its device for the way back (the
 `decoy-root` check refuses a tmpfs, ZFS or overlay root).
 

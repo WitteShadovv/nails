@@ -143,7 +143,7 @@ Also refused by the pre-flight checks:
   decoy's storage, an image file on a decoy filesystem, a filesystem that shows
   no disk it stores its data on (an overlay, FUSE, a network filesystem), or a
   root with a second filesystem mounted over it. The attach gate refuses these
-  before anything is written, `--no-preflight` included; `--allow-unmounted`
+  before anything is written, `--no-preflight` included; `--allow-decoy-storage`
   turns the refusal of the decoy's storage into a warning, and never covers a
   folder, a covered root or storage that cannot be judged (`hidden-volume`);
 - a decoy `/etc/crypttab` or `/etc/fstab` line that opens or mounts the hidden

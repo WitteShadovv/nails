@@ -271,7 +271,7 @@ rehearsal state all ask it first. It refuses:
 
 An encrypted container file on a decoy filesystem only warns: filesystem
 journals and copy-on-write snapshots of that filesystem can keep old copies of
-the parts of the container that changed. `--allow-unmounted` (on `init`,
+the parts of the container that changed. `--allow-decoy-storage` (on `init`,
 `activate` and `check`) turns the refusal of the decoy's storage into a
 warning; activation then repeats it in the logout confirmation, the session
 plan records it for `status`, and `rehearse plant` refuses, since a rehearsal

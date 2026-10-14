@@ -152,18 +152,18 @@ fn check_and_activation_build_the_same_checks_from_the_same_flags() {
             .names()
     };
     for bits in 0..8u8 {
-        let (overlay_only, accept_persistent_decoy, allow_not_separate) =
+        let (overlay_only, accept_persistent_decoy, allow_decoy_storage) =
             (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
         let check = PreflightOptions {
             overlay_only,
             accept_persistent_decoy,
-            allow_not_separate,
+            allow_decoy_storage,
             ..PreflightOptions::default()
         };
         let activation = crate::manager::EnterOptions {
             overlay_only,
             accept_persistent_decoy,
-            allow_not_separate,
+            allow_decoy_storage,
             ..crate::manager::EnterOptions::default()
         }
         .preflight();

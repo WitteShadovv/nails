@@ -32,9 +32,9 @@ pub struct EnterOptions {
     /// The running binary, copied to RAM for the panic path.
     pub binary: PathBuf,
     /// Accept a hidden root on storage the attach gate takes for the decoy's
-    /// (`--allow-unmounted`). The activation's own writes accept it, the
+    /// (`--allow-decoy-storage`). The activation's own writes accept it, the
     /// pre-flight check warns, and the plan records it.
-    pub allow_not_separate: bool,
+    pub allow_decoy_storage: bool,
 }
 
 impl EnterOptions {
@@ -45,15 +45,15 @@ impl EnterOptions {
         PreflightOptions {
             overlay_only: self.overlay_only,
             accept_persistent_decoy: self.accept_persistent_decoy,
-            allow_not_separate: self.allow_not_separate,
+            allow_decoy_storage: self.allow_decoy_storage,
             ..PreflightOptions::default()
         }
     }
 
     /// The attach-gate override these options ask for.
     pub fn allow(&self) -> crate::hidden_root::Allow {
-        if self.allow_not_separate {
-            crate::hidden_root::Allow::NotSeparate
+        if self.allow_decoy_storage {
+            crate::hidden_root::Allow::DecoyStorage
         } else {
             crate::hidden_root::Allow::Nothing
         }

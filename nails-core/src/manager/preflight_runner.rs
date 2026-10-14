@@ -34,10 +34,10 @@ pub struct PreflightOptions {
     /// value is this flag OR the `accept_persistent_decoy` config key.
     pub accept_persistent_decoy: bool,
     /// Accept a hidden root on storage the attach gate takes for the decoy's
-    /// (the `--allow-unmounted` flag): the hidden-volume check warns instead of
-    /// failing. It never covers a folder, a covered root, storage that cannot
-    /// be judged, or `backend-entries`.
-    pub allow_not_separate: bool,
+    /// (the `--allow-decoy-storage` flag): the hidden-volume check warns
+    /// instead of failing. It never covers a folder, a covered root, storage
+    /// that cannot be judged, or `backend-entries`.
+    pub allow_decoy_storage: bool,
 }
 
 impl Default for PreflightOptions {
@@ -47,7 +47,7 @@ impl Default for PreflightOptions {
             overlay_only: false,
             read_only: true,
             accept_persistent_decoy: false,
-            allow_not_separate: false,
+            allow_decoy_storage: false,
         }
     }
 }
@@ -133,8 +133,8 @@ pub fn build_registry<F: Filesystem>(
 
     registry.add_check(Box::new(
         HiddenVolumeCheck::new(hidden_root.clone()).allowing(
-            if inputs.options.allow_not_separate {
-                crate::hidden_root::Allow::NotSeparate
+            if inputs.options.allow_decoy_storage {
+                crate::hidden_root::Allow::DecoyStorage
             } else {
                 crate::hidden_root::Allow::Nothing
             },
@@ -142,7 +142,7 @@ pub fn build_registry<F: Filesystem>(
     ));
 
     // No decoy fstab or crypttab entry opens or mounts the hidden volume: such
-    // an entry is an enabler stored on the decoy. --allow-unmounted never
+    // an entry is an enabler stored on the decoy. --allow-decoy-storage never
     // covers it.
     registry.add_check(Box::new(BackendEntriesCheck::new(hidden_root.clone())));
 

@@ -25,10 +25,9 @@ use std::path::{Component, PathBuf};
 ///    device-mapper name and the filesystem label are scanned for words that
 ///    betray hidden storage, and a match is reported as a non-blocking warning
 ///
-/// A root the gate only warns about (a container file on a decoy
-/// filesystem), or decoy storage the operator accepted with
-/// `--allow-unmounted`, passes with that warning. A refusal is reported in the
-/// gate's own words.
+/// A root the gate only warns about (a container file on a decoy filesystem),
+/// or decoy storage the operator accepted with `--allow-decoy-storage`, passes
+/// with that warning. A refusal is reported in the gate's own words.
 ///
 /// # Failure Guidance
 ///
@@ -75,7 +74,7 @@ impl HiddenVolumeCheck {
         }
     }
 
-    /// Accept the gate refusals `allow` covers (`--allow-unmounted`) with a
+    /// Accept the gate refusals `allow` covers (`--allow-decoy-storage`) with a
     /// warning.
     #[must_use]
     pub fn allowing(mut self, allow: Allow) -> Self {
@@ -472,7 +471,7 @@ mod tests {
     fn two_filesystems_at_the_root_fail_before_any_audit_or_probe() {
         let fs = MockFilesystem::new();
         let check =
-            HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT)).allowing(Allow::NotSeparate);
+            HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT)).allowing(Allow::DecoyStorage);
         fs.mock_set_path_exists(NEUTRAL_ROOT, true);
         fs.mock_set_writable(NEUTRAL_ROOT, true);
         let stacked = |below: &str, above: &str| {
@@ -538,13 +537,13 @@ mod tests {
     fn the_override_turns_decoy_storage_into_a_warning() {
         let fs = bind_of_a_decoy_folder();
         let result = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
-            .allowing(Allow::NotSeparate)
+            .allowing(Allow::DecoyStorage)
             .run(&fs)
             .unwrap();
         assert!(result.is_warn(), "got {result:?}");
         assert!(
             result.message().starts_with(
-                "--allow-unmounted: using /mnt/data although it is a bind mount of a folder of /"
+                "--allow-decoy-storage: using /mnt/data although it is a bind mount of a folder of /"
             ),
             "{}",
             result.message()
@@ -563,7 +562,7 @@ mod tests {
         // A crypttab that exists but cannot be read.
         fs.mock_set_path_exists("/etc/crypttab", true);
         let result = HiddenVolumeCheck::new(PathBuf::from(NEUTRAL_ROOT))
-            .allowing(Allow::NotSeparate)
+            .allowing(Allow::DecoyStorage)
             .run(&fs)
             .unwrap();
         assert!(result.is_fail(), "got {result:?}");

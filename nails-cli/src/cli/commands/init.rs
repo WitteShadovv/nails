@@ -231,8 +231,8 @@ fn run<F: Filesystem>(settings: &OutputSettings, fs: &F, args: &InitArgs) -> Exi
 /// untouched.
 fn plan<F: Filesystem>(fs: &F, args: &InitArgs) -> std::result::Result<InitPlan, InitFailure> {
     let base = &args.path;
-    let allow = if args.allow_unmounted {
-        Allow::NotSeparate
+    let allow = if args.allow_decoy_storage {
+        Allow::DecoyStorage
     } else {
         Allow::Nothing
     };

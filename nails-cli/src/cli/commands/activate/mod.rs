@@ -107,7 +107,7 @@ fn dry_run_check_args(args: &ActivateArgs) -> crate::cli::args::CheckArgs {
         overlay_only: args.overlay_only,
         nixos_flake: args.nixos_flake.clone(),
         accept_persistent_decoy: args.accept_persistent_decoy,
-        allow_unmounted: args.allow_unmounted,
+        allow_decoy_storage: args.allow_decoy_storage,
     }
 }
 
@@ -118,7 +118,7 @@ fn enter_options(args: &ActivateArgs) -> EnterOptions {
         overlay_only: args.overlay_only,
         accept_persistent_decoy: args.accept_persistent_decoy,
         binary: std::env::current_exe().unwrap_or_default(),
-        allow_not_separate: args.allow_unmounted,
+        allow_decoy_storage: args.allow_decoy_storage,
     }
 }
 
@@ -306,7 +306,7 @@ fn print_result(settings: &OutputSettings, result: &ActivateResult<'_>, duration
 }
 
 /// Ask on the terminal before logging the operator out. `accepted` is the
-/// refusal the operator overrode with `--allow-unmounted`, repeated here.
+/// refusal the operator overrode with `--allow-decoy-storage`, repeated here.
 fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> bool {
     use nails_core::output::Mark;
     use std::io::{BufRead, Write};

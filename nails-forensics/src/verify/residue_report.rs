@@ -73,7 +73,7 @@ fn report_filename(generated_at: &str) -> String {
 /// under the hidden root cannot redirect the write.
 ///
 /// It asks the attach gate first and writes nothing on a root the gate
-/// refuses. A root the operator accepted with `--allow-unmounted` gets no
+/// refuses. A root the operator accepted with `--allow-decoy-storage` gets no
 /// report either: the baseline is a convenience, not worth another file on
 /// storage the decoy uses.
 pub fn write_activation_residue_report<F: Filesystem>(

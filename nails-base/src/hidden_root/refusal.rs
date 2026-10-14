@@ -33,8 +33,8 @@ pub const STORAGE_UNJUDGED: &str = "storage_unjudged";
 /// Where the operator guide explains where to set up.
 pub const GUIDE_SECTION: &str = "Where setup happens";
 
-/// What accepting a root with `--allow-unmounted` means, wherever it is shown
-/// (the warning, the logout confirmation, `status`).
+/// What accepting a root with `--allow-decoy-storage` means, wherever it is
+/// shown (the warning, the logout confirmation, `status`).
 pub const OVERRIDE_CONSEQUENCE: &str = "everything written there lands on that storage";
 
 impl RefusalKind {
@@ -127,7 +127,7 @@ impl Refusal {
     }
 
     /// Whether the root is used only because the operator overrode this
-    /// refusal ([`Allow::NotSeparate`](super::Allow::NotSeparate)); a refusal
+    /// refusal ([`Allow::DecoyStorage`](super::Allow::DecoyStorage)); a refusal
     /// that only warns by itself, such as a container file, is not.
     pub fn overridden(&self) -> bool {
         matches!(&self.kind, RefusalKind::DecoyStorage { verdict }
@@ -143,7 +143,7 @@ impl Refusal {
         };
         let root = self.root.display();
         if self.overridden() {
-            format!("--allow-unmounted: using {root} although {why}; {OVERRIDE_CONSEQUENCE}")
+            format!("--allow-decoy-storage: using {root} although {why}; {OVERRIDE_CONSEQUENCE}")
         } else {
             format!("{root} {}", why.strip_prefix("it ").unwrap_or(&why))
         }
@@ -412,7 +412,7 @@ mod tests {
         for refusal in every_refusal(Path::new("/mnt")) {
             let covered = matches!(refusal.kind, RefusalKind::DecoyStorage { .. });
             assert_eq!(
-                Allow::NotSeparate.covers(&refusal.kind),
+                Allow::DecoyStorage.covers(&refusal.kind),
                 covered,
                 "{refusal:?}"
             );
@@ -464,7 +464,7 @@ mod tests {
         assert!(subvolume.overridden());
         assert_eq!(
             subvolume.warning(),
-            "--allow-unmounted: using /mnt although it is a subvolume of the btrfs filesystem \
+            "--allow-decoy-storage: using /mnt although it is a subvolume of the btrfs filesystem \
              at /pool; everything written there lands on that storage"
         );
         // A container file only warns by itself: its warning is the reason.

@@ -295,8 +295,8 @@ crypttab line that opens only another volume on the same drive (a VeraCrypt
 outer volume on another partition) warns. Remove such a line long before the
 next use, since the decoy's configuration history can keep it. If the check
 cannot read `/etc/crypttab` (some distributions make it readable by root only),
-it fails and asks you to run the command with sudo. `--allow-unmounted` does not
-cover it, and `activate --no-preflight` runs it on its own.
+it fails and asks you to run the command with sudo. `--allow-decoy-storage` does
+not cover it, and `activate --no-preflight` runs it on its own.
 
 ### Encryption headers, high-entropy space and containers
 

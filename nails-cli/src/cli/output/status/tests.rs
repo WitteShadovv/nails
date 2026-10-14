@@ -60,7 +60,7 @@ fn an_active_session_lists_its_policy_mounts_and_system() {
 fn an_accepted_override_is_shown_in_both_forms() {
     let mut active = report(Posture::Active, "hidden");
     let lines = status_lines(&active, false, Style::default()).join("\n");
-    assert!(!lines.contains("--allow-unmounted"), "{lines}");
+    assert!(!lines.contains("--allow-decoy-storage"), "{lines}");
     let value = serde_json::to_value(status_envelope(&active)).unwrap();
     assert!(value["data"].get("accepted_not_separate").is_none());
 
@@ -69,7 +69,7 @@ fn an_accepted_override_is_shown_in_both_forms() {
     let lines = status_lines(&active, false, Style::default()).join("\n");
     assert!(
         lines.contains(&format!(
-            "--allow-unmounted: {reason}; everything written there lands on that storage"
+            "--allow-decoy-storage: {reason}; everything written there lands on that storage"
         )),
         "{lines}"
     );

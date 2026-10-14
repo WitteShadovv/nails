@@ -1496,7 +1496,7 @@ fn staging_asks_the_attach_gate_first() {
     assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 
     // The override never covers a folder.
-    assert!(stage_hidden_nixos_config(&fs, root, true, Allow::NotSeparate).is_err());
+    assert!(stage_hidden_nixos_config(&fs, root, true, Allow::DecoyStorage).is_err());
     assert!(fs.mock_ops().is_empty(), "{:?}", fs.mock_ops());
 
     // A bind of a folder of the decoy's /srv that the operator accepted is
@@ -1507,7 +1507,7 @@ fn staging_asks_the_attach_gate_first() {
          3 1 8:2 /x /mnt/hidden rw - ext4 /dev/vda2 rw\n",
     );
     assert!(stage_hidden_nixos_config(&fs, root, true, Allow::Nothing).is_err());
-    stage_hidden_nixos_config(&fs, root, true, Allow::NotSeparate).unwrap();
+    stage_hidden_nixos_config(&fs, root, true, Allow::DecoyStorage).unwrap();
     assert!(
         <MockFilesystem as Filesystem>::path_exists(
             &fs,

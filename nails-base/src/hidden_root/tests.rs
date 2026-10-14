@@ -615,7 +615,7 @@ fn the_override_attaches_decoy_storage_with_a_warning_but_never_a_folder_or_a_co
         HiddenRoot::assess_allowing(&bind, root, Allow::Nothing).unwrap(),
         Assessment::Refused(_)
     ));
-    match HiddenRoot::assess_allowing(&bind, root, Allow::NotSeparate).unwrap() {
+    match HiddenRoot::assess_allowing(&bind, root, Allow::DecoyStorage).unwrap() {
         Assessment::Warned(refusal) => assert!(refusal.overridden(), "{refusal:?}"),
         other => panic!("{other:?}"),
     }
@@ -623,7 +623,8 @@ fn the_override_attaches_decoy_storage_with_a_warning_but_never_a_folder_or_a_co
     // A folder is no volume of its own, whatever the operator says.
     let fs = fs_with(&decoy_table(""));
     fs.mock_set_path_exists("/home/op/vault", true);
-    match HiddenRoot::assess_allowing(&fs, Path::new("/home/op/vault"), Allow::NotSeparate).unwrap()
+    match HiddenRoot::assess_allowing(&fs, Path::new("/home/op/vault"), Allow::DecoyStorage)
+        .unwrap()
     {
         Assessment::Refused(refusal) => {
             assert!(
@@ -638,7 +639,7 @@ fn the_override_attaches_decoy_storage_with_a_warning_but_never_a_folder_or_a_co
     let covered = fs_with(&decoy_table(
         "11 10 8:17 / /mnt/data rw - ext4 /dev/sdb1 rw\n",
     ));
-    match HiddenRoot::assess_allowing(&covered, root, Allow::NotSeparate).unwrap() {
+    match HiddenRoot::assess_allowing(&covered, root, Allow::DecoyStorage).unwrap() {
         Assessment::Refused(refusal) => {
             assert_eq!(refusal.code(), super::refusal::ROOT_COVERED, "{refusal:?}");
         }
@@ -647,7 +648,7 @@ fn the_override_attaches_decoy_storage_with_a_warning_but_never_a_folder_or_a_co
 
     let missing = MockFilesystem::new();
     assert!(matches!(
-        HiddenRoot::assess_allowing(&missing, Path::new("/srv/x"), Allow::NotSeparate).unwrap(),
+        HiddenRoot::assess_allowing(&missing, Path::new("/srv/x"), Allow::DecoyStorage).unwrap(),
         Assessment::Refused(Refusal {
             kind: RefusalKind::Missing,
             ..
@@ -658,7 +659,7 @@ fn the_override_attaches_decoy_storage_with_a_warning_but_never_a_folder_or_a_co
 #[test]
 fn in_the_session_a_folder_is_refused_even_when_the_plan_accepted_the_root() {
     // Nothing is mounted at the root, `/` is the overlay with its upper there,
-    // and the plan says the activation was run with --allow-unmounted.
+    // and the plan says the activation was run with --allow-decoy-storage.
     let fs = fs_with(&session_table(""));
     write_plan(&fs, None);
     assert_eq!(super::recorded_acceptance(&fs), None);
@@ -691,7 +692,7 @@ fn outside_the_session_accepted_decoy_storage_needs_the_override() {
     let root = Path::new("/mnt/data");
     let _gate = super::state_attach_probe::enforce();
     assert!(super::ensure_state_dir_attached(&fs, root, root).is_err());
-    super::ensure_state_dir_attached_allowing(&fs, root, root, Allow::NotSeparate).unwrap();
+    super::ensure_state_dir_attached_allowing(&fs, root, root, Allow::DecoyStorage).unwrap();
     // A directory below the root on another filesystem is still refused.
     let mounted_below = fs_with(&format!(
         "{table}{BIND_OF_HOME}14 13 8:33 / /mnt/data/state rw - ext4 /dev/sdc1 rw\n"
@@ -701,7 +702,7 @@ fn outside_the_session_accepted_decoy_storage_needs_the_override() {
             &mounted_below,
             root,
             &root.join("state"),
-            Allow::NotSeparate
+            Allow::DecoyStorage
         )
         .is_err()
     );

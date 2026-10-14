@@ -46,7 +46,7 @@ pub struct NailsManager<F: Filesystem> {
     /// The startup environment snapshot.
     runtime_env: crate::RuntimeEnv,
     /// The attach-gate refusals this activation's own writes accept (set from
-    /// [`EnterOptions::allow_not_separate`]).
+    /// [`EnterOptions::allow_decoy_storage`]).
     allow: crate::hidden_root::Allow,
 }
 

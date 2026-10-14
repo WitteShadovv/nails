@@ -300,14 +300,13 @@ config and CLI surfaces; there are no compatibility shims.
   type, and shows a covering mount by its kernel device (`/dev/dm-0`). `--no-preflight` no longer
   skips the attach gate. A refused root no longer also prints a `File logging disabled` notice;
   `--verbose` shows it.
-- `--allow-unmounted` is accepted by `init`, `activate` and `check` (and `activate --dry-run`). It
-  turns the refusal of a root on the decoy's own storage into a warning, for storage the operator
+- `--allow-decoy-storage` is accepted by `init`, `activate` and `check` (and `activate --dry-run`).
+  It turns the refusal of a root on the decoy's own storage into a warning, for storage the operator
   knows the decoy does not use, and never covers a folder, a covered root, storage that cannot be
-  judged or a decoy entry for the hidden volume.
-  `activate` repeats it in the logout confirmation and records it in the session plan
-  (`accepted_not_separate`), which `status` shows; `rehearse plant` refuses such a session, since a
-  rehearsal on that storage cannot pass. No log file and no residue baseline are written onto an
-  accepted root.
+  judged or a decoy entry for the hidden volume. `activate` repeats it in the logout confirmation
+  and records it in the session plan (`accepted_not_separate`), which `status` shows; `rehearse
+  plant` refuses such a session, since a rehearsal on that storage cannot pass. No log file and no
+  residue baseline are written onto an accepted root.
 - A new blocking pre-flight check, `backend-entries`, refuses activation while the decoy's
   `/etc/crypttab` or `/etc/fstab` holds a line that opens or mounts the hidden volume or a device it
   is stored on, or a crypttab line with `tcrypt-hidden`; a line that opens only another volume on
@@ -467,9 +466,9 @@ config and CLI surfaces; there are no compatibility shims.
   the shell-history forensics page is trimmed to what NAILS does about each history surface.
 - `nails init` validates that the target is a mounted volume of its own, writable and
   symlink-capable, and that any hardware config is readable, before writing anything, and writes
-  nothing on refusal; it adds `--allow-unmounted`, `--hardware-config` and `--no-hardware-config`,
-  supports `--json`, reports each item as created or already present, drops the unused `overlays/`
-  directory, rejects a global `--config`, and ends with numbered next steps.
+  nothing on refusal; it adds `--allow-decoy-storage`, `--hardware-config` and
+  `--no-hardware-config`, supports `--json`, reports each item as created or already present, drops
+  the unused `overlays/` directory, rejects a global `--config`, and ends with numbered next steps.
 - Standard deactivation no longer reinstalls the decoy configuration: the redundant
   `switch-to-configuration switch` on the real disk is gone (the reboot already boots the decoy),
   switch actions are a non-installing enum that can only request `test`, and a failed reboot falls

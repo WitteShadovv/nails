@@ -275,7 +275,7 @@ pub struct ActivateArgs {
     /// storage that cannot be judged, and a decoy entry that opens the volume
     /// are still refused.
     #[arg(long)]
-    pub allow_unmounted: bool,
+    pub allow_decoy_storage: bool,
 }
 
 /// `nails deactivate` arguments
@@ -512,12 +512,12 @@ pub struct CheckArgs {
 
     /// Report a hidden root on this computer's own storage as a warning
     ///
-    /// Mirrors `activate --allow-unmounted`: a root this computer's own
+    /// Mirrors `activate --allow-decoy-storage`: a root this computer's own
     /// storage seems to hold then warns instead of failing. A folder that is
     /// no mount point, a covered root and storage that cannot be judged still
     /// fail.
     #[arg(long)]
-    pub allow_unmounted: bool,
+    pub allow_decoy_storage: bool,
 }
 
 /// `nails config` subcommands
@@ -575,7 +575,7 @@ pub struct InitArgs {
     /// target with a second filesystem mounted over it, and one whose storage
     /// cannot be judged are still refused.
     #[arg(long)]
-    pub allow_unmounted: bool,
+    pub allow_decoy_storage: bool,
 
     /// Base hardware configuration to seed the hidden NixOS layout from
     ///

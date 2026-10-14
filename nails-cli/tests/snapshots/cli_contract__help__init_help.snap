@@ -18,7 +18,7 @@ Arguments:
           Path to the mounted hidden volume to initialize
 
 Options:
-      --allow-unmounted
+      --allow-decoy-storage
           Initialize a volume that this computer's own storage seems to hold
 
           By default `init` refuses a target that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it), because writing the NAILS layout there leaves an identifying tree on this computer's disk. Use this flag only for storage you know this computer does not use; it turns those refusals into a warning. A folder that is no mount point, a target with a second filesystem mounted over it, and one whose storage cannot be judged are still refused.

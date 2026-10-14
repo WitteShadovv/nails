@@ -50,7 +50,7 @@
         "hidden_root": { "type": "string", "pattern": "^/" },
         "hidden_root_mounted": { "type": "boolean" },
         "accepted_not_separate": {
-          "description": "Why the hidden root is not a volume of its own, when the session's activation accepted that with --allow-unmounted.",
+          "description": "Why the hidden root is not a volume of its own, when the session's activation accepted that with --allow-decoy-storage.",
           "type": "string",
           "minLength": 1
         },

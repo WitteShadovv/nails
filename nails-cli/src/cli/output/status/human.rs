@@ -80,7 +80,7 @@ pub(super) fn status_lines(report: &StatusReport, details: bool, style: Style) -
     ));
     if let Some(reason) = &report.accepted_not_separate {
         out.push(format!(
-            "  {} --allow-unmounted: {reason}; {}",
+            "  {} --allow-decoy-storage: {reason}; {}",
             style.mark(Mark::Warn),
             nails_core::hidden_root::refusal::OVERRIDE_CONSEQUENCE
         ));

@@ -253,11 +253,11 @@ fn state_lock_dir(state_file_path: &Path) -> &Path {
 /// with a message naming the holder PID rather than racing it over the mounts
 /// and the state file. The lock lies next to the state file and is created only
 /// on the volume mounted at `hidden_root`, or on the root the operator accepted
-/// with `allow` (`activate --allow-unmounted`). A root the attach gate refuses
-/// is reported with the gate's text and code (exit 4), as `activate` reports it:
-/// `deactivate` refuses a root another disk was mounted over with
-/// `root_covered`, and `emergency` is the way out. The returned guard must be kept alive
-/// for the whole operation; dropping it (on exit) releases the lock.
+/// with `allow` (`activate --allow-decoy-storage`). A root the attach gate
+/// refuses is reported with the gate's text and code (exit 4), as `activate`
+/// reports it: `deactivate` refuses a root another disk was mounted over with
+/// `root_covered`, and `emergency` is the way out. The returned guard must be
+/// kept alive for the whole operation; dropping it (on exit) releases the lock.
 #[must_use = "the returned guard releases the lock when dropped"]
 pub(crate) fn acquire_state_lock_or_report(
     hidden_root: &Path,

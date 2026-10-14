@@ -6,8 +6,8 @@
 # the decoy's disk:
 #
 #   1. a folder of /srv: init, `activate -y --overlay-only` (with and without
-#      --no-preflight, with and without --allow-unmounted) and check refuse it
-#      with not_separate_volume (exit 4), and the folder stays empty with its
+#      --no-preflight, with and without --allow-decoy-storage) and check refuse
+#      it with not_separate_volume (exit 4), and the folder stays empty with its
 #      mtime and ctime unchanged;
 #   2. a btrfs subvolume of /pool mounted on its own is refused; its mount
 #      table line shows the same device as /pool's, while stat shows another
@@ -15,7 +15,7 @@
 #   3. a bind mount of a folder of /srv is refused;
 #   4. /srv itself, the filesystem the decoy's fstab mounts there, is refused;
 #   5. an unencrypted ext4 image on /srv, loop-mounted, is refused;
-#   6. `init --allow-unmounted` uses the bind of the /srv folder with a
+#   6. `init --allow-decoy-storage` uses the bind of the /srv folder with a
 #      warning, while the folder itself stays refused;
 #   7. a LUKS container file on /srv passes the hidden-volume check with a
 #      warning that names /srv and its copy-on-write snapshots;
@@ -123,7 +123,7 @@ in
         before = times("/srv/x")
         config = config_for("/srv/x")
 
-        for flags in ["", " --allow-unmounted"]:
+        for flags in ["", " --allow-decoy-storage"]:
             result = run_command_capture(
                 "gate-init", f"nails init --no-hardware-config{flags} /srv/x"
             )
@@ -136,8 +136,8 @@ in
                     "Where setup happens",
                 ],
             )
-            assert_result_not_contains(result, ["warning: --allow-unmounted"])
-        for flags in ["", " --no-preflight", " --allow-unmounted"]:
+            assert_result_not_contains(result, ["warning: --allow-decoy-storage"])
+        for flags in ["", " --no-preflight", " --allow-decoy-storage"]:
             result = run_command_capture(
                 "gate-activate",
                 f"nails --config {config} --json activate -y --overlay-only{flags}",
@@ -224,22 +224,22 @@ in
         )
         machine.succeed("umount /mnt/img && rm -f /srv/disk.img")
 
-    with subtest("--allow-unmounted uses decoy storage with a warning, never a folder"):
+    with subtest("--allow-decoy-storage uses decoy storage with a warning, never a folder"):
         refused_untouched(
             "gate-allow-folder",
             "/srv/x",
-            "nails init --no-hardware-config --allow-unmounted /srv/x",
+            "nails init --no-hardware-config --allow-decoy-storage /srv/x",
             ["it is a folder on the filesystem mounted at /srv"],
         )
         machine.succeed("mount --bind /srv/x /mnt/bind")
         result = run_command_capture(
-            "gate-allow", "nails init --no-hardware-config --allow-unmounted /mnt/bind"
+            "gate-allow", "nails init --no-hardware-config --allow-decoy-storage /mnt/bind"
         )
         assert_exit_code(result, 0)
         assert_result_contains(
             result,
             [
-                "warning: --allow-unmounted: using /mnt/bind although it is a bind mount of "
+                "warning: --allow-decoy-storage: using /mnt/bind although it is a bind mount of "
                 "a folder of /srv; everything written there lands on that storage"
             ],
         )

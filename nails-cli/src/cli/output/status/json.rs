@@ -51,7 +51,7 @@ pub struct StatusData<'a> {
     /// Whether the hidden volume is mounted at its own path.
     hidden_root_mounted: bool,
     /// Why the hidden root is not a volume of its own, when the session's
-    /// activation accepted that with `--allow-unmounted`.
+    /// activation accepted that with `--allow-decoy-storage`.
     #[serde(skip_serializing_if = "Option::is_none")]
     accepted_not_separate: Option<&'a str>,
     /// The decoy filesystems placed in the hidden root.

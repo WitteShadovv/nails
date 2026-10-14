@@ -142,7 +142,7 @@ EXAMPLES:
 * `--accept-persistent-decoy` — Accept a persistent decoy posture instead of refusing activation
 
    By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk. This flag accepts that risk (and overrides `accept_persistent_decoy` in `nails.toml`).
-* `--allow-unmounted` — Use a hidden root that this computer's own storage seems to hold
+* `--allow-decoy-storage` — Use a hidden root that this computer's own storage seems to hold
 
    By default activation refuses a root that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it): everything the session writes there lands on this computer's disk. Use this flag only for storage you know this computer does not use, such as a disk its fstab lists but never mounts. It turns those refusals into a warning, adds a line to the logout confirmation and records the choice for `status`. A folder that is no mount point, a root with a second filesystem mounted over it, storage that cannot be judged, and a decoy entry that opens the volume are still refused.
 
@@ -354,9 +354,9 @@ EXAMPLES:
 * `--accept-persistent-decoy` — Report a persistent decoy posture as a warning instead of a failure
 
    Mirrors `activate --accept-persistent-decoy` so `check`/`--dry-run` reflects what activation would do.
-* `--allow-unmounted` — Report a hidden root on this computer's own storage as a warning
+* `--allow-decoy-storage` — Report a hidden root on this computer's own storage as a warning
 
-   Mirrors `activate --allow-unmounted`: a root this computer's own storage seems to hold then warns instead of failing. A folder that is no mount point, a covered root and storage that cannot be judged still fail.
+   Mirrors `activate --allow-decoy-storage`: a root this computer's own storage seems to hold then warns instead of failing. A folder that is no mount point, a covered root and storage that cannot be judged still fail.
 
 
 
@@ -376,7 +376,7 @@ EXAMPLES:
 
 ###### **Options:**
 
-* `--allow-unmounted` — Initialize a volume that this computer's own storage seems to hold
+* `--allow-decoy-storage` — Initialize a volume that this computer's own storage seems to hold
 
    By default `init` refuses a target that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it), because writing the NAILS layout there leaves an identifying tree on this computer's disk. Use this flag only for storage you know this computer does not use; it turns those refusals into a warning. A folder that is no mount point, a target with a second filesystem mounted over it, and one whose storage cannot be judged are still refused.
 * `--hardware-config <PATH>` — Base hardware configuration to seed the hidden NixOS layout from

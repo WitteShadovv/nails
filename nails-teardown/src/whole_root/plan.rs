@@ -189,7 +189,7 @@ pub struct Plan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hidden_dev: Option<String>,
     /// Why the hidden root is not a volume of its own, when the operator
-    /// accepted that with `activate --allow-unmounted`. In the session the
+    /// accepted that with `activate --allow-decoy-storage`. In the session the
     /// attach gate then accepts a root that is no mount point; `status` shows
     /// it and `rehearse plant` refuses. Absent when nothing was overridden.
     #[serde(default, skip_serializing_if = "Option::is_none")]

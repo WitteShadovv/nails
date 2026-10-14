@@ -122,7 +122,7 @@ pub(super) fn preflight_options(args: &CheckArgs) -> PreflightOptions {
     PreflightOptions {
         overlay_only: args.overlay_only,
         accept_persistent_decoy: args.accept_persistent_decoy,
-        allow_not_separate: args.allow_unmounted,
+        allow_decoy_storage: args.allow_decoy_storage,
         ..PreflightOptions::default()
     }
 }
@@ -130,8 +130,8 @@ pub(super) fn preflight_options(args: &CheckArgs) -> PreflightOptions {
 /// The attach gate's refusal of the hidden root, as `activate` would report
 /// it, for the JSON report's `refusal` (the gate only reads).
 fn refusal<F: Filesystem>(fs: &F, root: &Path, args: &CheckArgs) -> Option<ErrorBody> {
-    let allow = if args.allow_unmounted {
-        Allow::NotSeparate
+    let allow = if args.allow_decoy_storage {
+        Allow::DecoyStorage
     } else {
         Allow::Nothing
     };

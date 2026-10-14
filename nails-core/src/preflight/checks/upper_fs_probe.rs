@@ -130,7 +130,7 @@ impl<F: Filesystem> PreFlightCheck<F> for UpperFsCapabilityCheck {
         // exists to prevent. The registry already short-circuits this check once
         // the `hidden-volume` check, which asks the same attach gate, fails.
         // Asking the gate here too keeps the probe safe however this check is
-        // run. A root the operator accepted with `--allow-unmounted` is not
+        // run. A root the operator accepted with `--allow-decoy-storage` is not
         // probed either: the gate without the override refuses it. The
         // hidden-volume check owns the operator message, so an unattached root
         // is a silent skip, not a second failure.
