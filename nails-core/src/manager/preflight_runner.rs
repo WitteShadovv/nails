@@ -115,11 +115,11 @@ pub fn build_registry<F: Filesystem>(
     config_layer: Option<&dyn crate::platform::ConfigLayer<F>>,
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
-        BackendDetectCheck, BinaryLocationCheck, DecoyPersistenceCheck, HiddenVolumeCheck,
-        HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, MemoryWipeCheck,
-        MountNamespaceCheck, NixOSBuildTargetCheck, ResidueCatalogCheck, SleepPolicyCheck,
-        SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck,
-        UpperFsCapabilityCheck,
+        BackendDetectCheck, BackendEntriesCheck, BinaryLocationCheck, DecoyPersistenceCheck,
+        HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck,
+        MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, ResidueCatalogCheck,
+        SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
+        SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
@@ -140,6 +140,11 @@ pub fn build_registry<F: Filesystem>(
             },
         ),
     ));
+
+    // No decoy fstab or crypttab entry opens or mounts the hidden volume: such
+    // an entry is an enabler stored on the decoy. --allow-unmounted never
+    // covers it.
+    registry.add_check(Box::new(BackendEntriesCheck::new(hidden_root.clone())));
 
     // Neither already in the hidden root nor with the leftovers of an
     // interrupted entry (a populated /run/nextroot must never be entered by a

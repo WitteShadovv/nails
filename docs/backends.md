@@ -182,7 +182,11 @@ Every backend leaves the same traces on the decoy side while you unlock it:
   volatile (journald `Storage=volatile`) or on impermanent storage.
 - **Persistent configuration.** Never list the hidden volume in
   `/etc/crypttab`, `/etc/fstab` or the decoy NixOS configuration
-  (`boot.initrd.luks.devices`, `fileSystems`).
+  (`boot.initrd.luks.devices`, `fileSystems`). The `backend-entries`
+  pre-flight check refuses activation while a crypttab or fstab line opens or
+  mounts the hidden volume, or a device it is stored on; a line that opens only
+  another volume on the same drive warns (see
+  [crypttab and fstab](decoy-requirements.md#crypttab-and-fstab)).
 
 `nails deactivate` and `nails emergency` close the hidden backend themselves:
 before the soft-reboot back they mark its device-mapper stack for deferred

@@ -287,6 +287,17 @@ VeraCrypt mapping, a loop-mounted container, an unexplained mapper name) tells a
 examiner where to look. The decoy's own full-disk encryption legitimately has an
 entry; the hidden backend never should. Open it by hand each time.
 
+The `backend-entries` pre-flight check enforces this for the mounted hidden
+volume: `nails check` and activation fail while a crypttab line opens it or a
+device it is stored on, while a crypttab line carries `tcrypt-hidden`, or while
+an fstab line mounts it or a device below it, `noauto` lines included. A
+crypttab line that opens only another volume on the same drive (a VeraCrypt
+outer volume on another partition) warns. Remove such a line long before the
+next use, since the decoy's configuration history can keep it. If the check
+cannot read `/etc/crypttab` (some distributions make it readable by root only),
+it fails and asks you to run the command with sudo. `--allow-unmounted` does not
+cover it.
+
 ### Encryption headers, high-entropy space and containers
 
 The audit reads the raw disk when given `--disk` and reports:
@@ -365,7 +376,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 |---|---|---|---|---|---|---|
 | [LVM metadata archive and backup](#lvm-metadata-archives) (`lvm-metadata-archive`) | `/etc/lvm/archive`, `/etc/lvm/backup` | all | path probe (warn) | `examiner-lvm` | Never run LVM tools on the hidden backend from the decoy, or disable archive and backup in the decoy's lvm.conf first. | `examiner-audit` |
 | [udisks2 state](#udisks2-state) (`udisks2-state`) | `/var/lib/udisks2` | all | path probe (warn) | path probe (warn) | Unlock and mount the backend with cryptsetup and mount from a shell, not through the desktop. | `examiner-audit` |
-| [crypttab and fstab entries](#crypttab-and-fstab) (`crypttab-fstab`) | `/etc/crypttab`, `/etc/fstab` | all | none: the decoy's own full-disk encryption legitimately lists entries here; review them with verify --examiner | `examiner-config` | Never add the hidden backend to the decoy's crypttab or fstab; open it by hand each time. | `examiner-audit` |
+| [crypttab and fstab entries](#crypttab-and-fstab) (`crypttab-fstab`) | `/etc/crypttab`, `/etc/fstab` | all | `backend-entries` (refuses) | `examiner-config` | Never add the hidden backend to the decoy's crypttab or fstab; open it by hand each time. Activation refuses an entry that opens or mounts the hidden volume; the decoy's own entries are reviewed with verify --examiner. | `examiner-audit` |
 | [LUKS headers on partitions](#encryption-headers-high-entropy-space-and-containers) (`luks-headers`) | LUKS1/LUKS2 signatures at partition starts, in gaps and in LUKS2 secondary-header slots | all | `backend-detect` | `examiner-disk` | Prefer a deniable backend (a VeraCrypt hidden volume) over a bare LUKS volume next to the decoy. | `examiner-audit` |
 | [High-entropy unpartitioned space](#encryption-headers-high-entropy-space-and-containers) (`high-entropy-space`) | partition gaps, space after the last partition, partitions with no known signature | all | none: needs the raw disk, which verify --offline --examiner --disk reads | `examiner-disk` | Fill free space with random data when the disk is set up, so the hidden region does not stand out; explain it as wiped space. | `examiner-audit` |
 | [Encrypted container candidates](#encryption-headers-high-entropy-space-and-containers) (`container-candidates`) | large files whose size is a multiple of 512, with no known header and high entropy | all | `backend-detect` | `examiner-containers` | Put the hidden volume on a whole device or partition rather than in a file on the decoy. | `examiner-audit` |

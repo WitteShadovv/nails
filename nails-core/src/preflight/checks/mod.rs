@@ -7,6 +7,7 @@
 //! Each check validates a specific aspect of the system before activation.
 
 pub mod backend_detect;
+pub mod backend_entries;
 pub mod binary_location;
 pub mod decoy_posture;
 pub mod hidden_volume;
@@ -27,6 +28,7 @@ pub mod upper_fs_probe;
 
 // Re-exports for convenient access
 pub use backend_detect::BackendDetectCheck;
+pub use backend_entries::BackendEntriesCheck;
 pub use binary_location::BinaryLocationCheck;
 pub use decoy_posture::DecoyPersistenceCheck;
 pub use hidden_volume::HiddenVolumeCheck;

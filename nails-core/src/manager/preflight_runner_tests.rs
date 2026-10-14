@@ -455,3 +455,13 @@ fn every_gate_refusal_fails_the_hidden_volume_check_and_skips_its_dependents() {
         assert!(probes.is_empty(), "{scene}: {probes:?}");
     }
 }
+
+#[test]
+fn backend_entries_runs_right_after_the_hidden_volume_check() {
+    let manager = manager_with(MockFilesystem::new());
+    let names = manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds")
+        .names();
+    assert_eq!(&names[..2], &["hidden-volume", "backend-entries"]);
+}
