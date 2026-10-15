@@ -185,6 +185,10 @@ Keep all of it `root`-owned on the hidden volume.
    mount from the decoy's fstab:
    - the ESP and `/boot` filesystems are bound read-only, so nothing in the
      hidden session rewrites `loader/random-seed`, `grubenv` or a boot entry;
+     the units that write there at every start
+     (`systemd-boot-random-seed.service`, and `grub-common.service` and
+     `grub-initrd-fallback.service` on Debian and Ubuntu) are masked in the
+     hidden session, so they do not fail there, and run as usual on the decoy;
    - a filesystem mounted read-only in the decoy is bound read-only;
    - every other mounted local filesystem (a separate `/home`, `/var` or
      `/nix`) gets an overlay of its own, with its upper under
@@ -204,10 +208,17 @@ Keep all of it `root`-owned on the hidden volume.
 7. It installs the transition step (a runtime drop-in for
    `systemd-soft-reboot.service`), prints its result, kills the decoy's
    interactive shells and soft-reboots. A second runtime drop-in clears the
-   stop command of `blk-availability.service`, which Debian and Ubuntu enable
-   wherever `dmsetup` is installed: its `blkdeactivate -u` would unmount the
-   hidden volume below `/run/nextroot` during the switch, or a LUKS or LVM
-   decoy root on the way back. The way back removes both.
+   stop command of `blk-availability.service`, which Debian's and Ubuntu's
+   lvm2 package enables: its `blkdeactivate -u` would unmount the hidden volume
+   below `/run/nextroot` during the switch, or a LUKS or LVM decoy root on the
+   way back. Debian's copy of that unit has no other command, so the drop-in
+   also gives it a start command that does nothing; without one, systemd would
+   refuse to load the unit. The way back removes both drop-ins, and leaves any
+   other drop-in the decoy had for these units in place. Ctrl+C (or a
+   SIGTERM) up to this point cancels the activation: it stops at the next step
+   and removes everything it built, and the command exits with status 130. A
+   step that runs a program to its end, such as the hidden system's
+   activation, finishes first.
 
 **The hidden NixOS system.** With a hidden configuration — a flake given with
 `--nixos-flake` or `nixos_flake`, or otherwise the legacy configuration, which
@@ -261,9 +272,16 @@ shutdown stops every hidden program. The last step before the switch:
 
 - scrubs `/run` of what the hidden session added. It deletes from an allowlist
   (the hidden runtime journal, logind's session state, runtime units, `utmp`,
-  and entries that were not there when the session was entered) and never
-  touches sockets, `/run/udev`, credentials or the current/booted system links,
-  which the decoy's next userspace is built to inherit;
+  and entries that the decoy did not leave when it stopped for the entry, such
+  as the PID file of a decoy service that the hidden session's copy wrote
+  again and an emergency's kill left) and never touches sockets, `/run/udev`,
+  credentials or the current/booted system links, which the decoy's next
+  userspace is built to inherit;
+- puts back the name-server records below `/run/resolvconf` (openresolv, and
+  Debian's resolvconf) as the decoy left them: NetworkManager leaves its record
+  in place when it stops, and on NixOS the decoy's start would otherwise write
+  the hidden session's name servers and search domains into `/etc/resolv.conf`
+  on the decoy disk;
 - restores libmount's `utab` to the copy taken at entry;
 - writes journald's kernel-message cursor, so the decoy journal imports no
   kernel record of the hidden session.

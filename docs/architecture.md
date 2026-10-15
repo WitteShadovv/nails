@@ -217,10 +217,12 @@ An activation moves through these layers; each names its modules and crates:
 - **Transition** (`nails-teardown`, `whole_root::transition`) is the
   `ExecStart=` of `systemd-soft-reboot.service`, run by systemd from the RAM
   copy as the last userspace step before each switch. It acts only on an armed
-  plan: entering, it repoints `/run/current-system` (NixOS) and installs the
-  session's runtime units and masks; leaving, it repoints back, scrubs `/run`,
-  restores `utab` and writes the kmsg cursor. An unarmed populated
-  `/run/nextroot` is detached instead.
+  plan: entering, it repoints `/run/current-system` (NixOS), installs the
+  session's runtime units and masks, narrows the `/run` snapshot to what the
+  decoy's own shutdown left and copies the decoy's name-server records;
+  leaving, it repoints back, scrubs `/run`, puts those records back, restores
+  `utab` and writes the kmsg cursor. An unarmed populated `/run/nextroot` is
+  detached instead.
 - **Way back and emergency** (`nails-session`'s `session::leave`, `nails-teardown`'s
   `whole_root::ret` and `whole_root::emergency`) mount the decoy root at
   `/run/nextroot`, mark the backend for deferred removal and enqueue the
