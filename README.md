@@ -112,7 +112,7 @@ model is written down; read it before relying on NAILS.
 | An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no disk swap. Activation fails closed otherwise; `--accept-persistent-decoy` overrides the journal, syslog and audit refusals, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
 | A hidden volume | Storage of its own: not a folder, a subvolume or a bind mount of a filesystem the computer uses, nor a volume inside its storage. Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
-| Root (`sudo`) | `activate`, `deactivate`, `emergency`, `recover` and the writing `rehearse` steps refuse to run without it. Run `init`, `check`, `verify` and `reset-upper` with `sudo` too, as the examples do, so they can read and write root-owned files. |
+| Root (`sudo`) | `activate`, `deactivate`, `emergency`, `recover` and the writing `rehearse` steps refuse to run without it. Run `init`, `check`, `status`, `verify`, `config` and `reset-upper` with `sudo` too, as the examples do, so they can read and write root-owned files: the configuration `init` writes is readable by root only. |
 | A local account | The account you run `sudo` from must be in `/etc/passwd`: the static binary does not use NSS, so LDAP or SSSD accounts cannot be resolved. |
 
 <details>

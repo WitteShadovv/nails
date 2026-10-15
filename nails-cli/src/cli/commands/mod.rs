@@ -64,13 +64,51 @@ pub(crate) fn config_error_line(error: &NailsError) -> String {
             path.display()
         ),
         NailsError::ConfigError(message) => message.clone(),
+        NailsError::IoError { path, source } => {
+            format!("cannot read config {}: {source}", path.display())
+        }
         other => other.to_string(),
     }
 }
 
-/// The structured error for a configuration load failure.
-pub(crate) fn config_error_body(error: &NailsError) -> ErrorBody {
-    ErrorBody::new("config", config_error_line(error))
+/// The next step after a configuration read that was refused for lack of
+/// permission: the full `sudo` line that runs `command` again. `init` leaves
+/// the configuration readable by root only, so this is what an unprivileged
+/// `status` or `check` meets. Root gets no hint, since sudo would not help.
+pub(crate) fn config_read_hint(error: &NailsError, command: &str) -> Option<String> {
+    sudo_line_for(error, command).map(|line| format!("run it as root: {line}"))
+}
+
+/// The `sudo` line that runs `command` again with the running binary, when
+/// `error` refused a read for lack of permission and the user is not root.
+pub(crate) fn sudo_line_for(error: &NailsError, command: &str) -> Option<String> {
+    sudo_line(
+        error,
+        command,
+        crate::cli::main_guard::effective_user_is_root(),
+        std::env::current_exe().ok().as_deref(),
+    )
+}
+
+fn sudo_line(
+    error: &NailsError,
+    command: &str,
+    is_root: bool,
+    binary: Option<&Path>,
+) -> Option<String> {
+    let refused = matches!(error, NailsError::PermissionDenied(_))
+        || error.io_kind() == Some(std::io::ErrorKind::PermissionDenied);
+    (refused && !is_root).then(|| crate::cli::main_guard::sudo_command(binary, command))
+}
+
+/// The structured error for a configuration load failure of `command`, with
+/// the `sudo` line when the read was refused for lack of permission.
+pub(crate) fn config_error_body(error: &NailsError, command: &str) -> ErrorBody {
+    let body = ErrorBody::new("config", config_error_line(error));
+    match config_read_hint(error, command) {
+        Some(hint) => body.with_hint(hint),
+        None => body,
+    }
 }
 
 /// Load the configuration for a command that must not run on a file the operator
@@ -81,8 +119,14 @@ pub(crate) fn load_config_or_report(
     command: &'static str,
     json: bool,
 ) -> Result<LoadedConfig, ExitStatus> {
-    resolve_config(config_override)
-        .map_err(|error| report_error(json, command, ExitStatus::Config, config_error_body(&error)))
+    resolve_config(config_override).map_err(|error| {
+        report_error(
+            json,
+            command,
+            ExitStatus::Config,
+            config_error_body(&error, command),
+        )
+    })
 }
 
 /// Load the configuration for a teardown command, which must never refuse.
@@ -336,8 +380,8 @@ pub(crate) fn acquire_state_lock_for_emergency(
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigSource, nixos_builder_for, pick_teardown_config};
-    use nails_core::{Config, HostTarget};
+    use super::{ConfigSource, nixos_builder_for, pick_teardown_config, sudo_line};
+    use nails_core::{Config, HostTarget, NailsError};
     use std::path::{Path, PathBuf};
 
     /// Activation builds nothing for the refused decoy flake, as for
@@ -369,6 +413,41 @@ mod tests {
             legacy.as_ref().and_then(|b| b.legacy_config()),
             Some(Path::new("/etc/nixos/configuration.nix"))
         );
+    }
+
+    fn unreadable(kind: std::io::ErrorKind) -> NailsError {
+        NailsError::io("/mnt/data/config/nails.toml", std::io::Error::from(kind))
+    }
+
+    #[test]
+    fn an_unreadable_config_names_the_file_and_the_sudo_line() {
+        let error = unreadable(std::io::ErrorKind::PermissionDenied);
+        assert!(
+            super::config_error_line(&error)
+                .starts_with("cannot read config /mnt/data/config/nails.toml: "),
+            "{}",
+            super::config_error_line(&error)
+        );
+        assert_eq!(
+            sudo_line(&error, "status", false, Some(Path::new("/mnt/data/nails"))),
+            Some("sudo /mnt/data/nails status".to_string())
+        );
+        let denied = NailsError::PermissionDenied("state.json".into());
+        assert_eq!(
+            sudo_line(&denied, "status", false, None),
+            Some("sudo nails status".to_string())
+        );
+    }
+
+    #[test]
+    fn only_a_refused_read_by_a_non_root_user_gets_the_sudo_line() {
+        let binary = Some(Path::new("/mnt/data/nails"));
+        let denied = unreadable(std::io::ErrorKind::PermissionDenied);
+        assert_eq!(sudo_line(&denied, "status", true, binary), None, "root");
+        let other = unreadable(std::io::ErrorKind::IsADirectory);
+        assert_eq!(sudo_line(&other, "status", false, binary), None);
+        let invalid = NailsError::ConfigError("invalid config".into());
+        assert_eq!(sudo_line(&invalid, "status", false, binary), None);
     }
 
     fn config_rooted_at(root: &str) -> Config {

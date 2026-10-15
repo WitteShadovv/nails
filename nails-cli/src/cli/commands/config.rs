@@ -9,10 +9,10 @@
 
 use std::path::Path;
 
-use nails_core::{CliOverrides, Config, LoadedConfig};
+use nails_core::{CliOverrides, Config, LoadedConfig, NailsError};
 use serde_json::json;
 
-use super::{config_error_line, resolve_config};
+use super::{config_error_line, config_read_hint, resolve_config};
 use crate::cli::args::ConfigCommand;
 use crate::cli::output::{ExitStatus, OutputSettings};
 
@@ -45,6 +45,16 @@ impl Outcome {
             stderr: format!("error: {line}\n"),
             ..Self::default()
         }
+    }
+
+    /// A configuration that could not be loaded for `command`: the error line
+    /// and, when the read was refused for lack of permission, the `sudo` line.
+    fn load_error(error: &NailsError, command: &str) -> Self {
+        let mut outcome = Self::config_error(&config_error_line(error));
+        if let Some(hint) = config_read_hint(error, command) {
+            outcome.stderr.push_str(&format!("  {hint}\n"));
+        }
+        outcome
     }
 }
 
@@ -107,7 +117,7 @@ fn path(config_override: Option<&Path>, json: bool) -> Outcome {
 fn show(config_override: Option<&Path>, json: bool, overrides: &CliOverrides) -> Outcome {
     let mut loaded = match resolve_config(config_override) {
         Ok(loaded) => loaded,
-        Err(error) => return Outcome::config_error(&config_error_line(&error)),
+        Err(error) => return Outcome::load_error(&error, "config show"),
     };
     loaded.apply_cli_overrides(overrides);
 
@@ -134,24 +144,26 @@ fn validate(config_override: Option<&Path>, explicit: Option<&Path>, json: bool)
         .map(Path::to_path_buf)
         .unwrap_or_else(|| nails_core::config::discover_config_path(config_override));
 
+    let command = match explicit {
+        Some(file) => format!("config validate {}", file.display()),
+        None => "config validate".to_string(),
+    };
     match LoadedConfig::load(&path) {
         Ok(_) if json => Outcome::ok(format!("{}\n", json!({ "path": path, "valid": true }))),
         Ok(_) => Outcome::ok(format!("{}: valid\n", path.display())),
-        Err(error) => {
-            let line = config_error_line(&error);
-            if json {
-                Outcome {
-                    code: EXIT_CONFIG_ERROR,
-                    stdout: format!(
-                        "{}\n",
-                        json!({ "path": path, "valid": false, "error": line })
-                    ),
-                    stderr: String::new(),
-                }
-            } else {
-                Outcome::config_error(&line)
+        Err(error) if json => {
+            let mut value =
+                json!({ "path": path, "valid": false, "error": config_error_line(&error) });
+            if let Some(hint) = config_read_hint(&error, &command) {
+                value["hint"] = json!(hint);
+            }
+            Outcome {
+                code: EXIT_CONFIG_ERROR,
+                stdout: format!("{value}\n"),
+                stderr: String::new(),
             }
         }
+        Err(error) => Outcome::load_error(&error, &command),
     }
 }
 

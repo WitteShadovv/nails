@@ -150,14 +150,19 @@ struct UnknownData {
 }
 
 /// Print an unknown status (the report could not be built) as a failure
-/// envelope.
-pub fn print_status_json_unknown(error: String) {
+/// envelope. `sudo` is the line that runs status as root, when the state file
+/// was unreadable for lack of permission.
+pub fn print_status_json_unknown(error: String, sudo: Option<String>) {
+    let mut body = crate::cli::output::envelope::ErrorBody::new("unknown_state", error);
+    if let Some(line) = sudo {
+        body = body.with_hint(format!("run it as root: {line}"));
+    }
     Envelope::failure_with_data(
         "status",
-        crate::cli::output::envelope::ErrorBody::new("unknown_state", error),
+        body,
         UnknownData {
             posture: "unknown",
-            remediation: "Run status with sufficient privileges or fix the state file access",
+            remediation: "Run status as root, or fix access to the state file",
         },
     )
     .print();

@@ -155,10 +155,12 @@ impl Config {
     /// # Errors
     ///
     /// - `NailsError::ConfigNotFound` if the file does not exist.
-    /// - `NailsError::ConfigError` if the file cannot be read, is not valid
-    ///   TOML, contains an unknown key at any level, or has a value of the
-    ///   wrong type. The message is one line and names the line and column;
-    ///   for a misspelt key it suggests the closest valid key.
+    /// - `NailsError::IoError` if the file cannot be read (permission denied,
+    ///   a directory, an I/O error), carrying the error's kind.
+    /// - `NailsError::ConfigError` if the file is not valid TOML, contains an
+    ///   unknown key at any level, or has a value of the wrong type. The
+    ///   message is one line and names the line and column; for a misspelt
+    ///   key it suggests the closest valid key.
     /// - `NailsError::UnsafeConfigPath` if a path breaks a rule of
     ///   [`Config::validate_paths`].
     ///

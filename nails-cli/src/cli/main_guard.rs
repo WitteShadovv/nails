@@ -36,7 +36,9 @@ pub fn requires_root(command: &Commands) -> bool {
         | Commands::GuardDevice { .. } => true,
         // Planting writes into the overlays, a live scan reads raw block devices
         // and reset deletes from the hidden volume. An offline scan of image
-        // files and the status view need no privileges.
+        // files and the status view are not gated here: they still read the
+        // configuration, which `init` leaves readable by root only, and a
+        // refused read names the `sudo` line (`commands::config_read_hint`).
         Commands::Rehearse(args) => match &args.step {
             Some(RehearseStep::Plant(_) | RehearseStep::Reset) => true,
             Some(RehearseStep::Scan(scan)) => !scan.offline,
@@ -68,21 +70,30 @@ fn subcommand_name(command: &Commands) -> &'static str {
     }
 }
 
-/// Build the "must run as root" message for `subcommand`.
+/// The `sudo` line that runs `subcommand` with the running binary.
 ///
 /// The absolute path to the running binary is used so the suggested `sudo`
-/// invocation works regardless of the caller's `PATH` and regardless of whether
-/// the binary is reached through a decoy symlink. When the path cannot be
-/// resolved the bare command name is used as a last resort.
-fn needs_root_message(argv0: Option<&std::path::Path>, subcommand: &str) -> String {
+/// invocation works regardless of the caller's `PATH` (sudo's `secure_path`
+/// never includes the hidden volume) and regardless of whether the binary is
+/// reached through a decoy symlink. When the path cannot be resolved the bare
+/// command name is used as a last resort.
+pub(crate) fn sudo_command(argv0: Option<&std::path::Path>, subcommand: &str) -> String {
     let binary = argv0
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| "nails".to_string());
-    format!("this command must run as root: try `sudo {binary} {subcommand}`")
+    format!("sudo {binary} {subcommand}")
+}
+
+/// Build the "must run as root" message for `subcommand`.
+fn needs_root_message(argv0: Option<&std::path::Path>, subcommand: &str) -> String {
+    format!(
+        "this command must run as root: try `{}`",
+        sudo_command(argv0, subcommand)
+    )
 }
 
 /// True when the effective user is root.
-fn effective_user_is_root() -> bool {
+pub(crate) fn effective_user_is_root() -> bool {
     nix::unistd::geteuid().is_root()
 }
 
