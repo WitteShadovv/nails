@@ -156,7 +156,7 @@ pub fn ensure_hidden_configuration_module<F: Filesystem>(fs: &F, hidden_path: &P
         ))
     })?;
 
-    tracing::info!(
+    tracing::debug!(
         path = %hidden_config.display(),
         "Seeded the hidden configuration.nix template (all settings commented out)"
     );

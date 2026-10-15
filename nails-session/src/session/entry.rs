@@ -448,7 +448,7 @@ fn build(
         // store before the next session, so the closure is kept on the
         // hidden volume.
         let kept = host.keep_hidden_closure(&nextroot, &system, &layout.store_kept())?;
-        tracing::info!(
+        tracing::debug!(
             paths = kept.paths,
             copied = kept.copied,
             files = kept.files,

@@ -283,10 +283,14 @@ fn failing_check_is_reported_through_tracing() {
         other => panic!("expected PreFlightCheckFailed, got {other:?}"),
     }
 
-    // The failure is reported on the one progress channel (tracing); the old
-    // unconditional `output::check_result` print is gone, so this is the only
-    // report of the check. `logs_contain` is injected by `traced_test`.
+    // The failure reaches the log as a debug event; the console shows it once,
+    // from the returned error, which the caller prints as a formatted list.
+    // `logs_contain` is injected by `traced_test`.
     assert!(logs_contain("Preflight check failed"));
+    assert!(
+        !logs_contain("ERROR"),
+        "a failed check is not logged as an error"
+    );
 }
 
 /// The build-target check's verdict for a manager's registry.

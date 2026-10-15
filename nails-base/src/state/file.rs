@@ -499,7 +499,7 @@ impl StateFile {
 
         // Missing file is a legitimate "inactive" signal, not corruption.
         if !path.exists() {
-            tracing::warn!(
+            tracing::debug!(
                 "State file not found at {}, assuming INACTIVE",
                 path.display()
             );

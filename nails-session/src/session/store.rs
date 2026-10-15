@@ -85,7 +85,7 @@ pub fn forget_vanished(runner: &dyn ProcessRunner, store_root: &Path) -> bool {
     crate::reporter::progress::detail("nixos_build", "checking the hidden store database");
     let started = Instant::now();
     let result = runner.run_text(&command);
-    tracing::info!(
+    tracing::debug!(
         seconds = started.elapsed().as_secs_f64(),
         "hidden store database checked"
     );

@@ -361,38 +361,40 @@ impl<F: Filesystem> NailsManager<F> {
         // Run all checks (always get full results for display)
         let (results, all_passed) = registry.run_all_detailed(&self.filesystem);
 
-        // Report each check and collect failures. Progress is emitted as tracing
-        // events only; the subscriber the CLI installs honours `--quiet`/`--json`
-        // and chooses the stream, so the core never prints check results ad hoc
-        // (and never reports the same check twice).
+        // Report each check and collect failures, as tracing events only: the
+        // core never prints check results itself. A warning is the one result
+        // the operator sees on the console, as `<check>: <message>` like a row
+        // of `nails check`. Passes and skips are routine, and a failure comes
+        // back in the error, which the caller prints as one formatted list, so
+        // those go to the log at debug level and no check is reported twice.
         let mut failed_checks: crate::error::PreFlightFailures = Vec::new();
 
         for (name, result) in &results {
             match result {
                 crate::preflight::CheckResult::Pass(msg) => {
-                    tracing::info!(check = %name, result = "pass", msg = %msg, "Preflight check passed");
+                    tracing::debug!(check = %name, result = "pass", msg = %msg, "Preflight check passed");
                 }
                 crate::preflight::CheckResult::Warn(msg) => {
-                    tracing::warn!(check = %name, result = "warn", msg = %msg, "Preflight check warning");
+                    tracing::warn!("{name}: {msg}");
                 }
                 crate::preflight::CheckResult::Fail {
                     message,
                     remediation,
                 } => {
-                    tracing::error!(check = %name, result = "fail", msg = %message, "Preflight check failed");
+                    tracing::debug!(check = %name, result = "fail", msg = %message, "Preflight check failed");
                     failed_checks.push((name.clone(), message.clone(), remediation.clone()));
                 }
                 crate::preflight::CheckResult::Skipped(reason) => {
                     // Not a failure: a prerequisite (the hidden volume) was absent,
                     // so this check never ran and contributes no remediation.
-                    tracing::info!(check = %name, result = "skipped", msg = %reason, "Preflight check skipped");
+                    tracing::debug!(check = %name, result = "skipped", msg = %reason, "Preflight check skipped");
                 }
             }
         }
 
         if all_passed {
             self.ensure_state_file_exists()?;
-            tracing::info!("All pre-flight checks passed");
+            tracing::debug!("All pre-flight checks passed");
             Ok(())
         } else {
             Err(crate::NailsError::PreFlightCheckFailed(failed_checks))
@@ -401,9 +403,10 @@ impl<F: Filesystem> NailsManager<F> {
 
     /// Run `backend-entries` alone, as activation does under `--no-preflight`:
     /// a decoy fstab or crypttab entry that opens the hidden volume refuses
-    /// activation whatever the flags say. A warning is reported as the
-    /// pre-flight run reports one, once, as a tracing event that the CLI's
-    /// subscriber shows, and it does not change the activation's exit status.
+    /// activation whatever the flags say. A result is reported as the
+    /// pre-flight run reports one: a warning once, as a tracing event that the
+    /// CLI's subscriber shows, without changing the activation's exit status,
+    /// and a failure in the returned error alone.
     pub fn run_backend_entries_check(&self) -> Result<()> {
         use crate::preflight::{CheckResult, PreFlightCheck};
         let check = crate::preflight::checks::BackendEntriesCheck::new(
@@ -415,7 +418,7 @@ impl<F: Filesystem> NailsManager<F> {
                 message,
                 remediation,
             } => {
-                tracing::error!(check = %name, result = "fail", msg = %message, "Preflight check failed");
+                tracing::debug!(check = %name, result = "fail", msg = %message, "Preflight check failed");
                 Err(NailsError::PreFlightCheckFailed(vec![(
                     name,
                     message,
@@ -423,7 +426,7 @@ impl<F: Filesystem> NailsManager<F> {
                 )]))
             }
             CheckResult::Warn(message) => {
-                tracing::warn!(check = %name, result = "warn", msg = %message, "Preflight check warning");
+                tracing::warn!("{name}: {message}");
                 Ok(())
             }
             CheckResult::Pass(_) | CheckResult::Skipped(_) => Ok(()),

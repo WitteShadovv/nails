@@ -125,7 +125,7 @@ pub fn execute(
     crate::cli::output::flush_stdio();
     match manager.leave_session(to, &host) {
         Ok(report) => {
-            tracing::info!(
+            tracing::debug!(
                 backend_closing = ?report.deferred,
                 unmounted = ?report.unmounted,
                 "the way back is enqueued"

@@ -110,7 +110,7 @@ fn log_report(report: &HotReport) {
         .iter()
         .map(|(name, d)| format!("{name}={}ms", d.as_millis()))
         .collect();
-    tracing::info!(
+    tracing::debug!(
         side = ?report.side,
         requested = ?report.requested,
         dispatched = ?report.dispatched,
