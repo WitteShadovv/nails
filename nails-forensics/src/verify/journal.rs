@@ -4,7 +4,8 @@
 //! Reading the systemd journal for a deep-scan leak search.
 //!
 //! The deep verify pass greps the live journal for the tokens a hidden session
-//! would leave there if the journald relinquish/flush hooks failed: the tool
+//! would leave in the decoy journal if a barrier failed (the root overlay, the
+//! scrub of the runtime journal on the way back, the kmsg cursor): the tool
 //! name, the hidden volume mount path and the encrypted-backend command names.
 //! `verify --deep` reports the hits of each token, telling sudo's records of
 //! the operator's own commands from other entries and an entry kept in RAM

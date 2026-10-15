@@ -12,14 +12,18 @@
 //!
 //! # Security
 //!
-//! When journald stores its journal persistently under `/var/log/journal`, the
-//! records a hidden session produces before `/var` is overlaid — and anything
-//! journald fails to re-home onto the overlay — survive on the decoy disk across
-//! deactivation and reboot. The overlay re-home and the detach-time relinquish
-//! shrink that window, but a persistent decoy journal remains a standing hazard,
-//! so this is surfaced before any state is written. Nothing here vacuums or
-//! rotates the decoy journal: destroying the decoy's own log history is itself a
-//! deniability tell.
+//! With a persistent journal under `/var/log/journal`, the decoy journald
+//! writes the window around each soft-reboot to the decoy disk: the sudo line
+//! of the activation, the hidden build's progress, the decoy's shutdown before
+//! the switch and its start after the way back, under one boot ID. The hidden
+//! session's own records stay off that disk only while every barrier holds:
+//! the root overlay keeps the hidden journald's files below `/var` on the
+//! hidden volume, the scrub on the way back deletes the runtime journal before
+//! the decoy journald can flush it to disk, and the kmsg cursor keeps the
+//! hidden session's kernel records out. A volatile journal keeps all of this
+//! in RAM, so a persistent one is surfaced before any state is written.
+//! Nothing here vacuums or rotates the decoy journal: destroying the decoy's
+//! own log history is itself a deniability tell.
 
 use super::systemd_conf::{self, Assignment};
 use crate::Filesystem;

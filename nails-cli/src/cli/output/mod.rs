@@ -38,12 +38,13 @@ pub fn println_tolerating_broken_pipe(line: &str) {
 /// Print `line` and a trailing newline on stderr, tolerating a broken pipe. The
 /// pipe-safe replacement for `eprintln!`.
 ///
-/// An emergency teardown restarts journald as it scrubs the runtime journal,
-/// which severs the `journal+console` stream the unit's stderr is wired to; a
-/// later `eprintln!` then fails with `BrokenPipe` and panics. A teardown must
-/// never abort on its own diagnostic output, so the broken pipe is swallowed
-/// here and every other I/O error is ignored too (there is nowhere left to
-/// report it).
+/// An emergency kills every hidden program, the terminal or pipe that reads a
+/// command's stderr among them, and the shutdown it enqueues stops journald,
+/// which reads the stderr of a unit such as the panic switch. A later
+/// `eprintln!` then fails (with `BrokenPipe` on a pipe or socket) and panics.
+/// A teardown must never abort on its own diagnostic output, so the broken
+/// pipe is swallowed here and every other I/O error is ignored too (there is
+/// nowhere left to report it).
 pub fn eprintln_tolerating_broken_pipe(line: &str) {
     let mut stderr = io::stderr().lock();
     let _ = write_line_tolerating_broken_pipe(&mut stderr, line);

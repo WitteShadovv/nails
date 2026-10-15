@@ -44,16 +44,16 @@ impl<F: Filesystem> Verifier<F> {
     /// environment, returning the findings and whether the journal was
     /// searched.
     ///
-    /// The journald relinquish/flush hooks around every transition keep the
-    /// hidden session's records off the persistent decoy journal; this is the
-    /// forensic cross-check that they held. Each needle is a token that reveals
-    /// the hidden environment — the tool name, the hidden volume mount path, the
-    /// config file name and the encrypted-backend command name. A needle's hits
-    /// are split into sudo's records of commands and other entries, each group
-    /// rated by where it was found (see `journal_finding`). When the journal
-    /// cannot be searched (no journald, no access) nothing is reported as
-    /// clean: the second element is `false` so the caller records the journal
-    /// as an area it could not inspect.
+    /// The root overlay, the scrub of the runtime journal on the way back and
+    /// the kmsg cursor keep the hidden session's records out of the decoy
+    /// journal; this is the forensic cross-check that they held. Each needle is
+    /// a token that reveals the hidden environment — the tool name, the hidden
+    /// volume mount path, the config file name and the encrypted-backend
+    /// command name. A needle's hits are split into sudo's records of commands
+    /// and other entries, each group rated by where it was found (see
+    /// `journal_finding`). When the journal cannot be searched (no journald, no
+    /// access) nothing is reported as clean: the second element is `false` so
+    /// the caller records the journal as an area it could not inspect.
     pub(super) fn scan_journal(&self, in_session: bool) -> (Vec<Finding>, bool) {
         let place = JournalPlace {
             in_session,
