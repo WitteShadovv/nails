@@ -286,6 +286,7 @@ mod tests {
                 hidden: side(Some("/nix/store/aaa-nixos-system-hidden")),
                 policy_mounts: Vec::new(),
                 masks: vec!["dev-vda3.swap".to_string()],
+                boot_masks: Vec::new(),
                 session_units: Vec::new(),
                 backend: Vec::new(),
                 tools: Tools::default(),

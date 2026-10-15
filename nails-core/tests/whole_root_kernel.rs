@@ -111,6 +111,7 @@ mod kernel_tests {
                 },
                 policy_mounts: Vec::new(),
                 masks: vec!["dev-vdb1.swap".to_string()],
+                boot_masks: Vec::new(),
                 session_units: Vec::new(),
                 backend: Vec::new(),
                 tools: Tools::default(),

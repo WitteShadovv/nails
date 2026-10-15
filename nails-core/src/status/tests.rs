@@ -34,6 +34,7 @@ fn plan(root: &Path) -> Plan {
             kind: PolicyMountKind::ReadOnlyBind,
         }],
         masks: vec!["dev-vda3.swap".into()],
+        boot_masks: Vec::new(),
         session_units: Vec::new(),
         backend: Vec::new(),
         tools: Tools::default(),

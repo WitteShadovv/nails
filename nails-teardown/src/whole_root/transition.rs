@@ -12,11 +12,13 @@
 //!
 //! - **Enter** (decoy to hidden): repoint `/run/current-system` to the hidden
 //!   NixOS toplevel (PID 1 re-executes `/run/current-system/systemd/...`), mask
-//!   the decoy units the hidden systemd must never start, install the hidden
-//!   session's runtime units (and, opted in, the udev rule that keeps unused
-//!   disks read-only, [`crate::whole_root::disk_guard`]), narrow the `/run`
-//!   snapshot to what the decoy's own shutdown left, copy the decoy's records
-//!   ([`crate::whole_root::run_records`]), and record the entry.
+//!   the decoy units the hidden systemd must never start and, best effort, the
+//!   boot-loader units that would only fail on the read-only boot filesystems,
+//!   install the hidden session's runtime units (and, opted in, the udev rule
+//!   that keeps unused disks read-only, [`crate::whole_root::disk_guard`]),
+//!   narrow the `/run` snapshot to what the decoy's own shutdown left, copy the
+//!   decoy's records ([`crate::whole_root::run_records`]), and record the
+//!   entry.
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
 //!   decoy, make the disks the session set read-only writable again and remove
 //!   the rule and the drop-ins, scrub `/run` ([`crate::whole_root::run_scrub`]),
@@ -350,11 +352,13 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
         return disarm(env, plan, &format!("could not mask decoy units: {e}"));
     }
     // The session's own units (watcher, sleep guard) are best-effort, and so
-    // is the read-only rule for unused disks: the watcher sweeps them too.
+    // is the read-only rule for unused disks: the watcher sweeps them too. So
+    // are the boot-loader masks, which only keep units from failing.
     let _ = runtime_units::install_units(&env.run, &plan.session_units);
     if plan.read_only_disks {
         let _ = disk_guard::install_rule(&env.run, &env.runtime_dir.join(BINARY_NAME));
     }
+    runtime_units::mask_units_best_effort(&env.run, &plan.boot_masks);
     narrow_snapshot(env);
     // Without the copy, the way back clears the records instead.
     if run_records::save(&env.run, &env.runtime_dir.join(RECORDS_NAME)).is_err() {

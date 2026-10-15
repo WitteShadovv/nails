@@ -348,6 +348,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         decoy,
         policy_mounts: Vec::new(),
         masks: Vec::new(),
+        boot_masks: Vec::new(),
         session_units: inputs.session_units.clone(),
         backend: inputs.backend.clone(),
         tools: Tools {
@@ -477,6 +478,10 @@ fn build(
     }
     plan.masks = policy::masked_units(&decisions);
     plan.masks.dedup();
+    plan.boot_masks = super::systemd::units_in_root(&nextroot, policy::BOOT_WRITER_UNITS)
+        .into_iter()
+        .filter(|unit| !plan.masks.contains(unit))
+        .collect();
     if let Some(operator) = &inputs.operator {
         let home = paths.in_nextroot(operator.passwd_home());
         super::persona::write_masks(&home, &inputs.persona, operator);

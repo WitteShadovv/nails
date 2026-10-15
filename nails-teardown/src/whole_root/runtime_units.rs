@@ -11,7 +11,8 @@
 //! and the return scrub removes them, so the decoy's PID 1 never sees them.
 //!
 //! Unit names are validated: a plain file name with a known unit suffix, so a
-//! plan can never make the transition write outside `/run/systemd/system`.
+//! plan can never make the transition write outside `/run/systemd/system`
+//! and `/run/systemd/system.control`.
 
 use serde::{Deserialize, Serialize};
 use std::io;
@@ -19,6 +20,13 @@ use std::path::{Path, PathBuf};
 
 /// The runtime unit directory below a `/run` root.
 pub const RUNTIME_UNIT_DIR: &str = "systemd/system";
+
+/// The runtime directory that ranks above `/etc/systemd/system`, below a
+/// `/run` root. A unit file in a directory listed earlier overrides one of the
+/// same name listed later, and `/run/systemd/system` comes after
+/// `/etc/systemd/system`, where NixOS links every unit: a mask there only
+/// hides a unit installed below `/usr` (or generated from fstab).
+pub const RUNTIME_CONTROL_DIR: &str = "systemd/system.control";
 
 /// The unit suffixes a runtime unit may have.
 const UNIT_SUFFIXES: &[&str] = &[
@@ -48,6 +56,27 @@ pub fn valid_unit_name(name: &str) -> bool {
         && UNIT_SUFFIXES
             .iter()
             .any(|s| name.len() > s.len() && name.ends_with(s))
+}
+
+/// Mask `units` under `run` in [`RUNTIME_CONTROL_DIR`], so the mask wins
+/// wherever the unit is installed. Best effort and one at a time: a name that
+/// is not a unit name, or a path that already holds anything (a mask or an
+/// override of the decoy's own), is skipped. Returns the links written.
+pub fn mask_units_best_effort(run: &Path, units: &[String]) -> Vec<PathBuf> {
+    let dir = run.join(RUNTIME_CONTROL_DIR);
+    let mut written = Vec::new();
+    for name in units.iter().filter(|name| valid_unit_name(name)) {
+        let link = dir.join(name);
+        if std::fs::symlink_metadata(&link).is_ok() {
+            continue;
+        }
+        if std::fs::create_dir_all(&dir).is_ok()
+            && std::os::unix::fs::symlink("/dev/null", &link).is_ok()
+        {
+            written.push(link);
+        }
+    }
+    written
 }
 
 fn invalid(name: &str) -> io::Error {
@@ -160,6 +189,34 @@ mod tests {
         assert!(install_units(run.path(), &[unit("../../escape.service")]).is_err());
         assert!(mask_units(run.path(), &["x/y.swap".to_string()]).is_err());
         assert!(!run.path().join(RUNTIME_UNIT_DIR).exists());
+    }
+
+    #[test]
+    fn best_effort_masks_rank_above_etc_and_never_replace_what_is_there() {
+        let run = tempfile::tempdir().unwrap();
+        let dir = run.path().join(RUNTIME_CONTROL_DIR);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("grub-common.service"), "[Unit]\n").unwrap();
+        let written = mask_units_best_effort(
+            run.path(),
+            &[
+                "systemd-boot-random-seed.service".to_string(),
+                "grub-common.service".to_string(),
+                "../escape.service".to_string(),
+            ],
+        );
+        assert_eq!(written, vec![dir.join("systemd-boot-random-seed.service")]);
+        assert_eq!(
+            std::fs::read_link(&written[0]).unwrap(),
+            Path::new("/dev/null")
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("grub-common.service")).unwrap(),
+            "[Unit]\n",
+            "an override of the decoy's own stays"
+        );
+        assert!(!run.path().join("systemd/escape.service").exists());
+        assert!(mask_units_best_effort(run.path(), &[]).is_empty());
     }
 
     #[test]

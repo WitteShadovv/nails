@@ -372,7 +372,9 @@ impl<F: Filesystem> StatusCommand<F> {
                         .collect()
                 })
                 .unwrap_or_default(),
-            masked_units: plan.map(|p| p.masks.clone()).unwrap_or_default(),
+            masked_units: plan
+                .map(|p| p.masks.iter().chain(&p.boot_masks).cloned().collect())
+                .unwrap_or_default(),
             nextroot_mounted: entries.iter().any(|e| {
                 e.mount_point == Path::new(nails_teardown::whole_root::nextroot::NEXTROOT)
             }),

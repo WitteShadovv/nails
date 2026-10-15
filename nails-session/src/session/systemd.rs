@@ -84,21 +84,33 @@ pub fn running_version(runner: &dyn ProcessRunner) -> Option<u32> {
         .flatten()
 }
 
-/// The soft-reboot units missing in `root`, resolved as if `root` were `/`:
-/// on NixOS the unit directory is a link into `/etc/static` and the store, so
+/// Whether `unit` is installed in `root`, resolved as if `root` were `/`: on
+/// NixOS the unit directory is a link into `/etc/static` and the store, so
 /// following it on the running system would look at the wrong root's units.
+fn unit_in_root(root: &Path, unit: &str) -> bool {
+    UNIT_DIRS.iter().any(|dir| {
+        nails_teardown::whole_root::nextroot::exists_in_root(
+            root,
+            &Path::new("/").join(dir).join(unit),
+        )
+    })
+}
+
+/// The soft-reboot units missing in `root`.
 pub fn missing_soft_reboot_units(root: &Path) -> Vec<&'static str> {
     SOFT_REBOOT_UNITS
         .iter()
         .copied()
-        .filter(|unit| {
-            !UNIT_DIRS.iter().any(|dir| {
-                nails_teardown::whole_root::nextroot::exists_in_root(
-                    root,
-                    &Path::new("/").join(dir).join(unit),
-                )
-            })
-        })
+        .filter(|unit| !unit_in_root(root, unit))
+        .collect()
+}
+
+/// The `units` installed in `root`.
+pub fn units_in_root(root: &Path, units: &[&str]) -> Vec<String> {
+    units
+        .iter()
+        .filter(|unit| unit_in_root(root, unit))
+        .map(|unit| (*unit).to_string())
         .collect()
 }
 
@@ -154,6 +166,25 @@ mod tests {
             missing_soft_reboot_units(root.path()),
             ["systemd-soft-reboot.service"]
         );
+    }
+
+    #[test]
+    fn only_the_units_the_root_has_are_named() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("lib/systemd/system")).unwrap();
+        std::fs::write(
+            root.path().join("lib/systemd/system/grub-common.service"),
+            "",
+        )
+        .unwrap();
+        assert_eq!(
+            units_in_root(
+                root.path(),
+                &["systemd-boot-random-seed.service", "grub-common.service"]
+            ),
+            ["grub-common.service"]
+        );
+        assert!(units_in_root(root.path(), &[]).is_empty());
     }
 
     #[test]

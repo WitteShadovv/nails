@@ -218,6 +218,12 @@ pub struct Plan {
     /// (decoy swap, decoy filesystems that would be mounted read-write).
     #[serde(default)]
     pub masks: Vec<String>,
+    /// Boot-loader units masked in the hidden root, best effort: they write
+    /// to the boot filesystems at every start, which the hidden root has
+    /// read-only, so they would only fail there. Kept apart from
+    /// [`masks`](Self::masks), without which the entry must not happen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boot_masks: Vec<String>,
     /// Runtime units installed in `/run` at entry, for the hidden session.
     #[serde(default)]
     pub session_units: Vec<RuntimeUnit>,
@@ -403,6 +409,7 @@ pub(crate) fn sample() -> Plan {
             kind: PolicyMountKind::ReadOnlyBind,
         }],
         masks: vec!["dev-vda3.swap".to_string()],
+        boot_masks: Vec::new(),
         session_units: Vec::new(),
         backend: vec!["sample-backend-unmapped".to_string()],
         tools: Tools::default(),

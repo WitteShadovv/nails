@@ -521,6 +521,42 @@ fn the_decoy_s_name_server_records_are_put_back_on_the_way_back() {
 }
 
 #[test]
+fn the_boot_loader_masks_are_written_where_they_outrank_etc_and_go_with_the_session() {
+    let world = World::new();
+    let mut plan = armed(Direction::Enter);
+    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&world.run()).to_text(),
+    )
+    .unwrap();
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    let mask = world
+        .run()
+        .join(runtime_units::RUNTIME_CONTROL_DIR)
+        .join("systemd-boot-random-seed.service");
+    assert_eq!(fs::read_link(&mask).unwrap(), Path::new("/dev/null"));
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    assert!(matches!(
+        run(&world.env(true, 1_030)),
+        Outcome::Returned { .. }
+    ));
+    assert!(
+        fs::symlink_metadata(&mask).is_err(),
+        "the decoy runs the unit again"
+    );
+}
+
+#[test]
 fn the_read_only_rule_lives_from_the_entry_to_the_way_back_only() {
     let world = World::new();
     let rule = world
