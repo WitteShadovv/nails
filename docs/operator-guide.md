@@ -311,7 +311,8 @@ switch itself, once the overlay that held it is released.
 kernel state, all of it in RAM and gone at power-off:
 
 - the kernel ring buffer (`dmesg`), with the hidden session's kernel messages;
-- `SoftRebootsCount`, two per session, readable with `systemctl show`;
+- `SoftRebootsCount`, two per session, readable with `systemctl show` on
+  systemd 256 and newer;
 - the same boot ID and continuous uptime across both transitions.
 
 On a persistent decoy journal (which the decoy requirements forbid), the decoy's

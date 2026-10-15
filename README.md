@@ -356,7 +356,8 @@ Every command accepts `--json` and prints one line with a versioned envelope
   kernel-managed for that reason: a FUSE mount dies with the programs at the
   soft-reboot.
 - **A soft-reboot leaves traces in RAM**: the kernel ring buffer, the
-  soft-reboot counter (two per session) and the unchanged boot ID and uptime.
+  soft-reboot counter (two per session, on systemd 256 and newer) and the
+  unchanged boot ID and uptime.
   Power off after a session when that matters. A warm reboot does not clear RAM
   either.
 - **Do not suspend during a session.** Suspend keeps the whole hidden session

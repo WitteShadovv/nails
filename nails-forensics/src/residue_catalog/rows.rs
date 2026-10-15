@@ -323,10 +323,10 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "Soft-reboot counter and boot ID",
         kind: ResidueKind::Session,
         channel: Channel::Mechanism(
-            "SoftRebootsCount and the unchanged boot ID and uptime, readable with systemctl and journalctl",
+            "SoftRebootsCount (systemd 256 and newer) and the unchanged boot ID and uptime, readable with systemctl and journalctl",
         ),
         platforms: Platforms::All,
-        risk: "Anyone with a shell sees two soft-reboots per session; a persistent decoy journal shows a shutdown and start under one boot ID.",
+        risk: "Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID.",
         preflight: Probe::None("kernel and PID 1 state, not a file"),
         preflight_blocks: false,
         verify: Probe::None("RAM only, gone at power-off"),

@@ -42,8 +42,8 @@ The price:
   overlay. For the same reason an emergency ends at the decoy's login screen, or
   with the machine off; it cannot leave a desktop running.
 - Kernel and service-manager state is not reset: the boot ID, the uptime, the
-  kernel ring buffer and systemd's soft-reboot counter carry over until the
-  machine powers off (see the
+  kernel ring buffer and, on systemd 256 and newer, its soft-reboot counter
+  carry over until the machine powers off (see the
   [residual channels](threat-model.md#residual-channels)).
 - The hidden systemd would mount every other filesystem in the decoy's fstab
   directly and read-write, so the
