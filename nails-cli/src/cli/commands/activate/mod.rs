@@ -37,7 +37,7 @@ fn write_activation_residue_baseline(
     json: bool,
     settings: &OutputSettings,
 ) {
-    use nails_core::{RealFilesystem, StateFileStatus, Verifier, VerifyStatus};
+    use nails_core::{RealFilesystem, StateFileStatus, Verifier};
 
     let config = manager.config().clone();
     let hidden_root = config.hidden_volume_root.clone();
@@ -73,11 +73,6 @@ fn write_activation_residue_baseline(
         &timestamp,
     ) {
         Ok(summary) => {
-            let status = match summary.status {
-                VerifyStatus::Secure => "clean",
-                VerifyStatus::Warning => "warnings",
-                VerifyStatus::Critical => "critical findings",
-            };
             if json {
                 tracing::debug!(
                     path = %summary.path.display(),
@@ -85,9 +80,8 @@ fn write_activation_residue_baseline(
                 );
             } else if settings.verbosity >= Verbosity::Normal {
                 println!(
-                    "Pre-activation decoy residue baseline: {status} ({} finding{}) -> {}",
-                    summary.finding_count,
-                    if summary.finding_count == 1 { "" } else { "s" },
+                    "Pre-activation decoy residue baseline: {} -> {}",
+                    baseline_summary(&result),
                     summary.path.display()
                 );
             }
@@ -97,6 +91,40 @@ fn write_activation_residue_baseline(
                 error = %e,
                 "could not write pre-activation decoy residue report; continuing"
             );
+        }
+    }
+}
+
+/// What the residue baseline line says about the decoy: no count when it shows
+/// no known residue, otherwise the warnings and critical findings. The
+/// informational notes every scan adds (the RAM caveat, the scope of the
+/// baseline, catalogue notes such as `timesync-clock`) are not findings and
+/// stay in the report.
+fn baseline_summary(result: &nails_core::VerifyResult) -> String {
+    use crate::cli::output::count_noun;
+    use nails_core::{Severity, VerifyStatus};
+
+    let of = |severity: Severity| {
+        result
+            .findings
+            .iter()
+            .filter(|finding| finding.severity == severity)
+            .count()
+    };
+    let warnings = of(Severity::Warn);
+    match result.status {
+        VerifyStatus::Secure => "no known residue".to_string(),
+        VerifyStatus::Warning => count_noun(warnings, "warning", "warnings"),
+        VerifyStatus::Critical => {
+            let critical = of(Severity::Critical);
+            let mut text = count_noun(critical, "critical finding", "critical findings");
+            if warnings > 0 {
+                text.push_str(&format!(
+                    ", {}",
+                    count_noun(warnings, "warning", "warnings")
+                ));
+            }
+            text
         }
     }
 }

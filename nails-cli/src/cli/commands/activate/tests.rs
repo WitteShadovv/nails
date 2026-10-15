@@ -238,6 +238,48 @@ fn execute_colour_settings_paint_dry_run_marks() {
     );
 }
 
+/// The notes every baseline carries are not findings: a clean decoy is "no
+/// known residue" without a count, and the other states count only their
+/// warnings and critical findings, in the right number.
+#[test]
+fn the_residue_baseline_counts_only_warnings_and_critical_findings() {
+    use nails_core::{Finding, ScanDepth, Severity, VerifyResult, VerifyStatus};
+    let note = |text: &str| Finding::new(Severity::Info, "memory", text);
+    let warn = |text: &str| Finding::new(Severity::Warn, "file", text);
+    let critical = |text: &str| Finding::new(Severity::Critical, "mount", text);
+    let notes = vec![
+        note("RAM may retain data briefly after shutdown"),
+        note("Decoy-scoped baseline"),
+        note("noted: timesync-clock"),
+    ];
+    let result = |status, mut findings: Vec<Finding>| {
+        findings.extend(notes.clone());
+        VerifyResult::new(status, findings, ScanDepth::Standard)
+    };
+
+    let clean = result(VerifyStatus::Secure, Vec::new());
+    assert_eq!(super::baseline_summary(&clean), "no known residue");
+
+    let one = result(VerifyStatus::Warning, vec![warn("a")]);
+    assert_eq!(super::baseline_summary(&one), "1 warning");
+    let two = result(VerifyStatus::Warning, vec![warn("a"), warn("b")]);
+    assert_eq!(super::baseline_summary(&two), "2 warnings");
+
+    let only_critical = result(VerifyStatus::Critical, vec![critical("c")]);
+    assert_eq!(
+        super::baseline_summary(&only_critical),
+        "1 critical finding"
+    );
+    let mixed = result(
+        VerifyStatus::Critical,
+        vec![critical("c"), critical("d"), warn("a")],
+    );
+    assert_eq!(
+        super::baseline_summary(&mixed),
+        "2 critical findings, 1 warning"
+    );
+}
+
 /// Without a config file activation says so before it asks, because every
 /// opt-in protection then keeps its default; with one it says nothing.
 #[test]

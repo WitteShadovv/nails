@@ -64,6 +64,16 @@ pub fn flush_stdio() {
     let _ = io::stderr().lock().flush();
 }
 
+/// `count` followed by the noun in the number it needs: `1 warning`,
+/// `2 warnings`, `0 warnings`.
+pub fn count_noun(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("{count} {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
 pub mod activate;
 pub mod check;
 pub mod deactivate;
@@ -116,6 +126,17 @@ mod tests {
         let mut writer = FailingWriter(io::ErrorKind::Other);
         let err = write_line_tolerating_broken_pipe(&mut writer, "done").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn count_noun_uses_the_singular_for_one_only() {
+        assert_eq!(count_noun(0, "warning", "warnings"), "0 warnings");
+        assert_eq!(count_noun(1, "warning", "warnings"), "1 warning");
+        assert_eq!(count_noun(2, "warning", "warnings"), "2 warnings");
+        assert_eq!(
+            count_noun(1, "potential issue", "potential issues"),
+            "1 potential issue"
+        );
     }
 
     #[test]
