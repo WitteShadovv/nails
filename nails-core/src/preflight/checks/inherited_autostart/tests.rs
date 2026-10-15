@@ -184,7 +184,7 @@ fn a_stock_ubuntu_gnome_decoy_is_clean_in_both_modes() {
         assert!(
             result
                 .message()
-                .contains("49 desktop and distribution component(s) not counted"),
+                .contains("49 desktop and distribution components not counted"),
             "{result:?}"
         );
     }
@@ -201,7 +201,7 @@ fn a_nixos_gnome_decoy_is_clean() {
     assert!(
         result
             .message()
-            .contains("14 desktop and distribution component(s) not counted"),
+            .contains("14 desktop and distribution components not counted"),
         "{result:?}"
     );
 }
@@ -237,10 +237,16 @@ fn autologin_on_a_stock_ubuntu_decoy_is_the_only_item_to_review() {
         .unwrap();
     assert!(result.is_warn(), "{result:?}");
     let message = result.message();
-    assert!(message.contains("inherit 1 decoy item(s)"), "{message}");
+    assert!(
+        message.contains("inherit 1 decoy item to review"),
+        "{message}"
+    );
+    assert!(message.contains("To keep it out of"), "{message}");
     assert!(message.contains("alex (autologin)"), "{message}");
     assert!(
-        message.contains("turn off autologin on the decoy"),
+        message.contains("turn autologin off for the hidden session only")
+            && message.contains("autologin stays listed here while the decoy keeps it")
+            && !message.contains("on the decoy;"),
         "{message}"
     );
     assert!(
@@ -299,7 +305,10 @@ fn entries_added_by_the_user_or_third_party_software_are_reported() {
     let result = shared_home().run(&fs).unwrap();
     assert!(result.is_warn(), "{result:?}");
     let message = result.message();
-    assert!(message.contains("inherit 3 decoy item(s)"), "{message}");
+    assert!(
+        message.contains("inherit 3 decoy items to review"),
+        "{message}"
+    );
     assert!(
         message.contains("dropbox (user-autostart, remote-linked)"),
         "{message}"
@@ -314,7 +323,7 @@ fn entries_added_by_the_user_or_third_party_software_are_reported() {
         "{message}"
     );
     assert!(
-        message.contains("(49 desktop and distribution component(s) not counted)"),
+        message.contains("(49 desktop and distribution components not counted)"),
         "{message}"
     );
     assert!(!message.contains("from the decoy account"), "{message}");
@@ -364,7 +373,10 @@ fn a_long_list_names_six_entries_and_counts_the_rest() {
     seed_user_autostart(&fs, &["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8"]);
     let result = shared_home().run(&fs).unwrap();
     let message = result.message();
-    assert!(message.contains("inherit 8 decoy item(s)"), "{message}");
+    assert!(
+        message.contains("inherit 8 decoy items to review"),
+        "{message}"
+    );
     assert!(
         message.contains("a6 (user-autostart), and 2 more"),
         "{message}"

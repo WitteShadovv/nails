@@ -14,6 +14,8 @@ use nails_core::config::PersonaConfig;
 use nails_core::output::{Mark, Style};
 use nails_core::{EntryStatus, PersonaInventory};
 
+use crate::cli::output::count_noun;
+
 /// One inherited decoy persona entry.
 #[derive(Debug, Serialize)]
 pub struct InheritedEntry {
@@ -150,8 +152,8 @@ pub fn inherited_lines(
         lines.push(style.marked(
             Mark::Info,
             format!(
-                "{ignored} component(s) of the desktop or distribution not listed (--json lists \
-                 every entry)"
+                "{} of the desktop or distribution not listed (--json lists every entry)",
+                count_noun(ignored, "component", "components")
             ),
         ));
     }
@@ -161,19 +163,27 @@ pub fn inherited_lines(
         .filter(|entry| entry.remote_linked && entry.status == EntryStatus::Review.as_str())
         .count();
     if remote > 0 {
+        let looks = if remote == 1 {
+            "1 entry looks like a remote-linked client".to_string()
+        } else {
+            format!("{remote} entries look like remote-linked clients")
+        };
         lines.push(style.marked(
             Mark::Warn,
-            format!(
-                "{remote} look like remote-linked client(s); mask with [persona] mask_inherited"
-            ),
+            format!("{looks}; mask with [persona] mask_inherited"),
         ));
     }
     if !summary.unmatched_masks.is_empty() {
+        let (matches, them) = if summary.unmatched_masks.len() == 1 {
+            ("matches", "it")
+        } else {
+            ("match", "them")
+        };
         lines.push(style.marked(
             Mark::Info,
             format!(
-                "mask_inherited names {}, which match no inherited autostart entry or user unit; \
-                 activation masks them anyway",
+                "mask_inherited names {}, which {matches} no inherited autostart entry or user \
+                 unit; activation masks {them} anyway",
                 summary.unmatched_masks.join(", ")
             ),
         ));
@@ -248,9 +258,10 @@ mod tests {
                 "- dropbox (user-autostart)  [remote-linked, maskable]",
                 "- backup (user-autostart)  [masked]",
                 "- alice (linger)",
-                "[INFO] 2 component(s) of the desktop or distribution not listed (--json lists \
+                "[INFO] 2 components of the desktop or distribution not listed (--json lists \
                  every entry)",
-                "[WARN] 1 look like remote-linked client(s); mask with [persona] mask_inherited",
+                "[WARN] 1 entry looks like a remote-linked client; mask with [persona] \
+                 mask_inherited",
             ]
         );
     }
@@ -267,6 +278,12 @@ mod tests {
             lines.last().unwrap(),
             "[INFO] mask_inherited names dropbx, ghost.service, which match no inherited \
              autostart entry or user unit; activation masks them anyway"
+        );
+        let one = InheritedSummary::from_inventory(&inventory(), &persona(&["ghost.service"]));
+        assert_eq!(
+            inherited_lines(&one, "fresh-home", PLAIN).last().unwrap(),
+            "[INFO] mask_inherited names ghost.service, which matches no inherited autostart \
+             entry or user unit; activation masks it anyway"
         );
     }
 
@@ -297,7 +314,7 @@ mod tests {
         let summary = InheritedSummary::from_inventory(&inventory, &persona(&[]));
         let lines = inherited_lines(&summary, "fresh-home", PLAIN);
         assert_eq!(lines[0], "[PASS] nothing to review");
-        assert!(lines[1].starts_with("[INFO] 1 component(s)"));
+        assert!(lines[1].starts_with("[INFO] 1 component of the desktop"));
 
         let empty = InheritedSummary::from_inventory(&PersonaInventory::default(), &persona(&[]));
         assert_eq!(

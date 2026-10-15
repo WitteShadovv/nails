@@ -1017,12 +1017,14 @@ unchanged. **Lingering is a decoy setting** — disable it on the decoy itself.
 Disabling changes what *runs*; it does not roll back remote or account state.
 
 **Autologin repeats at every switch.** Each soft-reboot starts a fresh display
-manager, and one set to log in automatically logs that account in again, as at
-boot: after `activate` the hidden desktop opens without a password, and after
+manager, and one set to log an account in automatically logs it in again, as
+at boot: after `activate` the hidden desktop opens without a password, and after
 `deactivate` or `emergency` the decoy's does. NAILS logs nobody in and leaves
-the setting alone; `nails check` lists an autologin it finds in the GDM, LightDM
-or SDDM configuration. To keep autologin on the decoy but have the hidden
-session start at its login screen, turn it off in the hidden session only:
+the setting alone; `nails check` lists an autologin it finds in the decoy's
+GDM, LightDM or SDDM configuration, and keeps listing it while the decoy has it,
+even once the hidden session turns it off. To keep autologin on the decoy but
+have the hidden session start at its login screen, turn it off in the hidden
+session only:
 
 - NixOS, with any display manager: add
   `services.displayManager.autoLogin.enable = lib.mkForce false;` to the hidden
@@ -1031,7 +1033,8 @@ session start at its login screen, turn it off in the hidden session only:
 - Debian and Ubuntu: inside a hidden session, edit the display manager's file.
   For GDM set `AutomaticLoginEnable=false` in the `[daemon]` section of
   `/etc/gdm3/daemon.conf` (Debian) or `/etc/gdm3/custom.conf` (Ubuntu); for
-  LightDM or SDDM empty `autologin-user=` or `User=` under `[Autologin]` in the
+  LightDM empty `autologin-user=` in its `[Seat:*]` section (`[SeatDefaults]`
+  in older files); for SDDM empty `User=` under `[Autologin]`; each in the
   file that sets it. The edit lands in the upper, so it applies from the next
   activation and the decoy keeps its own setting.
 

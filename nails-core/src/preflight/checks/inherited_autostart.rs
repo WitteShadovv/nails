@@ -69,7 +69,19 @@ fn label(entry: &PersonaEntry) -> String {
     }
 }
 
-/// What the operator can do about the reviewed entries.
+/// `count` with the noun in the number it needs: `1 item`, `3 items`.
+fn count_noun(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("{count} {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
+/// What the operator can do about the reviewed entries. Autologin is the
+/// decoy's to keep: it is turned off for the hidden session only, as the
+/// operator guide describes, and the inventory, which reads the decoy's
+/// display-manager files, keeps listing it while the decoy has it.
 fn remedies(review: &[&PersonaEntry]) -> String {
     let mut out = Vec::new();
     if review.iter().any(|entry| entry.source.is_maskable()) {
@@ -78,17 +90,22 @@ fn remedies(review: &[&PersonaEntry]) -> String {
                 .to_string(),
         );
     }
-    let linger = review
+    if review
         .iter()
-        .any(|entry| entry.source == InheritedSource::Linger);
-    let autologin = review
+        .any(|entry| entry.source == InheritedSource::Linger)
+    {
+        out.push("turn off lingering on the decoy".to_string());
+    }
+    if review
         .iter()
-        .any(|entry| entry.source == InheritedSource::Autologin);
-    match (linger, autologin) {
-        (true, true) => out.push("turn off lingering and autologin on the decoy".into()),
-        (true, false) => out.push("turn off lingering on the decoy".into()),
-        (false, true) => out.push("turn off autologin on the decoy".into()),
-        (false, false) => {}
+        .any(|entry| entry.source == InheritedSource::Autologin)
+    {
+        out.push(
+            "turn autologin off for the hidden session only (operator guide: Inherited \
+             autostart, services and autologin); autologin stays listed here while the decoy \
+             keeps it"
+                .to_string(),
+        );
     }
     out.join("; ")
 }
@@ -98,7 +115,12 @@ fn not_counted(ignored: usize, masked: usize) -> String {
     let mut parts = Vec::new();
     if ignored > 0 {
         parts.push(format!(
-            "{ignored} desktop and distribution component(s) not counted"
+            "{} not counted",
+            count_noun(
+                ignored,
+                "desktop or distribution component",
+                "desktop and distribution components"
+            )
         ));
     }
     if masked > 0 {
@@ -157,10 +179,11 @@ impl<F: Filesystem> PreFlightCheck<F> for InheritedAutostartCheck {
             named.push(format!("and {} more", review.len() - NAMED_ENTRIES));
         }
         let mut message = format!(
-            "Hidden session would inherit {} decoy item(s) to review: {}. To keep them out of \
-             the hidden session, {}.",
-            review.len(),
+            "Hidden session would inherit {} to review: {}. To keep {} out of the hidden \
+             session, {}.",
+            count_noun(review.len(), "decoy item", "decoy items"),
             named.join(", "),
+            if review.len() == 1 { "it" } else { "them" },
             remedies(&review)
         );
         if !others.is_empty() {

@@ -189,7 +189,7 @@ in
             "- decoy-sync (user-autostart)  [masked]",
             "- decoy-package-sync (global-autostart)  [masked]",
             "- decoy-sync.timer (user-unit)  [masked]",
-            "mask_inherited names decoy-unknown.service, which match no inherited",
+            "mask_inherited names decoy-unknown.service, which matches no inherited",
         ):
             assert line in out, f"missing {line!r}"
         # The VM logs testuser in automatically, which no mask handles; the
