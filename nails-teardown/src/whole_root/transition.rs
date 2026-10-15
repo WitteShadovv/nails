@@ -65,10 +65,10 @@ pub fn dropin_text(binary: &Path) -> String {
 /// ending in `-.service` is a prefix: systemd reads `foo-.service.d/` for
 /// every `foo-*.service`.
 ///
-/// `blk-availability.service` (Debian and Ubuntu ship it, enabled, wherever
-/// `dmsetup` is installed) runs `blkdeactivate -u` when it stops. That
-/// unmounts every filesystem on a device-mapper device that is not mounted on
-/// one of its fixed system paths: on the way in the hidden volume below
+/// `blk-availability.service` (Debian's and Ubuntu's lvm2 package ships it,
+/// enabled) runs `blkdeactivate -u` when it stops. That unmounts every
+/// filesystem on a device-mapper device that is not mounted on one of its
+/// fixed system paths: on the way in the hidden volume below
 /// `/run/nextroot`, which leaves the hidden session without its volume at its
 /// path; on the way back the decoy root below `/run/nextroot` when the decoy
 /// root is on LUKS or LVM, which would leave PID 1 nothing to switch to. A
@@ -90,6 +90,23 @@ pub fn is_unit_prefix(unit: &str) -> bool {
 
 /// The drop-in text that clears a unit's stop commands.
 pub const STOP_GUARD_TEXT: &str = "[Service]\nExecStop=\n";
+
+/// [`STOP_GUARD_TEXT`] with a start command that does nothing, for
+/// `blk-availability.service`. Debian and Ubuntu ship that unit with its stop
+/// as its only command, and systemd refuses to load a service left with none
+/// ("Service has no ExecStart=, ExecStop=, or SuccessAction=. Refusing."). A
+/// one-shot service runs every start command, so lvm2's own unit, which
+/// starts `true` already, runs two; the `-` makes a missing binary harmless.
+pub const STOP_GUARD_WITH_START_TEXT: &str = "[Service]\nExecStop=\nExecStart=-/usr/bin/true\n";
+
+/// The stop guard's text for `unit`.
+fn stop_guard_text(unit: &str) -> &'static str {
+    if unit == "blk-availability.service" {
+        STOP_GUARD_WITH_START_TEXT
+    } else {
+        STOP_GUARD_TEXT
+    }
+}
 
 /// The stop guards' file name. systemd applies a unit's drop-ins in the order
 /// of their file names across every directory, and an `ExecStop=` in a later
@@ -125,7 +142,7 @@ pub const SHUTDOWN_BOUND_TEXT: &str = "[Unit]\nConflicts=shutdown.target\nBefore
 pub fn runtime_guards() -> impl Iterator<Item = (&'static str, &'static str)> {
     STOP_GUARDED_UNITS
         .into_iter()
-        .map(|unit| (unit, STOP_GUARD_TEXT))
+        .map(|unit| (unit, stop_guard_text(unit)))
         .chain(
             SHUTDOWN_BOUND_UNITS
                 .into_iter()

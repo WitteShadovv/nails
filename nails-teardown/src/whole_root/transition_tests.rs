@@ -303,18 +303,19 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
     install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
     // blkdeactivate -u would unmount the hidden volume below /run/nextroot on
     // the way in, and a LUKS or LVM decoy root below it on the way back.
+    // Debian's and Ubuntu's copy of the unit has its stop as its only
+    // command: the guard gives it a start that does nothing, or systemd would
+    // refuse to load it.
     let guard = run
         .join(stop_guard_dir("blk-availability.service"))
         .join(STOP_GUARD_NAME);
     assert_eq!(
         fs::read_to_string(&guard).unwrap(),
-        "[Service]\nExecStop=\n"
+        "[Service]\nExecStop=\nExecStart=-/usr/bin/true\n"
     );
-    assert!(
-        STOP_GUARD_TEXT
-            .lines()
-            .all(|l| !l.to_lowercase().contains("nails"))
-    );
+    for text in [STOP_GUARD_TEXT, STOP_GUARD_WITH_START_TEXT] {
+        assert!(text.lines().all(|l| !l.to_lowercase().contains("nails")));
+    }
     assert!(!STOP_GUARD_NAME.contains("nails"));
     // Later than what `systemctl edit` and NixOS write, so neither undoes it.
     for other in ["override.conf", "overrides.conf", "99-local.conf"] {
