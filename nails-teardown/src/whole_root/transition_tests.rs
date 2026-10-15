@@ -141,7 +141,9 @@ fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
     // The decoy's initrd wrote lines for the decoy's root and store, which the
     // switch leaves behind; the kernel then hands their IDs to the next mounts
     // made (here ID 62 to the hidden volume). Joined to that mount, the root's
-    // x-initrd.mount would hide it from the shutdown order.
+    // x-initrd.mount would hide it from the shutdown order. A line without an
+    // ID joins whatever is mounted at its target later with its source and
+    // root, as the next userspace mounts /run/wrappers.
     let world = World::new();
     let plan = armed(Direction::Enter);
     world.init_in_nextroot(&plan.hidden.init);
@@ -152,7 +154,9 @@ fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
         "ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
          ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n\
          ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=X-kept\n\
-         SRC=/dev/vda TARGET=/ OPTS=x-initrd.mount\n",
+         SRC=/dev/vda TARGET=/ OPTS=x-initrd.mount\n\
+         SRC=wrappers TARGET=/run/wrappers ROOT=/ OPTS=x-initrd.mount\n\
+         SRC=/dev/mapper/data TARGET=/mnt/data ROOT=/ OPTS=X-kept\n",
     )
     .unwrap();
     let mut env = world.env(true, 1_010);
@@ -160,6 +164,7 @@ fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
     env.mounts.extend(parse_mountinfo(&format!(
         "62 1 8:0 / / rw - ext4 /dev/vda rw\n\
          85 62 0:50 / /nix/store rw - overlay overlay rw\n\
+         70 62 0:51 / /run/wrappers rw - tmpfs wrappers rw\n\
          63 40 254:0 / {}/mnt/data rw - ext4 /dev/mapper/data rw\n",
         next.display()
     )));
@@ -168,7 +173,7 @@ fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
     assert_eq!(
         fs::read_to_string(&utab).unwrap(),
         "ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=X-kept\n\
-         SRC=/dev/vda TARGET=/ OPTS=x-initrd.mount\n"
+         SRC=/dev/mapper/data TARGET=/mnt/data ROOT=/ OPTS=X-kept\n"
     );
 }
 
