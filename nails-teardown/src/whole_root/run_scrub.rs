@@ -14,8 +14,13 @@
 //!   journal, logind's sessions/users/seats/inhibitors, `utmp`) and the empty
 //!   mountpoint directories of `/run/user/<uid>`;
 //! - every entry up to two levels below `/run` (three below `/run/systemd`,
-//!   where runtime unit files live) that is not in the snapshot taken in the
-//!   decoy just before entering. A mount among them is detached first.
+//!   where runtime unit files live) that is not in the snapshot. The entry
+//!   takes it in the decoy before it adds anything to `/run`, and the switch
+//!   into the hidden session narrows it to the entries the decoy's own
+//!   shutdown left ([`Snapshot::still_present`]): the PID file of a decoy
+//!   service, removed when the service stopped and written again by the
+//!   hidden session's copy of it, goes too. A mount among them is detached
+//!   first.
 //!
 //! It never touches a socket (PID 1 and the never-stopped socket units carry
 //! them as fds bound to these inodes), `/run/udev` (the device database the
@@ -78,9 +83,38 @@ impl Snapshot {
         }
     }
 
+    /// Read a snapshot written with [`to_text`](Self::to_text); `None` when
+    /// the file cannot be read.
+    pub fn load(path: &Path) -> Option<Self> {
+        std::fs::read(path).ok().map(|text| Self::from_text(&text))
+    }
+
     /// Whether the snapshot holds `relative`.
     pub fn contains(&self, relative: &OsStr) -> bool {
         self.entries.contains(relative)
+    }
+
+    /// The entries that still exist below `run`. An entry whose lookup fails
+    /// for any reason other than its absence stays, and so does every entry
+    /// when `run` itself cannot be looked up: dropping an entry lets the scrub
+    /// delete it, so only a certain absence counts.
+    pub fn still_present(&self, run: &Path) -> Self {
+        if std::fs::symlink_metadata(run).is_err() {
+            return self.clone();
+        }
+        Self {
+            entries: self
+                .entries
+                .iter()
+                .filter(|entry| {
+                    !matches!(
+                        std::fs::symlink_metadata(run.join(entry)),
+                        Err(e) if e.kind() == io::ErrorKind::NotFound
+                    )
+                })
+                .cloned()
+                .collect(),
+        }
     }
 
     /// The number of entries.
@@ -467,6 +501,28 @@ mod tests {
             fs::read_link(r.join("current-system")).unwrap(),
             Path::new("/nix/store/aaa")
         );
+    }
+
+    #[test]
+    fn a_snapshot_narrowed_to_what_is_still_there_drops_only_the_entries_that_are_gone() {
+        let run = decoy_run();
+        let r = run.path();
+        fs::create_dir_all(r.join("avahi-daemon")).unwrap();
+        fs::write(r.join("avahi-daemon/pid"), "100").unwrap();
+        let snap = Snapshot::take(r);
+        // The decoy's own shutdown: the service removed its PID file.
+        fs::remove_file(r.join("avahi-daemon/pid")).unwrap();
+        let narrowed = snap.still_present(r);
+        assert!(!narrowed.contains(&rel("avahi-daemon/pid")));
+        assert!(narrowed.contains(&rel("avahi-daemon")));
+        assert_eq!(narrowed.len(), snap.len() - 1);
+        // Without the /run it was taken of, nothing counts as gone.
+        assert_eq!(snap.still_present(&r.join("absent")), snap);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot");
+        fs::write(&path, narrowed.to_text()).unwrap();
+        assert_eq!(Snapshot::load(&path), Some(narrowed));
+        assert_eq!(Snapshot::load(&dir.path().join("absent")), None);
     }
 
     #[test]

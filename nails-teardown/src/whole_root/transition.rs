@@ -14,11 +14,14 @@
 //!   NixOS toplevel (PID 1 re-executes `/run/current-system/systemd/...`), mask
 //!   the decoy units the hidden systemd must never start, install the hidden
 //!   session's runtime units (and, opted in, the udev rule that keeps unused
-//!   disks read-only, [`crate::whole_root::disk_guard`]), and record the entry.
+//!   disks read-only, [`crate::whole_root::disk_guard`]), narrow the `/run`
+//!   snapshot to what the decoy's own shutdown left, copy the decoy's records
+//!   ([`crate::whole_root::run_records`]), and record the entry.
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
 //!   decoy, make the disks the session set read-only writable again and remove
-//!   the rule, scrub `/run` ([`crate::whole_root::run_scrub`]), restore `utab`,
-//!   and write the kmsg cursor last.
+//!   the rule and the drop-ins, scrub `/run` ([`crate::whole_root::run_scrub`]),
+//!   put the decoy's records back, restore `utab`, and write the kmsg cursor
+//!   last.
 //!
 //! Before either it checks the next root's init the way PID 1 will; when the
 //! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
@@ -37,10 +40,11 @@ use crate::mountinfo::{MountEntry, read_mountinfo};
 use crate::whole_root::disk_guard;
 use crate::whole_root::nextroot::{self, NEXTROOT};
 use crate::whole_root::plan::{
-    self, BINARY_NAME, Direction, PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME, UTAB_NAME, unix_now,
+    self, BINARY_NAME, Direction, PLAN_NAME, Plan, RECORDS_NAME, RUNTIME_DIR, SNAPSHOT_NAME,
+    UTAB_NAME, unix_now,
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
-use crate::whole_root::runtime_units;
+use crate::whole_root::{run_records, runtime_units};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -173,15 +177,19 @@ pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
     Ok(path)
 }
 
-/// Remove the drop-in and the stop guards (and their directories when empty)
-/// under `run`.
-pub fn remove_dropin(run: &Path) {
+/// Remove the drop-in and the stop guards under `run`, with each of their
+/// directories that is left empty, unless `kept` (the `/run` snapshot taken
+/// before the entry) lists it: a drop-in directory the decoy had already
+/// keeps whatever else it holds, and only the files NAILS wrote go.
+pub fn remove_dropin(run: &Path, kept: &Snapshot) {
     let files = runtime_guards()
-        .map(|(unit, _)| (run.join(stop_guard_dir(unit)), STOP_GUARD_NAME))
-        .chain(std::iter::once((run.join(DROPIN_DIR), DROPIN_NAME)));
+        .map(|(unit, _)| (stop_guard_dir(unit), STOP_GUARD_NAME))
+        .chain(std::iter::once((PathBuf::from(DROPIN_DIR), DROPIN_NAME)));
     for (dir, name) in files {
-        let _ = std::fs::remove_file(dir.join(name));
-        let _ = std::fs::remove_dir(dir);
+        let _ = std::fs::remove_file(run.join(&dir).join(name));
+        if !kept.contains(dir.as_os_str()) {
+            let _ = std::fs::remove_dir(run.join(&dir));
+        }
     }
 }
 
@@ -232,6 +240,11 @@ impl Env {
 
     fn mount_points(&self) -> Vec<PathBuf> {
         self.mounts.iter().map(|e| e.mount_point.clone()).collect()
+    }
+
+    /// The `/run` snapshot the entry saved, if any.
+    fn saved_snapshot(&self) -> Option<Snapshot> {
+        Snapshot::load(&self.runtime_dir.join(SNAPSHOT_NAME))
     }
 }
 
@@ -298,7 +311,7 @@ fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
         // A reboot that met the leftover tree: the volume was unmounted by
         // the shutdown, and a real reboot would have closed it too.
         let _ = crate::whole_root::ret::close_backend_deferred(plan);
-        remove_dropin(&env.run);
+        remove_dropin(&env.run, &env.saved_snapshot().unwrap_or_default());
         nextroot::remove_runtime_dir(&env.runtime_dir);
         if plan.run_noexec {
             let _ = nextroot::set_noexec(&env.run, true);
@@ -342,18 +355,40 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
     if plan.read_only_disks {
         let _ = disk_guard::install_rule(&env.run, &env.runtime_dir.join(BINARY_NAME));
     }
+    narrow_snapshot(env);
+    // Without the copy, the way back clears the records instead.
+    if run_records::save(&env.run, &env.runtime_dir.join(RECORDS_NAME)).is_err() {
+        let _ = std::fs::remove_file(env.runtime_dir.join(RECORDS_NAME));
+    }
     plan.armed = None;
     plan.entered_at = Some(env.now);
     let _ = plan.write_atomic(&env.runtime_dir.join(PLAN_NAME));
     Outcome::Entered
 }
 
+/// Narrow the `/run` snapshot the entry took to the entries still there now
+/// that every decoy unit has stopped. What the decoy's own shutdown removed
+/// (the PID file of a service it stopped) is then no longer the decoy's, and
+/// the way back removes it when the hidden session wrote it again, as a
+/// session ended by an emergency's kill leaves it. A plain soft-reboot would
+/// not have carried it either. Best effort: on any error the entry's snapshot
+/// stays.
+fn narrow_snapshot(env: &Env) {
+    let path = env.runtime_dir.join(SNAPSHOT_NAME);
+    let Some(saved) = Snapshot::load(&path) else {
+        return;
+    };
+    let narrowed = saved.still_present(&env.run);
+    if narrowed != saved {
+        let _ = plan::write_private_atomic(&path, &narrowed.to_text());
+    }
+}
+
 fn leave(env: &Env, plan: &Plan) -> Outcome {
     // Read everything the scrub needs before it removes the runtime directory.
-    let snapshot = std::fs::read(env.runtime_dir.join(SNAPSHOT_NAME))
-        .ok()
-        .map(|text| Snapshot::from_text(&text));
+    let snapshot = env.saved_snapshot();
     let utab = std::fs::read(env.runtime_dir.join(UTAB_NAME)).ok();
+    let records = std::fs::read(env.runtime_dir.join(RECORDS_NAME)).ok();
     if let Err(why) = repoint_and_check(env, &plan.decoy) {
         if let Some(system) = &plan.hidden.system {
             let _ = repoint_current_system(&env.run, system);
@@ -364,6 +399,9 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // udevd must never load the rule (the scrub leaves /run/udev alone).
     disk_guard::remove_rule(&env.run);
     disk_guard::release(&env.runtime_dir);
+    // By name: the scrub keeps a drop-in directory the decoy already had,
+    // and never looks inside it.
+    remove_dropin(&env.run, snapshot.as_ref().unwrap_or(&Snapshot::default()));
     let runtime_rel = env
         .runtime_dir
         .strip_prefix(&env.run)
@@ -384,6 +422,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
             &env.mount_points(),
         ),
     };
+    run_records::restore(&env.run, records.as_deref());
     if let Some(utab) = utab {
         let _ = run_scrub::restore_utab(&env.run, &utab);
     }

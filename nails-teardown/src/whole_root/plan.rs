@@ -39,6 +39,10 @@ pub const SNAPSHOT_NAME: &str = "run-entries";
 /// The saved `/run/mount/utab` inside [`RUNTIME_DIR`].
 pub const UTAB_NAME: &str = "mount-table";
 
+/// The copy of the decoy's records ([`crate::whole_root::run_records`])
+/// inside [`RUNTIME_DIR`].
+pub const RECORDS_NAME: &str = "run-records";
+
 /// The RAM copy of the binary inside [`RUNTIME_DIR`] (neutral name).
 pub const BINARY_NAME: &str = "control";
 
@@ -516,6 +520,7 @@ mod tests {
             PLAN_NAME,
             SNAPSHOT_NAME,
             UTAB_NAME,
+            RECORDS_NAME,
             BINARY_NAME,
         ] {
             assert!(!name.to_lowercase().contains("nails"), "{name}");

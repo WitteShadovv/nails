@@ -34,8 +34,9 @@ use crate::mountinfo::read_mountinfo;
 use crate::proc::{self, Invocation, ProcessHandle};
 use crate::whole_root::kill::{self, KillReport};
 use crate::whole_root::nextroot::{self, NEXTROOT};
-use crate::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR};
+use crate::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME};
 use crate::whole_root::ret;
+use crate::whole_root::run_scrub::Snapshot;
 use crate::whole_root::tools;
 use crate::whole_root::transition;
 use std::path::{Path, PathBuf};
@@ -323,7 +324,8 @@ fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) {
             // Nothing hidden runs on the decoy: the backend goes with the
             // last close, as the way back would close it.
             let _ = ret::close_backend_deferred(plan);
-            transition::remove_dropin(&host.run);
+            let kept = Snapshot::load(&host.runtime_dir.join(SNAPSHOT_NAME)).unwrap_or_default();
+            transition::remove_dropin(&host.run, &kept);
             for unit in &plan.masks {
                 let _ = std::fs::remove_file(host.run.join("systemd/system").join(unit));
             }

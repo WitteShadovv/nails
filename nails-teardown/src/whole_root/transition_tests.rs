@@ -348,7 +348,7 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
     }
     assert_eq!(runtime_guards().count(), 4);
 
-    remove_dropin(run);
+    remove_dropin(run, &Snapshot::default());
     for unit in ["dbus.service", "dbus.socket"] {
         assert!(!run.join(stop_guard_dir(unit)).exists(), "{unit}");
     }
@@ -378,6 +378,146 @@ fn the_dropins_are_readable_by_all_so_pid1_never_names_them_in_the_kernel_log() 
         assert_eq!(mode & 0o044, 0o044, "{}: {mode:o}", file.display());
         assert_eq!(mode & 0o113, 0, "{}: {mode:o}", file.display());
     }
+}
+
+#[test]
+fn a_dropin_directory_the_decoy_had_keeps_its_own_files_and_loses_the_guard() {
+    let world = World::new();
+    let r = world.run();
+    let decoy_dir = r.join(stop_guard_dir("blk-availability.service"));
+    fs::create_dir_all(&decoy_dir).unwrap();
+    fs::write(decoy_dir.join("10-local.conf"), "[Unit]\n").unwrap();
+    let empty_dir = r.join(stop_guard_dir("dbus.service"));
+    fs::create_dir_all(&empty_dir).unwrap();
+    // The entry: the snapshot first, then the drop-ins.
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&r).to_text(),
+    )
+    .unwrap();
+    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let outcome = run(&world.env(true, 1_030));
+    assert!(
+        matches!(outcome, Outcome::Returned { failed: 0, .. }),
+        "{outcome:?}"
+    );
+
+    assert!(!decoy_dir.join(STOP_GUARD_NAME).exists(), "the guard goes");
+    assert_eq!(
+        fs::read_to_string(decoy_dir.join("10-local.conf")).unwrap(),
+        "[Unit]\n"
+    );
+    assert!(fs::read_dir(&empty_dir).unwrap().next().is_none());
+    for unit in ["dbus.socket", "network-addresses-.service"] {
+        assert!(!r.join(stop_guard_dir(unit)).exists(), "{unit}");
+    }
+    assert!(!r.join(DROPIN_DIR).exists());
+}
+
+#[test]
+fn a_rollback_removes_the_guards_and_only_the_directories_it_made() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path();
+    let decoy_dir = run.join(stop_guard_dir("dbus.service"));
+    fs::create_dir_all(&decoy_dir).unwrap();
+    let kept = Snapshot::take(run);
+    install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    remove_dropin(run, &kept);
+    assert!(decoy_dir.is_dir());
+    assert!(!decoy_dir.join(STOP_GUARD_NAME).exists());
+    assert!(!run.join(stop_guard_dir("dbus.socket")).exists());
+    assert!(!run.join(DROPIN_DIR).exists());
+}
+
+#[test]
+fn a_decoy_service_s_pid_file_the_hidden_session_wrote_again_goes_on_the_way_back() {
+    // The decoy's avahi wrote its PID file and removed it when the switch
+    // stopped it; the hidden avahi wrote it again and was killed by an
+    // emergency, so nothing removed it. The decoy's avahi must not find it.
+    let world = World::new();
+    let r = world.run();
+    fs::create_dir_all(r.join("avahi-daemon")).unwrap();
+    fs::write(r.join("avahi-daemon/pid"), "100\n").unwrap();
+    // At activation, with the decoy's services still running.
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&r).to_text(),
+    )
+    .unwrap();
+    // The decoy's own shutdown, then the switch.
+    fs::remove_file(r.join("avahi-daemon/pid")).unwrap();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    // The hidden session, ended by a kill.
+    fs::write(r.join("avahi-daemon/pid"), "200\n").unwrap();
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let outcome = run(&world.env(true, 1_030));
+    assert!(
+        matches!(outcome, Outcome::Returned { failed: 0, .. }),
+        "{outcome:?}"
+    );
+
+    assert!(!r.join("avahi-daemon/pid").exists());
+    assert!(
+        r.join("avahi-daemon").is_dir(),
+        "kept through the decoy's shutdown"
+    );
+    assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
+}
+
+#[test]
+fn the_decoy_s_name_server_records_are_put_back_on_the_way_back() {
+    let world = World::new();
+    let r = world.run();
+    let key = r.join("resolvconf/keys/NetworkManager");
+    fs::create_dir_all(key.parent().unwrap()).unwrap();
+    fs::write(&key, "nameserver 10.0.2.3\n").unwrap();
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&r).to_text(),
+    )
+    .unwrap();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    // The hidden NetworkManager rewrites its record and leaves it at its stop.
+    fs::write(&key, "search hidden.example\nnameserver 10.213.77.53\n").unwrap();
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let outcome = run(&world.env(true, 1_030));
+    assert!(
+        matches!(outcome, Outcome::Returned { failed: 0, .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(fs::read_to_string(&key).unwrap(), "nameserver 10.0.2.3\n");
 }
 
 #[test]

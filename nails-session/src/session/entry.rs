@@ -273,8 +273,9 @@ fn fhs_init(root: &Path) -> PathBuf {
 /// drop-in and the runtime directory. Returns the mounts still left.
 pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
     let run_noexec = Plan::load(&paths.plan()).is_ok_and(|plan| plan.run_noexec);
+    let kept = Snapshot::load(&paths.runtime().join(SNAPSHOT_NAME)).unwrap_or_default();
     let remaining = nextroot::detach_tree(&paths.nextroot());
-    transition::remove_dropin(&paths.run);
+    transition::remove_dropin(&paths.run, &kept);
     nextroot::remove_runtime_dir(&paths.runtime());
     if run_noexec {
         let _ = nextroot::set_noexec(&paths.run, true);

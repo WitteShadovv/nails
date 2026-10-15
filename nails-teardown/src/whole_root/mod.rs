@@ -10,6 +10,8 @@
 //! - [`transition`]: the last userspace step before each switch (the arm
 //!   check, the `current-system` repoint, the `/run` scrub, the kmsg cursor);
 //! - [`run_scrub`]: the `/run` snapshot and scrub;
+//! - [`run_records`]: the decoy's records in `/run` that its start writes to
+//!   disk, put back on the way back;
 //! - [`ret`]: preparing the way back to the decoy;
 //! - [`carry`]: the decoy filesystems the hidden session holds for the way
 //!   back;
@@ -26,6 +28,7 @@ pub mod kill;
 pub mod nextroot;
 pub mod plan;
 pub mod ret;
+pub mod run_records;
 pub mod run_scrub;
 pub mod runtime_units;
 pub mod tools;
