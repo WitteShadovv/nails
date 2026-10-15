@@ -197,7 +197,8 @@ fn journal_finding(
     } else {
         Severity::Info
     };
-    let sample = hits.first().map(String::as_str).unwrap_or_default();
+    // sudo pads the user name with spaces; the sample reads better without.
+    let sample = hits.first().map(|hit| hit.trim()).unwrap_or_default();
     Finding::new(
         severity,
         "journal",

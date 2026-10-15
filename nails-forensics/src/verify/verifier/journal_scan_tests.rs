@@ -11,8 +11,9 @@ use crate::verify::{Finding, Severity, StateFileStatus, VerifyResult, VerifyStat
 use crate::{MockFilesystem, RuntimeEnv};
 use std::path::{Path, PathBuf};
 
-/// sudo's record of the unlock the operator ran.
-const UNLOCK_RECORD: &str = "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; \
+/// sudo's record of the unlock the operator ran, with the padding sudo puts
+/// before the user name.
+const UNLOCK_RECORD: &str = "    alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; \
                              COMMAND=/usr/bin/cryptsetup open /dev/sdb2 data";
 /// sudo's record of a verify run, started without a terminal.
 const VERIFY_RECORD: &str = "root : PWD=/ ; USER=root ; COMMAND=/mnt/hidden/nails verify --deep";
@@ -73,7 +74,12 @@ fn sudo_records_in_ram_are_notes_and_other_entries_warn() {
          (\"cryptsetup\"): commands run with sudo"
     );
     assert!(guidance(sudo).starts_with("The journal is in RAM: a power-off removes"));
-    assert!(guidance(sudo).ends_with(&format!("Sample: {UNLOCK_RECORD}")));
+    // The sample drops sudo's padding.
+    assert!(
+        guidance(sudo).ends_with(&format!("Sample: {}", UNLOCK_RECORD.trim_start())),
+        "{}",
+        guidance(sudo)
+    );
 
     let entry = found
         .iter()
