@@ -166,15 +166,28 @@ logind.
     `/mnt/data/nixos`, but not `/mnt/data2`), or the units systemd names after
     it (`mnt-data.mount`, `mnt-data.automount`);
   - its device as a whole path (`/dev/mapper/data`,
-    `/dev/disk/by-id/dm-name-data`), or the unit systemd names after it
-    (`dev-mapper-data.device`);
+    `/dev/disk/by-id/dm-name-data`, a `/dev/disk/by-id/dm-uuid-…-data` link),
+    or the unit systemd names after it (`dev-mapper-data.device`);
+  - what it is stored on, as the kernel reports it below the mount, unless the
+    decoy's own volumes sit on it too: the partition or disk as a whole path
+    (`/dev/sdb2`), its partition uuid, the LUKS uuid (in
+    `/dev/disk/by-uuid/<uuid>`, `UUID=<uuid>` or a `luks-<uuid>` name), the
+    mapping below a logical volume, or the image file behind a loop device;
   - its mapping name where a line opens the volume: a
-    `boot.initrd.luks.devices` entry (`luks.devices.data`,
-    `luks.devices."data"`, or `data = { … }` inside `luks.devices = { … }`), a
-    line that mentions `crypttab` or `cryptsetup` (`cryptsetup open /dev/sdb2
-    data`, `systemd-cryptsetup@data.service`), or a crypttab line that starts
-    with the name (`data UUID=… none luks`);
+    `boot.initrd.luks.devices` entry however it is written
+    (`luks.devices.data`, `luks.devices."data"`, `data = { … }` inside
+    `luks.devices = { … }` or a `lib.mkForce` or `lib.mkMerge` value of it,
+    `devices.data` inside `luks = { … }`, the same in fully nested blocks, or
+    `inherit data;`), a line that mentions `crypttab` or `cryptsetup`
+    (`cryptsetup open /dev/sdb2 data`, `systemd-cryptsetup@data.service`), or
+    a crypttab line that starts with the name (`data UUID=… none luks`,
+    `data /var/lib/vault.img none luks`);
   - text NAILS writes during a session, or the word `nails`.
+
+  A unit name with a character systemd escapes counts in both spellings: with
+  one backslash, as a comment or an indented `''…''` string holds it
+  (`mnt-my\x2ddata.mount` for `/mnt/my-data`), and with two, as a
+  double-quoted string must write it (`"mnt-my\\x2ddata.mount"`).
 
   Nothing else counts. The mapping name as an ordinary word passes
   (`description = "Back up user data"`, or the comment
@@ -182,6 +195,11 @@ logind.
   directory such as `/var/lib/postgresql/data`, the word `hidden` and options
   such as `services.plausible`. Run `nixos-generate-config` only while the
   hidden volume is closed: it writes an entry for every mounted filesystem.
+
+  The check reads `.nix` files only. Keep the other files in `/etc/nixos`
+  (notes, scripts, a README) free of these names too, and the history of a
+  git repository there, which a flake decoy's `/etc/nixos` must be: a line
+  removed from a file stays in the commit that added it.
 
 ### Ubuntu
 

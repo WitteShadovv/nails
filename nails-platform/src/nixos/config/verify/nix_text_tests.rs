@@ -1,0 +1,176 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Unit tests for the line matching of the reference check.
+
+use super::*;
+
+fn found(pattern: &Pattern, text: &str) -> Option<String> {
+    let mut paths = AttrPaths::default();
+    let lower = text.to_ascii_lowercase();
+    let mut hit = None;
+    for line in lower.split('\n') {
+        let names = paths.luks_names(line.as_bytes());
+        if let Some(range) = pattern.find(line.as_bytes(), &names) {
+            hit = Some(line[range].to_string());
+            break;
+        }
+    }
+    hit
+}
+
+fn data() -> Pattern {
+    Pattern::Name {
+        name: "data".into(),
+        escaped: vec!["data".into()],
+    }
+}
+
+#[test]
+fn a_path_ends_at_a_component_boundary() {
+    let path = Pattern::Path("/mnt/data".into());
+    for hit in [
+        "fileSystems.\"/mnt/data\" = {",
+        "imports = [ /mnt/data/nixos ];",
+        "url = \"git+file:///mnt/data/nixos\";",
+        "# mount it at /mnt/data first",
+        "x = /mnt/data;",
+    ] {
+        assert_eq!(found(&path, hit).as_deref(), Some("/mnt/data"), "{hit}");
+    }
+    for miss in [
+        "fileSystems.\"/mnt/data2\" = {",
+        "x = \"/mnt/data-old\";",
+        "x = \"/mnt/data.bak\";",
+        "x = \"/srv/mnt/data\";",
+    ] {
+        assert_eq!(found(&path, miss), None, "{miss}");
+    }
+    let unit = Pattern::Path("mnt-data.mount".into());
+    assert_eq!(
+        found(&unit, "after = [ \"mnt-data.mount\" ];").as_deref(),
+        Some("mnt-data.mount")
+    );
+    for miss in [
+        "after = [ \"srv-mnt-data.mount\" ];",
+        "after = [ \"mnt-data.mounts\" ];",
+    ] {
+        assert_eq!(found(&unit, miss), None, "{miss}");
+    }
+}
+
+#[test]
+fn a_word_is_bounded_by_non_identifier_bytes() {
+    let word = Pattern::Word("nails".into());
+    assert_eq!(
+        found(&word, "config.nails.enable").as_deref(),
+        Some("nails")
+    );
+    assert_eq!(found(&word, "# nails").as_deref(), Some("nails"));
+    assert_eq!(found(&word, "hostName = \"snails-box\";"), None);
+    assert_eq!(found(&word, "x = nails_y;"), None);
+}
+
+#[test]
+fn the_mapping_name_counts_where_it_names_the_mapping_comments_included() {
+    for hit in [
+        "boot.initrd.luks.devices.data.device = \"/dev/disk/by-uuid/1\";",
+        "boot.initrd.luks.devices.\"data\".device = \"/dev/disk/by-uuid/1\";",
+        "# boot.initrd.luks.devices.data.device = \"/dev/disk/by-uuid/7d2c9e14\";",
+        "/* boot.initrd.luks.devices.\"data\".device = \"/dev/sdb2\"; */",
+        "boot.initrd.luks.devices = {\n  data = { device = \"/dev/disk/by-uuid/1\"; };\n};",
+        "boot.initrd.luks.devices = { other = { }; data.device = \"/dev/sdb2\"; };",
+        "# boot.initrd.luks.devices = {\n#   data = {\n#     device = \"/dev/sdb2\";",
+        "environment.etc.crypttab.text = \"data /dev/sdb2 none tcrypt\";",
+        "# environment.etc.crypttab.text = \"data /dev/sdb2 none tcrypt\";",
+        "text = ''\n  data UUID=7d2c9e14 none luks\n'';",
+        "text = ''\n  data /var/lib/vault.img none luks\n'';",
+        "# data /dev/sdb2 none tcrypt",
+        "script = \"cryptsetup open /dev/sdb2 data\";",
+        "# cryptsetup open /dev/sdb2 data",
+        "after = [ \"systemd-cryptsetup@data.service\" ];",
+    ] {
+        assert_eq!(found(&data(), hit).as_deref(), Some("data"), "{hit}");
+    }
+    let dashed = Pattern::Name {
+        name: "vg-root".into(),
+        escaped: vec!["vg\\x2droot".into(), "vg\\\\x2droot".into()],
+    };
+    for (hit, text) in [
+        (
+            "requires = [ ''systemd-cryptsetup@vg\\x2droot.service'' ];",
+            "vg\\x2droot",
+        ),
+        (
+            "requires = [ \"systemd-cryptsetup@vg\\\\x2droot.service\" ];",
+            "vg\\\\x2droot",
+        ),
+    ] {
+        assert_eq!(found(&dashed, hit).as_deref(), Some(text), "{hit}");
+    }
+}
+
+/// Every way Nix lets a configuration define a `luks.devices` entry,
+/// live or commented out.
+#[test]
+fn a_luks_entry_counts_however_its_blocks_nest() {
+    for hit in [
+        "boot.initrd.luks = { devices.data.device = \"/dev/sdb2\"; };",
+        "boot.initrd.luks = {\n  devices.\"data\" = { device = \"/dev/sdb2\"; };\n};",
+        "{\n  boot = {\n    initrd = {\n      luks = {\n        devices = {\n          \
+         data = { device = \"/dev/sdb2\"; };\n        };\n      };\n    };\n  };\n}",
+        "# boot.initrd.luks = {\n#   devices.data.device = \"/dev/sdb2\";\n# };",
+        "boot.initrd.luks.devices = lib.mkForce {\n  data = { device = \"/dev/sdb2\"; };\n};",
+        "boot.initrd.luks.devices = lib.mkMerge [\n  { root = { }; }\n  { data.device = \"/dev/sdb2\"; }\n];",
+        "boot.initrd.luks.devices = # the vault\n  {\n    data.device = \"/dev/sdb2\";\n  };",
+        "boot.initrd.luks.devices . data . device = \"/dev/sdb2\";",
+        "boot.initrd.luks.devices = { inherit data; };",
+        "boot.initrd.luks.devices = { inherit (cfg) root data; };",
+        "imports = [ ({ ... }: { boot.initrd.luks.devices.data.device = \"/dev/sdb2\"; }) ];",
+    ] {
+        assert_eq!(found(&data(), hit).as_deref(), Some("data"), "{hit}");
+    }
+}
+
+#[test]
+fn the_mapping_name_as_an_ordinary_word_or_directory_passes() {
+    for miss in [
+        "# and is used to maintain compatibility with application data (e.g. databases)",
+        "x = 1; # keep user data on /home",
+        "description = \"Back up user data\";",
+        "services.postgresql.dataDir = \"/var/lib/postgresql/data\";",
+        "fileSystems.\"/srv/data\".device = \"/dev/sdb1\";",
+        "services.evolution-data-server.enable = true;",
+        "x = \"data2\";",
+        "users.users.alice = {\n  data = 1;\n};",
+        "boot.initrd.luks.devices.database.device = \"/dev/sdb2\";",
+        "boot.initrd.luks.devices = { root = { }; };\nservices.x = {\n  data = 1;\n};",
+        "boot.initrd.luks = { devices.root.device = \"/dev/sda2\"; };\ndata = 1;",
+        "boot.initrd.luks = {\n  devices.root = { device = \"/dev/sda2\"; };\n  data = 1;\n};",
+        "boot.initrd.luks.devices.root = {\n  data = 1;\n};",
+        "boot.initrd.luks.devices = lib.mkMerge [ { root = { }; } ];\nx = { data = 1; };",
+        "x = \"${pkgs.foo}\"; y = { data = 1; };",
+        "# the data / logs split",
+        "/data /dev/sdb1 none",
+        "# data /home is backed up nightly",
+    ] {
+        assert_eq!(found(&data(), miss), None, "{miss}");
+    }
+}
+
+#[test]
+fn a_dm_uuid_link_counts_when_its_name_ends_with_the_mapping() {
+    let link = Pattern::DmUuid("data".into());
+    let path = "/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data";
+    assert_eq!(
+        found(&link, &format!("# device = \"{path}\";")).as_deref(),
+        Some(path)
+    );
+    for miss in [
+        "device = \"/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c-root\";",
+        "device = \"/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c-data2\";",
+        "device = \"/srv/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c-data\";",
+    ] {
+        assert_eq!(found(&link, miss), None, "{miss}");
+    }
+}

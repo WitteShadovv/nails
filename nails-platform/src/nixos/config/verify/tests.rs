@@ -335,10 +335,83 @@ fn every_leak_form_of_the_mapper_name_is_refused() {
             "{ fileSystems.\"/srv\".device = \"/dev/disk/by-id/dm-name-data\"; }",
             (1, "/dev/disk/by-id/dm-name-data", Device),
         ),
+        (
+            "{ boot.initrd.luks = { devices.data.device = \"/dev/disk/by-uuid/1\"; }; }",
+            (1, "data", MapperName),
+        ),
+        (
+            "{\n  boot = {\n    initrd = {\n      luks = {\n        devices = {\n          \
+             data = { device = \"/dev/disk/by-uuid/1\"; };\n        };\n      };\n    };\n  };\n}",
+            (6, "data", MapperName),
+        ),
+        (
+            "{ }\n# boot.initrd.luks = {\n#   devices.data.device = \"/dev/sdb2\";\n# };\n",
+            (3, "data", MapperName),
+        ),
+        (
+            "{ boot.initrd.luks = {\n  devices.\"data\" = { device = \"/dev/sdb2\"; };\n}; }",
+            (2, "data", MapperName),
+        ),
+        (
+            "{ boot.initrd.luks.devices = { inherit data; }; }",
+            (1, "data", MapperName),
+        ),
+        (
+            "{ }\n# device = \"/dev/disk/by-id/dm-uuid-CRYPT-LUKS2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data\";\n",
+            (
+                2,
+                "/dev/disk/by-id/dm-uuid-CRYPT-LUKS2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data",
+                Device,
+            ),
+        ),
+        (
+            "{ environment.etc.crypttab.text = ''\n  data /var/lib/vault.img none luks\n''; }",
+            (2, "data", MapperName),
+        ),
     ];
     for (content, expected) in cases {
         let scan = scan_configuration(content);
         assert_eq!(only_reference(&scan), expected, "{content}");
+    }
+}
+
+/// A mount point or a mapping with a `-` in it: systemd escapes the `-` in
+/// the names of its units, and a double-quoted Nix string must double the
+/// backslash. Both spellings are refused.
+#[test]
+fn escaped_unit_names_are_refused_in_either_spelling() {
+    use ReferenceKind::{DeviceUnit, MapperName, MountUnit};
+    let mountinfo = "36 35 254:0 / /mnt/my-data rw - ext4 /dev/mapper/vg-data rw\n";
+    let cases = [
+        (
+            "{ systemd.services.x.after = [ \"mnt-my\\\\x2ddata.mount\" ]; }",
+            ("mnt-my\\\\x2ddata.mount", MountUnit),
+        ),
+        (
+            "{ systemd.services.x.after = [ ''mnt-my\\x2ddata.mount'' ]; }",
+            ("mnt-my\\x2ddata.mount", MountUnit),
+        ),
+        (
+            "{ systemd.services.x.requires = [ \"systemd-cryptsetup@vg\\\\x2ddata.service\" ]; }",
+            ("vg\\\\x2ddata", MapperName),
+        ),
+        (
+            "{ systemd.services.x.requires = [ ''systemd-cryptsetup@vg\\x2ddata.service'' ]; }",
+            ("vg\\x2ddata", MapperName),
+        ),
+        (
+            "{ systemd.services.x.requires = [ \"dev-mapper-vg\\\\x2ddata.device\" ]; }",
+            ("dev-mapper-vg\\\\x2ddata.device", DeviceUnit),
+        ),
+        (
+            "{ systemd.services.x.requires = [ ''dev-mapper-vg\\x2ddata.device'' ]; }",
+            ("dev-mapper-vg\\x2ddata.device", DeviceUnit),
+        ),
+    ];
+    for (content, (text, kind)) in cases {
+        let fs = host(&[("/etc/nixos/configuration.nix", content)], mountinfo);
+        let scan = scan_at(&fs, "/mnt/my-data");
+        assert_eq!(only_reference(&scan), (1, text, kind), "{content}");
     }
 }
 
@@ -360,6 +433,11 @@ fn ordinary_uses_of_the_mapper_name_pass() {
         "{ }\n# an implausible setting\n",
         "{ }\n# plausible deniability\n",
         "{ systemd.services.x.after = [ \"srv-mnt-data.mount\" ]; }",
+        "{ networking.hostName = \"data\"; }",
+        "{ boot.initrd.luks.devices.\"luks-0f6c1a3e\".device = \"/dev/disk/by-uuid/0f6c1a3e\"; }",
+        "{ boot.initrd.luks.devices.root.device = \"/dev/sda2\";\n  services.foo = {\n    data = 1;\n  }; }",
+        "{ boot.initrd.luks = {\n  devices.root.device = \"/dev/sda2\";\n  data = 1;\n}; }",
+        "{ }\n# data /home is backed up nightly\n",
     ] {
         let scan = scan_configuration(content);
         assert!(scan.is_clean(), "{content}: {scan:#?}");
@@ -435,21 +513,16 @@ fn nails_is_refused() {
     for (content, expected) in [
         (
             "{ ... }: { imports = [ ./nails/configuration.nix ]; }",
-            ("./nails/configuration.nix", ReferenceKind::StagedText),
+            (1, "./nails/configuration.nix", ReferenceKind::StagedText),
         ),
         (
             "{ config.nails.enable = true; }",
-            ("nails", ReferenceKind::ToolName),
+            (1, "nails", ReferenceKind::ToolName),
         ),
-        ("{ }\n# NAILS\n", ("NAILS", ReferenceKind::ToolName)),
+        ("{ }\n# NAILS\n", (2, "NAILS", ReferenceKind::ToolName)),
     ] {
         let scan = scan_configuration(content);
-        let (line, text, kind) = only_reference(&scan);
-        assert_eq!(
-            (text, kind),
-            (expected.0, expected.1),
-            "{content}: line {line}"
-        );
+        assert_eq!(only_reference(&scan), expected, "{content}");
     }
 
     let scan = scan_configuration("{ networking.hostName = \"snails-box\"; }");
@@ -611,6 +684,7 @@ fn every_kind_says_what_it_is_and_what_to_do() {
         ReferenceKind::StagedText,
         ReferenceKind::Device,
         ReferenceKind::DeviceUnit,
+        ReferenceKind::Storage,
         ReferenceKind::MountPoint,
         ReferenceKind::MountUnit,
         ReferenceKind::MapperName,

@@ -178,8 +178,8 @@ Keep all of it `root`-owned on the hidden volume.
    the way back), `session-state` (no session and no leftovers of an
    interrupted one), `fstab-policy`, `hidden-volume`, `upper-fs-capability`,
    `backend-entries`, `suspicious-nails-reference` (NixOS: nothing in the
-   decoy's `/etc/nixos` names the hidden volume's device or mount point, opens
-   its mapping, or names NAILS; [the decoy
+   decoy's `/etc/nixos` names the hidden volume's device, mount point or the
+   storage it is on, opens its mapping, or names NAILS; [the decoy
    requirements](decoy-requirements.md#nixos) list each form), `backend-detect`, `storage-readiness`, `swap`,
    `memory-wipe`, `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
    `incremental-history-flush` and `space`. `nails check` runs the same checks
