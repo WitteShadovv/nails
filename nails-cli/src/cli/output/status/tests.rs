@@ -169,6 +169,27 @@ fn times_are_shown_in_the_local_zone_with_their_offset() {
     assert_eq!(value["data"]["entered_at"], "2026-10-14T19:41:59+00:00");
 }
 
+/// An activation under a second shows its tenths, as `activate` printed it,
+/// never "took 0s".
+#[test]
+fn a_sub_second_activation_shows_its_tenths() {
+    use chrono::{TimeZone, Utc};
+
+    let mut decoy = report(Posture::Decoy, "decoy");
+    decoy.last_activation = Some(nails_core::LastActivation {
+        duration_ms: 640,
+        finished_at: Utc.with_ymd_and_hms(2026, 10, 14, 19, 41, 59).unwrap(),
+    });
+
+    let lines = status_lines(&decoy, false, plain(), &Utc).join("\n");
+
+    assert!(
+        lines.contains("Last activation:    took 0.6s (finished 2026-10-14 19:41:59 +00:00)"),
+        "{lines}"
+    );
+    assert!(!lines.contains("took 0s"), "{lines}");
+}
+
 /// The log lines of `status --details` are in the same zone as the report.
 #[test]
 fn recent_logs_are_shown_in_the_given_zone() {
