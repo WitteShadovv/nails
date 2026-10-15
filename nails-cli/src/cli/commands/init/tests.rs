@@ -547,6 +547,32 @@ fn json_report_lists_each_item_and_its_status() {
     );
 }
 
+/// Init runs on the decoy, so its next steps never send the operator to an
+/// editor there, never ask for a copy of the binary that is already running
+/// from the volume, and point at `check` as the read-only preview.
+#[test]
+fn next_steps_keep_editing_and_copying_off_the_decoy() {
+    let steps = next_steps(Path::new("/mnt/data"));
+    let text = steps.join("\n");
+
+    assert_eq!(steps.len(), 3, "{text}");
+    assert!(!text.contains("$EDITOR"), "{text}");
+    assert!(!text.contains("install -m"), "{text}");
+    assert!(!text.contains("<source>"), "{text}");
+    assert!(!text.contains("generated"), "{text}");
+    assert!(!text.contains("--dry-run"), "{text}");
+    assert!(steps[0].contains("another machine"), "{text}");
+    assert!(
+        steps[0].contains("/mnt/data/config/nails.toml.new inside a hidden session"),
+        "{text}"
+    );
+    assert!(steps[1].ends_with("sudo /mnt/data/nails check"), "{text}");
+    assert!(
+        steps[2].ends_with("sudo /mnt/data/nails activate"),
+        "{text}"
+    );
+}
+
 /// The cases that run init against a real directory. The attach gate accepts
 /// only a mounted volume, so each runs in an unprivileged user + mount
 /// namespace with a tmpfs as the root.
@@ -805,14 +831,17 @@ mod kernel_tests {
                     .position(|line| *line == "Next steps:")
                     .unwrap_or_else(|| panic!("no next steps header: {text}"));
                 let steps = &lines[header + 1..];
-                assert_eq!(steps.len(), 4, "{text}");
+                assert_eq!(steps.len(), 3, "{text}");
                 for (index, step) in steps.iter().enumerate() {
                     assert!(step.starts_with(&format!("  {}. ", index + 1)), "{text}");
                 }
                 let root = root.display().to_string();
-                assert!(steps[0].contains(&format!("{root}/nails")), "{text}");
                 assert!(
-                    steps[3].contains(&format!("sudo {root}/nails activate")),
+                    steps[1].contains(&format!("sudo {root}/nails check")),
+                    "{text}"
+                );
+                assert!(
+                    steps[2].contains(&format!("sudo {root}/nails activate")),
                     "{text}"
                 );
 

@@ -472,17 +472,23 @@ fn write_state_file(base: &Path) -> Result<InitItem> {
 }
 
 /// The numbered steps the operator takes after init to reach activation.
+///
+/// Init runs on the decoy, so none of them edits a file there: an editor
+/// leaves its own traces (swap and backup files, `~/.viminfo`, recent-file
+/// lists). The binary is not mentioned: the documented setup runs init from
+/// `<root>/nails` already, and the `binary-location` check warns at `check`
+/// and `activate` when it runs from anywhere else.
 fn next_steps(base: &Path) -> Vec<String> {
     let root = base.display();
+    let config = base.join("config").join(CONFIG_FILE_NAME);
     vec![
         format!(
-            "copy the nails binary onto the hidden volume: install -m0755 <source>/nails {root}/nails"
+            "optionally change the configuration, but not on the decoy: prepare {config} on \
+             another machine, or write {config}.new inside a hidden session and move it into \
+             place afterwards",
+            config = config.display()
         ),
-        format!(
-            "optionally review the generated config: $EDITOR {}",
-            base.join("config").join(CONFIG_FILE_NAME).display()
-        ),
-        format!("preview activation read-only: sudo {root}/nails activate --dry-run"),
+        format!("check readiness without changing anything: sudo {root}/nails check"),
         format!("activate the hidden environment: sudo {root}/nails activate"),
     ]
 }
