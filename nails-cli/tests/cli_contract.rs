@@ -529,9 +529,19 @@ fn status_reports_the_last_activation_duration() {
     assert_eq!(value["data"]["last_activation"]["duration_ms"], 92_000);
     assert!(value["data"].get("activation_in_flight").is_none());
 
-    let stdout = String::from_utf8(run(&harness.config, &[], &["status"]).stdout).unwrap();
+    // The human report shows the time in the local zone with its offset (TZ
+    // here, as POSIX rules so no zone database is needed); the JSON above
+    // keeps UTC.
+    let stdout =
+        String::from_utf8(run(&harness.config, &[("TZ", "UTC0")], &["status"]).stdout).unwrap();
     assert!(
-        stdout.contains("Last activation:    took 1m32s (finished 2023-11-14 22:13:20 UTC)"),
+        stdout.contains("Last activation:    took 1m32s (finished 2023-11-14 22:13:20 +00:00)"),
+        "{stdout}"
+    );
+    let stdout =
+        String::from_utf8(run(&harness.config, &[("TZ", "<+02>-2")], &["status"]).stdout).unwrap();
+    assert!(
+        stdout.contains("Last activation:    took 1m32s (finished 2023-11-15 00:13:20 +02:00)"),
         "{stdout}"
     );
 }

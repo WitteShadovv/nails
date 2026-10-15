@@ -55,9 +55,10 @@ serde_json = "1.0"
 # Configuration file format (strict nails.toml)
 toml = "1.1"
 
-# Date and time (for state timestamps). Only Utc::now, DateTime, Duration and
-# RFC 3339 parsing are used, so the wasm bindings and other default extras are
-# left out.
+# Date and time (for state timestamps). Only Utc::now, DateTime, Duration,
+# RFC 3339 parsing and the local time zone (`status` shows local times; chrono
+# reads TZ or /etc/localtime itself) are used, so the wasm bindings and other
+# default extras are left out.
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 
 # Atomic file operations (NFR13)
