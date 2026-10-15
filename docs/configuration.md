@@ -25,7 +25,9 @@ upper's `/etc` holds. See the
   it, reads `/mnt/data/config/nails.toml`, so the configuration
   always travels with the binary on the hidden volume.
 - `--config PATH` reads any TOML file instead. A file named by `--config` must
-  exist; a missing file at the default location means "use the defaults".
+  exist; a missing file at the default location means "use the defaults", and
+  `activate` says so before it asks for confirmation, since every opt-in
+  protection then keeps its default.
 - `nails init <root>` writes a commented starter file with every assignment
   commented out.
 - Activation copies the effective configuration, with the binary, into RAM
@@ -47,6 +49,11 @@ On an invalid file, `activate`, `check`, `status`, `verify`, `rehearse`,
 never refuse: they log one warning and carry on with defaults derived from the
 binary location (`recover` uses the RAM copy under `/run/overlay-runtime` when
 it can). `emergency` reads no configuration at all.
+
+`nails init` writes the file readable by root only. A command run without root
+that cannot read it exits with status 3 too, and names the full line to run
+instead (`sudo /mnt/data/nails status`), in its text and as the hint of its
+JSON error.
 
 | Command | Purpose |
 |---|---|

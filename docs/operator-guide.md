@@ -127,9 +127,11 @@ Two safeguards bracket the session:
 
 - **Pre-activation residue baseline.** Before it builds anything, `nails
   activate` runs the read-only decoy residue scan and writes the result to
-  `<hidden-root>/reports/`, then prints a one-line summary. The scan only reads
-  the decoy; the report lives on the hidden volume. It is a baseline, so if a
-  later examination finds a trace you can tell whether it predated the session.
+  `<hidden-root>/reports/`, then prints a one-line summary: `no known residue`,
+  or the number of warnings and critical findings (the notes stay in the
+  report). The scan only reads the decoy; the report lives on the hidden
+  volume. It is a baseline, so if a later examination finds a trace you can tell
+  whether it predated the session.
 - **No shell history reaches the decoy.** Right before it starts the
   soft-reboot, activation SIGKILLs the decoy's interactive shells: stopping a
   login session sends its shells SIGHUP, on which bash writes its history, so
@@ -790,7 +792,9 @@ writes its superblock).
 
 - The session watcher raises a desktop alert ("Disk mounted with write access")
   for every read-write mount of a disk outside the hidden volume
-  (`session_mounts.alert`, on by default).
+  (`session_mounts.alert`, on by default). Its alerts appear on the desktop of
+  the account logged in on the machine's own screen; while nobody is logged in
+  there, none can be shown.
 - A disk mounted over the hidden root itself (with `/mnt` as the root, an
   ordinary `mount /dev/sdc1 /mnt`) takes every file saved under `/mnt` from
   then on. The watcher raises "Disk mounted over a folder in use", naming the

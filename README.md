@@ -255,10 +255,10 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    for a [binary update](docs/operator-guide.md#updating-nails):
 
    ```bash
-   # inside a hidden session
-   $EDITOR /mnt/data/config/nails.toml.new
-   /mnt/data/nails config validate /mnt/data/config/nails.toml.new
-   /mnt/data/nails --config /mnt/data/config/nails.toml.new config show   # effective values and their sources
+   # inside a hidden session; the configuration directory is root's
+   sudoedit /mnt/data/config/nails.toml.new
+   sudo /mnt/data/nails config validate /mnt/data/config/nails.toml.new
+   sudo /mnt/data/nails --config /mnt/data/config/nails.toml.new config show   # effective values and their sources
    ```
 
    Leave `hidden_volume_root` unset to derive it from the binary's location. On
