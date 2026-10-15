@@ -17,7 +17,11 @@
 #      and a probe that, like avahi, refuses to start while its file is there.
 #      The boot-loader units are masked in the hidden session only, and the
 #      kernel log names no session drop-in and no failed unmount of the hidden
-#      volume.
+#      volume. On either side of each switch, every line of libmount's utab
+#      that names a mount ID names a live mount with the line's source: the
+#      kernel reuses the IDs of the mounts a switch leaves behind, and a stale
+#      x-initrd.mount line would take a reused mount out of the shutdown
+#      order.
 #   3. A scratch disk mounted over the hidden root in the session: the
 #      session watcher, polling every second with its automatic emergency on,
 #      keeps running past its debounce without writing a probe or ending the
@@ -107,6 +111,26 @@ in
             assert rc != 0, f"{where}: {command}:\n{out}"
 
 
+    def assert_utab_names_live_mounts(where):
+        # libmount joins a utab line to the mount with the line's mount ID.
+        live = {}
+        for line in machine.succeed("cat /proc/self/mountinfo").splitlines():
+            fields = line.split(" ")
+            sep = fields.index("-")
+            live[fields[0]] = (fields[sep + 2], fields[3])
+        utab = machine.succeed("cat /run/mount/utab 2>/dev/null || true")
+        stale = []
+        for line in utab.splitlines():
+            values = dict(f.split("=", 1) for f in line.split(" ") if "=" in f)
+            if "ID" not in values:
+                continue
+            source, root = live.get(values["ID"], (None, None))
+            named = (values.get("SRC", source), values.get("ROOT", root))
+            if source is None or named != (source, root):
+                stale.append(line)
+        assert not stale, f"{where}: utab lines naming no live mount: {stale}"
+
+
     def write_config(extra=""):
         machine.succeed(
             f"cat > {CONFIG} <<'EOF'\n"
@@ -169,6 +193,7 @@ in
             if decoy_boot_writers[unit] != "not-found":
                 assert state == "masked", f"{unit} in the hidden session: {state}"
         assert_quiet_kernel_log("the hidden session")
+        assert_utab_names_live_mounts("the hidden session")
         # The hidden copies that the emergency below kills.
         machine.wait_for_unit("avahi-daemon.service")
         machine.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
@@ -208,6 +233,7 @@ in
         assert "trying to remove PID file" not in avahi, avahi
         assert load_states() == decoy_boot_writers, "the decoy's own units again"
         assert_quiet_kernel_log("after the emergency")
+        assert_utab_names_live_mounts("after the emergency")
 
     with subtest("nothing typed in either shell reached the decoy history"):
         history = decoy_history()
@@ -230,6 +256,7 @@ in
         canonical_activate(CONFIG, "--overlay-only", "activate-covered")
         session.assert_hidden_root(machine)
         machine.wait_for_unit(WATCH_UNIT)
+        assert_utab_names_live_mounts("the second hidden session")
         # The configuration on the volume is hidden by the disk on top, so
         # the commands below read a copy in /run.
         covered_config = "/run/covered.toml"
