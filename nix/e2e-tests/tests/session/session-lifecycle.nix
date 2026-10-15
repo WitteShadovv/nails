@@ -11,7 +11,10 @@
 #      `nails init` seeded;
 #   3. `nails deactivate`: a soft-reboot back to the plain decoy. Nothing of the
 #      hidden /run survives, the hidden volume's mapping closed itself, the
-#      decoy never saw the hidden file;
+#      decoy never saw the hidden file. The decoy journal is volatile (the
+#      suite's default) and shared with the hidden session, so the way back
+#      deletes it whole: a line the decoy logged before activation is gone with
+#      the hidden session's, and the journal starts at the deactivation;
 #   4. a second activation finds the hidden file again (the upper persists);
 #   5. `nails emergency` in the hidden session kills a hidden service and the
 #      login session at once and soft-reboots back, with its phases timed in
@@ -86,6 +89,20 @@ in
         status = read_status_json(config_path=CONFIG)
         assert status["state"]["kind"] == "inactive", status
 
+    # One line the decoy logs before activation and one the hidden session
+    # logs. Neither names the tool or the hidden volume, so verify's journal
+    # search below does not count them.
+    decoy_line = "decoy-line-" + secrets.token_hex(8)
+    hidden_line = "hidden-line-" + secrets.token_hex(8)
+
+    with subtest("the decoy journal shows a line logged before activation"):
+        machine.succeed("grep -qi '^Storage=volatile' /etc/systemd/journald.conf")
+        machine.succeed(f"logger -t decoy {decoy_line}")
+        machine.succeed("journalctl --sync")
+        assert decoy_line in machine.succeed(
+            f"journalctl --grep {decoy_line} --no-pager -o cat"
+        ), "the decoy journal does not show its own line"
+
     run_before = session.run_entries(machine)
 
     with subtest("activate soft-reboots into the hidden root"):
@@ -136,10 +153,19 @@ in
         assert rc == 0, "the hidden file is on the decoy filesystem"
         machine.succeed("mountpoint -q /mnt/data")
 
+    with subtest("the hidden session logs into the runtime journal the decoy wrote"):
+        machine.succeed(f"logger -t session {hidden_line}")
+        machine.succeed("journalctl --sync")
+        for line in (decoy_line, hidden_line):
+            assert line in machine.succeed(
+                f"journalctl --grep {line} --no-pager -o cat"
+            ), f"{line} is not in the hidden session's journal"
+
     with subtest("deactivate soft-reboots back and leaves no hidden /run"):
         machine.succeed("echo probe > /run/hidden-run-probe")
         machine.succeed("systemd-run --unit hidden-probe --property=Type=exec sleep infinity")
         wall = session.wall_clock(machine)
+        deactivate_start_us = int(machine.succeed("date +%s%6N").strip())
         canonical_deactivate(CONFIG, "deactivate-1")
         machine.fail("test -e /root/hidden-canary")
         machine.fail("test -e /run/hidden-run-probe")
@@ -148,6 +174,36 @@ in
         machine.fail("systemctl is-active hidden-probe.service")
         residue = session.carried_run_residue(machine, run_before, wall)
         assert not residue, f"hidden /run residue on the decoy: {residue}"
+
+    with subtest("the way back resets the decoy's runtime journal"):
+        # The decoy's journald and the hidden one wrote the same runtime
+        # journal, and the way back deletes it whole: the decoy's own line from
+        # before activation goes with the hidden one, and the journal starts at
+        # the return.
+        machine.succeed("journalctl --sync")
+        for line in (decoy_line, hidden_line):
+            count = machine.succeed(
+                f"journalctl --no-pager -o cat | grep -c -F {line} || true"
+            ).strip()
+            assert count == "0", f"{line} is in the decoy journal ({count} lines)"
+        records = [
+            json.loads(entry)
+            for entry in machine.succeed(
+                "journalctl -o json --output-fields=MESSAGE --no-pager"
+            ).splitlines()
+            if entry.strip()
+        ]
+        assert records, "the decoy journal is empty after the way back"
+        oldest = min(records, key=lambda record: int(record["__REALTIME_TIMESTAMP"]))
+        oldest_us = int(oldest["__REALTIME_TIMESTAMP"])
+        machine.log(
+            f"oldest decoy journal record: {oldest_us} us, {oldest.get('MESSAGE')!r}; "
+            f"deactivation started at {deactivate_start_us} us"
+        )
+        assert oldest_us >= deactivate_start_us, (
+            f"the decoy journal starts {deactivate_start_us - oldest_us} us before "
+            f"the deactivation: {oldest.get('MESSAGE')!r}"
+        )
 
     with subtest("the upper persists into the next session"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
