@@ -424,7 +424,7 @@ mod tests {
     fn test_print_verify_result_all_severity_levels() {
         // Test all severity levels in findings
         let findings = vec![
-            Finding::new(Severity::Info, "memory", "RAM may retain data"),
+            Finding::new(Severity::Info, "memory", "RAM keeps the session's data"),
             Finding::new(Severity::Warn, "file", "Artifact found")
                 .with_fix_guidance("Delete artifact"),
             Finding::new(Severity::Critical, "mount", "Overlay mounted")
@@ -440,7 +440,7 @@ mod tests {
         let findings = vec![Finding::new(
             Severity::Info,
             "memory",
-            "RAM may retain data briefly",
+            "RAM keeps the session's data",
         )];
         let result = VerifyResult::new(VerifyStatus::Secure, findings, ScanDepth::Standard);
         print_verify_result(&result, Style::default());
@@ -505,7 +505,7 @@ mod tests {
                 "session",
                 "verify runs inside the hidden session",
             ),
-            Finding::new(Severity::Info, "memory", "RAM may retain data"),
+            Finding::new(Severity::Info, "memory", "RAM keeps the session's data"),
             Finding::new(Severity::Warn, "file", "NAILS-related file found"),
             Finding::new(Severity::Critical, "memory", "Swap can leak memory"),
         ];
@@ -521,7 +521,7 @@ mod tests {
             vec![Finding::new(
                 Severity::Info,
                 "memory",
-                "RAM may retain data",
+                "RAM keeps the session's data",
             )],
             ScanDepth::Standard,
         );

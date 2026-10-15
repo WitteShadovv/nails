@@ -435,7 +435,7 @@ fn test_memory_status_with_swap_enabled() {
     // Check RAM warning
     let ram_finding = memory_findings
         .iter()
-        .find(|f| f.message.contains("RAM may retain"))
+        .find(|f| f.message.contains("RAM keeps"))
         .unwrap();
     assert_eq!(ram_finding.severity, Severity::Info);
 }
@@ -456,7 +456,14 @@ fn test_memory_status_with_swap_disabled() {
     assert_eq!(memory_findings.len(), 1); // only RAM warning
 
     let ram_finding = &memory_findings[0];
-    assert!(ram_finding.message.contains("RAM may retain"));
+    assert!(ram_finding.message.contains("RAM keeps"));
+    assert!(
+        ram_finding
+            .fix_guidance
+            .as_deref()
+            .is_some_and(|fix| fix.contains("--poweroff")),
+        "{ram_finding:?}"
+    );
     assert_eq!(ram_finding.severity, Severity::Info);
 }
 

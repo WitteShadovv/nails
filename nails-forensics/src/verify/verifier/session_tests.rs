@@ -323,6 +323,44 @@ fn an_overlay_root_that_is_not_the_hidden_session_keeps_the_decoy_findings() {
     );
 }
 
+/// On the decoy, an interrupted activation's runtime directory is one
+/// critical finding that says to run `nails recover`, not a second one that
+/// says to deactivate, which the decoy refuses. A runtime file nothing else
+/// reports keeps its own finding, with the same advice.
+#[test]
+fn a_runtime_leftover_on_the_decoy_is_reported_once_and_points_at_recover() {
+    let fs = session_fs(Some(false));
+    fs.mock_add_file(
+        "/proc/self/mountinfo",
+        "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n2 1 254:0 / /mnt/hidden rw - ext4 /dev/mapper/data rw\n",
+    );
+    fs.mock_set_path_exists(READ_ONLY_RULE, true);
+    let result = session_verifier(&fs).run(false).unwrap();
+
+    assert!(!has_session_note(&result), "{:#?}", result.findings);
+    let about_runtime: Vec<&Finding> = result
+        .findings
+        .iter()
+        .filter(|f| f.message.contains("/run/overlay-runtime"))
+        .collect();
+    assert_eq!(about_runtime.len(), 1, "{about_runtime:#?}");
+    assert_eq!(about_runtime[0].severity, Severity::Critical);
+    assert!(
+        about_runtime[0]
+            .fix_guidance
+            .as_deref()
+            .is_some_and(|fix| fix.contains("nails recover")),
+        "{about_runtime:#?}"
+    );
+    let rule = artifact(&result, READ_ONLY_RULE).expect("the rule is reported");
+    let fix = rule.fix_guidance.as_deref().unwrap();
+    assert!(
+        fix.contains("run 'nails recover' on the decoy, or power off"),
+        "{fix}"
+    );
+    assert!(!fix.contains("deactivate"), "{fix}");
+}
+
 #[test]
 fn a_plan_for_another_upper_does_not_make_a_session() {
     let fs = session_fs(Some(false));

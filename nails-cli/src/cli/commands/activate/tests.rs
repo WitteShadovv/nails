@@ -271,7 +271,7 @@ fn the_residue_baseline_counts_only_warnings_and_critical_findings() {
     let warn = |text: &str| Finding::new(Severity::Warn, "file", text);
     let critical = |text: &str| Finding::new(Severity::Critical, "mount", text);
     let notes = vec![
-        note("RAM may retain data briefly after shutdown"),
+        note("RAM keeps the session's data until power-off"),
         note("Decoy-scoped baseline"),
         note("noted: timesync-clock"),
     ];

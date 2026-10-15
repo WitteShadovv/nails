@@ -51,6 +51,14 @@ impl<F: Filesystem> Verifier<F> {
             {
                 continue;
             }
+            // On the live decoy the session-leftovers check reports the
+            // runtime directory, as critical: one finding per leftover.
+            if session.is_none()
+                && !self.is_offline()
+                && path == Path::new(nails_teardown::whole_root::plan::RUNTIME_DIR)
+            {
+                continue;
+            }
             if !self.entry_exists(&self.rebase(&path))? {
                 continue;
             }
@@ -278,12 +286,19 @@ impl<F: Filesystem> Verifier<F> {
             ),
         }
 
-        // Always add RAM persistence warning as Info
-        findings.push(Finding::new(
-            Severity::Info,
-            "memory",
-            "RAM may retain data briefly after shutdown - consider cold boot for maximum security",
-        ));
+        // Always add the RAM note as Info. A cold boot is the attack on RAM
+        // the note guards against, never advice.
+        findings.push(
+            Finding::new(
+                Severity::Info,
+                "memory",
+                "RAM keeps the session's data until power-off, and briefly after it",
+            )
+            .with_fix_guidance(
+                "End the session with --poweroff and leave the machine off for a few minutes \
+                 before handing it over",
+            ),
+        );
 
         Ok(findings)
     }
@@ -301,7 +316,8 @@ fn map_artifact_severity(severity: ArtifactSeverity) -> Severity {
 fn artifact_fix_guidance(scope: ArtifactScope, path: &Path) -> String {
     match scope {
         ArtifactScope::Runtime => format!(
-            "Runtime leftover from an incomplete teardown; run 'nails deactivate' (then confirm {} is gone)",
+            "Leftover of an interrupted activation, in RAM; run 'nails recover' on the decoy, \
+             or power off (then confirm {} is gone)",
             path.display()
         ),
         ArtifactScope::Decoy => {
