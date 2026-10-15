@@ -157,6 +157,7 @@ gives the full reasoning and the price.
 |---|---|
 | `<hidden-root>/nails` | the binary |
 | `<hidden-root>/config/` | `nails.toml` and, on NixOS, the hidden module `config/nixos/configuration.nix` |
+| `<hidden-root>/nixos/` | on NixOS, optionally a hidden flake, built instead of the legacy configuration; it must import the hidden module |
 | `<hidden-root>/root/upper`, `root/work` | the hidden root's upper and its overlayfs work directory |
 | `<hidden-root>/root/mounts/<path>/upper` | the upper of each other decoy filesystem that is overlaid (a separate `/home`), named by its systemd path escape |
 | `<hidden-root>/root/cache` | the Nix evaluation cache used while the hidden system is built |
@@ -222,14 +223,28 @@ Keep all of it `root`-owned on the hidden volume.
    step that runs a program to its end, such as the hidden system's
    activation, finishes first.
 
-**The hidden NixOS system.** With a hidden configuration — a flake given with
-`--nixos-flake` or `nixos_flake`, or otherwise the legacy configuration, which
-is the decoy's `/etc/nixos` plus the hidden hardware configuration `init` placed
-in `<hidden-root>/root/upper/etc/nixos/` (it imports
-`<hidden-root>/config/nixos/configuration.nix`) — activation builds the hidden
-toplevel into the next root's store (`nix build --store /run/nextroot`). The
-build reads the decoy store through the lower and writes every new path, the
-Nix database included, into the upper; nothing reaches the decoy `/nix`.
+**The hidden NixOS system.** Activation builds the hidden toplevel into the
+next root's store (`nix build --store /run/nextroot`) from the first of:
+
+1. a flake given with `--nixos-flake` or `nixos_flake`;
+2. a flake in `<hidden-root>/nixos`, built for this machine's hostname;
+3. the legacy configuration: the decoy's `/etc/nixos` plus the hidden hardware
+   configuration `init` placed in `<hidden-root>/root/upper/etc/nixos/`, which
+   imports the hidden module `<hidden-root>/config/nixos/configuration.nix`.
+
+Only the legacy configuration imports the hidden module by itself. A flake must
+import it, or the hidden system lacks its settings (`system.autoUpgrade` forced
+off, no shell history file) and whatever you added there, such as the [panic
+switch](#panic-switch); the build runs with `--impure`, so a flake can import
+it by its absolute path. A decoy whose `/etc/nixos` holds its own flake is
+refused unless one of the first two applies: a build of the decoy's flake reads
+only the decoy's files, so neither the hidden module nor the hidden hardware
+configuration would be part of the hidden system. Put a flake in
+`<hidden-root>/nixos` whose configuration imports
+`/etc/nixos/configuration.nix` and the hidden module. `nails check` names the
+choice under "NixOS profile". The build reads the decoy store through the lower
+and writes every new path, the Nix database included, into the upper; nothing
+reaches the decoy `/nix`.
 
 Before it activates the toplevel, activation **copies the hidden system's
 whole closure onto the hidden volume**: every store path the hidden toplevel

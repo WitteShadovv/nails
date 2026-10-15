@@ -246,7 +246,9 @@ fn render_template(root: &Path, title: &str) -> String {
 # Free space required when a hidden NixOS system is built (NixOS), in MB.
 # rebuild_space_mb = 4096
 
-# NixOS flake reference for the hidden environment. Unset: auto-detected.
+# NixOS flake reference for the hidden environment; the flake must import the
+# hidden module. Unset: a flake in <hidden_volume_root>/nixos, else the legacy
+# hidden configuration.
 # nixos_flake = {flake_value}
 
 # Accept a persistent decoy posture instead of refusing activation. Activation

@@ -279,9 +279,12 @@ pub struct Config {
 
     /// NixOS flake reference (optional, auto-detected if not set)
     ///
-    /// When set, this value is passed directly to `nixos-rebuild --flake <value>`
-    /// instead of auto-detecting the flake path. Supports full flake references
-    /// with attribute selection (e.g., `/mnt/data/nixos#my-host`).
+    /// When set, the hidden system is built from this flake (`nix build` into
+    /// the hidden root's store) instead of the one auto-discovery picks: a
+    /// flake in `<hidden_volume_root>/nixos`, else the legacy hidden
+    /// configuration (the decoy's own `/etc/nixos` flake is refused). Supports
+    /// full flake references with attribute selection (e.g.,
+    /// `/mnt/data/nixos#my-host`). The flake must import the hidden module.
     ///
     /// **Precedence**: CLI `--nixos-flake` flag > config `nixos_flake` > auto-discovery
     ///

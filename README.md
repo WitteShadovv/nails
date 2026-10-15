@@ -265,7 +265,9 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    NixOS, change the hidden module `/mnt/data/config/nixos/configuration.nix`
    inside a hidden session (see the operator guide's
    [Changing the hidden configuration](docs/operator-guide.md#changing-the-hidden-configuration)),
-   or point `nixos_flake` at a flake:
+   or build the hidden system from a flake that imports that module. Activation
+   finds one in `/mnt/data/nixos` by itself, and a decoy whose `/etc/nixos` is a
+   flake needs one; `nixos_flake` names another flake or attribute:
 
    ```toml
    nixos_flake = "/mnt/data/nixos#my-host"

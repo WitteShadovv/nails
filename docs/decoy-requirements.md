@@ -62,8 +62,9 @@ decoy disk.
   decoy disk or firmware-backed storage.
 - **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which rebuilds the
   decoy on its own schedule (and can touch EFI NVRAM). The generated hidden
-  module force-disables `system.autoUpgrade`, but with `--overlay-only` the
-  decoy's own system, timer included, runs in the hidden session.
+  module force-disables `system.autoUpgrade`, but with `--overlay-only`, or
+  with a hidden flake that does not import that module, the decoy's own timer
+  runs in the hidden session.
 - **sudo's own logs** — `Defaults logfile=` in `/etc/sudoers` or
   `/etc/sudoers.d/*` writes every sudo command line to a file, and I/O logging
   (`log_input`, `log_output`, the `log_stdin`/`log_ttyout`/... flags, or the
