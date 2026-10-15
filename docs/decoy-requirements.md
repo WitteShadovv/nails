@@ -276,6 +276,26 @@ written, and keep the binary at a neutral path
 on the hidden volume. NAILS cannot suppress sudo's own logging without tampering
 with the decoy, which would itself be a tell.
 
+### What the decoy journal keeps
+
+The decoy journal logs the window around each soft-reboot: the sudo line of the
+activation, the hidden build's progress and the decoy's own shutdown before the
+switch, and its start after the way back, all under one boot ID. Where those
+records end up depends on the journal:
+
+- **Persistent** (accepted with `--accept-persistent-decoy`): they are on the
+  decoy disk and stay there, with a gap where the hidden session ran.
+- **Volatile** (the amnesic setup): they are in RAM, in the runtime journal
+  below `/run/log/journal`, which the hidden session's journald writes to as
+  well. The way back deletes that journal whole, the decoy's own records from
+  before the session included, so the decoy journal starts at the return: it
+  holds neither the activation nor anything the decoy logged earlier, nor any
+  of the kernel's boot messages, because the kernel-message cursor that keeps
+  the hidden session's kernel records out is set past them too. `uptime` and
+  `dmesg` still go back to the boot, so until the machine is powered off,
+  anyone with a shell can see that the journal starts long after the boot.
+  Power off after the session.
+
 ## Shell history hardening
 
 Hidden-session history never reaches the decoy: every hidden shell runs inside
@@ -444,7 +464,8 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | Class | Where | Platforms | Pre-flight | Verify | Mitigation | VM test |
 |---|---|---|---|---|---|---|
 | [Persistent systemd journal](#fail-closed-activation-is-refused) (`persistent-journal`) | `/var/log/journal` | all | `decoy-persistence` (refuses) | `journal-scan` | Set Storage=volatile under [Journal] in journald.conf or a journald.conf.d drop-in. | `decoy-persistence-preflight` |
-| [Journal window around each soft-reboot](#the-sudo-log-exposure-and-its-mitigation) (`pre-entry-journal-window`) | journald records of `sudo nails activate`, the decoy shutdown before the soft-reboot and the decoy start after the way back | all | `decoy-persistence` (refuses) | `journal-scan` | Run on a volatile journal, so the window stays in RAM; keep the binary at a neutral path. | `decoy-journal-leak` |
+| [Journal window around each soft-reboot](#what-the-decoy-journal-keeps) (`pre-entry-journal-window`) | journald records of `sudo nails activate`, the decoy shutdown before the soft-reboot and the decoy start after the way back | all | `decoy-persistence` (refuses) | `journal-scan` | Run on a volatile journal, so the window never reaches the decoy disk; keep the binary at a neutral path. | `decoy-journal-leak` |
+| [Decoy journal reset by the way back](#what-the-decoy-journal-keeps) (`runtime-journal-reset`) | the runtime journal below /run/log/journal, which the decoy and the hidden journald write alike and the way back deletes | all | none: the scrub causes it, as the last step before the switch back | none: RAM only, gone at power-off | Power off after the session. | `session-lifecycle` |
 | [Classic syslog daemon](#fail-closed-activation-is-refused) (`classic-syslog`) | `/var/log/syslog`, `/var/log/messages`, `/var/log/auth.log` | all | `decoy-persistence` (refuses) | `deep-scan-files` | Remove or disable rsyslog and syslog-ng on the decoy. | `decoy-persistence-preflight` |
 | [Audit daemon log](#fail-closed-activation-is-refused) (`auditd`) | `/var/log/audit` | all | `decoy-persistence` (refuses) | path probe (warn) | Disable auditd and the audit framework on the decoy. | `decoy-persistence-preflight` |
 | [sudo log file](#the-sudo-log-exposure-and-its-mitigation) (`sudo-logfile`) | `/var/log/sudo.log` | all | `decoy-persistence` | path probe (warn) | Remove `Defaults logfile=` from sudoers and sudoers.d. | `examiner-audit` |
@@ -457,7 +478,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [NixOS account bookkeeping](threat-model.md#known-residual-changes) (`var-lib-nixos`) | `/var/lib/nixos` | NixOS | none: the decoy rewrites these files on every boot; only a control run tells noise from a leak | `platform-scanners` | Overlay /var; the drift test compares against a plain-reboot control. | `session-nixos-hidden-system` |
 | [Decoy filesystems the hidden systemd would mount](#writes-that-bypass-the-overlays) (`decoy-filesystems`) | fstab entries of the hidden root: a separate /home or /var, the ESP, decoy swap, a second disk | all | `fstab-policy` (refuses) | none: verify cannot tell what a session wrote to another filesystem | NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, and masks swap and unmounted disks before the switch. | `soft-reboot-mechanics` |
 | [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) (`session-disk-mounts`) | a USB drive udisks automounts, a decoy partition the policy masked mounted by hand, a Windows partition | all | none: the disk is mounted after activation | none: verify cannot tell what a session wrote to another disk | The session watcher alerts on every read-write disk mount outside the hidden volume; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again. | `session-disk-mounts` |
-| [The hidden session's /run carried into the decoy](threat-model.md#residual-channels) (`run-carry-over`) | a soft-reboot carries /run: logind state, utmp, the runtime journal, utab lines, name-server records, stray files | all | none: the scrub runs as the last step before the switch back | `session-leftovers` | The transition step deletes what the hidden session added two levels below /run (three below /run/systemd), judged against what the decoy left when it stopped for the entry, puts the decoy's name-server records below /run/resolvconf back, restores utab, and never touches sockets or /run/udev. | `soft-reboot-mechanics` |
+| [The hidden session's /run carried into the decoy](threat-model.md#residual-channels) (`run-carry-over`) | a soft-reboot carries /run: logind state, utmp, the runtime journal, utab lines, name-server records, stray files | all | none: the scrub runs as the last step before the switch back | `session-leftovers` | The transition step deletes the runtime journal and logind's session state whole, and whatever else the hidden session added two levels below /run (three below /run/systemd), judged against what the decoy left when it stopped for the entry; it puts the decoy's name-server records below /run/resolvconf back, restores utab, and never touches sockets or /run/udev. | `soft-reboot-mechanics` |
 | [An interrupted entry's runtime files in /run](threat-model.md#residual-channels) (`interrupted-entry`) | an activation killed before the soft-reboot leaves /run/nextroot, the session plan and the transition drop-in | all | `session-state` (refuses) | `session-leftovers` | The transition drop-in is installed before the next root is populated, so an unarmed entry is disarmed by any soft-reboot; `nails recover` removes the leftovers. | `session-interrupted-entry` |
 | [Hidden kernel records imported by the decoy journal](threat-model.md#residual-channels) (`kmsg-import`) | journald reads /dev/kmsg from its stored sequence number after every soft-reboot | all | `decoy-persistence` | `journal-scan` | The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last generic lines and the hidden filesystem's unmount line follow it. | `soft-reboot-mechanics` |
 | [Network state the hidden session created or changed](operator-guide.md#how-it-works) (`network-state`) | a soft-reboot keeps the kernel's network state: links, addresses, routes and VPN tunnels the hidden session set up stay as they are, and so can a MAC address or a hostname it changed | all | none: the hidden session creates them after activation | none: a link the decoy adopted looks like one the decoy made itself | Before deactivating, take down every connection and VPN tunnel you brought up and delete every link you created by hand (`ip link delete`), or end the session with `deactivate --poweroff`, which powers off before the decoy's NetworkManager starts. End a session that used the hidden network-identity snippet with `deactivate --poweroff` (or `emergency --poweroff`). | none: session-dns-records only logs the link the hidden session leaves: what the way back does with it is not decided yet |

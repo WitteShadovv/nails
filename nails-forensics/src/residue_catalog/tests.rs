@@ -239,6 +239,7 @@ fn the_new_research_classes_are_catalogued() {
         "run-carry-over",
         "kmsg-import",
         "soft-reboot-counter",
+        "runtime-journal-reset",
     ] {
         assert!(class(id).is_some(), "catalog row {id} is missing");
     }
