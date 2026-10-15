@@ -1437,7 +1437,7 @@ fn test_decoy_scoped_baseline_still_catches_real_decoy_leak_and_foreign_device()
 }
 
 // ========================================================================
-// Deep-scan journal leak search (T-094)
+// Deep-scan journal leak search
 // ========================================================================
 
 use super::journal::FakeJournalReader;

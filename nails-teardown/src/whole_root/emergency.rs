@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The emergency hot path of a whole-root session (ADR 0008, section 6).
+//! The emergency hot path of a whole-root session.
 //!
 //! In the hidden session the fastest safe path is:
 //!

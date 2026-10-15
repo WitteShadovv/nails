@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Keeping the hidden NixOS system on the hidden volume (T-137, ADR 0008 §3).
+//! Keeping the hidden NixOS system on the hidden volume.
 //!
 //! The hidden toplevel is built into the next root's store, which is an
 //! overlay over the decoy's: new paths land in the upper on the hidden volume,
@@ -31,9 +31,9 @@
 //! the decoy deletes later disappears from the lower only, and the copy in the
 //! upper keeps serving it. The cost is the space and time of one copy of the
 //! closure at the first entry (the whole system, several GB for a desktop),
-//! and of the new paths at later ones. See ADR 0008 §3 for why this beats a
-//! separate store (which would need every build input copied in, the
-//! evaluation's sources included, and a decoy binary cache to substitute from).
+//! and of the new paths at later ones. A separate store on the hidden volume
+//! would cost more: it would need every build input copied in, the
+//! evaluation's sources included, and a decoy binary cache to substitute from.
 
 use crate::error::{NailsError, Result};
 use crate::process::{ProcessCommand, ProcessRunner};

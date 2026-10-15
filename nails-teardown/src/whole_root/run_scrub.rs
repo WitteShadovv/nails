@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What the hidden session leaves in `/run`, and the scrub that removes it on
-//! the way back (ADR 0008, section 5).
+//! the way back.
 //!
 //! A soft-reboot carries `/run` into the next userspace. On the way back the
 //! decoy would inherit everything the hidden session put there: logind state,

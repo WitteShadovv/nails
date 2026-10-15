@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The whole-root mechanics against a real kernel, without root (ADR 0006,
-//! ADR 0008).
+//! The whole-root mechanics against a real kernel, without root (the
+//! real-kernel tier of docs/testing-strategy.md).
 //!
 //! Each test re-runs itself in a private user + mount namespace and builds the
 //! real thing on scratch tmpfs: a decoy "root" with its own ESP, a hidden
@@ -934,7 +934,7 @@ mod entry_kernel_tests {
 }
 
 mod nixos_kernel_tests {
-    //! The chrooted activation of a hidden toplevel (ADR 0008, §3, variant B):
+    //! The chrooted activation of a hidden toplevel:
     //! it runs inside the next root, sees `/proc`, `/dev` and `/sys`, writes
     //! into the root, and gets a fresh `/run`, never the real one.
 
@@ -1016,7 +1016,7 @@ mod nixos_kernel_tests {
 }
 
 mod store_kernel_tests {
-    //! Keeping the hidden closure on the hidden volume (T-137): copied up
+    //! Keeping the hidden closure on the hidden volume: copied up
     //! through the store overlay, it survives the decoy deleting it from the
     //! lower, and the lower is never written.
 

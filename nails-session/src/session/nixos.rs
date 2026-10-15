@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Entering a hidden NixOS toplevel without touching the bootloader (ADR 0008,
-//! section 3, variant B).
+//! Entering a hidden NixOS toplevel without touching the bootloader.
 //!
 //! A soft-reboot executes `/run/current-system/systemd/lib/systemd/systemd`
 //! directly; NixOS's stage-2 activation does not run again. So before the

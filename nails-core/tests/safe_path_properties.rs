@@ -7,7 +7,7 @@
 //!
 //! `SafeRoot` resolves every relative path beneath a pinned `O_PATH` root fd with
 //! `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS | RESOLVE_NO_MAGICLINKS)`. The
-//! same component alphabet T-015 uses to probe configured-path containment — `.`,
+//! component alphabet the configured-path suite probes containment with — `.`,
 //! `..` and in-tree symlinks pointing at themselves, their parent, outside the
 //! volume, or in a loop — is driven here against the helper itself, so the two
 //! suites exercise the same planted-symlink and traversal inputs.

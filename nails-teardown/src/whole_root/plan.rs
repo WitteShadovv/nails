@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The session plan of a whole-root session (ADR 0008).
+//! The session plan of a whole-root session.
 //!
 //! Activation writes it on the decoy's `/run` tmpfs before the soft-reboot into
 //! the hidden root. `/run` is carried across every soft-reboot, so the same file

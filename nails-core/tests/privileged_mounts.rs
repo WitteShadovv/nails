@@ -427,7 +427,7 @@ fn mountinfo_decodes_overlay_target_with_space_tab_and_backslash() {
             let upper = root.path("upper");
             let work = root.path("work");
             // The mount point carries a space, a tab, and a backslash: exactly the bytes
-            // the kernel octal-escapes in mountinfo and the T-005 parser must decode.
+            // the kernel octal-escapes in mountinfo and the parser must decode.
             let target = root.path("weird dir\twith\\chars");
             for dir in [&lower, &upper, &work, &target] {
                 mkdir(dir);

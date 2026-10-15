@@ -141,7 +141,7 @@ fn activation_and_check_build_identical_check_lists() {
 
 /// `nails check` builds its options from its flags and activation takes them
 /// from `EnterOptions::preflight`: the same flags give the same options and so
-/// the same checks (T-062).
+/// the same checks.
 #[test]
 fn check_and_activation_build_the_same_checks_from_the_same_flags() {
     let manager = manager_with(MockFilesystem::new());

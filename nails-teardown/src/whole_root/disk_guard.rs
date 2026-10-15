@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Disks the hidden session does not use, read-only for the session (T-143).
+//! Disks the hidden session does not use, read-only for the session.
 //!
 //! The fstab policy covers every filesystem the decoy knows about at entry. A
 //! disk the hidden session mounts itself (a USB drive automounted by udisks, a

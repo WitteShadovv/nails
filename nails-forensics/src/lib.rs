@@ -12,7 +12,7 @@
 //! (`rehearse`).
 //!
 //! It reads the session's probes but never drives the session or the
-//! teardown mechanics; the dependency direction is recorded in ADR 0010.
+//! teardown mechanics; `tests/boundary.rs` holds it to that.
 
 // Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
 // may use it freely; production code opts in per site with a scoped allow.

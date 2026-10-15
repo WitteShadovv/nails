@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The last userspace step before PID 1 switches root (ADR 0008, sections 3
-//! and 5).
+//! The last userspace step before PID 1 switches root.
 //!
 //! Activation installs a runtime drop-in that makes this step the `ExecStart=`
 //! of `systemd-soft-reboot.service`. That service is ordered after

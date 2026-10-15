@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What happens to each decoy filesystem in the hidden root (ADR 0008, §2).
+//! What happens to each decoy filesystem in the hidden root.
 //!
 //! The root overlay covers only the root filesystem. Every other filesystem
 //! in the fstab the hidden systemd reads would be mounted by it **directly and

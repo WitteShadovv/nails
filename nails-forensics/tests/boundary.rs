@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The boundary of the forensics crate (ADR 0010): it only reads.
+//! The boundary of the forensics crate: it only reads.
 //!
 //! Verification needs to recognise a session and its leftovers, so it reads
 //! the session plan's format, the mount table and the session's unit names.

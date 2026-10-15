@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The dependency boundary of the emergency hot path (ADR 0007).
+//! The dependency boundary of the emergency hot path.
 //!
 //! Everything the panic path runs lives in this crate, and the crate may only
 //! depend on `rustix`, `libc` and `serde`. Cargo already refuses a dependency on

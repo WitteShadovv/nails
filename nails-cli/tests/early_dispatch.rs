@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The emergency hot path acts before the CLI reads its configuration (ADR
-//! 0007, ADR 0008).
+//! The emergency hot path acts before the CLI reads its configuration.
 //!
 //! The real `nails` binary runs `emergency` on the decoy side of an interrupted
 //! activation: a session plan in `/run` and a real overlay populating

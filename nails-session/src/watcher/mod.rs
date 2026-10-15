@@ -232,7 +232,7 @@ pub fn is_unguarded_mount(
         && is_block(mount)
 }
 
-/// The watcher's view of disk mounts made during the session (T-143): each
+/// The watcher's view of disk mounts made during the session: each
 /// unguarded read-write mount is reported once, by mount id.
 #[derive(Debug, Default)]
 pub struct MountWatch {

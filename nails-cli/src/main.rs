@@ -47,10 +47,10 @@ fn main() -> std::process::ExitCode {
     let core_dump_error = nails::cli::disable_core_dumps();
 
     // The emergency hot path and the soft-reboot transition step run here,
-    // before clap, the environment snapshot, the configuration and tracing exist
-    // (ADR 0007, ADR 0008). The emergency command then prints and logs the
-    // result; the transition step ends the process itself. Any other command
-    // line is left untouched.
+    // before clap, the environment snapshot, the configuration and tracing exist,
+    // so a failed hidden volume or an unreadable configuration cannot stop them.
+    // The emergency command then prints and logs the result; the transition
+    // step ends the process itself. Any other command line is left untouched.
     nails::cli::early::dispatch();
 
     let cli = Cli::parse_checked();

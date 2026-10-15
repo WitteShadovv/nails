@@ -5,7 +5,7 @@
 //!
 //! Core library for the nails overlay environment manager: a hidden session
 //! on a decoy system, entered and left with `systemctl soft-reboot` into a
-//! whole-root overlay (ADR 0008).
+//! whole-root overlay.
 //!
 //! This crate holds the orchestration that needs every area at once: the
 //! manager (enter, leave, recover, reset-upper), the pre-flight registry and
@@ -21,7 +21,7 @@
 //!   probes, persona and runtime units;
 //! - `nails-forensics`: verification, the residue catalog, rehearse.
 //!
-//! The dependency direction is recorded in ADR 0010.
+//! The dependency direction is pinned by `tests/crate_graph.rs`.
 //!
 //! The core library is designed to be reusable by different interfaces:
 //! - CLI (nails-cli)
@@ -77,8 +77,8 @@ pub mod preflight;
 // Status command module (live session view)
 pub mod status;
 
-// The whole-root session (ADR 0008): entry, way back, fstab policy, probes,
-// the persona and the session's runtime units.
+// The whole-root session: entry, way back, fstab policy, probes, the persona
+// and the session's runtime units.
 pub use nails_session::{persona, runtime_copy, session, sleep_guard, watcher};
 
 // Host detection, the platform backends, the NixOS configuration layer and

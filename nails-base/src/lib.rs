@@ -11,7 +11,7 @@
 //! It knows nothing about a platform backend, the whole-root session or
 //! verification; those live in `nails-platform`, `nails-session` and
 //! `nails-forensics`, and `nails-core` ties them together. The dependency
-//! direction is recorded in ADR 0010.
+//! direction is pinned by `nails-core/tests/crate_graph.rs`.
 
 // Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
 // may use it freely; production code opts in per site with a scoped allow.

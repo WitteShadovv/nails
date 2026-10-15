@@ -4,9 +4,9 @@
 //! # nails-teardown
 //!
 //! The whole-root session's mechanics that must run without the rest of the
-//! tool (ADR 0008): the session plan in RAM, the next root, the transition step
-//! systemd runs on each soft-reboot, the return scrub of `/run`, and the
-//! emergency path that leaves the hidden root (see [`whole_root`]).
+//! tool: the session plan in RAM, the next root, the transition step systemd
+//! runs on each soft-reboot, the return scrub of `/run`, and the emergency
+//! path that leaves the hidden root (see [`whole_root`]).
 //!
 //! The crate depends on `rustix`, `libc` and `serde` only. It has no
 //! configuration, no state file, no logging and no process runner, so the CLI

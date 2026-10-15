@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The whole-root session (ADR 0008): the only session mode of NAILS.
+//! The whole-root session: the only session mode of NAILS.
 //!
 //! `activate` builds one overlay over the decoy root at `/run/nextroot`, with
 //! the upper on the hidden volume, and soft-reboots into it: every process of

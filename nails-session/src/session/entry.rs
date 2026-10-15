@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Preparing the entry into the hidden root (ADR 0008, sections 2 and 3).
+//! Preparing the entry into the hidden root.
 //!
 //! [`prepare`] builds everything the soft-reboot needs and arms the plan; the
 //! caller then commits the state and enqueues `soft-reboot.target`:
@@ -429,7 +429,8 @@ fn build(
         ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
         let system = host.build_hidden_system(builder, &nextroot, &layout.cache())?;
         // Before anything runs from it: the decoy may garbage-collect its
-        // store before the next session (T-137).
+        // store before the next session, so the closure is kept on the
+        // hidden volume.
         let kept = host.keep_hidden_closure(&nextroot, &system, &layout.store_kept())?;
         tracing::info!(
             paths = kept.paths,

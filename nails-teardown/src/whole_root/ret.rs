@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Preparing the way back to the plain decoy root (ADR 0008, section 5).
+//! Preparing the way back to the plain decoy root.
 //!
 //! Shared by `deactivate` and `emergency`, both running in the hidden session:
 //!

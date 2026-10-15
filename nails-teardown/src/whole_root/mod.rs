@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The whole-root session: one overlay over the decoy root, entered and left
-//! with `systemctl soft-reboot` through `/run/nextroot` (ADR 0008).
+//! with `systemctl soft-reboot` through `/run/nextroot`.
 //!
 //! - [`plan`]: the session plan on the decoy's `/run`, carried across every
 //!   soft-reboot;

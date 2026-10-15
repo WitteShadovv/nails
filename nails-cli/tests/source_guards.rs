@@ -3,7 +3,7 @@
 
 //! Guards that keep the machine-interface invariants from regressing.
 //!
-//! These scan the crate source so the contract T-028 establishes - one process
+//! These scan the crate source so the machine-interface contract - one process
 //! exit chokepoint, no `Debug`-formatted state/verification, and no hand-built
 //! JSON - stays enforced without a reviewer having to remember it.
 

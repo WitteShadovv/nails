@@ -5,8 +5,8 @@
 //!
 //! Everything below `/run/nextroot` is *extrinsic* to systemd: the orderly
 //! shutdown of a soft-reboot never unmounts it, and PID 1 switches root into
-//! it (ADR 0008, sections 1 and 2). These are the few mount operations the
-//! transitions need, in both directions:
+//! it. These are the few mount operations the transitions need, in both
+//! directions:
 //!
 //! - the root overlay: a non-recursive, read-only bind of the decoy root as the
 //!   lower, the upper and work directories on the hidden volume;

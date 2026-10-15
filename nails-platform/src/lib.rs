@@ -11,7 +11,7 @@
 //!
 //! It builds on `nails-base` only, so the session, the verification and the
 //! orchestration in `nails-core` all consult one platform seam. The
-//! dependency direction is recorded in ADR 0010.
+//! dependency direction is pinned by `nails-core/tests/crate_graph.rs`.
 
 // Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
 // may use it freely; production code opts in per site with a scoped allow.
