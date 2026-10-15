@@ -87,6 +87,11 @@
   # it, environment.etc stores the content under /etc/static and links /etc/nixos
   # entries to it, which a real install never does and which some tests (and the
   # forensic baseline) must not see: a stock /etc/nixos/*.nix is a plain file.
+  #
+  # configuration.nix keeps the comment nixos-generate-config writes above
+  # system.stateVersion. It holds the word "data", the mapping name of the
+  # hidden volume these tests open, and a stock decoy must still pass the
+  # check that refuses an /etc/nixos naming the hidden volume.
   environment.etc = {
     "nixos/configuration.nix" = {
       mode = "0644";
@@ -99,7 +104,25 @@
             device = "/dev/disk/by-label/nixos";
             fsType = "ext4";
           };
-          system.stateVersion = "25.11";
+
+          # This option defines the first version of NixOS you have installed on this particular machine,
+          # and is used to maintain compatibility with application data (e.g. databases) created on older NixOS versions.
+          #
+          # Most users should NEVER change this value after the initial install, for any reason,
+          # even if you've upgraded your system to a new NixOS release.
+          #
+          # This value does NOT affect the Nixpkgs version your packages and OS are pulled from,
+          # so changing it will NOT upgrade your system - see https://nixos.org/manual/nixos/stable/#sec-upgrading for how
+          # to actually do that.
+          #
+          # This value being lower than the current NixOS release does NOT mean your system is
+          # out of date, out of support, or vulnerable.
+          #
+          # Do NOT change this value unless you have manually inspected all the changes it would make to your configuration,
+          # and migrated your data accordingly.
+          #
+          # For more information, see `man configuration.nix` or https://nixos.org/manual/nixos/stable/options#opt-system.stateVersion .
+          system.stateVersion = "25.11"; # Did you read the comment?
         }
       '';
     };

@@ -1,11 +1,16 @@
 # Test 31: A base /etc/nixos that references the hidden module is refused
 #
-# The decoy's hardware-configuration.nix imports ./nails/configuration.nix, the
-# trace a leaked hidden configuration would leave on the decoy. `nails check`
-# reports the suspicious-nails-reference check as failing and names the file,
-# the line and the text, and `nails activate` refuses (exit 4) before preparing
-# anything: no next root at /run/nextroot, no soft-reboot, no runtime drop-in,
-# no hidden module in /etc/nixos, and the machine stays on the plain decoy root.
+# First the stock decoy passes: the hidden volume is the mapping `data` at
+# /mnt/data, and the decoy's configuration.nix keeps the comment
+# nixos-generate-config writes, which holds the word "data".
+#
+# Then the decoy's hardware-configuration.nix imports ./nails/configuration.nix,
+# the trace a leaked hidden configuration would leave on the decoy. `nails
+# check` reports the suspicious-nails-reference check as failing and names the
+# file, the line and the text, and `nails activate` refuses (exit 4) before
+# preparing anything: no next root at /run/nextroot, no soft-reboot, no runtime
+# drop-in, no hidden module in /etc/nixos, and the machine stays on the plain
+# decoy root.
 
 { self, ... }:
 let
@@ -56,8 +61,15 @@ in
         return rc, rows["suspicious-nails-reference"]
 
 
-    with subtest("prepare hidden volume and dirty decoy nixos tree"):
+    with subtest("the stock decoy passes with the hidden volume mapped as data"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        machine.succeed("test -b /dev/mapper/data && mountpoint -q /mnt/data")
+        machine.succeed("grep -qw data /etc/nixos/configuration.nix")
+        _, row = reference_row("check-stock")
+        assert row["status"] == "pass", f"the stock decoy must pass: {row}"
+        assert "name nothing of the hidden environment" in row["message"], row
+
+    with subtest("prepare a dirty decoy nixos tree"):
         machine.succeed("mkdir -p /run/dirty-etc-nixos")
         machine.succeed("cp -L /etc/nixos/configuration.nix /run/dirty-etc-nixos/configuration.nix")
         machine.succeed("""cat > /run/dirty-etc-nixos/hardware-configuration.nix <<'EOF'
