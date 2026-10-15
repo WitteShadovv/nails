@@ -23,8 +23,8 @@
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
 //!   decoy, make the disks the session set read-only writable again and remove
 //!   the rule and the drop-ins, scrub `/run` ([`crate::whole_root::run_scrub`]),
-//!   put the decoy's records back, restore the decoy's `utab` lines that still
-//!   name a mount of the decoy root, and write the kmsg cursor last.
+//!   put the decoy's records back, give the decoy's `utab` lines back to the
+//!   decoy mounts the way back restored, and write the kmsg cursor last.
 //!
 //! Before either it checks the next root's init the way PID 1 will; when the
 //! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
@@ -39,12 +39,12 @@
 //! It never writes to a disk and never logs: its output goes nowhere, and a
 //! name sent to `/dev/kmsg` would reach the decoy's ring buffer.
 
-use crate::mountinfo::{MountEntry, read_mountinfo};
+use crate::mountinfo::{MountEntry, parse_mountinfo, read_mountinfo};
 use crate::whole_root::disk_guard;
 use crate::whole_root::nextroot::{self, NEXTROOT};
 use crate::whole_root::plan::{
     self, BINARY_NAME, Direction, PLAN_NAME, Plan, RECORDS_NAME, RUNTIME_DIR, SNAPSHOT_NAME,
-    UTAB_NAME, unix_now,
+    UTAB_MOUNTS_NAME, UTAB_NAME, unix_now,
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
 use crate::whole_root::{kernel_helpers, run_records, runtime_units, utab};
@@ -415,6 +415,9 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     // Read everything the scrub needs before it removes the runtime directory.
     let snapshot = env.saved_snapshot();
     let saved_utab = std::fs::read(env.runtime_dir.join(UTAB_NAME)).ok();
+    let utab_mounts = std::fs::read_to_string(env.runtime_dir.join(UTAB_MOUNTS_NAME))
+        .ok()
+        .map(|text| parse_mountinfo(&text));
     let records = std::fs::read(env.runtime_dir.join(RECORDS_NAME)).ok();
     if let Err(why) = repoint_and_check(env, &plan.decoy) {
         if let Some(system) = &plan.hidden.system {
@@ -454,10 +457,10 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
     };
     run_records::restore(&env.run, records.as_deref());
     // The decoy's copy, taken at entry, names mounts by their IDs at that time;
-    // the decoy root comes back as new mounts, and the old IDs may name the
-    // session's mounts or none.
+    // the decoy root and its filesystems come back as new mounts, and the old
+    // IDs may name the session's mounts or none.
     if let Some(saved) = saved_utab {
-        let kept = utab::surviving_lines(&saved, &env.mounts, &env.nextroot);
+        let kept = utab::restored_lines(&saved, utab_mounts.as_deref(), &env.mounts, &env.nextroot);
         let _ = run_scrub::restore_utab(&env.run, &kept);
     }
     // A process exec'd from /run keeps running once it turns noexec again.

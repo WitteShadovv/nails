@@ -32,6 +32,7 @@ fn a_line_is_read_the_way_libmount_reads_it() {
     )
     .unwrap();
     assert_eq!(line.id, 85);
+    assert_eq!(line.id_at, 3..5);
     assert_eq!(line.source.as_deref(), Some(Path::new("/dev/my disk")));
     assert_eq!(line.target.as_deref(), Some(Path::new("/srv")));
     assert_eq!(line.root.as_deref(), Some(Path::new("/sub")));
@@ -121,4 +122,131 @@ fn a_line_that_is_not_utf8_is_copied_unchanged_or_dropped() {
     assert!(surviving_lines(other, &entry_table(), nextroot).is_empty());
     let pathless = b"SRC=/dev/disk\xff TARGET=/x OPTS=X-mine\n";
     assert!(surviving_lines(pathless, &entry_table(), nextroot).is_empty());
+}
+
+/// The decoy's mount table when the copy was taken, at the entry.
+const DECOY_AT_ENTRY: &str = "\
+62 1 253:0 / / rw - ext4 /dev/vda rw
+65 62 0:30 / /nix/.ro-store ro - 9p nix-store rw
+68 62 0:31 / /nix/.rw-store rw - tmpfs tmpfs rw
+85 62 0:32 / /nix/store ro - overlay overlay rw
+90 62 0:41 /sub /srv rw - ext4 /dev/my\\040disk rw
+";
+
+/// The decoy's copy: the initrd's lines (with the initrd's targets), a line
+/// of the decoy's own, and two without an ID.
+const SAVED: &str = "\
+ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount
+ID=65 SRC=nix-store TARGET=/sysroot/nix/.ro-store ROOT=/ OPTS=x-initrd.mount
+ID=68 SRC=tmpfs TARGET=/sysroot/nix/.rw-store ROOT=/ OPTS=x-initrd.mount
+ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount
+ID=90 SRC=/dev/my\\040disk TARGET=/srv ROOT=/sub OPTS=X-mine
+SRC=overlay TARGET=/nix/store ROOT=/ OPTS=x-initrd.mount
+SRC=/dev/vda TARGET=/ OPTS=x-initrd.mount
+";
+
+/// At the way back, in the hidden session: the hidden volume has the decoy
+/// root's old ID, and the decoy root and the filesystems the session carried
+/// are back below the next root with new IDs (not /nix/.rw-store, which the
+/// session did not carry).
+fn way_back_table() -> Vec<MountEntry> {
+    parse_mountinfo(
+        "140 1 0:50 / / rw - overlay overlay rw\n\
+         62 140 254:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         150 140 253:0 / /run/nextroot rw - ext4 /dev/vda rw\n\
+         151 150 0:30 / /run/nextroot/nix/.ro-store ro - 9p nix-store rw\n\
+         152 150 0:32 / /run/nextroot/nix/store ro - overlay overlay rw\n\
+         153 150 0:41 /sub /run/nextroot/srv rw - ext4 /dev/my\\040disk rw\n",
+    )
+}
+
+fn restored(saved: &str, named: Option<&str>) -> String {
+    let named = named.map(parse_mountinfo);
+    let lines = restored_lines(
+        saved.as_bytes(),
+        named.as_deref(),
+        &way_back_table(),
+        Path::new(NEXTROOT),
+    );
+    String::from_utf8(lines).unwrap()
+}
+
+#[test]
+fn the_mounts_utab_names_are_recorded_with_it() {
+    let mountinfo = format!("{DECOY_AT_ENTRY}99 62 0:60 / /tmp rw - tmpfs tmpfs rw\n");
+    let named = named_mounts(SAVED.as_bytes(), &mountinfo);
+    assert_eq!(named, DECOY_AT_ENTRY);
+    assert_eq!(
+        named_mounts(b"SRC=overlay TARGET=/ ROOT=/\n", &mountinfo),
+        ""
+    );
+}
+
+#[test]
+fn the_way_back_gives_the_decoys_lines_to_its_restored_mounts() {
+    assert_eq!(
+        restored(SAVED, Some(DECOY_AT_ENTRY)),
+        "ID=150 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
+         ID=151 SRC=nix-store TARGET=/sysroot/nix/.ro-store ROOT=/ OPTS=x-initrd.mount\n\
+         ID=152 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n\
+         ID=153 SRC=/dev/my\\040disk TARGET=/srv ROOT=/sub OPTS=X-mine\n\
+         SRC=overlay TARGET=/nix/store ROOT=/ OPTS=x-initrd.mount\n\
+         SRC=/dev/vda TARGET=/ OPTS=x-initrd.mount\n"
+    );
+}
+
+#[test]
+fn a_line_that_named_no_mount_or_another_one_at_the_entry_is_dropped() {
+    // ID 70 named nothing when the copy was taken; ID 65 named the store with
+    // another source; ID 85's place now has another filesystem.
+    let saved = "ID=70 SRC=/dev/vdb TARGET=/old ROOT=/ OPTS=x-initrd.mount\n\
+                 ID=65 SRC=other TARGET=/sysroot/nix/.ro-store ROOT=/ OPTS=x-initrd.mount\n";
+    assert_eq!(restored(saved, Some(DECOY_AT_ENTRY)), "");
+    let moved = DECOY_AT_ENTRY.replace(
+        "0:32 / /nix/store ro - overlay overlay",
+        "0:32 / /nix/store ro - ext4 /dev/vdc",
+    );
+    assert_eq!(
+        restored(
+            "ID=85 SRC=/dev/vdc TARGET=/nix/store ROOT=/ OPTS=X\n",
+            Some(&moved)
+        ),
+        ""
+    );
+}
+
+#[test]
+fn without_the_record_only_lines_that_still_fit_come_back() {
+    // ID 62 is the hidden volume's now: the decoy root's line must not join it.
+    assert_eq!(
+        restored(SAVED, None),
+        "SRC=overlay TARGET=/nix/store ROOT=/ OPTS=x-initrd.mount\n\
+         SRC=/dev/vda TARGET=/ OPTS=x-initrd.mount\n"
+    );
+    assert_eq!(
+        restored(
+            "ID=151 SRC=nix-store TARGET=/nix/.ro-store ROOT=/ OPTS=x-initrd.mount\n",
+            None
+        ),
+        "ID=151 SRC=nix-store TARGET=/nix/.ro-store ROOT=/ OPTS=x-initrd.mount\n"
+    );
+}
+
+#[test]
+fn a_restored_line_takes_the_newest_mount_at_its_place() {
+    let mut table = way_back_table();
+    table.extend(parse_mountinfo(
+        "160 152 0:32 / /run/nextroot/nix/store ro - overlay overlay rw\n",
+    ));
+    let named = parse_mountinfo(DECOY_AT_ENTRY);
+    let lines = restored_lines(
+        b"ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n",
+        Some(&named),
+        &table,
+        Path::new(NEXTROOT),
+    );
+    assert_eq!(
+        lines,
+        b"ID=160 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n"
+    );
 }

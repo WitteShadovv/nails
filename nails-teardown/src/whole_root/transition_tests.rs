@@ -336,6 +336,51 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
 }
 
 #[test]
+fn leaving_gives_the_decoys_utab_lines_back_to_its_restored_mounts() {
+    // The decoy's initrd lines name its root and store by the IDs they had at
+    // entry. The way back mounts the decoy root and binds the store it carried
+    // again, under new IDs (the hidden volume has the root's old one now): the
+    // lines follow their mounts there, so the decoy keeps them as initrd
+    // mounts. The tmpfs the session did not carry gets no line.
+    let world = World::new();
+    fs::write(
+        world.runtime().join(UTAB_NAME),
+        "ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
+         ID=68 SRC=tmpfs TARGET=/sysroot/nix/.rw-store ROOT=/ OPTS=x-initrd.mount\n\
+         ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n",
+    )
+    .unwrap();
+    fs::write(
+        world.runtime().join(UTAB_MOUNTS_NAME),
+        "62 1 253:0 / / rw - ext4 /dev/vda rw\n\
+         68 62 0:31 / /nix/.rw-store rw - tmpfs tmpfs rw\n\
+         85 62 0:32 / /nix/store ro - overlay overlay rw\n",
+    )
+    .unwrap();
+    fs::write(world.run().join("mount/utab"), "ID=112 hidden\n").unwrap();
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let mut env = world.env(true, 1_000);
+    let next = world.nextroot();
+    env.mounts = parse_mountinfo(&format!(
+        "140 1 0:50 / / rw - overlay overlay rw\n\
+         62 140 254:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         150 140 253:0 / {next} rw - ext4 /dev/vda rw\n\
+         152 150 0:32 / {next}/nix/store ro - overlay overlay rw\n",
+        next = next.display()
+    ));
+
+    assert!(matches!(run(&env), Outcome::Returned { .. }));
+    assert_eq!(
+        fs::read_to_string(world.run().join("mount/utab")).unwrap(),
+        "ID=150 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
+         ID=152 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n"
+    );
+}
+
+#[test]
 fn the_dropin_runs_the_ram_copy_with_its_output_discarded() {
     let text = dropin_text(Path::new("/run/overlay-runtime/control"));
     assert!(text.contains("ExecStart=-/run/overlay-runtime/control transition\n"));

@@ -15,11 +15,11 @@
 mod kernel_tests {
     use nails_core::test_path;
     use nails_core::test_support::{Rerun, ScratchTmpfs};
-    use nails_teardown::mountinfo::{parse_overlay_opts, read_mountinfo, top_mount_at};
+    use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts, read_mountinfo, top_mount_at};
     use nails_teardown::whole_root::nextroot;
     use nails_teardown::whole_root::plan::{
         Arm, DecoyRoot, Direction, PLAN_NAME, PLAN_VERSION, Plan, RootSide, SNAPSHOT_NAME, Tools,
-        UTAB_NAME,
+        UTAB_MOUNTS_NAME, UTAB_NAME,
     };
     use nails_teardown::whole_root::run_scrub::Snapshot;
     use nails_teardown::whole_root::transition::{self, Env, Outcome};
@@ -386,6 +386,80 @@ mod kernel_tests {
                 std::fs::read_to_string(run.join("mount/utab")).unwrap(),
                 kept,
                 "only the decoy's line for a mount of the next root is back"
+            );
+            nextroot::detach_tree(&world.nextroot());
+        });
+    }
+
+    #[test]
+    fn the_way_back_gives_the_decoys_utab_lines_to_its_restored_mounts() {
+        // The decoy's copy of utab names its root and its ESP by the IDs they
+        // had at entry. The way back binds both below the next root again,
+        // where the kernel gives them IDs of their own; the mount table lines
+        // the entry kept beside the copy (as the decoy saw them) lead each
+        // line to its mount.
+        let _ = Rerun::new(test_path!(
+            the_way_back_gives_the_decoys_utab_lines_to_its_restored_mounts
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            let run = world.run.path();
+            let runtime = run.join("overlay-runtime");
+            let table = read_mountinfo().unwrap();
+            let root_then = top_mount_at(&table, world.decoy.path()).unwrap().clone();
+            let esp_then = top_mount_at(&table, world.esp.path()).unwrap().clone();
+            let seen_at = |m: &MountEntry, at: &str| {
+                format!(
+                    "{} 1 {} {} {at} rw - {} {} rw\n",
+                    m.mount_id,
+                    m.dev,
+                    m.root.display(),
+                    m.fstype,
+                    m.source.display()
+                )
+            };
+            std::fs::write(
+                runtime.join(UTAB_MOUNTS_NAME),
+                seen_at(&root_then, "/") + &seen_at(&esp_then, "/boot"),
+            )
+            .unwrap();
+            let line = |id: i32, m: &MountEntry, target: &str| {
+                format!(
+                    "ID={id} SRC={} TARGET={target} ROOT={} OPTS=x-initrd.mount\n",
+                    m.source.display(),
+                    m.root.display()
+                )
+            };
+            std::fs::write(
+                runtime.join(UTAB_NAME),
+                line(root_then.mount_id, &root_then, "/sysroot")
+                    + &line(esp_then.mount_id, &esp_then, "/sysroot/boot"),
+            )
+            .unwrap();
+            std::fs::create_dir_all(run.join("mount")).unwrap();
+            std::fs::write(run.join("mount/utab"), "ID=1 hidden\n").unwrap();
+
+            // The way back: the decoy root and its ESP below the next root.
+            nextroot::bind(world.decoy.path(), &world.nextroot(), false).unwrap();
+            nextroot::bind(world.esp.path(), &world.nextroot().join("boot"), false).unwrap();
+            nextroot::bind(run, &world.nextroot().join("run"), false).unwrap();
+            let table = read_mountinfo().unwrap();
+            let root_now = top_mount_at(&table, &world.nextroot()).unwrap().mount_id;
+            let esp_now = top_mount_at(&table, &world.nextroot().join("boot"))
+                .unwrap()
+                .mount_id;
+            assert_ne!(root_now, root_then.mount_id);
+            assert_ne!(esp_now, esp_then.mount_id);
+            let mut plan = world.plan(Direction::Leave);
+            plan.entered_at = Some(1);
+            plan.write_atomic(&runtime.join(PLAN_NAME)).unwrap();
+
+            let outcome = transition::run(&world.env());
+            assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+            assert_eq!(
+                std::fs::read_to_string(run.join("mount/utab")).unwrap(),
+                line(root_now, &root_then, "/sysroot") + &line(esp_now, &esp_then, "/sysroot/boot")
             );
             nextroot::detach_tree(&world.nextroot());
         });

@@ -30,11 +30,18 @@
 //! [`surviving_lines`] keeps a line only while it names a mount the switch
 //! carries: by its ID, a mount at or below the next root with the line's source
 //! and root; without an ID, the mount at the line's target in the next root,
-//! with its source and root. The transition applies it on entry to the carried
-//! `utab`, and on the way back to the decoy's copy.
+//! with its source and root. The way back ([`restored_lines`]) gives the
+//! decoy's own lines back to the decoy: its root and the filesystems the
+//! session carried come back as new mounts with new IDs, so a line takes the ID
+//! of the mount now where its mount was when the copy was taken
+//! ([`named_mounts`]), with the same source and root. Without that, the decoy's
+//! initrd mounts would lose `x-initrd.mount` after a session, and its next
+//! shutdown would unmount them as units, which neither a fresh boot nor a plain
+//! soft-reboot does.
 
 use crate::mountinfo::{MountEntry, unescape_octal};
 use std::borrow::Cow;
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 /// The lines of `utab` that still name the same mount once PID 1 has switched
@@ -44,6 +51,65 @@ pub fn surviving_lines(utab: &[u8], mounts: &[MountEntry], nextroot: &Path) -> V
     rewrite(utab, |bytes| {
         Line::parse(bytes)?.carried(mounts, nextroot)?;
         Some(Cow::Borrowed(bytes))
+    })
+}
+
+/// The lines of `mountinfo` (`/proc/self/mountinfo` read just after `utab`)
+/// for the mounts `utab` names by ID: what the way back needs to find each
+/// of them again ([`restored_lines`]).
+pub fn named_mounts(utab: &[u8], mountinfo: &str) -> String {
+    let ids: Vec<i32> = utab
+        .split(|&b| b == b'\n')
+        .filter_map(Line::parse)
+        .map(|line| line.id)
+        .filter(|&id| id > 0)
+        .collect();
+    let mut named = String::new();
+    for line in mountinfo.lines() {
+        let id = line
+            .split_whitespace()
+            .next()
+            .and_then(|id| id.parse().ok());
+        if id.is_some_and(|id| ids.contains(&id)) {
+            named.push_str(line);
+            named.push('\n');
+        }
+    }
+    named
+}
+
+/// The lines of the decoy's `utab` copy to put back on the way back, once PID
+/// 1 switches to the decoy root at `nextroot`. `named` holds the mount table
+/// lines [`named_mounts`] recorded with the copy. A line that names an ID takes
+/// the ID of the mount now at its mount's place below `nextroot`, with that
+/// mount's source and root; it is dropped when there is no such mount, or when
+/// it did not fit the mount its ID named when the copy was taken. Without
+/// `named`, and for a line without an ID, the rule of [`surviving_lines`]
+/// decides. Everything but the ID is copied byte for byte.
+pub fn restored_lines(
+    saved: &[u8],
+    named: Option<&[MountEntry]>,
+    mounts: &[MountEntry],
+    nextroot: &Path,
+) -> Vec<u8> {
+    rewrite(saved, |bytes| {
+        let line = Line::parse(bytes)?;
+        let Some(named) = named.filter(|_| line.id > 0) else {
+            line.carried(mounts, nextroot)?;
+            return Some(Cow::Borrowed(bytes));
+        };
+        let then = named
+            .iter()
+            .find(|m| m.mount_id == line.id && line.fits(m))?;
+        let at = below(nextroot, &then.mount_point);
+        let now = mounts
+            .iter()
+            .rev()
+            .find(|m| m.mount_point == at && m.source == then.source && m.root == then.root)?;
+        let mut rekeyed = bytes[..line.id_at.start].to_vec();
+        rekeyed.extend_from_slice(now.mount_id.to_string().as_bytes());
+        rekeyed.extend_from_slice(&bytes[line.id_at.end..]);
+        Some(Cow::Owned(rekeyed))
     })
 }
 
@@ -85,6 +151,8 @@ const STRING_KEYS: [&[u8]; 6] = [
 struct Line {
     /// The mount ID, 0 for none (a negative one is matched by path too).
     id: i32,
+    /// Where the ID's value is in the line.
+    id_at: Range<usize>,
     source: Option<PathBuf>,
     target: Option<PathBuf>,
     root: Option<PathBuf>,
@@ -110,6 +178,7 @@ impl Line {
             } else if line.id == 0 && rest.starts_with(b"ID=") {
                 let (id, end) = number(bytes, at + 3)?;
                 line.id = i32::try_from(id).ok()?;
+                line.id_at = at + 3..end;
                 at = end;
             } else if let Some(key) =
                 (0..STRING_KEYS.len()).find(|&k| !set[k] && rest.starts_with(STRING_KEYS[k]))

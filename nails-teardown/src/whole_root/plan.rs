@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 pub const PLAN_VERSION: u32 = 2;
 
 /// The neutral runtime directory on the decoy's `/run` tmpfs. It holds the plan,
-/// the `/run` snapshot, the saved `utab` and the RAM copy of the binary. The
-/// return scrub removes it as a whole.
+/// the `/run` snapshot, the saved `utab` with the mounts it names and the RAM
+/// copy of the binary. The return scrub removes it as a whole.
 pub const RUNTIME_DIR: &str = "/run/overlay-runtime";
 
 /// The plan's file name inside [`RUNTIME_DIR`].
@@ -38,6 +38,11 @@ pub const SNAPSHOT_NAME: &str = "run-entries";
 
 /// The saved `/run/mount/utab` inside [`RUNTIME_DIR`].
 pub const UTAB_NAME: &str = "mount-table";
+
+/// The decoy's mount table lines for the mounts the saved `utab` names by ID,
+/// read with it, inside [`RUNTIME_DIR`]
+/// ([`crate::whole_root::utab::named_mounts`]).
+pub const UTAB_MOUNTS_NAME: &str = "mount-ids";
 
 /// The copy of the decoy's records ([`crate::whole_root::run_records`])
 /// inside [`RUNTIME_DIR`].
@@ -533,6 +538,7 @@ mod tests {
             PLAN_NAME,
             SNAPSHOT_NAME,
             UTAB_NAME,
+            UTAB_MOUNTS_NAME,
             RECORDS_NAME,
             BINARY_NAME,
         ] {

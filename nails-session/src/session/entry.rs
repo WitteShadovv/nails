@@ -44,15 +44,15 @@ use super::policy::{self, Decision};
 use super::store;
 use crate::error::{NailsError, Result};
 use crate::nixos::NixOSBuilder;
-use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
+use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{
     Arm, CarriedMount, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount,
-    PolicyMountKind, RootSide, SNAPSHOT_NAME, Tools, UTAB_NAME,
+    PolicyMountKind, RootSide, SNAPSHOT_NAME, Tools, UTAB_MOUNTS_NAME, UTAB_NAME,
 };
 use nails_teardown::whole_root::run_scrub::{Snapshot, UTAB};
 use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
-use nails_teardown::whole_root::{carry, kernel_helpers, ret, transition};
+use nails_teardown::whole_root::{carry, kernel_helpers, ret, transition, utab};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -325,8 +325,16 @@ fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -
     std::fs::create_dir_all(&runtime).map_err(|e| io(&runtime, e))?;
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| io(&runtime, e))?;
-    let utab = std::fs::read(paths.run.join(UTAB)).unwrap_or_default();
-    for (name, bytes) in [(SNAPSHOT_NAME, snapshot.to_text()), (UTAB_NAME, utab)] {
+    let saved_utab = std::fs::read(paths.run.join(UTAB)).unwrap_or_default();
+    // Read after the copy, so every mount it names by ID is in it: the way
+    // back finds each one again where it was (`utab::restored_lines`).
+    let mountinfo = std::fs::read_to_string(SELF_MOUNTINFO).unwrap_or_default();
+    let named = utab::named_mounts(&saved_utab, &mountinfo).into_bytes();
+    for (name, bytes) in [
+        (SNAPSHOT_NAME, snapshot.to_text()),
+        (UTAB_NAME, saved_utab),
+        (UTAB_MOUNTS_NAME, named),
+    ] {
         nails_teardown::whole_root::plan::write_private_atomic(&runtime.join(name), &bytes)
             .map_err(|e| io(&runtime.join(name), e))?;
     }
