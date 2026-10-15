@@ -552,7 +552,10 @@ fn build(
 
 /// Carry every decoy filesystem the fstab policy placed into the hidden
 /// session, so the way back can put it in place again (see
-/// [`nails_teardown::whole_root::carry`]).
+/// [`nails_teardown::whole_root::carry`]). Each one goes to its directory on
+/// the hidden volume as the hidden root resolves it, like the policy's own
+/// mount points: through a link on the volume's path the bind would land on
+/// the decoy's own mount of the volume.
 fn carry_decoy_mounts(
     paths: &Paths,
     layout: &Layout,
@@ -565,7 +568,7 @@ fn carry_decoy_mounts(
             continue;
         }
         let at = layout.carried(&mount.target);
-        let in_nextroot = paths.in_nextroot(&at);
+        let in_nextroot = target_in_nextroot(paths, &at)?;
         carry::carry(&paths.decoy(&mount.target), &at, &in_nextroot)
             .map_err(|e| io(&in_nextroot, e))?;
         carried.push(CarriedMount {

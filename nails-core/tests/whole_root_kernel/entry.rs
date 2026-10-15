@@ -8,7 +8,7 @@
 use nails_core::session::entry::{self, EntryHost, EntryInputs};
 use nails_core::session::layout::Paths;
 use nails_core::test_path;
-use nails_core::test_support::{Rerun, ScratchTmpfs};
+use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host};
 use nails_core::{NailsError, nixos::NixOSBuilder};
 use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::kernel_helpers::{self, KernelSetting};
@@ -781,6 +781,73 @@ fn a_rollback_gives_the_decoy_back_its_kernel_paths_and_unit_masks() {
                 assert!(std::fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
             }
         }
+    });
+}
+
+/// Every path below `dir` with its kind: what a test compares to see that a
+/// tree did not change.
+fn listing(dir: &Path) -> Vec<(PathBuf, &'static str)> {
+    let mut out = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        for entry in std::fs::read_dir(&current).unwrap().flatten() {
+            let path = entry.path();
+            let kind = entry.file_type().unwrap();
+            if kind.is_dir() {
+                pending.push(path.clone());
+            }
+            let what = if kind.is_symlink() {
+                "link"
+            } else if kind.is_dir() {
+                "dir"
+            } else {
+                "file"
+            };
+            out.push((path.strip_prefix(dir).unwrap().to_path_buf(), what));
+        }
+    }
+    out.sort();
+    out
+}
+
+#[test]
+fn a_mount_point_behind_an_absolute_link_is_made_inside_the_next_root() {
+    // The first directory on the hidden volume's path is an absolute link in
+    // the decoy. The bind must land where the hidden root resolves the path,
+    // inside the next root; through the link on the running system it would
+    // create directories and mount outside the next root.
+    let _ = Rerun::new(test_path!(
+        a_mount_point_behind_an_absolute_link_is_made_inside_the_next_root
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let hidden = world.hidden.path().to_path_buf();
+        let mut parts = hidden.components().skip(1);
+        let first = parts.next().unwrap().as_os_str().to_owned();
+        let rest: PathBuf = parts.collect();
+        let link = world.decoy.path().join(&first);
+        if link.exists() {
+            skip_host("the scratch directory's first component is a directory of the test decoy");
+        }
+        world.decoy.mkdir("linked");
+        std::os::unix::fs::symlink("/linked", &link).unwrap();
+        let before = listing(world.decoy.path());
+        let paths = world.paths();
+
+        entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+
+        let inside = paths.nextroot().join("linked").join(&rest);
+        assert!(
+            read_mountinfo()
+                .unwrap()
+                .iter()
+                .any(|e| e.mount_point == inside),
+            "the hidden volume is not bound at {}",
+            inside.display()
+        );
+        assert_eq!(listing(world.decoy.path()), before, "the decoy changed");
+        entry::rollback(&paths);
     });
 }
 
