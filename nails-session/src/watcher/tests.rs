@@ -381,17 +381,25 @@ fn run_loop_stops_after_an_automatic_emergency() {
         enabled: true,
     };
     let mut probes = vec![false, false].into_iter();
-    let mut alerts = 0;
+    let (alert, alerts) = std::sync::mpsc::channel();
+    let alert = std::sync::Mutex::new(alert);
     let mut emergencies = 0;
     let mut ticks = 0;
     run_loop(
         &config,
         || probes.next().unwrap_or(false),
-        || alerts += 1,
+        move || {
+            let _ = alert.lock().map(|alert| alert.send(()));
+        },
         || emergencies += 1,
         || ticks += 1,
     );
-    assert_eq!(alerts, 1, "first failure alerts");
+    // The alert went out on a thread of its own.
+    assert!(
+        alerts.recv_timeout(Duration::from_secs(10)).is_ok(),
+        "first failure alerts"
+    );
+    assert!(alerts.try_recv().is_err(), "once");
     assert_eq!(emergencies, 1, "persistent failure tears down once");
     assert_eq!(ticks, 2, "every round ticks first");
 }
@@ -425,4 +433,34 @@ fn only_read_write_disk_mounts_outside_the_session_alert_once() {
     // Unmounted and mounted again under the same id: reported again.
     assert!(watch.observe(&table(""), &block_sources).is_empty());
     assert_eq!(watch.observe(&table(usb), &block_sources).len(), 1);
+}
+
+/// A notification daemon that never answers holds up neither the probes nor
+/// the automatic emergency: the alert waits on its own thread.
+#[test]
+fn an_alert_that_never_returns_delays_no_emergency() {
+    let config = BackendWatchConfig {
+        auto_emergency: true,
+        poll_interval_secs: 0,
+        debounce_secs: 0,
+        ..BackendWatchConfig::default()
+    };
+    let (fired, emergency) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        run_loop(
+            &config,
+            || false,
+            || loop {
+                std::thread::park();
+            },
+            move || {
+                let _ = fired.send(());
+            },
+            || {},
+        );
+    });
+    assert!(
+        emergency.recv_timeout(Duration::from_secs(10)).is_ok(),
+        "the emergency waited for the alert"
+    );
 }

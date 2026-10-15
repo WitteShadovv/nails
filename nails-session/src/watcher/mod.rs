@@ -267,27 +267,45 @@ impl MountWatch {
     }
 }
 
+/// Run `send` on a thread of its own and return at once.
+///
+/// An alert waits for the notification daemon's reply, and a daemon on a
+/// failing volume may never answer. Sent from the loop, it would hold off the
+/// next probe, the debounce, the automatic emergency and every later alert;
+/// sent from here, it holds up nothing but its own thread.
+pub fn in_background(send: impl FnOnce() + Send + 'static) {
+    if let Err(e) = std::thread::Builder::new()
+        .name("alert".to_string())
+        .spawn(send)
+    {
+        tracing::warn!(error = %e, "Could not start the thread for an alert");
+    }
+}
+
 /// Run the watch loop around a real sleep until an automatic emergency fires.
 ///
 /// The probe, alert and emergency effects are injected so the loop itself stays
 /// free of the host: the CLI's hidden `watch` subcommand supplies a real
 /// backend probe, a desktop notification, and an in-process emergency teardown.
-/// `tick` runs at the start of every round, before the sleep (the mount watch
-/// and the read-only sweep). The loop returns once an automatic emergency has
-/// run; with alert-only configuration it runs until the process is stopped
+/// The alert is sent [in the background](in_background), so a notification
+/// daemon that never answers delays no probe and no emergency. `tick` runs at
+/// the start of every round, before the sleep (the mount watch and the
+/// read-only sweep). The loop returns once an automatic emergency has run;
+/// with alert-only configuration it runs until the process is stopped
 /// (deactivation and emergency stop the transient unit).
 pub fn run_loop<P, A, E, T>(
     config: &BackendWatchConfig,
     mut probe: P,
-    mut alert: A,
+    alert: A,
     mut emergency: E,
     mut tick: T,
 ) where
     P: FnMut() -> bool,
-    A: FnMut(),
+    A: Fn() + Send + Sync + 'static,
     E: FnMut(),
     T: FnMut(),
 {
+    let alert = std::sync::Arc::new(alert);
     let mut watch = BackendWatch::new(config);
     loop {
         tick();
@@ -295,7 +313,10 @@ pub fn run_loop<P, A, E, T>(
         let healthy = probe();
         match watch.observe(healthy, Instant::now()) {
             WatchAction::Nothing => {}
-            WatchAction::Alert => alert(),
+            WatchAction::Alert => {
+                let alert = std::sync::Arc::clone(&alert);
+                in_background(move || alert());
+            }
             WatchAction::Emergency => {
                 emergency();
                 return;

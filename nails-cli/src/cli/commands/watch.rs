@@ -89,13 +89,14 @@ pub fn execute(
     let mut cover_watch = watcher::CoverWatch::new(&hidden_root, manifest.hidden_dev.as_deref());
     let is_block = |mount: &MountEntry| disk_guard::mount_device(mount).is_some();
 
+    let alert_env = env.clone();
     watcher::run_loop(
         &watch_config,
         // A probe of a covered hidden root writes nothing and is no failure of
         // the backend: it neither alerts as one nor leads to an emergency.
         || !watch_config.enabled || !watcher::probe_backend(&filesystem, &manifest).is_failure(),
-        || {
-            if let Err(e) = send_immediate(&backend_alert(), env) {
+        move || {
+            if let Err(e) = send_immediate(&backend_alert(), &alert_env) {
                 tracing::warn!(error = %e, "Could not deliver the backend-failure alert");
             }
         },
@@ -126,9 +127,7 @@ pub fn execute(
                     mount_point = %cover.mount_point.display(),
                     "A disk is mounted over the folder in use"
                 );
-                if let Err(e) = send_immediate(&cover_alert(&cover), env) {
-                    tracing::warn!(error = %e, "Could not deliver the cover alert");
-                }
+                send_in_background(cover_alert(&cover), env, "cover");
             }
             if mounts_config.alert {
                 // A cover on a parent of the root lies outside it; its own
@@ -143,15 +142,24 @@ pub fn execute(
                         mount_point = %mount.mount_point.display(),
                         "A disk is mounted read-write"
                     );
-                    if let Err(e) = send_immediate(&mount_alert(&mount), env) {
-                        tracing::warn!(error = %e, "Could not deliver the disk-mount alert");
-                    }
+                    send_in_background(mount_alert(&mount), env, "disk-mount");
                 }
             }
         },
     );
 
     ExitStatus::Ok
+}
+
+/// Send `alert` from a thread of its own ([`watcher::in_background`]), so the
+/// watch loop never waits for the notification daemon.
+fn send_in_background(alert: Notification, env: &nails_core::RuntimeEnv, what: &'static str) {
+    let env = env.clone();
+    watcher::in_background(move || {
+        if let Err(e) = send_immediate(&alert, &env) {
+            tracing::warn!(error = %e, "Could not deliver the {what} alert");
+        }
+    });
 }
 
 /// The neutral desktop alert raised when a disk is mounted read-write during
