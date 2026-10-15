@@ -93,12 +93,19 @@ in
                 "contract-verify-active",
                 f"nails --config {shlex.quote(headless_config)} verify --deep --json",
             )
-            # The live hidden root (an overlay whose upper is on the hidden
-            # volume) is a finding: warning => 10, critical => 11.
-            assert verified["rc"] in (10, 11), verified
+            # Inside the hidden session the session's own runtime files, its
+            # hidden volume and its active state are expected: verify says so
+            # in one note and reports none of them. Nothing on this setup is
+            # critical; a warning (10) can still come from the decoy itself.
+            assert verified["rc"] in (0, 10), verified
             assert_json_schema_valid(verify_schema, verified["stdout_path"], "active verify JSON")
             verify_payload = json.loads(verified["stdout"])["data"]
-            assert verify_payload["findings"], verify_payload
+            findings = verify_payload["findings"]
+            assert any(
+                f["category"] == "session" and f["severity"] == "info" for f in findings
+            ), verify_payload
+            critical = [f for f in findings if f["severity"] == "critical"]
+            assert not critical, verify_payload
 
         with subtest("active status renders ASCII-only without escapes"):
             piped_status = run_command_capture(

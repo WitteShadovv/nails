@@ -6,8 +6,9 @@
 #   1. `nails init` and `nails check` on the decoy;
 #   2. `nails activate`: a soft-reboot into the root overlay. In the hidden
 #      root `/` is the overlay with its upper on the hidden volume, a write
-#      lands in the upper and never on the decoy filesystem, and status reports
-#      the session;
+#      lands in the upper and never on the decoy filesystem, status reports
+#      the session, and `verify --deep` finds nothing critical in the session
+#      `nails init` seeded;
 #   3. `nails deactivate`: a soft-reboot back to the plain decoy. Nothing of the
 #      hidden /run survives, the hidden volume's mapping closed itself, the
 #      decoy never saw the hidden file;
@@ -95,6 +96,37 @@ in
         assert status["posture"] == "active", status
         count = machine.succeed("systemctl show -p SoftRebootsCount --value").strip()
         assert count == "1", f"SoftRebootsCount={count}"
+
+    with subtest("verify --deep in the session reports nothing critical"):
+        # The quick start's check before the way back, through sudo as an
+        # operator runs it. `nails init` staged the link to the hidden module
+        # in the upper, so the live root shows it at /etc/nixos/nails: it is
+        # the session's own, a note like the session's runtime files, its
+        # state and sudo's records in the session's journal (in RAM here).
+        machine.succeed(f"test -L {UPPER}/etc/nixos/nails/configuration.nix")
+        rc, out = machine.execute(
+            f"sudo nails --config {CONFIG} verify --deep --json 2>/run/verify-session.stderr"
+        )
+        machine.log(out)
+        assert rc in (0, 10), f"in-session verify exited {rc}: {out}"
+        findings = json.loads(out)["data"]["findings"]
+        critical = [f for f in findings if f["severity"] == "critical"]
+        assert not critical, f"in-session verify reported critical findings: {critical}"
+        staged = [
+            f["severity"]
+            for f in findings
+            if f["message"] == "Artifact file found: /etc/nixos/nails/configuration.nix"
+        ]
+        assert staged == ["info"], f"the staged link must be one note: {findings}"
+        for own in (
+            "/run/overlay-runtime",
+            "records an active session",
+            "Hidden volume path is accessible",
+            "State file exists",
+        ):
+            assert not any(own in f["message"] for f in findings), f"{own}: {findings}"
+        journal = [f for f in findings if f["category"] == "journal"]
+        assert all(f["severity"] == "info" for f in journal), journal
 
     canary = "hidden-" + secrets.token_hex(8)
     with subtest("a hidden write lands in the upper, never on the decoy"):
