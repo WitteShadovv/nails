@@ -24,8 +24,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use super::inventory::{InheritedSource, file_name_of, list_dir};
-use crate::Filesystem;
+use super::inventory::{InheritedSource, PersonaSource, file_name_of, list_dir};
 
 /// The live system link that marks a NixOS host.
 const NIXOS_CURRENT_SYSTEM: &str = "/run/current-system";
@@ -53,15 +52,12 @@ impl AutostartDir {
 }
 
 /// The autostart directories for `user` in `home`, most important first.
-fn search_path<F: Filesystem>(fs: &F, home: &Path, user: &str) -> Vec<AutostartDir> {
+fn search_path<F: PersonaSource>(fs: &F, home: &Path, user: &str) -> Vec<AutostartDir> {
     let mut dirs = vec![
         AutostartDir::home(home, ".config/autostart"),
         AutostartDir::system("/etc/xdg/autostart"),
     ];
-    if fs
-        .path_exists(Path::new(NIXOS_CURRENT_SYSTEM))
-        .unwrap_or(false)
-    {
+    if fs.exists(Path::new(NIXOS_CURRENT_SYSTEM)) {
         dirs.push(AutostartDir::home(home, ".nix-profile/etc/xdg/autostart"));
         dirs.push(AutostartDir::home(
             home,
@@ -88,7 +84,7 @@ fn search_path<F: Filesystem>(fs: &F, home: &Path, user: &str) -> Vec<AutostartD
 /// In fresh-home mode the directories in the home are skipped: the hidden home
 /// does not carry them, so neither their entries nor their `Hidden=true`
 /// overrides apply. NAILS' own legacy notification entry is never listed.
-pub(super) fn collect<F: Filesystem>(
+pub(super) fn collect<F: PersonaSource>(
     fs: &F,
     home: &Path,
     user: &str,
@@ -117,7 +113,7 @@ pub(super) fn collect<F: Filesystem>(
             {
                 continue;
             }
-            let hidden = desktop_entry_hidden(&fs.read_file_content(&path).unwrap_or_default());
+            let hidden = desktop_entry_hidden(&fs.text(&path).unwrap_or_default());
             winners.insert(stem.to_string(), (!hidden).then_some(source));
         }
     }
@@ -141,6 +137,7 @@ fn desktop_entry_hidden(content: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Filesystem;
     use crate::filesystem::MockFilesystem;
 
     const HOME: &str = "/home/alice";

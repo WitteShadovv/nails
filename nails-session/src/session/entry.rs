@@ -501,8 +501,7 @@ fn build(
         .filter(|unit| !plan.masks.contains(unit))
         .collect();
     if let Some(operator) = &inputs.operator {
-        let home = paths.in_nextroot(operator.passwd_home());
-        super::persona::write_masks(&home, &inputs.persona, operator);
+        super::persona::write_masks(&nextroot, &inputs.persona, operator);
     }
 
     plan.carried = carry_decoy_mounts(paths, &layout, &plan.policy_mounts, &decoy_mounts)?;
@@ -681,6 +680,31 @@ fn decide_fstab(fstab: &[u8], mounts: &[MountEntry], hidden_root: &Path) -> Resu
     Ok(decisions)
 }
 
+/// The mount point `target` (absolute, as the hidden root sees it) inside the
+/// next root, created where missing: resolved as the hidden root will resolve
+/// it, so an absolute symlink on the way (a decoy whose `/mnt` links
+/// elsewhere) stays inside the next root, and returned as a path without
+/// symlinks for the mount calls. A plain path would follow such a link on the
+/// running system and mount, or create a directory, on the decoy.
+fn target_in_nextroot(paths: &Paths, target: &Path) -> Result<PathBuf> {
+    let nextroot = paths.nextroot();
+    let shown = paths.in_nextroot(target);
+    let real = nextroot::create_dir_all_in_root(&nextroot, target, &mut |_, _| Ok(()))
+        .and_then(|fd| nextroot::real_path(&fd))
+        .map_err(|e| io(&shown, e))?;
+    let root = nextroot::open_dir_in_root(&nextroot, Path::new("/"))
+        .and_then(|fd| nextroot::real_path(&fd))
+        .map_err(|e| io(&nextroot, e))?;
+    if !real.starts_with(&root) {
+        return Err(NailsError::InvalidState(format!(
+            "{} resolves to {}, outside the next root",
+            shown.display(),
+            real.display()
+        )));
+    }
+    Ok(real)
+}
+
 /// Put the mounts `decisions` call for in place inside the next root, parents
 /// first, skipping the targets in `done`. The hidden volume is bound unless it
 /// is in `done` already.
@@ -719,8 +743,7 @@ fn apply_mounts(
         } else {
             paths.decoy(&mount.target)
         };
-        let target = paths.in_nextroot(&mount.target);
-        std::fs::create_dir_all(&target).map_err(|e| io(&target, e))?;
+        let target = target_in_nextroot(paths, &mount.target)?;
         let done = match mount.kind {
             PolicyMountKind::ReadOnlyBind => nextroot::bind_read_only(&source, &target),
             PolicyMountKind::HiddenVolume => nextroot::bind(&source, &target, false),

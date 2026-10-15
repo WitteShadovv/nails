@@ -12,7 +12,8 @@
 //! entries and user units carry over in every persona mode.
 //!
 //! This module is a platform-neutral, read-only inventory of that inherited
-//! state. It is a pure function of a [`Filesystem`], so the same collector backs
+//! state. It is a pure function of what it reads (a [`PersonaSource`]: any
+//! [`Filesystem`], or the next root at entry), so the same collector backs
 //! the Warn-only `inherited-autostart` pre-flight check (in `nails-core`),
 //! the full listing in `nails check`, and the activation-time masking of
 //! inherited entries. It never writes and never fails: an unreadable or missing
@@ -31,6 +32,32 @@ use std::path::Path;
 use super::autostart;
 use super::classify::{is_desktop_component, is_trace_writer};
 use crate::Filesystem;
+
+/// What the inventory reads. Every [`Filesystem`] is one; activation reads the
+/// operator's home through the next root instead, resolved as the hidden root
+/// will resolve it.
+pub trait PersonaSource {
+    /// The entries of `dir`, as paths below it; empty when it cannot be listed.
+    fn entries(&self, dir: &Path) -> Vec<std::path::PathBuf>;
+    /// The text of the file at `path`, `None` when it cannot be read.
+    fn text(&self, path: &Path) -> Option<String>;
+    /// Whether `path` exists.
+    fn exists(&self, path: &Path) -> bool;
+}
+
+impl<F: Filesystem> PersonaSource for F {
+    fn entries(&self, dir: &Path) -> Vec<std::path::PathBuf> {
+        self.list_directory(dir).unwrap_or_default()
+    }
+
+    fn text(&self, path: &Path) -> Option<String> {
+        self.read_file_content(path).ok()
+    }
+
+    fn exists(&self, path: &Path) -> bool {
+        self.path_exists(path).unwrap_or(false)
+    }
+}
 
 /// Where an inherited entry comes from.
 ///
@@ -194,7 +221,7 @@ impl PersonaInventory {
 ///
 /// This is read-only and infallible: a missing or unreadable source simply
 /// contributes nothing.
-pub fn collect_inherited_persona<F: Filesystem>(
+pub fn collect_inherited_persona<F: PersonaSource>(
     fs: &F,
     home: &Path,
     user: &str,
@@ -230,11 +257,7 @@ pub fn collect_inherited_persona<F: Filesystem>(
         &mut entries,
     );
 
-    if !user.is_empty()
-        && fs
-            .path_exists(&Path::new("/var/lib/systemd/linger").join(user))
-            .unwrap_or(false)
-    {
+    if !user.is_empty() && fs.exists(&Path::new("/var/lib/systemd/linger").join(user)) {
         entries.push(PersonaEntry::new(user, InheritedSource::Linger));
     }
 
@@ -258,7 +281,7 @@ pub(super) fn file_name_of(path: &Path) -> String {
 /// Enabled units appear as symlinks inside `*.wants` sub-directories (for
 /// example `default.target.wants/syncthing.service`). Unit names are reported
 /// with their suffix, sorted and de-duplicated across the `.wants` directories.
-fn collect_wants<F: Filesystem>(
+fn collect_wants<F: PersonaSource>(
     fs: &F,
     dir: &Path,
     source: InheritedSource,
@@ -281,7 +304,7 @@ fn collect_wants<F: Filesystem>(
 
 /// Parse the display-manager autologin configuration and report the autologin
 /// user, if any, for each of GDM, SDDM and LightDM.
-fn collect_autologin<F: Filesystem>(fs: &F, user: &str, entries: &mut Vec<PersonaEntry>) {
+fn collect_autologin<F: PersonaSource>(fs: &F, user: &str, entries: &mut Vec<PersonaEntry>) {
     let mut names: Vec<String> = Vec::new();
 
     if let Some(login) = gdm_autologin_user(fs) {
@@ -314,13 +337,13 @@ fn collect_autologin<F: Filesystem>(fs: &F, user: &str, entries: &mut Vec<Person
 
 /// GDM autologin from `/etc/gdm/custom.conf`, `/etc/gdm3/custom.conf` (Ubuntu)
 /// or `/etc/gdm3/daemon.conf`, the file Debian builds its gdm3 to read instead.
-fn gdm_autologin_user<F: Filesystem>(fs: &F) -> Option<String> {
+fn gdm_autologin_user<F: PersonaSource>(fs: &F) -> Option<String> {
     for path in [
         "/etc/gdm/custom.conf",
         "/etc/gdm3/custom.conf",
         "/etc/gdm3/daemon.conf",
     ] {
-        let Ok(content) = fs.read_file_content(Path::new(path)) else {
+        let Some(content) = fs.text(Path::new(path)) else {
             continue;
         };
         let enabled = ini_value(&content, "AutomaticLoginEnable")
@@ -335,12 +358,12 @@ fn gdm_autologin_user<F: Filesystem>(fs: &F) -> Option<String> {
 }
 
 /// SDDM autologin from `/etc/sddm.conf` or any `/etc/sddm.conf.d/*.conf`.
-fn sddm_autologin_user<F: Filesystem>(fs: &F) -> Option<String> {
+fn sddm_autologin_user<F: PersonaSource>(fs: &F) -> Option<String> {
     let mut files = vec![std::path::PathBuf::from("/etc/sddm.conf")];
     files.extend(conf_d_files(fs, Path::new("/etc/sddm.conf.d")));
 
     for path in files {
-        let Ok(content) = fs.read_file_content(&path) else {
+        let Some(content) = fs.text(&path) else {
             continue;
         };
         if let Some(login) = ini_value(&content, "User")
@@ -354,12 +377,12 @@ fn sddm_autologin_user<F: Filesystem>(fs: &F) -> Option<String> {
 
 /// LightDM autologin from `/etc/lightdm/lightdm.conf` or any
 /// `/etc/lightdm/lightdm.conf.d/*.conf`.
-fn lightdm_autologin_user<F: Filesystem>(fs: &F) -> Option<String> {
+fn lightdm_autologin_user<F: PersonaSource>(fs: &F) -> Option<String> {
     let mut files = vec![std::path::PathBuf::from("/etc/lightdm/lightdm.conf")];
     files.extend(conf_d_files(fs, Path::new("/etc/lightdm/lightdm.conf.d")));
 
     for path in files {
-        let Ok(content) = fs.read_file_content(&path) else {
+        let Some(content) = fs.text(&path) else {
             continue;
         };
         if let Some(login) = ini_value(&content, "autologin-user")
@@ -372,7 +395,7 @@ fn lightdm_autologin_user<F: Filesystem>(fs: &F) -> Option<String> {
 }
 
 /// The `*.conf` files in a `conf.d` directory, sorted for a stable read order.
-fn conf_d_files<F: Filesystem>(fs: &F, dir: &Path) -> Vec<std::path::PathBuf> {
+fn conf_d_files<F: PersonaSource>(fs: &F, dir: &Path) -> Vec<std::path::PathBuf> {
     let mut files: Vec<std::path::PathBuf> = list_dir(fs, dir)
         .into_iter()
         .filter(|path| {
@@ -400,8 +423,8 @@ pub(super) fn ini_value(content: &str, key: &str) -> Option<String> {
 
 /// List a directory, treating any error (missing, unreadable) as empty so the
 /// inventory stays best-effort.
-pub(super) fn list_dir<F: Filesystem>(fs: &F, dir: &Path) -> Vec<std::path::PathBuf> {
-    fs.list_directory(dir).unwrap_or_default()
+pub(super) fn list_dir<F: PersonaSource>(fs: &F, dir: &Path) -> Vec<std::path::PathBuf> {
+    fs.entries(dir)
 }
 
 /// Sort and de-duplicate names, then append them as entries of one source.

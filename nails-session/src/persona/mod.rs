@@ -17,5 +17,7 @@ pub mod classify;
 pub mod inventory;
 pub mod review;
 
-pub use inventory::{InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona};
+pub use inventory::{
+    InheritedSource, PersonaEntry, PersonaInventory, PersonaSource, collect_inherited_persona,
+};
 pub use review::{EntryStatus, MaskKind, MaskTarget};

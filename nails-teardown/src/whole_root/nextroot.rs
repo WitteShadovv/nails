@@ -39,10 +39,11 @@ use crate::mountinfo::{MountEntry, escape_overlay_path, read_mountinfo};
 use crate::noatime::with_noatime;
 use rustix::fs::{Mode, OFlags, ResolveFlags, StatVfsMountFlags};
 use rustix::mount::{MountFlags, MountPropagationFlags, UnmountFlags};
-use std::ffi::CString;
+use std::ffi::{CString, OsStr, OsString};
 use std::io;
-use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::{Component, Path, PathBuf};
 
 /// Where PID 1 looks for the next root on a soft-reboot.
 pub const NEXTROOT: &str = "/run/nextroot";
@@ -294,7 +295,12 @@ pub fn remove_runtime_dir(dir: &Path) {
 
 /// Open `path` as if `root` were `/`: absolute symlinks and `..` stay inside
 /// `root`, the way PID 1 resolves the init in the next root.
-fn open_in_root(root: &Path, path: &Path) -> io::Result<std::os::fd::OwnedFd> {
+fn open_in_root(root: &Path, path: &Path) -> io::Result<OwnedFd> {
+    open_in_root_with(root, path, OFlags::PATH)
+}
+
+/// [`open_in_root`] with the open flags `flags`.
+fn open_in_root_with(root: &Path, path: &Path, flags: OFlags) -> io::Result<OwnedFd> {
     let dir = rustix::fs::open(
         root,
         OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
@@ -302,14 +308,90 @@ fn open_in_root(root: &Path, path: &Path) -> io::Result<std::os::fd::OwnedFd> {
     )
     .map_err(to_io)?;
     let relative = path.strip_prefix("/").unwrap_or(path);
+    let relative = if relative.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        relative
+    };
     rustix::fs::openat2(
         &dir,
         relative.as_os_str().as_bytes(),
-        OFlags::PATH | OFlags::CLOEXEC,
+        flags | OFlags::CLOEXEC,
         Mode::empty(),
         ResolveFlags::IN_ROOT,
     )
     .map_err(to_io)
+}
+
+/// The directory at `path` as if `root` were `/`, for the `*at` calls that
+/// create, replace or remove an entry in it. The descriptor reads nothing
+/// (`O_PATH`).
+///
+/// A plain path below `/run/nextroot` resolves an absolute symlink on the
+/// running system: a decoy whose `/home` or `~/.config` is such a link would
+/// take a write meant for the next root onto the decoy disk.
+pub fn open_dir_in_root(root: &Path, path: &Path) -> io::Result<OwnedFd> {
+    open_in_root_with(root, path, OFlags::PATH | OFlags::DIRECTORY)
+}
+
+/// The names in the directory at `path`, resolved as if `root` were `/`.
+pub fn list_in_root(root: &Path, path: &Path) -> io::Result<Vec<OsString>> {
+    let fd = open_in_root_with(root, path, OFlags::RDONLY | OFlags::DIRECTORY)?;
+    let mut names = Vec::new();
+    for entry in rustix::fs::Dir::new(fd).map_err(to_io)? {
+        let name = entry.map_err(to_io)?.file_name().to_bytes().to_vec();
+        if name != b"." && name != b".." {
+            names.push(OsString::from_vec(name));
+        }
+    }
+    Ok(names)
+}
+
+/// Create the directory `path` and every missing parent as if `root` were
+/// `/`, and open it like [`open_dir_in_root`]. `made` is called with the
+/// parent and the name of each directory created (mode `0777` less the
+/// umask, as `mkdir -p`), to give it an owner. A component that exists but
+/// does not resolve to a directory inside `root`, such as a dangling link,
+/// fails the call: nothing is created through it.
+pub fn create_dir_all_in_root(
+    root: &Path,
+    path: &Path,
+    made: &mut dyn FnMut(BorrowedFd<'_>, &OsStr) -> io::Result<()>,
+) -> io::Result<OwnedFd> {
+    let mut names = Vec::new();
+    for component in path.components() {
+        match component {
+            Component::RootDir => {}
+            Component::Normal(name) => names.push(name),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("not a plain path: {}", path.display()),
+                ));
+            }
+        }
+    }
+    let mut dir = open_dir_in_root(root, Path::new("/"))?;
+    let mut current = PathBuf::from("/");
+    for name in names {
+        current.push(name);
+        dir = match open_dir_in_root(root, &current) {
+            Ok(fd) => fd,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                rustix::fs::mkdirat(&dir, name, Mode::from_raw_mode(0o777)).map_err(to_io)?;
+                made(dir.as_fd(), name)?;
+                open_dir_in_root(root, &current)?
+            }
+            Err(e) => return Err(e),
+        };
+    }
+    Ok(dir)
+}
+
+/// The path the kernel reports for `fd`: absolute, with no symlink in it, so
+/// a later call on it reaches the same directory.
+pub fn real_path(fd: &OwnedFd) -> io::Result<PathBuf> {
+    std::fs::read_link(format!("/proc/self/fd/{}", fd.as_raw_fd()))
 }
 
 /// Whether `path` exists as if `root` were `/`: absolute symlinks resolve
@@ -482,6 +564,52 @@ mod tests {
             b"inside\n"
         );
         assert!(read_in_root(root.path(), Path::new("/etc/absent")).is_err());
+    }
+
+    #[test]
+    fn directories_are_created_and_listed_through_links_resolved_inside_the_root() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("srv/people")).unwrap();
+        // Absolute, and a name no host has: a lookup on the running system
+        // would fail, one inside the root reaches srv/people.
+        symlink("/srv/people", root.path().join("nails-test-home")).unwrap();
+        let mut made = Vec::new();
+        let fd = create_dir_all_in_root(
+            root.path(),
+            Path::new("/nails-test-home/alice/.config"),
+            &mut |_, name| {
+                made.push(name.to_owned());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(made, ["alice", ".config"]);
+        assert_eq!(
+            real_path(&fd).unwrap(),
+            root.path()
+                .canonicalize()
+                .unwrap()
+                .join("srv/people/alice/.config")
+        );
+        assert_eq!(
+            list_in_root(root.path(), Path::new("/nails-test-home")).unwrap(),
+            [OsString::from("alice")]
+        );
+        // An existing directory is opened, not made again.
+        create_dir_all_in_root(root.path(), Path::new("/srv"), &mut |_, _| {
+            panic!("nothing to make")
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn nothing_is_created_through_a_dangling_link_or_a_dot_dot() {
+        let root = tempfile::tempdir().unwrap();
+        symlink("/gone", root.path().join("away")).unwrap();
+        let mut none = |_: BorrowedFd<'_>, _: &OsStr| -> io::Result<()> { panic!("nothing made") };
+        assert!(create_dir_all_in_root(root.path(), Path::new("/away/x"), &mut none).is_err());
+        assert!(create_dir_all_in_root(root.path(), Path::new("/a/../b"), &mut none).is_err());
+        assert!(!root.path().join("gone").exists() && !root.path().join("a").exists());
     }
 
     #[test]
