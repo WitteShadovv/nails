@@ -21,7 +21,7 @@ Options:
           Check as for `activate --overlay-only` (skip the hidden NixOS build checks)
 
       --nixos-flake <FLAKE_REF>
-          NixOS layer: check a specific flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
+          NixOS layer: check a specific flake reference as <path>#<host> (e.g. /mnt/data/nixos#my-host)
 
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace

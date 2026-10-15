@@ -495,7 +495,7 @@ pub struct CheckArgs {
     #[arg(long)]
     pub overlay_only: bool,
 
-    /// NixOS layer: check a specific flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
+    /// NixOS layer: check a specific flake reference as <path>#<host> (e.g. /mnt/data/nixos#my-host)
     #[arg(
         long = "nixos-flake",
         value_name = "FLAKE_REF",

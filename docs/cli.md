@@ -350,7 +350,7 @@ EXAMPLES:
 ###### **Options:**
 
 * `--overlay-only` — Check as for `activate --overlay-only` (skip the hidden NixOS build checks)
-* `--nixos-flake <FLAKE_REF>` — NixOS layer: check a specific flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
+* `--nixos-flake <FLAKE_REF>` — NixOS layer: check a specific flake reference as <path>#<host> (e.g. /mnt/data/nixos#my-host)
 * `--accept-persistent-decoy` — Report a persistent decoy posture as a warning instead of a failure
 
    Mirrors `activate --accept-persistent-decoy` so `check`/`--dry-run` reflects what activation would do.
