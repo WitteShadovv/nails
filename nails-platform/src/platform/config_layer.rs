@@ -4,11 +4,11 @@
 //! The declarative config layer: the NixOS-only part of the session.
 //!
 //! On NixOS the hidden session can run its own system toplevel, built from a
-//! hidden configuration. [`ConfigLayer`] is the seam for what that needs
-//! before the entry: staging the hidden configuration in the
-//! root upper's `/etc/nixos`, and the pre-flight checks that inspect it. A host
-//! without a layer (FHS / Debian) never runs them; its hidden configuration is
-//! whatever the upper's `/etc` holds. The build and the activation of the hidden
+//! hidden configuration. [`ConfigLayer`] is the seam for what that needs before
+//! the entry: staging the hidden configuration in the root upper's
+//! `/etc/nixos`, and the pre-flight checks that inspect it. A host without a
+//! layer (FHS / Debian) never runs them; its hidden configuration is whatever
+//! the upper's `/etc` holds. The build and the activation of the hidden
 //! toplevel are in `nails_session::session::nixos`.
 
 use std::path::Path;

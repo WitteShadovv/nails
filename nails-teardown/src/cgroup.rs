@@ -12,8 +12,8 @@
 //!
 //! On a kernel without `cgroup.kill` the fallback reads `cgroup.procs` and
 //! SIGKILLs each process through a pidfd, a few rounds to catch forks. It never
-//! freezes instead: a frozen process keeps its open files and its working
-//! directory, and writes again the moment it is thawed.
+//! freezes the cgroup in place of a kill: a frozen process keeps its open files
+//! and its working directory, and writes again the moment it is thawed.
 
 use crate::proc::ProcessHandle;
 use std::path::{Path, PathBuf};
