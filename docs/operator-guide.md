@@ -592,9 +592,28 @@ could not run, `3` the configuration could not be loaded.
 
 ```bash
 sudo /mnt/data/nails verify            # standard
-sudo /mnt/data/nails verify --deep     # homes, histories, temp dirs
+sudo /mnt/data/nails verify --deep     # homes, histories, temp dirs, journal
 sudo /mnt/data/nails verify --json     # machine-readable
 ```
+
+Inside the session the live root is the session's overlay, and what belongs to
+the session is not reported as residue. One note (`[INFO]`) says that its
+runtime files in `/run`, the mounted hidden volume and its active state are
+expected, and a NAILS path that the hidden layer holds, such as the link
+`nails init` stages at `/etc/nixos/nails/configuration.nix` on NixOS, is a note
+as well. The hidden layer hides whatever the decoy holds beneath such a path,
+so check the decoy itself offline (below). The header counts warnings and
+critical findings, not notes.
+
+With `--deep`, verify also searches the systemd journal for the tool name, the
+configuration file name, `cryptsetup` and the hidden volume path. sudo logs
+every command run with it, so its records of your own commands (the unlock,
+the mount, this verify run) match; verify names them as sudo's records. While
+the journal is in RAM they are notes, as is every entry of the session's own
+journal inside the session, because the way back or a power-off removes them.
+When the journal keeps files on disk, every entry is a warning. On the decoy
+any other entry is a warning too: only you can tell whether it is the decoy's
+own record or one a hidden session left.
 
 To inspect the decoy itself for leftovers, mount its image or partition
 read-only and scan it offline (again from the hidden side):
@@ -630,9 +649,10 @@ says how to avoid each one.
 `verify` reports only what the verify engine actually checks: known artifact
 paths, running NAILS processes by binary identity, open crypt mappers and loop
 devices, swap/memory warnings, platform package drift, and — with `--deep` —
-shell history files, temp and log directories, and `recently-used.xbel`/VeraCrypt
-config naming the hidden root. A clean result is evidence against *known*
-artifacts, not proof the decoy is untouched.
+shell history files, temp and log directories, `recently-used.xbel`/VeraCrypt
+config naming the hidden root, and journal entries naming the tool or the
+hidden volume. A clean result is evidence against *known* artifacts, not proof
+the decoy is untouched.
 
 ### Rehearsing before you rely on it
 
