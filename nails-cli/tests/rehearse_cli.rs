@@ -116,7 +116,11 @@ const OTHER_BOOT: &str = "00000000-0000-0000-0000-000000000000";
 
 /// A planted rehearsal: one overlay file whose upper copy carries the token in
 /// its name, and one skipped channel.
-fn planted(harness: &Harness, boot_id: Option<String>, soft_reboots: u64) -> RehearsalState {
+fn planted(
+    harness: &Harness,
+    boot_id: Option<String>,
+    soft_reboots: Option<u64>,
+) -> RehearsalState {
     let upper = harness.hidden().join(format!(
         "root/upper/home/op/{}{TOKEN}",
         rehearse::FILE_PREFIX
@@ -127,7 +131,8 @@ fn planted(harness: &Harness, boot_id: Option<String>, soft_reboots: u64) -> Reh
         phase: Phase::Planted,
         planted_at: "2026-01-01T10:00:00Z".to_string(),
         planted_boot_id: boot_id,
-        planted_soft_reboots: Some(soft_reboots),
+        planted_entered_at: Some(1_700_000_000),
+        planted_soft_reboots: soft_reboots,
         channels: vec![
             ChannelRecord {
                 kind: ChannelKind::OverlayFile,
@@ -147,8 +152,8 @@ fn planted(harness: &Harness, boot_id: Option<String>, soft_reboots: u64) -> Reh
 }
 
 /// The running boot as the binary sees it: its boot ID and systemd's
-/// soft-reboot count (`0` when the service manager does not report one).
-fn this_boot() -> (String, u64) {
+/// soft-reboot count (`None` where the service manager does not report one).
+fn this_boot() -> (String, Option<u64>) {
     let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .unwrap()
         .trim()
@@ -158,8 +163,7 @@ fn this_boot() -> (String, u64) {
         .output()
         .ok()
         .filter(|out| out.status.success())
-        .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse().ok())
-        .unwrap_or(0);
+        .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse().ok());
     (boot_id, soft_reboots)
 }
 
@@ -303,7 +307,7 @@ fn plant_on_a_folder_is_refused_by_the_attach_gate() {
 #[test]
 fn status_of_a_planted_rehearsal_shows_its_fingerprint_channels_and_the_scan_step() {
     let harness = Harness::new();
-    harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), 0));
+    harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), Some(0)));
 
     let output = harness.run(&["--ascii", "rehearse", "status"]);
 
@@ -330,7 +334,10 @@ fn status_of_a_planted_rehearsal_shows_its_fingerprint_channels_and_the_scan_ste
 }
 
 #[test]
-fn status_in_the_planting_session_says_to_deactivate_first() {
+fn status_outside_a_hidden_session_names_the_scan_step_in_the_planting_boot() {
+    // Planted in this boot, and the soft-reboots of a plain deactivation keep
+    // the boot ID (with no count on systemd 255): with no hidden session live,
+    // the planting session has ended all the same.
     let harness = Harness::new();
     let (boot_id, soft_reboots) = this_boot();
     harness.write_state(&planted(&harness, Some(boot_id), soft_reboots));
@@ -340,11 +347,8 @@ fn status_in_the_planting_session_says_to_deactivate_first() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let value = json(&output);
     assert_eq!(value["data"]["phase"], "planted");
-    assert!(
-        value["data"]["next_step"]
-            .as_str()
-            .unwrap()
-            .starts_with("Step 2 of 3: deactivate as usual"),
+    assert_eq!(
+        value["data"]["next_step"], "Step 3 of 3: run `nails rehearse scan`.",
         "{value:#}"
     );
 }
@@ -352,7 +356,7 @@ fn status_in_the_planting_session_says_to_deactivate_first() {
 #[test]
 fn status_of_a_scanned_rehearsal_lists_each_scan_and_is_done() {
     let harness = Harness::new();
-    let mut state = planted(&harness, Some(OTHER_BOOT.to_string()), 0);
+    let mut state = planted(&harness, Some(OTHER_BOOT.to_string()), Some(0));
     state.phase = Phase::Scanned;
     state.scans.push(ScanSummary {
         at: "2026-01-02T08:00:00Z".to_string(),
@@ -439,27 +443,22 @@ fn an_offline_scan_with_the_state_token_records_the_scan_phase() {
 }
 
 #[test]
-fn a_scan_in_the_planting_session_is_refused_unless_allowed() {
+fn a_scan_outside_a_hidden_session_runs_in_the_planting_boot() {
+    // The boot ID and soft-reboot count of this very boot, as a deactivation
+    // back to the decoy leaves them: only a live hidden session can be the
+    // planting session, so the scan runs without --allow-same-boot. The
+    // refusal inside that session is the NixOS VM test's and the distribution
+    // smoke test's to show; the decision itself has unit tests.
     let harness = Harness::new();
     let (boot_id, soft_reboots) = this_boot();
     harness.write_state(&planted(&harness, Some(boot_id), soft_reboots));
     let clean = harness.image("clean.img", None);
 
-    let refused = harness.run(&["--json", "rehearse", "scan", "--device", path(&clean)]);
-    assert_eq!(refused.status.code(), Some(6), "{refused:?}");
-    assert_eq!(json(&refused)["error"]["code"], "same_boot");
+    let output = harness.run(&["--json", "rehearse", "scan", "--device", path(&clean)]);
 
-    let allowed = harness.run(&[
-        "--json",
-        "rehearse",
-        "scan",
-        "--device",
-        path(&clean),
-        "--allow-same-boot",
-    ]);
-    assert_eq!(allowed.status.code(), Some(0), "{allowed:?}");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(
-        json(&allowed)["data"]["scan"]["devices"][0]["hits"],
+        json(&output)["data"]["scan"]["devices"][0]["hits"],
         serde_json::json!([])
     );
 }
@@ -513,7 +512,7 @@ fn a_token_file_without_a_valid_token_is_refused() {
 #[test]
 fn reset_on_a_folder_is_refused_and_removes_nothing() {
     let harness = Harness::new();
-    let state = planted(&harness, Some(OTHER_BOOT.to_string()), 0);
+    let state = planted(&harness, Some(OTHER_BOOT.to_string()), Some(0));
     let upper = state.channels[0].upper_copy.clone().unwrap();
     std::fs::create_dir_all(upper.parent().unwrap()).unwrap();
     std::fs::write(&upper, TOKEN).unwrap();
@@ -555,7 +554,7 @@ mod kernel_tests {
         .run(|| {
             let harness = Harness::on_a_volume();
             harness.write_marker();
-            let state = planted(&harness, Some(OTHER_BOOT.to_string()), 0);
+            let state = planted(&harness, Some(OTHER_BOOT.to_string()), Some(0));
             let upper = state.channels[0].upper_copy.clone().unwrap();
             std::fs::create_dir_all(upper.parent().unwrap()).unwrap();
             std::fs::write(&upper, TOKEN).unwrap();
@@ -587,7 +586,7 @@ mod kernel_tests {
             .run(|| {
                 let harness = Harness::on_a_volume();
                 harness.write_marker();
-                harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), 0));
+                harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), Some(0)));
 
                 let output = harness.run(&["--ascii", "rehearse", "reset"]);
 
@@ -617,7 +616,7 @@ mod kernel_tests {
         .run(|| {
             let harness = Harness::on_a_volume();
             harness.write_marker();
-            harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), 0));
+            harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), Some(0)));
             let clean = harness.image("clean.img", None);
 
             let output = harness.run(&["--json", "rehearse", "scan", "--device", path(&clean)]);

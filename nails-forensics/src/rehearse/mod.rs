@@ -17,7 +17,9 @@
 //! 3. **Scan** ([`scan`]), back on the decoy or in a later session, or offline
 //!    against an image: the raw, decrypted decoy block devices are read
 //!    `O_RDONLY | O_NOATIME`, never mounted, and searched for the token in
-//!    ASCII and UTF-16LE, allocated and unallocated space alike.
+//!    ASCII and UTF-16LE, allocated and unallocated space alike. A scan in the
+//!    planting session itself is refused
+//!    ([`RehearsalState::planted_in_this_session`]).
 //!
 //! The token and the progress live in `rehearse/state.json` on the hidden
 //! volume. The token is never printed or logged whole (only a short
@@ -140,9 +142,14 @@ pub struct RehearsalState {
     /// The boot the canary was planted in.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planted_boot_id: Option<String>,
-    /// systemd's soft-reboot count when the canary was planted. A soft-reboot
-    /// keeps the boot ID, so the boot ID and this count together tell the
-    /// planting session from a later one.
+    /// When the hidden session the canary was planted in was entered: its
+    /// plan's entry time, in seconds since the epoch. A soft-reboot keeps the
+    /// boot ID, but every activation enters a session with an entry time of
+    /// its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planted_entered_at: Option<u64>,
+    /// systemd's soft-reboot count when the canary was planted, where systemd
+    /// reports one (256 and newer).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planted_soft_reboots: Option<u64>,
     /// The channels, planted or skipped.
@@ -152,13 +159,66 @@ pub struct RehearsalState {
     pub scans: Vec<ScanSummary>,
 }
 
+/// A live hidden session.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LiveSession {
+    /// When it was entered (its plan's entry time, in seconds since the
+    /// epoch), when its plan is readable.
+    pub entered_at: Option<u64>,
+}
+
+/// Where a rehearsal step runs: the facts that tell the session the canary was
+/// planted in from any other.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Here {
+    /// The live hidden session this runs in, `None` outside one.
+    pub session: Option<LiveSession>,
+    /// The running boot's ID.
+    pub boot_id: Option<String>,
+    /// systemd's soft-reboot count in this boot. `None` where systemd does not
+    /// report one (255 and older), and outside a hidden session, where it is
+    /// not needed.
+    pub soft_reboots: Option<u64>,
+}
+
+impl Here {
+    /// The facts of the running system, in or outside `session`.
+    pub fn read(session: Option<LiveSession>) -> Self {
+        Self {
+            session,
+            boot_id: current_boot_id(),
+            soft_reboots: session.and_then(|_| current_soft_reboots()),
+        }
+    }
+}
+
 impl RehearsalState {
-    /// Whether this runs in the session the canary was planted in: the same
-    /// boot ID and the same soft-reboot count.
-    pub fn planted_in_this_session(&self, boot_id: Option<&str>, soft_reboots: u64) -> bool {
-        self.planted_boot_id.is_some()
-            && self.planted_boot_id.as_deref() == boot_id
-            && self.planted_soft_reboots.unwrap_or(0) == soft_reboots
+    /// Whether `here` is the hidden session the canary was planted in, where a
+    /// scan could read the disks before the session's writes reach them.
+    ///
+    /// The canary is planted only in a live hidden session, so outside one (on
+    /// the decoy after the way back, or after a power-off) the planting session
+    /// has ended. Inside one, a different boot is a later session. Then the
+    /// session's entry time decides, on every systemd version; then systemd's
+    /// soft-reboot count, which only 256 and newer report. When neither is
+    /// known on both sides, the answer is yes: a refused scan can run later,
+    /// while a scan in the planting session proves little.
+    pub fn planted_in_this_session(&self, here: &Here) -> bool {
+        let Some(session) = here.session else {
+            return false;
+        };
+        if let (Some(planted), Some(now)) = (&self.planted_boot_id, &here.boot_id)
+            && planted != now
+        {
+            return false;
+        }
+        if let (Some(planted), Some(now)) = (self.planted_entered_at, session.entered_at) {
+            return planted == now;
+        }
+        match (self.planted_soft_reboots, here.soft_reboots) {
+            (Some(planted), Some(now)) => planted == now,
+            _ => true,
+        }
     }
 
     /// A short, safe-to-print stand-in for the token.
@@ -315,15 +375,15 @@ pub(crate) fn now() -> String {
     chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
-/// The running boot's id. With [`current_soft_reboots`] it tells the planting
-/// session from a later one.
+/// The running boot's id. A soft-reboot keeps it.
 pub fn current_boot_id() -> Option<String> {
     crate::state::read_boot_id()
 }
 
-/// systemd's count of soft-reboots in this boot (`SoftRebootsCount`), `0` when
-/// the service manager does not report it.
-pub fn current_soft_reboots() -> u64 {
+/// systemd's count of soft-reboots in this boot (`SoftRebootsCount`). `None`
+/// when the service manager does not report it: systemd 255 and older print
+/// nothing for a property they do not have, and the probe may fail.
+pub fn current_soft_reboots() -> Option<u64> {
     use crate::process::{ProcessCommand, ProcessRunner, RealProcessRunner};
     let command = ProcessCommand::tool("systemctl")
         .args(["show", "-p", "SoftRebootsCount", "--value"])
@@ -332,5 +392,4 @@ pub fn current_soft_reboots() -> u64 {
         .run_text(&command)
         .ok()
         .and_then(|(ok, out, _)| ok.then(|| out.trim().parse().ok()).flatten())
-        .unwrap_or(0)
 }

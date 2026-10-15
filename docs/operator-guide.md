@@ -661,11 +661,11 @@ The forensic E2E tests prove the leak claims on CI's virtual machines.
 desktop, before you rely on them:
 
 ```bash
-sudo /mnt/data/nails rehearse plant         # 1. inside an active hidden session
-sudo /mnt/data/nails deactivate --poweroff  # 2. end the session and power off
-# boot the decoy, unlock and mount the hidden volume again, then:
-sudo /mnt/data/nails rehearse scan          # 3. from the decoy, or a later session
-sudo /mnt/data/nails rehearse reset         # remove the rehearsal when done
+sudo /mnt/data/nails rehearse plant   # 1. inside an active hidden session
+sudo /mnt/data/nails deactivate       # 2. end the session as usual
+# on the decoy, unlock and mount the hidden volume again, then:
+sudo /mnt/data/nails rehearse scan    # 3. from the decoy, or a later session
+sudo /mnt/data/nails rehearse reset   # remove the rehearsal when done
 ```
 
 `plant` puts a random token where a session most often leaks: a file named after
@@ -677,15 +677,16 @@ written to the decoy. The token stays on the hidden volume
 
 `scan` reads every mounted decoy block device (and active swap) raw and
 read-only, without mounting anything, and searches allocated and unallocated
-space for the token in ASCII and UTF-16LE. It refuses to run in the session the
-canary was planted in. A soft-reboot keeps the boot ID, so the session is told
-apart by the boot ID together with systemd's soft-reboot count: after
-`nails deactivate` the scan runs on the decoy. On a systemd that does not
-report the count, power off between `plant` and `scan` (`--allow-same-boot`
-overrides the check, but a scan in the planting session proves little).
-Exit `0` means the token was not found, `11` that it was (with the device and
-byte offset of each hit), `9` that a device could not be scanned completely.
-`nails rehearse` alone shows where you are and the next step.
+space for the token in ASCII and UTF-16LE. It refuses to run inside the session
+the canary was planted in, which `plant` records by the session's entry time:
+on the decoy after `nails deactivate`, after a power-off or in a later session
+the scan runs, on every systemd version (`--allow-same-boot` overrides the
+check, but a scan in the planting session proves little). To rehearse the
+power-off exit instead, end the session with `nails deactivate --poweroff` and
+boot the decoy again before the scan. Exit `0` means the token was not found,
+`11` that it was (with the device and byte offset of each hit), `9` that a
+device could not be scanned completely. `nails rehearse` alone shows where you
+are and the next step.
 
 A clean scan covers only what a host can read. It cannot see SSD cells the
 drive has remapped or keeps in reserve, blocks discarded with TRIM, disks that

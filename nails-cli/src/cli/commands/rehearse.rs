@@ -9,7 +9,9 @@
 use std::path::{Path, PathBuf};
 
 use nails_core::output::{Mark, Style};
-use nails_core::rehearse::{self, ChannelRecord, Phase, RehearsalState, ScanReport};
+use nails_core::rehearse::{
+    self, ChannelRecord, Here, LiveSession, Phase, RehearsalState, ScanReport,
+};
 use nails_core::{Config, RealFilesystem};
 use serde::Serialize;
 
@@ -70,14 +72,20 @@ fn fail(
     report_error(json, COMMAND, status, ErrorBody::new(code, message))
 }
 
-/// Whether the recorded system state is an active hidden session.
-/// Whether this runs in the hidden root, from the live mount table and plan.
-fn session_active(config: &Config) -> bool {
-    nails_core::session::probe(
+/// The live hidden session this runs in, from the live mount table and plan;
+/// `None` outside one.
+fn live_session(config: &Config) -> Option<LiveSession> {
+    use nails_core::session::SessionView;
+    match nails_core::session::probe(
         &nails_core::session::Paths::system(),
         &config.hidden_volume_root,
-    )
-    .is_hidden()
+    ) {
+        SessionView::Hidden(plan) => Some(LiveSession {
+            entered_at: plan.entered_at,
+        }),
+        SessionView::HiddenWithoutPlan(_) => Some(LiveSession { entered_at: None }),
+        _ => None,
+    }
 }
 
 fn load(config: &Config) -> Result<Option<RehearsalState>, String> {
@@ -92,18 +100,14 @@ fn phase_name(state: Option<&RehearsalState>) -> &'static str {
     }
 }
 
-/// The guided next step for where the rehearsal stands.
-fn next_step(state: Option<&RehearsalState>, active: bool) -> String {
-    let same_boot = |s: &RehearsalState| {
-        s.planted_in_this_session(
-            rehearse::current_boot_id().as_deref(),
-            rehearse::current_soft_reboots(),
-        )
-    };
+/// The guided next step for where the rehearsal stands, run `here`.
+fn next_step(state: Option<&RehearsalState>, here: &Here) -> String {
     match state {
-        None if active => "Step 1 of 3: run `nails rehearse plant` in this hidden session.".into(),
+        None if here.session.is_some() => {
+            "Step 1 of 3: run `nails rehearse plant` in this hidden session.".into()
+        }
         None => "Step 1 of 3: activate a hidden session, then run `nails rehearse plant`.".into(),
-        Some(s) if s.phase == Phase::Planted && same_boot(s) => {
+        Some(s) if s.phase == Phase::Planted && s.planted_in_this_session(here) => {
             "Step 2 of 3: deactivate as usual (`nails deactivate`, it soft-reboots back to the \
              decoy), then unlock and mount the hidden volume again and run `nails rehearse scan`."
                 .into()
@@ -138,7 +142,7 @@ fn status(settings: &OutputSettings, config: &Config) -> ExitStatus {
             );
         }
     };
-    let active = session_active(config);
+    let here = Here::read(live_session(config));
     let data = RehearseData {
         phase: phase_name(state.as_ref()),
         fingerprint: state.as_ref().map(RehearsalState::fingerprint),
@@ -149,7 +153,7 @@ fn status(settings: &OutputSettings, config: &Config) -> ExitStatus {
             .unwrap_or_default(),
         scan: None,
         removed: Vec::new(),
-        next_step: next_step(state.as_ref(), active),
+        next_step: next_step(state.as_ref(), &here),
     };
     emit(settings, &data, |style| match &state {
         None => println!(
@@ -219,14 +223,14 @@ fn plant(
         }
         Err(e) => return fail(json, ExitStatus::Failed, "not_attached", e.to_string()),
     }
-    if !session_active(config) {
+    let Some(session) = live_session(config) else {
         return fail(
             json,
             ExitStatus::InvalidState,
             "not_active",
             "no hidden session is active; activate first, then plant the canary inside it",
         );
-    }
+    };
     match load(config) {
         Ok(None) => {}
         Ok(Some(existing)) => {
@@ -278,13 +282,15 @@ fn plant(
             "no overlaid tree took the canary, so a scan could prove nothing; is the session active?",
         );
     }
+    let here = Here::read(Some(session));
     let state = RehearsalState {
         schema_version: rehearse::STATE_SCHEMA_VERSION,
         token,
         phase: Phase::Planted,
         planted_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
-        planted_boot_id: rehearse::current_boot_id(),
-        planted_soft_reboots: Some(rehearse::current_soft_reboots()),
+        planted_boot_id: here.boot_id.clone(),
+        planted_entered_at: session.entered_at,
+        planted_soft_reboots: here.soft_reboots,
         channels,
         scans: Vec::new(),
     };
@@ -298,7 +304,7 @@ fn plant(
         channels: state.redacted_channels(),
         scan: None,
         removed: Vec::new(),
-        next_step: next_step(Some(&state), true),
+        next_step: next_step(Some(&state), &here),
     };
     emit(settings, &data, |style| {
         println!(
@@ -358,21 +364,19 @@ fn scan(settings: &OutputSettings, config: &Config, args: &RehearseScanArgs) -> 
         Ok(found) => found,
         Err(e) => return fail(json, ExitStatus::InvalidState, "no_token", e),
     };
+    let here = Here::read(live_session(config));
     if let Some(s) = &state
         && !args.offline
         && !args.allow_same_boot
-        && s.planted_in_this_session(
-            rehearse::current_boot_id().as_deref(),
-            rehearse::current_soft_reboots(),
-        )
+        && s.planted_in_this_session(&here)
     {
         return fail(
             json,
             ExitStatus::InvalidState,
             "same_boot",
             "the canary was planted in this session, so its writes may not have reached the \
-             disk; deactivate first (it soft-reboots back to the decoy), or pass \
-             --allow-same-boot",
+             disk; deactivate first (it soft-reboots back to the decoy), then scan from the \
+             decoy or a later session, or pass --allow-same-boot",
         );
     }
     let devices = match scan_devices(config, args) {
@@ -414,7 +418,7 @@ fn scan(settings: &OutputSettings, config: &Config, args: &RehearseScanArgs) -> 
             .unwrap_or_default(),
         scan: Some(&report),
         removed: Vec::new(),
-        next_step: next_step(state.as_ref(), session_active(config)),
+        next_step: next_step(state.as_ref(), &here),
     };
     emit(settings, &data, |style| print_scan(style, &report, &token));
     if report.total_hits() > 0 {
@@ -428,7 +432,7 @@ fn scan(settings: &OutputSettings, config: &Config, args: &RehearseScanArgs) -> 
 
 fn reset(settings: &OutputSettings, config: &Config) -> ExitStatus {
     let json = settings.is_json();
-    if session_active(config) {
+    if live_session(config).is_some() {
         return fail(
             json,
             ExitStatus::InvalidState,
@@ -465,7 +469,7 @@ fn reset(settings: &OutputSettings, config: &Config) -> ExitStatus {
             .iter()
             .map(|p| p.display().to_string().replace(&state.token, "<canary>"))
             .collect(),
-        next_step: next_step(None, false),
+        next_step: next_step(None, &Here::default()),
     };
     emit(settings, &data, |style| {
         println!(
