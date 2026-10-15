@@ -67,7 +67,14 @@ pub enum EnterOutcome {
     AlreadyActive,
     /// The entry is prepared and armed; [`NailsManager::trigger_entry`] starts
     /// the soft-reboot.
-    Prepared(Box<entry::Entry>),
+    Prepared {
+        /// The prepared entry.
+        entry: Box<entry::Entry>,
+        /// How long the activation took, from its start to the commit to
+        /// Active: the duration the state file records as the last
+        /// activation, so `activate` and `status` show the same time.
+        elapsed: std::time::Duration,
+    },
 }
 
 /// What [`NailsManager::recover_session`] did.
@@ -205,6 +212,9 @@ impl<F: Filesystem> NailsManager<F> {
             return Ok(EnterOutcome::AlreadyActive);
         }
         crate::cancel::checkpoint()?;
+        // The activation's one clock: it covers the staging and the pre-flight
+        // checks too, as the progress line and the recorded duration say.
+        let started = std::time::Instant::now();
         // What the operator accepted holds for every write of this activation.
         self.allow = options.allow();
         let nixos = self.require_supported_host(machine)?;
@@ -216,7 +226,6 @@ impl<F: Filesystem> NailsManager<F> {
             cancellable(|| self.stage_hidden_config(options.overlay_only))?;
             cancellable(|| self.run_preflight_checks(&options.preflight()))?;
         }
-        let started = std::time::Instant::now();
         let hidden_root = self.config.hidden_volume_root.clone();
         let entries = machine
             .mounts()
@@ -247,16 +256,20 @@ impl<F: Filesystem> NailsManager<F> {
             accepted_decoy_storage,
         };
         let prepared = entry::prepare(&machine.paths, &inputs, host)?;
+        let elapsed = started.elapsed();
         // The last boundary: once recorded, the caller only enqueues the
         // soft-reboot.
-        let recorded = crate::cancel::checkpoint()
-            .and_then(|()| self.record_entry(&prepared, started.elapsed()));
+        let recorded =
+            crate::cancel::checkpoint().and_then(|()| self.record_entry(&prepared, elapsed));
         if let Err(e) = recorded {
             entry::rollback(&machine.paths);
             let _ = host.daemon_reload();
             return Err(e);
         }
-        Ok(EnterOutcome::Prepared(Box::new(prepared)))
+        Ok(EnterOutcome::Prepared {
+            entry: Box::new(prepared),
+            elapsed,
+        })
     }
 
     fn record_entry(

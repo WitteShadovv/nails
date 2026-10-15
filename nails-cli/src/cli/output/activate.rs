@@ -83,6 +83,13 @@ pub fn print_activate_progress(phase: &'static str) {
     );
 }
 
+/// `duration` (in seconds) as `status` shows the recorded activation time.
+fn shown_duration(duration: f64) -> String {
+    nails_core::timing::format_duration(
+        std::time::Duration::try_from_secs_f64(duration).unwrap_or_default(),
+    )
+}
+
 fn filesystems(entry: &Entry) -> Vec<String> {
     entry
         .decisions
@@ -124,8 +131,10 @@ fn result_event(result: &ActivateResult<'_>, duration: f64) -> ActivateResultEve
             event.filesystems = filesystems(entry);
             event.masked_units = entry.plan.masks.clone();
             event.warnings = entry.warnings.clone();
-            event.message =
-                format!("Prepared in {duration:.1}s; soft-rebooting into the hidden session");
+            event.message = format!(
+                "Prepared in {}; soft-rebooting into the hidden session",
+                shown_duration(duration)
+            );
         }
         ActivateResult::Failed(error) => {
             event.ok = false;
@@ -175,7 +184,7 @@ fn human_lines(
         ActivateResult::Entering(entry) => {
             out.push(out_style.marked(
                 Mark::Pass,
-                format!("Hidden session prepared in {duration:.1}s"),
+                format!("Hidden session prepared in {}", shown_duration(duration)),
             ));
             if !settings.is_quiet() {
                 if let Some(system) = &entry.plan.hidden.system {

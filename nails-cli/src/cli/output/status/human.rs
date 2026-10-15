@@ -103,7 +103,7 @@ pub(super) fn status_lines(report: &StatusReport, details: bool, style: Style) -
     if let Some(last) = &report.last_activation {
         out.push(format!(
             "Last activation:    took {} (finished {})",
-            nails_core::timing::format_elapsed(std::time::Duration::from_millis(last.duration_ms)),
+            nails_core::timing::format_duration(std::time::Duration::from_millis(last.duration_ms)),
             last.finished_at.format("%Y-%m-%d %H:%M:%S UTC")
         ));
     }

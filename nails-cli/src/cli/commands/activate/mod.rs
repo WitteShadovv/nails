@@ -323,12 +323,12 @@ pub fn execute(
     let result = manager.enter_session(&options, &RealEntryHost);
     let duration = start.elapsed().as_secs_f64();
 
-    let entry = match result {
+    let (entry, elapsed) = match result {
         Ok(EnterOutcome::AlreadyActive) => {
             print_result(settings, &ActivateResult::AlreadyActive, duration);
             return ExitStatus::Ok;
         }
-        Ok(EnterOutcome::Prepared(entry)) => entry,
+        Ok(EnterOutcome::Prepared { entry, elapsed }) => (entry, elapsed),
         Err(error) => {
             print_result(settings, &ActivateResult::Failed(&error), duration);
             return match error {
@@ -339,7 +339,12 @@ pub fn execute(
             };
         }
     };
-    print_result(settings, &ActivateResult::Entering(&entry), duration);
+    // The time the state file records, which `status` shows as well.
+    print_result(
+        settings,
+        &ActivateResult::Entering(&entry),
+        elapsed.as_secs_f64(),
+    );
     crate::cli::output::flush_stdio();
 
     // The decoy's shells write their history when they exit, bash on the

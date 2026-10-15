@@ -709,7 +709,7 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
 
         let outcome = m.enter_session_on(&machine, &options, &host).unwrap();
 
-        let EnterOutcome::Prepared(entry) = outcome else {
+        let EnterOutcome::Prepared { entry, elapsed } = outcome else {
             panic!("expected a prepared entry, got {outcome:?}");
         };
         // The plan is armed for the entry, read from the given mount table,
@@ -733,7 +733,12 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         let state = recorded(hidden.path());
         assert!(state.state.is_active(), "{:?}", state.state);
         assert_eq!(state.platform, Some(PlatformState::DebianFamily));
-        assert!(state.last_activation.is_some());
+        // `activate` prints the outcome's time and `status` the recorded one:
+        // one measurement.
+        assert_eq!(
+            state.last_activation.map(|last| last.duration_ms),
+            Some(u64::try_from(elapsed.as_millis()).unwrap())
+        );
 
         let target = FakeTarget {
             refuse: true,
