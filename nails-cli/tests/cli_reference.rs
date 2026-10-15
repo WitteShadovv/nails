@@ -108,3 +108,20 @@ fn man_page_is_current() {
 fn cli_markdown_reference_is_current() {
     check_or_regenerate("docs/cli.md", &render_markdown());
 }
+
+/// The README's `nails -h` capture, `docs/assets/screenshots/help.txt`: its
+/// body (below the `---` that ends the front matter) is the short help as
+/// clap renders it. `render-terminal-svg.py --check` compares each SVG with
+/// its capture only, so without this the capture would drift from the help.
+/// `REGENERATE_CLI_DOCS=1` rewrites the body; render the SVG again after it.
+#[test]
+fn the_help_capture_is_current() {
+    let relative = "docs/assets/screenshots/help.txt";
+    let committed = std::fs::read_to_string(repo_root().join(relative))
+        .unwrap_or_else(|e| panic!("could not read {relative}: {e}"));
+    let (front, _) = committed
+        .split_once("\n---\n")
+        .unwrap_or_else(|| panic!("{relative} has no front matter"));
+    let help = Cli::command().render_help().to_string();
+    check_or_regenerate(relative, &format!("{front}\n---\n{help}"));
+}

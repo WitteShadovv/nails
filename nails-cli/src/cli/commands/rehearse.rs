@@ -358,6 +358,19 @@ fn scan_devices(config: &Config, args: &RehearseScanArgs) -> Result<Vec<PathBuf>
     Ok(rehearse::default_scan_targets(&mounts, &swaps, &hidden))
 }
 
+/// Whether a scan must be refused: it would read the disks from the hidden
+/// session that planted the canary (`state`, run `here`), whose writes may not
+/// have reached them yet. An offline scan of images never runs there, and
+/// `--allow-same-boot` accepts the risk.
+fn refuses_same_session(
+    state: Option<&RehearsalState>,
+    here: &Here,
+    offline: bool,
+    allow_same_boot: bool,
+) -> bool {
+    !offline && !allow_same_boot && state.is_some_and(|s| s.planted_in_this_session(here))
+}
+
 fn scan(settings: &OutputSettings, config: &Config, args: &RehearseScanArgs) -> ExitStatus {
     let json = settings.is_json();
     let (token, state) = match scan_token(config, args) {
@@ -365,11 +378,7 @@ fn scan(settings: &OutputSettings, config: &Config, args: &RehearseScanArgs) -> 
         Err(e) => return fail(json, ExitStatus::InvalidState, "no_token", e),
     };
     let here = Here::read(live_session(config));
-    if let Some(s) = &state
-        && !args.offline
-        && !args.allow_same_boot
-        && s.planted_in_this_session(&here)
-    {
+    if refuses_same_session(state.as_ref(), &here, args.offline, args.allow_same_boot) {
         return fail(
             json,
             ExitStatus::InvalidState,
@@ -486,4 +495,67 @@ fn reset(settings: &OutputSettings, config: &Config) -> ExitStatus {
         }
     });
     ExitStatus::Ok
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A canary planted in the session entered at 100, in boot `b1`.
+    fn planted() -> RehearsalState {
+        RehearsalState {
+            schema_version: 1,
+            token: "0".repeat(32),
+            phase: Phase::Planted,
+            planted_at: "2026-10-15T20:00:00Z".to_string(),
+            planted_boot_id: Some("b1".to_string()),
+            planted_entered_at: Some(100),
+            planted_soft_reboots: None,
+            channels: Vec::new(),
+            scans: Vec::new(),
+        }
+    }
+
+    fn in_session(entered_at: u64) -> Here {
+        Here {
+            session: Some(LiveSession {
+                entered_at: Some(entered_at),
+            }),
+            boot_id: Some("b1".to_string()),
+            soft_reboots: None,
+        }
+    }
+
+    #[test]
+    fn a_scan_in_the_planting_session_is_refused_unless_allowed() {
+        let state = planted();
+        let here = in_session(100);
+        assert!(refuses_same_session(Some(&state), &here, false, false));
+        assert!(
+            !refuses_same_session(Some(&state), &here, false, true),
+            "--allow-same-boot"
+        );
+        assert!(
+            !refuses_same_session(Some(&state), &here, true, false),
+            "an offline scan of images"
+        );
+    }
+
+    #[test]
+    fn a_scan_elsewhere_or_without_a_state_is_not_refused() {
+        let state = planted();
+        assert!(!refuses_same_session(
+            Some(&state),
+            &in_session(200),
+            false,
+            false
+        ));
+        assert!(!refuses_same_session(
+            Some(&state),
+            &Here::default(),
+            false,
+            false
+        ));
+        assert!(!refuses_same_session(None, &in_session(100), false, false));
+    }
 }
