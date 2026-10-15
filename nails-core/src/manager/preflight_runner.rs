@@ -401,6 +401,35 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// Refuse the decoy's own `/etc/nixos` flake as the build target, as the
+    /// `nixos-build-target` check does, also under `--no-preflight`: a hidden
+    /// system built from it would lack the hidden module, and an entry
+    /// without a build would quietly run the decoy's own system.
+    pub fn refuse_decoy_flake(&self, overlay_only: bool) -> Result<()> {
+        use crate::preflight::CheckResult;
+        let Ok(crate::platform::HostTarget::DecoyFlake {
+            dir,
+            hidden_volume_root,
+        }) = self.discover_host_target(overlay_only)
+        else {
+            return Ok(());
+        };
+        match crate::preflight::checks::nixos_build_target::decoy_flake_refusal(
+            &dir,
+            &hidden_volume_root,
+        ) {
+            CheckResult::Fail {
+                message,
+                remediation,
+            } => Err(NailsError::PreFlightCheckFailed(vec![(
+                "nixos-build-target".to_string(),
+                message,
+                remediation,
+            )])),
+            _ => Ok(()),
+        }
+    }
+
     /// Run `backend-entries` alone, as activation does under `--no-preflight`:
     /// a decoy fstab or crypttab entry that opens the hidden volume refuses
     /// activation whatever the flags say. A result is reported as the

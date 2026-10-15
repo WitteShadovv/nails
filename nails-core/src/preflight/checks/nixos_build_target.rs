@@ -159,26 +159,32 @@ impl NixOSBuildTargetCheck {
 }
 
 /// The refusal of the decoy's own flake in `dir`, with what to put in its
-/// place on the hidden volume at `hidden_volume_root`.
-fn decoy_flake_refusal(dir: &Path, hidden_volume_root: &Path) -> CheckResult {
+/// place on the hidden volume at `hidden_volume_root`. Activation refuses the
+/// same target under `--no-preflight` too.
+pub(crate) fn decoy_flake_refusal(dir: &Path, hidden_volume_root: &Path) -> CheckResult {
     let hidden_flake = hidden_volume_root.join("nixos");
     CheckResult::fail_with(
         format!(
             "{} holds the decoy's own flake and {} holds none. A hidden system built from \
              the decoy's files would lack the hidden module and the hidden hardware \
-             configuration, so activation does not build it.",
+             configuration (the one without the decoy's swap), so activation does not \
+             build it.",
             dir.display(),
             hidden_flake.display()
         ),
         format!(
-            "Put a flake in {} whose configuration for this machine's hostname imports {} \
-             and the hidden module {}, or name such a flake with --nixos-flake. \
-             --overlay-only enters with the decoy's own system instead.",
+            "Write a self-contained flake in {} and lock it from inside a hidden session \
+             (`activate --overlay-only` enters one with the decoy's own system), never on \
+             the decoy, where an editor, nix's cache and the nixpkgs it fetches would leave \
+             traces. Its configuration for this machine's hostname imports the hidden \
+             module {} and reads no file of the decoy: copy what it needs from {} into the \
+             flake. Activation never updates flake.lock, so it must exist. --nixos-flake \
+             names such a flake elsewhere.",
             hidden_flake.display(),
-            dir.join("configuration.nix").display(),
             hidden_volume_root
                 .join("config/nixos/configuration.nix")
-                .display()
+                .display(),
+            dir.display()
         ),
     )
 }
@@ -446,9 +452,12 @@ mod tests {
         );
         let remedy = result.remediation().expect("instructions");
         for part in [
-            "Put a flake in /mnt/data/nixos",
-            "imports /etc/nixos/configuration.nix",
+            "Write a self-contained flake in /mnt/data/nixos and lock it",
+            "from inside a hidden session",
+            "never on the decoy",
             "the hidden module /mnt/data/config/nixos/configuration.nix",
+            "reads no file of the decoy: copy what it needs from /etc/nixos",
+            "flake.lock, so it must exist",
             "--nixos-flake",
             "--overlay-only",
         ] {

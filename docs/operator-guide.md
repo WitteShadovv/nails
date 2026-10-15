@@ -243,14 +243,32 @@ import it, or the hidden system lacks its settings (`system.autoUpgrade` forced
 off, no shell history file) and whatever you added there, such as the [panic
 switch](#panic-switch); the build runs with `--impure`, so a flake can import
 it by its absolute path. A decoy whose `/etc/nixos` holds its own flake is
-refused unless one of the first two applies: a build of the decoy's flake reads
-only the decoy's files, so neither the hidden module nor the hidden hardware
-configuration would be part of the hidden system. Put a flake in
-`<hidden-root>/nixos` whose configuration imports
-`/etc/nixos/configuration.nix` and the hidden module. `nails check` names the
-choice under "NixOS profile". The build reads the decoy store through the lower
-and writes every new path, the Nix database included, into the upper; nothing
-reaches the decoy `/nix`.
+refused unless one of the first two applies, `--no-preflight` included: a build
+of the decoy's flake reads only the decoy's files, so neither the hidden module
+nor the hidden hardware configuration (the decoy's without its swap) would be
+part of the hidden system. Give such a decoy a self-contained hidden flake:
+
+1. Enter a hidden session with the decoy's own system:
+   `sudo /mnt/data/nails activate --overlay-only`.
+2. There, `/etc/nixos` shows the decoy's `configuration.nix` beside the hidden
+   hardware configuration (`hardware-configuration.base.nix` is the decoy's
+   without its swap). Copy what the hidden system needs into
+   `<hidden-root>/nixos` and write a `flake.nix` there that builds this
+   machine's hostname from those copies and imports the hidden module
+   `<hidden-root>/config/nixos/configuration.nix` by its absolute path.
+3. Lock it there with `nix flake lock`. Activation never updates `flake.lock`,
+   so it must exist.
+4. Deactivate. The next activation builds the hidden flake.
+
+Never write or lock the flake on the decoy: the editor's state, root's
+`~/.cache/nix` and the nixpkgs the lock fetches would land on the decoy disk.
+Keep it self-contained, too. A flake that imports `/etc/nixos/configuration.nix`
+by its absolute path reads the decoy's own files at every activation, which
+updates their access times on a `relatime` decoy, and its
+`./hardware-configuration.nix` is then the decoy's, swap included. `nails check`
+names the choice under "NixOS profile". The build reads the decoy store through
+the lower and writes every new path, the Nix database included, into the upper;
+nothing reaches the decoy `/nix`.
 
 Before it activates the toplevel, activation **copies the hidden system's
 whole closure onto the hidden volume**: every store path the hidden toplevel

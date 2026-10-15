@@ -540,6 +540,54 @@ fn a_ram_decoy_root_refuses_the_entry_before_anything_is_prepared() {
     assert_eq!(host.reloads.get(), 0);
 }
 
+/// The decoy's own `/etc/nixos` flake is refused under `--no-preflight` too,
+/// before anything is prepared: the entry would otherwise run the decoy's own
+/// system, without the hidden module, and say nothing.
+#[test]
+fn the_decoy_flake_is_refused_without_the_preflight_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&hidden);
+    m.set_fake_platform(FakePlatform::nixos().with_build_target(
+        crate::platform::HostTarget::DecoyFlake {
+            dir: PathBuf::from("/etc/nixos"),
+            hidden_volume_root: hidden.clone(),
+        },
+    ));
+    let options = EnterOptions {
+        skip_preflight: true,
+        ..EnterOptions::default()
+    };
+    let host = FakeEntryHost::default();
+
+    let error = m.enter_session_on(&machine, &options, &host).unwrap_err();
+
+    let NailsError::PreFlightCheckFailed(failed) = &error else {
+        panic!("not a pre-flight refusal: {error}");
+    };
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].0, "nixos-build-target");
+    assert!(
+        failed[0]
+            .1
+            .contains("/etc/nixos holds the decoy's own flake"),
+        "{failed:?}"
+    );
+    assert!(
+        failed[0]
+            .2
+            .as_deref()
+            .is_some_and(|fix| fix.contains("never on the decoy")),
+        "{failed:?}"
+    );
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 0);
+    // --overlay-only builds nothing, so it has no build target to refuse.
+    assert!(m.refuse_decoy_flake(true).is_ok());
+}
+
 #[test]
 fn a_cancel_before_the_entry_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();

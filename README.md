@@ -534,11 +534,14 @@ your setup before running the new binary.
   hardware configuration moves to `<hidden-root>/root/upper/etc/nixos/`; run
   `nails init` again to place it.
 - **NixOS flake decoys.** A decoy whose `/etc/nixos` is a flake needs a hidden
-  flake: activation refuses to build the decoy's own flake, which would leave
-  out the hidden module and the hidden hardware configuration. Put a flake in
-  `<hidden-root>/nixos` that imports `/etc/nixos/configuration.nix` and the
-  hidden module, or name one with `nixos_flake` (see
-  [How it works](docs/operator-guide.md#how-it-works) in the operator guide).
+  flake: activation refuses to build the decoy's own flake, `--no-preflight`
+  included, because it would leave out the hidden module and the hidden
+  hardware configuration. Write a self-contained flake in
+  `<hidden-root>/nixos` that imports the hidden module and reads none of the
+  decoy's files, and lock it, from inside a hidden session
+  (`activate --overlay-only` enters one), never on the decoy; or name one with
+  `nixos_flake` (see [How it works](docs/operator-guide.md#how-it-works) in
+  the operator guide).
 - **Configuration format.** Configuration is strict TOML. Convert any earlier
   YAML configuration to `config/nails.toml` next to the binary on the hidden
   volume (see [docs/configuration.md](docs/configuration.md)). Unknown keys,

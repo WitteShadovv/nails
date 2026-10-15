@@ -159,7 +159,9 @@ in
         target = {row["name"]: row for row in report["checks"]}["nixos-build-target"]
         assert target["status"] == "fail", target
         assert "/etc/nixos holds the decoy's own flake" in target["message"], target
-        assert target["remediation"].startswith("Put a flake in /mnt/data/nixos"), target
+        assert target["remediation"].startswith(
+            "Write a self-contained flake in /mnt/data/nixos and lock it from inside a hidden session"
+        ), target
         assert report["profile"]["mode"] == "refused", report["profile"]
         dry = run_command_capture(
             machine,

@@ -283,9 +283,10 @@ pub struct Config {
     /// When set, the hidden system is built from this flake (`nix build` into
     /// the hidden root's store) instead of the one auto-discovery picks: a
     /// flake in `<hidden_volume_root>/nixos`, else the legacy hidden
-    /// configuration (the decoy's own `/etc/nixos` flake is refused). Supports
-    /// full flake references with attribute selection (e.g.,
-    /// `/mnt/data/nixos#my-host`). The flake must import the hidden module.
+    /// configuration (the decoy's own `/etc/nixos` flake is refused, also
+    /// under `--no-preflight`). Supports full flake references with attribute
+    /// selection (e.g., `/mnt/data/nixos#my-host`). The flake must import the
+    /// hidden module, and is written and locked inside a hidden session.
     ///
     /// **Precedence**: CLI `--nixos-flake` flag > config `nixos_flake` > auto-discovery
     ///

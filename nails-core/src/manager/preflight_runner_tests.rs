@@ -366,7 +366,7 @@ fn a_decoy_flake_is_refused_across_discovery_and_preflight() {
     assert!(
         result
             .remediation()
-            .is_some_and(|fix| fix.starts_with("Put a flake in /mnt/hidden/nixos")),
+            .is_some_and(|fix| fix.starts_with("Write a self-contained flake in /mnt/hidden/nixos")),
         "{result:?}"
     );
 }

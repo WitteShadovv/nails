@@ -249,8 +249,10 @@ fn render_template(root: &Path, title: &str) -> String {
 # rebuild_space_mb = 4096
 
 # NixOS flake reference for the hidden environment; the flake must import the
-# hidden module. Unset: a flake in <hidden_volume_root>/nixos, else the legacy
-# hidden configuration.
+# hidden module. Unset: a flake in <hidden_volume_root>/nixos; else, when
+# /etc/nixos is the decoy's own flake, activation refuses; otherwise the legacy
+# hidden configuration. Write and lock a hidden flake inside a hidden session,
+# never on the decoy.
 # nixos_flake = {flake_value}
 
 # Accept a persistent decoy posture instead of refusing activation. Activation
@@ -263,7 +265,7 @@ fn render_template(root: &Path, title: &str) -> String {
 # How the hidden session relates to the decoy account.
 #   "shared-home" (default): the hidden session starts from the decoy home (the
 #     root overlay's lower). The decoy's accounts, keys and app profiles are live
-#     in the hidden session; activation warns while this mode is in effect.
+#     in the hidden session; `nails check` says so on a line of its own.
 #   "fresh-home": the operator's home starts empty in the hidden session (an
 #     opaque directory in the root upper), so the decoy home is not visible.
 # (A separate fixed-UID hidden account, "separate-user", is planned for a later
