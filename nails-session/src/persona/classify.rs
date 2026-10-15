@@ -64,9 +64,9 @@ pub const TRACE_WRITERS: &[&str] = &[
 
 /// Names of components the installed desktop or distribution ships. An entry
 /// ending in `*` matches every name that starts with the part before it; any
-/// other entry matches the whole name. Matching ignores ASCII case. Autostart
-/// entries are matched by their `.desktop` stem, user units by their full
-/// name.
+/// other entry matches the whole name, or a unit of that name with any unit
+/// suffix. Matching ignores ASCII case. Autostart entries are matched by their
+/// `.desktop` stem, user units by their full name.
 pub const DESKTOP_COMPONENTS: &[&str] = &[
     // GNOME and the freedesktop.org services every desktop uses.
     "org.gnome.*",
@@ -97,7 +97,7 @@ pub const DESKTOP_COMPONENTS: &[&str] = &[
     "gmenudbusmenuproxy",
     "powerdevil",
     "plasma-*",
-    // Xfce, MATE, Cinnamon, LXQt, Budgie and elementary.
+    // Xfce, MATE, Cinnamon, LXQt, Budgie, elementary and Lomiri.
     "xfce4-*",
     "xfsettingsd",
     "xiccd",
@@ -111,11 +111,14 @@ pub const DESKTOP_COMPONENTS: &[&str] = &[
     "budgie-*",
     "org.buddiesofbudgie.*",
     "io.elementary.*",
+    "lomiri-*",
     // Input methods.
     "ibus*",
     "fcitx*",
     "org.fcitx.*",
     "im-launch",
+    // Speech for the screen reader, on by default on NixOS desktops.
+    "speech-dispatcher*",
     // Audio, the session bus, the keyring and the GnuPG and SSH agents.
     "pipewire*",
     "wireplumber*",
@@ -129,9 +132,9 @@ pub const DESKTOP_COMPONENTS: &[&str] = &[
     "gcr-ssh-agent*",
     "ssh-agent*",
     "p11-kit-*",
-    // systemd, NixOS, Flatpak and snapd.
+    // systemd, NixOS's own user units, Flatpak and snapd.
     "systemd-*",
-    "nixos-activation*",
+    "nixos-*",
     "flatpak-*",
     "snapd.*",
     "snap-userd-autostart",
@@ -150,6 +153,29 @@ pub const DESKTOP_COMPONENTS: &[&str] = &[
     "spice-vdagent",
 ];
 
+/// The suffixes of systemd unit names.
+pub const UNIT_SUFFIXES: &[&str] = &[
+    ".service",
+    ".socket",
+    ".timer",
+    ".path",
+    ".target",
+    ".mount",
+    ".automount",
+    ".swap",
+    ".slice",
+    ".scope",
+    ".device",
+];
+
+/// `name` without its systemd unit suffix, or `None` when it has none.
+pub fn unit_stem(name: &str) -> Option<&str> {
+    UNIT_SUFFIXES
+        .iter()
+        .find_map(|suffix| name.strip_suffix(suffix))
+        .filter(|stem| !stem.is_empty())
+}
+
 /// Whether `name` matches one of [`TRACE_WRITERS`].
 pub fn is_trace_writer(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -161,11 +187,15 @@ pub fn is_trace_writer(name: &str) -> bool {
 /// Whether `name` matches one of [`DESKTOP_COMPONENTS`].
 pub fn is_desktop_component(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
+    let stem = unit_stem(&lower);
     DESKTOP_COMPONENTS
         .iter()
         .any(|pattern| match pattern.strip_suffix('*') {
             Some(prefix) => lower.starts_with(&prefix.to_ascii_lowercase()),
-            None => lower == pattern.to_ascii_lowercase(),
+            None => {
+                let whole = pattern.to_ascii_lowercase();
+                lower == whole || stem == Some(whole.as_str())
+            }
         })
 }
 
@@ -210,6 +240,10 @@ mod tests {
             "nixos-activation.service",
             "update-notifier",
             "SPICE-VDAGENT",
+            // A whole-name entry also matches the unit of that name.
+            "nm-applet.service",
+            "speech-dispatcher.socket",
+            "nixos-rebuild-sycoca.service",
         ] {
             assert!(is_desktop_component(name), "{name}");
         }
@@ -217,6 +251,7 @@ mod tests {
             // A whole-name entry does not match a longer name.
             "update-notifier-extra",
             "spice-vdagent-helper",
+            "nm-applet.desktop-helper",
             // Neither prefixes nor whole names of the list.
             "dbusx.service",
             "portmaster",
@@ -225,6 +260,18 @@ mod tests {
         ] {
             assert!(!is_desktop_component(name), "{name}");
         }
+    }
+
+    #[test]
+    fn unit_stems_drop_exactly_one_unit_suffix() {
+        assert_eq!(
+            unit_stem("speech-dispatcher.socket"),
+            Some("speech-dispatcher")
+        );
+        assert_eq!(unit_stem("backup.timer"), Some("backup"));
+        assert_eq!(unit_stem("org.gnome.Evolution-alarm-notify"), None);
+        assert_eq!(unit_stem(".service"), None);
+        assert_eq!(unit_stem("dropbox"), None);
     }
 
     #[test]

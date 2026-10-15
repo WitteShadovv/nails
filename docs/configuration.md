@@ -224,8 +224,9 @@ same warning. They are:
 The components the desktop or the distribution ships itself are not reported:
 the settings daemons and session services of GNOME, KDE Plasma, Xfce, MATE,
 Cinnamon, LXQt and Budgie, the keyring, PipeWire, D-Bus, the GnuPG and SSH
-agents, input methods and update notifiers. Masking them would break or degrade
-the hidden desktop. `nails check` counts them, and `nails check --json` lists
+agents, input methods, the screen reader's speech service, NixOS's own user
+units and update notifiers. Masking them would break or degrade the hidden
+desktop. `nails check` counts them, and `nails check --json` lists
 every entry with its `origin` (`desktop` or `added`) and its `status`
 (`ignored`, `masked` or `review`). Both lists match names only: they make no
 claim about what an entry does or whether a client is signed in.

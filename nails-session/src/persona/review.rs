@@ -19,26 +19,10 @@
 //! does not, so a directory the collector does not read never drops a mask the
 //! operator asked for.
 
+use super::classify::unit_stem;
 use super::inventory::{PersonaEntry, PersonaInventory};
 use crate::config::PersonaConfig;
 use crate::config::persona::is_entry_name;
-
-/// The suffixes of systemd unit names. A `mask_inherited` name the inventory
-/// does not list is masked as a user unit when it ends in one of them, and as
-/// an autostart entry otherwise.
-const UNIT_SUFFIXES: &[&str] = &[
-    ".service",
-    ".socket",
-    ".timer",
-    ".path",
-    ".target",
-    ".mount",
-    ".automount",
-    ".swap",
-    ".slice",
-    ".scope",
-    ".device",
-];
 
 /// The kind of mask activation writes for an entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,9 +34,10 @@ pub enum MaskKind {
 }
 
 impl MaskKind {
-    /// The kind of mask for a name the inventory does not list.
+    /// The kind of mask for a name the inventory does not list: a user unit
+    /// when it ends in a unit suffix, an autostart entry otherwise.
     pub fn for_name(name: &str) -> Self {
-        if UNIT_SUFFIXES.iter().any(|suffix| name.ends_with(suffix)) {
+        if unit_stem(name).is_some() {
             MaskKind::Unit
         } else {
             MaskKind::Autostart

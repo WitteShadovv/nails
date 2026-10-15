@@ -207,6 +207,25 @@ fn a_nixos_gnome_decoy_is_clean() {
 }
 
 #[test]
+fn the_speech_service_nixos_desktops_enable_for_everyone_is_not_reported() {
+    // NixOS turns on speech-dispatcher for every graphical desktop, and KDE
+    // Plasma adds its own cache rebuild; both are the distribution's own.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/run/current-system", true);
+    let mut units = NIXOS_UNITS.to_vec();
+    units.push(("sockets.target.wants", "speech-dispatcher.socket"));
+    units.push((
+        "graphical-session-pre.target.wants",
+        "nixos-rebuild-sycoca.service",
+    ));
+    add_wants(&fs, "/etc/systemd/user", &units);
+    let result = check_for("alex", persona(PersonaMode::SharedHome, &[]))
+        .run(&fs)
+        .unwrap();
+    assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
 fn autologin_on_a_stock_ubuntu_decoy_is_the_only_item_to_review() {
     let fs = ubuntu_gnome_decoy();
     fs.mock_set_file_content(
