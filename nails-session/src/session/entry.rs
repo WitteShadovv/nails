@@ -93,6 +93,11 @@ pub trait EntryHost {
     fn failed_units(&self) -> Vec<String> {
         Vec::new()
     }
+    /// The kernel's helper paths as the decoy has them now
+    /// ([`kernel_helpers::HELPER_PATHS`]), which every way back writes back.
+    fn kernel_settings(&self) -> Vec<kernel_helpers::KernelSetting> {
+        kernel_helpers::read(&kernel_helpers::HELPER_PATHS)
+    }
 }
 
 /// The real host.
@@ -413,6 +418,11 @@ fn build(
     let mut plan = skeleton(paths, inputs, &layout);
     plan.hidden_dev = hidden_dev(&mounts, inputs.hidden_root);
     plan.failed_at_entry = host.failed_units();
+    // Recorded at every entry, before anything runs: a NixOS activation points
+    // the kernel's module loader and firmware path at its own store, the
+    // hidden build's as well as a `nixos-rebuild test` in a session entered
+    // without one, and every way back writes the decoy's values back.
+    plan.kernel_settings = host.kernel_settings();
     // Recorded before it is cleared, so a rollback always knows to set it again.
     plan.run_noexec = nextroot::is_mount_point(&mounts, &paths.run)
         && nextroot::is_noexec(&paths.run).unwrap_or(false);
@@ -468,11 +478,6 @@ fn build(
         // The last stop before the activation, which runs to its end once it
         // has begun.
         crate::cancel::checkpoint()?;
-        // The activation points the kernel's module loader and firmware path
-        // at the hidden store: every way back writes the decoy's values back.
-        plan.kernel_settings = kernel_helpers::read(&kernel_helpers::HELPER_PATHS);
-        plan.write_atomic(&paths.plan())
-            .map_err(|e| io(&paths.plan(), e))?;
         host.activate_hidden_system(&nextroot, &system)?;
         crate::cancel::checkpoint()?;
         if let Some(decoy) = &plan.decoy.system

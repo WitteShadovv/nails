@@ -298,9 +298,10 @@ It then runs the toplevel's activation chrooted into the next root with a privat
 reach, and the transition step repoints `/run/current-system` only after every
 decoy unit has stopped, so PID 1 executes the hidden systemd against the hidden
 `/etc`. The activation points the running kernel's module loader, hotplug
-helper and firmware path at the hidden system's store; the entry records the
-decoy's values first, and every way back to the decoy (the return, an entry
-rolled back or recovered) writes them back. No bootloader is installed and no system profile changes. The hidden
+helper and firmware path at the hidden system's store, and so does a
+`nixos-rebuild test` in a session entered without a build; every entry records
+the decoy's values first, and every way back to the decoy (the return, an
+emergency, an entry rolled back or recovered) writes them back. No bootloader is installed and no system profile changes. The hidden
 toplevel must run on the decoy's kernel: the kernel modules come from
 `/run/booted-system`. `--overlay-only` skips the build and enters with the
 decoy's own system plus the hidden `/etc` and home.

@@ -440,6 +440,48 @@ mod tests {
         assert!(report.fallback.unwrap().contains("powering off"));
     }
 
+    /// On the decoy (an activation interrupted after its entry transition,
+    /// or a switch that failed), acting for real on a scratch `/run`: the
+    /// session's masks of both kinds go, the kernel paths come back and the
+    /// runtime directory is removed.
+    #[test]
+    fn the_decoy_side_undoes_the_masks_and_the_kernel_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let h = Host {
+            act: true,
+            ..host(dir.path())
+        };
+        std::fs::create_dir_all(&h.runtime_dir).unwrap();
+        let kept = Snapshot::take(&h.run);
+        std::fs::write(h.runtime_dir.join(SNAPSHOT_NAME), kept.to_text()).unwrap();
+        let modprobe = dir.path().join("modprobe");
+        std::fs::write(&modprobe, "/nix/store/decoy-kmod/bin/modprobe\n").unwrap();
+        let mut plan = sample();
+        plan.owner = None;
+        plan.backend = Vec::new();
+        plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+        plan.kernel_settings = kernel_helpers::read(&[modprobe.to_str().unwrap()]);
+        std::fs::write(&modprobe, "/nix/store/hidden-kmod/bin/modprobe\n").unwrap();
+        let mut masks = runtime_units::mask_units(&h.run, &plan.masks).unwrap();
+        masks.extend(runtime_units::mask_units_best_effort(
+            &h.run,
+            &plan.boot_masks,
+        ));
+        assert_eq!(masks.len(), 2);
+        let mut report = HotReport::new(Side::Decoy, Finish::Return);
+
+        decoy(&plan, &h, &mut report);
+
+        assert_eq!(
+            std::fs::read_to_string(&modprobe).unwrap(),
+            "/nix/store/decoy-kmod/bin/modprobe"
+        );
+        for mask in masks {
+            assert!(std::fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
+        }
+        assert!(!h.runtime_dir.exists());
+    }
+
     #[test]
     fn a_requested_power_off_skips_the_way_back() {
         let dir = tempfile::tempdir().unwrap();

@@ -7,11 +7,12 @@
 //! the program the kernel runs to load a module (`/proc/sys/kernel/modprobe`),
 //! the hotplug helper (`/proc/sys/kernel/hotplug`) and the firmware search
 //! path (`/sys/module/firmware_class/parameters/path`). The hidden system's
-//! activation runs on the decoy's kernel, and nothing runs the decoy's
-//! activation again on the way back. So the entry records the decoy's values
-//! before the hidden activation ([`read`]), and every way back to the decoy (a
-//! rolled-back entry, the return transition, an emergency on the decoy) writes
-//! them back ([`restore`]). Without that, once the hidden system's store is
+//! activation runs on the decoy's kernel, and so does a `nixos-rebuild test`
+//! in a session entered without a hidden build; nothing runs the decoy's
+//! activation again on the way back. So every entry records the decoy's values
+//! before anything runs ([`read`]), and every way back to the decoy (a
+//! rolled-back entry, a disarmed next root, the return transition, an
+//! emergency on the decoy) writes them back ([`restore`]). Without that, once the hidden system's store is
 //! gone the decoy kernel would load no module and no firmware until power-off,
 //! and would name store paths the decoy does not have.
 

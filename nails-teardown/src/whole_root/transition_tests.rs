@@ -598,6 +598,79 @@ fn the_masks_of_an_entry_whose_switch_failed_go_and_the_decoy_s_own_stay() {
     );
 }
 
+/// A file that stands for the kernel's module loader path: the decoy's
+/// value recorded, then the session's written over it.
+fn repointed_modprobe(world: &World) -> Vec<kernel_helpers::KernelSetting> {
+    let modprobe = world.dir.path().join("modprobe");
+    fs::write(&modprobe, "/nix/store/decoy-kmod/bin/modprobe\n").unwrap();
+    let recorded = kernel_helpers::read(&[modprobe.to_str().unwrap()]);
+    fs::write(&modprobe, "/nix/store/hidden-kmod/bin/modprobe\n").unwrap();
+    recorded
+}
+
+fn modprobe_now(world: &World) -> String {
+    fs::read_to_string(world.dir.path().join("modprobe")).unwrap()
+}
+
+/// The entry's snapshot of `/run`, then the masks the entry transition
+/// writes: the decoy units in the runtime unit directory, the boot-loader
+/// units in the control directory.
+fn masked_after_snapshot(world: &World, plan: &Plan) -> Vec<PathBuf> {
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&world.run()).to_text(),
+    )
+    .unwrap();
+    let mut masks = runtime_units::mask_units(&world.run(), &plan.masks).unwrap();
+    masks.extend(runtime_units::mask_units_best_effort(
+        &world.run(),
+        &plan.boot_masks,
+    ));
+    assert_eq!(masks.len(), plan.masks.len() + plan.boot_masks.len());
+    masks
+}
+
+/// A reboot met a next root the activation left unarmed, after an entry
+/// transition whose switch failed: the decoy gets back its kernel paths and
+/// loses the session's masks of both kinds.
+#[test]
+fn a_disarmed_next_root_gives_the_decoy_back_its_kernel_paths_and_units() {
+    let world = World::new();
+    let mut plan = armed(Direction::Enter);
+    plan.armed = None;
+    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+    plan.kernel_settings = repointed_modprobe(&world);
+    world.write_plan(&plan);
+    let masks = masked_after_snapshot(&world, &plan);
+
+    assert!(matches!(run(&world.env(true, 1_000)), Outcome::Disarmed(_)));
+
+    assert_eq!(modprobe_now(&world), "/nix/store/decoy-kmod/bin/modprobe");
+    for mask in masks {
+        assert!(fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
+    }
+}
+
+#[test]
+fn the_way_back_gives_the_decoy_back_its_kernel_paths_and_units() {
+    let world = World::new();
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+    plan.kernel_settings = repointed_modprobe(&world);
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let masks = masked_after_snapshot(&world, &plan);
+
+    let outcome = run(&world.env(true, 1_000));
+    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+
+    assert_eq!(modprobe_now(&world), "/nix/store/decoy-kmod/bin/modprobe");
+    for mask in masks {
+        assert!(fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
+    }
+}
+
 #[test]
 fn the_read_only_rule_lives_from_the_entry_to_the_way_back_only() {
     let world = World::new();

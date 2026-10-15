@@ -11,11 +11,12 @@ use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs};
 use nails_core::{NailsError, nixos::NixOSBuilder};
 use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
+use nails_teardown::whole_root::kernel_helpers::{self, KernelSetting};
 use nails_teardown::whole_root::plan::{
     CarriedMount, DecoyRoot, Direction, Plan, PolicyMountKind, SNAPSHOT_NAME, unix_now,
 };
 use nails_teardown::whole_root::transition::{self, DROPIN_DIR, DROPIN_NAME, Env, Outcome};
-use nails_teardown::whole_root::{carry, nextroot};
+use nails_teardown::whole_root::{carry, nextroot, runtime_units};
 use std::cell::Cell;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -29,6 +30,8 @@ struct FakeHost {
     populated_at_first_reload: Cell<Option<bool>>,
     /// Request a cancel during the first reload, as a Ctrl+C would.
     cancel_at_reload: bool,
+    /// The files that stand for the kernel's helper paths.
+    helpers: Vec<PathBuf>,
 }
 
 impl EntryHost for FakeHost {
@@ -67,6 +70,10 @@ impl EntryHost for FakeHost {
     }
     fn activate_hidden_system(&self, _: &Path, _: &Path) -> nails_core::Result<()> {
         Ok(())
+    }
+    fn kernel_settings(&self) -> Vec<KernelSetting> {
+        let paths: Vec<&str> = self.helpers.iter().filter_map(|p| p.to_str()).collect();
+        kernel_helpers::read(&paths)
     }
 }
 
@@ -697,6 +704,83 @@ fn an_entry_refused_at_its_last_check_leaves_nothing_in_a_service_s_namespace() 
             assert!(error.to_string().contains("does not resolve"), "{error}");
         });
         assert_eq!(left, "", "the service's namespace keeps them");
+    });
+}
+
+#[test]
+fn a_rollback_gives_the_decoy_back_its_kernel_paths_and_unit_masks() {
+    // Every entry records the kernel's helper paths before anything runs (an
+    // activation in a session entered without a build points them at its own
+    // store too), and a switch that fails after the entry transition leaves
+    // the session's masks in /run. A rollback (`nails recover` runs one)
+    // gives the decoy back both.
+    let _ = Rerun::new(test_path!(
+        a_rollback_gives_the_decoy_back_its_kernel_paths_and_unit_masks
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        std::fs::write(
+            world
+                .decoy
+                .path()
+                .join("usr/lib/systemd/system/systemd-boot-random-seed.service"),
+            "",
+        )
+        .unwrap();
+        let helpers = tempfile::tempdir().unwrap();
+        let modprobe = helpers.path().join("modprobe");
+        let firmware = helpers.path().join("path");
+        std::fs::write(&modprobe, "/nix/store/decoy-kmod/bin/modprobe\n").unwrap();
+        std::fs::write(&firmware, "/nix/store/decoy-firmware/lib/firmware\n").unwrap();
+        let host = FakeHost {
+            helpers: vec![modprobe.clone(), firmware.clone()],
+            ..FakeHost::default()
+        };
+        let paths = world.paths();
+        let entry = entry::prepare(&paths, &world.inputs(), &host).expect("the entry");
+        let recorded: Vec<&str> = entry
+            .plan
+            .kernel_settings
+            .iter()
+            .map(|s| s.value.as_str())
+            .collect();
+        assert_eq!(
+            recorded,
+            [
+                "/nix/store/decoy-kmod/bin/modprobe",
+                "/nix/store/decoy-firmware/lib/firmware"
+            ]
+        );
+        let plan = &entry.plan;
+        assert!(!plan.masks.is_empty(), "{plan:?}");
+        assert_eq!(plan.boot_masks, ["systemd-boot-random-seed.service"]);
+        // The entry transition masked the units, an activation in the
+        // session repointed the kernel, and then the switch failed.
+        runtime_units::mask_units(&paths.run, &plan.masks).unwrap();
+        runtime_units::mask_units_best_effort(&paths.run, &plan.boot_masks);
+        std::fs::write(&modprobe, "/nix/store/hidden-kmod/bin/modprobe\n").unwrap();
+        std::fs::write(&firmware, "/nix/store/hidden-firmware/lib/firmware").unwrap();
+
+        entry::rollback(&paths);
+
+        assert_eq!(
+            std::fs::read_to_string(&modprobe).unwrap(),
+            "/nix/store/decoy-kmod/bin/modprobe"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&firmware).unwrap(),
+            "/nix/store/decoy-firmware/lib/firmware"
+        );
+        for (dir, names) in [
+            ("systemd/system", &plan.masks),
+            ("systemd/system.control", &plan.boot_masks),
+        ] {
+            for name in names {
+                let mask = paths.run.join(dir).join(name);
+                assert!(std::fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
+            }
+        }
     });
 }
 
