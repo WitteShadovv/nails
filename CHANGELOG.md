@@ -16,7 +16,7 @@ of this changelog for that version becomes the release notes word for word, and
 ## [0.3.0-rc.1] - 2026-10-14
 
 NAILS 0.3.0 replaces the per-directory live overlays of 0.2 with one design: the hidden session is
-an overlay over the whole decoy root, entered and left with `systemctl soft-reboot` (ADR 0008).
+an overlay over the whole decoy root, entered and left with `systemctl soft-reboot`.
 Debian 13 or newer, Ubuntu 24.04 or newer and, provisionally, their derivatives join NixOS as
 decoys.
 
@@ -60,7 +60,7 @@ config and CLI surfaces; there are no compatibility shims.
 
 ### Added
 
-- The whole-root session (ADR 0008). `nails activate` builds one overlay over the whole decoy root
+- The whole-root session. `nails activate` builds one overlay over the whole decoy root
   at `/run/nextroot` (the decoy root read-only as the lower, `<hidden-root>/root/upper` as the
   upper), applies a fixed policy to every other decoy filesystem (the ESP and `/boot` bound
   read-only, other mounted local filesystems overlaid with an upper under
@@ -174,8 +174,8 @@ config and CLI surfaces; there are no compatibility shims.
   memory to the decoy.
 - Documentation: an operator guide organised by where each step runs, with a recovery runbook,
   `docs/threat-model.md`, `docs/configuration.md`, `docs/backends.md`,
-  `docs/decoy-requirements.md`, `docs/architecture.md`, `docs/distribution.md`,
-  `docs/verify-release.md` and architecture decision records under `docs/adr/`.
+  `docs/decoy-requirements.md`, `docs/architecture.md`, `docs/distribution.md` and
+  `docs/verify-release.md`.
 
 ### Changed
 
@@ -223,7 +223,7 @@ config and CLI surfaces; there are no compatibility shims.
   `Cargo.lock` and this changelog, builds from source, rebuilds on a fresh runner, runs the full
   E2E suite, attests the assets and an SBOM, and drafts the release with this section as its
   notes. `docs/verify-release.md` explains how to verify the assets.
-- Development: the library is split into crates along the session's boundaries (ADR 0010), unsafe
+- Development: the library is split into crates along the session's boundaries, unsafe
   code is denied outside scoped, commented sites, the toolchain is pinned in
   `rust-toolchain.toml` (1.93.0), the flake pins nixos-unstable of 2026-10-11, and a `justfile` is
   the single source of local and CI commands. The VM tests cover the session on NixOS, Debian 13
