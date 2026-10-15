@@ -137,6 +137,42 @@ fn entering_repoints_current_system_masks_decoy_units_and_records_the_entry() {
 }
 
 #[test]
+fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
+    // The decoy's initrd wrote lines for the decoy's root and store, which the
+    // switch leaves behind; the kernel then hands their IDs to the next mounts
+    // made (here ID 62 to the hidden volume). Joined to that mount, the root's
+    // x-initrd.mount would hide it from the shutdown order.
+    let world = World::new();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    let utab = world.run().join("mount/utab");
+    fs::write(
+        &utab,
+        "ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
+         ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n\
+         ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=X-kept\n\
+         SRC=/dev/vda TARGET=/ OPTS=x-initrd.mount\n",
+    )
+    .unwrap();
+    let mut env = world.env(true, 1_010);
+    let next = world.nextroot();
+    env.mounts.extend(parse_mountinfo(&format!(
+        "62 1 8:0 / / rw - ext4 /dev/vda rw\n\
+         85 62 0:50 / /nix/store rw - overlay overlay rw\n\
+         63 40 254:0 / {}/mnt/data rw - ext4 /dev/mapper/data rw\n",
+        next.display()
+    )));
+
+    assert_eq!(run(&env), Outcome::Entered);
+    assert_eq!(
+        fs::read_to_string(&utab).unwrap(),
+        "ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=X-kept\n\
+         SRC=/dev/vda TARGET=/ OPTS=x-initrd.mount\n"
+    );
+}
+
+#[test]
 fn an_entry_whose_init_does_not_resolve_is_disarmed_instead_of_freezing_pid1() {
     let world = World::new();
     install_dropin(&world.run(), Path::new("/run/overlay-runtime/control")).unwrap();
@@ -198,7 +234,15 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     // In the decoy, just before entering: the snapshot and the utab copy.
     let snapshot = Snapshot::take(&r);
     fs::write(world.runtime().join(SNAPSHOT_NAME), snapshot.to_text()).unwrap();
-    fs::write(world.runtime().join(UTAB_NAME), "ID=1 decoy\n").unwrap();
+    // The decoy's copy: a line for the mount that is the next root now (ID 40
+    // in the world's mount table), and one for a decoy mount the entry's
+    // switch left behind, whose ID the kernel may have handed on since.
+    fs::write(
+        world.runtime().join(UTAB_NAME),
+        "ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=x-initrd.mount\n\
+         ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n",
+    )
+    .unwrap();
     // The hidden session.
     repoint_current_system(&r, Path::new("/nix/store/bbb-nixos-system")).unwrap();
     fs::write(r.join("hidden-probe"), "x").unwrap();
@@ -271,7 +315,8 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     );
     assert_eq!(
         fs::read_to_string(r.join("mount/utab")).unwrap(),
-        "ID=1 decoy\n"
+        "ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=x-initrd.mount\n",
+        "the hidden session's line and the stale decoy line are gone"
     );
     assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
     let cursor = fs::read(r.join(run_scrub::KERNEL_SEQNUM)).unwrap();

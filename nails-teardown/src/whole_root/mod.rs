@@ -12,6 +12,7 @@
 //! - [`run_scrub`]: the `/run` snapshot and scrub;
 //! - [`run_records`]: the decoy's records in `/run` that its start writes to
 //!   disk, put back on the way back;
+//! - [`utab`]: libmount's `utab` lines that still name a mount after a switch;
 //! - [`ret`]: preparing the way back to the decoy;
 //! - [`carry`]: the decoy filesystems the hidden session holds for the way
 //!   back;
@@ -34,3 +35,4 @@ pub mod run_scrub;
 pub mod runtime_units;
 pub mod tools;
 pub mod transition;
+pub mod utab;

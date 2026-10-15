@@ -320,7 +320,6 @@ mod kernel_tests {
             std::fs::create_dir_all(run.join("mount")).unwrap();
             std::fs::write(run.join("mount/utab"), "ID=1 decoy\n").unwrap();
             std::fs::write(runtime.join(SNAPSHOT_NAME), Snapshot::take(run).to_text()).unwrap();
-            std::fs::write(runtime.join(UTAB_NAME), "ID=1 decoy\n").unwrap();
 
             // The hidden session and its shutdown.
             let initramfs = run.join("initramfs");
@@ -340,6 +339,28 @@ mod kernel_tests {
             // The decoy root at the next root, with /run bound in.
             nextroot::bind(world.decoy.path(), &world.nextroot(), false).unwrap();
             nextroot::bind(run, &world.nextroot().join("run"), false).unwrap();
+            // The decoy's copy taken at entry: a line for the decoy root,
+            // which is the next root's mount now, and one whose mount the
+            // entry's switch left behind (here the scratch /run's own ID,
+            // which is not below the next root).
+            let table = read_mountinfo().unwrap();
+            let decoy_root = top_mount_at(&table, &world.nextroot()).unwrap();
+            let left_behind = top_mount_at(&table, run).unwrap();
+            let kept = format!(
+                "ID={} SRC={} TARGET=/sysroot ROOT={} OPTS=x-initrd.mount\n",
+                decoy_root.mount_id,
+                decoy_root.source.display(),
+                decoy_root.root.display()
+            );
+            std::fs::write(
+                runtime.join(UTAB_NAME),
+                format!(
+                    "{kept}ID={} SRC={} TARGET=/sysroot/run ROOT=/ OPTS=x-initrd.mount\n",
+                    left_behind.mount_id,
+                    left_behind.source.display()
+                ),
+            )
+            .unwrap();
             let mut plan = world.plan(Direction::Leave);
             plan.entered_at = Some(1);
             // The entry cleared noexec on this /run; the way back sets it again.
@@ -363,7 +384,8 @@ mod kernel_tests {
             assert!(run.join("decoy-lock").exists());
             assert_eq!(
                 std::fs::read_to_string(run.join("mount/utab")).unwrap(),
-                "ID=1 decoy\n"
+                kept,
+                "only the decoy's line for a mount of the next root is back"
             );
             nextroot::detach_tree(&world.nextroot());
         });

@@ -221,10 +221,15 @@ An activation moves through these layers; each names its modules and crates:
   copy as the last userspace step before each switch. It acts only on an armed
   plan: entering, it repoints `/run/current-system` (NixOS), installs the
   session's runtime units and masks, narrows the `/run` snapshot to what the
-  decoy's own shutdown left and copies the decoy's name-server records;
-  leaving, it repoints back, scrubs `/run`, puts those records back, restores
-  `utab` and writes the kmsg cursor. An unarmed populated `/run/nextroot` is
-  detached instead.
+  decoy's own shutdown left, drops the `utab` lines of the mounts the switch
+  leaves behind and copies the decoy's name-server records; leaving, it
+  repoints back, scrubs `/run`, puts those records back, restores the decoy's
+  `utab` lines that still name a mount of its root and writes the kmsg cursor.
+  libmount joins a `utab` line to a mount by its kernel mount ID, and the
+  kernel reuses the IDs of the mounts a switch leaves behind: a stale line
+  would lend its options to an unrelated mount (an initrd's `x-initrd.mount`
+  takes a mount out of systemd's shutdown order). An unarmed populated
+  `/run/nextroot` is detached instead.
 - **Way back and emergency** (`nails-session`'s `session::leave`, `nails-teardown`'s
   `whole_root::ret` and `whole_root::emergency`) mount the decoy root at
   `/run/nextroot`, mark the backend for deferred removal and enqueue the

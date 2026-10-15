@@ -16,14 +16,15 @@
 //!   boot-loader units that would only fail on the read-only boot filesystems,
 //!   install the hidden session's runtime units (and, opted in, the udev rule
 //!   that keeps unused disks read-only, [`crate::whole_root::disk_guard`]),
-//!   narrow the `/run` snapshot to what the decoy's own shutdown left, copy the
-//!   decoy's records ([`crate::whole_root::run_records`]), and record the
-//!   entry.
+//!   narrow the `/run` snapshot to what the decoy's own shutdown left, drop the
+//!   `utab` lines of the mounts the switch leaves behind
+//!   ([`crate::whole_root::utab`]), copy the decoy's records
+//!   ([`crate::whole_root::run_records`]), and record the entry.
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
 //!   decoy, make the disks the session set read-only writable again and remove
 //!   the rule and the drop-ins, scrub `/run` ([`crate::whole_root::run_scrub`]),
-//!   put the decoy's records back, restore `utab`, and write the kmsg cursor
-//!   last.
+//!   put the decoy's records back, restore the decoy's `utab` lines that still
+//!   name a mount of the decoy root, and write the kmsg cursor last.
 //!
 //! Before either it checks the next root's init the way PID 1 will; when the
 //! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
@@ -46,7 +47,7 @@ use crate::whole_root::plan::{
     UTAB_NAME, unix_now,
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
-use crate::whole_root::{kernel_helpers, run_records, runtime_units};
+use crate::whole_root::{kernel_helpers, run_records, runtime_units, utab};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -366,6 +367,7 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
     }
     runtime_units::mask_units_best_effort(&env.run, &plan.boot_masks);
     narrow_snapshot(env);
+    prune_utab(env);
     // Without the copy, the way back clears the records instead.
     if run_records::save(&env.run, &env.runtime_dir.join(RECORDS_NAME)).is_err() {
         let _ = std::fs::remove_file(env.runtime_dir.join(RECORDS_NAME));
@@ -394,10 +396,25 @@ fn narrow_snapshot(env: &Env) {
     }
 }
 
+/// Keep in `utab` only the lines that still name the same mount once PID 1
+/// has switched to the next root ([`utab::surviving_lines`]): the hidden
+/// session must not join the decoy's lines to the mounts that reuse the IDs
+/// of the decoy's root and its submounts. Best effort: on any error the file
+/// stays as it is.
+fn prune_utab(env: &Env) {
+    let Ok(text) = std::fs::read(env.run.join(run_scrub::UTAB)) else {
+        return;
+    };
+    let kept = utab::surviving_lines(&text, &env.mounts, &env.nextroot);
+    if kept != text {
+        let _ = run_scrub::restore_utab(&env.run, &kept);
+    }
+}
+
 fn leave(env: &Env, plan: &Plan) -> Outcome {
     // Read everything the scrub needs before it removes the runtime directory.
     let snapshot = env.saved_snapshot();
-    let utab = std::fs::read(env.runtime_dir.join(UTAB_NAME)).ok();
+    let saved_utab = std::fs::read(env.runtime_dir.join(UTAB_NAME)).ok();
     let records = std::fs::read(env.runtime_dir.join(RECORDS_NAME)).ok();
     if let Err(why) = repoint_and_check(env, &plan.decoy) {
         if let Some(system) = &plan.hidden.system {
@@ -436,8 +453,12 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         ),
     };
     run_records::restore(&env.run, records.as_deref());
-    if let Some(utab) = utab {
-        let _ = run_scrub::restore_utab(&env.run, &utab);
+    // The decoy's copy, taken at entry, names mounts by their IDs at that time;
+    // the decoy root comes back as new mounts, and the old IDs may name the
+    // session's mounts or none.
+    if let Some(saved) = saved_utab {
+        let kept = utab::surviving_lines(&saved, &env.mounts, &env.nextroot);
+        let _ = run_scrub::restore_utab(&env.run, &kept);
     }
     // A process exec'd from /run keeps running once it turns noexec again.
     if plan.run_noexec {
