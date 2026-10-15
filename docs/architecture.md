@@ -206,15 +206,15 @@ An activation moves through these layers; each names its modules and crates:
   space, the amnesic-decoy guard, and more — before anything is mounted, and
   fails closed.
 - **Entry** (`session::entry`, `session::policy`, `session::nixos`, in
-  `nails-session`) snapshots
-  `/run`, writes the session plan and the RAM copy of the binary to
-  `/run/overlay-runtime`, mounts the root overlay at `/run/nextroot`, builds
-  and activates the hidden NixOS system there, applies the fstab policy, checks
-  the init and installs the transition drop-in. Any failure undoes all of it, so
-  a populated `/run/nextroot` is never left behind. How a path under the hidden
-  root is resolved without following a planted link is described in
-  `nails_base::filesystem::safe_path`; why the overlay covers the whole root and
-  is entered with a soft-reboot is explained
+  `nails-session`) snapshots `/run`, writes the session plan and the RAM copy of
+  the binary to `/run/overlay-runtime` with a copy of libmount's `utab` and the
+  mount table lines of the mounts it names, mounts the root overlay at
+  `/run/nextroot`, builds and activates the hidden NixOS system there, applies
+  the fstab policy, checks the init and installs the transition drop-in. Any
+  failure undoes all of it, so a populated `/run/nextroot` is never left behind.
+  How a path under the hidden root is resolved without following a planted link
+  is described in `nails_base::filesystem::safe_path`; why the overlay covers
+  the whole root and is entered with a soft-reboot is explained
   [above](#why-one-overlay-over-the-whole-root).
 - **Transition** (`nails-teardown`, `whole_root::transition`) is the
   `ExecStart=` of `systemd-soft-reboot.service`, run by systemd from the RAM
@@ -222,14 +222,19 @@ An activation moves through these layers; each names its modules and crates:
   plan: entering, it repoints `/run/current-system` (NixOS), installs the
   session's runtime units and masks, narrows the `/run` snapshot to what the
   decoy's own shutdown left, drops the `utab` lines of the mounts the switch
-  leaves behind and copies the decoy's name-server records; leaving, it
-  repoints back, scrubs `/run`, puts those records back, restores the decoy's
-  `utab` lines that still name a mount of its root and writes the kmsg cursor.
-  libmount joins a `utab` line to a mount by its kernel mount ID, and the
-  kernel reuses the IDs of the mounts a switch leaves behind: a stale line
-  would lend its options to an unrelated mount (an initrd's `x-initrd.mount`
-  takes a mount out of systemd's shutdown order). An unarmed populated
-  `/run/nextroot` is detached instead.
+  leaves behind and copies the decoy's name-server records; leaving, it repoints
+  back, scrubs `/run`, puts those records back, gives the decoy's `utab` lines
+  back to the mounts the way back restored and writes the kmsg cursor. libmount
+  joins a `utab` line to the mount with the line's kernel mount ID, or, for a
+  line without one, to the mount at the line's path with its source and root,
+  and the kernel hands the IDs of the mounts a switch leaves behind to the next
+  mounts it makes: a stale line would lend its options to an unrelated mount. An
+  initrd's `x-initrd.mount` takes a mount out of systemd's shutdown order; when
+  that happens while systemd mounts or unmounts it, PID 1 never runs the job
+  that waited for that mount, and the switch or the power-off hangs. The decoy
+  root and the filesystems the session carried come back as new mounts, so each
+  of the decoy's lines that names an ID takes the ID of the mount now where its
+  mount was at entry. An unarmed populated `/run/nextroot` is detached instead.
 - **Way back and emergency** (`nails-session`'s `session::leave`, `nails-teardown`'s
   `whole_root::ret` and `whole_root::emergency`) mount the decoy root at
   `/run/nextroot`, mark the backend for deferred removal and enqueue the

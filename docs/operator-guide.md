@@ -185,7 +185,8 @@ Keep all of it `root`-owned on the hidden volume.
    `incremental-history-flush` and `space`. `nails check` runs the same checks
    and changes nothing.
 2. It snapshots `/run` and writes the session plan to `/run/overlay-runtime`,
-   together with a RAM copy of the binary and the configuration.
+   together with a RAM copy of the binary and the configuration, and a copy of
+   libmount's `utab` with the mount table lines of the mounts it names.
 3. It mounts the root overlay at `/run/nextroot`: the decoy root, read-only, as
    the lower; `<hidden-root>/root/upper` as the upper.
 4. On NixOS with a hidden configuration it builds and activates the hidden
@@ -348,7 +349,11 @@ shutdown stops every hidden program. The last step before the switch:
   on the decoy disk;
 - gives the kernel back the decoy's module loader, hotplug helper and firmware
   path, which a hidden NixOS activation pointed at its own store;
-- restores libmount's `utab` to the copy taken at entry;
+- puts libmount's `utab` back as the decoy had it at entry, without the lines
+  of mounts that did not come back: the decoy root and the filesystems the
+  session carried come back as new mounts, and each line that names a mount by
+  its kernel mount ID takes the ID of the mount now in its place, so libmount
+  never joins a line to another mount that got its old ID;
 - writes journald's kernel-message cursor, so the decoy journal imports no
   kernel record of the hidden session.
 
@@ -389,6 +394,9 @@ and, on a volatile decoy, a journal that starts late:
   hidden build's progress, its shutdown) are gone with the hidden ones, and the
   kernel's boot messages are not read in again. `uptime` and `dmesg` still go
   back to the boot.
+- the decoy root and the filesystems the session carried, mounted again under
+  new mount IDs (`findmnt -o ID`), and `/run/credentials` as a mount of its
+  own, where a plain soft-reboot keeps the mounts of the boot.
 
 On a persistent decoy journal (which the decoy requirements forbid), the decoy's
 own shutdown and start lines appear under one boot ID, together with the kernel's
