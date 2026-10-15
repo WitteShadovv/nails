@@ -344,8 +344,9 @@ Both transitions log you out. Save your work first.
 <img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: posture active, session hidden, the hidden system path, the overlaid mounts, the masked boot-loader unit and the last activation's duration" width="820">
 
 Every command accepts `--json` and prints one line with a versioned envelope
-(`schema_version`, `command`, `ok`, then `data` or `error`). The schemas are in
-[docs/schemas/](docs/schemas/).
+(`schema_version`, `command`, `ok`, then `data` or `error`), except `activate`,
+which prints a progress line before its result (one JSON object per line). The
+schemas are in [docs/schemas/](docs/schemas/).
 
 </details>
 
@@ -511,7 +512,10 @@ Every command returns one of these codes; scripts can rely on them.
 With `--json`, every command writes one line: a stable envelope with
 `schema_version` (currently `1`), the `command` name, an `ok` boolean, and either
 a typed `data` object or an `error` object with a snake_case `code`, a `message`
-and an optional `hint`. A new schema version signals an incompatible change.
+and an optional `hint`. `activate` is the exception: it prints a progress line
+first and then its result, one JSON object per line
+([docs/schemas/activate.schema.json](docs/schemas/activate.schema.json)). A new
+schema version signals an incompatible change.
 
 </details>
 

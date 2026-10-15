@@ -339,12 +339,19 @@ logs it in again, as at boot). The hidden volume is unmounted and its mapping
 closed by the switch itself, once the overlay that held it is released.
 
 **What a soft-reboot leaves.** Nothing of the hidden session's files, but some
-kernel state, all of it in RAM and gone at power-off:
+kernel state, in RAM and gone at power-off:
 
 - the kernel ring buffer (`dmesg`), with the hidden session's kernel messages;
 - `SoftRebootsCount`, two per session, readable with `systemctl show` on
   systemd 256 and newer;
-- the same boot ID and continuous uptime across both transitions.
+- the same boot ID and continuous uptime across both transitions;
+- the network links, addresses, routes and VPN tunnels the hidden session
+  created: the way back does not take them down, so they stay up in the decoy
+  until power-off. The decoy's NetworkManager adopts such a link as connected
+  externally and records the profile it generates for it, with the time, in
+  `/var/lib/NetworkManager/timestamps` on the decoy disk. Bring down every
+  connection, tunnel and link you added before you deactivate, or power off
+  after the session.
 
 On a persistent decoy journal (which the decoy requirements forbid), the decoy's
 own shutdown and start lines appear under one boot ID, together with the kernel's

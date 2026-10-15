@@ -15,6 +15,12 @@
 #      in /etc/resolv.conf as the decoy's resolvconf.service wrote it at the
 #      decoy's start (a probe copies it before NetworkManager starts), in
 #      /etc/resolv.conf now, or in the decoy journal.
+#
+# The dummy link the hidden connection runs on is logged, not asserted: a
+# soft-reboot keeps the kernel's network state, so the link stays up in the
+# decoy with its address and route until power-off, and the decoy's
+# NetworkManager adopts it. That is a documented residual channel (the
+# residue catalog's network-state row), not something the way back undoes.
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
