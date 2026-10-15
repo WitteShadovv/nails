@@ -213,8 +213,8 @@ logind.
   volume is closed: it writes an entry for every mounted filesystem.
 
   The check reads `.nix` files only. Keep the other files in `/etc/nixos`
-  (notes, scripts, a README) free of these names too, and the history of a
-  git repository there, which a flake decoy's `/etc/nixos` must be: a line
+  (notes, scripts, a README) free of these names too, and, where
+  `/etc/nixos` is a git repository, as a flake often is, its history: a line
   removed from a file stays in the commit that added it.
 
 ### Ubuntu
