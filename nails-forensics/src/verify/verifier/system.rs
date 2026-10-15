@@ -71,7 +71,7 @@ impl<F: Filesystem> Verifier<F> {
                     "file",
                     format!("Artifact file found: {}", path.display()),
                 )
-                .with_fix_guidance(artifact_fix_guidance(artifact.scope, &path)),
+                .with_fix_guidance(artifact_fix_guidance(artifact, &path)),
             });
         }
 
@@ -295,8 +295,8 @@ impl<F: Filesystem> Verifier<F> {
                 "RAM keeps the session's data until power-off, and briefly after it",
             )
             .with_fix_guidance(
-                "End the session with --poweroff and leave the machine off for a few minutes \
-                 before handing it over",
+                "Power off (in the hidden session: nails deactivate --poweroff) and leave the \
+                 machine off for a few minutes before handing it over",
             ),
         );
 
@@ -313,13 +313,9 @@ fn map_artifact_severity(severity: ArtifactSeverity) -> Severity {
 }
 
 /// Fix guidance for a leftover artifact, tailored to where it lives.
-fn artifact_fix_guidance(scope: ArtifactScope, path: &Path) -> String {
-    match scope {
-        ArtifactScope::Runtime => format!(
-            "Leftover of an interrupted activation, in RAM; run 'nails recover' on the decoy, \
-             or power off (then confirm {} is gone)",
-            path.display()
-        ),
+fn artifact_fix_guidance(artifact: &artifacts::Artifact, path: &Path) -> String {
+    match artifact.scope {
+        ArtifactScope::Runtime => runtime_fix_guidance(artifact.id, path),
         ArtifactScope::Decoy => {
             format!(
                 "Trace on the decoy filesystem; remove it: rm -rf {}",
@@ -330,6 +326,29 @@ fn artifact_fix_guidance(scope: ArtifactScope, path: &Path) -> String {
             "Expected on the hidden volume while mounted; unmount it before handing over the machine ({})",
             path.display()
         ),
+    }
+}
+
+/// What to do about a NAILS file left in RAM. `nails recover` removes what an
+/// interrupted activation left; nothing removes the read-only rule a way back
+/// that did not finish left, or the fixed paths of an earlier release, but a
+/// power-off clears them all.
+fn runtime_fix_guidance(id: &str, path: &Path) -> String {
+    let path = path.display();
+    match id {
+        "runtime-copy-dir" => format!(
+            "Leftover of an interrupted activation, in RAM; run 'nails recover' on the decoy, \
+             or power off (then confirm {path} is gone)"
+        ),
+        "read-only-disks-rule" => format!(
+            "Left by a way back that did not finish, in RAM; power off, or remove it as \
+             root: rm {path}"
+        ),
+        "runtime-dir-legacy" | "pivot-staging-run-legacy" => format!(
+            "Left by a session of an earlier release, in RAM; power off (then confirm {path} \
+             is gone)"
+        ),
+        _ => format!("In RAM; power off (then confirm {path} is gone)"),
     }
 }
 

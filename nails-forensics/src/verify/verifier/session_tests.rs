@@ -326,7 +326,8 @@ fn an_overlay_root_that_is_not_the_hidden_session_keeps_the_decoy_findings() {
 /// On the decoy, an interrupted activation's runtime directory is one
 /// critical finding that says to run `nails recover`, not a second one that
 /// says to deactivate, which the decoy refuses. A runtime file nothing else
-/// reports keeps its own finding, with the same advice.
+/// reports keeps its own finding, with advice that removes it: `nails
+/// recover` leaves the read-only rule and an earlier release's paths alone.
 #[test]
 fn a_runtime_leftover_on_the_decoy_is_reported_once_and_points_at_recover() {
     let fs = session_fs(Some(false));
@@ -335,6 +336,7 @@ fn a_runtime_leftover_on_the_decoy_is_reported_once_and_points_at_recover() {
         "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n2 1 254:0 / /mnt/hidden rw - ext4 /dev/mapper/data rw\n",
     );
     fs.mock_set_path_exists(READ_ONLY_RULE, true);
+    fs.mock_set_path_exists("/run/nails-pivot", true);
     let result = session_verifier(&fs).run(false).unwrap();
 
     assert!(!has_session_note(&result), "{:#?}", result.findings);
@@ -355,10 +357,20 @@ fn a_runtime_leftover_on_the_decoy_is_reported_once_and_points_at_recover() {
     let rule = artifact(&result, READ_ONLY_RULE).expect("the rule is reported");
     let fix = rule.fix_guidance.as_deref().unwrap();
     assert!(
-        fix.contains("run 'nails recover' on the decoy, or power off"),
+        fix.contains("power off, or remove it as root: rm /run/udev/rules.d/"),
         "{fix}"
     );
-    assert!(!fix.contains("deactivate"), "{fix}");
+    assert!(
+        !fix.contains("recover") && !fix.contains("deactivate"),
+        "{fix}"
+    );
+    let legacy = artifact(&result, "/run/nails-pivot").expect("the old path is reported");
+    let fix = legacy.fix_guidance.as_deref().unwrap();
+    assert!(
+        fix.contains("earlier release") && fix.contains("power off"),
+        "{fix}"
+    );
+    assert!(!fix.contains("recover"), "{fix}");
 }
 
 #[test]
