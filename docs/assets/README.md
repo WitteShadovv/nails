@@ -25,7 +25,7 @@ else.
 |---|---|
 | `help.svg` | `nails -h` from a local build |
 | `check.svg` | `nails check` in the `session-lifecycle` NixOS VM test |
-| `activate.svg` | `nails activate` in the `session-lifecycle` NixOS VM test (standard-error log lines left out) |
+| `activate.svg` | `nails activate` in the `session-lifecycle` NixOS VM test, standard output and standard error together |
 | `status-json.svg` | `nails status --json` in the hidden session, `session-lifecycle` NixOS VM test |
 
 To refresh one, replace the output below the `---` line of its capture with a
@@ -36,6 +36,15 @@ scripts/render-terminal-svg.py --all docs/assets/screenshots          # rewrite 
 scripts/render-terminal-svg.py --all docs/assets/screenshots --check  # fail if one is stale
 ```
 
-The VM captures come from the test's build log: run
-`nix build -L .#e2e.session-lifecycle` and copy the command's output from the log
-(the test prints the `check` output, the activation log and the status JSON).
+The `--check` run compares each SVG with its capture only; it cannot tell
+that a capture no longer matches what NAILS prints. Refresh all four for every
+release, as [RELEASING.md](../../RELEASING.md) says.
+
+The VM captures come from one run of the test, taken from its build log: run
+`nix build -L .#e2e.session-lifecycle` and copy the command's output from the
+log (the test prints the `check` output, the activation log and the status
+JSON). The test driver puts `machine: ` in front of the first line of the
+`check` output and of the status JSON; that prefix belongs to the log, not to
+the output. A test that is already built prints no log: `nix log` on the same
+installable prints the stored one, and `nix build --rebuild` runs the test
+again.
