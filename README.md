@@ -66,8 +66,8 @@ NAILS does **not** encrypt anything itself. The hidden volume, and its
 deniability, come from the storage backend you choose; see
 [docs/backends.md](docs/backends.md).
 
-Why the session takes the whole root, and what that costs, is explained in
-[the architecture overview](docs/architecture.md#why-one-overlay-over-the-whole-root).
+The [architecture overview](docs/architecture.md#why-one-overlay-over-the-whole-root)
+explains why the session takes the whole root and what that costs.
 
 ## Threat model in brief
 

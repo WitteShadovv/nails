@@ -30,22 +30,31 @@ hidden volume, and nothing is installed on the decoy. systemd then stops all of
 userspace, switches root into the overlay and starts a fresh userspace there:
 every process of the hidden session starts inside the overlay, so there is
 nothing to find, restart or kill, and whatever it writes through the decoy's
-filesystems lands in an upper on the hidden volume. The kernel, its modules,
-the device-mapper mappings and `/run` survive the switch. The way back is a
-second soft-reboot, again without firmware or bootloader.
+mounted filesystems lands in an upper on the hidden volume. The few writes that
+go around the mount layer (a disk the session mounts itself, EFI variables) are
+listed under the [residual channels](threat-model.md#residual-channels). The
+kernel, its modules, the device-mapper mappings and `/run` survive the switch.
+The way back is a second soft-reboot, again without firmware or bootloader.
 
 The price:
 
 - Both transitions log the user out, because the desktop itself runs inside the
   overlay. For the same reason an emergency ends at the decoy's login screen, or
   with the machine off; it cannot leave a desktop running.
-- Kernel state is not reset: the boot ID, the uptime, the kernel ring buffer and
-  systemd's soft-reboot counter carry over until the machine powers off (see the
+- Kernel and service-manager state is not reset: the boot ID, the uptime, the
+  kernel ring buffer and systemd's soft-reboot counter carry over until the
+  machine powers off (see the
   [residual channels](threat-model.md#residual-channels)).
 - The hidden systemd would mount every other filesystem in the decoy's fstab
   directly and read-write, so the
   [fstab policy](configuration.md#what-the-session-covers) decides for each one
   before the switch.
+- The policy covers only the filesystems the decoy knows about. A disk the
+  hidden session mounts itself, the decoy's own block device mounted again
+  included, is a real disk outside every overlay. NAILS alerts on a read-write
+  mount of one, and `session_mounts.read_only` makes the disks the session does
+  not use read-only (see
+  [disks mounted during the session](configuration.md#disks-mounted-during-the-session)).
 - A next root whose init does not resolve can freeze PID 1, and a populated
   `/run/nextroot` would turn a later plain `reboot` into a soft-reboot into it.
   NAILS checks the init the way PID 1 will before every switch, and detaches a
