@@ -17,8 +17,8 @@
 #      the drop-in, and `check` passes its session-state check again.
 #   3. Ctrl+C (SIGINT to the process group) during the build rolls the entry
 #      back by itself.
-#   4. `nails emergency` during the build detaches the next root and removes
-#      the runtime files.
+#   4. `nails emergency` during the build detaches the next root, removes
+#      the runtime files and reloads PID 1, which forgets the drop-in.
 { self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -195,6 +195,13 @@ in
         machine.fail("mountpoint -q /run/nextroot")
         machine.fail("test -e /run/overlay-runtime")
         kill_activation()
+        # The emergency reloads PID 1, which would otherwise keep the removed
+        # transition drop-in loaded until its next reload.
+        unit = "systemd-soft-reboot.service"
+        need = machine.succeed(f"systemctl show -P NeedDaemonReload {unit}").strip()
+        dropins = machine.succeed(f"systemctl show -P DropInPaths {unit}").strip()
+        assert need == "no", need
+        assert "/run/systemd/system/" not in dropins, dropins
         session.assert_decoy_root(machine)
   '';
 }

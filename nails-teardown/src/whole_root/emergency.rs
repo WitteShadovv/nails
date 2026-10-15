@@ -325,10 +325,22 @@ fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) {
             // last close, as the way back would close it.
             let _ = ret::close_backend_deferred(plan);
             let kept = Snapshot::load(&host.runtime_dir.join(SNAPSHOT_NAME)).unwrap_or_default();
-            transition::remove_dropin(&host.run, &kept);
-            runtime_units::remove_masks(&host.run, &plan.masks, &plan.boot_masks, &kept);
+            let dropins = transition::remove_dropin(&host.run, &kept);
+            let masks =
+                runtime_units::remove_masks(&host.run, &plan.masks, &plan.boot_masks, &kept);
             kernel_helpers::restore(&plan.kernel_settings);
             nextroot::remove_runtime_dir(&host.runtime_dir);
+            // As a rollback does: `/run` is `noexec` again where the decoy
+            // had it so, and PID 1 forgets the drop-ins and masks, which it
+            // keeps loaded until a reload.
+            if plan.run_noexec {
+                let _ = nextroot::set_noexec(&host.run, true);
+            }
+            if (dropins || masks)
+                && let Some(systemctl) = &plan.tools.systemctl
+            {
+                let _ = tools::daemon_reload(systemctl);
+            }
         }
     });
 }
@@ -442,8 +454,9 @@ mod tests {
 
     /// On the decoy (an activation interrupted after its entry transition,
     /// or a switch that failed), acting for real on a scratch `/run`: the
-    /// session's masks of both kinds go, the kernel paths come back and the
-    /// runtime directory is removed.
+    /// session's masks of both kinds go, the kernel paths come back, the
+    /// runtime directory is removed and PID 1 is reloaded, so it forgets the
+    /// masks and the drop-in.
     #[test]
     fn the_decoy_side_undoes_the_masks_and_the_kernel_paths() {
         let dir = tempfile::tempdir().unwrap();
@@ -456,9 +469,23 @@ mod tests {
         std::fs::write(h.runtime_dir.join(SNAPSHOT_NAME), kept.to_text()).unwrap();
         let modprobe = dir.path().join("modprobe");
         std::fs::write(&modprobe, "/nix/store/decoy-kmod/bin/modprobe\n").unwrap();
+        let calls = dir.path().join("systemctl-calls");
+        let systemctl = dir.path().join("systemctl");
+        std::fs::write(
+            &systemctl,
+            format!("#!/bin/sh\necho \"$@\" >> {}\n", calls.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &systemctl,
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
         let mut plan = sample();
         plan.owner = None;
         plan.backend = Vec::new();
+        plan.tools.systemctl = Some(systemctl);
+        transition::install_dropin(&h.run, Path::new("/x")).unwrap();
         plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
         plan.kernel_settings = kernel_helpers::read(&[modprobe.to_str().unwrap()]);
         std::fs::write(&modprobe, "/nix/store/hidden-kmod/bin/modprobe\n").unwrap();
@@ -480,6 +507,13 @@ mod tests {
             assert!(std::fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
         }
         assert!(!h.runtime_dir.exists());
+        assert!(
+            !h.run
+                .join(transition::DROPIN_DIR)
+                .join(transition::DROPIN_NAME)
+                .exists()
+        );
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "daemon-reload\n");
     }
 
     #[test]

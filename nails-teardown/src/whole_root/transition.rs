@@ -182,17 +182,20 @@ pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
 /// Remove the drop-in and the stop guards under `run`, with each of their
 /// directories that is left empty, unless `kept` (the `/run` snapshot taken
 /// before the entry) lists it: a drop-in directory the decoy had already
-/// keeps whatever else it holds, and only the files NAILS wrote go.
-pub fn remove_dropin(run: &Path, kept: &Snapshot) {
+/// keeps whatever else it holds, and only the files NAILS wrote go. Returns
+/// whether a file went, which PID 1 keeps loaded until its next reload.
+pub fn remove_dropin(run: &Path, kept: &Snapshot) -> bool {
     let files = runtime_guards()
         .map(|(unit, _)| (stop_guard_dir(unit), STOP_GUARD_NAME))
         .chain(std::iter::once((PathBuf::from(DROPIN_DIR), DROPIN_NAME)));
+    let mut removed = false;
     for (dir, name) in files {
-        let _ = std::fs::remove_file(run.join(&dir).join(name));
+        removed |= std::fs::remove_file(run.join(&dir).join(name)).is_ok();
         if !kept.contains(dir.as_os_str()) {
             let _ = std::fs::remove_dir(run.join(&dir));
         }
     }
+    removed
 }
 
 /// The jobs of the soft-reboot itself, which wait for the transition.

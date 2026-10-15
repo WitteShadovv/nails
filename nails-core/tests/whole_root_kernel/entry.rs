@@ -1073,3 +1073,49 @@ fn a_shadowed_mount_below_the_next_root_does_not_fail_the_backstop() {
         assert!(!line.contains(" shared:"), "{line}");
     });
 }
+
+/// An emergency on the decoy, after an entry that cleared `noexec` on `/run`,
+/// sets it again as a rollback does, and detaches the next root.
+#[test]
+fn an_emergency_on_the_decoy_sets_noexec_on_run_again() {
+    use nails_teardown::whole_root::emergency::{self, Finish, Side};
+    let _ = Rerun::new(test_path!(
+        an_emergency_on_the_decoy_sets_noexec_on_run_again
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let paths = world.paths();
+        nix::mount::mount(
+            None::<&str>,
+            &paths.run,
+            None::<&str>,
+            nix::mount::MsFlags::MS_REMOUNT
+                | nix::mount::MsFlags::MS_BIND
+                | nix::mount::MsFlags::MS_NOEXEC,
+            None::<&str>,
+        )
+        .unwrap();
+        let entry =
+            entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+        assert!(!nextroot::is_noexec(&paths.run).unwrap());
+        let mut plan = entry.plan.clone();
+        plan.backend = Vec::new();
+        plan.tools = Default::default();
+        let cgroup = ScratchTmpfs::new("");
+        let host = emergency::Host {
+            run: paths.run.clone(),
+            nextroot: paths.nextroot(),
+            runtime_dir: paths.runtime(),
+            cgroup_root: cgroup.path().to_path_buf(),
+            protected_pids: Vec::new(),
+            act: true,
+        };
+
+        let report = emergency::run(Some(plan), &host, Finish::Return);
+
+        assert_eq!(report.side, Side::Decoy);
+        assert!(report.remaining.is_empty(), "{:?}", report.remaining);
+        assert!(nextroot::is_noexec(&paths.run).unwrap());
+    });
+}

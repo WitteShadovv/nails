@@ -90,8 +90,10 @@ pub fn mask_units_best_effort(run: &Path, units: &[String]) -> Vec<PathBuf> {
 /// is for the decoy side: an entry rolled back, a next root disarmed, or an
 /// emergency on the decoy after a switch that never happened. Without it the
 /// decoy would keep its swap, its other disks or its boot-loader units masked
-/// until the next boot.
-pub fn remove_masks(run: &Path, masks: &[String], boot_masks: &[String], kept: &Snapshot) {
+/// until the next boot. Returns whether a mask went, which PID 1 keeps
+/// loaded until its next reload.
+pub fn remove_masks(run: &Path, masks: &[String], boot_masks: &[String], kept: &Snapshot) -> bool {
+    let mut removed = false;
     for (dir, names) in [(RUNTIME_UNIT_DIR, masks), (RUNTIME_CONTROL_DIR, boot_masks)] {
         for name in names.iter().filter(|name| valid_unit_name(name)) {
             let relative = Path::new(dir).join(name);
@@ -99,13 +101,14 @@ pub fn remove_masks(run: &Path, masks: &[String], boot_masks: &[String], kept: &
             if !kept.contains(relative.as_os_str())
                 && std::fs::read_link(&link).is_ok_and(|target| target == Path::new("/dev/null"))
             {
-                let _ = std::fs::remove_file(&link);
+                removed |= std::fs::remove_file(&link).is_ok();
             }
         }
     }
     if !kept.contains(std::ffi::OsStr::new(RUNTIME_CONTROL_DIR)) {
         let _ = std::fs::remove_dir(run.join(RUNTIME_CONTROL_DIR));
     }
+    removed
 }
 
 fn invalid(name: &str) -> io::Error {
