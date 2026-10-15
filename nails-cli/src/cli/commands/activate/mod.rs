@@ -101,6 +101,18 @@ fn write_activation_residue_baseline(
     }
 }
 
+/// The line activation prints before it asks for confirmation when no
+/// configuration file was found: every opt-in protection then keeps its
+/// built-in default, which the operator should know before the switch.
+fn defaults_notice(loaded: &nails_core::LoadedConfig) -> Option<String> {
+    (!loaded.file_found).then(|| {
+        format!(
+            "No config file at {}: activation uses the built-in defaults.",
+            loaded.path.display()
+        )
+    })
+}
+
 /// The `check` arguments `activate --dry-run` runs with.
 fn dry_run_check_args(args: &ActivateArgs) -> crate::cli::args::CheckArgs {
     crate::cli::args::CheckArgs {
@@ -149,6 +161,7 @@ pub fn execute(
         Ok(loaded) => loaded,
         Err(status) => return status,
     };
+    let defaults_notice = defaults_notice(&loaded);
     loaded.apply_cli_overrides(&CliOverrides {
         nixos_flake: args.nixos_flake.clone(),
     });
@@ -231,6 +244,9 @@ pub fn execute(
         );
     }
 
+    if let Some(notice) = defaults_notice.filter(|_| !settings.is_quiet()) {
+        crate::cli::output::eprintln_tolerating_broken_pipe(&notice);
+    }
     if !args.yes && !confirm_logout(settings, accepted.as_ref()) {
         return report_error(
             json,

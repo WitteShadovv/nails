@@ -91,13 +91,18 @@ impl LoadedConfig {
 
     /// Load `path` strictly, using defaults when the file does not exist.
     ///
+    /// A missing file is reported through [`LoadedConfig::file_found`]: each
+    /// command says so in its own output (`check`, `status --details` and
+    /// `config show` name the source, `activate` prints a notice before it
+    /// asks for confirmation), so the log records it at debug level only.
+    ///
     /// # Errors
     ///
     /// Every error of [`LoadedConfig::load`] except `ConfigNotFound`.
     pub fn load_or_default(path: &Path) -> Result<Self> {
         match Self::load(path) {
             Err(NailsError::ConfigNotFound { .. }) => {
-                tracing::info!("No config file found at {}, using defaults", path.display());
+                tracing::debug!("No config file found at {}, using defaults", path.display());
                 Ok(Self::defaults(path))
             }
             other => other,

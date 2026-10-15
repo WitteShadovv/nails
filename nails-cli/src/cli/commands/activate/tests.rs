@@ -238,6 +238,26 @@ fn execute_colour_settings_paint_dry_run_marks() {
     );
 }
 
+/// Without a config file activation says so before it asks, because every
+/// opt-in protection then keeps its default; with one it says nothing.
+#[test]
+fn a_missing_config_file_is_announced_and_a_present_one_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nails.toml");
+    let defaults = nails_core::LoadedConfig::defaults(&missing);
+    assert_eq!(
+        super::defaults_notice(&defaults),
+        Some(format!(
+            "No config file at {}: activation uses the built-in defaults.",
+            missing.display()
+        ))
+    );
+
+    std::fs::write(&missing, "show_opsec_reminders = false\n").unwrap();
+    let found = nails_core::LoadedConfig::load(&missing).unwrap();
+    assert_eq!(super::defaults_notice(&found), None);
+}
+
 /// `activate --dry-run` runs `check` with the options activation itself runs
 /// the pre-flight checks with, for every combination of the shared flags.
 #[test]
