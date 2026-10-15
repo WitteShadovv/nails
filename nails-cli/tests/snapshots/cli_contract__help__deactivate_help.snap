@@ -61,7 +61,9 @@ WHAT HAPPENS:
   is stopped in order, the top of /run is scrubbed of the hidden session
   (network links it set up stay), and the decoy starts again at its own login
   screen (a display manager set to log an account in automatically logs it in
-  again, as at boot). The hidden volume is unmounted and its encryption
+  again, as at boot). The scrub also deletes the runtime journal, which the
+  decoy shares with the hidden session, so a volatile decoy's journal starts
+  again at the return. The hidden volume is unmounted and its encryption
   mapping closed by the switch itself.
 
 EXAMPLES:
