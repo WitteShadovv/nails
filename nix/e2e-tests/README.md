@@ -108,8 +108,8 @@ redirects it to the hidden volume.
   machine while it is unchanged (`py/nails_e2e/store_image.py`), so only the
   first start of a test pays for it. The driver log says `Reusing Nix store
   image.` on each later start.
-- `blk-availability.nix`: the `blk-availability.service` Debian and Ubuntu
-  enable wherever `dmsetup` is installed. Its stop, which every soft-reboot
+- `blk-availability.nix`: the `blk-availability.service` that Debian's and
+  Ubuntu's lvm2 package enables. Its stop, which every soft-reboot
   runs, unmounts the filesystems on device-mapper devices (`blkdeactivate
   -u`). A NixOS VM always carries its store mounts below the hidden volume, so
   the stop cannot unmount the volume itself there; a decoy filesystem on LVM
@@ -429,8 +429,11 @@ soft-reboots with `py/nails_e2e/session.py`:
   residue, the upper persisting into the next session, an emergency and its
   timed log, and `recover`/`emergency` on the plain decoy changing nothing;
 - `session-emergency`: the activation command typed on a decoy tty never reaches
-  its history, emergency from a hidden login shell, `--poweroff`, and the next
-  cold boot on the plain decoy with the backend closed;
+  its history, emergency from a hidden login shell, the decoy's avahi-daemon
+  and a service with a PID file in `/run` starting again after the emergency
+  killed their hidden copies, the boot-loader units masked in the hidden
+  session only, `--poweroff`, and the next cold boot on the plain decoy with
+  the backend closed;
 - `session-interrupted-entry`: a killed activation that `status` reports as an
   interrupted entry, a plain reboot that never enters the leftover next root,
   `recover`, Ctrl+C during the build, and emergency during an entry;
@@ -507,11 +510,17 @@ Each smoke scenario shares the static musl `nails` binary into the guest over
 9p (on `/run`, off the decoy disk); asserts platform detection selects the
 Debian-family backend; images the decoy as booted for a baseline; runs the
 decoy-persistence preflight (a stock persistent journal is refused, and passes
-once the decoy is amnesic); where the image ships `dmsetup` (Ubuntu), runs
-Debian's `blk-availability.service`; activates, soft-rebooting into the
-whole-root overlay and writing canaries, including under `/usr`, that must land
-in the upper; asserts the ESP is read-only in the hidden root; runs
-`emergency`, which soft-reboots back to the plain decoy; runs a second session
+once the decoy is amnesic); runs `blk-availability.service` as lvm2 ships it
+(the image's own unit on Ubuntu, Debian's copy where only `dmsetup` is
+installed) and asserts that it stays loaded and active in the hidden session;
+runs a decoy service that keeps a PID file in `/run`; cancels an activation
+with SIGINT while it runs its checks (exit 130, nothing left behind);
+activates, soft-rebooting into the whole-root overlay and writing canaries,
+including under `/usr`, that must land in the upper; asserts the ESP is
+read-only in the hidden root and the boot-loader units masked there; runs
+`emergency`, which soft-reboots back to the plain decoy, where the PID-file
+service starts again; asserts the kernel log names no session drop-in and no
+failed unmount of the hidden volume; runs a second session
 that ends with `deactivate`, entered with `/boot` and the ESP unmounted where
 `blk-availability.service` runs, so that nothing carried below the hidden
 volume keeps the unit's stop from unmounting it; and runs the host-side decoy

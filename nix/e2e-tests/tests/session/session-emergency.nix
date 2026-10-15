@@ -11,7 +11,13 @@
 #      `sudo nails emergency`. Every hidden process dies at once (the login
 #      session included), the machine soft-reboots back to the plain decoy and
 #      the decoy greeter (here: getty) comes back; nothing typed in the hidden
-#      session reaches the decoy's history file.
+#      session reaches the decoy's history file. The decoy's services that
+#      keep a PID file in /run start again although the kill left their hidden
+#      copies' files behind: avahi-daemon (with resolvconf, which signals it)
+#      and a probe that, like avahi, refuses to start while its file is there.
+#      The boot-loader units are masked in the hidden session only, and the
+#      kernel log names no session drop-in and no failed unmount of the hidden
+#      volume.
 #   3. A scratch disk mounted over the hidden root in the session: the
 #      session watcher, polling every second with its automatic emergency on,
 #      keeps running past its debounce without writing a probe or ending the
@@ -42,6 +48,24 @@ in
     {
       imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.nails ];
+      # On by default with GNOME: its unit may not remove a stale PID file.
+      services.avahi.enable = true;
+      # A service that keeps a PID file in /run the way avahi-daemon does: it
+      # removes the file when it stops and refuses to start while one is left.
+      # The stop signal goes to the shell alone, as a daemon removes its file
+      # itself: sent to every process, it can also reach the trap's rm.
+      systemd.services.pidfile-probe = {
+        wantedBy = [ "multi-user.target" ];
+        path = [ pkgs.coreutils ];
+        serviceConfig.KillMode = "mixed";
+        script = ''
+          set -C
+          mkdir -p /run/pidfile-probe
+          echo $$ > /run/pidfile-probe/pid
+          trap 'rm -f /run/pidfile-probe/pid; exit 0' TERM
+          while :; do sleep 1 & wait $!; done
+        '';
+      };
       # The disk a covered-root subtest mounts over the hidden root.
       virtualisation.emptyDiskImages = [
         {
@@ -60,6 +84,27 @@ in
 
     CONFIG = "/mnt/data/config/nails.toml"
     WATCH_UNIT = "overlay-runtime-monitor.service"
+    BOOT_WRITERS = (
+        "systemd-boot-random-seed.service",
+        "grub-common.service",
+        "grub-initrd-fallback.service",
+    )
+
+
+    def load_states():
+        return {
+            unit: machine.succeed(f"systemctl show --property=LoadState --value {unit}").strip()
+            for unit in BOOT_WRITERS
+        }
+
+
+    def assert_quiet_kernel_log(where):
+        for command in (
+            "dmesg | grep -F world-inaccessible | grep -F overlay-runtime",
+            "dmesg | grep -F 'Failed unmounting mnt-data.mount'",
+        ):
+            rc, out = machine.execute(command)
+            assert rc != 0, f"{where}: {command}:\n{out}"
 
 
     def write_config(extra=""):
@@ -97,6 +142,11 @@ in
     machine.succeed("nails init /mnt/data")
     write_config()
 
+    machine.wait_for_unit("avahi-daemon.service")
+    machine.wait_for_unit("pidfile-probe.service")
+    decoy_boot_writers = load_states()
+    machine.log(f"boot-loader units on the decoy: {decoy_boot_writers}")
+
     activation_token = "act-" + secrets.token_hex(6)
     with subtest("activation typed on the decoy tty never reaches its history"):
         login_tty1()
@@ -115,6 +165,13 @@ in
             start=lambda: machine.send_chars(command),
         )
         session.assert_hidden_root(machine)
+        for unit, state in load_states().items():
+            if decoy_boot_writers[unit] != "not-found":
+                assert state == "masked", f"{unit} in the hidden session: {state}"
+        assert_quiet_kernel_log("the hidden session")
+        # The hidden copies that the emergency below kills.
+        machine.wait_for_unit("avahi-daemon.service")
+        machine.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
 
     hidden_token = "hidden-" + secrets.token_hex(6)
     with subtest("emergency from a hidden login shell kills it and returns"):
@@ -142,6 +199,15 @@ in
         machine.fail("loginctl list-sessions --no-legend | grep -q testuser")
         machine.wait_for_unit("getty@tty1.service")
         machine.wait_until_succeeds("test ! -e /dev/mapper/data", timeout=60)
+
+    with subtest("the decoy's services start again after the emergency killed their copies"):
+        machine.wait_for_unit("pidfile-probe.service")
+        machine.wait_for_unit("avahi-daemon.service")
+        machine.wait_for_unit("resolvconf.service")
+        _, avahi = machine.execute("journalctl -b -u avahi-daemon.service --no-pager")
+        assert "trying to remove PID file" not in avahi, avahi
+        assert load_states() == decoy_boot_writers, "the decoy's own units again"
+        assert_quiet_kernel_log("after the emergency")
 
     with subtest("nothing typed in either shell reached the decoy history"):
         history = decoy_history()

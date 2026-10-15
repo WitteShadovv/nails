@@ -6,10 +6,13 @@
 # non-NixOS host (systemd >= 254): activation soft-reboots the stock cloud image
 # into an overlay of its own root, every hidden write (including /usr) lands on
 # the hidden root, the ESP stays read-only, and deactivation and emergency
-# soft-reboot back to the plain decoy without a trace on the decoy disk. Where
-# the image ships dmsetup (Ubuntu), the decoy runs Debian's
-# blk-availability.service, and the second session, entered without /boot or
-# the ESP mounted, keeps its hidden volume through that unit's stop.
+# soft-reboot back to the plain decoy without a trace on the decoy disk. The
+# decoy runs blk-availability.service as Debian's and Ubuntu's lvm2 ships it
+# (the image's own unit where lvm2 is installed, a copy where only dmsetup
+# is), and the second session, entered without /boot or the ESP mounted, keeps
+# its hidden volume through that unit's stop. A decoy service that keeps a PID
+# file in /run starts again after an emergency killed its hidden copy, and a
+# Ctrl+C during the pre-flight checks cancels an activation.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -90,23 +93,22 @@ distroVm.buildVmTest {
     # overlaid, so a hidden write there lands on the hidden root as well.
     canary_trees = ("home", "etc", "srv", "opt", "var", "usr", "root")
 
-    # blk-availability.service as Debian's and Ubuntu's dmsetup package ships
-    # it, enabled wherever it is installed. Its stop, which every soft-reboot
-    # runs, unmounts each filesystem on a device-mapper device outside a few
-    # system paths (blkdeactivate -u): in the switch, the hidden volume below
-    # /run/nextroot.
+    # blk-availability.service as Debian's and Ubuntu's lvm2 package ships it,
+    # enabled, with its stop as its only command. That stop, which every
+    # soft-reboot runs, unmounts each filesystem on a device-mapper device
+    # outside a few system paths (blkdeactivate -u): in the switch, the hidden
+    # volume below /run/nextroot.
     blk_availability_unit = "\n".join(
         (
             "[Unit]",
             "Description=Availability of block devices",
             "Before=shutdown.target",
-            "After=iscsi-shutdown.service iscsi.service iscsid.service fcoe.service rbdmap.service",
+            "After=lvm2-activation.service iscsi-shutdown.service iscsi.service iscsid.service fcoe.service rbdmap.service",
             "DefaultDependencies=no",
             "Conflicts=shutdown.target",
             "",
             "[Service]",
             "Type=oneshot",
-            "ExecStart=/usr/bin/true",
             "ExecStop=/usr/sbin/blkdeactivate -u -l wholevg -m disablequeueing -r wait",
             "RemainAfterExit=yes",
             "",
@@ -116,6 +118,50 @@ distroVm.buildVmTest {
         )
     )
     blkdeactivate = "argv[]=/usr/sbin/blkdeactivate -u -l wholevg -m disablequeueing -r wait"
+
+    # A decoy service that keeps a PID file in /run the way avahi-daemon does:
+    # it removes the file when it stops, and refuses to start while one is
+    # left. A copy killed by an emergency in the hidden session leaves its file
+    # behind, which the way back must remove. The stop signal goes to the
+    # shell alone (KillMode=mixed), as a daemon removes its file itself: sent
+    # to every process, it can also reach the rm the trap starts.
+    pidfile_probe_script = "\n".join(
+        (
+            "#!/bin/sh",
+            "set -C",
+            "mkdir -p /run/pidfile-probe",
+            "if ! echo $$ > /run/pidfile-probe/pid; then",
+            "  echo \"pid file left by $(cat /run/pidfile-probe/pid)\"",
+            "  exit 1",
+            "fi",
+            "echo \"started as $$\"",
+            "trap 'echo stopping; rm -f /run/pidfile-probe/pid; exit 0' TERM",
+            "while :; do sleep 1 & wait $!; done",
+            "",
+        )
+    )
+    pidfile_probe_unit = "\n".join(
+        (
+            "[Unit]",
+            "Description=PID file probe",
+            "",
+            "[Service]",
+            "ExecStart=/usr/local/sbin/pidfile-probe",
+            "KillMode=mixed",
+            "",
+            "[Install]",
+            "WantedBy=multi-user.target",
+            "",
+        )
+    )
+
+    # Units that write to the boot filesystems at every start, masked in the
+    # hidden root where the decoy has them.
+    boot_writers = (
+        "systemd-boot-random-seed.service",
+        "grub-common.service",
+        "grub-initrd-fallback.service",
+    )
 
 
     def write_config():
@@ -220,6 +266,37 @@ distroVm.buildVmTest {
         return vm.succeed("systemctl show -P ExecStop blk-availability.service").strip()
 
 
+    def unit_state(unit):
+        out = vm.succeed(f"systemctl show --property=LoadState --property=ActiveState {unit}")
+        return dict(line.split("=", 1) for line in out.splitlines() if "=" in line)
+
+
+    def assert_guarded_blk_availability(where):
+        # Loaded and active, its stop cleared until the way back has switched:
+        # a guard that left the unit without a command would make systemd
+        # refuse to load it ("bad-setting").
+        state = unit_state("blk-availability.service")
+        assert state == {"LoadState": "loaded", "ActiveState": "active"}, f"{where}: {state}"
+        stop = blk_availability_stop()
+        assert stop == "", f"{where}: blk-availability.service still stops with {stop}"
+
+
+    def load_states(units):
+        return {unit: unit_state(unit)["LoadState"] for unit in units}
+
+
+    def assert_quiet_kernel_log(where):
+        # Neither PID 1's warning that a session drop-in is not readable by
+        # all (which names the file), nor a failed unmount of the hidden
+        # volume at a switch, is in the kernel log.
+        for command in (
+            "dmesg | grep -F world-inaccessible | grep -F overlay-runtime",
+            "dmesg | grep -F 'Failed unmounting mnt-data.mount'",
+        ):
+            rc, out = vm.execute(command)
+            assert rc != 0, f"{where}: {command}:\n{out}"
+
+
     # Each probe is bounded on its own, so a wedged PID 1 or journald still lets
     # the next one (and the test's own failure) run.
     pid1_probes = (
@@ -240,6 +317,17 @@ distroVm.buildVmTest {
         ),
         ("kernel tail", "dmesg | tail -n 40"),
     )
+
+
+    def probe_report(where):
+        # Where the PID-file probe stands, for the log. Never fails.
+        _, out = vm.execute(
+            "{ systemctl show --property=ActiveState --property=MainPID pidfile-probe.service; "
+            + "ls -la /run/pidfile-probe; cat /run/pidfile-probe/pid; "
+            + "journalctl -b -u pidfile-probe.service --no-pager -o short-monotonic | tail -n 20; } 2>&1",
+            check_return=False,
+        )
+        print(f"=== PID-file probe: {where} ===\n{out.rstrip()}")
 
 
     def pid1_health(label):
@@ -306,28 +394,90 @@ distroVm.buildVmTest {
         vm.succeed("""${hiddenRoot.makeDecoyAmnesic}""")
         vm.succeed(f"{nails_cmd} check --overlay-only")
 
-    with subtest("blk-availability.service runs on the decoy where dmsetup ships it"):
-        # Debian's generic cloud image has no device-mapper tools, so nothing
-        # there can unmount the hidden volume in the switch.
-        blk_availability = vm.execute("test -x /usr/sbin/blkdeactivate")[0] == 0
+    with subtest("blk-availability.service runs on the decoy as lvm2 ships it"):
+        # The image's own unit where lvm2 is installed (Ubuntu). Debian's
+        # generic cloud image has dmsetup without lvm2: it gets the unit as
+        # Debian's lvm2 package ships it. The choice goes by the unit file.
+        ships_unit = vm.execute("systemctl cat blk-availability.service")[0] == 0
+        blk_availability = ships_unit or vm.execute("test -x /usr/sbin/blkdeactivate")[0] == 0
         if blk_availability:
-            vm.succeed(
-                "printf %s "
-                + shlex.quote(blk_availability_unit)
-                + " > /etc/systemd/system/blk-availability.service"
-            )
+            if not ships_unit:
+                vm.succeed(
+                    "printf %s "
+                    + shlex.quote(blk_availability_unit)
+                    + " > /etc/systemd/system/blk-availability.service"
+                )
+            print(vm.succeed("systemctl cat blk-availability.service"))
             vm.succeed("systemctl daemon-reload && systemctl enable --now blk-availability.service")
-            vm.succeed("systemctl is-active blk-availability.service")
+            state = unit_state("blk-availability.service")
+            assert state == {"LoadState": "loaded", "ActiveState": "active"}, state
             stop = blk_availability_stop()
             assert blkdeactivate in stop, stop
         else:
-            print("this image ships no /usr/sbin/blkdeactivate: no blk-availability.service")
+            print("this image has neither lvm2 nor dmsetup: no blk-availability.service")
+
+    with subtest("a decoy service keeps a PID file in /run"):
+        vm.succeed(
+            "mkdir -p /usr/local/sbin && printf %s "
+            + shlex.quote(pidfile_probe_script)
+            + " > /usr/local/sbin/pidfile-probe && chmod 0755 /usr/local/sbin/pidfile-probe"
+        )
+        vm.succeed(
+            "printf %s "
+            + shlex.quote(pidfile_probe_unit)
+            + " > /etc/systemd/system/pidfile-probe.service"
+        )
+        vm.succeed("systemctl daemon-reload && systemctl enable --now pidfile-probe.service")
+        vm.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
+        probe_report("the decoy")
+        decoy_boot_writers = load_states(boot_writers)
+        print(f"boot-loader units on the decoy: {decoy_boot_writers}")
+
+    with subtest("Ctrl+C during the pre-flight checks cancels the activation"):
+        # A CPU quota stretches the activation, so the interrupt reaches it
+        # while it runs its checks; no child process of it dies with the
+        # signal there, so only the activation's own checkpoints can stop it.
+        log = "/run/cancelled-activation.log"
+        vm.succeed(
+            "systemd-run --unit=cancelled-activation --remain-after-exit "
+            + "--property=CPUQuota=5% "
+            + f"--property=StandardOutput=file:{log} --property=StandardError=file:{log} "
+            + f"{nails_cmd} activate -y"
+        )
+        # The residue baseline, the last step before the checks, is written.
+        vm.wait_until_succeeds("ls /mnt/data/reports/activation-residue-*.json", timeout=600)
+        vm.succeed("systemctl kill --signal=SIGINT cancelled-activation.service")
+        vm.wait_until_succeeds(
+            "test \"$(systemctl show -P ExecMainExitTimestampMonotonic "
+            + "cancelled-activation.service)\" != 0",
+            timeout=600,
+        )
+        print(vm.succeed(f"cat {log}"))
+        status = vm.succeed("systemctl show -P ExecMainStatus cancelled-activation.service").strip()
+        assert status == "130", f"the cancelled activation exited {status}"
+        vm.fail("mountpoint -q /run/nextroot")
+        vm.fail("test -e /run/overlay-runtime")
+        vm.fail("test -e /run/systemd/system/systemd-soft-reboot.service.d")
+        session.assert_decoy_root(vm)
+        posture = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]["posture"]
+        assert posture == "decoy", f"after the cancel: {posture}"
+        vm.succeed("systemctl reset-failed cancelled-activation.service || true")
+        vm.succeed("rm -f /mnt/data/reports/activation-residue-*.json")
 
     with subtest("activation soft-reboots into the whole-root overlay"):
         follow(f"{nails_cmd} activate -y > /mnt/data/activate.log 2>&1", "activate")
         print(vm.succeed("cat /mnt/data/activate.log || true"))
         pid1_health("after the first activation")
         session.assert_hidden_root(vm)
+        if blk_availability:
+            assert_guarded_blk_availability("the first session")
+        assert_quiet_kernel_log("the first session")
+        # The boot-loader units the decoy has are masked in the hidden root.
+        for unit, state in load_states(boot_writers).items():
+            if decoy_boot_writers[unit] != "not-found":
+                assert state == "masked", f"{unit} in the hidden root: {state}"
+        vm.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
+        probe_report("the first hidden session")
         # The hidden volume is still at its path, with the binary's log and
         # the upper on it.
         vm.succeed("mountpoint -q /mnt/data")
@@ -355,6 +505,12 @@ distroVm.buildVmTest {
         for tree in canary_trees:
             vm.fail(f"test -e /{tree}/nails-canary-{tree}")
         vm.succeed("touch /usr/rw-probe && rm -f /usr/rw-probe")
+        # The emergency killed the hidden copy of the PID-file service, which
+        # left its file; the way back removed it, so the decoy's copy starts.
+        probe_report("after the emergency")
+        vm.wait_for_unit("pidfile-probe.service")
+        assert load_states(boot_writers) == decoy_boot_writers, "the decoy's own units again"
+        assert_quiet_kernel_log("after the emergency")
 
     with subtest("a second session ends with deactivate"):
         vm.succeed("""${hiddenRoot.setupHiddenRoot}""")
@@ -379,9 +535,8 @@ distroVm.buildVmTest {
         if blk_availability:
             # The unit runs in the hidden session too; its stop stays cleared
             # until the way back has switched.
-            vm.succeed("systemctl is-active blk-availability.service")
-            stop = blk_availability_stop()
-            assert stop == "", f"blk-availability.service still stops with {stop}"
+            assert_guarded_blk_availability("the second session")
+        probe_report("the second hidden session")
         follow(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
         vm.fail("mountpoint -q /mnt/data")
@@ -392,11 +547,15 @@ distroVm.buildVmTest {
         if blk_availability:
             # The decoy's own shutdown deactivates its block devices again.
             vm.fail("test -e /run/systemd/system/blk-availability.service.d")
-            vm.succeed("systemctl is-active blk-availability.service")
+            state = unit_state("blk-availability.service")
+            assert state == {"LoadState": "loaded", "ActiveState": "active"}, state
             stop = blk_availability_stop()
             assert blkdeactivate in stop, stop
             for target in boot_mounts:
                 vm.succeed(f"mountpoint -q {target}")
+        probe_report("after deactivate")
+        vm.wait_for_unit("pidfile-probe.service")
+        assert_quiet_kernel_log("after deactivate")
 
     with subtest("decoy disk-image leak check: no hidden canaries, positive control caught"):
         canary_tokens = [f"NAILS_CANARY_{tree}" for tree in canary_trees]
