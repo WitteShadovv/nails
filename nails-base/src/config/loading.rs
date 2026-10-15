@@ -298,7 +298,8 @@ fn render_template(root: &Path, title: &str) -> String {
 
 # What to do about system sleep (suspend/hibernate) while the hidden environment
 # is active. Suspending an active session leaves it resident in RAM behind the
-# decoy lock screen, so on resume the decoy login unlocks a still-live session.
+# hidden session's own lock screen, so whoever unlocks it on resume is in the
+# still-live session.
 #   "warn" (default): pre-flight warns when the host would suspend an active
 #     session (lid switch, idle auto-suspend); nothing runs at runtime.
 #   "block": hold sleep and idle block inhibitors for the whole session so the

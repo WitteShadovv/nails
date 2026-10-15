@@ -95,7 +95,9 @@ idle auto-suspend.
 
 The `sleep-policy` pre-flight check parses `/etc/systemd/logind.conf` and its
 `logind.conf.d/*.conf` drop-ins and warns (never blocks) when the effective lid
-or idle settings would suspend an active session.
+or idle settings would suspend an active session, and when a closed lid is set
+to `ignore` (on battery, or on external power), which leaves the session running
+and unlocked behind the lid.
 
 Set the decoy's lid switch so a closed lid does not suspend. Use `lock` (lock the
 screen, stay running): `ignore` also keeps the host awake but leaves the screen

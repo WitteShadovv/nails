@@ -113,8 +113,9 @@ mod tests {
 /// session is active.
 ///
 /// Closing the lid or an idle auto-suspend leaves the whole hidden session
-/// resident in RAM behind the decoy lock screen: on resume the decoy login
-/// unlocks a session whose overlays, mapper and master key are all still live.
+/// resident in RAM behind the hidden session's own lock screen (the decoy is
+/// not running): whoever unlocks it on resume is in a session whose overlays,
+/// mapper and master key are all still live.
 /// Each mode trades that exposure against a practical cost, so the safe default
 /// only warns rather than silently changing the machine's power behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -270,10 +271,10 @@ pub struct Config {
     /// What to do about system sleep (suspend/hibernate) while active.
     ///
     /// Suspending an active session leaves the hidden environment resident in RAM
-    /// behind the decoy lock screen. Warn-only by default; `block` holds sleep,
-    /// idle and lid-switch inhibitors for the session and `teardown` powers off
-    /// through the bounded emergency teardown when the host is about to sleep.
-    /// See [`SleepPolicyConfig`].
+    /// behind the hidden session's lock screen. Warn-only by default; `block`
+    /// holds sleep, idle and lid-switch inhibitors for the session and
+    /// `teardown` powers off through the bounded emergency teardown when the
+    /// host is about to sleep. See [`SleepPolicyConfig`].
     #[serde(default)]
     pub sleep_policy: SleepPolicyConfig,
 
