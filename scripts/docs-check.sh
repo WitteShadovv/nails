@@ -10,10 +10,7 @@
 #
 #   2. Retired-name guard. Old paths, keys, flags, commands and file names that
 #      the project has moved away from must not reappear in the user-facing
-#      docs. Exempt are CHANGELOG.md and TODO.md (the changelog records the
-#      removals by name and the backlog describes the problems they came from),
-#      docs/history/ (records of the earlier design, kept as they were) and
-#      docs/adr/ (decision records are never edited after acceptance).
+#      docs. Exempt is CHANGELOG.md, which records the removals by name.
 #
 # Exit status is non-zero if either check fails.
 
@@ -52,16 +49,12 @@ if [ "${#all_docs[@]}" -eq 0 ]; then
   exit 1
 fi
 
-# The retired-name guard skips the changelog and the backlog (matched by base
-# name, so a `./` prefix from the filesystem walk does not slip past it) and the
-# historical records under docs/history/ and docs/adr/.
+# The retired-name guard skips the changelog (matched by base name, so a `./`
+# prefix from the filesystem walk does not slip past it).
 guard_docs=()
 for doc in "${all_docs[@]}"; do
   case "${doc##*/}" in
-    CHANGELOG.md | TODO.md) continue ;;
-  esac
-  case "${doc#./}" in
-    docs/history/* | docs/adr/*) continue ;;
+    CHANGELOG.md) continue ;;
   esac
   guard_docs+=("$doc")
 done
