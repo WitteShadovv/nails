@@ -8,8 +8,8 @@ for the CI layout, [docs/ci.md](ci.md).
 
 ## Crates
 
-The library is split into crates along the session's boundaries
-([ADR 0010](adr/0010-library-crate-split.md)), from the bottom up:
+The library is split into crates along the session's boundaries (see the
+[architecture overview](architecture.md#crates)), from the bottom up:
 `nails-teardown`, `nails-base`, `nails-platform`, `nails-session`,
 `nails-forensics` and `nails-core`, with `nails-cli` on top. A crate depends
 only on crates below it; `nails-core/tests/crate_graph.rs` fails on a new edge,
@@ -21,7 +21,8 @@ re-exports every module of the crates below.
 
 When you add a crate:
 
-- list it in the workspace `members`, in `crate_graph.rs` and in ADR 0010;
+- list it in the workspace `members`, in `crate_graph.rs` and in the crate list
+  and graph of [docs/architecture.md](architecture.md#crates);
 - give it `[lints] workspace = true`, the `#![cfg_attr(test, allow(unsafe_code))]`
   line and `nails_base::unit_test_mode!();` in its `lib.rs`, `test-hooks` and
   `test-support` features that forward to the crates below, and a self

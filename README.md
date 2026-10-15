@@ -66,8 +66,8 @@ NAILS does **not** encrypt anything itself. The hidden volume, and its
 deniability, come from the storage backend you choose; see
 [docs/backends.md](docs/backends.md).
 
-The design and its evidence are in
-[ADR 0008](docs/adr/0008-whole-root-soft-reboot.md).
+Why the session takes the whole root, and what that costs, is explained in
+[the architecture overview](docs/architecture.md#why-one-overlay-over-the-whole-root).
 
 ## Threat model in brief
 
@@ -431,7 +431,7 @@ of them runs at a time; switching logs you out of the other.
 starts inside the overlay, so there is nothing on the decoy side to find,
 restart or kill. The older design that overlaid a running system directory by
 directory could miss a writer silently; see
-[ADR 0008](docs/adr/0008-whole-root-soft-reboot.md).
+[the architecture overview](docs/architecture.md#why-one-overlay-over-the-whole-root).
 
 **Does the hidden session get its own account?** Not yet. By default it runs as
 the decoy user in the decoy home seen through the overlay; the `fresh-home`
@@ -565,8 +565,8 @@ The full index is [docs/README.md](docs/README.md). The essentials:
 - [Storage backends](docs/backends.md): which backends work and the hazards of each
 - [Configuration](docs/configuration.md) and [CLI](docs/cli.md) reference
 - [Verify a release](docs/verify-release.md)
-- [Architecture](docs/architecture.md) and the
-  [design records](docs/adr/README.md)
+- [Architecture](docs/architecture.md): why the session takes the whole root,
+  the crates and the runtime layers
 - [Project site](https://nails.run), [changelog](CHANGELOG.md),
   [roadmap](ROADMAP.md)
 

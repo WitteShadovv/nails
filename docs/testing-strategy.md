@@ -1,25 +1,22 @@
 # Testing strategy
 
 This document says which test tier covers which kind of behaviour, and when a
-mock is still the right tool. The decision behind it is
-[ADR 0006](adr/0006-real-kernel-test-tier.md). How to run each tier locally is
-in the [development guide](development-guide.md#test-tiers); the CI jobs are in
+mock is still the right tool. How to run each tier locally is in the
+[development guide](development-guide.md#test-tiers); the CI jobs are in
 [ci.md](ci.md).
 
-The evidence that led here (the bugs that passed every unit test and failed only
-in a VM, and the migration that followed) was gathered on the earlier
-live-overlay code. It is kept in
-[history/testing-strategy-live-overlay.md](history/testing-strategy-live-overlay.md).
+The tiers grew out of bugs that passed every unit test and failed only in a VM,
+found on the earlier live-overlay code; the next section names some of them.
 
 ## Why mocks are not enough
 
-[ADR 0002](adr/0002-trait-filesystem-testability.md) put filesystem access
-behind the `Filesystem` trait so orchestration can be tested without root. Each
-test double encodes a belief about the kernel or a tool, and nothing checks that
-belief unless a test also runs against the real thing. Past examples: overlayfs
-reporting its own anonymous device rather than the upper's, the kernel printing
-mount options octal-escaped, `redirect_dir=off` meaning different things on
-different kernel builds, and a closed stderr turning `eprintln!` into a panic.
+Filesystem access sits behind the `Filesystem` trait so orchestration can be
+tested without root. Each test double encodes a belief about the kernel or a
+tool, and nothing checks that belief unless a test also runs against the real
+thing. Past examples: overlayfs reporting its own anonymous device rather than
+the upper's, the kernel printing mount options octal-escaped, `redirect_dir=off`
+meaning different things on different kernel builds, and a closed stderr
+turning `eprintln!` into a panic.
 
 Ordered by how much NAILS depends on the behaviour and how wrong a mock can be,
 these need a real kernel or a booted system:

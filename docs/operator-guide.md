@@ -143,8 +143,13 @@ covered in [decoy-requirements.md](decoy-requirements.md).
 
 ## How it works
 
-The design record is [ADR 0008](adr/0008-whole-root-soft-reboot.md); this is
-the operator's view of it.
+This is the operator's view of the design. Why it takes the whole root, in
+short: an earlier design overlaid the running decoy directory by directory and
+had to find, restart or kill every process that could still write to it, and a
+writer it missed wrote to the decoy without any sign. Here every process of the
+hidden session starts inside the overlay, so there is nothing left to find. The
+[architecture overview](architecture.md#why-one-overlay-over-the-whole-root)
+gives the full reasoning and the price.
 
 **Hidden-root layout.** The hidden volume holds:
 
@@ -1024,8 +1029,8 @@ Rehearse on your own machine before relying on it.
 - [decoy-requirements.md](decoy-requirements.md) — amnesic decoy setup and
   decoy-side history hardening
 - [backends.md](backends.md) — storage backend matrix and deniability notes
-- [ADR 0008](adr/0008-whole-root-soft-reboot.md) — the whole-root soft-reboot
-  design and its evidence
+- [architecture.md](architecture.md) — how the session is built, and why it
+  takes the whole root with a soft-reboot
 - [bash-history-forensics.md](bash-history-forensics.md) — history-protection
   mechanics
 - [SECURITY.md](../SECURITY.md) — vulnerability reporting policy

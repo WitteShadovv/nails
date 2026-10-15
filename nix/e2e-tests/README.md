@@ -193,8 +193,7 @@ per-test node stays minimal.
 On the local KVM workstation a boot to `multi-user.target` took a median of
 21.8 s (p90 27.7 s) before dhcpcd stopped gating the boot, about 6 s less
 after, and booting was 38% of all test-script time in a full run of the earlier
-live-overlay suite (190 boots for 106 tests); see
-[the historical measurements](../../docs/history/e2e-performance-live-overlay.md).
+live-overlay suite (190 boots for 106 tests).
 
 **GitHub-hosted runners: not measured yet.** No number is recorded here
 because none has been measured, and the CI lanes cannot provide one as they
@@ -399,16 +398,15 @@ needs no entry in `shard-durations.json`. Its log is the deliverable: lines
 starting with `FINDING:` are research output, not assertions.
 
 - `research-emergency-cgroup-kill`: shows that systemd restarts a killed
-  `Restart=always` unit onto the decoy unless a stop job is enqueued first
-  ([ADR 0007](../../docs/adr/0007-emergency-architecture.md)); the emergency
-  enqueues the soft-reboot before its `cgroup.kill` for this reason.
+  `Restart=always` unit onto the decoy unless a stop job is enqueued first; the
+  emergency enqueues the soft-reboot before its `cgroup.kill` for this reason.
 - `research-dual-root-vt-emergency`: runs a hidden display and session on their
   own VT inside a whole-root overlay while the decoy desktop keeps running, and
-  makes emergency a cgroup kill plus a VT switch
-  ([ADR 0009](../../docs/adr/0009-dual-root-emergency.md)).
+  makes emergency a cgroup kill plus a VT switch. This dual-root design was
+  evaluated as a way to keep the decoy desktop through an emergency and was not
+  adopted.
 - `research-dual-root-risks`: probes the dual-root design's risks (mount
-  namespace copies, display and VT handling, shared-daemon writes)
-  ([ADR 0009](../../docs/adr/0009-dual-root-emergency.md#risk-assessment)).
+  namespace copies, display and VT handling, shared-daemon writes).
 - `research-blockdev-fixtures`: builds an LVM-on-LUKS stack on a loop device
   and captures what sysfs says about it for the block-device walk's tests
   (`scripts/capture-kernel-fixtures.sh blockdev`); copy the contents of its
@@ -419,7 +417,7 @@ The spike that proved the whole-root soft-reboot, formerly
 `soft-reboot-mechanics` in `tests/session/`: it enters a whole-root overlay with
 `systemctl soft-reboot` and returns twice, checks the vital paths, the `/run`
 scrub and the decoy journal, then power-cycles through the firmware and scans
-the raw decoy disk ([ADR 0008](../../docs/adr/0008-whole-root-soft-reboot.md)).
+the raw decoy disk.
 
 ## Session tests (`tests/session/`)
 

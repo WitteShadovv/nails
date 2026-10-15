@@ -1,6 +1,6 @@
 # Pre-flight Checks
 
-This directory contains the pre-flight checks that live in `nails-core`. Each check validates a specific aspect of the system before NAILS activation. The checks of other areas live with their area: the swap check with the framework in `nails-base`, the NixOS configuration checks in `nails-platform`, the session's checks in `nails-session` and the residue-catalog check in `nails-forensics` ([ADR 0010](../../../../docs/adr/0010-library-crate-split.md)). `nails_core::preflight::checks` re-exports all of them.
+This directory contains the pre-flight checks that live in `nails-core`. Each check validates a specific aspect of the system before NAILS activation. The checks of other areas live with their area: the swap check with the framework in `nails-base`, the NixOS configuration checks in `nails-platform`, the session's checks in `nails-session` and the residue-catalog check in `nails-forensics` (see [the crates](../../../../docs/architecture.md#crates)). `nails_core::preflight::checks` re-exports all of them.
 
 ## Overview
 
@@ -346,5 +346,5 @@ if let Err(e) = fs.create_directory(&path) {
 - Parent module: `../mod.rs` (re-exports the framework from `nails_base::preflight`: trait definitions, registry)
 - Filesystem abstraction: `../../filesystem/mod.rs`
 - Error types: `../../error.rs`
-- Architecture decisions: [`docs/adr/`](../../../../docs/adr)
+- Architecture: [`docs/architecture.md`](../../../../docs/architecture.md)
 - Threat model: [`docs/threat-model.md`](../../../../docs/threat-model.md)

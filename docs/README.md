@@ -31,7 +31,7 @@ Read these before relying on NAILS, in roughly this order.
 
 | Document | What it covers |
 |---|---|
-| [Architecture overview](architecture.md) | The crates and how they depend on each other, the platform seam, and the runtime layers of a session. |
+| [Architecture overview](architecture.md) | Why the session is one overlay over the whole root, entered with a soft-reboot, and what that costs; the crates and how they depend on each other, the platform seam, and the runtime layers of a session. |
 | [Architecture decision records](adr/README.md) | The decisions that shape NAILS. [ADR 0008](adr/0008-whole-root-soft-reboot.md) (the whole-root soft-reboot session) is the one to read first. |
 | [Threat model](threat-model.md) | Listed under operators as well; it is also the design's yardstick. |
 

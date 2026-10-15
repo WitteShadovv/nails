@@ -1,10 +1,63 @@
 # Architecture overview
 
-This is a map of how NAILS is put together: the crates, the seam that keeps
-host-specific behaviour in one place, and the runtime layers an activation runs
-through. It is an orientation document, not a specification — the code and the
-[architecture decision records](adr/README.md) are authoritative where they
-disagree with this page.
+This is a map of how NAILS is put together: why the session takes the whole
+root, the crates, the seam that keeps host-specific behaviour in one place, and
+the runtime layers an activation runs through. It is an orientation document,
+not a specification — the code is authoritative where it disagrees with this
+page.
+
+## Why one overlay over the whole root
+
+The earlier live-overlay design overlaid the running decoy directory by
+directory (`/etc`, `/home`, `/var` and others). The decoy kept running across
+activation, so every process that existed before had to be found and restarted
+or killed, journald had to be moved onto the overlay and the display manager
+restarted. A writer the scan missed, such as a service in its own mount
+namespace with binds onto the decoy filesystem, or a periodic writer that held
+no file open during the scan, went on writing to the decoy, and nothing
+reported it. No per-distribution heuristic closes that class of leak.
+
+Overlays taken at boot (`overlayroot`, `systemd.volatile=overlay`, dracut's
+overlay modules, Kicksecure's `grub-live`) need no such heuristics, but they
+need a full reboot, keep the upper in RAM by default and leave an enabler on the
+decoy: a package, a configuration file, a boot entry or a kernel command-line
+flag. Such an enabler is evidence of a hidden mode in itself (see the
+[invariant](threat-model.md#invariant)).
+
+A soft-reboot into `/run/nextroot` (systemd 254 or newer) avoids both. NAILS
+builds the overlay at runtime from the hidden volume, its upper stays on the
+hidden volume, and nothing is installed on the decoy. systemd then stops all of
+userspace, switches root into the overlay and starts a fresh userspace there:
+every process of the hidden session starts inside the overlay, so there is
+nothing to find, restart or kill, and whatever it writes through the decoy's
+filesystems lands in an upper on the hidden volume. The kernel, its modules,
+the device-mapper mappings and `/run` survive the switch. The way back is a
+second soft-reboot, again without firmware or bootloader.
+
+The price:
+
+- Both transitions log the user out, because the desktop itself runs inside the
+  overlay. For the same reason an emergency ends at the decoy's login screen, or
+  with the machine off; it cannot leave a desktop running.
+- Kernel state is not reset: the boot ID, the uptime, the kernel ring buffer and
+  systemd's soft-reboot counter carry over until the machine powers off (see the
+  [residual channels](threat-model.md#residual-channels)).
+- The hidden systemd would mount every other filesystem in the decoy's fstab
+  directly and read-write, so the
+  [fstab policy](configuration.md#what-the-session-covers) decides for each one
+  before the switch.
+- A next root whose init does not resolve can freeze PID 1, and a populated
+  `/run/nextroot` would turn a later plain `reboot` into a soft-reboot into it.
+  NAILS checks the init the way PID 1 will before every switch, and detaches a
+  next root it did not finish.
+- A host whose systemd is older than 254 cannot soft-reboot and is refused.
+
+The `soft-reboot-mechanics` VM test pins this kernel and systemd behaviour
+independently of the `nails` code, and the session tests run the same steps
+through `nails`. What a virtual machine cannot show (graphics, Wi-Fi and the
+time to the login screen on real hardware, TPM-sealed decoy roots, GRUB) is
+listed under
+[what has not been validated on hardware](operator-guide.md#what-has-not-been-validated-on-hardware).
 
 ## Crates
 
@@ -76,12 +129,14 @@ and the transition step before anything else is initialised.
   `rustix`, `libc`, `serde` and `serde_json` only, so `main` can run the emergency and the
   transition before clap, the configuration or tracing exist.
 
-Keeping the logic in the library (rather than in the binary) is recorded in
-[ADR 0001](adr/0001-core-library-boundary.md), the split into these crates and
-the tests that hold their boundaries in
-[ADR 0010](adr/0010-library-crate-split.md), and the teardown crate and its
-boundary in [ADR 0007](adr/0007-emergency-architecture.md) and
-[ADR 0008](adr/0008-whole-root-soft-reboot.md).
+The logic lives in the libraries rather than in the binary, so the whole
+threat-relevant surface can be tested without going through the binary or a
+terminal, and each behaviour is defined once for every command. The crates
+follow the session's areas so that one area cannot reach into another: besides
+the graph test, `nails-forensics/tests/boundary.rs` keeps verification away
+from the code that enters, leaves or tears down a session, and
+`nails-teardown/tests/boundary.rs` fails when the panic path gains a
+dependency, which keeps it small enough to review in one place.
 
 ## The platform seam
 
@@ -131,8 +186,8 @@ An activation moves through these layers; each names its modules and crates:
   expressible, persisted to `state.json`. Because a soft-reboot keeps the boot
   ID, the live session (hidden root, entry under way, interrupted entry, plain
   decoy) is read from the mount table and the session plan
-  (`session::probe`), not from the state file. The rationale for the typed
-  states is in [ADR 0003](adr/0003-type-safe-state-machine.md).
+  (`session::probe`), not from the state file. Contradictory states cannot be
+  represented, and a change to the variants is a change to the on-disk format.
 - **Pre-flight** (the framework in `nails-base`, the registry and most checks
   in `nails-core`, `session::checks` in `nails-session`) runs a registry of
   trait-based checks — systemd version and the soft-reboot units, the decoy
@@ -145,12 +200,11 @@ An activation moves through these layers; each names its modules and crates:
   `/run/overlay-runtime`, mounts the root overlay at `/run/nextroot`, builds
   and activates the hidden NixOS system there, applies the fstab policy, checks
   the init and installs the transition drop-in. Any failure undoes all of it, so
-  a populated `/run/nextroot` is never left behind. Path containment and the
-  mount APIs are described in [ADR 0004](adr/0004-detached-mount-apis.md); why
-  the overlay covers the whole root and is entered with a soft-reboot, rather
-  than taken live per directory or at boot, is recorded in
-  [ADR 0008](adr/0008-whole-root-soft-reboot.md), which supersedes
-  [ADR 0005](adr/0005-live-overlay-vs-boot-time-overlay.md).
+  a populated `/run/nextroot` is never left behind. How a path under the hidden
+  root is resolved without following a planted link is described in
+  `nails_base::filesystem::safe_path`; why the overlay covers the whole root and
+  is entered with a soft-reboot is explained
+  [above](#why-one-overlay-over-the-whole-root).
 - **Transition** (`nails-teardown`, `whole_root::transition`) is the
   `ExecStart=` of `systemd-soft-reboot.service`, run by systemd from the RAM
   copy as the last userspace step before each switch. It acts only on an armed
@@ -162,8 +216,8 @@ An activation moves through these layers; each names its modules and crates:
   `whole_root::ret` and `whole_root::emergency`) mount the decoy root at
   `/run/nextroot`, mark the backend for deferred removal and enqueue the
   soft-reboot; the emergency kills every hidden cgroup first. Emergency runs
-  the hot path from `main` before clap (the design history is in
-  [ADR 0007](adr/0007-emergency-architecture.md)).
+  the hot path from `main` before clap, the configuration and tracing, so a
+  failed hidden volume or an unreadable configuration cannot stop it.
 - **Verification** (`verify`, `nails-forensics`) scans for known residue, live or offline against
   a decoy image.
 
@@ -171,8 +225,7 @@ An activation moves through these layers; each names its modules and crates:
 
 Filesystem and process effects are reached through the `Filesystem` and process
 traits, with mock implementations used in tests. This lets almost the entire
-library be unit-tested without root or a real mount, and is recorded in
-[ADR 0002](adr/0002-trait-filesystem-testability.md). End-to-end behaviour that
+library be unit-tested without root or a real mount. End-to-end behaviour that
 genuinely needs a booted system — real soft-reboots, the hidden NixOS system,
 the fstab policy, forensic residue — is covered by the NixOS VM tests under
 `nix/e2e-tests` and the Debian/Ubuntu tier under `nix/distro-tests`. Between
