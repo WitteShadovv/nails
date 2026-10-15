@@ -176,15 +176,36 @@ pub fn bind_read_only(source: &Path, target: &Path) -> io::Result<()> {
 /// Make every mount below `target` private, leaving `target`'s own mount as
 /// it is (see the module docs: the next root's own mount stays shared until
 /// the switch). Every mount below the next root is private from the moment it
-/// exists; this is the backstop for the finished tree.
+/// exists; this is the backstop for the finished tree. A mount that a later
+/// mount on top of it or of a parent shadows is left alone: its path leads to
+/// the mount on top, and it was made private when it was created.
 pub fn make_below_private(target: &Path) -> io::Result<()> {
-    for point in mount_points()
+    for entry in read_mountinfo()
+        .unwrap_or_default()
         .into_iter()
-        .filter(|point| point != target && point.starts_with(target))
+        .filter(|entry| entry.mount_point != target && entry.mount_point.starts_with(target))
     {
-        rustix::mount::mount_change(&point, MountPropagationFlags::PRIVATE).map_err(to_io)?;
+        if !reaches(&entry.mount_point, entry.mount_id) {
+            continue;
+        }
+        rustix::mount::mount_change(&entry.mount_point, MountPropagationFlags::PRIVATE)
+            .map_err(to_io)?;
     }
     Ok(())
+}
+
+/// Whether a lookup of `path` ends on the mount `id`, as mountinfo numbers
+/// it. A path that no longer exists leads to no mount; without the mount id
+/// in `statx` (Linux before 5.8) every path is taken to reach its mount.
+fn reaches(path: &Path, id: i32) -> bool {
+    use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
+    match statx(CWD, path, AtFlags::empty(), StatxFlags::MNT_ID) {
+        Ok(stat) if stat.stx_mask & StatxFlags::MNT_ID.bits() != 0 => {
+            u64::try_from(id).is_ok_and(|id| id == stat.stx_mnt_id)
+        }
+        Err(rustix::io::Errno::NOENT) => false,
+        _ => true,
+    }
 }
 
 fn overlay_path(path: &Path) -> io::Result<String> {

@@ -1038,3 +1038,38 @@ fn an_unreadable_decoy_fstab_refuses_the_entry() {
             );
         });
 }
+
+/// A mount below the next root that a later mount on its parent shadows is
+/// out of reach of its path: the backstop leaves it, private since it was
+/// made, and makes the mount on top private. It used to fail with EINVAL and
+/// roll back an entry that was valid.
+#[test]
+fn a_shadowed_mount_below_the_next_root_does_not_fail_the_backstop() {
+    let _ = Rerun::new(test_path!(
+        a_shadowed_mount_below_the_next_root_does_not_fail_the_backstop
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let run = ScratchTmpfs::new("");
+        run.mkdir("nextroot");
+        let root = run.path().join("nextroot");
+        let top = ScratchTmpfs::new("");
+        top.mkdir("srv/data");
+        bind(top.path(), &root);
+        let child = ScratchTmpfs::new("");
+        nextroot::bind(child.path(), &root.join("srv/data"), false).unwrap();
+        let parent = ScratchTmpfs::new("");
+        parent.mkdir("data");
+        nextroot::bind(parent.path(), &root.join("srv"), false).unwrap();
+
+        nextroot::make_below_private(&root).expect("the backstop");
+
+        let srv = root.join("srv");
+        let mountinfo = std::fs::read_to_string("/proc/self/mountinfo").unwrap();
+        let line = mountinfo
+            .lines()
+            .find(|line| line.split(' ').nth(4) == Some(srv.to_str().unwrap()))
+            .expect("the mount on top");
+        assert!(!line.contains(" shared:"), "{line}");
+    });
+}
