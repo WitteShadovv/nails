@@ -39,8 +39,9 @@ The way back is a second soft-reboot, again without firmware or bootloader.
 The price:
 
 - Both transitions log the user out, because the desktop itself runs inside the
-  overlay. For the same reason an emergency ends at the decoy's login screen, or
-  with the machine off; it cannot leave a desktop running.
+  overlay. For the same reason an emergency ends at the decoy's login screen (or
+  a freshly started desktop, where the display manager logs in automatically),
+  or with the machine off; it cannot leave a desktop running.
 - Kernel and service-manager state is not reset: the boot ID, the uptime, the
   kernel ring buffer and, on systemd 256 and newer, its soft-reboot counter
   carry over until the machine powers off (see the

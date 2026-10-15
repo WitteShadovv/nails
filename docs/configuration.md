@@ -249,8 +249,11 @@ a unit suffix such as `.service` or `.timer`, and as an autostart entry
 otherwise. `nails check` names those names, so a typo does not go unnoticed. You
 can also disable an entry from inside the hidden session (`systemctl --user
 mask <unit>`, or remove or override the autostart file): the change lands in the
-upper, so it affects the hidden session only. Lingering and autologin are
-decoy settings — disable them on the decoy itself if they matter.
+upper, so it affects the hidden session only. Lingering is a decoy setting —
+disable it on the decoy itself if it matters. A display manager set to log in
+automatically logs that account in again at every switch, as at boot; the
+operator guide says how to
+[turn that off for the hidden session only](operator-guide.md#inherited-autostart-services-and-autologin).
 
 Masking hides what *runs*; it does not roll back remote or account state. Shared
 accounts, tokens and sync history remain shared and are never undone. Correlation

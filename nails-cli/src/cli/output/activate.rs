@@ -200,7 +200,8 @@ fn human_lines(
             out.push(String::new());
             out.push(
                 "Soft-rebooting into the hidden session now: every program closes and you are \
-                 logged out. Log in at the hidden session's login screen."
+                 logged out. Log in at the hidden session's login screen (a display manager \
+                 set to log in automatically logs that account in again, as at boot)."
                     .to_string(),
             );
         }
@@ -382,7 +383,8 @@ mod tests {
                 "\u{26a0} hidden kernel differs".to_string(),
                 String::new(),
                 "Soft-rebooting into the hidden session now: every program closes and you are \
-                 logged out. Log in at the hidden session's login screen."
+                 logged out. Log in at the hidden session's login screen (a display manager \
+                 set to log in automatically logs that account in again, as at boot)."
                     .to_string(),
             ]
         );

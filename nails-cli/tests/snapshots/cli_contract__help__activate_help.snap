@@ -78,9 +78,10 @@ WHAT HAPPENS:
   Activation builds one overlay over the whole decoy root at /run/nextroot,
   with every change stored on the hidden volume, and soft-reboots into it
   (systemd 254 or newer). Every program is closed and you are logged out; the
-  hidden session starts at its own login screen. Nothing of the hidden session
-  can reach the decoy disk: the ESP is read-only, other decoy filesystems are
-  overlaid, and decoy swap is never used.
+  hidden session starts at its own login screen (a display manager set to log
+  in automatically logs that account in again, as at boot). Nothing of the
+  hidden session can reach the decoy disk: the ESP is read-only, other decoy
+  filesystems are overlaid, and decoy swap is never used.
 
 EXAMPLES:
   nails activate                      Enter the hidden session

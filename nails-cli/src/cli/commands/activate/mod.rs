@@ -8,9 +8,11 @@
 //! root's store), the overlay at `/run/nextroot` and the armed plan. It prints
 //! its result and then enqueues the soft-reboot, which stops every program of
 //! the decoy and starts the hidden userspace inside the overlay: the operator
-//! is logged out and logs in again at the hidden session's login screen. As its
-//! last step it SIGKILLs the decoy's interactive shells, so none of them writes
-//! the activation command to its history file on the decoy disk.
+//! is logged out and logs in again at the hidden session's login screen (a
+//! display manager set to log in automatically logs that account in again, as
+//! at boot; NAILS logs nobody in). As its last step it SIGKILLs the decoy's
+//! interactive shells, so none of them writes the activation command to its
+//! history file on the decoy disk.
 
 use crate::cli::args::ActivateArgs;
 use crate::cli::output::envelope::{ErrorBody, report_error};

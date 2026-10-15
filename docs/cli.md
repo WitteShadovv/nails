@@ -40,7 +40,8 @@ The workflow has four steps:
   1. Open and mount the hidden backend (e.g. unlock the LUKS/VeraCrypt volume).
   2. `init <root>` once, to lay out the hidden volume.
   3. `activate` to soft-reboot into the hidden session. You are logged out;
-     the hidden session starts at its own login screen.
+     the hidden session starts at its own login screen (a display manager set
+     to log in automatically logs that account in again, as at boot).
   4. `deactivate` to soft-reboot back to the plain decoy, or `emergency` to
      kill the hidden session at once and return (or power off). If an
      activation was interrupted, `recover` removes what it left behind.
@@ -51,7 +52,7 @@ EXAMPLES:
   # Run by full path from the mounted backend, never from a decoy copy.
   sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
   sudo /mnt/data/nails activate         Soft-reboot into the hidden session
-  /mnt/data/nails status --json         Machine-readable state and uptime
+  sudo /mnt/data/nails status --json    Machine-readable state and uptime
   sudo /mnt/data/nails deactivate       Soft-reboot back to the decoy
   sudo /mnt/data/nails emergency        Kill the hidden session and return now
   source <(/mnt/data/nails completions bash)   Load completions in the session
@@ -119,9 +120,10 @@ WHAT HAPPENS:
   Activation builds one overlay over the whole decoy root at /run/nextroot,
   with every change stored on the hidden volume, and soft-reboots into it
   (systemd 254 or newer). Every program is closed and you are logged out; the
-  hidden session starts at its own login screen. Nothing of the hidden session
-  can reach the decoy disk: the ESP is read-only, other decoy filesystems are
-  overlaid, and decoy swap is never used.
+  hidden session starts at its own login screen (a display manager set to log
+  in automatically logs that account in again, as at boot). Nothing of the
+  hidden session can reach the decoy disk: the ESP is read-only, other decoy
+  filesystems are overlaid, and decoy swap is never used.
 
 EXAMPLES:
   nails activate                      Enter the hidden session
@@ -158,8 +160,9 @@ WHAT HAPPENS:
   In the hidden session, deactivation mounts the decoy root at /run/nextroot,
   marks the hidden volume for closing and soft-reboots: every hidden program
   is stopped in order, /run is scrubbed of the hidden session, and the decoy
-  starts again at its own login screen. The hidden volume is unmounted and
-  its encryption mapping closed by the switch itself.
+  starts again at its own login screen (a display manager set to log in
+  automatically logs that account in again, as at boot). The hidden volume is
+  unmounted and its encryption mapping closed by the switch itself.
 
 EXAMPLES:
   nails deactivate                    Soft-reboot back to the decoy
@@ -187,9 +190,10 @@ WHAT HAPPENS:
   In the hidden session: the decoy root is mounted at /run/nextroot, the
   hidden volume is marked for closing, the soft-reboot is enqueued and every
   hidden program is killed at once. The machine returns to the plain decoy,
-  which shows its normal login screen; log in with the decoy password. With
-  --poweroff the machine powers off instead. On the decoy, emergency removes
-  what an interrupted activation left in /run.
+  which shows its normal login screen; log in with the decoy password (a
+  display manager set to log in automatically logs that account in again, as
+  at boot). With --poweroff the machine powers off instead. On the decoy,
+  emergency removes what an interrupted activation left in /run.
 
 EXAMPLES:
   nails emergency                     Kill the hidden session and return now
@@ -227,9 +231,12 @@ Show the session, security posture and hidden volume
 **Usage:** `nails status [OPTIONS]`
 
 EXAMPLES:
-  nails status                        Show the current state and uptime
-  nails status --details              Add resolved paths and overlay details
-  nails status --json                 Emit a machine-readable envelope
+  sudo nails status                   Show the current state and uptime
+  sudo nails status --details         Add resolved paths and overlay details
+  sudo nails status --json            Emit a machine-readable envelope
+
+The configuration `init` writes is readable by root only, so status runs with
+sudo like the other commands.
 
 ###### **Options:**
 

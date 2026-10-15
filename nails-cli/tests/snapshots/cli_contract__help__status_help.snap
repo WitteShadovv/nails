@@ -49,8 +49,11 @@ Options:
           Print help (see a summary with '-h')
 
 EXAMPLES:
-  nails status                        Show the current state and uptime
-  nails status --details              Add resolved paths and overlay details
-  nails status --json                 Emit a machine-readable envelope
+  sudo nails status                   Show the current state and uptime
+  sudo nails status --details         Add resolved paths and overlay details
+  sudo nails status --json            Emit a machine-readable envelope
+
+The configuration `init` writes is readable by root only, so status runs with
+sudo like the other commands.
 
 ----- stderr -----

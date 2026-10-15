@@ -285,7 +285,10 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    `check` runs the same pre-flight checks as `activate` and changes nothing.
    `activate` asks for confirmation, prepares the hidden root and soft-reboots:
    **every program closes and you are logged out.** Log in again at the hidden
-   session's login screen.
+   session's login screen. NAILS logs nobody in, but a decoy whose display
+   manager logs in automatically logs that account in again, as at boot; the
+   operator guide says how to
+   [turn that off for the hidden session alone](docs/operator-guide.md#inherited-autostart-services-and-autologin).
 
 5. **Verify, then return** from inside the hidden session:
 
@@ -294,7 +297,8 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    sudo /mnt/data/nails deactivate --poweroff
    ```
 
-   `deactivate` without `--poweroff` returns to the decoy's login screen.
+   `deactivate` without `--poweroff` returns to the decoy's login screen (or,
+   with display-manager autologin, to its desktop).
    Powering off is what clears RAM; leave the machine off for a few minutes
    before handing it over.
 
@@ -324,9 +328,9 @@ flowchart LR
 
 | Step | Runs on | What happens | What you see |
 |---|---|---|---|
-| `activate` | the decoy | Pre-flight checks, a read-only residue baseline of the decoy (report on the hidden volume), the root overlay at `/run/nextroot`, on NixOS the hidden system built into the overlay, then the soft-reboot. Ctrl+C before the switch rolls everything back. | Progress and a summary, then your terminal closes and the screen shows a text console for a few seconds. The hidden session starts at its own login screen. |
-| `deactivate` | the hidden session | Mounts the decoy root for the way back, marks the hidden volume for closing, and soft-reboots. The orderly shutdown stops every hidden program; the last step scrubs `/run` of what the session added. | Programs close as at a logout. The decoy starts at its own login screen. The hidden volume is unmounted and closed. |
-| `emergency` | the hidden session | The same way back, but every hidden program is killed at once (`cgroup.kill`). It acts immediately; `--countdown` adds an abortable wait. If the way back cannot be prepared, it powers off. | A few seconds of text console, then the decoy's normal login screen. Log in with the decoy password; nothing logs in automatically. |
+| `activate` | the decoy | Pre-flight checks, a read-only residue baseline of the decoy (report on the hidden volume), the root overlay at `/run/nextroot`, on NixOS the hidden system built into the overlay, then the soft-reboot. Ctrl+C before the switch rolls everything back. | Progress and a summary, then your terminal closes and the screen shows a text console for a few seconds. The hidden session starts at its own login screen; a display manager set to log in automatically logs that account in again. |
+| `deactivate` | the hidden session | Mounts the decoy root for the way back, marks the hidden volume for closing, and soft-reboots. The orderly shutdown stops every hidden program; the last step scrubs `/run` of what the session added. | Programs close as at a logout. The decoy starts at its own login screen; a display manager set to log in automatically logs that account in again. The hidden volume is unmounted and closed. |
+| `emergency` | the hidden session | The same way back, but every hidden program is killed at once (`cgroup.kill`). It acts immediately; `--countdown` adds an abortable wait. If the way back cannot be prepared, it powers off. | A few seconds of text console, then the decoy's normal login screen: log in with the decoy password. NAILS logs nobody in; a display manager set to log in automatically logs that account in again, as at boot. |
 | `--poweroff` | either command | Powers off instead of returning to the decoy. | The machine turns off. |
 | `recover` | the decoy | Removes what an interrupted activation left in `/run` and resets the state. Never reboots. | A short report. |
 

@@ -7,7 +7,8 @@
 //! at `/run/nextroot`, the hidden backend marked for closing), records the
 //! state as inactive and enqueues the soft-reboot. The orderly shutdown stops
 //! every hidden program, the transition scrubs `/run`, and the decoy starts at
-//! its own login screen. `--poweroff` powers off instead.
+//! its own login screen (a display manager set to log in automatically logs
+//! that account in again, as at boot). `--poweroff` powers off instead.
 
 use std::io::IsTerminal;
 use std::path::Path;
@@ -118,7 +119,8 @@ pub fn execute(
         ));
         if !args.poweroff {
             crate::cli::output::println_tolerating_broken_pipe(
-                "  The decoy starts at its own login screen in a few seconds.",
+                "  The decoy starts at its own login screen in a few seconds (a display manager \
+                 set to log in automatically logs that account in again, as at boot).",
             );
         }
     }

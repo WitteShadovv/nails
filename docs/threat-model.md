@@ -186,7 +186,10 @@ upper changes.
   distribution does not ship, and known trace writers such as sync clients),
   and `[persona] mask_inherited` writes masks for autostart entries and user
   units into the upper at entry, so they never run in the hidden session.
-  Lingering and autologin are reported, not masked.
+  Lingering and autologin are reported, not masked; autologin logs the account
+  in again at every switch, and can be turned off in the hidden session's own
+  configuration (see the
+  [operator guide](operator-guide.md#inherited-autostart-services-and-autologin)).
 - **Network identity.** The overlay does not change machine-id, hostname, MAC
   addresses or NetworkManager profiles (including VPN autoconnect). The kernel
   keeps its interfaces and addresses across the soft-reboot; the network

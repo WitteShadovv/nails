@@ -118,7 +118,10 @@ The overlay separates *files*, not the machine: the hidden session runs on the
 decoy's kernel and shares its network identity (see
 [What the hidden environment shares with the decoy](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
 Both transitions log you out: every program closes, and the hidden session and,
-afterwards, the decoy start at their own login screens.
+afterwards, the decoy start at their own login screens. NAILS logs nobody in,
+but a decoy whose display manager logs in automatically logs that account in
+again after each switch, as at boot (see
+[Inherited autostart, services and autologin](#inherited-autostart-services-and-autologin)).
 
 Two safeguards bracket the session:
 
@@ -304,8 +307,9 @@ shutdown stops every hidden program. The last step before the switch:
   kernel record of the hidden session.
 
 PID 1 then switches back into the plain decoy root, and the decoy starts at its
-own login screen. The hidden volume is unmounted and its mapping closed by the
-switch itself, once the overlay that held it is released.
+own login screen (a display manager set to log in automatically logs that
+account in again, as at boot). The hidden volume is unmounted and its mapping
+closed by the switch itself, once the overlay that held it is released.
 
 **What a soft-reboot leaves.** Nothing of the hidden session's files, but some
 kernel state, all of it in RAM and gone at power-off:
@@ -365,7 +369,7 @@ run in the hidden session and end it with a soft-reboot back to the decoy;
 | Hidden programs | stopped in order by the shutdown | killed at once (`cgroup.kill` on every cgroup but PID 1's and its own) | — |
 | Hidden backend | marked for deferred removal; closed by the switch | marked for deferred removal; closed by the switch | — |
 | `/run` scrub, `utab` restore, kmsg cursor | Yes | Yes | — |
-| Ends at | the decoy's login screen (`--poweroff`: off) | the decoy's login screen (`--poweroff`: off; `--reboot`: a full reboot) | the decoy, unchanged |
+| Ends at | the decoy's login screen, or its desktop with autologin (`--poweroff`: off) | the decoy's login screen, or its desktop with autologin (`--poweroff`: off; `--reboot`: a full reboot) | the decoy, unchanged |
 | Detaches a leftover `/run/nextroot` and removes `/run/overlay-runtime` and the drop-in | — | on the decoy: Yes | Yes |
 | Reads the configuration first | Yes (falls back to defaults) | No: it runs before argument parsing, the configuration and logging | Yes |
 
@@ -406,9 +410,11 @@ In the hidden session, emergency:
 The orderly shutdown then has nothing left to wait for, the `/run` scrub still
 runs as the last step, and the machine returns to the plain decoy, which shows
 its normal display-manager greeter (or a getty). **Log in normally, with the
-decoy password; nothing logs in automatically.** The screen goes to a text
-console for a few seconds in between: to an observer this is a logout, not a
-crash.
+decoy password.** NAILS logs nobody in; a decoy whose display manager logs in
+automatically logs that account in again, as at boot, and its desktop then
+opens without a password. The screen goes to a text console for a few seconds
+in between: to an observer this looks like a logout, not a crash, or, with
+autologin, like a restart of the desktop.
 
 - With `--poweroff` the machine powers off instead. RAM decays: the strongest
   answer to a seizure. Leave it off for a few minutes.
@@ -464,9 +470,10 @@ security.polkit.extraConfig = ''
 ```
 
 Bind a key to `systemctl start panic.service`. Drop `--poweroff` to return to
-the decoy's login screen instead. Keep `<hidden-root>/nails` root-owned and not
-writable by any other account, or a root-run `ExecStart` is the same escalation
-the passwordless-sudo warning is about.
+the decoy instead (its login screen, or its desktop with autologin). Keep
+`<hidden-root>/nails` root-owned and not writable by any other account, or a
+root-run `ExecStart` is the same escalation the passwordless-sudo warning is
+about.
 
 ---
 
@@ -579,9 +586,9 @@ never land on the decoy. See the "Common host traces" guidance in
 
 ## Inside the hidden session
 
-Everything in this section runs after activation's soft-reboot, logged in at the
-hidden session's own login screen. The hidden volume is at the same path as on
-the decoy.
+Everything in this section runs after activation's soft-reboot, logged in to the
+hidden session (at its own login screen, or by the display manager's autologin).
+The hidden volume is at the same path as on the decoy.
 
 ### Verifying the decoy
 
@@ -977,9 +984,27 @@ Disable what you do not want **inside the hidden session**: mask the unit
 (`systemctl --user mask syncthing.service`), remove or override the autostart
 entry, or, on NixOS, leave it out of the hidden configuration. The change lands
 in the upper, so it takes effect for the hidden session only and the decoy is
-unchanged. **Lingering and autologin are decoy settings** — disable those on the
-decoy itself. Disabling changes what *runs*; it does not roll back remote or
-account state.
+unchanged. **Lingering is a decoy setting** — disable it on the decoy itself.
+Disabling changes what *runs*; it does not roll back remote or account state.
+
+**Autologin repeats at every switch.** Each soft-reboot starts a fresh display
+manager, and one set to log in automatically logs that account in again, as at
+boot: after `activate` the hidden desktop opens without a password, and after
+`deactivate` or `emergency` the decoy's does. NAILS logs nobody in and leaves
+the setting alone; `nails check` lists an autologin it finds in the GDM, LightDM
+or SDDM configuration. To keep autologin on the decoy but have the hidden
+session start at its login screen, turn it off in the hidden session only:
+
+- NixOS, with any display manager: add
+  `services.displayManager.autoLogin.enable = lib.mkForce false;` to the hidden
+  configuration (`config/nixos/configuration.nix` on the hidden volume, or the
+  hidden flake). The next activation builds it in.
+- Debian and Ubuntu: inside a hidden session, edit the display manager's file.
+  For GDM set `AutomaticLoginEnable=false` in the `[daemon]` section of
+  `/etc/gdm3/daemon.conf` (Debian) or `/etc/gdm3/custom.conf` (Ubuntu); for
+  LightDM or SDDM empty `autologin-user=` or `User=` under `[Autologin]` in the
+  file that sets it. The edit lands in the upper, so it applies from the next
+  activation and the decoy keeps its own setting.
 
 #### Remote state and sync clients
 
