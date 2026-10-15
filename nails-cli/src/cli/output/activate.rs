@@ -41,7 +41,8 @@ struct ActivateResultEvent {
     #[serde(rename = "type")]
     event_type: &'static str,
     ok: bool,
-    /// `entering`, `entering_with_warnings`, `already_active` or `error`.
+    /// `entering`, `entering_with_warnings`, `already_active`, `cancelled` or
+    /// `error`.
     status: &'static str,
     /// Seconds spent preparing the entry.
     duration: f64,
@@ -69,6 +70,10 @@ pub enum ActivateResult<'a> {
     /// It failed.
     Failed(&'a NailsError),
 }
+
+/// What a cancelled activation reports, whether the operator answered `n` at
+/// the prompt or pressed Ctrl+C at it or later in the entry.
+pub const CANCELLED: &str = "Activation cancelled; nothing was changed.";
 
 /// Emit a progress event on stdout, ahead of the final result line.
 pub fn print_activate_progress(phase: &'static str) {
@@ -143,6 +148,11 @@ fn result_event(result: &ActivateResult<'_>, duration: f64) -> ActivateResultEve
                 shown_duration(duration)
             );
         }
+        ActivateResult::Failed(NailsError::Cancelled) => {
+            event.ok = false;
+            event.status = "cancelled";
+            event.message = CANCELLED.to_string();
+        }
         ActivateResult::Failed(error) => {
             event.ok = false;
             event.status = "error";
@@ -211,6 +221,9 @@ fn human_lines(
                  set to log an account in automatically logs it in again, as at boot)."
                     .to_string(),
             );
+        }
+        ActivateResult::Failed(NailsError::Cancelled) => {
+            err.push(err_style.marked(Mark::Neutral, CANCELLED));
         }
         ActivateResult::Failed(error) => {
             if let NailsError::PreFlightCheckFailed(failures) = error {
@@ -441,6 +454,25 @@ mod tests {
                 format!("\u{2717} Activation failed: {error}"),
                 "  Nothing was changed: no next root is left behind.".to_string(),
             ]
+        );
+    }
+
+    /// A cancel is no failure: it reads the same whether the operator
+    /// answered `n` or pressed Ctrl+C, at the prompt or during the entry.
+    #[test]
+    fn a_cancel_reads_as_a_cancel_not_a_failure() {
+        let cancelled = ActivateResult::Failed(&NailsError::Cancelled);
+        let event = result_event(&cancelled, 0.0);
+        assert!(!event.ok);
+        assert_eq!(event.status, "cancelled");
+        assert_eq!(event.message, "Activation cancelled; nothing was changed.");
+        assert!(event.failed_checks.is_none());
+
+        let (out, err) = human_lines(&cancelled, 0.0, &OutputSettings::default());
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(
+            err,
+            vec!["\u{25cb} Activation cancelled; nothing was changed.".to_string()]
         );
     }
 

@@ -295,29 +295,20 @@ pub fn execute(
     if let Some(notice) = defaults_notice {
         crate::cli::output::eprintln_tolerating_broken_pipe(&notice);
     }
-    if !args.yes {
-        match confirm_logout(settings, accepted.as_ref()) {
-            Answer::Yes => {}
-            Answer::Cancelled => return report_cancelled(settings),
-            Answer::No => {
-                return report_error(
-                    json,
-                    "activate",
-                    ExitStatus::Failed,
-                    ErrorBody::new("cancelled", "activation cancelled; nothing changed"),
-                );
-            }
-        }
+    if !args.yes
+        && let Some(status) = stop_status(confirm_logout(settings, accepted.as_ref()))
+    {
+        return report_cancelled(settings, status);
     }
     // Ctrl+C sets a flag that every step from here on reads (see
     // nails_core::cancel). At the prompt it ends the activation at once;
     // during the residue baseline, before the entry begins.
     if nails_core::cancel::is_cancelled() {
-        return report_cancelled(settings);
+        return report_cancelled(settings, ExitStatus::Cancelled);
     }
     write_activation_residue_baseline(&manager, json, settings);
     if nails_core::cancel::is_cancelled() {
-        return report_cancelled(settings);
+        return report_cancelled(settings, ExitStatus::Cancelled);
     }
 
     if json {
@@ -381,14 +372,26 @@ pub fn execute(
     }
 }
 
-/// Report an activation that a signal cancelled before it changed anything.
-fn report_cancelled(settings: &OutputSettings) -> ExitStatus {
+/// How the answer at the prompt ends the activation, if it does: a `n` (or
+/// the end of the input) with exit 1, a Ctrl+C with exit 130 as a signal's
+/// cancel anywhere else. Both read alike ([`report_cancelled`]).
+fn stop_status(answer: Answer) -> Option<ExitStatus> {
+    match answer {
+        Answer::Yes => None,
+        Answer::No => Some(ExitStatus::Failed),
+        Answer::Cancelled => Some(ExitStatus::Cancelled),
+    }
+}
+
+/// Report an activation cancelled before it changed anything, ending with
+/// `status`.
+fn report_cancelled(settings: &OutputSettings, status: ExitStatus) -> ExitStatus {
     print_result(
         settings,
         &ActivateResult::Failed(&NailsError::Cancelled),
         0.0,
     );
-    ExitStatus::Cancelled
+    status
 }
 
 fn print_result(settings: &OutputSettings, result: &ActivateResult<'_>, duration: f64) {

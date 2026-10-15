@@ -644,6 +644,14 @@ fn activate_schema_accepts_progress_result_and_error_lines() {
     });
     assert_matches_schema(&schema, &refused);
 
+    let cancelled = serde_json::json!({
+        "schema_version": 1, "command": "activate", "type": "result",
+        "ok": false, "status": "cancelled", "duration": 0.0,
+        "filesystems": [], "masked_units": [],
+        "message": "Activation cancelled; nothing was changed."
+    });
+    assert_matches_schema(&schema, &cancelled);
+
     let error = serde_json::json!({
         "schema_version": 1, "command": "activate", "ok": false,
         "error": {"code": "usage", "message": "no terminal to confirm on"}

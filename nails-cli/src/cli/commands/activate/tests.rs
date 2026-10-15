@@ -358,6 +358,22 @@ fn answer_to(input: &[u8], cancelled: bool) -> super::Answer {
     )
 }
 
+/// `n` ends the activation with exit 1, Ctrl+C at the prompt with 130, the
+/// code of every other signal cancel; only `y` goes on.
+#[test]
+fn the_answer_decides_how_the_activation_ends() {
+    use crate::cli::output::ExitStatus;
+    assert_eq!(super::stop_status(super::Answer::Yes), None);
+    assert_eq!(
+        super::stop_status(super::Answer::No).map(ExitStatus::code),
+        Some(1)
+    );
+    assert_eq!(
+        super::stop_status(super::Answer::Cancelled).map(ExitStatus::code),
+        Some(130)
+    );
+}
+
 #[test]
 fn the_prompt_takes_yes_and_nothing_else() {
     assert_eq!(answer_to(b"y\n", false), super::Answer::Yes);
