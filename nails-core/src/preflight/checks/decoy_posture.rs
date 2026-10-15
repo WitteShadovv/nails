@@ -21,7 +21,8 @@
 //! - an atime policy that records read access on the decoy (`strictatime` /
 //!   missing `noatime`),
 //! - crash-dump channels that persist memory to the decoy disk: a disk
-//!   `kernel.core_pattern`, systemd-coredump `Storage=external`, registered
+//!   `kernel.core_pattern`, a systemd-coredump that is not set to
+//!   `Storage=none` with `ProcessSizeMax=0` (see [`coredump`]), registered
 //!   pstore records, or an armed kdump,
 //! - the NixOS `nixos-upgrade.timer` (which can rebuild and touch EFI NVRAM
 //!   from the decoy profile while the hidden session runs),
@@ -39,11 +40,11 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use super::journald_storage::journald_persists_to_decoy_at;
-use super::systemd_conf;
 use crate::filesystem::parse_mountinfo;
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
+mod coredump;
 mod sudo_logging;
 pub use sudo_logging::{SudoLogging, scan_sudoers};
 
@@ -55,8 +56,6 @@ const MOUNTINFO: &str = "/proc/self/mountinfo";
 const INVOCATION_DIR: &str = "run/systemd/units";
 /// Kernel core-dump pattern.
 const CORE_PATTERN: &str = "/proc/sys/kernel/core_pattern";
-/// systemd-coredump configuration name, resolved with its drop-ins.
-const COREDUMP_CONF: &str = "coredump.conf";
 /// Persistent crash-record store exposed by the pstore filesystem.
 const PSTORE_DIR: &str = "/sys/fs/pstore";
 /// `1` here means a crash kernel is loaded and kdump will write a dump on panic.
@@ -194,7 +193,7 @@ impl DecoyPersistenceCheck {
             }
         }
 
-        out.extend(Self::crash_posture(fs, root));
+        out.extend(Self::crash_posture(fs, root, is_nixos));
         out.extend(scan_sudoers(fs, Path::new(sudo_logging::SUDOERS)).findings());
 
         if is_nixos
@@ -213,31 +212,24 @@ impl DecoyPersistenceCheck {
     }
 
     /// Crash-dump channels that can persist memory contents to the decoy disk.
-    fn crash_posture<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
+    ///
+    /// systemd-coredump's settings are read only when the kernel pipes core
+    /// dumps to it: a `coredump.conf` left behind while another helper or a
+    /// plain pattern takes the dumps decides nothing.
+    fn crash_posture<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Vec<String> {
         let mut out = Vec::new();
 
         if let Ok(pattern) = fs.read_file_content(Path::new(CORE_PATTERN)) {
             let pattern = pattern.trim();
-            if pattern.starts_with("|") {
-                if pattern.contains("systemd-coredump") {
-                    out.push(
-                        "core dumps are piped to systemd-coredump; check its Storage= \
-                         setting (external persists to the decoy disk)"
-                            .to_string(),
-                    );
+            if let Some(helper) = pattern.strip_prefix('|') {
+                if helper.contains("systemd-coredump") {
+                    out.extend(coredump::CoredumpSettings::read(fs, root).finding(is_nixos));
                 }
             } else if !pattern.is_empty() && pattern != "core" {
                 out.push(format!(
                     "kernel.core_pattern writes core dumps to the decoy disk ({pattern})"
                 ));
             }
-        }
-
-        if coredump_storage_external(fs, root) {
-            out.push(
-                "systemd-coredump Storage=external persists core dumps to the decoy disk"
-                    .to_string(),
-            );
         }
 
         // A non-empty pstore means crash records are already persisted in
@@ -264,35 +256,6 @@ impl DecoyPersistenceCheck {
 
         out
     }
-}
-
-/// Whether systemd-coredump's effective `Storage=` persists dumps to disk.
-///
-/// `coredump.conf` is resolved with its drop-ins (see [`systemd_conf`]). When
-/// no coredump configuration exists at all, systemd-coredump is taken as not
-/// installed and nothing is reported; otherwise the upstream default is
-/// `external`, so an unset `Storage=` is treated as persistent. `none` and
-/// `journal` do not write standalone dump files to the decoy disk. Values match
-/// exactly; an invalid one is ignored and an empty one resets to the default.
-fn coredump_storage_external<F: Filesystem>(fs: &F, root: &Path) -> bool {
-    if !systemd_conf::config_present(fs, root, COREDUMP_CONF) {
-        return false;
-    }
-    let assignments = systemd_conf::section_assignments(fs, root, COREDUMP_CONF, "Coredump");
-    coredump_external_from(&assignments)
-}
-
-/// Fold `Storage=` assignments of `[Coredump]` into whether dumps go to disk.
-fn coredump_external_from(assignments: &[systemd_conf::Assignment]) -> bool {
-    let mut external = true; // upstream default
-    for assignment in assignments.iter().filter(|a| a.key == "Storage") {
-        match assignment.value.as_str() {
-            "external" | "" => external = true,
-            "none" | "journal" => external = false,
-            _ => {}
-        }
-    }
-    external
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for DecoyPersistenceCheck {

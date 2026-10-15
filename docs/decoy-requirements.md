@@ -54,10 +54,17 @@ decoy disk.
 
 - **atime policy** — a root mounted without `noatime`/`relatime` records read
   access, leaving an atime trail on the decoy.
-- **Crash-dump channels** — a disk `kernel.core_pattern`, systemd-coredump
-  `Storage=external`, registered pstore records, or an armed kdump. Each can
-  persist process or kernel memory (which may contain hidden-session data) to the
-  decoy disk or firmware-backed storage.
+- **Crash-dump channels** — a disk `kernel.core_pattern`, systemd-coredump with
+  any setting other than `Storage=none` together with `ProcessSizeMax=0`,
+  registered pstore records, or an armed kdump. Each can persist process or
+  kernel memory (which may contain hidden-session data) to the decoy disk or
+  firmware-backed storage. systemd-coredump writes every core it processes to
+  `/var/lib/systemd/coredump` first, so `Storage=none` alone still puts each
+  one on the decoy disk for as long as it takes; `ProcessSizeMax=0` stops the
+  processing, and with both set it only logs that a program crashed. Keep
+  systemd-coredump running with those two settings rather than turning it off:
+  without it the kernel writes a `core` file into the crashing program's
+  working directory.
 - **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which rebuilds the
   decoy on its own schedule (and can touch EFI NVRAM). The generated hidden
   module force-disables `system.autoUpgrade`, but with `--overlay-only`, or
@@ -145,6 +152,8 @@ logind.
 - **No classic syslog / audit**: do not enable `services.rsyslogd`,
   `services.syslog-ng` or `security.auditd` / the audit framework on the decoy.
 - **noatime**: add `"noatime"` to the root filesystem's mount options.
+- **Core dumps kept off the disk**:
+  `systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; };`.
 - **No swap / hibernation**: leave `swapDevices` empty and do not configure
   `boot.resumeDevice` or a resume kernel parameter.
 - **Nothing in `/etc/nixos` names the hidden environment**: no `fileSystems`
@@ -168,6 +177,9 @@ logind.
   file and every `journald.conf.d/*.conf` drop-in the way systemd does, so a
   drop-in that sets `Storage=persistent` is caught too.
 - Remove or disable `rsyslog` and `auditd` if installed.
+- If `systemd-coredump` is installed, set `Storage=none` and `ProcessSizeMax=0`
+  under `[Coredump]` in a drop-in such as
+  `/etc/systemd/coredump.conf.d/50-discard.conf`.
 - Mount the root with `noatime`; disable swap and hibernation.
 
 ### Debian
@@ -177,6 +189,8 @@ logind.
 - **Volatile journald**: `Storage=volatile` in `journald.conf` or a
   `journald.conf.d/*.conf` drop-in.
 - Remove or disable `rsyslog`/`syslog-ng` and `auditd`.
+- With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
+  `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
 
 ## The sudo-log exposure and its mitigation
@@ -367,7 +381,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [sudo log file](#the-sudo-log-exposure-and-its-mitigation) (`sudo-logfile`) | `/var/log/sudo.log` | all | `decoy-persistence` | path probe (warn) | Remove `Defaults logfile=` from sudoers and sudoers.d. | `examiner-audit` |
 | [sudo I/O logging](#the-sudo-log-exposure-and-its-mitigation) (`sudo-io-log`) | `/var/log/sudo-io` | all | `decoy-persistence` | path probe (warn) | Remove every I/O logging option and tag from sudoers and sudoers.d. | `examiner-audit` |
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
-| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Send core dumps nowhere persistent and disarm kdump on the decoy. | `examiner-audit` |
+| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, send other core dumps nowhere persistent, and disarm kdump on the decoy. | `examiner-audit` |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `session-emergency` |
 | [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the upper on the hidden volume | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
