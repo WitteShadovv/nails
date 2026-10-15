@@ -95,18 +95,20 @@ config and CLI surfaces; there are no compatibility shims.
   between sessions no longer breaks the hidden system. On Debian and Ubuntu the hidden
   configuration is the upper's `/etc`.
 - The switch in both directions runs from the RAM copy (`ExecStart=` of
-  `systemd-soft-reboot.service`) and acts only on an armed plan. On the way back it scrubs `/run`
-  of what the decoy did not leave there when it stopped for the entry, such as a PID file that the
-  hidden session's copy of a decoy service wrote again; puts the decoy's name-server records below
-  `/run/resolvconf` back as the decoy left them, so the hidden session's name servers and search
-  domains (a VPN's, say) do not reach `/etc/resolv.conf` on the decoy disk; removes the session's
-  drop-ins by name, leaving the decoy's own; restores libmount's `utab`; writes journald's kmsg
-  cursor so the decoy journal imports no hidden kernel record; and resets units the session left
-  failed. The session's drop-ins and runtime units are readable by all, so PID 1 names none of
-  them in the journal or the kernel ring buffer. The session keeps working with
-  `blk-availability.service` (Debian, Ubuntu), Ubuntu 26.04's D-Bus units and NixOS static
-  addresses (`networking.interfaces`), whose stop would otherwise unmount the hidden volume, stall
-  the login screen or drop the network.
+  `systemd-soft-reboot.service`) and acts only on an armed plan. On the way back it deletes the
+  runtime journal, which the decoy's journald and the hidden one write alike, so a volatile decoy's
+  journal starts again at the return, without the decoy's own records from before the session;
+  scrubs `/run` of what else the decoy did not leave there when it stopped for the entry, such as a
+  PID file that the hidden session's copy of a decoy service wrote again; puts the decoy's
+  name-server records below `/run/resolvconf` back as the decoy left them, so the hidden session's
+  name servers and search domains (a VPN's, say) do not reach `/etc/resolv.conf` on the decoy disk;
+  removes the session's drop-ins by name, leaving the decoy's own; restores libmount's `utab`;
+  writes journald's kmsg cursor so the decoy journal imports no hidden kernel record; and resets
+  units the session left failed. The session's drop-ins and runtime units are readable by all, so
+  PID 1 names none of them in the journal or the kernel ring buffer. The session keeps working with
+  `blk-availability.service` (Debian, Ubuntu), Ubuntu 26.04's D-Bus units and NixOS static addresses
+  (`networking.interfaces`), whose stop would otherwise unmount the hidden volume, stall the login
+  screen or drop the network.
 - `nails deactivate` runs in the hidden session and soft-reboots back to the plain decoy after a
   confirmation (`-y` skips it); `--poweroff` powers off instead. The hidden volume is unmounted and
   its device-mapper stack closed by the switch itself, so dm-crypt wipes the master key from RAM; a

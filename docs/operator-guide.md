@@ -330,15 +330,17 @@ mounting it writes nothing), marks the hidden backend's device-mapper stack for
 deferred removal, records the state as inactive and soft-reboots. The orderly
 shutdown stops every hidden program. The last step before the switch:
 
-- scrubs the top of `/run` of what the hidden session added: it judges the
-  entries two levels deep (three below `/run/systemd`), so a daemon's state
-  deeper down stays, such as NetworkManager's per-link records. It deletes
-  from an allowlist (the hidden runtime journal, logind's session state,
-  runtime units, `utmp`, and entries that the decoy did not leave when it
-  stopped for the entry, such as the PID file of a decoy service that the
-  hidden session's copy wrote again and an emergency's kill left) and never
-  touches sockets, `/run/udev`, credentials or the current/booted system
-  links, which the decoy's next userspace is built to inherit;
+- scrubs the top of `/run`: it judges the entries two levels deep (three
+  below `/run/systemd`), so a daemon's state deeper down stays, such as
+  NetworkManager's per-link records. It deletes from an allowlist (the
+  runtime journal, logind's session state, runtime units, `utmp`, and entries
+  that the decoy did not leave when it stopped for the entry, such as the PID
+  file of a decoy service that the hidden session's copy wrote again and an
+  emergency's kill left) and never touches sockets, `/run/udev`, credentials
+  or the current/booted system links, which the decoy's next userspace is
+  built to inherit. The decoy's journald and the hidden session's write the
+  same runtime journal, so on a volatile decoy the decoy's own records from
+  before the session go too (see "What a soft-reboot leaves" below);
 - puts back the name-server records below `/run/resolvconf` (openresolv, and
   Debian's resolvconf) as the decoy left them: NetworkManager leaves its record
   in place when it stops, and on NixOS the decoy's start would otherwise write
@@ -357,8 +359,8 @@ closed by the switch itself, once the overlay that held it is released.
 
 **What a soft-reboot leaves.** On the decoy disk, none of the hidden session's
 files but one record, NetworkManager's (below); in RAM until power-off, some
-kernel state and the per-link records the network daemons keep deeper in
-`/run`:
+kernel state, the per-link records the network daemons keep deeper in `/run`
+and, on a volatile decoy, a journal that starts late:
 
 - the kernel ring buffer (`dmesg`), with the hidden session's kernel messages;
 - `SoftRebootsCount`, two per session, readable with `systemctl show` on
@@ -381,6 +383,12 @@ kernel state and the per-link records the network daemons keep deeper in
   before the decoy's NetworkManager starts. End a session that used the
   network-identity snippet with `deactivate --poweroff` (or
   `emergency --poweroff`).
+- on a volatile decoy, a journal that starts at the return. The way back
+  deletes the runtime journal the decoy shared with the hidden session, so the
+  decoy's own records from before the session (the activation's sudo line, the
+  hidden build's progress, its shutdown) are gone with the hidden ones, and the
+  kernel's boot messages are not read in again. `uptime` and `dmesg` still go
+  back to the boot.
 
 On a persistent decoy journal (which the decoy requirements forbid), the decoy's
 own shutdown and start lines appear under one boot ID, together with the kernel's
@@ -615,7 +623,10 @@ For the journal and kernel-message residue, the fix is to keep the journal off
 persistent disk rather than to scrub it afterwards: configure journald with
 `Storage=volatile` (or put the journal on impermanent storage) so these lines
 never land on the decoy. See the "Common host traces" guidance in
-[backends.md](backends.md). NAILS never touches pre-activation journal entries.
+[backends.md](backends.md). NAILS never touches a journal on the decoy disk; a
+volatile journal loses these lines at the way back, together with the hidden
+session's records (see "What a soft-reboot leaves" under
+[How it works](#how-it-works)).
 
 ### Pre-activation checklist
 

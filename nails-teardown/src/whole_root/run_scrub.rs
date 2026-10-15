@@ -8,11 +8,19 @@
 //! decoy would inherit everything the hidden session put there: logind state,
 //! `utmp`, the runtime journal, stray files, and libmount's `utab` lines. The
 //! scrub runs as the last userspace code before the switch, when every hidden
-//! unit has stopped, and deletes **only what the hidden session added**:
+//! unit has stopped, and deletes:
 //!
 //! - the per-session state of units that are all stopped by now (the runtime
 //!   journal, logind's sessions/users/seats/inhibitors, `utmp`) and the empty
-//!   mountpoint directories of `/run/user/<uid>`;
+//!   mountpoint directories of `/run/user/<uid>`. This state is deleted whole,
+//!   whoever wrote it. The decoy's journald and the hidden one write the same
+//!   files below `/run/log/journal/<machine-id>`, so on a volatile decoy the
+//!   decoy's own records from before the entry go too (the activation's sudo
+//!   line, the hidden build's progress, the decoy's shutdown). After the return
+//!   the decoy journal starts at the switch, and since the kmsg cursor (below)
+//!   lies past the kernel's boot records, it holds none of them either. A
+//!   persistent journal keeps the decoy's records in `/var/log/journal`, which
+//!   the scrub never touches;
 //! - every entry up to two levels below `/run` (three below `/run/systemd`,
 //!   where runtime unit files live) that is not in the snapshot. The entry
 //!   takes it in the decoy before it adds anything to `/run`, and the switch
@@ -31,8 +39,9 @@
 //!
 //! The scrub then restores `utab` to the decoy's copy, and the caller writes the
 //! kmsg cursor ([`next_kernel_seqnum`], [`write_kernel_seqnum`]) so the decoy
-//! journald skips every kernel record of the hidden session. Nothing here logs:
-//! a name written to `/dev/kmsg` would reach the decoy's ring buffer.
+//! journald skips every kernel record of the hidden session, and every earlier
+//! one with them. Nothing here logs: a name written to `/dev/kmsg` would reach
+//! the decoy's ring buffer.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -51,7 +60,9 @@ const PRUNED: &[&str] = &[
 ];
 
 /// Directories below `/run` whose children are the state of units that have
-/// all stopped when the scrub runs.
+/// all stopped when the scrub runs. Every child goes, the decoy's included:
+/// `log/journal` holds the decoy's runtime journal as well as the hidden
+/// session's records, in the same files.
 const SESSION_STATE_DIRS: &[&str] = &[
     "log/journal",
     "systemd/sessions",
@@ -215,7 +226,9 @@ pub struct ScrubReport {
     pub detached: Vec<PathBuf>,
 }
 
-/// Remove from `run` what the hidden session added, judged against `snapshot`.
+/// Remove from `run` the per-session state (the runtime journal among it,
+/// whoever wrote it) and what else the hidden session added, judged against
+/// `snapshot`.
 ///
 /// `extra` names entries (relative to `run`) to remove even when the snapshot
 /// holds them: the runtime directory of NAILS itself. `mount_points` is the

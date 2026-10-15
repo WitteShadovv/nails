@@ -43,8 +43,10 @@ The claims below hold only when all of these are true:
   written to a decoy disk.
 - **Volatile journald.** The journal lives in RAM only, so what the decoy logs
   around each soft-reboot (the activation command, the decoy's shutdown before
-  the switch and its start after the way back; see
-  [Residual channels](#residual-channels)) never reaches disk.
+  the switch and its start after the way back) never reaches disk. The hidden
+  session writes the same runtime journal, and the way back deletes it with the
+  decoy's records from before the session, so the decoy journal starts again at
+  the return; see [Residual channels](#residual-channels).
 - **Storage of its own, prepared elsewhere.** The hidden volume is a device,
   partition or encrypted volume the decoy does not use, created on another
   computer or from a setup medium, never on the decoy itself. NAILS refuses a
