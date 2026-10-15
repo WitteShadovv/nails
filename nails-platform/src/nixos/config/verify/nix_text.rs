@@ -7,8 +7,9 @@
 //! match maps back to a line and to the original spelling by offset. Every
 //! marker counts in comments as well: an examiner reads them, and a
 //! commented-out line that names the hidden volume points at it as plainly as
-//! a live one. The device-mapper name, often an ordinary word such as `data`,
-//! counts only where it names the mapping ([`Pattern::Name`]).
+//! a live one. The device-mapper name and a filesystem label, often ordinary
+//! words such as `data`, count only where they name the mapping or the
+//! filesystem ([`Pattern::Name`], [`Pattern::Tag`]).
 
 use super::scan::{Named, is_identifier_byte};
 use std::ops::Range;
@@ -39,6 +40,11 @@ pub(super) enum Pattern {
     /// `name`, whatever its uuid: `dm-uuid-CRYPT-<TYPE>-<name>` or
     /// `dm-uuid-CRYPT-<TYPE>-<32 hex digits>-<name>`.
     DmUuid(String),
+    /// An identifier written as a tag, `<tag>=<value>` (`LABEL=data`,
+    /// `PARTLABEL="vault"`), the value ending where a file name would. A
+    /// filesystem label (`label`) counts as the `label` of a `fileSystems` or
+    /// `swapDevices` entry too ([`Named::Label`]).
+    Tag { tag: String, value: String },
 }
 
 /// What a line holds beyond its text, from the lines before it.
@@ -62,6 +68,13 @@ impl Pattern {
             Pattern::Word(word) => find_where(line, word, bounded),
             Pattern::Name { name, escaped } => mapping_name(line, name, escaped, context),
             Pattern::DmUuid(name) => dm_uuid_link(line, name),
+            Pattern::Tag { tag, value } => tag_value(line, tag, value).or_else(|| {
+                if tag == "label" {
+                    named(line, value, Named::Label, context)
+                } else {
+                    None
+                }
+            }),
         }
     }
 }
@@ -252,6 +265,29 @@ fn dm_uuid_link(line: &[u8], name: &str) -> Option<Range<usize>> {
             }
         }
         from = tail;
+    }
+    None
+}
+
+/// `<tag>=<value>`, the value quoted or not: the range of the value. The
+/// tag must not end another word (`partlabel=` holds no `label=` tag), and
+/// the value must end where a file name would.
+fn tag_value(line: &[u8], tag: &str, value: &str) -> Option<Range<usize>> {
+    let lead = format!("{tag}=");
+    let mut from = 0;
+    while let Some(found) = find_where(&line[from..], &lead, |before, _| {
+        !before.is_some_and(is_identifier_byte)
+    }) {
+        let mut at = from + found.end;
+        if line.get(at) == Some(&b'"') {
+            at += 1;
+        }
+        if line[at..].starts_with(value.as_bytes())
+            && !continues_file_name(line.get(at + value.len()).copied())
+        {
+            return Some(at..at + value.len());
+        }
+        from += found.end;
     }
     None
 }

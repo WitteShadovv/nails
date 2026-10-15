@@ -9,9 +9,10 @@
 //! decoy, so an examination reads it. [`verify_base_config_clean`] reports
 //! each line that names the hidden volume (its device, its mount point, the
 //! units systemd names after them, its mapping where a line opens it, or the
-//! storage it lives on) or NAILS, with the file, the line, the matched text and
-//! why it counts. Only `.nix` files are read: other files in `/etc/nixos` and
-//! the history of a git repository there are not.
+//! storage it lives on, by any name the system gives it) or NAILS, with the
+//! file, the line, the matched text and why it counts. Only `.nix` files are
+//! read: other files in `/etc/nixos` and the history of a git repository
+//! there are not.
 
 mod nix_text;
 mod scan;
@@ -43,10 +44,14 @@ pub enum ReferenceKind {
     Device,
     /// The unit systemd names after that device (`dev-mapper-data.device`).
     DeviceUnit,
-    /// What the hidden volume is stored on, as sysfs shows it below its
-    /// mount: the partition or disk (`/dev/sdb2`), its partition uuid, the
-    /// LUKS uuid (`/dev/disk/by-uuid/<uuid>`, `UUID=<uuid>`), the
-    /// `/dev/disk/by-id/dm-uuid-…` link, or an image file behind a loop device.
+    /// What the hidden volume is stored on, as the system names it below its
+    /// mount: the partition or disk (`/dev/sdb2`) and the image file behind a
+    /// loop device; every link udev made for one of them or for the hidden
+    /// volume's own device (`/dev/disk/by-id/…`, `by-path`, `by-partlabel`,
+    /// `by-uuid`, `by-label`, the LVM path `/dev/<vg>/<lv>`); their uuids (the
+    /// partition's, the LUKS header's, the filesystem's: `UUID=<uuid>`); and
+    /// their labels as tags (`LABEL=`, `PARTLABEL=`, a `fileSystems` entry's
+    /// `label`).
     Storage,
     /// The hidden volume's mount point.
     MountPoint,
@@ -68,7 +73,8 @@ impl ReferenceKind {
             ReferenceKind::Device => "the hidden volume's device",
             ReferenceKind::DeviceUnit => "the unit systemd names after the hidden volume's device",
             ReferenceKind::Storage => {
-                "the device or file the hidden volume is stored on, or one of its identifiers"
+                "a name of the device or file the hidden volume is stored on (a device node, a \
+                 link, a uuid or a label)"
             }
             ReferenceKind::MountPoint => "the hidden volume's mount point",
             ReferenceKind::MountUnit => {
@@ -91,6 +97,11 @@ impl ReferenceKind {
                 "Remove it from that file long before the next use and rebuild the decoy. If \
                  the decoy uses that path for something else, mount the hidden volume at a \
                  path that appears nowhere in /etc/nixos instead."
+            }
+            ReferenceKind::Storage => {
+                "Remove it from that file long before the next use and rebuild the decoy. If \
+                 it is a label the decoy's own device carries too, give the hidden volume \
+                 another label instead."
             }
             _ => "Remove it from that file long before the next use and rebuild the decoy.",
         }
@@ -147,10 +158,13 @@ struct Marker {
 ///   (the LUKS mapping under a logical volume), `/dev/disk/by-id/dm-name-<name>`
 ///   and any `/dev/disk/by-id/dm-uuid-…-<name>`, each as a whole path, and
 ///   the units systemd names after them (`dev-mapper-data.device`);
-/// - what the volume is stored on, read from sysfs below its mount as long as
-///   nothing else is built on it ([`storage`]): the partition or disk, its
-///   partition uuid, the LUKS uuid, the `dm-uuid` link, or the image file
-///   behind a loop device;
+/// - what the volume is stored on, read from the system below its mount as
+///   long as nothing else is built on it ([`storage`]): the partition or
+///   disk, the image file behind a loop device, every link udev made for
+///   them or for the volume's own device (`/dev/disk/by-id/…`, `by-path`,
+///   `by-partlabel`, `by-uuid`, `by-label`, `/dev/<vg>/<lv>`), their uuids
+///   (partition, LUKS, filesystem) and their labels as tags (`LABEL=`,
+///   `PARTLABEL=`, a `fileSystems` or `swapDevices` entry's `label`);
 /// - `hidden_volume_root` itself, as a whole path (`/mnt/data` and
 ///   `/mnt/data/nixos` count, `/mnt/data2` does not), and its `.mount` and
 ///   `.automount` units (`mnt-data.mount`);
@@ -176,7 +190,7 @@ struct Marker {
 /// name ends like the hidden one (`user-data`), the word `hidden` (GRUB's
 /// `timeoutStyle = "hidden"`), or an option such as `services.plausible`. A
 /// mapping defined through a `let` binding or `lib.listToAttrs` is not
-/// followed; its device still counts where the line names it.
+/// followed; its device still counts by any name of the storage.
 ///
 /// This is a best-effort trace scan, not a proof: a clean result means none of
 /// the known markers were found, which is weaker than the base being

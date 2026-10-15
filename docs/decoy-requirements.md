@@ -169,11 +169,18 @@ logind.
     `/dev/disk/by-id/dm-name-data`, the `/dev/disk/by-id/dm-uuid-CRYPT-…-data`
     link of a mapping called `data`), or the unit systemd names after it
     (`dev-mapper-data.device`);
-  - what it is stored on, as the kernel reports it below the mount, unless the
-    decoy's own volumes sit on it too: the partition or disk as a whole path
-    (`/dev/sdb2`), its partition uuid, the LUKS uuid (in
-    `/dev/disk/by-uuid/<uuid>`, `UUID=<uuid>` or a `luks-<uuid>` name), the
-    mapping below a logical volume, or the image file behind a loop device;
+  - what it is stored on, by any name the system gives it, unless the decoy's
+    own volumes sit on it too. NAILS reads the layers below the mount from
+    the kernel and their names from udev: the partition or disk as a whole
+    path (`/dev/sdb2`), the mapping below a logical volume, the image file
+    behind a loop device; every link udev made for one of these layers or
+    for the hidden volume's own device, among them each `/dev/disk/by-id`,
+    `by-path`, `by-partlabel`, `by-partuuid`, `by-diskseq`, `by-uuid` and
+    `by-label` name and the LVM path `/dev/<vg>/<lv>`; their uuids (the
+    partition's, the LUKS header's and the filesystem's own, as in
+    `UUID=<uuid>` or a `luks-<uuid>` name); and their labels written as a tag
+    (`LABEL=`, `PARTLABEL=`) or as the `label` of a `fileSystems` or
+    `swapDevices` entry;
   - its mapping name where a line opens the volume: a
     `boot.initrd.luks.devices` or `boot.initrd.clevis.devices` entry however
     it is written (`luks.devices.data`, `luks.devices."data"`, `data = { … }`
@@ -201,8 +208,8 @@ logind.
   `/var/lib/postgresql/data`, the decoy's own mapping whose name merely ends
   like the hidden one (`user-data` beside `data`), the word `hidden` and
   options such as `services.plausible`. A mapping defined through a `let`
-  binding or `lib.listToAttrs` is not followed; its device still counts where
-  a line names it. Run `nixos-generate-config` only while the hidden
+  binding or `lib.listToAttrs` is not followed; its device still counts by
+  any of the names above. Run `nixos-generate-config` only while the hidden
   volume is closed: it writes an entry for every mounted filesystem.
 
   The check reads `.nix` files only. Keep the other files in `/etc/nixos`

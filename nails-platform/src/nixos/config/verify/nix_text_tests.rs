@@ -207,3 +207,45 @@ fn a_dm_uuid_link_counts_when_it_is_the_mapping_s_whole_name() {
         assert_eq!(found(&link, miss), None, "{miss}");
     }
 }
+
+/// A label counts as a tag or as the `label` of a filesystem or swap
+/// entry, never as an ordinary word; a partition label only as a tag.
+#[test]
+fn a_label_counts_as_a_tag_or_a_filesystem_s_label() {
+    let label = Pattern::Tag {
+        tag: "label".into(),
+        value: "vault".into(),
+    };
+    for hit in [
+        "# /dev/sdb2: LABEL=vault",
+        "text = ''\n  x LABEL=\"vault\" none luks\n'';",
+        "fileSystems.\"/srv\".label = \"vault\";",
+        "fileSystems.\"/srv\" = { label = \"vault\"; fsType = \"ext4\"; };",
+        "swapDevices = [ { label = \"vault\"; } ];",
+        "# fileSystems.\"/srv\" = {\n#   label = \"vault\";\n# };",
+    ] {
+        assert_eq!(found(&label, hit).as_deref(), Some("vault"), "{hit}");
+    }
+    for miss in [
+        "# PARTLABEL=vault",
+        "# LABEL=vault2",
+        "networking.hostName = \"vault\";",
+        "system.nixos.label = \"vault\";",
+        "services.vault.enable = true;",
+        "fileSystems.\"/srv\".encrypted.label = \"vault\";",
+    ] {
+        assert_eq!(found(&label, miss), None, "{miss}");
+    }
+    let partlabel = Pattern::Tag {
+        tag: "partlabel".into(),
+        value: "vault".into(),
+    };
+    assert_eq!(
+        found(&partlabel, "# PARTLABEL=vault").as_deref(),
+        Some("vault")
+    );
+    assert_eq!(
+        found(&partlabel, "fileSystems.\"/srv\".label = \"vault\";"),
+        None
+    );
+}
