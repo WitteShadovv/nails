@@ -18,10 +18,15 @@
 #      The boot-loader units are masked in the hidden session only, and the
 #      kernel log names no session drop-in and no failed unmount of the hidden
 #      volume. On either side of each switch, every line of libmount's utab
-#      that names a mount ID names a live mount with the line's source: the
-#      kernel reuses the IDs of the mounts a switch leaves behind, and a stale
-#      x-initrd.mount line would take a reused mount out of the shutdown
-#      order.
+#      that names a mount ID names a live mount with the line's source, and
+#      every line without one that libmount can join names a live mount at its
+#      target with its source and root: the kernel reuses the IDs of the
+#      mounts a switch leaves behind, and a stale x-initrd.mount line would
+#      take a reused or a new mount out of the shutdown order. After the way
+#      back libmount marks the same decoy mounts x-initrd.mount as at boot:
+#      the decoy's root and the filesystems the session carried come back as
+#      new mounts, and the decoy's initrd lines follow them, so its next
+#      shutdown leaves them alone as a fresh boot's does.
 #   3. A scratch disk mounted over the hidden root in the session: the
 #      session watcher, polling every second with its automatic emergency on,
 #      keeps running past its debounce without writing a probe or ending the
@@ -112,23 +117,39 @@ in
 
 
     def assert_utab_names_live_mounts(where):
-        # libmount joins a utab line to the mount with the line's mount ID.
+        # libmount joins a utab line to the mount with the line's mount ID, or,
+        # without one, to the mount at the line's target with its source and
+        # root; a line without a source, target or root joins no mount.
         live = {}
         for line in machine.succeed("cat /proc/self/mountinfo").splitlines():
             fields = line.split(" ")
             sep = fields.index("-")
-            live[fields[0]] = (fields[sep + 2], fields[3])
+            live[fields[0]] = (fields[4], fields[sep + 2], fields[3])
         utab = machine.succeed("cat /run/mount/utab 2>/dev/null || true")
         stale = []
         for line in utab.splitlines():
             values = dict(f.split("=", 1) for f in line.split(" ") if "=" in f)
-            if "ID" not in values:
-                continue
-            source, root = live.get(values["ID"], (None, None))
-            named = (values.get("SRC", source), values.get("ROOT", root))
-            if source is None or named != (source, root):
-                stale.append(line)
+            if "ID" in values:
+                _, source, root = live.get(values["ID"], (None, None, None))
+                named = (values.get("SRC", source), values.get("ROOT", root))
+                if source is None or named != (source, root):
+                    stale.append(line)
+            elif all(key in values for key in ("SRC", "TARGET", "ROOT")):
+                named = (values["TARGET"], values["SRC"], values["ROOT"])
+                if named not in live.values():
+                    stale.append(line)
         assert not stale, f"{where}: utab lines naming no live mount: {stale}"
+
+
+    def initrd_mounts():
+        # The mount points that libmount, joining utab to the mount table,
+        # marks x-initrd.mount: systemd leaves them out of the shutdown order.
+        marked = set()
+        for line in machine.succeed("findmnt --mtab -rn -o TARGET,OPTIONS").splitlines():
+            target, _, options = line.partition(" ")
+            if "x-initrd.mount" in options.split(","):
+                marked.add(target)
+        return marked
 
 
     def write_config(extra=""):
@@ -170,6 +191,9 @@ in
     machine.wait_for_unit("pidfile-probe.service")
     decoy_boot_writers = load_states()
     machine.log(f"boot-loader units on the decoy: {decoy_boot_writers}")
+    decoy_initrd_mounts = initrd_mounts()
+    machine.log(f"initrd mounts on the decoy: {sorted(decoy_initrd_mounts)}")
+    assert "/" in decoy_initrd_mounts, decoy_initrd_mounts
 
     activation_token = "act-" + secrets.token_hex(6)
     with subtest("activation typed on the decoy tty never reaches its history"):
@@ -234,6 +258,7 @@ in
         assert load_states() == decoy_boot_writers, "the decoy's own units again"
         assert_quiet_kernel_log("after the emergency")
         assert_utab_names_live_mounts("after the emergency")
+        assert initrd_mounts() == decoy_initrd_mounts, sorted(initrd_mounts())
 
     with subtest("nothing typed in either shell reached the decoy history"):
         history = decoy_history()
