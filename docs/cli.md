@@ -121,9 +121,10 @@ WHAT HAPPENS:
   with every change stored on the hidden volume, and soft-reboots into it
   (systemd 254 or newer). Every program is closed and you are logged out; the
   hidden session starts at its own login screen (a display manager set to log
-  an account in automatically logs it in again, as at boot). Nothing of the
-  hidden session can reach the decoy disk: the ESP is read-only, other decoy
-  filesystems are overlaid, and decoy swap is never used.
+  an account in automatically logs it in again, as at boot). Nothing the
+  hidden session writes through the decoy's filesystems reaches the decoy
+  disk: the ESP is read-only, other decoy filesystems are overlaid, and decoy
+  swap is never used. docs/threat-model.md lists the residual channels.
 
 EXAMPLES:
   nails activate                      Enter the hidden session
@@ -159,10 +160,11 @@ Soft-reboot from the hidden session back to the plain decoy
 WHAT HAPPENS:
   In the hidden session, deactivation mounts the decoy root at /run/nextroot,
   marks the hidden volume for closing and soft-reboots: every hidden program
-  is stopped in order, /run is scrubbed of the hidden session, and the decoy
-  starts again at its own login screen (a display manager set to log an
-  account in automatically logs it in again, as at boot). The hidden volume is
-  unmounted and its encryption mapping closed by the switch itself.
+  is stopped in order, the top of /run is scrubbed of the hidden session
+  (network links it set up stay), and the decoy starts again at its own login
+  screen (a display manager set to log an account in automatically logs it in
+  again, as at boot). The hidden volume is unmounted and its encryption
+  mapping closed by the switch itself.
 
 EXAMPLES:
   nails deactivate                    Soft-reboot back to the decoy

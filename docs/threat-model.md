@@ -97,8 +97,9 @@ forensic claims are made for. What NAILS offers there:
 - **No session residue on the decoy, except the residual channels.** After a
   clean teardown the overlays leave nothing of the hidden session on the decoy
   disk beyond the channels in [Residual channels](#residual-channels), each of
-  which an amnesic decoy bounds. `verify` and `nails rehearse` let the operator
-  check this on their own machine before relying on it.
+  which an assumption or a documented mitigation bounds. `verify` and
+  `nails rehearse` let the operator check this on their own machine before
+  relying on it.
 - **No enabler on the decoy.** The binary, configuration and hidden NixOS
   module live on the hidden volume, and nothing on the decoy knows about them
   (see the [Invariant](#invariant)).

@@ -79,9 +79,10 @@ WHAT HAPPENS:
   with every change stored on the hidden volume, and soft-reboots into it
   (systemd 254 or newer). Every program is closed and you are logged out; the
   hidden session starts at its own login screen (a display manager set to log
-  an account in automatically logs it in again, as at boot). Nothing of the
-  hidden session can reach the decoy disk: the ESP is read-only, other decoy
-  filesystems are overlaid, and decoy swap is never used.
+  an account in automatically logs it in again, as at boot). Nothing the
+  hidden session writes through the decoy's filesystems reaches the decoy
+  disk: the ESP is read-only, other decoy filesystems are overlaid, and decoy
+  swap is never used. docs/threat-model.md lists the residual channels.
 
 EXAMPLES:
   nails activate                      Enter the hidden session
