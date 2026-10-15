@@ -148,6 +148,16 @@ logind.
 - **noatime**: add `"noatime"` to the root filesystem's mount options.
 - **No swap / hibernation**: leave `swapDevices` empty and do not configure
   `boot.resumeDevice` or a resume kernel parameter.
+- **Nothing in `/etc/nixos` names the hidden environment**: no `fileSystems`
+  entry for the hidden volume's mount point, no `/dev/mapper/<name>` path of
+  its device, no `boot.initrd.luks.devices` entry, crypttab text or
+  `cryptsetup` line with its mapping name, and no mention of NAILS. The
+  `suspicious-nails-reference` check reads every `.nix` file there and refuses
+  activation with the file, the line and the text it found. Comments count for
+  paths but not for the mapping name, so a neutral name such as `data` may
+  appear in the comments `nixos-generate-config` writes. Run
+  `nixos-generate-config` only while the hidden volume is closed: it writes an
+  entry for every mounted filesystem.
 
 ### Ubuntu
 
