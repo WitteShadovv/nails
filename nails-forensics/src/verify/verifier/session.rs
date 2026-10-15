@@ -2,11 +2,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Session leftovers on the decoy: what an entry or a hidden session puts in
-//! `/run` and the return scrub (or `nails recover`) removes.
+//! `/run` and the return scrub (or `nails recover`) removes. Also how a run
+//! tells that it is inside the hidden session, where the live root is the
+//! session's root overlay.
 
 use super::*;
 use crate::session::units::WATCH_UNIT;
-use nails_teardown::mountinfo::{MountEntry, parse_mountinfo};
+use nails_teardown::mountinfo::{MountEntry, parse_mountinfo, parse_overlay_opts, top_mount_at};
+use nails_teardown::whole_root::disk_guard::{RULE_DIR, RULE_NAME};
 use nails_teardown::whole_root::nextroot::NEXTROOT;
 use nails_teardown::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR};
 use nails_teardown::whole_root::transition::{
@@ -19,6 +22,39 @@ const RUN_UNIT_DIR: &str = "/run/systemd/system";
 /// Guidance for an interrupted entry's leftovers.
 const RECOVER: &str = "Run 'nails recover' to remove the leftovers of the interrupted entry";
 
+/// How to check the decoy itself from inside the hidden session, where the
+/// hidden layer hides what lies beneath it.
+pub(super) const CHECK_DECOY_OFFLINE: &str =
+    "run 'nails verify --offline --root <mount>' against a read-only mount of the decoy root";
+
+/// The hidden session a run is inside, as far as verify needs to know it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HiddenSession {
+    /// The root overlay's upper directory, on the hidden volume. An entry of
+    /// the live root is the session's own when the upper holds it, and comes
+    /// from the decoy root beneath otherwise.
+    upper: PathBuf,
+    /// Whether the entry installed the udev rule that keeps the disks the
+    /// session does not use read-only (`[session_mounts] read_only`).
+    read_only_disks: bool,
+}
+
+impl HiddenSession {
+    /// Whether `path` is one of the session's own runtime files: the runtime
+    /// directory, and the read-only disks rule when the entry installed it.
+    /// Leftovers of earlier builds at other runtime paths come from the
+    /// decoy's `/run` and stay reported.
+    pub(super) fn owns_runtime_path(&self, path: &Path) -> bool {
+        path == Path::new(RUNTIME_DIR)
+            || (self.read_only_disks && path == Path::new("/run").join(RULE_DIR).join(RULE_NAME))
+    }
+
+    /// Where the live root's `path` lies in the upper layer.
+    pub(super) fn upper_path(&self, path: &Path) -> PathBuf {
+        self.upper.join(path.strip_prefix("/").unwrap_or(path))
+    }
+}
+
 impl<F: Filesystem> Verifier<F> {
     /// The live mount table, read through the filesystem seam.
     fn mount_table(&self) -> Vec<MountEntry> {
@@ -28,22 +64,34 @@ impl<F: Filesystem> Verifier<F> {
             .unwrap_or_default()
     }
 
-    /// Whether this runs inside the hidden root: `/` is the overlay the session
-    /// plan names, or (without a readable plan) an overlay whose upper lies on
-    /// the configured hidden volume.
-    pub(super) fn in_hidden_root(&self) -> bool {
+    /// The hidden session this run is inside, if any: `/` is an overlay whose
+    /// upper is the one the session plan names or, without a readable plan,
+    /// one that lies on the configured hidden volume.
+    pub(super) fn hidden_session(&self) -> Option<HiddenSession> {
         let entries = self.mount_table();
+        let upper = top_mount_at(&entries, Path::new("/"))
+            .filter(|root| root.fstype == "overlay")
+            .and_then(|root| parse_overlay_opts(&root.super_opts).upperdir)?;
         let plan = self
             .filesystem
             .read_file_content(&Path::new(RUNTIME_DIR).join(PLAN_NAME))
             .ok()
             .and_then(|text| Plan::from_json(&text).ok());
-        if plan.is_some_and(|plan| nails_teardown::whole_root::ret::in_hidden_root(&entries, &plan))
-        {
-            return true;
-        }
-        self.hidden_root().is_some_and(|root| {
-            nails_teardown::mountinfo::root_is_hidden_overlay(&entries, root).is_some()
+        let read_only_disks = match plan {
+            Some(plan) if plan.upper == upper => plan.read_only_disks,
+            _ if self
+                .hidden_root()
+                .is_some_and(|root| upper.starts_with(root)) =>
+            {
+                self.config
+                    .as_ref()
+                    .is_some_and(|config| config.session_mounts.read_only)
+            }
+            _ => return None,
+        };
+        Some(HiddenSession {
+            upper,
+            read_only_disks,
         })
     }
 
@@ -52,14 +100,24 @@ impl<F: Filesystem> Verifier<F> {
     /// transition drop-in on `systemd-soft-reboot.service`, and the session's
     /// own units or masks among the runtime unit files. Inside the hidden root
     /// all of these are expected, so it reports that as information instead.
-    pub(crate) fn check_session_leftovers(&self) -> Result<Vec<Finding>> {
-        if self.in_hidden_root() {
-            return Ok(vec![Finding::new(
-                Severity::Info,
-                "session",
-                "verify runs inside the hidden session; its runtime files in /run are \
-                 expected and the return to the decoy removes them",
-            )]);
+    pub(super) fn check_session_leftovers(
+        &self,
+        session: Option<&HiddenSession>,
+    ) -> Result<Vec<Finding>> {
+        if session.is_some() {
+            return Ok(vec![
+                Finding::new(
+                    Severity::Info,
+                    "session",
+                    "verify runs inside the hidden session: its runtime files in /run, the \
+                     mounted hidden volume and the active state are expected, and the return \
+                     to the decoy removes the runtime files",
+                )
+                .with_fix_guidance(format!(
+                    "The session cannot see what its hidden layer covers on the decoy; to \
+                     check the decoy itself, {CHECK_DECOY_OFFLINE}"
+                )),
+            ]);
         }
         let mut findings = Vec::new();
         let critical = |what: String| {

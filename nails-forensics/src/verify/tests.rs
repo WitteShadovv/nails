@@ -1630,18 +1630,12 @@ fn a_runtime_mask_left_on_the_decoy_only_warns() {
     );
     crate::Filesystem::create_symlink(&fs, std::path::Path::new("/dev/null"), mask).unwrap();
     fs.mock_set_is_symlink(mask.to_str().unwrap(), true);
-    let findings = verifier.check_session_leftovers().unwrap();
+    let result = verifier.run(false).unwrap();
+    let findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "session")
+        .collect();
     assert_eq!(findings.len(), 1, "{findings:?}");
     assert_eq!(findings[0].severity, Severity::Warn);
-}
-
-#[test]
-fn inside_the_hidden_root_the_runtime_files_are_expected() {
-    let (fs, verifier) = overlay_verifier(
-        "1 0 0:40 / / rw - overlay overlay rw,lowerdir=/x,upperdir=/mnt/hidden/root/upper,workdir=/mnt/hidden/root/work\n",
-    );
-    fs.mock_set_path_exists("/run/overlay-runtime/plan.json", true);
-    let findings = verifier.check_session_leftovers().unwrap();
-    assert_eq!(findings.len(), 1);
-    assert_eq!(findings[0].severity, Severity::Info);
 }

@@ -10,7 +10,11 @@ impl<F: Filesystem> Verifier<F> {
     ///
     /// Checks the log directory, hidden volume path and state file location for
     /// any residual NAILS artifacts.
-    pub(super) fn check_config_paths(&self, config: &Config) -> Result<(Vec<Finding>, usize)> {
+    pub(super) fn check_config_paths(
+        &self,
+        config: &Config,
+        in_session: bool,
+    ) -> Result<(Vec<Finding>, usize)> {
         let mut findings = Vec::new();
         let mut paths_checked: usize = 0;
 
@@ -25,9 +29,10 @@ impl<F: Filesystem> Verifier<F> {
             .is_some_and(|state| matches!(state.state, crate::state::SystemState::Inactive));
 
         // A decoy-scoped baseline runs while the hidden volume is deliberately
-        // attached, so — exactly as for the Inactive host context — its path being
-        // accessible and its state file existing are expected, not residue.
-        let suppress_hidden_volume = host_context_inactive || self.scope_to_decoy;
+        // attached, and a run inside the hidden session runs on the volume the
+        // session uses, so — exactly as for the Inactive host context — its path
+        // being accessible and its state file existing are expected, not residue.
+        let suppress_hidden_volume = host_context_inactive || self.scope_to_decoy || in_session;
 
         // 2. Check hidden volume path for accessibility.
         //
@@ -144,12 +149,15 @@ impl<F: Filesystem> Verifier<F> {
     }
 
     /// Check state file for indicators of incomplete deactivation
-    pub(super) fn check_state(&self, state: &StateFile) -> Result<Vec<Finding>> {
+    pub(super) fn check_state(&self, state: &StateFile, in_session: bool) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
 
         // The live facts (the session-leftovers check) say where the machine
         // is; the record only adds that a session ended without `deactivate`.
+        // Inside the hidden session an active record describes the session
+        // verify runs in.
         match &state.state {
+            crate::SystemState::Active { .. } if in_session => {}
             crate::SystemState::Active { .. } => {
                 findings.push(
                     Finding::new(

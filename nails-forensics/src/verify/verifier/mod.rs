@@ -220,15 +220,21 @@ impl<F: Filesystem> Verifier<F> {
 
         let offline = self.is_offline();
 
+        // Inside the hidden session the live root is the session's overlay, so
+        // its own files, its state and its journal show in the live view. Worked
+        // out once, for every check that must tell them from the decoy's.
+        let session = if offline { None } else { self.hidden_session() };
+        let in_session = session.is_some();
+
         // Live-only checks: these describe the running machine, not an image.
         if !offline {
             // 1. What an entry or a hidden session leaves in /run on the decoy.
-            findings.extend(self.check_session_leftovers()?);
+            findings.extend(self.check_session_leftovers(session.as_ref())?);
             ran.insert("session-leftovers");
         }
 
         // 2. Check for artifact files from the shared registry.
-        findings.extend(self.check_artifact_files()?);
+        findings.extend(self.check_artifact_files(session.as_ref())?);
         ran.insert("artifact-files");
 
         // 2b. The residue catalog's path probes for session residue.
@@ -258,7 +264,7 @@ impl<F: Filesystem> Verifier<F> {
 
         // 5. Config-aware checks run against live locations only.
         if !offline && let Some(ref config) = self.config {
-            let (config_findings, paths_checked) = self.check_config_paths(config)?;
+            let (config_findings, paths_checked) = self.check_config_paths(config, in_session)?;
             findings.extend(config_findings);
             config_paths_checked = paths_checked;
             ran.insert("config-paths");
@@ -266,7 +272,7 @@ impl<F: Filesystem> Verifier<F> {
 
         // 6. State-aware checks (if state is available).
         if !offline && let Some(ref state) = self.state {
-            findings.extend(self.check_state(state)?);
+            findings.extend(self.check_state(state, in_session)?);
             ran.insert("state");
         }
 
@@ -418,4 +424,6 @@ pub use catalog::VERIFY_CHECK_IDS;
 mod config_state;
 mod deep_scan;
 mod session;
+#[cfg(test)]
+mod session_tests;
 mod system;

@@ -16,12 +16,14 @@ use std::path::{Path, PathBuf};
 /// A trailing `*` allows a whole module (pure parsers only).
 const TEARDOWN_ALLOWED: &[&str] = &[
     "mountinfo::*",
+    "whole_root::disk_guard::RULE_DIR",
+    "whole_root::disk_guard::RULE_NAME",
     "whole_root::plan::PLAN_NAME",
+    "whole_root::plan::PLAN_VERSION",
     "whole_root::plan::Plan",
     "whole_root::plan::RUNTIME_DIR",
     "whole_root::nextroot::NEXTROOT",
     "whole_root::nextroot::is_mount_point",
-    "whole_root::ret::in_hidden_root",
     "whole_root::transition::DROPIN_DIR",
     "whole_root::transition::DROPIN_NAME",
     "whole_root::transition::STOP_GUARD_NAME",

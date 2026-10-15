@@ -3,6 +3,7 @@
 
 //! Artifact-file, block-device, process and memory checks, with the finding/severity helpers they share.
 
+use super::session::{CHECK_DECOY_OFFLINE, HiddenSession};
 use super::*;
 
 impl<F: Filesystem> Verifier<F> {
@@ -19,7 +20,14 @@ impl<F: Filesystem> Verifier<F> {
     /// are still checked (rebased under the image root when offline).
     /// Content markers and bare basenames do not map to one path; they are
     /// covered by the base-config pre-flight check and the disk-image harness.
-    pub(super) fn check_artifact_files(&self) -> Result<Vec<Finding>> {
+    ///
+    /// Inside the hidden session the live root is the session's overlay: its
+    /// own runtime files are skipped (the session note covers them), and a
+    /// decoy path is attributed to the layer that holds it.
+    pub(super) fn check_artifact_files(
+        &self,
+        session: Option<&HiddenSession>,
+    ) -> Result<Vec<Finding>> {
         let mut findings = Vec::new();
         let hidden_root = self.hidden_root();
         let skip_hidden_root = self.excludes_hidden_root();
@@ -38,21 +46,69 @@ impl<F: Filesystem> Verifier<F> {
             let Some(path) = resolved else {
                 continue;
             };
-            let probe = self.rebase(&path);
-
-            if self.filesystem.path_exists(&probe)? {
-                findings.push(
-                    Finding::new(
-                        map_artifact_severity(artifact.severity),
-                        "file",
-                        format!("Artifact file found: {}", path.display()),
-                    )
-                    .with_fix_guidance(artifact_fix_guidance(artifact.scope, &path)),
-                );
+            if artifact.scope == ArtifactScope::Runtime
+                && session.is_some_and(|session| session.owns_runtime_path(&path))
+            {
+                continue;
             }
+            if !self.entry_exists(&self.rebase(&path))? {
+                continue;
+            }
+            findings.push(match session {
+                Some(session) if artifact.scope == ArtifactScope::Decoy => {
+                    self.decoy_artifact_in_session(artifact.severity, &path, session)?
+                }
+                _ => Finding::new(
+                    map_artifact_severity(artifact.severity),
+                    "file",
+                    format!("Artifact file found: {}", path.display()),
+                )
+                .with_fix_guidance(artifact_fix_guidance(artifact.scope, &path)),
+            });
         }
 
         Ok(findings)
+    }
+
+    /// Whether anything is at `path`, a dangling symbolic link included. The
+    /// probe is `lstat`, not `stat`: a leaked link whose target does not
+    /// resolve where verify runs (an offline image, say) is still a trace.
+    fn entry_exists(&self, path: &Path) -> Result<bool> {
+        Ok(self.filesystem.is_symlink(path)? || self.filesystem.path_exists(path)?)
+    }
+
+    /// A decoy path found from inside the hidden session. The live root is
+    /// the session's overlay, so the entry is the session's own when the
+    /// upper holds it, and only an entry from the decoy root beneath keeps
+    /// the registry's severity. Deleting either through the overlay leaves the
+    /// decoy as it is, so the guidance never suggests it.
+    fn decoy_artifact_in_session(
+        &self,
+        severity: ArtifactSeverity,
+        path: &Path,
+        session: &HiddenSession,
+    ) -> Result<Finding> {
+        let found = format!("Artifact file found: {}", path.display());
+        let upper = session.upper_path(path);
+        if self.entry_exists(&upper)? {
+            return Ok(
+                Finding::new(Severity::Info, "file", found).with_fix_guidance(format!(
+                    "The hidden session's own copy, in its hidden layer ({}); the decoy is not \
+                 written. The session cannot see the decoy beneath it: to check the decoy, \
+                 {CHECK_DECOY_OFFLINE}",
+                    upper.display()
+                )),
+            );
+        }
+        Ok(
+            Finding::new(map_artifact_severity(severity), "file", found).with_fix_guidance(
+                format!(
+                    "Trace on the decoy filesystem, seen through the hidden session. Deleting it \
+                 here only hides it in the hidden layer: remove it on the decoy after the \
+                 return, or first confirm it ({CHECK_DECOY_OFFLINE})"
+                ),
+            ),
+        )
     }
 
     /// Name-independent detection of open dm-crypt mappers and loop devices.
