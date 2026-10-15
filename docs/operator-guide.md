@@ -940,9 +940,22 @@ ls /run/overlay-runtime           # no such file or directory
 ```
 
 Then close the backend as usual (`umount <hidden-root>`, `cryptsetup close
-<mapper>`). Powering off instead does the same: everything above lives in `/run`
-and is gone at power-off. **Do not edit or delete `state.json` by hand** —
-`recover` resets it once the hidden volume is back.
+<mapper>`). If `cryptsetup close` reports the device busy, a service that
+started during the activation holds a copy of the next root's mounts in a
+mount namespace of its own: `grep -l /run/nextroot /proc/*/mountinfo` names
+its processes; restart that service, or power off. Powering off instead does
+the same: everything above lives in `/run` and is gone at power-off.
+
+If the activation built a hidden NixOS system, or its switch failed, power
+off instead. `nails recover` also writes back the kernel's module loader,
+hotplug helper and firmware path, which the hidden system's activation
+pointed at its store (the decoy then loads no module and no firmware), and
+removes the session's masks in `/run/systemd/system` and
+`/run/systemd/system.control`, which keep the decoy's swap and boot-loader
+units masked. By hand, only a power-off does.
+
+**Do not edit or delete `state.json` by hand** — `recover` resets it once the
+hidden volume is back.
 
 A plain `reboot` with a leftover populated `/run/nextroot` would be turned into a
 soft-reboot into that tree by systemd 255 and newer. The transition step refuses
