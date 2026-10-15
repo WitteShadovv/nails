@@ -9,6 +9,8 @@ these helpers poll the driver's full console log instead (appended directly by
 its reader thread), fail at once if the new userspace lands in emergency mode or
 PID 1 freezes, and reconnect when the new backdoor announces itself. This is
 the mechanism the soft-reboot spike (now ``soft-reboot-mechanics``) proved.
+A switch or a power-off that never ends is reported with what PID 1 waits on
+and the SysRq dumps (:mod:`nails_e2e.stall`).
 """
 
 from __future__ import annotations
@@ -18,6 +20,8 @@ import signal
 import time
 from collections.abc import Callable
 from typing import Any, Protocol, TypedDict
+
+from . import stall
 
 #: Console lines that mean the new userspace will never start the backdoor.
 STUCK_MARKERS = (
@@ -44,6 +48,7 @@ class Machine(Protocol):
     connected: bool
     full_console_log: list[str]
     process: Any
+    qmp_client: Any
 
     def succeed(self, *commands: str, timeout: int | None = None) -> str: ...
 
@@ -180,8 +185,9 @@ def follow_soft_reboot(
             break
         if time.monotonic() > deadline:
             machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
+            why = stall.report(machine, label)
             raise AssertionError(
-                f"{label}: no backdoor {deadline_s:.0f} s after the soft-reboot"
+                f"{label}: no backdoor {deadline_s:.0f} s after the soft-reboot ({why})"
             )
         time.sleep(
             0.5
@@ -322,7 +328,8 @@ def wait_for_power_off(machine: Machine, timeout: float = 300.0) -> None:
             machine.process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
             tail = "\n".join(machine.get_console_log().splitlines()[-100:])
+            why = stall.report(machine, "power-off")
             raise AssertionError(
-                f"the VM did not power off within {timeout:.0f} s\n{tail}"
+                f"the VM did not power off within {timeout:.0f} s ({why})\n{tail}"
             ) from None
     machine.wait_for_shutdown()

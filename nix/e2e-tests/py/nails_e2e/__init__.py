@@ -9,7 +9,7 @@ same definition serves single- and multi-node tests.
 
 from __future__ import annotations
 
-from . import session
+from . import session, stall
 from .command import CommandResult, run_command_capture
 from .rebuild import install_nixos_rebuild_wrapper
 
@@ -18,4 +18,5 @@ __all__ = [
     "install_nixos_rebuild_wrapper",
     "run_command_capture",
     "session",
+    "stall",
 ]

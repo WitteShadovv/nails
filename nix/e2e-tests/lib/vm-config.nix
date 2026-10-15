@@ -12,6 +12,9 @@
   ...
 }:
 {
+  # Reports what PID 1 waits on when a switch or a power-off never ends.
+  imports = [ ./stall-report.nix ];
+
   # Virtual hardware configuration
   virtualisation = {
     # Fixed rather than sized to the host, so that a test's derivation, and
