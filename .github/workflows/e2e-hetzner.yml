@@ -10,8 +10,7 @@ name: E2E (Hetzner)
 # It cannot run the VM tests as written: Hetzner Cloud servers expose no
 # hardware virtualisation to the guest (tested 2026-10-14 on ccx13, cpx22 and
 # cx23: no svm or vmx CPU flag, kvm_amd does not load), so the NixOS VM tests
-# find no /dev/kvm on the runner. Whether to move the lane to a dedicated
-# (Robot) server or to remove it is still open.
+# find no /dev/kvm on the runner.
 #
 # A reusable workflow call always runs the caller's commit, so dispatch this
 # workflow at the ref you want to test (`gh workflow run e2e-hetzner.yml
