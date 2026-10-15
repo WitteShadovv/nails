@@ -234,8 +234,10 @@ next root's store (`nix build --store /run/nextroot`) from the first of:
 
 1. a flake given with `--nixos-flake` or `nixos_flake`, unless it is the
    decoy's own `/etc/nixos` (in any spelling: `path:/etc/nixos`,
-   `git+file:///etc/nixos`, a link to the directory), which is refused;
-2. a flake in `<hidden-root>/nixos`, built for this machine's hostname;
+   `git+file:///etc/nixos`, `path:/etc?dir=nixos`, a link to the directory),
+   which is refused;
+2. a flake in `<hidden-root>/nixos`, built for this machine's hostname; a link
+   there to `/etc/nixos` is the decoy's own flake and refused the same way;
 3. the legacy configuration: the decoy's `/etc/nixos` plus the hidden hardware
    configuration `init` placed in `<hidden-root>/root/upper/etc/nixos/`, which
    imports the hidden module `<hidden-root>/config/nixos/configuration.nix`.

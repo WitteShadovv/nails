@@ -414,10 +414,8 @@ impl<F: Filesystem> NailsManager<F> {
         else {
             return Ok(());
         };
-        use crate::preflight::checks::nixos_build_target::{
-            decoy_flake_refusal, hidden_flake_exists,
-        };
-        let hidden = hidden_flake_exists(&self.filesystem, &hidden_volume_root);
+        use crate::preflight::checks::nixos_build_target::decoy_flake_refusal;
+        let hidden = crate::platform::hidden_flake(&self.filesystem, &hidden_volume_root);
         match decoy_flake_refusal(&dir, &hidden_volume_root, hidden) {
             CheckResult::Fail {
                 message,

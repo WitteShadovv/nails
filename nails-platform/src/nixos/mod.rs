@@ -23,7 +23,8 @@ pub use config::{
 };
 
 pub use flake_ref::{
-    resolve_local_flake_dir, selected_nixos_configuration_fragment, split_flake_ref,
+    location_and_dir, resolve_local_flake_dir, selected_nixos_configuration_fragment,
+    split_flake_ref, with_dir,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]

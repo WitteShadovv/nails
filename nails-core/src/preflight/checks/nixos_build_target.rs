@@ -8,7 +8,7 @@
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::nixos::{resolve_local_flake_dir, split_flake_ref};
-use crate::platform::HostTarget;
+use crate::platform::{HiddenFlake, HostTarget, hidden_flake};
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
@@ -140,7 +140,7 @@ impl NixOSBuildTargetCheck {
             HostTarget::DecoyFlake {
                 dir,
                 hidden_volume_root,
-            } => decoy_flake_refusal(dir, hidden_volume_root, false),
+            } => decoy_flake_refusal(dir, hidden_volume_root, HiddenFlake::Missing),
             HostTarget::Legacy(path) => CheckResult::Pass(format!(
                 "Auto-discovered legacy config at {}",
                 path.display()
@@ -162,48 +162,58 @@ impl NixOSBuildTargetCheck {
 
 /// The refusal of the decoy's own flake in `dir`, with what to put in its
 /// place on the hidden volume at `hidden_volume_root`. Activation refuses the
-/// same target under `--no-preflight` too. `hidden_flake_exists` tells a
-/// hidden flake that is there but not chosen (the decoy's flake was named
-/// with `--nixos-flake` or `nixos_flake`) from one that is missing.
+/// same target under `--no-preflight` too. `hidden` tells a hidden flake that
+/// is there but not chosen (the decoy's flake was named with `--nixos-flake`
+/// or `nixos_flake`) from one that is missing, and from a hidden flake
+/// directory that is a link to the decoy's.
 pub(crate) fn decoy_flake_refusal(
     dir: &Path,
     hidden_volume_root: &Path,
-    hidden_flake_exists: bool,
+    hidden: HiddenFlake,
 ) -> CheckResult {
     let hidden_flake = hidden_volume_root.join("nixos");
-    let found = if hidden_flake_exists {
-        format!(
-            "{} holds the decoy's own flake, and --nixos-flake or nixos_flake names it",
-            dir.display()
-        )
-    } else {
-        format!(
-            "{} holds the decoy's own flake and {} holds none",
-            dir.display(),
-            hidden_flake.display()
-        )
-    };
-    let remedy = if hidden_flake_exists {
-        format!(
-            "Name the hidden flake in {} instead, or leave --nixos-flake and nixos_flake \
-             unset: activation then builds that flake by itself.",
-            hidden_flake.display()
-        )
-    } else {
-        format!(
-            "Write a self-contained flake in {} and lock it from inside a hidden session \
-             (`activate --overlay-only` enters one with the decoy's own system), never on \
-             the decoy, where an editor, nix's cache and the nixpkgs it fetches would leave \
-             traces. Its configuration for this machine's hostname imports the hidden \
-             module {} and reads no file of the decoy: copy what it needs from {} into the \
-             flake. Activation never updates flake.lock, so it must exist. --nixos-flake \
-             names such a flake elsewhere.",
-            hidden_flake.display(),
-            hidden_volume_root
-                .join("config/nixos/configuration.nix")
-                .display(),
-            dir.display()
-        )
+    let write = format!(
+        "Write a self-contained flake in {} and lock it from inside a hidden session \
+         (`activate --overlay-only` enters one with the decoy's own system), never on \
+         the decoy, where an editor, nix's cache and the nixpkgs it fetches would leave \
+         traces. Its configuration for this machine's hostname imports the hidden \
+         module {} and reads no file of the decoy: copy what it needs from {} into the \
+         flake. Activation never updates flake.lock, so it must exist. --nixos-flake \
+         names such a flake elsewhere.",
+        hidden_flake.display(),
+        hidden_volume_root
+            .join("config/nixos/configuration.nix")
+            .display(),
+        dir.display()
+    );
+    let (found, remedy) = match hidden {
+        HiddenFlake::Present => (
+            format!(
+                "{} holds the decoy's own flake, and --nixos-flake or nixos_flake names it",
+                dir.display()
+            ),
+            format!(
+                "Name the hidden flake in {} instead, or leave --nixos-flake and nixos_flake \
+                 unset: activation then builds that flake by itself.",
+                hidden_flake.display()
+            ),
+        ),
+        HiddenFlake::Missing => (
+            format!(
+                "{} holds the decoy's own flake and {} holds none",
+                dir.display(),
+                hidden_flake.display()
+            ),
+            write,
+        ),
+        HiddenFlake::DecoyFlake => (
+            format!(
+                "{} is a link to {}, the decoy's own flake",
+                hidden_flake.display(),
+                dir.display()
+            ),
+            format!("Remove the link {}. {write}", hidden_flake.display()),
+        ),
     };
     CheckResult::fail_with(
         format!(
@@ -213,12 +223,6 @@ pub(crate) fn decoy_flake_refusal(
         ),
         remedy,
     )
-}
-
-/// Whether the hidden flake in `<hidden_volume_root>/nixos` exists.
-pub(crate) fn hidden_flake_exists<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> bool {
-    fs.path_exists(&hidden_volume_root.join("nixos/flake.nix"))
-        .unwrap_or(false)
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
@@ -239,7 +243,7 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
             hidden_volume_root,
         } = &self.discovered
         {
-            let hidden = hidden_flake_exists(fs, hidden_volume_root);
+            let hidden = hidden_flake(fs, hidden_volume_root);
             return Ok(decoy_flake_refusal(dir, hidden_volume_root, hidden));
         }
         if let Some(ref flake_ref) = self.nixos_flake {
@@ -506,6 +510,38 @@ mod tests {
         ] {
             assert!(remedy.contains(part), "{part} missing: {remedy}");
         }
+    }
+
+    /// A hidden flake directory that is a link to the decoy's flake is
+    /// refused with what to put in its place.
+    #[test]
+    fn a_hidden_flake_linked_to_the_decoy_flake_is_refused_with_instructions() {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+        fs.mock_set_path_exists("/mnt/data/nixos/flake.nix", true);
+        fs.create_symlink(Path::new("/etc/nixos"), Path::new("/mnt/data/nixos"))
+            .unwrap();
+        let result = NixOSBuildTargetCheck::new(
+            None,
+            HostTarget::DecoyFlake {
+                dir: PathBuf::from("/etc/nixos"),
+                hidden_volume_root: PathBuf::from("/mnt/data"),
+            },
+        )
+        .run(&fs)
+        .unwrap();
+        assert!(
+            result
+                .message()
+                .starts_with("/mnt/data/nixos is a link to /etc/nixos, the decoy's own flake"),
+            "{result:?}"
+        );
+        assert!(
+            result.remediation().is_some_and(|fix| fix.starts_with(
+                "Remove the link /mnt/data/nixos. Write a self-contained flake in /mnt/data/nixos"
+            )),
+            "{result:?}"
+        );
     }
 
     #[test]

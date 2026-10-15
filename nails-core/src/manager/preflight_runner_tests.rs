@@ -417,6 +417,10 @@ fn the_decoy_flake_named_explicitly_is_refused_in_every_spelling() {
         ("path:/etc/nixos#host", false),
         ("/etc/nixos/#host", true),
         ("git+file:///etc/nixos?ref=main#host", true),
+        ("/etc/nixos?dir=.#host", false),
+        ("/etc/nixos/?ref=main#host", true),
+        ("path:/etc?dir=nixos#host", false),
+        ("git+file:///etc?dir=nixos#host", true),
     ] {
         let fs = MockFilesystem::new();
         fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
