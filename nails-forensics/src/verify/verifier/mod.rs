@@ -291,7 +291,7 @@ impl<F: Filesystem> Verifier<F> {
             //     journald to query, so it is left to the host-side disk-image
             //     forensics instead.
             if !offline {
-                let (journal_findings, searched) = self.scan_journal();
+                let (journal_findings, searched) = self.scan_journal(in_session);
                 findings.extend(journal_findings);
                 journal_searched = searched;
                 if searched {
@@ -423,6 +423,9 @@ mod catalog;
 pub use catalog::VERIFY_CHECK_IDS;
 mod config_state;
 mod deep_scan;
+mod journal_scan;
+#[cfg(test)]
+mod journal_scan_tests;
 mod session;
 #[cfg(test)]
 mod session_tests;

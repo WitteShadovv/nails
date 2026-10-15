@@ -14,7 +14,7 @@ use crate::verify::journal::FakeJournalReader;
 use crate::verify::{Finding, Severity, StateFileStatus, VerifyResult, VerifyStatus};
 use crate::{RealFilesystem, SystemState};
 use nails_teardown::whole_root::plan::{PLAN_VERSION, Plan};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 const HIDDEN: &str = "/mnt/hidden";
 const UPPER: &str = "/mnt/hidden/root/upper";
@@ -118,7 +118,15 @@ fn artifact<'a>(result: &'a VerifyResult, path: &str) -> Option<&'a Finding> {
 fn an_init_seeded_session_reports_its_own_files_as_notes_and_nothing_critical() {
     let fs = session_fs(Some(false));
     stage_link(&fs, true);
-    let result = session_verifier(&fs).run(true).unwrap();
+    let reader = FakeJournalReader::with_entries([
+        "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/run/wrappers/bin/mount \
+         /dev/mapper/data /mnt/hidden",
+        "alice : TTY=pts/0 ; PWD=/home/alice ; USER=root ; COMMAND=/mnt/hidden/nails verify --deep",
+    ]);
+    let result = session_verifier(&fs)
+        .with_journal_reader(Box::new(reader))
+        .run(true)
+        .unwrap();
 
     assert_eq!(
         result.status,
@@ -159,6 +167,58 @@ fn an_init_seeded_session_reports_its_own_files_as_notes_and_nothing_critical() 
         .collect();
     assert_eq!(session.len(), 1, "{session:?}");
     assert_eq!(session[0].severity, Severity::Info);
+
+    let journal: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "journal")
+        .collect();
+    assert_eq!(journal.len(), 2, "{journal:#?}");
+    for finding in journal {
+        assert_eq!(finding.severity, Severity::Info, "{finding:?}");
+        assert!(
+            finding
+                .message
+                .starts_with("The running session's journal has ")
+                && finding.message.contains(" sudo record"),
+            "{}",
+            finding.message
+        );
+        assert!(
+            finding.fix_guidance.as_deref().unwrap().contains("in RAM"),
+            "{finding:?}"
+        );
+    }
+}
+
+#[test]
+fn in_the_session_entries_a_persistent_journal_keeps_warn() {
+    let fs = session_fs(Some(false));
+    let dir = Path::new("/var/log/journal");
+    let machine = dir.join("0123456789abcdef0123456789abcdef");
+    fs.mock_set_directory_contents(dir, vec![machine.clone()]);
+    fs.mock_set_directory_contents(&machine, vec![machine.join("system.journal")]);
+    let reader = FakeJournalReader::with_entries([
+        "root : PWD=/ ; USER=root ; COMMAND=/mnt/hidden/nails activate",
+    ]);
+    let result = session_verifier(&fs)
+        .with_journal_reader(Box::new(reader))
+        .run(true)
+        .unwrap();
+
+    let journal: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "journal")
+        .collect();
+    assert!(!journal.is_empty());
+    for finding in journal {
+        assert_eq!(finding.severity, Severity::Warn, "{finding:?}");
+        let guidance = finding.fix_guidance.as_deref().unwrap();
+        assert!(guidance.contains("can be on the decoy disk"), "{guidance}");
+        assert!(guidance.contains("On the decoy, vacuum"), "{guidance}");
+    }
+    assert_eq!(result.status, VerifyStatus::Warning);
 }
 
 #[test]
