@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
 # Base VM Configuration for E2E Tests
 # Simplified: let NixOS test framework handle boot/filesystems
 # Secondary disk (serial "data", /dev/disk/by-id/virtio-data) is available for LUKS hidden volume testing
@@ -93,6 +96,11 @@
   # hidden volume these tests open, and a stock decoy must still pass the
   # check that refuses an /etc/nixos naming the hidden volume.
   environment.etc = {
+    # The stateVersion comment below is the configuration.nix template from
+    # Nixpkgs, under its MIT licence.
+    # SPDX-SnippetBegin
+    # SPDX-SnippetCopyrightText: Eelco Dolstra and the Nixpkgs/NixOS contributors
+    # SPDX-License-Identifier: MIT
     "nixos/configuration.nix" = {
       mode = "0644";
       text = ''
@@ -126,6 +134,7 @@
         }
       '';
     };
+    # SPDX-SnippetEnd
 
     "nixos/hardware-configuration.nix" = {
       mode = "0644";
