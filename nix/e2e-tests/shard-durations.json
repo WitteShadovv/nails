@@ -38,6 +38,7 @@
   "preflight-vfat-targets": 110,
   "quickstart-zero-config": 180,
   "rehearse-canary": 360,
+  "session-alert-delivery": 480,
   "session-disk-mounts": 500,
   "session-dns-records": 360,
   "session-emergency": 560,

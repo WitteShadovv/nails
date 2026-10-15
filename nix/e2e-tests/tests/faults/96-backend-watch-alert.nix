@@ -9,14 +9,16 @@
 # hidden root and, the moment a probe fails, raises a neutral desktop alert.
 # With `auto_emergency = true` a failure that outlasts the debounce runs the
 # emergency itself. This test drives that whole path: activate, check the RAM
-# copy and the watcher unit, yank the backing device, check the alert, then
-# wait (bounded) for the watcher's emergency to land the machine on the plain
-# decoy, or powered off, with nothing of the watcher left behind.
+# copy and the watcher unit, log the operator in, yank the backing device, check
+# the alert, then wait (bounded) for the watcher's emergency to land the
+# machine on the plain decoy, or powered off, with nothing of the watcher left
+# behind.
 #
-# notify-send is shadowed by a logging stub on the system PATH so the alert is
-# observable headlessly; the stub stands in for the operator's real session
-# bus. It logs under /run, because every root-filesystem path is backed by the
-# failed upper in the hidden session.
+# The alert goes to the owner of the active session on seat0, as that account:
+# testuser logs in on the console, and a notification server on testuser's
+# session bus (lib/notification-server.nix) records what it receives. The
+# records are in testuser's runtime directory under /run, because every
+# root-filesystem path is backed by the failed upper in the hidden session.
 
 { self, ... }:
 let
@@ -32,31 +34,16 @@ in
   ];
   globalTimeout = 1200;
 
-  nodes.machine =
-    { pkgs, ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      environment.systemPackages = [
-        self.packages.x86_64-linux.nails
-        # A notify-send that records its arguments instead of talking to a bus,
-        # on the system PATH so the watcher (a system unit) resolves it the way
-        # it resolves the real one.
-        (pkgs.writeShellScriptBin "notify-send" ''
-          log=/run/notify-stub/notify-send.log
-          mkdir -p "$(dirname "$log")"
-          {
-            printf '__CALL__\n'
-            for arg in "$@"; do
-              printf '%s\n' "$arg"
-            done
-          } >> "$log"
-          exit 0
-        '')
-      ];
-    };
+  nodes.machine = _: {
+    imports = [
+      ./../../lib/vm-config.nix
+      ./../../lib/notification-server.nix
+    ];
+    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+  };
 
   testScript = _: ''
-    from nails_e2e import session
+    from nails_e2e import desktop, session
 
     ${testHelpers.canonicalActivateFn}
     ${backendFault.emergencyOutcomeFn}
@@ -67,16 +54,6 @@ in
     # name the product on screen or in systemctl.
     runtime_dir = "/run/overlay-runtime"
     watch_unit = "overlay-runtime-monitor.service"
-    stub_log = "/run/notify-stub/notify-send.log"
-
-
-    def read_stub_calls(path):
-        text = machine.succeed(f"cat {path}")
-        return [
-            [line for line in call.splitlines() if line]
-            for call in text.split("__CALL__\n")
-            if call.strip()
-        ]
 
 
     machine.start()
@@ -117,6 +94,9 @@ in
         assert f"{runtime_dir}/control" in exec_start, exec_start
         assert "nails" not in exec_start.lower(), exec_start
 
+    with subtest("the operator logs in on the hidden session's console"):
+        uid = desktop.login_on_console(machine)
+
     with subtest("the backing device is yanked out from under the hidden root"):
         # Swap the dm table for an error target in place so the hidden
         # filesystem returns EIO; the node stays because the hidden mounts hold
@@ -126,15 +106,14 @@ in
         machine.succeed("dmsetup wipe_table --force data")
 
     with subtest("the watcher alerts the operator about the failed backend"):
-        machine.wait_until_succeeds(f"test -s {stub_log}", timeout=30)
-        calls = read_stub_calls(stub_log)
-        assert calls, "watcher raised no desktop alert"
-        alert = calls[0]
-        # The alert is critical and worded to reveal nothing about a hidden
-        # environment to anyone watching the screen.
-        assert "--urgency" in alert and "critical" in alert, alert
-        assert not any("nails" in token.lower() for token in alert), alert
-        assert any("Storage unavailable" in token for token in alert), alert
+        alert = desktop.wait_for(machine, uid, "Storage unavailable", timeout=30)[0]
+        # The alert reaches the operator's own bus from the operator's uid. It
+        # is critical and worded to reveal nothing about a hidden environment to
+        # anyone watching the screen.
+        assert alert["uid"] == uid, alert
+        assert alert["hints"]["urgency"] == 2, alert
+        assert alert["app_name"] == "System", alert
+        assert "nails" not in (alert["summary"] + alert["body"]).lower(), alert
 
     with subtest("auto_emergency takes the machine out of the hidden session on its own"):
         # Nothing is run here: the watcher's emergency fires after the debounce.
