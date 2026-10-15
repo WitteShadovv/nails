@@ -67,8 +67,11 @@ pub fn install_units(run: &Path, units: &[RuntimeUnit]) -> io::Result<Vec<PathBu
         }
         std::fs::create_dir_all(&dir)?;
         let path = dir.join(&unit.name);
-        crate::whole_root::plan::write_private_atomic(&path, unit.content.as_bytes())?;
-        set_mode(&path, 0o644)?;
+        crate::whole_root::plan::write_atomic_with_mode(
+            &path,
+            unit.content.as_bytes(),
+            crate::whole_root::plan::SERVICE_CONFIG_MODE,
+        )?;
         written.push(path);
         for target in &unit.wanted_by {
             let wants = dir.join(format!("{target}.wants"));
@@ -98,11 +101,6 @@ pub fn mask_units(run: &Path, units: &[String]) -> io::Result<Vec<PathBuf>> {
         written.push(link);
     }
     Ok(written)
-}
-
-fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
 #[cfg(test)]

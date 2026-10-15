@@ -133,18 +133,26 @@ pub fn runtime_guards() -> impl Iterator<Item = (&'static str, &'static str)> {
         )
 }
 
-/// Install the drop-in, and the stop guards, under `run`. The caller reloads
-/// the service manager.
+/// Install the drop-in, and the stop guards, under `run`, readable by all
+/// ([`plan::SERVICE_CONFIG_MODE`]). The caller reloads the service manager.
 pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
     for (unit, text) in runtime_guards() {
         let dir = run.join(stop_guard_dir(unit));
         std::fs::create_dir_all(&dir)?;
-        plan::write_private_atomic(&dir.join(STOP_GUARD_NAME), text.as_bytes())?;
+        plan::write_atomic_with_mode(
+            &dir.join(STOP_GUARD_NAME),
+            text.as_bytes(),
+            plan::SERVICE_CONFIG_MODE,
+        )?;
     }
     let dir = run.join(DROPIN_DIR);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(DROPIN_NAME);
-    plan::write_private_atomic(&path, dropin_text(binary).as_bytes())?;
+    plan::write_atomic_with_mode(
+        &path,
+        dropin_text(binary).as_bytes(),
+        plan::SERVICE_CONFIG_MODE,
+    )?;
     Ok(path)
 }
 

@@ -202,6 +202,42 @@ mod kernel_tests {
     }
 
     #[test]
+    fn the_session_s_unit_files_are_readable_by_all_under_a_restrictive_umask() {
+        // PID 1 warns about, and names in the kernel log, a configuration
+        // file that is not readable by all; a hardened root's umask of 077
+        // must not bring that back.
+        let _ = Rerun::new(test_path!(
+            the_session_s_unit_files_are_readable_by_all_under_a_restrictive_umask
+        ))
+        .run(|| {
+            use nails_teardown::whole_root::{disk_guard, runtime_units};
+            nix::sys::stat::umask(nix::sys::stat::Mode::from_bits_truncate(0o077));
+            let run = tempfile::tempdir().unwrap();
+            let binary = Path::new("/run/overlay-runtime/control");
+            let dropin = transition::install_dropin(run.path(), binary).unwrap();
+            let rule = disk_guard::install_rule(run.path(), binary).unwrap();
+            let units = runtime_units::install_units(
+                run.path(),
+                &[runtime_units::RuntimeUnit {
+                    name: "overlay-runtime-monitor.service".into(),
+                    content: "[Service]\n".into(),
+                    wanted_by: Vec::new(),
+                }],
+            )
+            .unwrap();
+            let guards = transition::runtime_guards().map(|(unit, _)| {
+                run.path()
+                    .join(transition::stop_guard_dir(unit))
+                    .join(transition::STOP_GUARD_NAME)
+            });
+            for file in guards.chain([dropin, rule]).chain(units) {
+                let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o7777;
+                assert_eq!(mode, 0o644, "{}: {mode:o}", file.display());
+            }
+        });
+    }
+
+    #[test]
     fn the_transition_enters_an_armed_root_and_detaches_an_unarmed_one() {
         let _ = Rerun::new(test_path!(
             the_transition_enters_an_armed_root_and_detaches_an_unarmed_one

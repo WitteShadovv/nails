@@ -363,6 +363,23 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
 }
 
 #[test]
+fn the_dropins_are_readable_by_all_so_pid1_never_names_them_in_the_kernel_log() {
+    // PID 1 warns about a configuration file that is not readable by all, or
+    // that is executable or writable by all, and names it; at the start of
+    // the other root no journald runs yet, so the warning reaches dmesg.
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path();
+    let dropin = install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    let guards =
+        runtime_guards().map(|(unit, _)| run.join(stop_guard_dir(unit)).join(STOP_GUARD_NAME));
+    for file in guards.chain(std::iter::once(dropin)) {
+        let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode & 0o044, 0o044, "{}: {mode:o}", file.display());
+        assert_eq!(mode & 0o113, 0, "{}: {mode:o}", file.display());
+    }
+}
+
+#[test]
 fn the_read_only_rule_lives_from_the_entry_to_the_way_back_only() {
     let world = World::new();
     let rule = world

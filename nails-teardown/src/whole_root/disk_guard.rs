@@ -99,8 +99,11 @@ pub fn install_rule(run: &Path, binary: &Path) -> io::Result<PathBuf> {
     let dir = run.join(RULE_DIR);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(RULE_NAME);
-    crate::whole_root::plan::write_private_atomic(&path, rule_text(binary).as_bytes())?;
-    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
+    crate::whole_root::plan::write_atomic_with_mode(
+        &path,
+        rule_text(binary).as_bytes(),
+        crate::whole_root::plan::SERVICE_CONFIG_MODE,
+    )?;
     Ok(path)
 }
 

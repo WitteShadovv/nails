@@ -326,9 +326,24 @@ impl Plan {
     }
 }
 
+/// The mode of the files the session writes for the service manager and udev
+/// (drop-ins, runtime units, the read-only rule). Both read them as root, but
+/// PID 1 warns about a configuration file that is not readable by everyone and
+/// names it in the log: at the start of the other root, before its journald
+/// runs, that is the kernel log, which outlives the session in RAM.
+pub const SERVICE_CONFIG_MODE: u32 = 0o644;
+
 /// Write `bytes` to `path` through a private temporary file in the same
 /// directory, renamed over the target, so a reader never sees a torn write.
 pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_atomic_with_mode(path, bytes, 0o600)
+}
+
+/// [`write_private_atomic`], with the file's final `mode` set on the open
+/// temporary file before the rename: the name never shows another mode, and
+/// a restrictive umask cannot take bits away.
+pub fn write_atomic_with_mode(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let dir = path.parent().unwrap_or(Path::new("/"));
     let name = path
         .file_name()
@@ -343,6 +358,7 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             .mode(0o600)
             .open(&temp)?;
         file.write_all(bytes)?;
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
         drop(file);
         std::fs::rename(&temp, path)
     })();
@@ -477,6 +493,20 @@ mod tests {
             Plan::load(&dir.path().join("absent")),
             Err(PlanError::Missing)
         ));
+    }
+
+    #[test]
+    fn a_file_written_with_a_mode_has_it_and_replaces_the_old_one_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unit.conf");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomic_with_mode(&path, b"[Service]\n", SERVICE_CONFIG_MODE).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[Service]\n");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o644);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]
