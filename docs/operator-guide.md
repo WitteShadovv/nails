@@ -351,8 +351,10 @@ own login screen (a display manager set to log an account in automatically
 logs it in again, as at boot). The hidden volume is unmounted and its mapping
 closed by the switch itself, once the overlay that held it is released.
 
-**What a soft-reboot leaves.** Nothing of the hidden session's files, but some
-kernel state, in RAM until power-off, and one record on the decoy disk:
+**What a soft-reboot leaves.** On the decoy disk, none of the hidden session's
+files but one record, NetworkManager's (below); in RAM until power-off, some
+kernel state and the per-link records the network daemons keep deeper in
+`/run`:
 
 - the kernel ring buffer (`dmesg`), with the hidden session's kernel messages;
 - `SoftRebootsCount`, two per session, readable with `systemctl show` on
@@ -366,14 +368,15 @@ kernel state, in RAM until power-off, and one record on the decoy disk:
   it, with the time, in `/var/lib/NetworkManager/timestamps` on the decoy
   disk, as soon as the decoy starts, so a power-off after the return comes too
   late for that record. The random MAC address of the hidden network-identity
-  snippet can stay on the decoy's own network device (a NetworkManager profile
-  that sets no MAC address keeps the current one), and on a decoy without
-  `/etc/hostname` the hidden hostname stays. Before you deactivate, take down
-  every connection and VPN tunnel you brought up and delete every link you
-  created by hand (`ip link delete`; `ip link set down` keeps it), or end the
-  session with `deactivate --poweroff`, which powers off before the decoy's
-  NetworkManager starts. After a session that used the network-identity
-  snippet, power off.
+  snippet can stay on the decoy's own network device (a device keeps its
+  current MAC address when its NetworkManager profile sets none), and on a
+  decoy without `/etc/hostname` the hidden hostname stays. Before you
+  deactivate, take down every connection and VPN tunnel you brought up and
+  delete every link you created by hand (`ip link delete`; `ip link set down`
+  keeps it), or end the session with `deactivate --poweroff`, which powers off
+  before the decoy's NetworkManager starts. End a session that used the
+  network-identity snippet with `deactivate --poweroff` (or
+  `emergency --poweroff`).
 
 On a persistent decoy journal (which the decoy requirements forbid), the decoy's
 own shutdown and start lines appear under one boot ID, together with the kernel's
@@ -1118,7 +1121,8 @@ global VPN-autoconnect switch, so disable it per profile with `nmcli connection
 modify <vpn> connection.autoconnect no`. The way back does not undo what the
 snippet changed on the running system: the random MAC address can stay on the
 decoy's device, and so can the hostname on a decoy without `/etc/hostname`.
-End a session that used it with `deactivate --poweroff`.
+End a session that used it with `deactivate --poweroff` (or
+`emergency --poweroff`).
 
 ### SSD wear-levelling
 

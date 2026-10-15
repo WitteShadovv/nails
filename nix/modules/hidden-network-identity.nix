@@ -3,10 +3,10 @@
 # The overlay shares the host's network identity (machine-id, hostname, MAC
 # addresses, NetworkManager/VPN profiles) between the decoy and the hidden
 # session; correlation through these identifiers is out of scope for the overlay
-# alone. Import this module into the *hidden* NixOS generation to give the hidden
-# session a different network identity. It takes effect only once the hidden
-# switch runs before the session restarts, so it is a hidden-generation setting,
-# not an activation-time one.
+# alone. Import this module into the hidden NixOS configuration to give the
+# hidden session a different network identity. It takes effect when activation
+# builds the hidden system (or `nixos-rebuild test` applies it in a hidden
+# session), so it is a setting of the hidden system, never of the decoy.
 #
 # The hidden configuration imports the decoy configuration, which normally sets
 # these options itself, so they are forced here: a default-priority value would
@@ -18,14 +18,16 @@
 # host.
 #
 # NetworkManager has no global switch for VPN autoconnect, so it is not set
-# here. Disable it per profile from the hidden session instead (see the user
-# security guide); with /etc overlaid the change lands only in the hidden upper.
+# here. Disable it per profile from the hidden session instead (see "Shared
+# network identifiers" in docs/operator-guide.md); in the hidden session the
+# change lands only in the hidden upper.
 #
 # The way back to the decoy does not undo what this changes on the running
-# system: the random MAC address can stay on the decoy's own device (a decoy
-# profile that sets no MAC address keeps the current one), and on a decoy
-# without /etc/hostname the hostname stays too. End a session that used this
-# module with `nails deactivate --poweroff`.
+# system: the random MAC address can stay on the decoy's own device (a device
+# keeps its current MAC address when the decoy's profile sets none), and on a
+# decoy without /etc/hostname the hostname stays too. End a session that used
+# this module with `nails deactivate --poweroff` (or
+# `nails emergency --poweroff`).
 
 { lib, ... }:
 {
