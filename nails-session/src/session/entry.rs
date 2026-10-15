@@ -25,9 +25,11 @@
 //!    garbage collection cannot break it ([`super::store`]), and activated
 //!    chrooted (see [`super::nixos`]), then the policy applied to the hidden
 //!    generation's own fstab for what the decoy's did not cover;
-//! 7. `/run` bound in and the tree made private; the init checked the way
-//!    PID 1 will, and the soft-reboot units the way back needs found in the
-//!    next root;
+//! 7. `/run` bound in and everything below the next root made private (its
+//!    own mount stays shared until the switch, so a rollback reaches the
+//!    copies other mount namespaces hold; see [`nextroot`]); the init checked
+//!    the way PID 1 will, and the soft-reboot units the way back needs found
+//!    in the next root;
 //! 8. the plan armed for the entry.
 //!
 //! Any failure undoes all of it ([`rollback`]): a populated `/run/nextroot`
@@ -519,7 +521,7 @@ fn build(
     plan.carried = carry_decoy_mounts(paths, &layout, &plan.policy_mounts, &decoy_mounts)?;
     nextroot::bind(&paths.run, &paths.in_nextroot(Path::new("/run")), false)
         .map_err(|e| io(&nextroot, e))?;
-    nextroot::make_rprivate(&nextroot).map_err(|e| io(&nextroot, e))?;
+    nextroot::make_below_private(&nextroot).map_err(|e| io(&nextroot, e))?;
     nextroot::precheck(&nextroot, &ret::init_before_repoint(&plan.hidden))
         .map_err(|e| NailsError::InvalidState(e.to_string()))?;
     let missing = super::systemd::missing_soft_reboot_units(&nextroot);

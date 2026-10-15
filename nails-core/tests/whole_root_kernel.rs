@@ -68,7 +68,7 @@ mod kernel_tests {
         }
 
         /// What activation builds: the root overlay, `/run`, the hidden
-        /// volume and a read-only ESP, all below the next root, made private.
+        /// volume and a read-only ESP, everything below the next root private.
         fn build(&self) {
             let nextroot = self.nextroot();
             nextroot::overlay_over(
@@ -84,7 +84,7 @@ mod kernel_tests {
                 .expect("bind the hidden volume");
             nextroot::bind_read_only(self.esp.path(), &nextroot.join("boot"))
                 .expect("the read-only ESP");
-            nextroot::make_rprivate(&nextroot).expect("private");
+            nextroot::make_below_private(&nextroot).expect("private");
         }
 
         fn plan(&self, direction: Direction) -> Plan {

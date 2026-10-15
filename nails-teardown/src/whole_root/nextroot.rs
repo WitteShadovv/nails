@@ -21,14 +21,25 @@
 //! bind would appear below the decoy's own mount too (a carried `/boot` below
 //! the hidden volume's bind would show at `/mnt/data/root/decoy/boot` in the
 //! decoy, and keep the decoy from unmounting the hidden volume at the switch).
-//! Making the finished tree private ([`make_rprivate`]) comes too late for
-//! that, and stays as a backstop. The next root's own mount (the root overlay
-//! at entry, the decoy root on the way back) stays shared until then: logind
-//! decides whether a plain `reboot` becomes a soft-reboot by looking for an
-//! OS tree at `/run/nextroot` from a mount namespace of its own, which
-//! receives the mounts below a shared root only: below a private one it would
-//! miss the `os-release` of a NixOS next root, which lives in a store mounted
-//! there.
+//! Making the finished tree private comes too late for that;
+//! [`make_below_private`] does it again for the finished tree, as a backstop.
+//!
+//! The next root's own mount (the root overlay at entry, the decoy root on the
+//! way back) stays shared until the switch, which makes the whole tree private
+//! itself before it moves it. Every mount namespace made before the entry
+//! (logind's, and that of every service with a namespace of its own) receives
+//! a copy of each mount made directly below it. Two things need those copies
+//! to follow the next root:
+//!
+//! - logind decides whether a plain `reboot` becomes a soft-reboot by looking
+//!   for an OS tree at `/run/nextroot` from its own namespace, and on NixOS
+//!   the `os-release` it looks for lives in a store mounted below the root;
+//! - detaching the tree (a rollback, a disarmed next root, `nails recover`, an
+//!   emergency on the decoy) reaches the copies only through a shared root.
+//!   Below a private one they would stay, with the hidden volume's bind and
+//!   the layers on it, until those services restart: readable by every user
+//!   in `/proc/<pid>/mountinfo`, and holding the hidden filesystem busy after
+//!   the operator unmounts it.
 //!
 //! [`precheck`] does what PID 1 (systemd >= 258) does before it switches: the
 //! init must resolve *inside* the new root, and the root must be an OS tree. A
@@ -162,15 +173,18 @@ pub fn bind_read_only(source: &Path, target: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Make the tree at `target` recursively private, so nothing propagates
-/// between it and the rest of the system. Every mount below the next root is
-/// private already; this is the backstop for the finished tree.
-pub fn make_rprivate(target: &Path) -> io::Result<()> {
-    rustix::mount::mount_change(
-        target,
-        MountPropagationFlags::PRIVATE | MountPropagationFlags::REC,
-    )
-    .map_err(to_io)
+/// Make every mount below `target` private, leaving `target`'s own mount as
+/// it is (see the module docs: the next root's own mount stays shared until
+/// the switch). Every mount below the next root is private from the moment it
+/// exists; this is the backstop for the finished tree.
+pub fn make_below_private(target: &Path) -> io::Result<()> {
+    for point in mount_points()
+        .into_iter()
+        .filter(|point| point != target && point.starts_with(target))
+    {
+        rustix::mount::mount_change(&point, MountPropagationFlags::PRIVATE).map_err(to_io)?;
+    }
+    Ok(())
 }
 
 fn overlay_path(path: &Path) -> io::Result<String> {

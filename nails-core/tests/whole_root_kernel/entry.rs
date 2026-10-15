@@ -586,6 +586,120 @@ fn a_service_s_mount_namespace_sees_the_whole_next_root() {
     });
 }
 
+/// The mount points at and below `point`, each with whether its mount is
+/// shared (a `shared:` tag in `/proc/self/mountinfo`).
+fn propagation_at(point: &Path) -> Vec<(PathBuf, bool)> {
+    std::fs::read_to_string("/proc/self/mountinfo")
+        .unwrap()
+        .lines()
+        .filter_map(|line| {
+            let (fields, _) = line.split_once(" - ")?;
+            let fields: Vec<&str> = fields.split(' ').collect();
+            let mount_point = PathBuf::from(fields.get(4)?);
+            let shared = fields.iter().skip(6).any(|f| f.starts_with("shared:"));
+            mount_point
+                .starts_with(point)
+                .then_some((mount_point, shared))
+        })
+        .collect()
+}
+
+/// The mount table lines below the next root that a mount namespace made
+/// before the entry still holds once the entry ran and `undo` undid it. The
+/// namespace is a slave of this one, as a sandboxed service's or logind's is.
+#[allow(unsafe_code)]
+fn left_in_a_service_namespace(
+    world: &World,
+    host: &FakeHost,
+    undo: impl FnOnce(&Paths, nails_core::Result<entry::Entry>),
+) -> String {
+    use std::os::unix::process::CommandExt;
+    for tree in [world.decoy.path(), world.hidden.path(), world.run.path()] {
+        make_rshared(tree);
+    }
+    let paths = world.paths();
+    let done = world.run.path().join("undone");
+    let mut service = std::process::Command::new("sh");
+    service.arg("-c").arg(format!(
+        "i=0; while [ ! -e '{}' ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done; \
+         grep -F ' {}' /proc/self/mountinfo || true",
+        done.display(),
+        paths.nextroot().display()
+    ));
+    service.stdout(std::process::Stdio::piped());
+    // SAFETY: unshare and mount are plain system calls on constant
+    // arguments, made in the child between fork and exec.
+    unsafe {
+        service.pre_exec(|| {
+            nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)?;
+            nix::mount::mount(
+                None::<&str>,
+                "/",
+                None::<&str>,
+                nix::mount::MsFlags::MS_REC | nix::mount::MsFlags::MS_SLAVE,
+                None::<&str>,
+            )?;
+            Ok(())
+        });
+    }
+    let service = service.spawn().unwrap();
+    undo(&paths, entry::prepare(&paths, &world.inputs(), host));
+    std::fs::write(&done, "").unwrap();
+    String::from_utf8(service.wait_with_output().unwrap().stdout).unwrap()
+}
+
+#[test]
+fn a_rolled_back_entry_leaves_nothing_in_a_service_s_namespace() {
+    // A namespace made before the entry received a copy of every mount below
+    // the next root: the hidden volume's bind and the overlays with their
+    // uppers on it. A rollback of the finished tree must take those copies
+    // too; they would show the hidden volume's layers to every user and keep
+    // its filesystem busy until the service restarts.
+    let _ = Rerun::new(test_path!(
+        a_rolled_back_entry_leaves_nothing_in_a_service_s_namespace
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let left = left_in_a_service_namespace(&world, &FakeHost::default(), |paths, entry| {
+            entry.expect("the entry");
+            let nextroot = paths.nextroot();
+            let tree = propagation_at(&nextroot);
+            assert!(
+                tree.iter()
+                    .any(|(point, shared)| *point == nextroot && *shared),
+                "the next root's own mount stays shared until the switch: {tree:?}"
+            );
+            assert!(
+                tree.iter()
+                    .all(|(point, shared)| *point == nextroot || !shared),
+                "everything below it is private: {tree:?}"
+            );
+            assert!(entry::rollback(paths).is_empty());
+        });
+        assert_eq!(left, "", "the service's namespace keeps them");
+    });
+}
+
+#[test]
+fn an_entry_refused_at_its_last_check_leaves_nothing_in_a_service_s_namespace() {
+    // Refused once the tree is complete (here at the init check), the entry
+    // rolls back by itself and takes the copies with it.
+    let _ = Rerun::new(test_path!(
+        an_entry_refused_at_its_last_check_leaves_nothing_in_a_service_s_namespace
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        std::fs::remove_file(world.decoy.path().join("usr/lib/systemd/systemd")).unwrap();
+        let left = left_in_a_service_namespace(&world, &FakeHost::default(), |_, entry| {
+            let error = entry.expect_err("the entry is refused");
+            assert!(error.to_string().contains("does not resolve"), "{error}");
+        });
+        assert_eq!(left, "", "the service's namespace keeps them");
+    });
+}
+
 #[test]
 fn nothing_the_way_back_mounts_shows_below_the_hidden_volume() {
     // In the hidden session the carried filesystems are shared binds on

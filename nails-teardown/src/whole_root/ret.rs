@@ -11,7 +11,9 @@
 //!    ([`crate::whole_root::carry`]), so a decoy store on its own filesystem
 //!    is there for the init check;
 //! 3. bind `/run` there (PID 1's init check on NixOS resolves
-//!    `/run/current-system` inside the new root) and make the tree private;
+//!    `/run/current-system` inside the new root) and make everything below
+//!    the decoy root private (its own mount stays shared until the switch, see
+//!    [`crate::whole_root::nextroot`]);
 //! 4. check the decoy init resolves in it;
 //! 5. mark the hidden backend's device-mapper stack for deferred removal, so its
 //!    key leaves the kernel the moment the switch releases the hidden volume;
@@ -91,7 +93,7 @@ pub fn mount_decoy_root(plan: &Plan, nextroot: &Path, run: &Path) -> Result<(), 
             false,
         )
         .map_err(|e| ReturnError::Mount(format!("bind of {}: {e}", run.display())))?;
-        nextroot::make_rprivate(nextroot).map_err(|e| ReturnError::Mount(e.to_string()))?;
+        nextroot::make_below_private(nextroot).map_err(|e| ReturnError::Mount(e.to_string()))?;
         nextroot::precheck(nextroot, &init_before_repoint(&plan.decoy))
             .map_err(|e| ReturnError::Precheck(e.to_string()))
     })();
