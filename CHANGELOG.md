@@ -31,6 +31,12 @@ config and CLI surfaces; there are no compatibility shims.
   (`<hidden-root>/<name>`, `<hidden-root>/.work`) are not read. Move what you need into a hidden
   session and delete them. On NixOS the hidden hardware configuration now lives in
   `<hidden-root>/root/upper/etc/nixos/`; run `nails init` again to place it.
+- On NixOS, a decoy whose `/etc/nixos` is a flake needs a hidden flake. 0.2 built that flake
+  through its overlay of `/etc`; 0.3 refuses to build the decoy's own flake
+  (`nixos-build-target`), because the build would read only the decoy's files and leave out the
+  hidden module and the hidden hardware configuration. Put a flake in `<hidden-root>/nixos` that
+  imports `/etc/nixos/configuration.nix` and the hidden module
+  (`<hidden-root>/config/nixos/configuration.nix`), or name one with `nixos_flake`.
 - The hidden root must be a volume of its own. NAILS now refuses a root that 0.2 accepted: a folder
   (no mount point), a btrfs subvolume or bind of a folder of a filesystem the decoy uses, a logical
   volume in the decoy's volume group, an image file on a decoy filesystem, and an overlay, FUSE,
@@ -66,27 +72,41 @@ config and CLI surfaces; there are no compatibility shims.
   read-only, other mounted local filesystems overlaid with an upper under
   `<hidden-root>/root/mounts/`, swap, unmounted disks, network filesystems and disk-backed overlay
   entries masked), binds `/run` and the hidden volume into it, writes the session plan with a RAM
-  copy of the binary and configuration to `/run/overlay-runtime`, and soft-reboots. Every process
-  of the hidden session starts inside the overlay. Activation logs you out after a confirmation
-  (`-y` skips it) and, as its last step, kills the decoy's interactive shells, so a shell that saves
-  history on exit never writes the activation command (the `incremental-history-flush` check warns
-  about shells that save after every command).
+  copy of the binary and configuration to `/run/overlay-runtime`, and soft-reboots. Every mount
+  below `/run/nextroot` is private from the moment it exists, so none of them propagates into the
+  decoy's own mounts, and the boot-loader units that would write to the read-only ESP and `/boot`
+  at every start (`systemd-boot-random-seed`, `grub-common`, `grub-initrd-fallback`) are masked in
+  the hidden session only. Every process of the hidden session starts inside the overlay.
+  Activation logs you out after a confirmation (`-y` skips it) and, as its last step, kills the
+  decoy's interactive shells, so a shell that saves history on exit never writes the activation
+  command (the `incremental-history-flush` check warns about shells that save after every command).
 - On NixOS the hidden system is built into the next root's store (`nix build --store
   /run/nextroot`, the evaluation cache on the hidden volume), activated chrooted, and entered by
   repointing `/run/current-system` after every decoy unit has stopped: one soft-reboot, no
-  bootloader install, no system profile change. Inside the hidden session `/etc/nixos` is the
-  hidden configuration and `nixos-rebuild test` applies changes. `--overlay-only` enters with the
-  decoy's own system plus the hidden `/etc` and home. The paths of the hidden system's closure
-  that still come from the decoy store are copied onto the hidden volume, so a decoy that
-  garbage-collects or rebuilds between sessions no longer breaks the hidden system. On Debian and
-  Ubuntu the hidden configuration is the upper's `/etc`.
+  bootloader install, no system profile change. It is built from the first of: a flake given with
+  `--nixos-flake` or `nixos_flake`, a flake in `<hidden-root>/nixos`, and the legacy configuration
+  (the decoy's `/etc/nixos` with the hidden hardware configuration, which imports the hidden module
+  `<hidden-root>/config/nixos/configuration.nix`). A flake has the hidden module only if it imports
+  it, and a decoy whose own `/etc/nixos` is a flake is refused (`nixos-build-target`) until a
+  hidden flake is given. Inside the hidden session `/etc/nixos` is the hidden configuration and
+  `nixos-rebuild test` applies changes. `--overlay-only` enters with the decoy's own system plus
+  the hidden `/etc` and home. The paths of the hidden system's closure that still come from the
+  decoy store are copied onto the hidden volume, so a decoy that garbage-collects or rebuilds
+  between sessions no longer breaks the hidden system. On Debian and Ubuntu the hidden
+  configuration is the upper's `/etc`.
 - The switch in both directions runs from the RAM copy (`ExecStart=` of
   `systemd-soft-reboot.service`) and acts only on an armed plan. On the way back it scrubs `/run`
-  of what the hidden session added, restores libmount's `utab`, writes journald's kmsg cursor so
-  the decoy journal imports no hidden kernel record, and resets units the session left failed. The
-  session keeps working with `blk-availability.service` (Debian, Ubuntu), Ubuntu 26.04's D-Bus
-  units and NixOS static addresses (`networking.interfaces`), whose stop would otherwise unmount
-  the hidden volume, stall the login screen or drop the network.
+  of what the decoy did not leave there when it stopped for the entry, such as a PID file that the
+  hidden session's copy of a decoy service wrote again; puts the decoy's name-server records below
+  `/run/resolvconf` back as the decoy left them, so the hidden session's name servers and search
+  domains (a VPN's, say) do not reach `/etc/resolv.conf` on the decoy disk; removes the session's
+  drop-ins by name, leaving the decoy's own; restores libmount's `utab`; writes journald's kmsg
+  cursor so the decoy journal imports no hidden kernel record; and resets units the session left
+  failed. The session's drop-ins and runtime units are readable by all, so PID 1 names none of
+  them in the journal or the kernel ring buffer. The session keeps working with
+  `blk-availability.service` (Debian, Ubuntu), Ubuntu 26.04's D-Bus units and NixOS static
+  addresses (`networking.interfaces`), whose stop would otherwise unmount the hidden volume, stall
+  the login screen or drop the network.
 - `nails deactivate` runs in the hidden session and soft-reboots back to the plain decoy after a
   confirmation (`-y` skips it); `--poweroff` powers off instead. The hidden volume is unmounted and
   its device-mapper stack closed by the switch itself, so dm-crypt wipes the master key from RAM; a
@@ -94,10 +114,11 @@ config and CLI surfaces; there are no compatibility shims.
 - `nails emergency` acts at once, before argument parsing, configuration and logging: in the
   hidden session it prepares the way back, marks the backend for closing, enqueues the soft-reboot
   with PID 1 and kills every hidden cgroup (`cgroup.kill`); the machine returns to the decoy's
-  normal login screen. `--countdown <SECS>` waits first with a Ctrl+C hint, `--poweroff` and
-  `--reboot` replace the soft-reboot back, and a way back that cannot be prepared powers off. The
-  result names the action and any fallback, the cgroups and processes killed, the timed phases and
-  any mount left behind; an emergency that leaves a mount behind, or can only ask the kernel to
+  login screen (NAILS logs nobody in, but a display manager set to log in automatically logs its
+  account in again, as at boot). `--countdown <SECS>` waits first with a Ctrl+C hint, `--poweroff`
+  and `--reboot` replace the soft-reboot back, and a way back that cannot be prepared powers off.
+  The result names the action and any fallback, the cgroups and processes killed, the timed phases
+  and any mount left behind; an emergency that leaves a mount behind, or can only ask the kernel to
   power off, exits 7. On the decoy, it removes what an interrupted activation left.
 - `nails recover` removes an interrupted activation's leftovers on the decoy (`/run/nextroot`,
   `/run/overlay-runtime`, the transition drop-in) and resets the state.
@@ -122,18 +143,22 @@ config and CLI surfaces; there are no compatibility shims.
   missing tool and its package), `backend-entries` (refuses a decoy crypttab or fstab line that
   opens or mounts the hidden volume), `decoy-persistence` (refuses a persistent journal or an active
   rsyslog, syslog-ng or auditd unless `accept_persistent_decoy` or `--accept-persistent-decoy` is
-  set; warns about a persistent root filesystem, atime, crash-dump channels and the NixOS
-  auto-upgrade timer), and the warn-only `backend-detect` (discard, file container timestamps,
-  copy-on-write hosts), `binary-location`, `inherited-autostart`, `incremental-history-flush`,
-  `sleep-policy` and `residue-catalog`, and the informational `memory-wipe` (`init_on_free=1`).
-  Failures end with one ordered list of fixes, and checks that depend on a failed one are skipped
-  with a reason.
+  set; warns about atime, crash-dump channels, sudo's own log files and the NixOS auto-upgrade
+  timer, and passes systemd-coredump only when it has both `Storage=none` and `ProcessSizeMax=0`),
+  and the warn-only `backend-detect` (discard, file container timestamps, copy-on-write hosts),
+  `binary-location`, `inherited-autostart`, `incremental-history-flush`, `sleep-policy` (a lid or
+  idle setting that would suspend the session, or a closed lid set to `ignore`, which leaves the
+  session running and unlocked) and `residue-catalog`, and the informational `memory-wipe`
+  (`init_on_free=1`). Failures end with one ordered list of fixes, and checks that depend on a
+  failed one are skipped with a reason.
 - Disks during the session (`[session_mounts]`): the session watcher raises a neutral desktop alert
   for every read-write mount of a disk outside the hidden volume and for a disk mounted over the
   hidden root or one of its parents, which `status` also names (`hidden_root_covered_by`);
   nothing NAILS writes reaches such a cover. Opt-in `read_only` makes every disk the session does
-  not use read-only at the block layer until the way back. Alerts go out through `notify-send` or,
-  where it is missing, `busctl`.
+  not use read-only at the block layer until the way back. The alerts go to the account logged in
+  on the machine's own screen and run as that account, since a desktop session bus admits no other
+  (the child drops root's groups and ids before it starts), through `notify-send` or, where it is
+  missing, `busctl`.
 - The backend watcher (`[backend_watch]`) alerts when the hidden backend fails mid-session and,
   only when opted in, runs the emergency after a debounce.
 - `[sleep_policy]` (`warn` by default, `block` or `teardown`): `block` holds sleep and idle block
@@ -141,12 +166,27 @@ config and CLI surfaces; there are no compatibility shims.
   emergency before the machine sleeps.
 - Persona options (`[persona]`): `mode = "fresh-home"` gives the operator an empty home in the upper
   instead of the decoy home, and `mask_inherited` lists inherited decoy autostart entries and user
-  units to hide from the hidden session (`["*"]` hides all; empty by default). An optional NixOS
-  module and NetworkManager drop-in give the hidden session its own MAC addresses and hostname.
+  units to hide from the hidden session (`["*"]` hides all; empty by default), also one the
+  inventory does not list: a name with a unit suffix as a user unit, any other as an autostart
+  entry. An optional NixOS module and NetworkManager drop-in give the hidden session its own MAC
+  addresses and hostname.
+- Inherited decoy state: `nails check` and the `inherited-autostart` check report what the hidden
+  session would inherit and needs review: autostart entries and user units in the decoy home,
+  system-wide ones that are not part of the desktop or the distribution, lingering, display-manager
+  autologin, and every entry on a documented list of known trace writers (sync, backup, messaging,
+  mail and account clients, phone links). The desktop's and the distribution's own components are
+  counted, not reported, and an entry `mask_inherited` names counts as handled. On NixOS the
+  autostart directories of the system and user profiles are read too. `nails check` names a
+  `mask_inherited` name that matches nothing, says on a line of its own when the hidden session
+  starts in the decoy home (`shared-home`), and in JSON gives every entry its origin and status.
 - `nails rehearse`: `plant` puts a random canary into a hidden session, and after the way back
   `scan` searches the raw decoy devices (or disk images with `--offline`) for it; `status` and
-  `reset` follow the rehearsal. The scan exits 0 when the canary is not found, 11 when it is and 9
-  when a device could not be read in full.
+  `reset` follow the rehearsal. A scan is refused only inside the session the canary was planted
+  in, which `plant` records by the session's entry time, so it runs on the decoy after a plain
+  `nails deactivate` on every systemd version. The result lists the channels the canary could not
+  be planted in (the notification, when no desktop session could show it) as not tested. The scan
+  exits 0 when the canary is not found, 11 when it is and 9 when a device could not be read in
+  full.
 - `nails verify --offline --root <mount>` scans a mounted decoy image, and `--examiner` reports the
   setup traces an examiner looks for (encryption headers, containers, crypttab lines of every
   TrueCrypt and VeraCrypt kind, LVM archives, tooling and history), grouped by what they suggest;
@@ -154,7 +194,8 @@ config and CLI surfaces; there are no compatibility shims.
   session or its setup can leave, with its mitigation; `verify` and the `residue-catalog` check run
   its probes, and the residue tables in the docs are generated from it.
 - `nails activate` writes a read-only decoy residue report under `<hidden-root>/reports/` before
-  the switch and prints a one-line summary.
+  the switch and prints a one-line summary: no known residue, or how many warnings and critical
+  findings the report holds.
 - `nails config path|show|validate`: `show` prints every effective value and its source
   (default, file, cli, derived), `--example` prints every key, and `validate` checks a file
   strictly.
@@ -166,10 +207,14 @@ config and CLI surfaces; there are no compatibility shims.
 - `nails status` reports the live session from the mount table and the session plan (posture
   `decoy`, `active`, `transitioning`, `degraded` or `unknown`), the policy for every decoy
   filesystem, whether the decoy keeps a persistent log store, the persona mode and how long the last
-  activation took. An interrupted entry exits 7 and points at `nails recover`, as does a record
+  activation took, as `activate` printed it. It shows times in local time with their UTC offset;
+  the JSON keeps UTC. An interrupted entry exits 7 and points at `nails recover`, as does a record
   that still says active after a power loss.
-- SIGINT and SIGTERM cancel an activation and remove the half-built next root (exit 130), SIGHUP
-  no longer aborts a running command, and NAILS lowers its own OOM score.
+- Ctrl+C (SIGINT) or SIGTERM cancels an activation at its next step up to the soft-reboot, during
+  the residue baseline, the pre-flight checks and the hidden system's store copy too, and removes
+  everything it built (exit 130); a step that runs a program to its end, such as the hidden
+  system's activation, finishes first. SIGHUP no longer aborts a running command, and NAILS lowers
+  its own OOM score.
 - NAILS disables its own core dumps before parsing its arguments, so a crash cannot write its
   memory to the decoy.
 - Documentation: an operator guide organised by where each step runs, with a recovery runbook,
@@ -182,32 +227,55 @@ config and CLI surfaces; there are no compatibility shims.
 - Configuration is strict TOML: unknown keys are rejected with a did-you-mean hint, most keys of
   the old live-overlay design say they were removed, configured paths are validated when the file
   is loaded (relative, `..`, symlinked or out-of-root paths are rejected), and a missing or
-  invalid `--config` file exits 3.
+  invalid `--config` file exits 3. So does a configuration the command cannot read: `init` writes
+  it readable by root only, and a run without root then names the full `sudo` line to use, in the
+  text and as the hint of the JSON error. Without a config file, `activate` says before its
+  confirmation that it uses the built-in defaults.
 - One stable machine interface: a typed JSON envelope (`schema_version`, `command`, `ok`, and
-  `data` or `error`; `activate --json` streams progress events before its result) and one
-  exit-code table for every command (pre-flight refusals 4, not run as
-  root 5, untrusted state 6, degraded or interrupted 7, unsupported host 8, completed with
+  `data` or `error`; `activate --json` streams progress events before its result, and every log
+  line goes to stderr) and one exit-code table for every command (pre-flight refusals 4, not run
+  as root 5, untrusted state 6, degraded or interrupted 7, unsupported host 8, completed with
   warnings 9, `verify` warnings and critical findings 10 and 11, cancelled 130).
 - Output flags (`-c`, `-v`/`-q`, `--color`, `--ascii`, `--json`, `--no-log-file`) are global.
   Colour is never used on piped output and honours `NO_COLOR` and `CLICOLOR_FORCE`; console lines
-  no longer carry a timestamp.
+  no longer carry a timestamp. At the default verbosity the console is compact: a log event prints
+  its message, a warning or error its mark, message and details, and routine events (each passed
+  check, the store and staging steps) go to the log file only; `-v` and `-vv` show the full
+  records.
 - `activate`, `deactivate`, `emergency` and `recover` refuse to run without root before writing
   anything, with a `sudo` hint and exit 5.
 - `nails init` checks the target, the attach gate first, before writing anything, supports
   `--json`, `--hardware-config` and `--no-hardware-config`, reports each item as created or
-  already present, and ends with numbered next steps.
+  already present, and ends with numbered next steps that keep editing off the decoy (prepare
+  `nails.toml` on another machine, or as `nails.toml.new` in a hidden session), then `check` and
+  `activate`.
 - The swap check classifies each device: RAM-only zram passes, swap on dm-crypt with a random key
   warns, and disk or file swap, fixed-key encrypted swap and hibernation are refused. A hidden
   NixOS hardware configuration that NAILS seeds has the decoy's `swapDevices` and `resumeDevice`
   commented out.
 - The disk-space check is one floor (`minimum_space_mb`, 500 MB); `rebuild_space_mb` (4096 MB) is
   checked before a hidden NixOS build.
-- `nails verify` names the checks it ran and the areas it did not, and reports session leftovers.
+- `nails verify` names the checks it ran and the areas it did not, reports session leftovers, and
+  counts only warnings and critical findings in its header. Inside the hidden session it tells the
+  session's own files from traces on the decoy: its runtime files, the mounted hidden volume and
+  its state make one note, and a NAILS path that the hidden layer holds (on NixOS, the module link
+  `nails init` stages) is a note that points to `verify --offline --root` instead of advice to
+  delete it. `--deep` also searches the journal for the tool, the configuration file, `cryptsetup`
+  and the hidden volume path, and names sudo's records of your own commands as such: notes while
+  the journal is in RAM, warnings when it keeps files on disk. Artifact paths are probed without
+  following links, so a leaked link is found even where its target does not resolve.
 - On NixOS the hidden `hardware-configuration.nix` wraps the original (kept as
   `hardware-configuration.base.nix`) instead of patching it, a `nix-instantiate --parse` check
-  rejects an unparseable configuration, the base-configuration check scans every `.nix` file under
-  `/etc/nixos` for references to the hidden volume, and the hidden NixOS module forces
-  `system.autoUpgrade.enable = false`.
+  rejects an unparseable configuration, and the hidden NixOS module forces
+  `system.autoUpgrade.enable = false`. The base-configuration check (`suspicious-nails-reference`)
+  scans every `.nix` file under `/etc/nixos` and refuses one that names the hidden environment: the
+  hidden volume's mount point or device as a whole path (`/mnt/data2` is not `/mnt/data`), its
+  mapping name as a word outside comments (a `boot.initrd.luks.devices` entry, crypttab text, a
+  `cryptsetup` line), or NAILS itself. The word `hidden` on its own no longer counts, and the
+  mapping name in a comment does not either, so a volume mapped as `data` passes the comment
+  `nixos-generate-config` writes above `system.stateVersion`. A refusal names the file, the line
+  and the text, why it counts and what to do; with no `.nix` file under `/etc/nixos`, the check
+  says it inspected nothing.
 - Unsupported hosts are refused before any write, with exit 8: Debian before 13, Ubuntu before
   24.04, non-merged-`/usr` Debian-family layouts, ostree or image-based systems, systems without
   systemd, and distributions not yet validated (Fedora, Arch). Hosts with systemd older than 254
