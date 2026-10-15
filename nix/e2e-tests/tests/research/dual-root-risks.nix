@@ -47,8 +47,8 @@
 #          it, strict teardown.
 #
 # How to read the log: lines starting with `FINDING:` are research output.
-# Assertions are used only for the mitigations the design claims work, and for
-# the decoy still rendering after the hidden display server was killed.
+# Assertions are used only for the mitigations the dual-root design relied on,
+# and for the decoy still rendering after the hidden display server was killed.
 { pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;

@@ -4,10 +4,11 @@
 #   nix build .#e2e.research-emergency-cgroup-kill --no-link -L
 #
 # The kernel side of `cgroup.kill` is proven without a VM by
-# nails-core/tests/research_emergency_kernel.rs. This test answers what that
-# cannot: how systemd reacts when emergency kills a *service* through its own
-# cgroup, on a real systemd host with a live overlay mounted over its own lower
-# directory (the NAILS live-overlay shape).
+# `the_kill_empties_every_cgroup_but_the_invocations` in
+# nails-core/tests/whole_root_kernel.rs. This test answers what that cannot: how
+# systemd reacts when emergency kills a *service* through its own cgroup, on a
+# real systemd host with a live overlay mounted over its own lower directory
+# (the NAILS live-overlay shape).
 #
 # Each variant runs a `Restart=always` unit whose working directory is inside the
 # overlay and which writes a heartbeat there, then tears the overlay down a
