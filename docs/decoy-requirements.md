@@ -166,22 +166,27 @@ logind.
     `/mnt/data/nixos`, but not `/mnt/data2`), or the units systemd names after
     it (`mnt-data.mount`, `mnt-data.automount`);
   - its device as a whole path (`/dev/mapper/data`,
-    `/dev/disk/by-id/dm-name-data`, a `/dev/disk/by-id/dm-uuid-…-data` link),
-    or the unit systemd names after it (`dev-mapper-data.device`);
+    `/dev/disk/by-id/dm-name-data`, the `/dev/disk/by-id/dm-uuid-CRYPT-…-data`
+    link of a mapping called `data`), or the unit systemd names after it
+    (`dev-mapper-data.device`);
   - what it is stored on, as the kernel reports it below the mount, unless the
     decoy's own volumes sit on it too: the partition or disk as a whole path
     (`/dev/sdb2`), its partition uuid, the LUKS uuid (in
     `/dev/disk/by-uuid/<uuid>`, `UUID=<uuid>` or a `luks-<uuid>` name), the
     mapping below a logical volume, or the image file behind a loop device;
   - its mapping name where a line opens the volume: a
-    `boot.initrd.luks.devices` entry however it is written
-    (`luks.devices.data`, `luks.devices."data"`, `data = { … }` inside
-    `luks.devices = { … }` or a `lib.mkForce` or `lib.mkMerge` value of it,
-    `devices.data` inside `luks = { … }`, the same in fully nested blocks, or
-    `inherit data;`), a line that mentions `crypttab` or `cryptsetup`
-    (`cryptsetup open /dev/sdb2 data`, `systemd-cryptsetup@data.service`), or
-    a crypttab line that starts with the name (`data UUID=… none luks`,
-    `data /var/lib/vault.img none luks`);
+    `boot.initrd.luks.devices` or `boot.initrd.clevis.devices` entry however
+    it is written (`luks.devices.data`, `luks.devices."data"`, `data = { … }`
+    inside `luks.devices = { … }` or a `lib.mkForce`, `lib.mkMerge`, `with`
+    or `let … in` value of it, `devices.data` inside `luks = { … }`, the same
+    in fully nested blocks, or `inherit data;`), the `name` of such an entry
+    or of one in the old list form (`luks.devices = [ { name = "data"; … } ]`),
+    `fileSystems.<path>.encrypted.label`, an argument of a `cryptsetup`
+    command that opens, closes or asks about a mapping
+    (`cryptsetup open /dev/sdb2 data`, also continued on the next line with
+    `\`) or `systemd-cryptsetup@data.service`, or a crypttab line, at the
+    start of a line or of a string, that starts with the name
+    (`data UUID=… none luks`, `data /var/lib/vault.img none luks`);
   - text NAILS writes during a session, or the word `nails`.
 
   A unit name with a character systemd escapes counts in both spellings: with
@@ -190,11 +195,15 @@ logind.
   double-quoted string must write it (`"mnt-my\\x2ddata.mount"`).
 
   Nothing else counts. The mapping name as an ordinary word passes
-  (`description = "Back up user data"`, or the comment
-  `nixos-generate-config` writes above `system.stateVersion`), and so do a
-  directory such as `/var/lib/postgresql/data`, the word `hidden` and options
-  such as `services.plausible`. Run `nixos-generate-config` only while the
-  hidden volume is closed: it writes an entry for every mounted filesystem.
+  (`description = "Back up user data"`, `cryptsetup` next to it in a package
+  list or in prose, or the comment `nixos-generate-config` writes above
+  `system.stateVersion`), and so do a directory such as
+  `/var/lib/postgresql/data`, the decoy's own mapping whose name merely ends
+  like the hidden one (`user-data` beside `data`), the word `hidden` and
+  options such as `services.plausible`. A mapping defined through a `let`
+  binding or `lib.listToAttrs` is not followed; its device still counts where
+  a line names it. Run `nixos-generate-config` only while the hidden
+  volume is closed: it writes an entry for every mounted filesystem.
 
   The check reads `.nix` files only. Keep the other files in `/etc/nixos`
   (notes, scripts, a README) free of these names too, and the history of a

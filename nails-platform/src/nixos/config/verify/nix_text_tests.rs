@@ -3,17 +3,23 @@
 
 //! Unit tests for the line matching of the reference check.
 
+use super::super::scan::Scanner;
 use super::*;
 
 fn found(pattern: &Pattern, text: &str) -> Option<String> {
-    let mut paths = AttrPaths::default();
+    let mut scanner = Scanner::default();
+    let mut shell = Shell::default();
     let lower = text.to_ascii_lowercase();
     let mut hit = None;
     for line in lower.split('\n') {
-        let names = paths.luks_names(line.as_bytes());
-        if let Some(range) = pattern.find(line.as_bytes(), &names) {
+        let context = Context {
+            names: scanner.line(line.as_bytes()),
+            arguments: shell.line(line.as_bytes()),
+        };
+        if hit.is_none()
+            && let Some(range) = pattern.find(line.as_bytes(), &context)
+        {
             hit = Some(line[range].to_string());
-            break;
         }
     }
     hit
@@ -89,6 +95,16 @@ fn the_mapping_name_counts_where_it_names_the_mapping_comments_included() {
         "script = \"cryptsetup open /dev/sdb2 data\";",
         "# cryptsetup open /dev/sdb2 data",
         "after = [ \"systemd-cryptsetup@data.service\" ];",
+        "script = ''\n  cryptsetup open --type luks \\\n    /dev/disk/by-id/ata-x-part2 data\n'';",
+        "script = ''\n  cryptsetup \\\n    luksOpen /dev/sdb2 data\n'';",
+        "script = \"/run/current-system/sw/bin/cryptsetup close data\";",
+        "# systemd-cryptsetup attach data /dev/sdb2 none",
+        "text = \"data\\t/dev/sdb2\\tnone\\tluks\";",
+        "environment.etc.\"crypttab\" = {\n  text = \"data UUID=7d2c9e14 none luks\";\n};",
+        "boot.initrd.clevis.devices.data.secretFile = ./data.jwe;",
+        "# boot.initrd.luks.devices = [ { name = \"data\"; device = \"/dev/sdb2\"; } ];",
+        "boot.initrd.luks.devices.vault.name = \"data\";",
+        "fileSystems.\"/srv/x\" = {\n  encrypted = { enable = true; label = \"data\"; };\n};",
     ] {
         assert_eq!(found(&data(), hit).as_deref(), Some("data"), "{hit}");
     }
@@ -153,23 +169,40 @@ fn the_mapping_name_as_an_ordinary_word_or_directory_passes() {
         "# the data / logs split",
         "/data /dev/sdb1 none",
         "# data /home is backed up nightly",
+        "environment.systemPackages = with pkgs; [ cryptsetup data ];",
+        "# cryptsetup keeps the data safe",
+        "script = ''\n  cryptsetup open /dev/sdb2 vault\n  cp -a /srv/data /mnt/x\n'';",
+        "script = \"cryptsetup open /dev/sdb2 vault; echo data\";",
+        "script = ''\n  cryptsetup open /dev/sdb2 vault \n  echo data\n'';",
+        "fileSystems.\"/srv\".label = \"data\";",
+        "system.nixos.label = \"data\";",
     ] {
         assert_eq!(found(&data(), miss), None, "{miss}");
     }
 }
 
+/// Only cryptsetup's whole name for the mapping counts, whatever its uuid:
+/// the decoy's own `user-data` ends like `data` but is another mapping.
 #[test]
-fn a_dm_uuid_link_counts_when_its_name_ends_with_the_mapping() {
+fn a_dm_uuid_link_counts_when_it_is_the_mapping_s_whole_name() {
     let link = Pattern::DmUuid("data".into());
-    let path = "/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data";
-    assert_eq!(
-        found(&link, &format!("# device = \"{path}\";")).as_deref(),
-        Some(path)
-    );
+    for path in [
+        "/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c9e14e8a14b3c9f6b0e1a2d3c4b5a-data",
+        "/dev/disk/by-id/dm-uuid-crypt-plain-data",
+        "/dev/disk/by-id/dm-uuid-crypt-tcrypt-data",
+    ] {
+        assert_eq!(
+            found(&link, &format!("# device = \"{path}\";")).as_deref(),
+            Some(path)
+        );
+    }
     for miss in [
+        "device = \"/dev/disk/by-id/dm-uuid-crypt-luks2-0123456789abcdef0123456789abcdef-user-data\";",
+        "device = \"/dev/disk/by-id/dm-uuid-crypt-plain-user-data\";",
         "device = \"/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c-root\";",
         "device = \"/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c-data2\";",
         "device = \"/srv/dev/disk/by-id/dm-uuid-crypt-luks2-7d2c-data\";",
+        "device = \"/dev/disk/by-id/dm-uuid-lvm-abcdef-data\";",
     ] {
         assert_eq!(found(&link, miss), None, "{miss}");
     }

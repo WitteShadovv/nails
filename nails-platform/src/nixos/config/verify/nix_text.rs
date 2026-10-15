@@ -10,6 +10,7 @@
 //! a live one. The device-mapper name, often an ordinary word such as `data`,
 //! counts only where it names the mapping ([`Pattern::Name`]).
 
+use super::scan::{Named, is_identifier_byte};
 use std::ops::Range;
 
 /// How a marker is matched in a line.
@@ -34,23 +35,32 @@ pub(super) enum Pattern {
     /// of the name as a systemd instance (`vg-root` is `vg\x2droot`, which a
     /// double-quoted Nix string writes `vg\\x2droot`).
     Name { name: String, escaped: Vec<String> },
-    /// The `/dev/disk/by-id/dm-uuid-…` link of the mapping `name`, whatever
-    /// its uuid: the link's name ends with `-<name>`.
+    /// The `/dev/disk/by-id/dm-uuid-…` link of the cryptsetup mapping
+    /// `name`, whatever its uuid: `dm-uuid-CRYPT-<TYPE>-<name>` or
+    /// `dm-uuid-CRYPT-<TYPE>-<32 hex digits>-<name>`.
     DmUuid(String),
 }
 
+/// What a line holds beyond its text, from the lines before it.
+#[derive(Debug, Default)]
+pub(super) struct Context {
+    /// The ranges that name something ([`super::scan::Scanner`]).
+    pub(super) names: Vec<(Range<usize>, Named)>,
+    /// The arguments of a `cryptsetup` or `systemd-cryptsetup` command that
+    /// opens, closes or asks about a mapping ([`Shell`]).
+    pub(super) arguments: Vec<Range<usize>>,
+}
+
 impl Pattern {
-    /// The byte range of the first match in `line`. `luks` holds the ranges
-    /// of the `boot.initrd.luks.devices` entry names that `line` defines, as
-    /// [`AttrPaths::luks_names`] returns them.
-    pub(super) fn find(&self, line: &[u8], luks: &[Range<usize>]) -> Option<Range<usize>> {
+    /// The byte range of the first match in `line`.
+    pub(super) fn find(&self, line: &[u8], context: &Context) -> Option<Range<usize>> {
         match self {
             Pattern::Text(text) => find_where(line, text, |_, _| true),
             Pattern::Path(path) => find_where(line, path, |before, after| {
                 !continues_file_name(before) && !continues_file_name(after)
             }),
             Pattern::Word(word) => find_where(line, word, bounded),
-            Pattern::Name { name, escaped } => mapping_name(line, name, escaped, luks),
+            Pattern::Name { name, escaped } => mapping_name(line, name, escaped, context),
             Pattern::DmUuid(name) => dm_uuid_link(line, name),
         }
     }
@@ -58,68 +68,94 @@ impl Pattern {
 
 /// Where `line` names the mapping `name`, in comments as well as in code:
 ///
-/// - a `luks.devices` entry: `luks.devices.data`, `luks.devices."data"`, or
-///   an entry [`AttrPaths`] found in a block (`luks`);
-/// - on a line that mentions `crypttab` or `cryptsetup`, as a word that is
-///   not part of a path: crypttab text, `cryptsetup open /dev/sdb2 data`,
+/// - a `luks.devices` or `clevis.devices` entry: `luks.devices.data`,
+///   `luks.devices."data"`, or a name [`super::scan::Scanner`] found;
+/// - an argument of a `cryptsetup` command that opens, closes or asks about a
+///   mapping (`cryptsetup open /dev/sdb2 data`, continued lines included), as
+///   a word that is not part of a path, or the instance of
 ///   `systemd-cryptsetup@data.service` (with `escaped`, the instance name
 ///   systemd writes for a name with a `-` in it, in either spelling);
-/// - at the start of a crypttab line: the name, then the device as a `/dev/`
-///   path, a `UUID=`, `PARTUUID=`, `LABEL=`, `PARTLABEL=` or `ID=` tag, or
-///   another absolute path (a container file) followed by a key file field.
+/// - at the start of a crypttab line, at the start of the line or of a
+///   string: the name, then the device as a `/dev/` path, a `UUID=`,
+///   `PARTUUID=`, `LABEL=`, `PARTLABEL=` or `ID=` tag, or another absolute
+///   path (a container file) followed by a key file field.
 fn mapping_name(
     line: &[u8],
     name: &str,
     escaped: &[String],
-    luks: &[Range<usize>],
+    context: &Context,
 ) -> Option<Range<usize>> {
     if let Some(range) = luks_entry(line, name.as_bytes()) {
         return Some(range);
     }
-    if let Some(range) = luks.iter().find(|r| line[(*r).clone()] == *name.as_bytes()) {
-        return Some(range.clone());
+    if let Some(range) = named(line, name, Named::Mapping, context) {
+        return Some(range);
     }
-    if contains(line, b"crypttab") || contains(line, b"cryptsetup") {
-        let word = find_where(line, name, |before, after| {
+    for span in &context.arguments {
+        let argument = find_where(&line[span.clone()], name, |before, after| {
             bounded(before, after) && before != Some(b'/') && after != Some(b'/')
         });
-        let instance = || {
-            escaped.iter().find_map(|escaped| {
-                find_where(line, &format!("cryptsetup@{escaped}"), |_, after| {
-                    !after.is_some_and(is_identifier_byte)
-                })
-                .map(|range| range.end - escaped.len()..range.end)
-            })
-        };
-        if let Some(range) = word.or_else(instance) {
-            return Some(range);
+        if let Some(range) = argument {
+            return Some(span.start + range.start..span.start + range.end);
         }
     }
-    crypttab_line(line, name.as_bytes())
+    let instance = escaped.iter().find_map(|escaped| {
+        find_where(line, &format!("cryptsetup@{escaped}"), |_, after| {
+            !after.is_some_and(is_identifier_byte)
+        })
+        .map(|range| range.end - escaped.len()..range.end)
+    });
+    if instance.is_some() {
+        return instance;
+    }
+    crypttab_starts(line).find_map(|from| crypttab_line(line, from, name.as_bytes()))
 }
 
-/// `luks.devices.<name>` or `luks.devices."<name>"`: the range of the name.
+/// A range of `line` the scanner found naming `what`, whose text is `text`.
+fn named(line: &[u8], text: &str, what: Named, context: &Context) -> Option<Range<usize>> {
+    context
+        .names
+        .iter()
+        .find(|(range, named)| *named == what && line[range.clone()] == *text.as_bytes())
+        .map(|(range, _)| range.clone())
+}
+
+/// `luks.devices.<name>`, `clevis.devices.<name>`, or either with the name
+/// quoted: the range of the name.
 fn luks_entry(line: &[u8], name: &[u8]) -> Option<Range<usize>> {
-    const PREFIX: &[u8] = b"luks.devices.";
+    const PREFIXES: [&[u8]; 2] = [b"luks.devices.", b"clevis.devices."];
     (0..line.len()).find_map(|at| {
-        let rest = line[at..].strip_prefix(PREFIX)?;
-        let start = at + PREFIX.len();
-        if let Some(quoted) = rest.strip_prefix(b"\"") {
-            (quoted.strip_prefix(name)?.first() == Some(&b'"'))
-                .then_some(start + 1..start + 1 + name.len())
-        } else {
-            let after = rest.strip_prefix(name)?.first().copied();
-            (!after.is_some_and(is_identifier_byte)).then_some(start..start + name.len())
-        }
+        PREFIXES.iter().find_map(|prefix| {
+            let rest = line[at..].strip_prefix(*prefix)?;
+            let start = at + prefix.len();
+            if let Some(quoted) = rest.strip_prefix(b"\"") {
+                (quoted.strip_prefix(name)?.first() == Some(&b'"'))
+                    .then_some(start + 1..start + 1 + name.len())
+            } else {
+                let after = rest.strip_prefix(name)?.first().copied();
+                (!after.is_some_and(is_identifier_byte)).then_some(start..start + name.len())
+            }
+        })
     })
 }
 
-/// A crypttab line that opens `name`: the name first (after any indentation,
-/// comment marker or opening quote), then the device. A device that is
-/// neither a `/dev/` path nor a tag counts as an absolute path followed by a
-/// key file field (`none`, `-` or a path), so prose such as `# data /home is
-/// backed up` is no crypttab line.
-fn crypttab_line(line: &[u8], name: &[u8]) -> Option<Range<usize>> {
+/// Where a crypttab line can start: at the start of the line and right
+/// after every `"` and `''`, where a string's text may begin.
+fn crypttab_starts(line: &[u8]) -> impl Iterator<Item = usize> + '_ {
+    std::iter::once(0).chain(
+        (0..line.len())
+            .filter(|&at| line[at] == b'"' || line[at..].starts_with(b"''"))
+            .map(move |at| at + if line[at] == b'"' { 1 } else { 2 }),
+    )
+}
+
+/// A crypttab line from `from` that opens `name`: the name first (after any
+/// indentation, comment marker or opening quote), then the device. A device
+/// that is neither a `/dev/` path nor a tag counts as an absolute path
+/// followed by a key file field (`none`, `-` or a path), so prose such as
+/// `# data /home is backed up` is no crypttab line. Fields may be separated
+/// by blanks or by `\t`, as a Nix string writes a tab.
+fn crypttab_line(line: &[u8], from: usize, name: &[u8]) -> Option<Range<usize>> {
     const DEVICE: &[&[u8]] = &[
         b"/dev/",
         b"uuid=",
@@ -128,7 +164,7 @@ fn crypttab_line(line: &[u8], name: &[u8]) -> Option<Range<usize>> {
         b"partlabel=",
         b"id=",
     ];
-    let mut start = 0;
+    let mut start = from;
     loop {
         let rest = &line[start..];
         start += if rest.starts_with(b"/*") {
@@ -143,14 +179,26 @@ fn crypttab_line(line: &[u8], name: &[u8]) -> Option<Range<usize>> {
         };
     }
     let rest = line[start..].strip_prefix(name)?;
-    let gap = rest
-        .iter()
-        .take_while(|&&b| b == b' ' || b == b'\t')
-        .count();
+    let gap = field_gap(rest);
     let device = &rest[gap..];
     let opens =
         gap > 0 && (DEVICE.iter().any(|tag| device.starts_with(tag)) || file_device(device));
     opens.then_some(start..start + name.len())
+}
+
+/// The length of the field separator at the start of `text`: blanks and
+/// `\t` escapes.
+fn field_gap(text: &[u8]) -> usize {
+    let mut at = 0;
+    loop {
+        if matches!(text.get(at), Some(b' ' | b'\t')) {
+            at += 1;
+        } else if text[at..].starts_with(b"\\t") {
+            at += 2;
+        } else {
+            return at;
+        }
+    }
 }
 
 /// An absolute path, then a key file field: `none`, `-` or another path.
@@ -158,21 +206,25 @@ fn file_device(fields: &[u8]) -> bool {
     if fields.first() != Some(&b'/') {
         return false;
     }
-    let mut words = fields
-        .split(|&b| b == b' ' || b == b'\t')
-        .filter(|word| !word.is_empty());
-    let _device = words.next();
-    words.next().is_some_and(|key| {
-        let key = key.strip_suffix(b"\"").unwrap_or(key);
-        key == b"none" || key == b"-" || key.first() == Some(&b'/')
-    })
+    let device = fields
+        .iter()
+        .take_while(|&&b| b != b' ' && b != b'\t' && b != b'\\')
+        .count();
+    let rest = &fields[device..];
+    let key = &rest[field_gap(rest)..];
+    let key = &key[..key
+        .iter()
+        .take_while(|&&b| !matches!(b, b' ' | b'\t' | b'\\' | b'"' | b'\''))
+        .count()];
+    !rest.is_empty() && (key == b"none" || key == b"-" || key.first() == Some(&b'/'))
 }
 
-/// A `/dev/disk/by-id/dm-uuid-…` path whose last component ends with
-/// `-<name>`: the range of the whole path.
+/// A `/dev/disk/by-id/dm-uuid-crypt-<type>-…` path whose last component is
+/// cryptsetup's whole name for the mapping `name`: `<type>-<name>` or
+/// `<type>-<32 hex digits>-<name>`, the type without a dash. The range of
+/// the whole path.
 fn dm_uuid_link(line: &[u8], name: &str) -> Option<Range<usize>> {
-    const PREFIX: &str = "/dev/disk/by-id/dm-uuid-";
-    let suffix = format!("-{name}");
+    const PREFIX: &str = "/dev/disk/by-id/dm-uuid-crypt-";
     let mut from = 0;
     while let Some(found) = find_where(&line[from..], PREFIX, |before, _| {
         !continues_file_name(before)
@@ -184,270 +236,116 @@ fn dm_uuid_link(line: &[u8], name: &str) -> Option<Range<usize>> {
                 .iter()
                 .take_while(|&&b| continues_file_name(Some(b)))
                 .count();
-        if line[tail..end].ends_with(suffix.as_bytes()) {
-            return Some(start..end);
+        let last = &line[tail..end];
+        let kind = last
+            .iter()
+            .take_while(|b| b.is_ascii_alphanumeric())
+            .count();
+        if kind > 0
+            && let Some(rest) = last[kind..].strip_prefix(b"-")
+        {
+            let after_uuid = rest.get(32) == Some(&b'-')
+                && rest[..32].iter().all(u8::is_ascii_hexdigit)
+                && rest[33..] == *name.as_bytes();
+            if rest == name.as_bytes() || after_uuid {
+                return Some(start..end);
+            }
         }
         from = tail;
     }
     None
 }
 
-/// One open bracket, as [`AttrPaths`] tracks it.
-#[derive(Debug)]
-enum Frame {
-    /// An attribute set whose attributes are defined below `path`. `value` is
-    /// the full path of the definition whose value is being read, from its
-    /// `=` to its `;`: a `{` or `[` in that value opens a block of it.
-    Attrs {
-        path: Vec<String>,
-        value: Option<Vec<String>>,
-    },
-    /// A list in the value of `path` (`lib.mkMerge [ { … } { … } ]`): each
-    /// attribute set in it is a value of `path` too.
-    List { path: Vec<String> },
-    /// An interpolation, `${ … }`.
-    Interpolation,
+/// The commands of a `cryptsetup` family that name a mapping in their
+/// arguments: they open, close or ask about one.
+const MAPPING_VERBS: &[&[u8]] = &[
+    b"open",
+    b"luksopen",
+    b"tcryptopen",
+    b"plainopen",
+    b"loopaesopen",
+    b"bitlkopen",
+    b"fvault2open",
+    b"close",
+    b"luksclose",
+    b"remove",
+    b"status",
+    b"resize",
+    b"refresh",
+    b"lukssuspend",
+    b"luksresume",
+    b"attach",
+    b"detach",
+];
+
+/// How far a `cryptsetup` command reaches past the end of a line, when the
+/// line ends in `\`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum Command {
+    #[default]
+    None,
+    /// `cryptsetup` without its verb yet.
+    Cryptsetup,
+    /// After a verb from [`MAPPING_VERBS`]: every word is an argument.
+    Arguments,
 }
 
-/// Tracks the attribute paths a file defines, line by line, so the name of a
-/// `boot.initrd.luks.devices` entry can be told from the same word anywhere
-/// else however the entry is written: in a `luks.devices = { … }` block, as
-/// `devices.data` in a `luks = { … }` block, in fully nested blocks, in a
-/// `lib.mkForce { … }` or `lib.mkMerge [ { … } ]` value, or by `inherit`.
-///
-/// Braces and brackets are counted on the whole line, comments included, so
-/// a block that was commented out line by line is followed too. Parentheses
-/// are not counted: a `case` in a shell script string leaves them unbalanced.
-#[derive(Debug)]
-pub(super) struct AttrPaths {
-    /// The open brackets, the file's top level first.
-    frames: Vec<Frame>,
+/// Follows `cryptsetup` commands across lines continued with `\`.
+#[derive(Debug, Default)]
+pub(super) struct Shell {
+    carried: Command,
 }
 
-impl Default for AttrPaths {
-    fn default() -> Self {
-        Self {
-            frames: vec![Frame::Attrs {
-                path: Vec::new(),
-                value: None,
-            }],
-        }
-    }
-}
-
-/// One component of an attribute path being read: its text and its range.
-type Component = (Vec<u8>, Range<usize>);
-
-impl AttrPaths {
-    /// The ranges in `line` of the `boot.initrd.luks.devices` entry names it
-    /// defines (`data` in `data = { … };`, `data.device = …;` or
-    /// `devices.data = …;` in the right block, or `inherit data;`).
-    pub(super) fn luks_names(&mut self, line: &[u8]) -> Vec<Range<usize>> {
-        let mut names = Vec::new();
-        // An attribute may start here: at the start of a line inside a block
-        // that waits for one, and after its `{` or a `;` at its own level.
-        let mut attribute = self.expects_attribute();
+impl Shell {
+    /// The ranges of `line` that are arguments of a `cryptsetup` or
+    /// `systemd-cryptsetup` command whose verb names a mapping. A command
+    /// ends at `;`, `|`, `&` or `#`, or at the end of a line that does not
+    /// end in `\`. Without such a verb, the command names nothing: a package
+    /// list or prose that mentions `cryptsetup` passes.
+    pub(super) fn line(&mut self, line: &[u8]) -> Vec<Range<usize>> {
+        let mut spans = Vec::new();
+        let mut command = std::mem::take(&mut self.carried);
+        let mut from = (command == Command::Arguments).then_some(0);
         let mut i = 0;
         while i < line.len() {
-            if attribute {
-                // Blanks and comment markers keep the position.
-                if matches!(line[i], b' ' | b'\t' | b'#' | b'*' | b'/') {
-                    i += 1;
-                    continue;
+            if matches!(line[i], b';' | b'|' | b'&' | b'#') {
+                if let Some(start) = from.take() {
+                    spans.push(start..i);
                 }
-                attribute = false;
-                if let Some(next) = self.definition(line, i, &mut names) {
-                    i = next;
-                    continue;
-                }
+                command = Command::None;
+                i += 1;
+                continue;
             }
-            match line[i] {
-                b'$' if line.get(i + 1) == Some(&b'{') => {
-                    self.frames.push(Frame::Interpolation);
-                    i += 1;
-                }
-                b'{' => {
-                    let path = self.block_path();
-                    self.frames.push(Frame::Attrs { path, value: None });
-                    attribute = true;
-                }
-                b'[' => {
-                    let path = self.block_path();
-                    self.frames.push(Frame::List { path });
-                }
-                b']' => {
-                    if matches!(self.frames.last(), Some(Frame::List { .. })) {
-                        self.frames.pop();
-                    }
-                }
-                b'}' => {
-                    if self.frames.len() > 1 {
-                        self.frames.pop();
-                    }
-                }
-                b';' => {
-                    if let Some(Frame::Attrs { value, .. }) = self.frames.last_mut() {
-                        *value = None;
-                    }
-                    attribute = self.expects_attribute();
-                }
-                _ => {}
+            if !is_identifier_byte(line[i]) || (i > 0 && is_identifier_byte(line[i - 1])) {
+                i += 1;
+                continue;
             }
-            i += 1;
-        }
-        names
-    }
-
-    /// Whether the innermost block waits for an attribute.
-    fn expects_attribute(&self) -> bool {
-        matches!(self.frames.last(), Some(Frame::Attrs { value: None, .. }))
-    }
-
-    /// The path a block opened here defines below: the definition whose value
-    /// is being read, or the list's path; none elsewhere.
-    fn block_path(&self) -> Vec<String> {
-        match self.frames.last() {
-            Some(Frame::Attrs {
-                value: Some(path), ..
-            })
-            | Some(Frame::List { path }) => path.clone(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// The path of the innermost attribute set.
-    fn attrs_path(&self) -> &[String] {
-        match self.frames.last() {
-            Some(Frame::Attrs { path, .. }) => path,
-            _ => &[],
-        }
-    }
-
-    /// Read the definition that may start at `start`: `inherit …;` or an
-    /// attribute path and its `=`. Pushes the entry names it defines to
-    /// `names` and returns where to go on, or `None` when no definition
-    /// starts there.
-    fn definition(
-        &mut self,
-        line: &[u8],
-        start: usize,
-        names: &mut Vec<Range<usize>>,
-    ) -> Option<usize> {
-        if let Some(rest) = line[start..].strip_prefix(b"inherit")
-            && !rest.first().copied().is_some_and(is_identifier_byte)
-        {
-            return Some(self.inherit(line, start + b"inherit".len(), names));
-        }
-        let (components, end) = attribute_path(line, start)?;
-        let next = skip_blanks(line, end);
-        if line.get(next) != Some(&b'=') || line.get(next + 1) == Some(&b'=') {
-            return None;
-        }
-        let mut full: Vec<String> = self.attrs_path().to_vec();
-        let offset = full.len();
-        full.extend(
-            components
+            let end = i + line[i..]
                 .iter()
-                .map(|(text, _)| String::from_utf8_lossy(text).into_owned()),
-        );
-        for (index, (_, range)) in components.into_iter().enumerate() {
-            if names_luks_entry(&full, offset + index) {
-                names.push(range);
+                .take_while(|&&b| is_identifier_byte(b))
+                .count();
+            let word = &line[i..end];
+            if word.ends_with(b"cryptsetup") && line.get(end) != Some(&b'@') {
+                command = Command::Cryptsetup;
+            } else if command == Command::Cryptsetup && MAPPING_VERBS.contains(&word) {
+                command = Command::Arguments;
+                from = Some(end);
             }
+            i = end;
         }
-        if let Some(Frame::Attrs { value, .. }) = self.frames.last_mut() {
-            *value = Some(full);
+        if let Some(start) = from {
+            spans.push(start..line.len());
         }
-        Some(next + 1)
-    }
-
-    /// The names an `inherit` (`inherit data;`, `inherit (cfg) data;`)
-    /// defines from `from` to its `;`, which is left for the caller.
-    fn inherit(&self, line: &[u8], from: usize, names: &mut Vec<Range<usize>>) -> usize {
-        let in_devices = self
-            .attrs_path()
-            .ends_with(&["luks".into(), "devices".into()]);
-        let mut i = from;
-        let mut depth = 0usize;
-        while i < line.len() && line[i] != b';' {
-            match line[i] {
-                b'(' => depth += 1,
-                b')' => depth = depth.saturating_sub(1),
-                _ if depth == 0 => {
-                    if let Some(((_, range), end)) = component(line, i) {
-                        if in_devices {
-                            names.push(range);
-                        }
-                        i = end;
-                        continue;
-                    }
-                }
-                _ => {}
-            }
-            i += 1;
+        let continued = line
+            .iter()
+            .rev()
+            .find(|&&b| b != b' ' && b != b'\t' && b != b'\r')
+            == Some(&b'\\');
+        if continued {
+            self.carried = command;
         }
-        i
+        spans
     }
-}
-
-/// Whether the component at `index` of `path` names a `luks.devices` entry:
-/// the two before it are `luks` and `devices`.
-fn names_luks_entry(path: &[String], index: usize) -> bool {
-    index >= 2 && path[index - 2] == "luks" && path[index - 1] == "devices"
-}
-
-/// The attribute path at `start` (`a.b."c"`, blanks allowed around each
-/// dot): its components and where it ends.
-fn attribute_path(line: &[u8], start: usize) -> Option<(Vec<Component>, usize)> {
-    let mut components = Vec::new();
-    let (first, mut end) = component(line, start)?;
-    components.push(first);
-    loop {
-        let dot = skip_blanks(line, end);
-        if line.get(dot) != Some(&b'.') {
-            break;
-        }
-        let Some((next, after)) = component(line, skip_blanks(line, dot + 1)) else {
-            break;
-        };
-        components.push(next);
-        end = after;
-    }
-    Some((components, end))
-}
-
-/// One attribute name at `start` (`data` or `"data"`): its text and range
-/// without quotes, and where it ends.
-fn component(line: &[u8], start: usize) -> Option<(Component, usize)> {
-    if line.get(start) == Some(&b'"') {
-        let close = start + 1 + line[start + 1..].iter().position(|&b| b == b'"')?;
-        let range = start + 1..close;
-        return Some(((line[range.clone()].to_vec(), range), close + 1));
-    }
-    let len = line
-        .get(start..)?
-        .iter()
-        .take_while(|&&b| is_identifier_byte(b) || b == b'\'')
-        .count();
-    if len == 0 {
-        return None;
-    }
-    let range = start..start + len;
-    Some(((line[range.clone()].to_vec(), range), start + len))
-}
-
-fn skip_blanks(line: &[u8], from: usize) -> usize {
-    from + line.get(from..).map_or(0, |rest| {
-        rest.iter()
-            .take_while(|&&b| b == b' ' || b == b'\t')
-            .count()
-    })
-}
-
-fn contains(haystack: &[u8], needle: &[u8]) -> bool {
-    haystack
-        .windows(needle.len())
-        .any(|window| window == needle)
 }
 
 /// The first occurrence of `needle` in `haystack` that `accept` takes, given
@@ -473,10 +371,6 @@ fn find_where(
 /// so `evolution-data-server` holds no word `data`.
 fn bounded(before: Option<u8>, after: Option<u8>) -> bool {
     !before.is_some_and(is_identifier_byte) && !after.is_some_and(is_identifier_byte)
-}
-
-fn is_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-'
 }
 
 /// Whether `byte` continues a file name. Separators, quotes, spaces and Nix

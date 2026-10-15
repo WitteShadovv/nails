@@ -368,6 +368,52 @@ fn every_leak_form_of_the_mapper_name_is_refused() {
             "{ environment.etc.crypttab.text = ''\n  data /var/lib/vault.img none luks\n''; }",
             (2, "data", MapperName),
         ),
+        (
+            "{ }\n# boot.initrd.luks.devices = [ { name = \"data\"; device = \"/dev/disk/by-uuid/1\"; } ];\n",
+            (2, "data", MapperName),
+        ),
+        (
+            "{ boot.initrd.clevis.devices.data.secretFile = ./data.jwe; }",
+            (1, "data", MapperName),
+        ),
+        (
+            "{ fileSystems.\"/srv/x\" = {\n  device = \"/dev/disk/by-label/x\";\n  encrypted = { enable = \
+             true; label = \"data\"; blkDev = \"/dev/sdb9\"; };\n}; }\n",
+            (3, "data", MapperName),
+        ),
+        (
+            "{ systemd.services.x.script = ''\n  cryptsetup open --type luks \\\n    \
+             /dev/disk/by-id/ata-DISK_SERIAL-part2 data\n''; }\n",
+            (3, "data", MapperName),
+        ),
+        (
+            "{ environment.etc.crypttab.text = \"data\\t/dev/sdb2\\tnone\\tluks\"; }",
+            (1, "data", MapperName),
+        ),
+        (
+            "{ environment.etc.\"crypttab\" = {\n  text = \"data UUID=7d2c none luks\";\n}; }\n",
+            (2, "data", MapperName),
+        ),
+        (
+            "{\n  programs.bash.promptInit = ''PS1=\"\\[\\e[1;32m\\]\\u@\\h\\[\\e[0m\\] \"'';\n  \
+             boot.initrd.luks = {\n    devices.data.device = \"/dev/disk/by-uuid/1\";\n  };\n}\n",
+            (4, "data", MapperName),
+        ),
+        (
+            "{ lib, ... }: {\n  boot.initrd.luks.devices = with lib; mkForce {\n    \
+             data.device = \"/dev/disk/by-uuid/1\";\n  };\n}\n",
+            (3, "data", MapperName),
+        ),
+        (
+            "{ }\n# keep [ for later\n# boot.initrd.luks = {\n#   devices.data.device = \
+             \"/dev/disk/by-uuid/1\";\n# };\n",
+            (4, "data", MapperName),
+        ),
+        (
+            "{\n  boot.initrd.luks.devices = {\n    root = { device = \"/dev/sda2\"; postOpenCommands \
+             = ''echo \"{\"''; };\n    data.device = \"/dev/disk/by-uuid/1\";\n  };\n}\n",
+            (4, "data", MapperName),
+        ),
     ];
     for (content, expected) in cases {
         let scan = scan_configuration(content);
@@ -438,6 +484,11 @@ fn ordinary_uses_of_the_mapper_name_pass() {
         "{ boot.initrd.luks.devices.root.device = \"/dev/sda2\";\n  services.foo = {\n    data = 1;\n  }; }",
         "{ boot.initrd.luks = {\n  devices.root.device = \"/dev/sda2\";\n  data = 1;\n}; }",
         "{ }\n# data /home is backed up nightly\n",
+        "{ environment.systemPackages = with pkgs; [ cryptsetup data ]; }",
+        "{ }\n# cryptsetup keeps the data safe\n",
+        "{ fileSystems.\"/srv\".device = \
+         \"/dev/disk/by-id/dm-uuid-CRYPT-LUKS2-0123456789abcdef0123456789abcdef-user-data\"; }",
+        "{ fileSystems.\"/srv\".label = \"data\"; }",
     ] {
         let scan = scan_configuration(content);
         assert!(scan.is_clean(), "{content}: {scan:#?}");

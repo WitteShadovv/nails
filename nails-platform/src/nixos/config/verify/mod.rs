@@ -14,6 +14,7 @@
 //! the history of a git repository there are not.
 
 mod nix_text;
+mod scan;
 mod storage;
 
 use crate::artifacts::{ARTIFACTS, ArtifactKind};
@@ -21,7 +22,8 @@ use crate::error::Result;
 use crate::filesystem::Filesystem;
 use nails_base::filesystem::parse_mountinfo;
 use nails_base::fstab::escape_path;
-use nix_text::{AttrPaths, Pattern};
+use nix_text::{Context, Pattern, Shell};
+use scan::Scanner;
 use std::path::{Path, PathBuf};
 
 /// Base `/etc/nixos` directory scanned for hidden-environment traces.
@@ -152,12 +154,16 @@ struct Marker {
 /// - `hidden_volume_root` itself, as a whole path (`/mnt/data` and
 ///   `/mnt/data/nixos` count, `/mnt/data2` does not), and its `.mount` and
 ///   `.automount` units (`mnt-data.mount`);
-/// - the device-mapper names where they name the mapping: a `luks.devices`
-///   entry however its blocks nest (`luks.devices.data`, `luks.devices."data"`,
-///   `luks = { devices.data = … }`, `inherit data;` in a `luks.devices` block),
-///   a word on a line that mentions `crypttab` or `cryptsetup`
-///   (`systemd-cryptsetup@data.service` too), or the first field of a crypttab
-///   line (`data UUID=… none luks`, `data /var/lib/vault.img none luks`);
+/// - the device-mapper names where they name the mapping: a `luks.devices` or
+///   `clevis.devices` entry however its blocks nest (`luks.devices.data`,
+///   `luks.devices."data"`, `luks = { devices.data = … }`, `inherit data;` in
+///   a `luks.devices` block, inside `with`, `let … in`, `lib.mkForce` or
+///   `lib.mkMerge`), the `name` of such an entry or of one in the old list
+///   form, `encrypted.label`, an argument of a `cryptsetup` command that
+///   opens, closes or asks about a mapping (continued lines included) or the
+///   instance of `systemd-cryptsetup@data.service`, or the first field of a
+///   crypttab line at the start of a line or a string (`data UUID=… none
+///   luks`, `data /var/lib/vault.img none luks`);
 /// - the word `nails`.
 ///
 /// A unit name with a character systemd escapes (`mnt-my\x2ddata.mount`)
@@ -165,9 +171,12 @@ struct Marker {
 /// `''…''` string holds it, and with two, as a double-quoted string writes it.
 /// Matching ignores ASCII case. Ordinary configuration never counts: the
 /// mapping name as an ordinary word (`description = "Back up user data"` with
-/// the mapping `data`) or a directory (`/var/lib/postgresql/data`), the word
-/// `hidden` (GRUB's `timeoutStyle = "hidden"`), or an option such as
-/// `services.plausible`.
+/// the mapping `data`, `cryptsetup` beside it in a package list or in prose)
+/// or a directory (`/var/lib/postgresql/data`), the decoy's own mapping whose
+/// name ends like the hidden one (`user-data`), the word `hidden` (GRUB's
+/// `timeoutStyle = "hidden"`), or an option such as `services.plausible`. A
+/// mapping defined through a `let` binding or `lib.listToAttrs` is not
+/// followed; its device still counts where the line names it.
 ///
 /// This is a best-effort trace scan, not a proof: a clean result means none of
 /// the known markers were found, which is weaker than the base being
@@ -334,17 +343,21 @@ fn unit(path: &str, suffix: &str) -> String {
 fn references_in(file: &Path, content: &str, markers: &[Marker]) -> Vec<BaseConfigReference> {
     let original = content.as_bytes();
     let text = original.to_ascii_lowercase();
-    let mut paths = AttrPaths::default();
+    let mut scanner = Scanner::default();
+    let mut shell = Shell::default();
 
     let mut found = Vec::new();
     let mut start = 0;
     for (index, line) in text.split(|&byte| byte == b'\n').enumerate() {
         let end = start + line.len();
-        let names = paths.luks_names(line);
+        let context = Context {
+            names: scanner.line(line),
+            arguments: shell.line(line),
+        };
         let hit = markers.iter().find_map(|marker| {
             marker
                 .pattern
-                .find(line, &names)
+                .find(line, &context)
                 .map(|range| (marker.kind, range))
         });
         if let Some((kind, range)) = hit {
