@@ -280,6 +280,12 @@ probes the hidden backend every `backend_watch.poll_interval_secs` seconds and
 raises a desktop alert the moment a probe fails, so an unresponsive volume is
 explained instead of showing up only as unrelated application errors.
 
+The watcher's alerts go to the account logged in on the machine's own screen
+(the active session of its first seat), and they run as that account, because a
+desktop session bus admits no other: through `notify-send`, or `busctl` where
+`notify-send` is not installed. While nobody is logged in there, no alert can be
+shown.
+
 The watcher is **alert-only by default**: a transient I/O stall must never be able
 to end a live session on its own. The automatic emergency is strictly opt-in —
 set `backend_watch.auto_emergency = true` — and even then it fires only after the

@@ -1,35 +1,43 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Immediate desktop alerts for the in-session backend watcher.
+//! Immediate desktop alerts on the operator's session bus.
 //!
-//! When the hidden volume stops responding, the watcher (a runtime unit of the
-//! hidden session) raises one alert on the operator's session bus through
-//! `notify-send`. It is attributed to a neutral application name, so nothing on
-//! screen names the tool. Where `notify-send` is not installed (libnotify-bin
-//! is not part of Debian's GNOME or KDE desktops), the same notification goes
-//! out through systemd's `busctl`, which every supported host has.
+//! The in-session watcher alerts the operator when the hidden volume stops
+//! responding, when a disk is mounted read-write and when a disk is mounted
+//! over the hidden root; `rehearse plant` shows a notification as one of its
+//! canary channels. Each alert goes out through `notify-send` and is
+//! attributed to a neutral application name, so nothing on screen names the
+//! tool. Where `notify-send` is not installed (libnotify-bin is not part of
+//! Debian's GNOME or KDE desktops), the same notification goes out through
+//! systemd's `busctl`, which every supported host has.
+//!
+//! Both run as root's children, but a session bus admits only the account that
+//! owns it. So the alert runs as the operator: their uid and primary gid, no
+//! supplementary groups (see
+//! [`ProcessCommand::run_as`](crate::process::ProcessCommand::run_as)), with the
+//! bus and display variables pointed at their session. When no operator can be
+//! resolved, nothing is started.
 
 use crate::Result;
+use crate::process::{ProcessCommand, ProcessRunner};
 use serde::{Deserialize, Serialize};
 
-/// Build the environment overrides handed to `notify-send` so it reaches the
-/// operator's session bus: a pure function of the operator's uid and the
-/// display variables.
+/// Build the environment overrides an alert needs to reach the session bus of
+/// the operator `uid`: a pure function of the uid and the display variables.
 fn build_runtime_environment(
-    uid: Option<u32>,
+    uid: u32,
     display: Option<String>,
     wayland_display: Option<String>,
 ) -> Vec<(&'static str, String)> {
-    let mut env = Vec::new();
-    if let Some(uid) = uid {
-        let runtime_dir = format!("/run/user/{uid}");
-        env.push(("XDG_RUNTIME_DIR", runtime_dir.clone()));
-        env.push((
+    let runtime_dir = format!("/run/user/{uid}");
+    let mut env = vec![
+        ("XDG_RUNTIME_DIR", runtime_dir.clone()),
+        (
             "DBUS_SESSION_BUS_ADDRESS",
             format!("unix:path={runtime_dir}/bus"),
-        ));
-    }
+        ),
+    ];
     if let Some(display) = display {
         env.push(("DISPLAY", display));
     }
@@ -37,15 +45,6 @@ fn build_runtime_environment(
         env.push(("WAYLAND_DISPLAY", wayland_display));
     }
     env
-}
-
-/// Environment overrides for `notify-send`, for the operator resolved through
-/// [`crate::TargetUser::resolve_with`].
-pub fn notification_runtime_environment(env: &crate::RuntimeEnv) -> Vec<(&'static str, String)> {
-    let uid = crate::TargetUser::resolve_with(env)
-        .ok()
-        .map(|user| user.uid);
-    build_runtime_environment(uid, env.display.clone(), env.wayland_display.clone())
 }
 
 /// A desktop notification.
@@ -66,41 +65,67 @@ pub struct Notification {
 /// Neutral application name for immediate alerts.
 const NEUTRAL_APP_NAME: &str = "System";
 
-/// The `notify-send` command for an immediate alert. The watcher runs as root
-/// from a system unit, so `notify-send` is a host tool from the fixed system
-/// directories.
-fn immediate_alert_command(
-    notification: &Notification,
-    session_env: &[(&'static str, String)],
-) -> crate::process::ProcessCommand {
-    let mut command = crate::process::ProcessCommand::tool("notify-send")
+/// The operator's desktop session an alert goes to: the account it runs as and
+/// the environment that points it at that account's session bus.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AlertSession {
+    uid: u32,
+    gid: u32,
+    env: Vec<(&'static str, String)>,
+}
+
+impl AlertSession {
+    /// The session of `operator`, with the display variables of `env`.
+    fn of(operator: &crate::TargetUser, env: &crate::RuntimeEnv) -> Self {
+        Self {
+            uid: operator.uid,
+            gid: operator.gid,
+            env: build_runtime_environment(
+                operator.uid,
+                env.display.clone(),
+                env.wayland_display.clone(),
+            ),
+        }
+    }
+
+    /// `command`, run as the operator on their session bus.
+    fn command(&self, mut command: ProcessCommand) -> ProcessCommand {
+        for (key, value) in &self.env {
+            command = command.set_env(key, value);
+        }
+        command.run_as(self.uid, self.gid)
+    }
+}
+
+/// The `notify-send` command for an immediate alert. `notify-send` is a host
+/// tool from the fixed system directories: the alert is started by root.
+fn immediate_alert_command(notification: &Notification, session: &AlertSession) -> ProcessCommand {
+    let mut command = ProcessCommand::tool("notify-send")
         .arg("--urgency")
         .arg(&notification.urgency)
         .arg("--app-name")
         .arg(NEUTRAL_APP_NAME);
-    for (key, value) in session_env {
-        command = command.set_env(key, value);
-    }
     if let Some(ref icon) = notification.icon {
         command = command.arg("--icon").arg(icon);
     }
-    command.arg(&notification.title).arg(&notification.body)
+    session.command(command.arg(&notification.title).arg(&notification.body))
 }
 
 /// The same alert as a direct `org.freedesktop.Notifications.Notify` call on
 /// the operator's session bus, for hosts without `notify-send`.
-fn bus_alert_command(
-    notification: &Notification,
-    session_env: &[(&'static str, String)],
-) -> crate::process::ProcessCommand {
+///
+/// `--` ends busctl's options before the call: the arguments that follow are
+/// the call's, and the expiry timeout `-1` among them would otherwise be read
+/// as an unknown option.
+fn bus_alert_command(notification: &Notification, session: &AlertSession) -> ProcessCommand {
     // The freedesktop urgency hint is a byte: 0 low, 1 normal, 2 critical.
     let urgency = match notification.urgency.as_str() {
         "low" => "0",
         "critical" => "2",
         _ => "1",
     };
-    let mut command = crate::process::ProcessCommand::tool("busctl")
-        .args(["--user", "call", "org.freedesktop.Notifications"])
+    let command = ProcessCommand::tool("busctl")
+        .args(["--user", "--", "call", "org.freedesktop.Notifications"])
         .args([
             "/org/freedesktop/Notifications",
             "org.freedesktop.Notifications",
@@ -112,31 +137,23 @@ fn bus_alert_command(
         .arg(&notification.title)
         .arg(&notification.body)
         .args(["0", "1", "urgency", "y", urgency, "-1"]);
-    for (key, value) in session_env {
-        command = command.set_env(key, value);
-    }
-    command
+    session.command(command)
 }
 
-/// Send a desktop notification to the operator's session now.
-///
-/// In a unit-test binary of a NAILS library crate
-/// ([`in_unit_tests`](crate::runtime_safety::in_unit_tests)) immediate alerts
-/// never reach a real session bus.
-pub fn send_immediate(notification: &Notification, env: &crate::RuntimeEnv) -> Result<()> {
-    use crate::process::{ProcessRunner, RealProcessRunner};
-    if crate::runtime_safety::in_unit_tests() {
-        return Ok(());
-    }
-    let session_env = notification_runtime_environment(env);
-    let (tool, output) =
-        match RealProcessRunner.run(&immediate_alert_command(notification, &session_env)) {
-            Err(e) if e.io_kind() == Some(std::io::ErrorKind::NotFound) => (
-                "busctl",
-                RealProcessRunner.run(&bus_alert_command(notification, &session_env))?,
-            ),
-            other => ("notify-send", other?),
-        };
+/// Show `notification` in `session` through `runner`: `notify-send`, or
+/// `busctl` where `notify-send` is not installed.
+fn deliver(
+    runner: &impl ProcessRunner,
+    notification: &Notification,
+    session: &AlertSession,
+) -> Result<()> {
+    let (tool, output) = match runner.run(&immediate_alert_command(notification, session)) {
+        Err(e) if e.io_kind() == Some(std::io::ErrorKind::NotFound) => (
+            "busctl",
+            runner.run(&bus_alert_command(notification, session))?,
+        ),
+        other => ("notify-send", other?),
+    };
     if !output.status.success() {
         return Err(crate::NailsError::io(
             tool,
@@ -150,63 +167,39 @@ pub fn send_immediate(notification: &Notification, env: &crate::RuntimeEnv) -> R
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_session_environment_points_at_the_operators_bus() {
-        let env = build_runtime_environment(Some(1000), Some(":0".into()), None);
-        assert!(env.contains(&("XDG_RUNTIME_DIR", "/run/user/1000".to_string())));
-        assert!(env.contains(&(
-            "DBUS_SESSION_BUS_ADDRESS",
-            "unix:path=/run/user/1000/bus".to_string()
-        )));
-        assert!(env.contains(&("DISPLAY", ":0".to_string())));
-        assert!(build_runtime_environment(None, None, None).is_empty());
-    }
-
-    #[test]
-    fn the_bus_fallback_sends_the_same_neutral_alert() {
-        let alert = Notification {
-            title: "Disk mounted with write access".into(),
-            body: "/mnt/x (/dev/sdb1) is mounted read-write.".into(),
-            urgency: "critical".into(),
-            icon: Some("drive-removable-media".into()),
-            created_at: String::new(),
-        };
-        let env = build_runtime_environment(Some(1000), None, None);
-        let text = format!("{}", bus_alert_command(&alert, &env));
-        assert!(
-            text.contains("--user call org.freedesktop.Notifications"),
-            "{text}"
-        );
-        assert!(
-            text.contains("Notify susssasa{sv}i System 0 drive-removable-media"),
-            "{text}"
-        );
-        assert!(text.contains("0 1 urgency y 2 -1"), "{text}");
-        assert!(!text.to_lowercase().contains("nails"), "{text}");
-        let normal = Notification {
-            urgency: "normal".into(),
-            icon: None,
-            ..alert
-        };
-        let text = format!("{}", bus_alert_command(&normal, &env));
-        assert!(text.contains("urgency y 1 -1"), "{text}");
-    }
-
-    #[test]
-    fn the_alert_is_attributed_to_a_neutral_application() {
-        let alert = Notification {
-            title: "Storage unavailable".into(),
-            body: "A mounted volume stopped responding.".into(),
-            urgency: "critical".into(),
-            icon: Some("drive-harddisk".into()),
-            created_at: String::new(),
-        };
-        let text = format!("{}", immediate_alert_command(&alert, &[]));
-        assert!(text.contains("--app-name System"), "{text}");
-        assert!(!text.to_lowercase().contains("nails"), "{text}");
-    }
+/// The error for an alert with no operator to show it to.
+fn no_operator_session() -> crate::NailsError {
+    const WHAT: &str = "operator session";
+    crate::NailsError::io(
+        WHAT,
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("no {WHAT} could be resolved"),
+        ),
+    )
 }
+
+/// Send a desktop notification to the operator's session now.
+///
+/// The operator is resolved from `env` (see
+/// [`TargetUser::resolve_with`](crate::TargetUser::resolve_with)): the account
+/// that ran sudo, or the owner of the active session on seat0. Without one
+/// there is no session to alert, and nothing is started.
+///
+/// In a unit-test binary of a NAILS library crate
+/// ([`in_unit_tests`](crate::runtime_safety::in_unit_tests)) immediate alerts
+/// never reach a real session bus.
+pub fn send_immediate(notification: &Notification, env: &crate::RuntimeEnv) -> Result<()> {
+    if crate::runtime_safety::in_unit_tests() {
+        return Ok(());
+    }
+    let operator = crate::TargetUser::resolve_with(env).map_err(|_| no_operator_session())?;
+    deliver(
+        &crate::process::RealProcessRunner,
+        notification,
+        &AlertSession::of(&operator, env),
+    )
+}
+
+#[cfg(test)]
+mod tests;
