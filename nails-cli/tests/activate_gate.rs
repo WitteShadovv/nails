@@ -201,6 +201,45 @@ mod kernel_tests {
             });
     }
 
+    /// `activate --json` writes only lines of its schema to stdout, however far
+    /// it gets: the log (pre-flight warnings and progress included) stays on
+    /// stderr. Here it passes the gate, takes the lock, reports its progress
+    /// and ends in a result, because the pre-flight checks refuse.
+    #[test]
+    fn activate_json_prints_only_lines_of_its_schema() {
+        let _ = Rerun::new(test_path!(activate_json_prints_only_lines_of_its_schema))
+            .in_user_mount_ns()
+            .run(|| {
+                let volume = ScratchTmpfs::new("");
+                let dir = tempfile::tempdir().unwrap();
+                let config = config_for(dir.path(), volume.path());
+                let output = nails(&config, &["activate", "-y", "--overlay-only", "--json"]);
+
+                let schema_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                    .join("../docs/schemas/activate.schema.json");
+                let schema: Value =
+                    serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
+                let validator = jsonschema::validator_for(&schema).expect("compile the schema");
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let lines: Vec<&str> = stdout.lines().collect();
+                assert!(lines.len() >= 2, "a progress line and a result: {output:?}");
+                for line in &lines {
+                    let value: Value = serde_json::from_str(line)
+                        .unwrap_or_else(|e| panic!("not JSON ({e}): {line}\n{output:?}"));
+                    let errors: Vec<String> = validator
+                        .iter_errors(&value)
+                        .map(|e| e.to_string())
+                        .collect();
+                    assert!(errors.is_empty(), "{errors:?}: {line}\n{output:?}");
+                }
+                assert_eq!(
+                    serde_json::from_str::<Value>(lines[0]).unwrap()["type"],
+                    "progress"
+                );
+                assert_eq!(last_json(&output)["type"], "result", "{output:?}");
+            });
+    }
+
     #[test]
     fn a_second_tmpfs_over_the_root_is_refused_and_neither_is_written() {
         let _ = Rerun::new(test_path!(

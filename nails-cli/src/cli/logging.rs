@@ -4,9 +4,13 @@
 //! Logging initialization for NAILS CLI
 //!
 //! This module initializes the tracing subscriber with:
-//! - A console layer (stderr, or NDJSON on stdout for `activate --json`)
-//!   filtered by the resolved verbosity
+//! - A console layer on stderr, filtered by the resolved verbosity and compact
+//!   at the default verbosity (see the `console` module)
 //! - An optional file layer for JSON-formatted logs (captures all events)
+//!
+//! The console never writes to stdout, which carries the command's own output:
+//! under `--json` that is the documented JSON and nothing else (for `activate`
+//! the progress and result lines of its schema).
 //!
 //! The file layer implements graceful fallback: if the hidden volume is not mounted
 //! or LoggingManager initialization fails, logging continues on the console only.
@@ -19,20 +23,11 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 use crate::cli::output::OutputSettings;
 
+mod console;
 #[cfg(test)]
 mod tests;
 
-/// Stdout formatting mode for CLI command output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StdoutFormat {
-    /// Human-readable tracing output written to stderr.
-    Human,
-    /// Newline-delimited JSON tracing events written to stdout.
-    ///
-    /// Used by `nails activate --json` so structured progress events are emitted
-    /// during activation before the final JSON result object is printed.
-    ActivateJsonStream,
-}
+pub(crate) use console::PANIC_TARGET;
 
 /// Initialize the tracing subscriber from the resolved output settings
 ///
@@ -40,9 +35,9 @@ pub enum StdoutFormat {
 /// 1. **File layer** (JSON): captures every event (TRACE+) to the configured
 ///    log file on the hidden volume, unless `log_file` is false
 ///    (`--no-log-file`) or the hidden volume is unavailable.
-/// 2. **Console layer**: human-readable on stderr, or NDJSON on stdout for
-///    [`StdoutFormat::ActivateJsonStream`], filtered by `settings.verbosity`
-///    (`-q` errors only, default INFO, `-v` DEBUG, `-vv` TRACE).
+/// 2. **Console layer**: on stderr, filtered by `settings.verbosity` (`-q`
+///    errors only, default INFO, `-v` DEBUG, `-vv` TRACE), compact at the
+///    default verbosity and full records with `-v` and `-vv`.
 ///
 /// ANSI colour on the console layer follows `settings.color_stderr`, so pipes
 /// and the journal never receive escape sequences unless `--color always` is
@@ -52,11 +47,7 @@ pub fn init_subscriber(
     settings: &OutputSettings,
     log_file: bool,
     config_override: Option<&std::path::Path>,
-    stdout_format: StdoutFormat,
 ) {
-    let console_level = settings.tracing_level();
-    let ansi = settings.color_stderr;
-
     let file_layer = if log_file {
         init_file_layer(config_override, settings).ok().flatten()
     } else {
@@ -64,43 +55,14 @@ pub fn init_subscriber(
     };
 
     // `Option<Layer>` is itself a layer, so a missing file layer is a no-op.
-    let registry = tracing_subscriber::registry().with(file_layer);
-    match stdout_format {
-        StdoutFormat::Human => {
-            // No timestamps on the human console: activation and teardown are
-            // interactive, the elapsed time is reported by the progress heartbeat,
-            // and a microsecond wall-clock stamp on every line only adds noise and
-            // widens the activity fingerprint if it is ever copied off-box. The
-            // JSON file layer still records a precise timestamp for forensics.
-            let console = fmt::layer()
-                .without_time()
-                .with_target(false)
-                .with_thread_ids(false)
-                .with_thread_names(false)
-                .with_file(false)
-                .with_line_number(false)
-                .with_level(true)
-                .with_ansi(ansi)
-                // Lifts an activation spinner (when one is on screen) around each
-                // log line so the two never garble; a plain stderr write otherwise.
-                .with_writer(|| nails_core::reporter::progress::ProgressAwareStderr)
-                .with_filter(console_level);
-            registry.with(console).init();
-        }
-        StdoutFormat::ActivateJsonStream => {
-            let console = fmt::layer()
-                .json()
-                .flatten_event(true)
-                .with_current_span(false)
-                .with_span_list(false)
-                .with_target(false)
-                .with_level(true)
-                .with_ansi(false)
-                .with_writer(std::io::stdout)
-                .with_filter(console_level);
-            registry.with(console).init();
-        }
-    }
+    tracing_subscriber::registry()
+        .with(file_layer)
+        // Lifts an activation spinner (when one is on screen) around each log
+        // line so the two never garble; a plain stderr write otherwise.
+        .with(console::layer(settings, || {
+            nails_core::reporter::progress::ProgressAwareStderr
+        }))
+        .init();
 }
 
 /// Print a notice about logging setup itself, before the subscriber exists.
