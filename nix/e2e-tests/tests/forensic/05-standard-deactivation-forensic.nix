@@ -16,6 +16,11 @@
 # same number of plain reboots, no session) records the boot noise: the hidden
 # session may change no inode, mode, owner, size, mtime, ctime, crtime or file
 # contents beyond it and the volatile allowlist.
+#
+# nails runs through sudo, as an operator runs it. sudo logs each command, so
+# the decoy's persistent journal keeps its records of the activation and of the
+# verify run, and `verify --deep` must report them as sudo's records; the
+# record of the deactivation, made in the hidden session, must not reach it.
 
 { self, pkgs, ... }:
 let
@@ -102,7 +107,10 @@ in
     with subtest("activate and plant hidden canaries"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
         canonical_activate(
-            headless_config, "--overlay-only --accept-persistent-decoy", "activate"
+            headless_config,
+            "--overlay-only --accept-persistent-decoy",
+            "activate",
+            sudo=True,
         )
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
 
@@ -120,13 +128,24 @@ in
         )
 
     with subtest("deactivation and verify"):
-        canonical_deactivate(headless_config)
+        canonical_deactivate(headless_config, sudo=True)
         status = json.loads(
             machine.succeed(f"nails --config {headless_config} status --json")
         )["data"]
         assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
 
-        verify_status, verify_payload = run_verify("--deep")
+        # sudo's record of the deactivation was made in the hidden session, so
+        # it went to the hidden journal on the hidden volume, never to this one.
+        machine.succeed("journalctl --sync")
+        deactivations = machine.succeed(
+            "journalctl --no-pager -o cat | grep -c -F 'deactivate -y' || true"
+        ).strip()
+        assert deactivations == "0", (
+            f"sudo's record of the hidden deactivation reached the decoy journal "
+            f"({deactivations} lines)"
+        )
+
+        verify_status, verify_payload = run_verify("--deep", sudo=True)
         findings_text = json.dumps(verify_payload)
         assert "NAILS_CANARY" not in findings_text, (
             f"verify --deep surfaced a canary: {verify_payload}"
@@ -137,7 +156,22 @@ in
             if "Overlay mount found" in finding["message"]
         ]
         assert not overlay_findings, f"verify reported overlays: {overlay_findings}"
-        assert verify_status == 0, (
+        # The persistent journal keeps sudo's records of the activation and of
+        # this run on the decoy disk: verify warns about them as sudo's records
+        # and about nothing else.
+        warnings = [
+            finding
+            for finding in verify_payload.get("findings", [])
+            if finding["severity"] != "info"
+        ]
+        assert warnings, f"sudo's record of the activation was not reported: {verify_payload}"
+        unexpected = [
+            finding
+            for finding in warnings
+            if finding["category"] != "journal" or "sudo record" not in finding["message"]
+        ]
+        assert not unexpected, f"verify --deep reported more than sudo's records: {unexpected}"
+        assert verify_status == 10, (
             f"verify --deep exit code was {verify_status}: {verify_payload}"
         )
         session.assert_decoy_root(machine)
