@@ -117,7 +117,7 @@ One workflow runs the NixOS VM suite in every lane. A `plan` job decides what ru
 
 Every test VM gets 2 cores and 2 GB of memory, 4 GB for graphical nodes (`nix/e2e-tests/lib/vm-config.nix`, `graphical-vm-config.nix`). The size is fixed rather than derived from the runner, so a test evaluates to the same derivation on every host, no build needs `--impure`, and two VMs fit a four-vCPU hosted runner. Every test runs with a 900 s driver timeout unless it declares a longer `globalTimeout`.
 
-The target is that `mode=all` finishes in at most 10 shards and about 20 minutes on hosted runners. Record the measured shard count and wall-clock time of a full hosted run here once one has completed.
+The target is that `mode=all` finishes in at most 10 shards and about 20 minutes on hosted runners. No full hosted run has been measured yet.
 
 ### The manual Hetzner lane
 
