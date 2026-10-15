@@ -43,9 +43,9 @@
       "kind": "hidden-root-path",
       "scope": "hidden-root",
       "severity": "info",
-      "value": "etc/nixos/nails/configuration.nix",
+      "value": "root/upper/etc/nixos/nails/configuration.nix",
       "image_token": "configuration.nix",
-      "description": "Staged hidden NixOS module source on the hidden root."
+      "description": "Link to the hidden NixOS module, staged in the root overlay's upper on the hidden root; the hidden session sees it as /etc/nixos/nails/configuration.nix."
     },
     {
       "id": "runtime-dir-legacy",

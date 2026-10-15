@@ -1005,6 +1005,21 @@ fn test_verify_flags_every_registry_path_artifact() {
 }
 
 #[test]
+fn the_registry_names_the_module_link_init_stages() {
+    // The staged module source is the link `nails init` creates in the root
+    // overlay's upper, so a verify run with the hidden volume mounted finds it.
+    let root = std::path::Path::new("/mnt/hidden");
+    let staged =
+        nails_platform::nixos::config::hidden_etc_nixos(root).join("nails/configuration.nix");
+    assert_eq!(
+        crate::artifacts::artifact("nixos-module-source")
+            .unwrap()
+            .resolve_path(root),
+        Some(staged)
+    );
+}
+
+#[test]
 fn test_block_device_scan_is_silent_without_sysblock() {
     // When /sys/block is unavailable (offline scan, container, or a mock without
     // the fixture) the crypt/loop scan must stay quiet rather than erroring.
