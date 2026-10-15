@@ -14,7 +14,8 @@
 #      decoy never saw the hidden file. The decoy journal is volatile (the
 #      suite's default) and shared with the hidden session, so the way back
 #      deletes it whole: a line the decoy logged before activation is gone with
-#      the hidden session's, and the journal starts at the deactivation;
+#      the hidden session's, and the journal starts at the deactivation,
+#      without the kernel's boot records;
 #   4. a second activation finds the hidden file again (the upper persists);
 #   5. `nails emergency` in the hidden session kills a hidden service and the
 #      login session at once and soft-reboots back, with its phases timed in
@@ -65,6 +66,26 @@ in
             machine.succeed(f"umount {PEEK} && rmdir {PEEK}")
 
 
+    def kernel_records():
+        """The journal's kernel records, as (us since boot, message).
+
+        journald stamps a kernel record with the time it read it, so a record
+        read in again later looks new. The time the kernel logged it is in
+        _SOURCE_MONOTONIC_TIMESTAMP."""
+        out = machine.succeed(
+            "journalctl -q _TRANSPORT=kernel -o json "
+            "--output-fields=_SOURCE_MONOTONIC_TIMESTAMP,MESSAGE --no-pager"
+        )
+        records = [json.loads(line) for line in out.splitlines() if line.strip()]
+        for record in records:
+            assert "_SOURCE_MONOTONIC_TIMESTAMP" in record, f"no kernel time: {record}"
+        logged = [
+            (int(record["_SOURCE_MONOTONIC_TIMESTAMP"]), record.get("MESSAGE"))
+            for record in records
+        ]
+        return sorted(logged, key=lambda record: record[0])
+
+
     machine.start()
     machine.wait_for_unit("multi-user.target")
     decoy_dev = machine.succeed("findmnt -no SOURCE /").strip()
@@ -95,13 +116,24 @@ in
     decoy_line = "decoy-line-" + secrets.token_hex(8)
     hidden_line = "hidden-line-" + secrets.token_hex(8)
 
-    with subtest("the decoy journal shows a line logged before activation"):
+    with subtest("the decoy journal shows its own line and the kernel's boot records"):
         machine.succeed("grep -qi '^Storage=volatile' /etc/systemd/journald.conf")
         machine.succeed(f"logger -t decoy {decoy_line}")
         machine.succeed("journalctl --sync")
         assert decoy_line in machine.succeed(
             f"journalctl --grep {decoy_line} --no-pager -o cat"
         ), "the decoy journal does not show its own line"
+        # The control for the check after the way back: by the kernel's own
+        # time, records from before userspace started are in the journal.
+        userspace_us = int(
+            machine.succeed("systemctl show -p UserspaceTimestampMonotonic --value").strip()
+        )
+        boot_records = [record for record in kernel_records() if record[0] < userspace_us]
+        machine.log(
+            f"{len(boot_records)} kernel records from before userspace started at "
+            f"{userspace_us} us, the first: {boot_records[:1]}"
+        )
+        assert boot_records, "the decoy journal holds none of the kernel's boot records"
 
     run_before = session.run_entries(machine)
 
@@ -166,6 +198,7 @@ in
         machine.succeed("systemd-run --unit hidden-probe --property=Type=exec sleep infinity")
         wall = session.wall_clock(machine)
         deactivate_start_us = int(machine.succeed("date +%s%6N").strip())
+        deactivate_uptime_us = int(session.guest_uptime(machine) * 1_000_000)
         canonical_deactivate(CONFIG, "deactivate-1")
         machine.fail("test -e /root/hidden-canary")
         machine.fail("test -e /run/hidden-run-probe")
@@ -179,7 +212,7 @@ in
         # The decoy's journald and the hidden one wrote the same runtime
         # journal, and the way back deletes it whole: the decoy's own line from
         # before activation goes with the hidden one, and the journal starts at
-        # the return.
+        # the return, without the kernel's boot records.
         machine.succeed("journalctl --sync")
         for line in (decoy_line, hidden_line):
             count = machine.succeed(
@@ -203,6 +236,20 @@ in
         assert oldest_us >= deactivate_start_us, (
             f"the decoy journal starts {deactivate_start_us - oldest_us} us before "
             f"the deactivation: {oldest.get('MESSAGE')!r}"
+        )
+        # That time is when journald read a record, so the kernel's boot
+        # records, read in again after the return, would pass. By the time the
+        # kernel logged them, no kernel record in the decoy journal is from
+        # before the deactivation: the kmsg cursor keeps the boot's out too.
+        kernel = kernel_records()
+        early = [record for record in kernel if record[0] < deactivate_uptime_us]
+        machine.log(
+            f"{len(kernel)} kernel records in the decoy journal, the first: {kernel[:1]}; "
+            f"deactivation started {deactivate_uptime_us} us after the boot"
+        )
+        assert not early, (
+            f"the decoy journal holds {len(early)} kernel records from before the "
+            f"deactivation, the first: {early[0]}"
         )
 
     with subtest("the upper persists into the next session"):

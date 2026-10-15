@@ -434,9 +434,10 @@ soft-reboots with `py/nails_e2e/session.py`:
 - `session-lifecycle`: `init` and `check`, activation into the hidden root, a
   hidden write that lands only in the upper, deactivation without hidden `/run`
   residue and with the volatile decoy journal reset (a line the decoy logged
-  before activation is gone, and the journal starts at the deactivation), the
-  upper persisting into the next session, an emergency and its timed log, and
-  `recover`/`emergency` on the plain decoy changing nothing;
+  before activation is gone, and the journal starts at the deactivation, with
+  no kernel record the kernel logged earlier), the upper persisting into the
+  next session, an emergency and its timed log, and `recover`/`emergency` on
+  the plain decoy changing nothing;
 - `session-emergency`: the activation command typed on a decoy tty never reaches
   its history, emergency from a hidden login shell, the decoy's avahi-daemon
   and a service with a PID file in `/run` starting again after the emergency
