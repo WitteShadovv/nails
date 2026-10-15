@@ -18,4 +18,4 @@ pub mod inventory;
 pub mod review;
 
 pub use inventory::{InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona};
-pub use review::EntryStatus;
+pub use review::{EntryStatus, MaskKind, MaskTarget};

@@ -10,12 +10,14 @@
 //! - **masks**: each inherited decoy autostart entry and user unit named in
 //!   `[persona] mask_inherited` gets a `Hidden=true` override or a `/dev/null`
 //!   mask, written through the next root's home before `/run` is bound in, so
-//!   it lands in the upper and never on the decoy.
+//!   it lands in the upper and never on the decoy. A name the inventory does
+//!   not list is masked as well, judged by its suffix, so a directory the
+//!   inventory does not read never drops a requested mask.
 
 use crate::config::{PersonaConfig, PersonaMode};
 use crate::error::{NailsError, Result};
 use crate::filesystem::RealFilesystem;
-use crate::persona::collect_inherited_persona;
+use crate::persona::{MaskKind, collect_inherited_persona};
 use crate::target_user::TargetUser;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -124,8 +126,11 @@ fn write_unit_mask(home: &Path, unit: &str, operator: &TargetUser) -> std::io::R
 }
 
 /// Write the masks `persona` asks for into `home`, the operator's home inside
-/// the next root. Best-effort per entry: a mask that cannot be written is
-/// skipped. Returns the masks written.
+/// the next root: one for every maskable inherited entry it names, and one for
+/// every name it lists that the inventory does not (see
+/// [`PersonaInventory::mask_targets`](crate::persona::PersonaInventory::mask_targets)).
+/// Best-effort per entry: a mask that cannot be written is skipped. Returns the
+/// masks written.
 pub fn write_masks(home: &Path, persona: &PersonaConfig, operator: &TargetUser) -> Vec<PathBuf> {
     if persona.mask_inherited.is_empty() || !home.is_dir() {
         return Vec::new();
@@ -133,14 +138,11 @@ pub fn write_masks(home: &Path, persona: &PersonaConfig, operator: &TargetUser) 
     let fresh = persona.mode == PersonaMode::FreshHome;
     let inventory = collect_inherited_persona(&RealFilesystem, home, &operator.name, fresh);
     inventory
-        .maskable()
-        .filter(|entry| persona.masks_inherited(&entry.name))
-        .filter_map(|entry| {
-            if entry.source.is_autostart() {
-                write_autostart_mask(home, &entry.name, operator).ok()
-            } else {
-                write_unit_mask(home, &entry.name, operator).ok()
-            }
+        .mask_targets(persona)
+        .into_iter()
+        .filter_map(|target| match target.kind {
+            MaskKind::Autostart => write_autostart_mask(home, &target.name, operator).ok(),
+            MaskKind::Unit => write_unit_mask(home, &target.name, operator).ok(),
         })
         .collect()
 }
@@ -193,6 +195,37 @@ mod tests {
         assert_eq!(
             std::fs::read_link(home.join(".config/systemd/user/syncthing.service")).unwrap(),
             Path::new("/dev/null")
+        );
+    }
+
+    #[test]
+    fn a_named_entry_the_inventory_misses_is_masked_by_its_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path().join("home/alice");
+        std::fs::create_dir_all(&home).unwrap();
+        let persona = PersonaConfig {
+            mode: PersonaMode::FreshHome,
+            mask_inherited: vec![
+                "org.kde.kdeconnect.daemon".into(),
+                "ghost.service".into(),
+                "../escape".into(),
+            ],
+        };
+        let written = write_masks(&home, &persona, &me(&home));
+        assert_eq!(written.len(), 2, "{written:?}");
+        let mask = std::fs::read_to_string(
+            home.join(".config/autostart/org.kde.kdeconnect.daemon.desktop"),
+        )
+        .unwrap();
+        assert!(mask.contains("Hidden=true"), "{mask}");
+        assert_eq!(
+            std::fs::read_link(home.join(".config/systemd/user/ghost.service")).unwrap(),
+            Path::new("/dev/null")
+        );
+        assert!(
+            !dir.path().join("home/escape.desktop").exists()
+                && !home.join(".config/escape.desktop").exists(),
+            "a name with a slash writes nothing"
         );
     }
 

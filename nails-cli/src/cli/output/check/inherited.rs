@@ -41,6 +41,9 @@ pub struct InheritedSummary {
     pub entries: Vec<InheritedEntry>,
     /// The names tagged as remote-linked.
     pub remote_linked: Vec<String>,
+    /// The `[persona] mask_inherited` names that match no inherited autostart
+    /// entry or user unit; activation masks them anyway.
+    pub unmatched_masks: Vec<String>,
 }
 
 impl InheritedSummary {
@@ -50,6 +53,7 @@ impl InheritedSummary {
             inspected: false,
             entries: Vec::new(),
             remote_linked: Vec::new(),
+            unmatched_masks: Vec::new(),
         }
     }
 
@@ -71,6 +75,7 @@ impl InheritedSummary {
             inspected: true,
             entries,
             remote_linked: inventory.remote_linked_names(),
+            unmatched_masks: inventory.unmatched_masks(persona),
         }
     }
 
@@ -163,6 +168,16 @@ pub fn inherited_lines(
             ),
         ));
     }
+    if !summary.unmatched_masks.is_empty() {
+        lines.push(style.marked(
+            Mark::Info,
+            format!(
+                "mask_inherited names {}, which match no inherited autostart entry or user unit; \
+                 activation masks them anyway",
+                summary.unmatched_masks.join(", ")
+            ),
+        ));
+    }
     lines
 }
 
@@ -237,6 +252,21 @@ mod tests {
                  every entry)",
                 "[WARN] 1 look like remote-linked client(s); mask with [persona] mask_inherited",
             ]
+        );
+    }
+
+    #[test]
+    fn masks_that_match_nothing_are_named() {
+        let summary = InheritedSummary::from_inventory(
+            &inventory(),
+            &persona(&["dropbox", "dropbx", "ghost.service", "*"]),
+        );
+        assert_eq!(summary.unmatched_masks, vec!["dropbx", "ghost.service"]);
+        let lines = inherited_lines(&summary, "fresh-home", PLAIN);
+        assert_eq!(
+            lines.last().unwrap(),
+            "[INFO] mask_inherited names dropbx, ghost.service, which match no inherited \
+             autostart entry or user unit; activation masks them anyway"
         );
     }
 

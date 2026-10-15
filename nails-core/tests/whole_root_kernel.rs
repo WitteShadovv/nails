@@ -771,7 +771,13 @@ mod entry_kernel_tests {
                 ..FakeHost::default()
             };
             let mut inputs = world.inputs();
-            inputs.persona.mask_inherited = vec!["dropbox".into()];
+            // dropbox is in the decoy home; the other two are in no directory
+            // the inventory reads and are masked by their names alone.
+            inputs.persona.mask_inherited = vec![
+                "dropbox".into(),
+                "not-inventoried".into(),
+                "not-inventoried.timer".into(),
+            ];
             inputs.operator = Some(nails_core::TargetUser::for_test(
                 nix::unistd::getuid().as_raw(),
                 nix::unistd::getgid().as_raw(),
@@ -811,6 +817,34 @@ mod entry_kernel_tests {
                 .unwrap()
                 .contains("Hidden=true")
             );
+            // Names the inventory never saw are masked too, by their suffix,
+            // and only in the hidden /home.
+            let unlisted = std::fs::read_to_string(
+                nextroot.join("home/alice/.config/autostart/not-inventoried.desktop"),
+            )
+            .unwrap();
+            assert!(unlisted.contains("Hidden=true"), "{unlisted}");
+            assert_eq!(
+                std::fs::read_link(
+                    nextroot.join("home/alice/.config/systemd/user/not-inventoried.timer")
+                )
+                .unwrap(),
+                Path::new("/dev/null")
+            );
+            for decoy_path in [
+                "home/alice/.config/autostart/not-inventoried.desktop",
+                "home/alice/.config/systemd/user/not-inventoried.timer",
+            ] {
+                assert!(
+                    world
+                        .decoy
+                        .path()
+                        .join(decoy_path)
+                        .symlink_metadata()
+                        .is_err(),
+                    "{decoy_path} reached the decoy"
+                );
+            }
             assert!(!world.decoy.path().join("home/hidden-file").exists());
             assert!(
                 world

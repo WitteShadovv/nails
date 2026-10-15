@@ -1,13 +1,20 @@
 # Test 36: Inherited autostart masking
 #
 # Seeds the decoy user with an autostart entry and an enabled systemd user
-# timer, then enters the hidden session with `[persona] mask_inherited`
-# covering both. NAILS writes the masks into the hidden root's upper at entry,
+# timer; the system also carries an autostart entry from a package, which NixOS
+# links under /run/current-system/sw/etc/xdg/autostart rather than
+# /etc/xdg/autostart. `nails check` lists all three as needing review. The
+# hidden session is then entered with `[persona] mask_inherited` covering the
+# three and naming a fourth entry, a user unit nothing on the system has.
+# `nails check` shows the three as masked and names the fourth as matching
+# nothing. NAILS writes all four masks into the hidden root's upper at entry,
 # so in the hidden session:
 #
-#   - the merged autostart entry is a `Hidden=true` override and the user timer
-#     is masked by a `/dev/null` symlink at its unit load path;
-#   - both live under /mnt/data/root/upper/home/testuser, the hidden volume;
+#   - the merged autostart entries are `Hidden=true` overrides, and the user
+#     timer and the unknown unit are masked by `/dev/null` symlinks at their
+#     unit load path;
+#   - all of them live under /mnt/data/root/upper/home/testuser, the hidden
+#     volume;
 #   - the decoy filesystem (mounted read-only at a scratch dir) still holds the
 #     original files byte for byte.
 #
@@ -15,7 +22,7 @@
 # activation: the masks never existed outside the upper. The activation is run
 # through sudo by the decoy user, the way an operator runs it, so the masks are
 # written for that user's home.
-{ self, ... }:
+{ self, pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
   testHelpers = import ./../../lib/test-helpers.nix;
@@ -31,7 +38,16 @@ in
     { ... }:
     {
       imports = [ ./../../lib/graphical-vm-config.nix ];
-      environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+      environment.systemPackages = [
+        self.packages.x86_64-linux.nails
+        # A package's autostart entry, linked into the system profile.
+        (pkgs.writeTextDir "etc/xdg/autostart/decoy-package-sync.desktop" ''
+          [Desktop Entry]
+          Type=Application
+          Name=Decoy Package Sync
+          Exec=/run/current-system/sw/bin/true
+        '')
+      ];
     };
 
   testScript = _: ''
@@ -48,18 +64,37 @@ in
     # The unit load path the /dev/null mask is written to (systemd masks a unit
     # by its name here, not by its *.wants enable symlink).
     user_timer_unit = user_unit_dir + "/decoy-sync.timer"
+    # The package's entry is masked by an override of the same name in the home.
+    package_entry = "/home/testuser/.config/autostart/decoy-package-sync.desktop"
+    # A user unit that exists nowhere: masked by its name alone.
+    unknown_unit = user_unit_dir + "/decoy-unknown.service"
 
 
-    def write_mask_config(path):
+    def write_config(path, masks):
+        mask_line = (
+            "[persona]\nmask_inherited = [" + ", ".join(f'"{m}"' for m in masks) + "]\n"
+            if masks
+            else ""
+        )
         machine.succeed(
             f"cat > {path} <<'EOF'\n"
             "hidden_volume_root = \"/mnt/data\"\n"
             "minimum_space_mb = 100\n"
             "\n"
-            "[persona]\n"
-            "mask_inherited = [\"decoy-sync\", \"decoy-sync.timer\"]\n"
+            f"{mask_line}"
             "EOF"
         )
+
+
+    def check_as_testuser():
+        """`nails check` as the operator runs it, and its inherited-autostart row."""
+        out = machine.succeed(
+            f"su testuser -c 'sudo nails --config {CONFIG} --ascii check --overlay-only' 2>&1"
+        )
+        machine.log(out)
+        rows = [line for line in out.splitlines() if "] inherited-autostart:" in line]
+        assert len(rows) == 1, out
+        return out, rows[0]
 
 
     def seed_decoy_persona():
@@ -117,10 +152,50 @@ in
 
     with subtest("prepare hidden volume and seed decoy persona state"):
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
+        machine.succeed(
+            "test -f /run/current-system/sw/etc/xdg/autostart/decoy-package-sync.desktop"
+        )
         seed_decoy_persona()
-        write_mask_config(CONFIG)
         autostart_hash_before = hash_path(autostart_entry)
         timer_unit_hash_before = hash_path(user_timer_unit)
+
+    with subtest("check lists what needs review, the package's entry included"):
+        write_config(CONFIG, [])
+        out, row = check_as_testuser()
+        for line in (
+            "- decoy-sync (user-autostart)  [maskable]",
+            "- decoy-package-sync (global-autostart)  [maskable]",
+            "- decoy-sync.timer (user-unit)  [maskable]",
+            "- testuser (autologin)",
+            "[INFO] shared-home: the hidden session starts in the decoy home",
+        ):
+            assert line in out, f"missing {line!r}"
+        assert row.lstrip().startswith("[WARN]"), row
+        for entry in (
+            "decoy-sync (user-autostart)",
+            "decoy-package-sync (global-autostart)",
+            "decoy-sync.timer (user-unit)",
+            "testuser (autologin)",
+        ):
+            assert entry in row, f"{entry!r} not in {row!r}"
+
+    with subtest("check counts the masked entries and names the unknown one"):
+        write_config(
+            CONFIG,
+            ["decoy-sync", "decoy-sync.timer", "decoy-package-sync", "decoy-unknown.service"],
+        )
+        out, row = check_as_testuser()
+        for line in (
+            "- decoy-sync (user-autostart)  [masked]",
+            "- decoy-package-sync (global-autostart)  [masked]",
+            "- decoy-sync.timer (user-unit)  [masked]",
+            "mask_inherited names decoy-unknown.service, which match no inherited",
+        ):
+            assert line in out, f"missing {line!r}"
+        # The VM logs testuser in automatically, which no mask handles; the
+        # masked entries no longer count.
+        assert "testuser (autologin)" in row and "3 masked" in row, row
+        assert "decoy-sync" not in row and "decoy-package-sync" not in row, row
 
     with subtest("activate through sudo as the decoy user"):
         activate_log = "/mnt/data/activate.log"
@@ -134,22 +209,30 @@ in
         session.assert_hidden_root(machine, UPPER)
 
     with subtest("masks are present in the merged hidden home"):
-        override = machine.succeed("cat " + autostart_entry)
-        assert "Hidden=true" in override, override
-        link_target = machine.succeed("readlink " + user_timer_unit).strip()
-        assert link_target == "/dev/null", link_target
+        for entry in (autostart_entry, package_entry):
+            override = machine.succeed("cat " + entry)
+            assert "Hidden=true" in override, override
+        for unit in (user_timer_unit, unknown_unit):
+            link_target = machine.succeed("readlink " + unit).strip()
+            assert link_target == "/dev/null", (unit, link_target)
 
     with subtest("the masks live in the hidden root's upper only"):
-        upper_override = machine.succeed("cat " + UPPER + autostart_entry)
-        assert "Hidden=true" in upper_override, upper_override
-        upper_link = machine.succeed("readlink " + UPPER + user_timer_unit).strip()
-        assert upper_link == "/dev/null", upper_link
+        for entry in (autostart_entry, package_entry):
+            upper_override = machine.succeed("cat " + UPPER + entry)
+            assert "Hidden=true" in upper_override, upper_override
+        for unit in (user_timer_unit, unknown_unit):
+            upper_link = machine.succeed("readlink " + UPPER + unit).strip()
+            assert upper_link == "/dev/null", (unit, upper_link)
         decoy_hashes = peek_decoy(
             decoy_dev,
             f"sha256sum {PEEK}{autostart_entry} {PEEK}{user_timer_unit} | cut -d' ' -f1",
         ).split()
         assert decoy_hashes == [autostart_hash_before, timer_unit_hash_before], (
             f"the decoy filesystem changed under the hidden session: {decoy_hashes}"
+        )
+        peek_decoy(
+            decoy_dev,
+            f"test ! -e {PEEK}{package_entry} && test ! -L {PEEK}{unknown_unit}",
         )
 
     with subtest("deactivate: the decoy home is byte-for-byte unchanged"):
@@ -163,5 +246,6 @@ in
         assert unit_kind == "regular file", f"decoy timer unit is a {unit_kind}"
         restored_target = machine.succeed("readlink " + user_timer_link).strip()
         assert restored_target == "../decoy-sync.timer", restored_target
+        machine.succeed(f"test ! -e {package_entry} && test ! -L {unknown_unit}")
   '';
 }

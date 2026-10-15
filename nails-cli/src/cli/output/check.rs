@@ -307,6 +307,7 @@ mod tests {
                     status: "review",
                 }],
                 remote_linked: vec!["dropbox".into()],
+                unmatched_masks: Vec::new(),
             },
         )
     }
