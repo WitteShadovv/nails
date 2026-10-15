@@ -296,8 +296,8 @@ fn print_examiner_report(report: &ExaminerReport, style: Style) {
         "{}",
         style.paint_bold(
             format_args!(
-                "Examiner's view: {} setup trace(s) (report only; nothing was changed)",
-                report.finding_count()
+                "Examiner's view: {} (report only; nothing was changed)",
+                super::count_noun(report.finding_count(), "setup trace", "setup traces")
             ),
             Tone::Yellow,
         )

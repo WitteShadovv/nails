@@ -86,7 +86,11 @@ pub fn judge_units(root: &Path, nixos: bool) -> CheckResult {
         "Install a systemd package that ships them (systemd 254 or newer).".to_string()
     };
     CheckResult::fail_with(
-        format!("missing unit(s): {}", missing.join(", ")),
+        format!(
+            "missing {}: {}",
+            if missing.len() == 1 { "unit" } else { "units" },
+            missing.join(", ")
+        ),
         remediation,
     )
 }

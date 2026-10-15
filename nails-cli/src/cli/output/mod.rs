@@ -64,15 +64,7 @@ pub fn flush_stdio() {
     let _ = io::stderr().lock().flush();
 }
 
-/// `count` followed by the noun in the number it needs: `1 warning`,
-/// `2 warnings`, `0 warnings`.
-pub fn count_noun(count: usize, singular: &str, plural: &str) -> String {
-    if count == 1 {
-        format!("{count} {singular}")
-    } else {
-        format!("{count} {plural}")
-    }
-}
+pub use nails_core::output::count_noun;
 
 pub mod activate;
 pub mod check;

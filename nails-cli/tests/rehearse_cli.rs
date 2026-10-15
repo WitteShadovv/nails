@@ -371,7 +371,7 @@ fn status_of_a_scanned_rehearsal_lists_each_scan_and_is_done() {
     let human = harness.run(&["--ascii", "rehearse", "status"]);
     let stdout = String::from_utf8_lossy(&human.stdout);
     assert!(
-        stdout.contains("- scan at 2026-01-02T08:00:00Z: 0 hit(s) on /dev/vda, /dev/vdb"),
+        stdout.contains("- scan at 2026-01-02T08:00:00Z: 0 hits on /dev/vda, /dev/vdb"),
         "{stdout}"
     );
     assert!(stdout.contains("-> Done. Scan again any time"), "{stdout}");

@@ -283,9 +283,9 @@ fn human_lines(settings: &OutputSettings, report: &HotReport) -> Vec<String> {
     }
     if report.side == Side::Hidden {
         out.push(format!(
-            "  Killed {} cgroup(s) and {} process(es)",
-            report.kill.cgroups.len(),
-            report.kill.processes.len()
+            "  Killed {} and {}",
+            crate::cli::output::count_noun(report.kill.cgroups.len(), "cgroup", "cgroups"),
+            crate::cli::output::count_noun(report.kill.processes.len(), "process", "processes")
         ));
     }
     let phases: Vec<String> = report

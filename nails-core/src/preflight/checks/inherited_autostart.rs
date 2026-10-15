@@ -16,6 +16,7 @@ use std::path::PathBuf;
 
 use super::super::{CheckResult, PreFlightCheck};
 use crate::config::{PersonaConfig, PersonaMode};
+use crate::output::count_noun;
 use crate::persona::{EntryStatus, InheritedSource, PersonaEntry, collect_inherited_persona};
 use crate::{Filesystem, Result};
 
@@ -66,15 +67,6 @@ fn label(entry: &PersonaEntry) -> String {
         format!("{} ({}, remote-linked)", entry.name, entry.source.as_str())
     } else {
         format!("{} ({})", entry.name, entry.source.as_str())
-    }
-}
-
-/// `count` with the noun in the number it needs: `1 item`, `3 items`.
-fn count_noun(count: usize, singular: &str, plural: &str) -> String {
-    if count == 1 {
-        format!("{count} {singular}")
-    } else {
-        format!("{count} {plural}")
     }
 }
 

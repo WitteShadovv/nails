@@ -38,9 +38,10 @@ pub(crate) fn print_scan(
     let headline = if hits > 0 {
         style.paint_bold(
             format_args!(
-                "{} Canary {} FOUND on the decoy: {hits} hit(s)",
+                "{} Canary {} FOUND on the decoy: {}",
                 style.glyph(Mark::Fail),
-                rehearse::fingerprint(token)
+                rehearse::fingerprint(token),
+                super::count_noun(hits, "hit", "hits")
             ),
             Tone::Red,
         )

@@ -176,10 +176,10 @@ fn status(settings: &OutputSettings, config: &Config) -> ExitStatus {
             print_channels(style, &data.channels);
             for summary in &s.scans {
                 println!(
-                    "  {} scan at {}: {} hit(s) on {}",
+                    "  {} scan at {}: {} on {}",
                     style.glyph(Mark::Bullet),
                     summary.at,
-                    summary.hits,
+                    crate::cli::output::count_noun(summary.hits, "hit", "hits"),
                     summary.devices.join(", ")
                 );
             }

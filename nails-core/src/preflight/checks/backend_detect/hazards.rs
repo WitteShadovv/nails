@@ -85,14 +85,18 @@ fn luks2_hazards(layer: &Layer, meta: &Luks2Metadata) -> Vec<String> {
         .filter(|kind| HARDWARE_TOKENS.contains(kind))
         .collect();
     if !hardware.is_empty() {
+        let tokens = if hardware.len() == 1 {
+            format!("a {} token, which names", hardware[0])
+        } else {
+            format!("{} tokens, which name", hardware.join(", "))
+        };
         found.push(format!(
-            "The LUKS2 header of mapping {} carries {} token(s), which name the unlock \
-             method in plain text; a systemd-tpm2 token also seals the key to this \
-             machine's TPM, binding the volume to the host. Remove the token with \
-             systemd-cryptenroll --wipe-slot or cryptsetup token remove --token-id if the volume \
-             must not point at this machine.",
+            "The LUKS2 header of mapping {} carries {tokens} the unlock method in plain \
+             text; a systemd-tpm2 token also seals the key to this machine's TPM, binding \
+             the volume to the host. Remove the token with systemd-cryptenroll \
+             --wipe-slot or cryptsetup token remove --token-id if the volume must not \
+             point at this machine.",
             layer.name,
-            hardware.join(", ")
         ));
     }
     found
