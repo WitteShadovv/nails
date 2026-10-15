@@ -549,7 +549,9 @@ your setup before running the new binary.
   `nails init` again to place it.
 - **NixOS flake decoys.** A decoy whose `/etc/nixos` is a flake needs a hidden
   flake: activation refuses to build the decoy's own flake, `--no-preflight`
-  included, because it would leave out the hidden module and the hidden
+  included, also when `nixos_flake` or `--nixos-flake` names it
+  (`/etc/nixos#host`, the form 0.2's examples used, `path:/etc/nixos` or a
+  link to it), because it would leave out the hidden module and the hidden
   hardware configuration. Write a self-contained flake in
   `<hidden-root>/nixos` that imports the hidden module and reads none of the
   decoy's files, and lock it, from inside a hidden session
