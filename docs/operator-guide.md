@@ -260,7 +260,13 @@ part of the hidden system. Give such a decoy a self-contained hidden flake:
    `<hidden-root>/config/nixos/configuration.nix` by its absolute path.
 3. Lock it there with `nix flake lock`. Activation never updates `flake.lock`,
    so it must exist.
-4. Deactivate. The next activation builds the hidden flake.
+4. Build it there before you rely on it:
+   `sudo nixos-rebuild build --flake <hidden-root>/nixos#<host> --impure`.
+   `<host>` is the configuration activation builds, the one named after this
+   machine's hostname, and `--impure` lets the flake import the hidden module
+   by its absolute path. `test` in place of `build` also applies it to the
+   running session.
+5. Deactivate. The next activation builds the hidden flake.
 
 Never write or lock the flake on the decoy: the editor's state, root's
 `~/.cache/nix` and the nixpkgs the lock fetches would land on the decoy disk.
@@ -779,13 +785,29 @@ hardening you configure yourself.
 
 ### Changing the hidden configuration
 
-On NixOS, `/etc/nixos` inside the hidden session is the hidden configuration
-(the decoy's files plus the hidden hardware configuration in the upper), and
-`sudo nixos-rebuild test` applies a change to the running hidden session. Do not
-use `switch` or `boot`: they try to install a bootloader into the read-only ESP
-and fail. The change persists in the upper; the next activation builds the
-hidden configuration again from `<hidden-root>/config/nixos/` or your flake, so
-keep that source in step with what you test.
+On NixOS, `nixos-rebuild test` applies a change to the running hidden session.
+Give it the target activation builds:
+
+- the legacy configuration, when there is no hidden flake and `nixos_flake` is
+  unset: `sudo nixos-rebuild test`. Inside the hidden session `/etc/nixos` is
+  the hidden configuration (the decoy's files plus the hidden hardware
+  configuration in the upper);
+- a hidden flake: `sudo nixos-rebuild test --flake <hidden-root>/nixos#<host>
+  --impure`, with `<host>` the configuration activation builds (named after
+  this machine's hostname) and `--impure` because the flake imports the hidden
+  module by its absolute path. A flake you name with `nixos_flake`, the same
+  way with that reference.
+
+On a decoy whose `/etc/nixos` holds a flake, a plain `nixos-rebuild test`
+builds that flake, the decoy's own, which activation refuses to build: it
+fails, or it puts the decoy's own system into the session, without the hidden
+module (no panic switch, `system.autoUpgrade` no longer forced off). Always
+name the hidden flake there.
+
+Do not use `switch` or `boot`: they try to install a bootloader into the
+read-only ESP and fail. The next activation builds the hidden configuration
+again from `<hidden-root>/config/nixos/` or your flake, so keep that source in
+step with what you test.
 
 On Debian and Ubuntu, change the hidden system like any other: `apt`, edits in
 `/etc`, `systemctl enable`. Every change lands in the upper and is the hidden
@@ -869,7 +891,8 @@ against automounts and mistakes. See
 [ ] Do not mount decoy partitions or external disks read-write: the fstab
     policy covers only what the hidden systemd mounts (session_mounts.read_only
     enforces this; the watcher alerts otherwise)
-[ ] On NixOS, apply changes with `nixos-rebuild test`, never `switch` or `boot`
+[ ] On NixOS, apply changes with `nixos-rebuild test` (with a hidden flake:
+    `--flake <hidden-root>/nixos#<host> --impure`), never `switch` or `boot`
 [ ] Keep the emergency command ready: sudo /mnt/data/nails emergency
 [ ] Know your physical emergency procedure
 ```
