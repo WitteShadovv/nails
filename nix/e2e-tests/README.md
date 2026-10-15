@@ -434,6 +434,10 @@ soft-reboots with `py/nails_e2e/session.py`:
 - `session-interrupted-entry`: a killed activation that `status` reports as an
   interrupted entry, a plain reboot that never enters the leftover next root,
   `recover`, Ctrl+C during the build, and emergency during an entry;
+- `session-dns-records`: a name server and a search domain that only the hidden
+  session's NetworkManager uses stay off the decoy after the way back: out of
+  the openresolv records in `/run`, out of the `/etc/resolv.conf` that the
+  decoy's `resolvconf.service` writes at its start, and out of its journal;
 - `session-fstab-policy`: the decision `check` reports for every decoy
   filesystem, the read-only ESP, a separate decoy filesystem overlaid with a
   hidden upper, masked swap, and no hidden write on any decoy disk afterwards;
