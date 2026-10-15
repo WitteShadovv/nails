@@ -178,7 +178,11 @@ fn profile_summary(target: nails_core::HostTarget) -> ProfileSummary {
     match target {
         HostTarget::OverlayOnly => ProfileSummary {
             mode: "overlay-only",
-            detail: Some("overlay-only mode: the NixOS profile switch is skipped".into()),
+            detail: Some(
+                "overlay-only: no hidden NixOS system is built; the session runs the decoy's \
+                 own system"
+                    .into(),
+            ),
         },
         HostTarget::ExplicitFlake(flake) => ProfileSummary {
             mode: "flake",

@@ -107,6 +107,15 @@ pub struct ProfileSummary {
     pub detail: Option<String>,
 }
 
+impl ProfileSummary {
+    /// The line `check` prints for it.
+    pub fn line(&self) -> &str {
+        self.detail
+            .as_deref()
+            .unwrap_or("no hidden NixOS build target")
+    }
+}
+
 /// The full readiness report.
 #[derive(Debug, Serialize)]
 pub struct CheckReport {
@@ -234,10 +243,7 @@ pub fn print_check_human(report: &CheckReport, style: Style) {
     println!();
 
     println!("NixOS profile:");
-    match &report.profile.detail {
-        Some(detail) => println!("  {} {detail}", style.mark(Mark::Info)),
-        None => println!("  {} no profile switch", style.mark(Mark::Info)),
-    }
+    println!("  {} {}", style.mark(Mark::Info), report.profile.line());
     println!();
 
     println!("Inherited decoy state:");
