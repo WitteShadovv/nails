@@ -312,9 +312,14 @@ fn collect_autologin<F: Filesystem>(fs: &F, user: &str, entries: &mut Vec<Person
     push_sorted(entries, names, InheritedSource::Autologin);
 }
 
-/// GDM autologin from `/etc/gdm/custom.conf` or `/etc/gdm3/custom.conf`.
+/// GDM autologin from `/etc/gdm/custom.conf`, `/etc/gdm3/custom.conf` (Ubuntu)
+/// or `/etc/gdm3/daemon.conf`, the file Debian builds its gdm3 to read instead.
 fn gdm_autologin_user<F: Filesystem>(fs: &F) -> Option<String> {
-    for path in ["/etc/gdm/custom.conf", "/etc/gdm3/custom.conf"] {
+    for path in [
+        "/etc/gdm/custom.conf",
+        "/etc/gdm3/custom.conf",
+        "/etc/gdm3/daemon.conf",
+    ] {
         let Ok(content) = fs.read_file_content(Path::new(path)) else {
             continue;
         };

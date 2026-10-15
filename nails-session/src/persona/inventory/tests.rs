@@ -181,6 +181,31 @@ fn reports_gdm_autologin() {
 }
 
 #[test]
+fn reports_gdm_autologin_from_debians_daemon_conf() {
+    // Debian's gdm3 reads /etc/gdm3/daemon.conf, which ships with the
+    // settings commented out.
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content(
+        "/etc/gdm3/daemon.conf",
+        "[daemon]\n#  AutomaticLoginEnable = true\n#  AutomaticLogin = user1\n\
+         AutomaticLoginEnable = true\nAutomaticLogin = carol\n",
+    );
+
+    let inventory = collect(&fs, false);
+    assert_eq!(
+        names_for(&inventory, InheritedSource::Autologin),
+        vec!["carol".to_string()]
+    );
+
+    fs.mock_set_file_content(
+        "/etc/gdm3/daemon.conf",
+        "[daemon]\n#  AutomaticLoginEnable = true\n#  AutomaticLogin = user1\n",
+    );
+    let inventory = collect(&fs, false);
+    assert!(names_for(&inventory, InheritedSource::Autologin).is_empty());
+}
+
+#[test]
 fn ignores_gdm_when_autologin_disabled() {
     let fs = MockFilesystem::new();
     fs.mock_set_file_content(
