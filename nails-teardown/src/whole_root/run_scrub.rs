@@ -449,7 +449,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scrub_removes_only_what_the_hidden_session_added() {
+    fn the_scrub_removes_what_the_hidden_session_added() {
         let run = decoy_run();
         let r = run.path();
         let snap = Snapshot::take(r);
@@ -514,6 +514,26 @@ mod tests {
             fs::read_link(r.join("current-system")).unwrap(),
             Path::new("/nix/store/aaa")
         );
+    }
+
+    #[test]
+    fn the_runtime_journal_goes_whole_the_decoys_own_records_included() {
+        // On a volatile decoy the decoy's journald and the hidden one write the
+        // same files, so the decoy's records from before the entry are in them.
+        // Not even a snapshot entry keeps them.
+        let run = decoy_run();
+        let r = run.path();
+        let journal = r.join("log/journal/0123abcd");
+        fs::create_dir_all(&journal).unwrap();
+        fs::write(journal.join("system.journal"), "decoy, hidden").unwrap();
+        let mut snap = Snapshot::take(r);
+        snap.entries.insert(rel("log/journal/0123abcd"));
+
+        let report = scrub(r, &snap, &[], &[]);
+
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert_eq!(report.removed, [PathBuf::from("log/journal/0123abcd")]);
+        assert!(r.join("log/journal").is_dir());
     }
 
     #[test]
