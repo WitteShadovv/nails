@@ -123,6 +123,15 @@ fn accepted_decoy_storage<F: Filesystem>(
     })
 }
 
+/// `step`, between two cancel checkpoints: a Ctrl+C reaches the step's
+/// child processes too, so a cancel outranks the failure it caused.
+fn cancellable<T>(step: impl FnOnce() -> Result<T>) -> Result<T> {
+    crate::cancel::checkpoint()?;
+    let result = step();
+    crate::cancel::checkpoint()?;
+    result
+}
+
 impl<F: Filesystem> NailsManager<F> {
     /// Where the machine is right now.
     pub fn session_view(&self) -> SessionView {
@@ -148,6 +157,11 @@ impl<F: Filesystem> NailsManager<F> {
     /// configuration, the next root and the armed plan. The state file records
     /// the session as active before the soft-reboot, because the activating
     /// process dies in it.
+    ///
+    /// A SIGINT or SIGTERM ([`crate::cancel`]) stops it at the next step
+    /// boundary with [`NailsError::Cancelled`], everything undone: the last
+    /// boundary is right before the state is recorded, after which the caller
+    /// only enqueues the soft-reboot.
     pub fn enter_session(
         &mut self,
         options: &EnterOptions,
@@ -165,16 +179,17 @@ impl<F: Filesystem> NailsManager<F> {
         if self.session_view_on(machine).is_hidden() {
             return Ok(EnterOutcome::AlreadyActive);
         }
+        crate::cancel::checkpoint()?;
         // What the operator accepted holds for every write of this activation.
         self.allow = options.allow();
         let nixos = self.require_supported_host(machine)?;
         // A decoy entry that opens the hidden volume is refused in every
         // case; --no-preflight skips the other checks only.
         if options.skip_preflight {
-            self.run_backend_entries_check()?;
+            cancellable(|| self.run_backend_entries_check())?;
         } else {
-            self.stage_hidden_config(options.overlay_only)?;
-            self.run_preflight_checks(&options.preflight())?;
+            cancellable(|| self.stage_hidden_config(options.overlay_only))?;
+            cancellable(|| self.run_preflight_checks(&options.preflight()))?;
         }
         let started = std::time::Instant::now();
         let hidden_root = self.config.hidden_volume_root.clone();
@@ -210,7 +225,11 @@ impl<F: Filesystem> NailsManager<F> {
             accepted_decoy_storage,
         };
         let prepared = entry::prepare(&machine.paths, &inputs, host)?;
-        if let Err(e) = self.record_entry(&prepared, started.elapsed()) {
+        // The last boundary: once recorded, the caller only enqueues the
+        // soft-reboot.
+        let recorded = crate::cancel::checkpoint()
+            .and_then(|()| self.record_entry(&prepared, started.elapsed()));
+        if let Err(e) = recorded {
             entry::rollback(&machine.paths);
             let _ = host.daemon_reload();
             return Err(e);

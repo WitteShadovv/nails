@@ -27,7 +27,9 @@ nails_base::unit_test_mode!();
 #[cfg(test)]
 use nails_base::kernel_fixtures;
 use nails_base::{Filesystem, NailsError, Result};
-use nails_base::{artifacts, config, error, filesystem, preflight, process, reporter, target_user};
+use nails_base::{
+    artifacts, cancel, config, error, filesystem, preflight, process, reporter, target_user,
+};
 use nails_platform::nixos;
 
 // The whole-root session: entry, way back, fstab policy, probes.

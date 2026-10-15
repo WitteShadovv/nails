@@ -495,6 +495,8 @@ mod entry_kernel_tests {
         nextroot: Option<PathBuf>,
         /// Whether it was a mount point then.
         populated_at_first_reload: Cell<Option<bool>>,
+        /// Request a cancel during the first reload, as a Ctrl+C would.
+        cancel_at_reload: bool,
     }
 
     impl EntryHost for FakeHost {
@@ -502,6 +504,9 @@ mod entry_kernel_tests {
             Ok(String::new())
         }
         fn daemon_reload(&self) -> nails_core::Result<()> {
+            if self.cancel_at_reload && self.reloads.get() == 0 {
+                nails_core::cancel::testing::request();
+            }
             if self.reloads.get() == 0
                 && let Some(nextroot) = &self.nextroot
             {
@@ -1081,6 +1086,36 @@ mod entry_kernel_tests {
             assert!(!paths.runtime().exists());
             assert!(!world.run.path().join(DROPIN_DIR).join(DROPIN_NAME).exists());
             // One reload installs the drop-in, one removes it again.
+            assert_eq!(host.reloads.get(), 2);
+        });
+    }
+
+    #[test]
+    fn a_cancel_stops_the_entry_at_its_next_step_and_undoes_it() {
+        let _ = Rerun::new(test_path!(
+            a_cancel_stops_the_entry_at_its_next_step_and_undoes_it
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            let paths = world.paths();
+            // The signal arrives while the service manager loads the drop-in.
+            let host = FakeHost {
+                cancel_at_reload: true,
+                ..FakeHost::default()
+            };
+            let error = entry::prepare(&paths, &world.inputs(), &host).unwrap_err();
+            nails_core::cancel::testing::reset();
+            assert!(matches!(error, NailsError::Cancelled), "{error}");
+            let entries = read_mountinfo().unwrap();
+            assert!(
+                !entries
+                    .iter()
+                    .any(|e| e.mount_point.starts_with(paths.nextroot())),
+                "nothing was mounted at the next root"
+            );
+            assert!(!paths.runtime().exists());
+            assert!(!world.run.path().join(DROPIN_DIR).exists());
             assert_eq!(host.reloads.get(), 2);
         });
     }

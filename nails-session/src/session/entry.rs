@@ -31,7 +31,10 @@
 //! 8. the plan armed for the entry.
 //!
 //! Any failure undoes all of it ([`rollback`]): a populated `/run/nextroot`
-//! must never be left behind, or a later plain reboot would enter it.
+//! must never be left behind, or a later plain reboot would enter it. A
+//! SIGINT or SIGTERM (Ctrl+C) is a failure too: each step boundary and the
+//! store copy ask [`crate::cancel`], and the entry stops at the first one
+//! after the signal.
 
 use super::layout::{Layout, Paths};
 use super::nixos;
@@ -293,7 +296,15 @@ pub fn prepare(paths: &Paths, inputs: &EntryInputs<'_>, host: &dyn EntryHost) ->
             let _ = host.daemon_reload();
         }
     }
-    result
+    // A Ctrl+C reaches the hidden build's processes too: their failure is
+    // the cancel's doing.
+    result.map_err(|e| {
+        if crate::cancel::is_cancelled() {
+            NailsError::Cancelled
+        } else {
+            e
+        }
+    })
 }
 
 fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -> Result<()> {
@@ -402,6 +413,7 @@ fn build(
         nextroot::set_noexec(&paths.run, false).map_err(|e| io(&paths.run, e))?;
     }
     install_transition(paths, host, dropin)?;
+    crate::cancel::checkpoint()?;
 
     let decoy_mounts = relative_mounts(&mounts, &paths.root);
     if inputs.persona.mode == crate::config::PersonaMode::FreshHome {
@@ -425,11 +437,13 @@ fn build(
         nextroot::read_in_root(&paths.root, Path::new("/etc/fstab")).unwrap_or_default();
     let mut decisions = decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root)?;
     plan.policy_mounts = apply_mounts(paths, &layout, &decisions, inputs.hidden_root, &[])?;
+    crate::cancel::checkpoint()?;
 
     let mut warnings = Vec::new();
     if let Some(builder) = inputs.builder {
         ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
         let system = host.build_hidden_system(builder, &nextroot, &layout.cache())?;
+        crate::cancel::checkpoint()?;
         // Before anything runs from it: the decoy may garbage-collect its
         // store before the next session, so the closure is kept on the
         // hidden volume.
@@ -442,7 +456,11 @@ fn build(
             seconds = kept.elapsed.as_secs_f64(),
             "hidden system kept on the hidden volume"
         );
+        // The last stop before the activation, which runs to its end once it
+        // has begun.
+        crate::cancel::checkpoint()?;
         host.activate_hidden_system(&nextroot, &system)?;
+        crate::cancel::checkpoint()?;
         if let Some(decoy) = &plan.decoy.system
             && nixos::kernel_of(&nextroot, &system) != nixos::kernel_of(&nextroot, decoy)
         {
@@ -503,6 +521,7 @@ fn build(
         )));
     }
 
+    crate::cancel::checkpoint()?;
     plan.armed = Some(Arm::now(Direction::Enter));
     plan.write_atomic(&paths.plan())
         .map_err(|e| io(&paths.plan(), e))?;

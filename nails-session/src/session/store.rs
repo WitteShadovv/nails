@@ -241,22 +241,38 @@ fn pending(merged: &Path, upper: &Path, items: &mut Vec<Item>) -> std::io::Resul
 /// commits, about ten times faster.
 const WORKERS: usize = 64;
 
+/// Why [`copy_all`] stopped before the end.
+#[derive(Debug)]
+enum CopyStop {
+    /// A copy-up failed.
+    Failed(PathBuf, std::io::Error),
+    /// A SIGINT or SIGTERM asked to cancel the entry.
+    Cancelled,
+}
+
 /// Run every copy-up on [`WORKERS`] threads, reporting progress every
-/// [`HEARTBEAT`]. Stops at the first error.
-fn copy_all(items: &[Item]) -> std::result::Result<(), (PathBuf, std::io::Error)> {
+/// [`HEARTBEAT`]. Stops at the first error, and on a cancel: the calling
+/// thread asks [`crate::cancel`] between its progress checks, and the workers
+/// finish the copy-ups they hold and take no more.
+fn copy_all(items: &[Item]) -> std::result::Result<(), CopyStop> {
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    if crate::cancel::is_cancelled() {
+        return Err(CopyStop::Cancelled);
+    }
     let next = AtomicUsize::new(0);
     let finished = AtomicUsize::new(0);
     let copied_bytes = AtomicU64::new(0);
     let failure: Mutex<Option<(PathBuf, std::io::Error)>> = Mutex::new(None);
+    let cancelled = AtomicBool::new(false);
     let total_bytes: u64 = items.iter().map(Item::bytes).sum();
     let started = Instant::now();
     std::thread::scope(|scope| {
         for _ in 0..WORKERS.min(items.len()) {
             scope.spawn(|| {
                 loop {
-                    let failed = failure.lock().map(|f| f.is_some()).unwrap_or(true);
+                    let failed = cancelled.load(Ordering::Relaxed)
+                        || failure.lock().map(|f| f.is_some()).unwrap_or(true);
                     let index = next.fetch_add(1, Ordering::Relaxed);
                     if failed || index >= items.len() {
                         break;
@@ -280,6 +296,10 @@ fn copy_all(items: &[Item]) -> std::result::Result<(), (PathBuf, std::io::Error)
             && failure.lock().map(|f| f.is_none()).unwrap_or(false)
         {
             std::thread::sleep(Duration::from_millis(200));
+            if crate::cancel::is_cancelled() {
+                cancelled.store(true, Ordering::Relaxed);
+                break;
+            }
             if beat.elapsed() >= HEARTBEAT {
                 beat = Instant::now();
                 crate::reporter::progress::detail(
@@ -294,8 +314,11 @@ fn copy_all(items: &[Item]) -> std::result::Result<(), (PathBuf, std::io::Error)
             }
         }
     });
+    if cancelled.into_inner() {
+        return Err(CopyStop::Cancelled);
+    }
     match failure.into_inner().ok().flatten() {
-        Some(failed) => Err(failed),
+        Some((path, e)) => Err(CopyStop::Failed(path, e)),
         None => Ok(()),
     }
 }
@@ -384,11 +407,18 @@ pub fn keep_closure(
             ),
         );
     }
-    if let Err((path, e)) = copy_all(&items) {
-        return Err(NailsError::InvalidState(format!(
-            "could not copy {} onto the hidden volume: {e}",
-            path.display()
-        )));
+    match copy_all(&items) {
+        Ok(()) => {}
+        // What was copied up stays in the upper on the hidden volume; the
+        // record is not written, so the next entry checks those paths again
+        // and copies what is still missing.
+        Err(CopyStop::Cancelled) => return Err(NailsError::Cancelled),
+        Err(CopyStop::Failed(path, e)) => {
+            return Err(NailsError::InvalidState(format!(
+                "could not copy {} onto the hidden volume: {e}",
+                path.display()
+            )));
+        }
     }
     kept.extend(todo.iter().map(|n| (*n).clone()));
     write_record(record, &kept)?;
@@ -475,6 +505,47 @@ mod tests {
         let mut items = Vec::new();
         pending(&path, &up, &mut items).unwrap();
         assert_eq!(items, vec![Item::File(path.join("small"), 1)]);
+    }
+
+    #[test]
+    fn a_cancel_stops_the_copy_before_it_takes_another_path() {
+        let merged = tempfile::tempdir().unwrap();
+        let path = merged.path().join("abc-pkg");
+        std::fs::create_dir_all(&path).unwrap();
+        std::fs::write(path.join("file"), "x").unwrap();
+        let items = vec![Item::File(path.join("file"), 1)];
+        crate::cancel::testing::request();
+        let result = copy_all(&items);
+        crate::cancel::testing::reset();
+        assert!(matches!(result, Err(CopyStop::Cancelled)), "{result:?}");
+        assert!(copy_all(&items).is_ok());
+        assert!(copy_all(&[]).is_ok());
+    }
+
+    #[test]
+    fn a_cancelled_copy_keeps_no_record() {
+        // A store overlay whose upper is a plain directory: the copy-up of a
+        // plain file is an open for writing, which changes nothing.
+        let root = tempfile::tempdir().unwrap();
+        let upper = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("nix/store/abc-pkg")).unwrap();
+        std::fs::write(root.path().join("nix/store/abc-pkg/file"), "x").unwrap();
+        let mounts = parse_mountinfo(&format!(
+            "1 0 8:2 / / rw - ext4 /dev/vda rw\n             2 1 0:40 / {} rw - overlay overlay rw,lowerdir=/l,upperdir={},workdir=/w\n",
+            root.path().display(),
+            upper.path().display()
+        ));
+        let record = root.path().join("record");
+        crate::cancel::testing::request();
+        let result = keep_closure(
+            root.path(),
+            &[PathBuf::from("/nix/store/abc-pkg")],
+            &record,
+            &mounts,
+        );
+        crate::cancel::testing::reset();
+        assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
+        assert!(!record.exists());
     }
 
     #[test]

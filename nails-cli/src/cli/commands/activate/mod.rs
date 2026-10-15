@@ -239,8 +239,17 @@ pub fn execute(
             ErrorBody::new("cancelled", "activation cancelled; nothing changed"),
         );
     }
-
+    // Ctrl+C sets a flag that every step from here on reads (see
+    // nails_core::cancel). At the prompt, whose read goes on until Enter, and
+    // during the residue baseline, it ends the activation before the entry
+    // begins.
+    if nails_core::cancel::is_cancelled() {
+        return report_cancelled(settings);
+    }
     write_activation_residue_baseline(&manager, json, settings);
+    if nails_core::cancel::is_cancelled() {
+        return report_cancelled(settings);
+    }
 
     if json {
         output::print_activate_progress("preparing");
@@ -295,6 +304,16 @@ pub fn execute(
     } else {
         ExitStatus::SuccessWithWarnings
     }
+}
+
+/// Report an activation that a signal cancelled before it changed anything.
+fn report_cancelled(settings: &OutputSettings) -> ExitStatus {
+    print_result(
+        settings,
+        &ActivateResult::Failed(&NailsError::Cancelled),
+        0.0,
+    );
+    ExitStatus::Cancelled
 }
 
 fn print_result(settings: &OutputSettings, result: &ActivateResult<'_>, duration: f64) {

@@ -29,10 +29,15 @@ const DECOY_TABLE: &str = "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n";
 #[derive(Default)]
 struct FakeEntryHost {
     reloads: Cell<u32>,
+    /// Request a cancel during the first reload, as a Ctrl+C would.
+    cancel_at_reload: bool,
 }
 
 impl EntryHost for FakeEntryHost {
     fn daemon_reload(&self) -> Result<()> {
+        if self.cancel_at_reload && self.reloads.get() == 0 {
+            crate::cancel::testing::request();
+        }
         self.reloads.set(self.reloads.get() + 1);
         Ok(())
     }
@@ -503,6 +508,40 @@ fn a_ram_decoy_root_refuses_the_entry_before_anything_is_prepared() {
     assert_eq!(host.reloads.get(), 0);
 }
 
+#[test]
+fn a_cancel_before_the_entry_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&hidden);
+    m.set_host_profile(FakePlatform::fhs().host_profile());
+    let options = EnterOptions {
+        skip_preflight: true,
+        ..EnterOptions::default()
+    };
+    let host = FakeEntryHost::default();
+
+    crate::cancel::testing::request();
+    let result = m.enter_session_on(&machine, &options, &host);
+    crate::cancel::testing::reset();
+
+    assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 0);
+    assert!(!hidden.join("state.json").exists());
+}
+
+#[test]
+fn a_step_that_fails_while_a_cancel_is_pending_reports_the_cancel() {
+    // A Ctrl+C from the terminal reaches the step's processes too.
+    crate::cancel::testing::request();
+    let result: Result<()> = cancellable(|| Err(NailsError::InvalidState("killed".into())));
+    crate::cancel::testing::reset();
+    assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
+    assert_eq!(cancellable(|| Ok(7)).unwrap(), 7);
+}
+
 // ---------------------------------------------------------------------------
 // record
 // ---------------------------------------------------------------------------
@@ -681,6 +720,58 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         );
         assert!(!machine.paths.runtime().exists());
         assert_eq!(recorded(hidden.path()).state, SystemState::Inactive);
+    });
+}
+
+#[test]
+fn a_cancel_during_the_entry_rolls_it_back_and_records_nothing() {
+    let _ = Rerun::new(crate::test_path!(
+        a_cancel_during_the_entry_rolls_it_back_and_records_nothing
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        m.set_host_profile(FakePlatform::fhs().host_profile());
+        let options = EnterOptions {
+            skip_preflight: true,
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        // The signal arrives while the service manager loads the drop-in.
+        let host = FakeEntryHost {
+            cancel_at_reload: true,
+            ..FakeEntryHost::default()
+        };
+
+        let result = m.enter_session_on(&machine, &options, &host);
+        crate::cancel::testing::reset();
+
+        assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
+        let mounts = read_mountinfo().unwrap();
+        assert!(
+            mounts
+                .iter()
+                .all(|e| !e.mount_point.starts_with(machine.paths.nextroot())),
+            "the next root is detached"
+        );
+        assert!(!machine.paths.runtime().exists());
+        assert!(
+            !run.path()
+                .join(nails_teardown::whole_root::transition::DROPIN_DIR)
+                .exists()
+        );
+        assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
+        assert!(!hidden.path().join("state.json").exists());
     });
 }
 
