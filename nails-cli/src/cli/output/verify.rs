@@ -189,7 +189,7 @@ pub fn print_verify_result(result: &VerifyResult, style: Style) {
             format_args!(
                 "{} WARNING: Found {} potential issues",
                 style.glyph(Mark::Warn),
-                result.findings.len()
+                attention_count(result)
             ),
             Tone::Yellow,
         ),
@@ -197,7 +197,7 @@ pub fn print_verify_result(result: &VerifyResult, style: Style) {
             format_args!(
                 "{} CRITICAL: Found {} artifacts requiring attention",
                 style.glyph(Mark::Fail),
-                result.findings.len()
+                attention_count(result)
             ),
             Tone::Red,
         ),
@@ -255,6 +255,17 @@ pub fn print_verify_result(result: &VerifyResult, style: Style) {
             );
         }
     }
+}
+
+/// The findings the header counts: warnings and critical ones. Notes (INFO)
+/// are listed below it but are not issues, so a run with three notes and one
+/// warning reports one.
+fn attention_count(result: &VerifyResult) -> usize {
+    result
+        .findings
+        .iter()
+        .filter(|finding| finding.severity != Severity::Info)
+        .count()
 }
 
 /// Print the examiner audit: one heading per conclusion, then its traces.
@@ -440,6 +451,33 @@ mod tests {
             .collect();
         let result = VerifyResult::new(VerifyStatus::Critical, findings, ScanDepth::Deep);
         print_verify_result(&result, Style::default());
+    }
+
+    #[test]
+    fn the_header_counts_warnings_and_critical_findings_but_not_notes() {
+        let findings = vec![
+            Finding::new(
+                Severity::Info,
+                "session",
+                "verify runs inside the hidden session",
+            ),
+            Finding::new(Severity::Info, "memory", "RAM may retain data"),
+            Finding::new(Severity::Warn, "file", "NAILS-related file found"),
+            Finding::new(Severity::Critical, "memory", "Swap can leak memory"),
+        ];
+        let result = VerifyResult::new(VerifyStatus::Critical, findings, ScanDepth::Deep);
+        assert_eq!(attention_count(&result), 2);
+
+        let notes_only = VerifyResult::new(
+            VerifyStatus::Secure,
+            vec![Finding::new(
+                Severity::Info,
+                "memory",
+                "RAM may retain data",
+            )],
+            ScanDepth::Standard,
+        );
+        assert_eq!(attention_count(&notes_only), 0);
     }
 
     #[test]
