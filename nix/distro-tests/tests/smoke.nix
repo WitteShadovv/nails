@@ -12,7 +12,13 @@
 # is), and the second session, entered without /boot or the ESP mounted, keeps
 # its hidden volume through that unit's stop. A decoy service that keeps a PID
 # file in /run starts again after an emergency killed its hidden copy, and a
-# Ctrl+C during the pre-flight checks cancels an activation.
+# Ctrl+C during the pre-flight checks cancels an activation. The second
+# session is also a rehearsal, run the way `nails rehearse` guides it: plant in
+# the session (a scan there is refused), a plain deactivate, then on the decoy,
+# in the same boot, the hidden root opened again and a scan of the raw decoy
+# devices that runs and finds nothing. On systemd 255 (Ubuntu 24.04), which
+# reports no soft-reboot count, only the session's entry time tells the two
+# apart.
 #
 # The host-side disk-image forensic scanners are shared verbatim with the NixOS
 # suite (nix/e2e-tests/lib/disk_forensics.py): they run on the NixOS test driver,
@@ -297,6 +303,24 @@ distroVm.buildVmTest {
             assert rc != 0, f"{where}: {command}:\n{out}"
 
 
+    def rehearse(args):
+        # Captured under /run (tmpfs): nothing the test reads back may land
+        # on the decoy disk the scan reads.
+        command = f"{nails_cmd} --json rehearse {args}"
+        vm.succeed(
+            "bash -c "
+            + shlex.quote(
+                f"set +e; {command} > /run/rehearse.out 2> /run/rehearse.err;"
+                " printf '%s' $? > /run/rehearse.rc"
+            )
+        )
+        rc = int(vm.succeed("cat /run/rehearse.rc"))
+        out = vm.succeed("cat /run/rehearse.out")
+        err = vm.succeed("cat /run/rehearse.err")
+        vm.succeed("rm -f /run/rehearse.out /run/rehearse.err /run/rehearse.rc")
+        return rc, out, err
+
+
     # Each probe is bounded on its own, so a wedged PID 1 or journald still lets
     # the next one (and the test's own failure) run.
     pid1_probes = (
@@ -537,6 +561,18 @@ distroVm.buildVmTest {
             # until the way back has switched.
             assert_guarded_blk_availability("the second session")
         probe_report("the second hidden session")
+        # The rehearsal's first step, and the refusal of a scan in the
+        # planting session.
+        rc, out, err = rehearse("plant --user root")
+        assert rc == 0, (rc, out, err)
+        planted = json.loads(out)["data"]
+        assert planted["next_step"].startswith("Step 2 of 3"), planted
+        assert any(
+            c["kind"] == "overlay-file" and "skipped" not in c for c in planted["channels"]
+        ), planted["channels"]
+        rc, out, err = rehearse("scan")
+        assert rc == 6, (rc, out, err)
+        assert json.loads(out)["error"]["code"] == "same_boot", out
         follow(f"{nails_cmd} deactivate -y", "deactivate")
         session.assert_decoy_root(vm)
         vm.fail("mountpoint -q /mnt/data")
@@ -556,6 +592,31 @@ distroVm.buildVmTest {
         probe_report("after deactivate")
         vm.wait_for_unit("pidfile-probe.service")
         assert_quiet_kernel_log("after deactivate")
+
+    with subtest("the rehearsal's scan runs on the decoy in the planting boot"):
+        # As the operator would: unlock and mount the hidden volume again.
+        vm.succeed("""${hiddenRoot.reopenHiddenRoot}""")
+        token = json.loads(vm.succeed("cat /mnt/data/rehearse/state.json"))["token"]
+        print(vm.succeed("cat /proc/sys/kernel/random/boot_id; systemctl --version | head -1"))
+        rc, out, err = rehearse("status")
+        assert rc == 0, (rc, out, err)
+        next_step = json.loads(out)["data"]["next_step"]
+        assert next_step.startswith("Step 3 of 3"), next_step
+        rc, out, err = rehearse("scan")
+        assert token not in out + err, "scan printed the token"
+        assert rc == 0, (rc, out, err)
+        result = json.loads(out)["data"]["scan"]
+        assert result["devices"], result
+        for device in result["devices"]:
+            assert "error" not in device, device
+            assert device["hits"] == [], device
+        assert any(d["bytes_scanned"] > 0 for d in result["devices"]), result
+        print(f"clean rehearsal scan of {[d['device'] for d in result['devices']]}")
+        # No `rehearse reset`: the root's image file sits on a tmpfs the
+        # soft-reboot detached, so the attach gate cannot tell where it lives
+        # and refuses writes there. The scan writes nothing to need it, and the
+        # rehearsal state goes with the RAM-backed volume.
+        vm.succeed("""${hiddenRoot.closeHiddenRoot}""")
 
     with subtest("decoy disk-image leak check: no hidden canaries, positive control caught"):
         canary_tokens = [f"NAILS_CANARY_{tree}" for tree in canary_trees]
