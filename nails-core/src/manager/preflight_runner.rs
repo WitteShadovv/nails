@@ -203,11 +203,10 @@ pub fn build_registry<F: Filesystem>(
         storage_check
     }));
 
-    // The config layer's base-config reference gate (on NixOS: a base
-    // `/etc/nixos` that still references the hidden environment). Activation
-    // also runs it as an early gate before any staging, so a dirty base aborts
-    // before side effects; keeping it in the shared registry means `nails check`
-    // reports it too.
+    // The config layer's base-config reference gate (on NixOS: a decoy
+    // `/etc/nixos` that names the hidden environment). It runs in every mode,
+    // overlay-only included, and refuses before the next root is prepared;
+    // the shared registry means `nails check` reports it too.
     if let Some(layer) = config_layer {
         registry.add_check(layer.base_reference_check(&config.hidden_volume_root));
     }
