@@ -19,6 +19,10 @@ use nails_teardown::whole_root::transition::{
 /// Where runtime unit files live.
 const RUN_UNIT_DIR: &str = "/run/systemd/system";
 
+/// The runtime directory that outranks `/etc/systemd/system`, where the entry
+/// masks the boot-loader units.
+const RUN_CONTROL_DIR: &str = "/run/systemd/system.control";
+
 /// Guidance for an interrupted entry's leftovers.
 const RECOVER: &str = "Run 'nails recover' to remove the leftovers of the interrupted entry";
 
@@ -197,11 +201,20 @@ impl<F: Filesystem> Verifier<F> {
             .collect()
     }
 
-    /// The session's units (by their names) and runtime masks (links to
-    /// `/dev/null`) in `/run/systemd/system`. A mask may also be the
-    /// administrator's own `systemctl mask --runtime`, so it only warns.
+    /// The session's units (by their names) in `/run/systemd/system`, and
+    /// runtime masks (links to `/dev/null`) there and in
+    /// `/run/systemd/system.control`, where the entry masks the boot-loader
+    /// units. A mask may also be the administrator's own `systemctl mask
+    /// --runtime`, so it only warns.
     fn leftover_run_units(&self) -> Result<Vec<Finding>> {
-        let dir = Path::new(RUN_UNIT_DIR);
+        let mut findings = Vec::new();
+        for dir in [RUN_UNIT_DIR, RUN_CONTROL_DIR] {
+            findings.extend(self.leftover_units_in(Path::new(dir))?);
+        }
+        Ok(findings)
+    }
+
+    fn leftover_units_in(&self, dir: &Path) -> Result<Vec<Finding>> {
         if !self.filesystem.is_directory(dir)? {
             return Ok(Vec::new());
         }

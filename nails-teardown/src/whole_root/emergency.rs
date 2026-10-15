@@ -35,10 +35,10 @@ use crate::proc::{self, Invocation, ProcessHandle};
 use crate::whole_root::kill::{self, KillReport};
 use crate::whole_root::nextroot::{self, NEXTROOT};
 use crate::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME};
-use crate::whole_root::ret;
 use crate::whole_root::run_scrub::Snapshot;
 use crate::whole_root::tools;
 use crate::whole_root::transition;
+use crate::whole_root::{kernel_helpers, ret, runtime_units};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -326,9 +326,8 @@ fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) {
             let _ = ret::close_backend_deferred(plan);
             let kept = Snapshot::load(&host.runtime_dir.join(SNAPSHOT_NAME)).unwrap_or_default();
             transition::remove_dropin(&host.run, &kept);
-            for unit in &plan.masks {
-                let _ = std::fs::remove_file(host.run.join("systemd/system").join(unit));
-            }
+            runtime_units::remove_masks(&host.run, &plan.masks, &plan.boot_masks, &kept);
+            kernel_helpers::restore(&plan.kernel_settings);
             nextroot::remove_runtime_dir(&host.runtime_dir);
         }
     });

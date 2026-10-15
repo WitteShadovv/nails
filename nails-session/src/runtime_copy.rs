@@ -149,6 +149,7 @@ mod tests {
             carried: Vec::new(),
             read_only_disks: false,
             failed_at_entry: Vec::new(),
+            kernel_settings: Vec::new(),
         };
         fs.mock_set_path_exists(plan_path().to_str().unwrap(), true);
         fs.mock_set_file_content(plan_path().to_str().unwrap(), &plan.to_json());

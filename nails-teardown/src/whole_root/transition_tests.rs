@@ -556,6 +556,48 @@ fn the_boot_loader_masks_are_written_where_they_outrank_etc_and_go_with_the_sess
     );
 }
 
+/// A switch that fails after the entry transition leaves the decoy running
+/// with the session's masks in `/run`. Removing them on the decoy side (a
+/// rollback, `nails recover`, an emergency there) takes only what the entry
+/// wrote: a mask the decoy had before stays.
+#[test]
+fn the_masks_of_an_entry_whose_switch_failed_go_and_the_decoy_s_own_stay() {
+    let world = World::new();
+    let control = world.run().join(runtime_units::RUNTIME_CONTROL_DIR);
+    fs::create_dir_all(&control).unwrap();
+    symlink("/dev/null", control.join("grub-common.service")).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.boot_masks = vec![
+        "systemd-boot-random-seed.service".to_string(),
+        "grub-common.service".to_string(),
+    ];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    let kept = Snapshot::take(&world.run());
+    fs::write(world.runtime().join(SNAPSHOT_NAME), kept.to_text()).unwrap();
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    let swap = world.run().join("systemd/system/dev-vda3.swap");
+    let seed = control.join("systemd-boot-random-seed.service");
+    assert!(fs::symlink_metadata(&swap).is_ok() && fs::symlink_metadata(&seed).is_ok());
+
+    // The switch failed: the decoy userspace runs again over the same /run.
+    let plan = world.plan();
+    runtime_units::remove_masks(&world.run(), &plan.masks, &plan.boot_masks, &kept);
+    assert!(
+        fs::symlink_metadata(&swap).is_err(),
+        "the decoy swap is masked"
+    );
+    assert!(
+        fs::symlink_metadata(&seed).is_err(),
+        "the seed unit is masked"
+    );
+    assert_eq!(
+        fs::read_link(control.join("grub-common.service")).unwrap(),
+        Path::new("/dev/null"),
+        "the decoy's own mask stays"
+    );
+}
+
 #[test]
 fn the_read_only_rule_lives_from_the_entry_to_the_way_back_only() {
     let world = World::new();

@@ -261,6 +261,11 @@ pub struct Plan {
     /// while the decoy's own earlier failures stay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_at_entry: Vec<String>,
+    /// The kernel's helper paths as the decoy had them before a hidden NixOS
+    /// activation rewrote them; every way back to the decoy writes them back
+    /// (see [`crate::whole_root::kernel_helpers`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kernel_settings: Vec<crate::whole_root::kernel_helpers::KernelSetting>,
 }
 
 /// Why a plan could not be used.
@@ -422,6 +427,7 @@ pub(crate) fn sample() -> Plan {
         carried: Vec::new(),
         read_only_disks: false,
         failed_at_entry: Vec::new(),
+        kernel_settings: Vec::new(),
     }
 }
 

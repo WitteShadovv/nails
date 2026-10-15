@@ -1621,21 +1621,34 @@ fn session_leftovers_are_critical_on_the_decoy() {
 #[test]
 fn a_runtime_mask_left_on_the_decoy_only_warns() {
     let (fs, verifier) = overlay_verifier("");
-    fs.mock_set_path_exists("/run/systemd/system", true);
-    fs.mock_set_path_type("/run/systemd/system", PathKind::Dir);
-    let mask = std::path::Path::new("/run/systemd/system/swap.target");
-    fs.mock_set_directory_contents(
-        std::path::Path::new("/run/systemd/system"),
-        vec![mask.to_path_buf()],
-    );
-    crate::Filesystem::create_symlink(&fs, std::path::Path::new("/dev/null"), mask).unwrap();
-    fs.mock_set_is_symlink(mask.to_str().unwrap(), true);
+    // A swap mask in the runtime unit directory, and a boot-loader mask in
+    // the control directory that outranks /etc, where the entry writes it.
+    for (dir, unit) in [
+        ("/run/systemd/system", "swap.target"),
+        (
+            "/run/systemd/system.control",
+            "systemd-boot-random-seed.service",
+        ),
+    ] {
+        fs.mock_set_path_exists(dir, true);
+        fs.mock_set_path_type(dir, PathKind::Dir);
+        let mask = std::path::Path::new(dir).join(unit);
+        fs.mock_set_directory_contents(std::path::Path::new(dir), vec![mask.clone()]);
+        crate::Filesystem::create_symlink(&fs, std::path::Path::new("/dev/null"), &mask).unwrap();
+        fs.mock_set_is_symlink(mask.to_str().unwrap(), true);
+    }
     let result = verifier.run(false).unwrap();
     let findings: Vec<_> = result
         .findings
         .iter()
         .filter(|f| f.category == "session")
         .collect();
-    assert_eq!(findings.len(), 1, "{findings:?}");
-    assert_eq!(findings[0].severity, Severity::Warn);
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(findings.iter().all(|f| f.severity == Severity::Warn));
+    assert!(
+        findings[1]
+            .message
+            .contains("systemd-boot-random-seed.service is masked at runtime"),
+        "{findings:?}"
+    );
 }

@@ -163,6 +163,11 @@ fn c_path(path: &Path) -> Result<CString> {
 /// Run `<system>/activate` chrooted into `root`, in a private mount namespace
 /// with `/dev`, `/proc`, `/sys` bound and a fresh tmpfs at `/run`. Nothing it
 /// mounts is visible outside the child.
+///
+/// The script runs in a process group of its own with SIGINT, SIGTERM and
+/// SIGHUP ignored: a Ctrl+C on the terminal reaches the whole foreground
+/// group, and an activation killed halfway would leave the hidden `/etc` half
+/// written. It runs to its end; the cancel takes effect at the next step.
 #[allow(unsafe_code)]
 pub fn activate_in(root: &Path, system: &Path) -> Result<()> {
     use std::os::unix::process::CommandExt;
@@ -194,7 +199,9 @@ pub fn activate_in(root: &Path, system: &Path) -> Result<()> {
             system.join("sw/lib/locale/locale-archive"),
         )
         .env("IN_NIXOS_ENTER", "1")
-        .stdin(std::process::Stdio::null());
+        .stdin(std::process::Stdio::null())
+        .process_group(0);
+    nails_teardown::whole_root::tools::ignore_stop_signals(&mut command);
     // SAFETY: the closure runs in the forked child before exec and only makes
     // raw syscalls (unshare, mount, chroot, chdir) on CStrings prepared above.
     unsafe {

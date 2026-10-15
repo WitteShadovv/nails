@@ -168,6 +168,7 @@ mod kernel_tests {
                 carried: Vec::new(),
                 read_only_disks: false,
                 failed_at_entry: Vec::new(),
+                kernel_settings: Vec::new(),
             };
             let plan_path = nails_teardown::whole_root::plan::default_plan_path();
             std::fs::create_dir_all(plan_path.parent().unwrap()).unwrap();

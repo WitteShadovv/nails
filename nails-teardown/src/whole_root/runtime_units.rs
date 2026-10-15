@@ -14,6 +14,7 @@
 //! plan can never make the transition write outside `/run/systemd/system`
 //! and `/run/systemd/system.control`.
 
+use crate::whole_root::run_scrub::Snapshot;
 use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -77,6 +78,34 @@ pub fn mask_units_best_effort(run: &Path, units: &[String]) -> Vec<PathBuf> {
         }
     }
     written
+}
+
+/// Remove the masks a session wrote below `run`: `masks` from the runtime
+/// unit directory and `boot_masks` from the control directory, each only
+/// where it is still a link to `/dev/null` and `kept` (the `/run` snapshot the
+/// entry took) does not hold it, so a mask the decoy had before stays. The
+/// control directory goes too when the decoy had none and it is empty now.
+///
+/// The return scrub removes them with the rest of the session's `/run`; this
+/// is for the decoy side: an entry rolled back, a next root disarmed, or an
+/// emergency on the decoy after a switch that never happened. Without it the
+/// decoy would keep its swap, its other disks or its boot-loader units masked
+/// until the next boot.
+pub fn remove_masks(run: &Path, masks: &[String], boot_masks: &[String], kept: &Snapshot) {
+    for (dir, names) in [(RUNTIME_UNIT_DIR, masks), (RUNTIME_CONTROL_DIR, boot_masks)] {
+        for name in names.iter().filter(|name| valid_unit_name(name)) {
+            let relative = Path::new(dir).join(name);
+            let link = run.join(&relative);
+            if !kept.contains(relative.as_os_str())
+                && std::fs::read_link(&link).is_ok_and(|target| target == Path::new("/dev/null"))
+            {
+                let _ = std::fs::remove_file(&link);
+            }
+        }
+    }
+    if !kept.contains(std::ffi::OsStr::new(RUNTIME_CONTROL_DIR)) {
+        let _ = std::fs::remove_dir(run.join(RUNTIME_CONTROL_DIR));
+    }
 }
 
 fn invalid(name: &str) -> io::Error {

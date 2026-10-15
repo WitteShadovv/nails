@@ -49,8 +49,8 @@ use nails_teardown::whole_root::plan::{
     PolicyMountKind, RootSide, SNAPSHOT_NAME, Tools, UTAB_NAME,
 };
 use nails_teardown::whole_root::run_scrub::{Snapshot, UTAB};
-use nails_teardown::whole_root::runtime_units::RuntimeUnit;
-use nails_teardown::whole_root::{carry, ret, transition};
+use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
+use nails_teardown::whole_root::{carry, kernel_helpers, ret, transition};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -273,14 +273,20 @@ fn fhs_init(root: &Path) -> PathBuf {
 }
 
 /// Undo a failed or abandoned entry: detach `/run/nextroot`, remove the
-/// drop-in and the runtime directory. Returns the mounts still left.
+/// drop-in, the masks the entry transition wrote (an entry whose switch
+/// failed) and the runtime directory, and give the kernel back the helper
+/// paths a hidden NixOS activation changed. Returns the mounts still left.
 pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
-    let run_noexec = Plan::load(&paths.plan()).is_ok_and(|plan| plan.run_noexec);
+    let plan = Plan::load(&paths.plan()).ok();
     let kept = Snapshot::load(&paths.runtime().join(SNAPSHOT_NAME)).unwrap_or_default();
     let remaining = nextroot::detach_tree(&paths.nextroot());
     transition::remove_dropin(&paths.run, &kept);
+    if let Some(plan) = &plan {
+        runtime_units::remove_masks(&paths.run, &plan.masks, &plan.boot_masks, &kept);
+        kernel_helpers::restore(&plan.kernel_settings);
+    }
     nextroot::remove_runtime_dir(&paths.runtime());
-    if run_noexec {
+    if plan.is_some_and(|plan| plan.run_noexec) {
         let _ = nextroot::set_noexec(&paths.run, true);
     }
     remaining
@@ -374,6 +380,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         carried: Vec::new(),
         read_only_disks: inputs.read_only_disks,
         failed_at_entry: Vec::new(),
+        kernel_settings: Vec::new(),
     }
 }
 
@@ -459,6 +466,11 @@ fn build(
         // The last stop before the activation, which runs to its end once it
         // has begun.
         crate::cancel::checkpoint()?;
+        // The activation points the kernel's module loader and firmware path
+        // at the hidden store: every way back writes the decoy's values back.
+        plan.kernel_settings = kernel_helpers::read(&kernel_helpers::HELPER_PATHS);
+        plan.write_atomic(&paths.plan())
+            .map_err(|e| io(&paths.plan(), e))?;
         host.activate_hidden_system(&nextroot, &system)?;
         crate::cancel::checkpoint()?;
         if let Some(decoy) = &plan.decoy.system

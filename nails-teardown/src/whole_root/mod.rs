@@ -24,6 +24,7 @@
 pub mod carry;
 pub mod disk_guard;
 pub mod emergency;
+pub mod kernel_helpers;
 pub mod kill;
 pub mod nextroot;
 pub mod plan;

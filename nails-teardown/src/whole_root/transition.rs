@@ -46,7 +46,7 @@ use crate::whole_root::plan::{
     UTAB_NAME, unix_now,
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
-use crate::whole_root::{run_records, runtime_units};
+use crate::whole_root::{kernel_helpers, run_records, runtime_units};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -313,7 +313,10 @@ fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
         // A reboot that met the leftover tree: the volume was unmounted by
         // the shutdown, and a real reboot would have closed it too.
         let _ = crate::whole_root::ret::close_backend_deferred(plan);
-        remove_dropin(&env.run, &env.saved_snapshot().unwrap_or_default());
+        let kept = env.saved_snapshot().unwrap_or_default();
+        remove_dropin(&env.run, &kept);
+        runtime_units::remove_masks(&env.run, &plan.masks, &plan.boot_masks, &kept);
+        kernel_helpers::restore(&plan.kernel_settings);
         nextroot::remove_runtime_dir(&env.runtime_dir);
         if plan.run_noexec {
             let _ = nextroot::set_noexec(&env.run, true);
@@ -399,6 +402,9 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         }
         return disarm(env, plan, &why);
     }
+    // The hidden activation pointed the kernel's module loader and firmware
+    // path at the hidden store; nothing runs the decoy's activation again.
+    kernel_helpers::restore(&plan.kernel_settings);
     // The disks the session made read-only are the decoy's again, and its
     // udevd must never load the rule (the scrub leaves /run/udev alone).
     disk_guard::remove_rule(&env.run);

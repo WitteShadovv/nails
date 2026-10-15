@@ -142,6 +142,7 @@ fn plan(hidden: &Path) -> Plan {
         carried: Vec::new(),
         read_only_disks: false,
         failed_at_entry: Vec::new(),
+        kernel_settings: Vec::new(),
     }
 }
 

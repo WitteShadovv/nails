@@ -276,9 +276,13 @@ garbage may need build inputs that are gone; without a binary cache that build
 fails, and the entry is refused and rolled back.
 
 It then runs the toplevel's activation chrooted into the next root with a private
-`/run`, and the transition step repoints `/run/current-system` only after every
+`/run`, in a process group of its own that a Ctrl+C on the terminal does not
+reach, and the transition step repoints `/run/current-system` only after every
 decoy unit has stopped, so PID 1 executes the hidden systemd against the hidden
-`/etc`. No bootloader is installed and no system profile changes. The hidden
+`/etc`. The activation points the running kernel's module loader, hotplug
+helper and firmware path at the hidden system's store; the entry records the
+decoy's values first, and every way back to the decoy (the return, an entry
+rolled back or recovered) writes them back. No bootloader is installed and no system profile changes. The hidden
 toplevel must run on the decoy's kernel: the kernel modules come from
 `/run/booted-system`. `--overlay-only` skips the build and enters with the
 decoy's own system plus the hidden `/etc` and home.
@@ -305,6 +309,8 @@ shutdown stops every hidden program. The last step before the switch:
   in place when it stops, and on NixOS the decoy's start would otherwise write
   the hidden session's name servers and search domains into `/etc/resolv.conf`
   on the decoy disk;
+- gives the kernel back the decoy's module loader, hotplug helper and firmware
+  path, which a hidden NixOS activation pointed at its own store;
 - restores libmount's `utab` to the copy taken at entry;
 - writes journald's kernel-message cursor, so the decoy journal imports no
   kernel record of the hidden session.
