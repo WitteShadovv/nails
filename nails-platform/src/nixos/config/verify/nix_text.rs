@@ -4,50 +4,243 @@
 //! Matching hidden-environment markers in the text of a `.nix` file.
 //!
 //! The scan works on bytes of ASCII-lowercased text, one line at a time, so a
-//! match maps back to a line and to the original spelling by offset. The one
-//! rule that must not see comments (a device-mapper name, often an ordinary
-//! word such as `data`) reads a copy of the line with its comments blanked
-//! ([`blank_comments`]), which keeps every offset.
+//! match maps back to a line and to the original spelling by offset. Every
+//! marker counts in comments as well: an examiner reads them, and a
+//! commented-out line that names the hidden volume points at it as plainly as
+//! a live one. The device-mapper name, often an ordinary word such as `data`,
+//! counts only where it names the mapping ([`Pattern::Name`]).
 
 use std::ops::Range;
 
 /// How a marker is matched in a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Pattern {
-    /// Plain text anywhere, comments included.
+    /// Plain text anywhere.
     Text(String),
-    /// A path, comments included. It must begin a path (the byte before it
-    /// cannot continue a file name; a `/` may precede it, as in
-    /// `file:///mnt/data`) and end at the end of a path component (the byte
-    /// after it cannot continue a file name). So `/mnt/data` matches
-    /// `/mnt/data/nixos` but not `/mnt/data2` or `/srv/mnt/data`.
+    /// A path, or the name of a systemd unit made from one. It must begin a
+    /// path (the byte before it cannot continue a file name; a `/` may
+    /// precede it, as in `file:///mnt/data`) and end at the end of a path
+    /// component (the byte after it cannot continue a file name). So
+    /// `/mnt/data` matches `/mnt/data/nixos` but not `/mnt/data2` or
+    /// `/srv/mnt/data`, and `mnt-data.mount` does not match
+    /// `srv-mnt-data.mount`.
     Path(String),
-    /// A word between bytes that cannot be part of a Nix identifier, comments
-    /// included: `nails` matches `config.nails.enable` but not `snails`.
+    /// A word between bytes that cannot be part of a Nix identifier: `nails`
+    /// matches `config.nails.enable` but not `snails`.
     Word(String),
-    /// A word as for [`Pattern::Word`], but only outside comments and never
-    /// next to a `/`: a device-mapper name in a `luks.devices` entry, in
-    /// crypttab text or on a `cryptsetup` command line, but neither in the
-    /// comments `nixos-generate-config` writes nor in a directory such as
-    /// `/var/lib/postgresql/data`. The device path itself is a [`Pattern::Path`].
-    Name(String),
+    /// A device-mapper name where it names the mapping (see [`mapping_name`]),
+    /// never as an ordinary word (`description = "Back up user data"`) or a
+    /// directory (`/var/lib/postgresql/data`). `escaped` is the name as a
+    /// systemd instance (`vg-root` is `vg\x2droot`).
+    Name { name: String, escaped: String },
 }
 
 impl Pattern {
-    /// The byte range of the first match in `line`. `code` is the same line
-    /// with its comments blanked, as [`blank_comments`] returns it.
-    pub(super) fn find(&self, line: &[u8], code: &[u8]) -> Option<Range<usize>> {
+    /// The byte range of the first match in `line`. `luks` holds the ranges
+    /// of the attribute names that `line` defines in a `luks.devices = { … }`
+    /// block, as [`LuksBlocks::names`] returns them.
+    pub(super) fn find(&self, line: &[u8], luks: &[Range<usize>]) -> Option<Range<usize>> {
         match self {
             Pattern::Text(text) => find_where(line, text, |_, _| true),
             Pattern::Path(path) => find_where(line, path, |before, after| {
                 !continues_file_name(before) && !continues_file_name(after)
             }),
             Pattern::Word(word) => find_where(line, word, bounded),
-            Pattern::Name(name) => find_where(code, name, |before, after| {
-                bounded(before, after) && before != Some(b'/') && after != Some(b'/')
-            }),
+            Pattern::Name { name, escaped } => mapping_name(line, name, escaped, luks),
         }
     }
+}
+
+/// Where `line` names the mapping `name`, in comments as well as in code:
+///
+/// - a `luks.devices` entry: `luks.devices.data`, `luks.devices."data"`, or an
+///   attribute of a `luks.devices = { … }` block (`luks`);
+/// - on a line that mentions `crypttab` or `cryptsetup`, as a word that is
+///   not part of a path: crypttab text, `cryptsetup open /dev/sdb2 data`,
+///   `systemd-cryptsetup@data.service` (with `escaped`, the instance name
+///   systemd writes for a name with a `-` in it);
+/// - at the start of a crypttab line: the name, then the device as a `/dev/`
+///   path or a `UUID=`, `PARTUUID=`, `LABEL=`, `PARTLABEL=` or `ID=` tag.
+fn mapping_name(
+    line: &[u8],
+    name: &str,
+    escaped: &str,
+    luks: &[Range<usize>],
+) -> Option<Range<usize>> {
+    if let Some(range) = luks_entry(line, name.as_bytes()) {
+        return Some(range);
+    }
+    if let Some(range) = luks.iter().find(|r| line[(*r).clone()] == *name.as_bytes()) {
+        return Some(range.clone());
+    }
+    if contains(line, b"crypttab") || contains(line, b"cryptsetup") {
+        let word = find_where(line, name, |before, after| {
+            bounded(before, after) && before != Some(b'/') && after != Some(b'/')
+        });
+        let instance = || {
+            find_where(line, &format!("cryptsetup@{escaped}"), |_, after| {
+                !after.is_some_and(is_identifier_byte)
+            })
+            .map(|range| range.end - escaped.len()..range.end)
+        };
+        if let Some(range) = word.or_else(instance) {
+            return Some(range);
+        }
+    }
+    crypttab_line(line, name.as_bytes())
+}
+
+/// `luks.devices.<name>` or `luks.devices."<name>"`: the range of the name.
+fn luks_entry(line: &[u8], name: &[u8]) -> Option<Range<usize>> {
+    const PREFIX: &[u8] = b"luks.devices.";
+    (0..line.len()).find_map(|at| {
+        let rest = line[at..].strip_prefix(PREFIX)?;
+        let start = at + PREFIX.len();
+        if let Some(quoted) = rest.strip_prefix(b"\"") {
+            (quoted.strip_prefix(name)?.first() == Some(&b'"'))
+                .then_some(start + 1..start + 1 + name.len())
+        } else {
+            let after = rest.strip_prefix(name)?.first().copied();
+            (!after.is_some_and(is_identifier_byte)).then_some(start..start + name.len())
+        }
+    })
+}
+
+/// A crypttab line that opens `name`: the name first (after any indentation,
+/// comment marker or opening quote), then the device.
+fn crypttab_line(line: &[u8], name: &[u8]) -> Option<Range<usize>> {
+    const DEVICE: &[&[u8]] = &[
+        b"/dev/",
+        b"uuid=",
+        b"partuuid=",
+        b"label=",
+        b"partlabel=",
+        b"id=",
+    ];
+    let mut start = 0;
+    loop {
+        let rest = &line[start..];
+        start += if rest.starts_with(b"/*") {
+            2
+        } else if matches!(
+            rest.first(),
+            Some(b' ' | b'\t' | b'#' | b'*' | b'"' | b'\'')
+        ) {
+            1
+        } else {
+            break;
+        };
+    }
+    let rest = line[start..].strip_prefix(name)?;
+    let gap = rest
+        .iter()
+        .take_while(|&&b| b == b' ' || b == b'\t')
+        .count();
+    (gap > 0 && DEVICE.iter().any(|tag| rest[gap..].starts_with(tag)))
+        .then_some(start..start + name.len())
+}
+
+/// Tracks the `luks.devices = { … }` blocks of a file, line by line, so the
+/// attribute names they define can be told from the same word anywhere else.
+/// Braces are counted on the whole line, comments included, so a block that
+/// was commented out line by line is followed too.
+#[derive(Debug, Default)]
+pub(super) struct LuksBlocks {
+    /// The brace depth inside the current block, 0 outside one.
+    depth: usize,
+    /// `luks.devices =` was seen and its `{` has not come yet.
+    pending: bool,
+}
+
+impl LuksBlocks {
+    /// The ranges in `line` of the attribute names it defines directly in a
+    /// `luks.devices` block (`data` in `data = { … };` or `data.device = …;`).
+    pub(super) fn names(&mut self, line: &[u8]) -> Vec<Range<usize>> {
+        const KEY: &[u8] = b"luks.devices";
+        let mut names = Vec::new();
+        // An attribute may start here: at the start of a line inside a block,
+        // and after its `{` or a `;` at its own level.
+        let mut attribute = self.depth == 1;
+        let mut i = 0;
+        while i < line.len() {
+            if line[i..].starts_with(KEY) {
+                let next = skip_blanks(line, i + KEY.len());
+                if line.get(next) == Some(&b'=') && line.get(next + 1) != Some(&b'=') {
+                    self.pending = true;
+                    i = next + 1;
+                } else {
+                    i += KEY.len();
+                }
+                continue;
+            }
+            match line[i] {
+                b'{' => {
+                    if self.pending {
+                        self.pending = false;
+                        self.depth = 1;
+                    } else if self.depth > 0 {
+                        self.depth += 1;
+                    }
+                    attribute = self.depth == 1;
+                }
+                b'}' => {
+                    self.depth = self.depth.saturating_sub(1);
+                    attribute = false;
+                }
+                b';' => {
+                    self.pending = false;
+                    attribute = self.depth == 1;
+                }
+                // Blanks and comment markers keep the position.
+                b' ' | b'\t' | b'#' | b'*' | b'/' => {}
+                _ if attribute => {
+                    attribute = false;
+                    if let Some((range, end)) = attribute_name(line, i) {
+                        names.push(range);
+                        i = end;
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        names
+    }
+}
+
+/// The attribute name at `start` (`data` or `"data"`) when an `=` or a `.`
+/// follows it: its range without quotes, and where it ends.
+fn attribute_name(line: &[u8], start: usize) -> Option<(Range<usize>, usize)> {
+    let (range, end) = if line[start] == b'"' {
+        let close = start + 1 + line[start + 1..].iter().position(|&b| b == b'"')?;
+        (start + 1..close, close + 1)
+    } else {
+        let len = line[start..]
+            .iter()
+            .take_while(|&&b| is_identifier_byte(b) || b == b'\'')
+            .count();
+        if len == 0 {
+            return None;
+        }
+        (start..start + len, start + len)
+    };
+    let next = skip_blanks(line, end);
+    matches!(line.get(next), Some(b'=' | b'.')).then_some((range, next))
+}
+
+fn skip_blanks(line: &[u8], from: usize) -> usize {
+    from + line.get(from..).map_or(0, |rest| {
+        rest.iter()
+            .take_while(|&&b| b == b' ' || b == b'\t')
+            .count()
+    })
+}
+
+fn contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|window| window == needle)
 }
 
 /// The first occurrence of `needle` in `haystack` that `accept` takes, given
@@ -89,163 +282,29 @@ fn continues_file_name(byte: Option<u8>) -> bool {
     })
 }
 
-/// Where the lexer is: in code (with the depth of `{` it has to see closed
-/// before a `}` ends the interpolation it is in), or in a string.
-#[derive(Debug, Clone, Copy)]
-enum Context {
-    Code { braces: usize },
-    String,
-    IndentedString,
-}
-
-/// `text` with every Nix comment (`# …` to the end of the line, `/* … */`)
-/// replaced by spaces. The result has the same length and keeps every newline,
-/// so offsets and line numbers still point into `text`. Strings (`"…"` and
-/// `''…''`, with their escapes and `${…}` interpolations) are kept whole: a
-/// `#` inside one starts no comment, and the text of a string is matched like
-/// code, since crypttab lines and unit scripts live in strings.
-pub(super) fn blank_comments(text: &[u8]) -> Vec<u8> {
-    let mut out = text.to_vec();
-    let mut stack = vec![Context::Code { braces: 0 }];
-    let mut i = 0;
-    while i < text.len() {
-        let rest = &text[i..];
-        let context = stack.last().copied().unwrap_or(Context::Code { braces: 0 });
-        i += match context {
-            Context::Code { braces } => {
-                if rest.starts_with(b"#") {
-                    let end = rest.iter().position(|&b| b == b'\n').unwrap_or(rest.len());
-                    blank(&mut out[i..i + end]);
-                    end
-                } else if rest.starts_with(b"/*") {
-                    let end = rest[2..]
-                        .windows(2)
-                        .position(|pair| pair == b"*/")
-                        .map_or(rest.len(), |at| at + 4);
-                    blank(&mut out[i..i + end]);
-                    end
-                } else if rest.starts_with(b"\"") {
-                    stack.push(Context::String);
-                    1
-                } else if rest.starts_with(b"''") && !ends_identifier(&text[..i]) {
-                    stack.push(Context::IndentedString);
-                    2
-                } else if rest.starts_with(b"{") {
-                    set_braces(&mut stack, braces + 1);
-                    1
-                } else if rest.starts_with(b"}") {
-                    if braces == 0 && stack.len() > 1 {
-                        stack.pop();
-                    } else {
-                        set_braces(&mut stack, braces.saturating_sub(1));
-                    }
-                    1
-                } else {
-                    1
-                }
-            }
-            Context::String => {
-                if rest.starts_with(b"\\") {
-                    2
-                } else if rest.starts_with(b"\"") {
-                    stack.pop();
-                    1
-                } else if rest.starts_with(b"${") {
-                    stack.push(Context::Code { braces: 0 });
-                    2
-                } else {
-                    1
-                }
-            }
-            Context::IndentedString => {
-                if rest.starts_with(b"'''") || rest.starts_with(b"''$") {
-                    3
-                } else if rest.starts_with(b"''\\") {
-                    4
-                } else if rest.starts_with(b"''") {
-                    stack.pop();
-                    2
-                } else if rest.starts_with(b"${") {
-                    stack.push(Context::Code { braces: 0 });
-                    2
-                } else {
-                    1
-                }
-            }
-        };
-    }
-    out
-}
-
-/// Replace every byte of `span` but newlines with a space.
-fn blank(span: &mut [u8]) {
-    for byte in span.iter_mut().filter(|byte| **byte != b'\n') {
-        *byte = b' ';
-    }
-}
-
-fn set_braces(stack: &mut [Context], depth: usize) {
-    if let Some(Context::Code { braces }) = stack.last_mut() {
-        *braces = depth;
-    }
-}
-
-/// Whether `before` ends in an identifier, which `''` would continue
-/// (`x''` is an identifier, not the start of a string).
-fn ends_identifier(before: &[u8]) -> bool {
-    before
-        .last()
-        .is_some_and(|&b| is_identifier_byte(b) || b == b'\'')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn blanked(text: &str) -> String {
-        String::from_utf8(blank_comments(text.as_bytes())).unwrap()
-    }
-
     fn found(pattern: &Pattern, line: &str) -> Option<String> {
-        let code = blank_comments(line.as_bytes());
-        pattern
-            .find(line.as_bytes(), &code)
-            .map(|range| line[range].to_string())
+        let mut luks = LuksBlocks::default();
+        let lower = line.to_ascii_lowercase();
+        let mut hit = None;
+        for text in lower.split('\n') {
+            let names = luks.names(text.as_bytes());
+            if let Some(range) = pattern.find(text.as_bytes(), &names) {
+                hit = Some(text[range].to_string());
+                break;
+            }
+        }
+        hit
     }
 
-    #[test]
-    fn line_and_block_comments_are_blanked_in_place() {
-        let text = "a = 1; # data\n/* data\n data */ b = 2;\n";
-        let out = blanked(text);
-        assert_eq!(out.len(), text.len());
-        assert_eq!(out, "a = 1;       \n       \n         b = 2;\n");
-    }
-
-    #[test]
-    fn strings_and_their_escapes_keep_a_hash() {
-        let text = "x = \"a # b \\\" # c\"; # gone\ny = '' # shell\n ''${z} '''# '' ;\n";
-        let out = blanked(text);
-        assert!(out.contains("\"a # b \\\" # c\";       \n"), "{out}");
-        assert!(out.contains("'' # shell\n ''${z} '''# '' ;"), "{out}");
-    }
-
-    #[test]
-    fn an_interpolation_is_code_until_its_own_brace_closes() {
-        let text = "s = \"${ { a = 1; }.a # x\n} rest # kept\"; # gone";
-        let out = blanked(text);
-        assert_eq!(out, "s = \"${ { a = 1; }.a    \n} rest # kept\";       ");
-    }
-
-    #[test]
-    fn two_quotes_after_an_identifier_start_no_string() {
-        let out = blanked("x'' = 1; # gone");
-        assert_eq!(out, "x'' = 1;       ");
-    }
-
-    #[test]
-    fn an_unterminated_comment_or_string_runs_to_the_end() {
-        assert_eq!(blanked("a /* b"), "a     ");
-        assert_eq!(blanked("a \" # b"), "a \" # b");
+    fn data() -> Pattern {
+        Pattern::Name {
+            name: "data".into(),
+            escaped: "data".into(),
+        }
     }
 
     #[test]
@@ -268,6 +327,17 @@ mod tests {
         ] {
             assert_eq!(found(&path, miss), None, "{miss}");
         }
+        let unit = Pattern::Path("mnt-data.mount".into());
+        assert_eq!(
+            found(&unit, "after = [ \"mnt-data.mount\" ];").as_deref(),
+            Some("mnt-data.mount")
+        );
+        for miss in [
+            "after = [ \"srv-mnt-data.mount\" ];",
+            "after = [ \"mnt-data.mounts\" ];",
+        ] {
+            assert_eq!(found(&unit, miss), None, "{miss}");
+        }
     }
 
     #[test]
@@ -283,38 +353,56 @@ mod tests {
     }
 
     #[test]
-    fn a_name_counts_only_outside_comments_and_paths() {
-        let name = Pattern::Name("data".into());
+    fn the_mapping_name_counts_where_it_names_the_mapping_comments_included() {
         for hit in [
             "boot.initrd.luks.devices.data.device = \"/dev/disk/by-uuid/1\";",
             "boot.initrd.luks.devices.\"data\".device = \"/dev/disk/by-uuid/1\";",
-            "  data = { device = \"/dev/disk/by-uuid/1\"; };",
+            "# boot.initrd.luks.devices.data.device = \"/dev/disk/by-uuid/7d2c9e14\";",
+            "/* boot.initrd.luks.devices.\"data\".device = \"/dev/sdb2\"; */",
+            "boot.initrd.luks.devices = {\n  data = { device = \"/dev/disk/by-uuid/1\"; };\n};",
+            "boot.initrd.luks.devices = { other = { }; data.device = \"/dev/sdb2\"; };",
+            "# boot.initrd.luks.devices = {\n#   data = {\n#     device = \"/dev/sdb2\";",
             "environment.etc.crypttab.text = \"data /dev/sdb2 none tcrypt\";",
+            "# environment.etc.crypttab.text = \"data /dev/sdb2 none tcrypt\";",
+            "text = ''\n  data UUID=7d2c9e14 none luks\n'';",
+            "# data /dev/sdb2 none tcrypt",
             "script = \"cryptsetup open /dev/sdb2 data\";",
+            "# cryptsetup open /dev/sdb2 data",
             "after = [ \"systemd-cryptsetup@data.service\" ];",
         ] {
-            assert_eq!(found(&name, hit).as_deref(), Some("data"), "{hit}");
+            assert_eq!(found(&data(), hit).as_deref(), Some("data"), "{hit}");
         }
+        let dashed = Pattern::Name {
+            name: "vg-root".into(),
+            escaped: "vg\\x2droot".into(),
+        };
+        assert_eq!(
+            found(
+                &dashed,
+                "requires = [ \"systemd-cryptsetup@vg\\x2droot.service\" ];"
+            )
+            .as_deref(),
+            Some("vg\\x2droot")
+        );
+    }
+
+    #[test]
+    fn the_mapping_name_as_an_ordinary_word_or_directory_passes() {
         for miss in [
             "# and is used to maintain compatibility with application data (e.g. databases)",
             "x = 1; # keep user data on /home",
+            "description = \"Back up user data\";",
             "services.postgresql.dataDir = \"/var/lib/postgresql/data\";",
             "fileSystems.\"/srv/data\".device = \"/dev/sdb1\";",
             "services.evolution-data-server.enable = true;",
             "x = \"data2\";",
+            "users.users.alice = {\n  data = 1;\n};",
+            "boot.initrd.luks.devices.database.device = \"/dev/sdb2\";",
+            "boot.initrd.luks.devices = { root = { }; };\nservices.x = {\n  data = 1;\n};",
+            "# the data / logs split",
+            "/data /dev/sdb1 none",
         ] {
-            assert_eq!(found(&name, &miss.to_ascii_lowercase()), None, "{miss}");
+            assert_eq!(found(&data(), miss), None, "{miss}");
         }
-    }
-
-    #[test]
-    fn text_matches_anywhere() {
-        let text = Pattern::Text("deniability".into());
-        assert_eq!(
-            found(&text, "# plausible deniability").as_deref(),
-            Some("deniability")
-        );
-        assert_eq!(found(&Pattern::Text(String::new()), "x"), None);
-        assert_eq!(found(&text, "short"), None);
     }
 }

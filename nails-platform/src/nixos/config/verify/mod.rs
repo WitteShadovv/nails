@@ -7,7 +7,8 @@
 //! Every `*.nix` file under `/etc/nixos` (the flake, `configuration.nix`,
 //! `hardware-configuration.nix` and any module they import) belongs to the
 //! decoy, so an examination reads it. [`verify_base_config_clean`] reports
-//! each line that names the hidden volume, its device or mount point, or
+//! each line that names the hidden volume (its device, its mount point, the
+//! units systemd names after them, or its mapping where a line opens it) or
 //! NAILS, with the file, the line, the matched text and why it counts.
 
 mod nix_text;
@@ -15,7 +16,8 @@ mod nix_text;
 use crate::artifacts::{ARTIFACTS, ArtifactKind};
 use crate::error::Result;
 use crate::filesystem::Filesystem;
-use nix_text::{Pattern, blank_comments};
+use nails_base::fstab::escape_path;
+use nix_text::{LuksBlocks, Pattern};
 use std::path::{Path, PathBuf};
 
 /// Base `/etc/nixos` directory scanned for hidden-environment traces.
@@ -30,20 +32,21 @@ pub enum ReferenceKind {
     /// Text NAILS writes into a file during a session, such as the import of
     /// the hidden module (from the artifact registry).
     StagedText,
-    /// The device the hidden volume is mounted from (`/dev/mapper/<name>`).
+    /// The device the hidden volume is mounted from (`/dev/mapper/<name>`, or
+    /// `/dev/disk/by-id/dm-name-<name>`).
     Device,
+    /// The unit systemd names after that device (`dev-mapper-data.device`).
+    DeviceUnit,
     /// The hidden volume's mount point.
     MountPoint,
-    /// A path that names a hidden volume: `/mnt/hidden`, a `hidden/nixos`
-    /// directory, or any `/hidden/` directory.
-    HiddenPath,
-    /// The hidden volume's device-mapper name outside comments and paths: a
-    /// `luks.devices` entry, crypttab text or a `cryptsetup` command line.
+    /// The unit systemd names after the mount point (`mnt-data.mount`,
+    /// `mnt-data.automount`).
+    MountUnit,
+    /// The hidden volume's device-mapper name where it names the mapping: a
+    /// `luks.devices` entry, crypttab text or a `cryptsetup` line.
     MapperName,
     /// The word `nails`.
     ToolName,
-    /// The words `plausible` or `deniability`.
-    DeniabilityWord,
 }
 
 impl ReferenceKind {
@@ -52,11 +55,13 @@ impl ReferenceKind {
         match self {
             ReferenceKind::StagedText => "text NAILS writes during a session",
             ReferenceKind::Device => "the hidden volume's device",
+            ReferenceKind::DeviceUnit => "the unit systemd names after the hidden volume's device",
             ReferenceKind::MountPoint => "the hidden volume's mount point",
-            ReferenceKind::HiddenPath => "a path that names a hidden volume",
+            ReferenceKind::MountUnit => {
+                "the unit systemd names after the hidden volume's mount point"
+            }
             ReferenceKind::MapperName => "the hidden volume's device-mapper name",
             ReferenceKind::ToolName => "the name of this tool",
-            ReferenceKind::DeniabilityWord => "a word about deniability",
         }
     }
 
@@ -65,10 +70,10 @@ impl ReferenceKind {
         match self {
             ReferenceKind::MapperName => {
                 "Remove it from that file long before the next use and rebuild the decoy. If \
-                 the word is there for another reason, open the hidden volume under a name \
+                 the name is there for another reason, open the hidden volume under a name \
                  that appears nowhere in /etc/nixos instead."
             }
-            ReferenceKind::MountPoint => {
+            ReferenceKind::MountPoint | ReferenceKind::MountUnit => {
                 "Remove it from that file long before the next use and rebuild the decoy. If \
                  the decoy uses that path for something else, mount the hidden volume at a \
                  path that appears nowhere in /etc/nixos instead."
@@ -118,23 +123,30 @@ struct Marker {
 ///
 /// Every `*.nix` file under `/etc/nixos` is read, and each line is matched
 /// against these markers, in this order (a line counts once, for the first
-/// marker it matches):
+/// marker it matches). Every marker counts in comments as well, since an
+/// examiner reads them:
 ///
 /// - text NAILS writes during a session (the artifact registry's content
 ///   markers);
 /// - the device `/proc/self/mountinfo` reports for `hidden_volume_root`
-///   (`/dev/mapper/<name>`), as a whole path;
-/// - `hidden_volume_root` itself, as a whole path: `/mnt/data` and
-///   `/mnt/data/nixos` count, `/mnt/data2` does not;
-/// - `/mnt/hidden`, `hidden/nixos` and `/hidden/`;
-/// - the device-mapper name of that device as a word outside comments and
-///   never next to a `/`: `luks.devices.data`, crypttab text, `cryptsetup open
-///   … data`; but not the word `data` in the comments `nixos-generate-config`
-///   writes, nor `/var/lib/postgresql/data`;
-/// - the word `nails`, and `plausible` or `deniability`.
+///   (`/dev/mapper/<name>`) and `/dev/disk/by-id/dm-name-<name>`, each as a
+///   whole path, and the units systemd names after them
+///   (`dev-mapper-data.device`);
+/// - `hidden_volume_root` itself, as a whole path (`/mnt/data` and
+///   `/mnt/data/nixos` count, `/mnt/data2` does not), and its `.mount` and
+///   `.automount` units (`mnt-data.mount`);
+/// - the device-mapper name where it names the mapping: a `luks.devices`
+///   entry (`luks.devices.data`, `luks.devices."data"`, an attribute of a
+///   `luks.devices = { … }` block), a word on a line that mentions `crypttab`
+///   or `cryptsetup` (`systemd-cryptsetup@data.service` too), or the first
+///   field of a crypttab line (`data UUID=… none luks`);
+/// - the word `nails`.
 ///
-/// Matching ignores ASCII case. The word `hidden` alone does not count: GRUB's
-/// `timeoutStyle = "hidden"` and ordinary prose use it.
+/// Matching ignores ASCII case. Ordinary configuration never counts: the
+/// mapping name as an ordinary word (`description = "Back up user data"` with
+/// the mapping `data`) or a directory (`/var/lib/postgresql/data`), the word
+/// `hidden` (GRUB's `timeoutStyle = "hidden"`), or an option such as
+/// `services.plausible`.
 ///
 /// This is a best-effort trace scan, not a proof: a clean result means none of
 /// the known markers were found, which is weaker than the base being byte-for-byte
@@ -204,8 +216,29 @@ fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
     // Only an absolute device path is a device marker: a pseudo source such as
     // `tmpfs` names no device.
     let sources = resolve_backing_sources(fs, hidden_volume_root);
-    for source in sources.iter().filter(|source| source.starts_with('/')) {
-        markers.push(marker(Pattern::Path(source.clone()), ReferenceKind::Device));
+    let names: Vec<&str> = sources
+        .iter()
+        .filter_map(|source| source.strip_prefix("/dev/mapper/"))
+        .filter(|name| !name.is_empty() && !name.contains('/'))
+        .collect();
+    let devices: Vec<String> = sources
+        .iter()
+        .filter(|source| source.starts_with('/'))
+        .cloned()
+        .chain(
+            names
+                .iter()
+                .map(|name| format!("/dev/disk/by-id/dm-name-{name}")),
+        )
+        .collect();
+    for device in &devices {
+        markers.push(marker(Pattern::Path(device.clone()), ReferenceKind::Device));
+    }
+    for device in &devices {
+        markers.push(marker(
+            Pattern::Path(unit(device, "device")),
+            ReferenceKind::DeviceUnit,
+        ));
     }
 
     // Normalised, so a configured `/mnt/data/` still matches `/mnt/data`; a
@@ -213,29 +246,24 @@ fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
     let root: PathBuf = hidden_volume_root.components().collect();
     let root = root.to_string_lossy().to_ascii_lowercase();
     if root.len() > 1 {
-        markers.push(marker(Pattern::Path(root), ReferenceKind::MountPoint));
+        markers.push(marker(
+            Pattern::Path(root.clone()),
+            ReferenceKind::MountPoint,
+        ));
+        for suffix in ["mount", "automount"] {
+            markers.push(marker(
+                Pattern::Path(unit(&root, suffix)),
+                ReferenceKind::MountUnit,
+            ));
+        }
     }
 
-    markers.push(marker(
-        Pattern::Path("/mnt/hidden".into()),
-        ReferenceKind::HiddenPath,
-    ));
-    markers.push(marker(
-        Pattern::Path("hidden/nixos".into()),
-        ReferenceKind::HiddenPath,
-    ));
-    markers.push(marker(
-        Pattern::Text("/hidden/".into()),
-        ReferenceKind::HiddenPath,
-    ));
-
-    for name in sources
-        .iter()
-        .filter_map(|source| source.strip_prefix("/dev/mapper/"))
-        .filter(|name| !name.is_empty())
-    {
+    for name in names {
         markers.push(marker(
-            Pattern::Name(name.to_string()),
+            Pattern::Name {
+                name: name.to_string(),
+                escaped: escape_path(Path::new(name)).to_ascii_lowercase(),
+            },
             ReferenceKind::MapperName,
         ));
     }
@@ -244,13 +272,13 @@ fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
         Pattern::Word("nails".into()),
         ReferenceKind::ToolName,
     ));
-    for word in ["plausible", "deniability"] {
-        markers.push(marker(
-            Pattern::Text(word.into()),
-            ReferenceKind::DeniabilityWord,
-        ));
-    }
     markers
+}
+
+/// The name of the `suffix` unit systemd makes for `path`, lowercased like
+/// the text it is matched against.
+fn unit(path: &str, suffix: &str) -> String {
+    format!("{}.{suffix}", escape_path(Path::new(path))).to_ascii_lowercase()
 }
 
 /// Each line of `content` that matches a marker, for the first marker it
@@ -258,16 +286,17 @@ fn markers<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> Vec<Marker> {
 fn references_in(file: &Path, content: &str, markers: &[Marker]) -> Vec<BaseConfigReference> {
     let original = content.as_bytes();
     let text = original.to_ascii_lowercase();
-    let code = blank_comments(&text);
+    let mut luks = LuksBlocks::default();
 
     let mut found = Vec::new();
     let mut start = 0;
     for (index, line) in text.split(|&byte| byte == b'\n').enumerate() {
         let end = start + line.len();
+        let names = luks.names(line);
         let hit = markers.iter().find_map(|marker| {
             marker
                 .pattern
-                .find(line, &code[start..end])
+                .find(line, &names)
                 .map(|range| (marker.kind, range))
         });
         if let Some((kind, range)) = hit {

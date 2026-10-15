@@ -173,6 +173,28 @@ pub fn spec_device(spec: &str) -> Option<PathBuf> {
     Some(Path::new("/dev/disk").join(dir).join(value))
 }
 
+/// systemd's path escaping (`systemd-escape --path`): the name a unit for
+/// `path` carries (`/mnt/my-disk` is `mnt-my\x2ddisk`). A single file name
+/// escapes as an instance name does (`vg-root` is `vg\x2droot`).
+pub fn escape_path(path: &Path) -> String {
+    let text = path.to_string_lossy();
+    let trimmed: Vec<&str> = text.split('/').filter(|s| !s.is_empty()).collect();
+    if trimmed.is_empty() {
+        return "-".to_string();
+    }
+    let joined = trimmed.join("/");
+    let mut out = String::new();
+    for (i, byte) in joined.bytes().enumerate() {
+        match byte {
+            b'/' => out.push('-'),
+            b'.' if i == 0 => out.push_str("\\x2e"),
+            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b':' | b'_' | b'.' => out.push(byte as char),
+            other => out.push_str(&format!("\\x{other:02x}")),
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

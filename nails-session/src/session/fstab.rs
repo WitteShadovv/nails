@@ -12,27 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use nails_base::fstab::{FstabEntry, parse_fstab, spec_device};
-
-/// systemd's path escaping (`systemd-escape --path`).
-pub fn escape_path(path: &Path) -> String {
-    let text = path.to_string_lossy();
-    let trimmed: Vec<&str> = text.split('/').filter(|s| !s.is_empty()).collect();
-    if trimmed.is_empty() {
-        return "-".to_string();
-    }
-    let joined = trimmed.join("/");
-    let mut out = String::new();
-    for (i, byte) in joined.bytes().enumerate() {
-        match byte {
-            b'/' => out.push('-'),
-            b'.' if i == 0 => out.push_str("\\x2e"),
-            b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b':' | b'_' | b'.' => out.push(byte as char),
-            other => out.push_str(&format!("\\x{other:02x}")),
-        }
-    }
-    out
-}
+pub use nails_base::fstab::{FstabEntry, escape_path, parse_fstab, spec_device};
 
 /// The `.mount` unit for a mount point.
 pub fn mount_unit(path: &Path) -> String {

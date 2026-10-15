@@ -9,7 +9,8 @@ use crate::{Filesystem, Result, verify_base_config_clean};
 use std::path::PathBuf;
 
 /// Refuses activation while the decoy's own `/etc/nixos` names the hidden
-/// environment: the hidden volume, its device or mount point, or NAILS.
+/// environment: the hidden volume's device or mount point (or the units
+/// systemd names after them), its mapping where a line opens it, or NAILS.
 #[derive(Debug, Clone, Default)]
 pub struct SuspiciousNailsReferenceCheck {
     hidden_volume_root: PathBuf,
@@ -149,7 +150,7 @@ mod tests {
             ("/etc/nixos/a.nix", "{ config.nails.enable = true; }"),
             (
                 "/etc/nixos/b.nix",
-                "{\n  fileSystems.\"/mnt/hidden\" = { };\n  x = \"plausible\";\n}",
+                "{\n  fileSystems.\"/mnt/hidden\" = { };\n  x = \"mnt-hidden.mount\";\n  y = \"plausible\";\n}",
             ),
         ]);
         assert!(result.is_fail());

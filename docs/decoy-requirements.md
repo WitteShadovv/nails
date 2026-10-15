@@ -158,16 +158,30 @@ logind.
   `systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; };`.
 - **No swap / hibernation**: leave `swapDevices` empty and do not configure
   `boot.resumeDevice` or a resume kernel parameter.
-- **Nothing in `/etc/nixos` names the hidden environment**: no `fileSystems`
-  entry for the hidden volume's mount point, no `/dev/mapper/<name>` path of
-  its device, no `boot.initrd.luks.devices` entry, crypttab text or
-  `cryptsetup` line with its mapping name, and no mention of NAILS. The
+- **Nothing in `/etc/nixos` names the hidden environment**. The
   `suspicious-nails-reference` check reads every `.nix` file there and refuses
-  activation with the file, the line and the text it found. Comments count for
-  paths but not for the mapping name, so a neutral name such as `data` may
-  appear in the comments `nixos-generate-config` writes. Run
-  `nixos-generate-config` only while the hidden volume is closed: it writes an
-  entry for every mounted filesystem.
+  activation with the file, the line and the text it found, in comments as in
+  code, when a line holds:
+  - the hidden volume's mount point as a whole path (`/mnt/data`, also
+    `/mnt/data/nixos`, but not `/mnt/data2`), or the units systemd names after
+    it (`mnt-data.mount`, `mnt-data.automount`);
+  - its device as a whole path (`/dev/mapper/data`,
+    `/dev/disk/by-id/dm-name-data`), or the unit systemd names after it
+    (`dev-mapper-data.device`);
+  - its mapping name where a line opens the volume: a
+    `boot.initrd.luks.devices` entry (`luks.devices.data`,
+    `luks.devices."data"`, or `data = { … }` inside `luks.devices = { … }`), a
+    line that mentions `crypttab` or `cryptsetup` (`cryptsetup open /dev/sdb2
+    data`, `systemd-cryptsetup@data.service`), or a crypttab line that starts
+    with the name (`data UUID=… none luks`);
+  - text NAILS writes during a session, or the word `nails`.
+
+  Nothing else counts. The mapping name as an ordinary word passes
+  (`description = "Back up user data"`, or the comment
+  `nixos-generate-config` writes above `system.stateVersion`), and so do a
+  directory such as `/var/lib/postgresql/data`, the word `hidden` and options
+  such as `services.plausible`. Run `nixos-generate-config` only while the
+  hidden volume is closed: it writes an entry for every mounted filesystem.
 
 ### Ubuntu
 

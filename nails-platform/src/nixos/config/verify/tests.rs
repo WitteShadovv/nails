@@ -244,33 +244,83 @@ fn the_stock_configuration_of_nixos_26_05_and_26_11_is_clean() {
 }
 
 /// The leak forms that name the mapping without its device path, beside the
-/// device path itself in a comment: each is still refused.
+/// device path itself in a comment: each is still refused, commented out or
+/// not.
 #[test]
 fn every_leak_form_of_the_mapper_name_is_refused() {
+    use ReferenceKind::{Device, DeviceUnit, MapperName, MountUnit};
     let cases = [
         (
             "{ boot.initrd.luks.devices.data.device = \"/dev/disk/by-uuid/1\"; }",
-            (1, "data", ReferenceKind::MapperName),
+            (1, "data", MapperName),
         ),
         (
             "{ boot.initrd.luks.devices.\"data\".device = \"/dev/disk/by-uuid/1\"; }",
-            (1, "data", ReferenceKind::MapperName),
+            (1, "data", MapperName),
         ),
         (
             "{ boot.initrd.luks.devices = {\n  data = { device = \"/dev/disk/by-uuid/1\"; };\n}; }",
-            (2, "data", ReferenceKind::MapperName),
+            (2, "data", MapperName),
         ),
         (
             "{ environment.etc.crypttab.text = \"data /dev/sdb2 none tcrypt\"; }",
-            (1, "data", ReferenceKind::MapperName),
+            (1, "data", MapperName),
         ),
         (
             "{ systemd.services.x.script = \"cryptsetup open /dev/sdb2 data\"; }",
-            (1, "data", ReferenceKind::MapperName),
+            (1, "data", MapperName),
         ),
         (
             "{ }\n# mount /dev/mapper/data before work\n",
-            (2, "/dev/mapper/data", ReferenceKind::Device),
+            (2, "/dev/mapper/data", Device),
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices.data.device = \"/dev/disk/by-uuid/7d2c9e14\";\n",
+            (2, "data", MapperName),
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices.\"data\".device = \"/dev/disk/by-uuid/7d2c9e14\";\n",
+            (2, "data", MapperName),
+        ),
+        (
+            "{ }\n/* boot.initrd.luks.devices.data.device = \"/dev/sdb2\"; */\n",
+            (2, "data", MapperName),
+        ),
+        (
+            "{ }\n# boot.initrd.luks.devices = {\n#   data = {\n#     device = \"/dev/sdb2\";\n#   };\n# };\n",
+            (3, "data", MapperName),
+        ),
+        (
+            "{ }\n# cryptsetup open /dev/sdb2 data\n",
+            (2, "data", MapperName),
+        ),
+        (
+            "{ }\n# environment.etc.crypttab.text = \"data /dev/sdb2 none tcrypt\";\n",
+            (2, "data", MapperName),
+        ),
+        (
+            "{ environment.etc.crypttab.text = ''\n  data UUID=7d2c9e14 none luks\n''; }",
+            (2, "data", MapperName),
+        ),
+        (
+            "{ systemd.services.x.requires = [ \"systemd-cryptsetup@data.service\" ]; }",
+            (1, "data", MapperName),
+        ),
+        (
+            "{ systemd.services.x.after = [ \"mnt-data.mount\" ]; }",
+            (1, "mnt-data.mount", MountUnit),
+        ),
+        (
+            "{ systemd.services.x.after = [ \"mnt-data.automount\" ]; }",
+            (1, "mnt-data.automount", MountUnit),
+        ),
+        (
+            "{ systemd.services.x.requires = [ \"dev-mapper-data.device\" ]; }",
+            (1, "dev-mapper-data.device", DeviceUnit),
+        ),
+        (
+            "{ fileSystems.\"/srv\".device = \"/dev/disk/by-id/dm-name-data\"; }",
+            (1, "/dev/disk/by-id/dm-name-data", Device),
         ),
     ];
     for (content, expected) in cases {
@@ -279,6 +329,8 @@ fn every_leak_form_of_the_mapper_name_is_refused() {
     }
 }
 
+/// Ordinary configuration passes: the mapping name as a word or a
+/// directory, and words and options that merely look related.
 #[test]
 fn ordinary_uses_of_the_mapper_name_pass() {
     for content in [
@@ -289,6 +341,12 @@ fn ordinary_uses_of_the_mapper_name_pass() {
         "{ services.evolution-data-server.enable = true; }",
         "{ fileSystems.\"/mnt/data2\".device = \"/dev/sdb1\"; }",
         "{ swapDevices = [ { device = \"/dev/mapper/data-swap\"; } ]; }",
+        "{ systemd.services.backup.description = \"Back up user data\"; }",
+        "{ users.users.alice = {\n  data = 1;\n}; }",
+        "{ services.plausible.enable = true; }",
+        "{ }\n# an implausible setting\n",
+        "{ }\n# plausible deniability\n",
+        "{ systemd.services.x.after = [ \"srv-mnt-data.mount\" ]; }",
     ] {
         let scan = scan_configuration(content);
         assert!(scan.is_clean(), "{content}: {scan:#?}");
@@ -344,27 +402,23 @@ fn the_word_hidden_alone_passes() {
     }
 }
 
+/// A path with `hidden` in it is no trace of this hidden volume: only its
+/// own mount point counts.
 #[test]
-fn the_default_hidden_paths_are_refused() {
-    for (content, text) in [
-        ("{ fileSystems.\"/mnt/hidden\" = { }; }", "/mnt/hidden"),
-        ("{ imports = [ /srv/hidden/extra.nix ]; }", "/hidden/"),
-        (
-            "{ inputs.hidden.url = \"path:hidden/nixos\"; }",
-            "hidden/nixos",
-        ),
+fn paths_named_hidden_pass() {
+    for content in [
+        "{ fileSystems.\"/mnt/hidden\" = { }; }",
+        "{ imports = [ /srv/hidden/extra.nix ]; }",
+        "{ inputs.hidden.url = \"path:hidden/nixos\"; }",
+        "{ services.nginx.virtualHosts.x.locations.\"/hidden/\".return = \"404\"; }",
     ] {
         let scan = scan_configuration(content);
-        assert_eq!(
-            only_reference(&scan),
-            (1, text, ReferenceKind::HiddenPath),
-            "{content}"
-        );
+        assert!(scan.is_clean(), "{content}: {scan:#?}");
     }
 }
 
 #[test]
-fn nails_and_deniability_words_are_refused() {
+fn nails_is_refused() {
     for (content, expected) in [
         (
             "{ ... }: { imports = [ ./nails/configuration.nix ]; }",
@@ -374,14 +428,15 @@ fn nails_and_deniability_words_are_refused() {
             "{ config.nails.enable = true; }",
             ("nails", ReferenceKind::ToolName),
         ),
-        (
-            "{ assertions = [ { message = \"Plausible Deniability\"; } ]; }",
-            ("Plausible", ReferenceKind::DeniabilityWord),
-        ),
+        ("{ }\n# NAILS\n", ("NAILS", ReferenceKind::ToolName)),
     ] {
         let scan = scan_configuration(content);
         let (line, text, kind) = only_reference(&scan);
-        assert_eq!((line, text, kind), (1, expected.0, expected.1), "{content}");
+        assert_eq!(
+            (text, kind),
+            (expected.0, expected.1),
+            "{content}: line {line}"
+        );
     }
 
     let scan = scan_configuration("{ networking.hostName = \"snails-box\"; }");
@@ -542,11 +597,11 @@ fn every_kind_says_what_it_is_and_what_to_do() {
     for kind in [
         ReferenceKind::StagedText,
         ReferenceKind::Device,
+        ReferenceKind::DeviceUnit,
         ReferenceKind::MountPoint,
-        ReferenceKind::HiddenPath,
+        ReferenceKind::MountUnit,
         ReferenceKind::MapperName,
         ReferenceKind::ToolName,
-        ReferenceKind::DeniabilityWord,
     ] {
         assert!(!kind.reason().is_empty());
         assert!(
@@ -556,4 +611,5 @@ fn every_kind_says_what_it_is_and_what_to_do() {
     }
     assert!(ReferenceKind::MapperName.remedy().contains("under a name"));
     assert!(ReferenceKind::MountPoint.remedy().contains("at a path"));
+    assert!(ReferenceKind::MountUnit.remedy().contains("at a path"));
 }
