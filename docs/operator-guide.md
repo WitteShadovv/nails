@@ -1015,9 +1015,14 @@ real hardware:
 - decoy roots unlocked with a TPM-sealed key (the mapping survives the
   soft-reboot, but anything in the hidden session that measures into PCRs changes
   them for the rest of the uptime);
+- decoy roots on storage the initrd assembled beyond LUKS and LVM (mdraid,
+  multipath, an iSCSI root): a soft-reboot never assembles that storage again,
+  so no service stopped at either transition may tear it down;
 - GRUB's `grubenv` (keep `/boot` read-only, as the fstab policy does);
 - user services that do not stop promptly, delaying an orderly transition up to
   `DefaultTimeoutStopSec`.
+
+Secure Boot does not affect a soft-reboot, which loads no new kernel.
 
 Rehearse on your own machine before relying on it.
 
