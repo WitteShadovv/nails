@@ -72,21 +72,24 @@ pub(crate) fn config_error_line(error: &NailsError) -> String {
 }
 
 /// The next step after a configuration read that was refused for lack of
-/// permission: the full `sudo` line that runs `command` again. `init` leaves
-/// the configuration readable by root only, so this is what an unprivileged
-/// `status` or `check` meets. Root gets no hint, since sudo would not help.
+/// permission: the `sudo` line that runs the same invocation again, its
+/// `--config` and flags included. `init` leaves the configuration readable by
+/// root only, so this is what an unprivileged `status` or `check` meets. Root
+/// gets no hint, since sudo would not help.
 pub(crate) fn config_read_hint(error: &NailsError, command: &str) -> Option<String> {
     sudo_line_for(error, command).map(|line| format!("run it as root: {line}"))
 }
 
-/// The `sudo` line that runs `command` again with the running binary, when
-/// `error` refused a read for lack of permission and the user is not root.
+/// The `sudo` line that runs this invocation again with the running binary,
+/// when `error` refused a read for lack of permission and the user is not
+/// root. `command` names the subcommand when no arguments can be read.
 pub(crate) fn sudo_line_for(error: &NailsError, command: &str) -> Option<String> {
     sudo_line(
         error,
         command,
         crate::cli::main_guard::effective_user_is_root(),
         std::env::current_exe().ok().as_deref(),
+        &crate::cli::main_guard::invocation_args(),
     )
 }
 
@@ -95,10 +98,11 @@ fn sudo_line(
     command: &str,
     is_root: bool,
     binary: Option<&Path>,
+    args: &[std::ffi::OsString],
 ) -> Option<String> {
     let refused = matches!(error, NailsError::PermissionDenied(_))
         || error.io_kind() == Some(std::io::ErrorKind::PermissionDenied);
-    (refused && !is_root).then(|| crate::cli::main_guard::sudo_command(binary, command))
+    (refused && !is_root).then(|| crate::cli::main_guard::sudo_command(binary, command, args))
 }
 
 /// The structured error for a configuration load failure of `command`, with
@@ -428,13 +432,33 @@ mod tests {
             "{}",
             super::config_error_line(&error)
         );
+        // The README's own quick start, run without sudo: the line keeps the
+        // configuration it named.
+        let invocation: Vec<std::ffi::OsString> = [
+            "--config",
+            "/mnt/data/config/nails.toml.new",
+            "config",
+            "show",
+        ]
+        .iter()
+        .map(std::ffi::OsString::from)
+        .collect();
         assert_eq!(
-            sudo_line(&error, "status", false, Some(Path::new("/mnt/data/nails"))),
-            Some("sudo /mnt/data/nails status".to_string())
+            sudo_line(
+                &error,
+                "config show",
+                false,
+                Some(Path::new("/mnt/data/nails")),
+                &invocation
+            ),
+            Some(
+                "sudo /mnt/data/nails --config /mnt/data/config/nails.toml.new config show"
+                    .to_string()
+            )
         );
         let denied = NailsError::PermissionDenied("state.json".into());
         assert_eq!(
-            sudo_line(&denied, "status", false, None),
+            sudo_line(&denied, "status", false, None, &[]),
             Some("sudo nails status".to_string())
         );
     }
@@ -443,11 +467,15 @@ mod tests {
     fn only_a_refused_read_by_a_non_root_user_gets_the_sudo_line() {
         let binary = Some(Path::new("/mnt/data/nails"));
         let denied = unreadable(std::io::ErrorKind::PermissionDenied);
-        assert_eq!(sudo_line(&denied, "status", true, binary), None, "root");
+        assert_eq!(
+            sudo_line(&denied, "status", true, binary, &[]),
+            None,
+            "root"
+        );
         let other = unreadable(std::io::ErrorKind::IsADirectory);
-        assert_eq!(sudo_line(&other, "status", false, binary), None);
+        assert_eq!(sudo_line(&other, "status", false, binary, &[]), None);
         let invalid = NailsError::ConfigError("invalid config".into());
-        assert_eq!(sudo_line(&invalid, "status", false, binary), None);
+        assert_eq!(sudo_line(&invalid, "status", false, binary, &[]), None);
     }
 
     fn config_rooted_at(root: &str) -> Config {

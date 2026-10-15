@@ -1230,9 +1230,13 @@ fn test_explicit_config_unreadable_fails() {
     let binary = std::path::PathBuf::from(assert_cmd::cargo::cargo_bin!("nails"))
         .canonicalize()
         .unwrap();
-    // The full sudo line, binary path included: sudo's secure_path never holds
-    // the hidden volume.
-    let sudo = format!("run it as root: sudo {} status", binary.display());
+    // The full sudo line, binary path included (sudo's secure_path never holds
+    // the hidden volume), with the configuration and the flags given.
+    let config = config_file.path().display().to_string();
+    let sudo = format!(
+        "run it as root: sudo {} --config {config} status",
+        binary.display()
+    );
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["--config", config_file.path().to_str().unwrap(), "status"])
@@ -1254,7 +1258,11 @@ fn test_explicit_config_unreadable_fails() {
     assert_eq!(output.status.code(), Some(3));
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["error"]["code"], "config");
-    assert_eq!(value["error"]["hint"], sudo.as_str(), "{value}");
+    assert_eq!(
+        value["error"]["hint"],
+        format!("{sudo} --json").as_str(),
+        "{value}"
+    );
 
     // Restore permissions so temp file cleanup works
     std::fs::set_permissions(config_file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();

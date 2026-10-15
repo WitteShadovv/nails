@@ -365,12 +365,13 @@ pub struct RecoverArgs {}
 #[derive(Args, Debug, Clone, Default, PartialEq, Eq)]
 #[command(after_long_help = "\
 EXAMPLES:
-  sudo nails status                   Show the current state and uptime
-  sudo nails status --details         Add resolved paths and overlay details
-  sudo nails status --json            Emit a machine-readable envelope
+  sudo /mnt/data/nails status             Show the current state and uptime
+  sudo /mnt/data/nails status --details   Add resolved paths and overlay details
+  sudo /mnt/data/nails status --json      Emit a machine-readable envelope
 
 The configuration `init` writes is readable by root only, so status runs with
-sudo like the other commands.")]
+sudo like the other commands, by the binary's full path: sudo's secure_path
+never includes the hidden volume.")]
 pub struct StatusArgs {
     /// Show resolved paths and overlay mount details
     #[arg(long)]
