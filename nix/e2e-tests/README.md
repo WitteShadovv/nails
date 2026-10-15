@@ -101,6 +101,13 @@ redirects it to the hidden volume.
   every hidden NixOS configuration can soft-reboot without the module that
   `nails check` prints for an older nixpkgs.
 - `graphical-vm-config.nix`: LightDM + autologin + shell/notification tooling
+- `notification-server.nix`: a user service of testuser that owns
+  `org.freedesktop.Notifications` on testuser's session bus and records every
+  call, with the uid and the program that made it, in testuser's runtime
+  directory. NAILS shows its alerts as the operator, on the operator's bus;
+  `py/nails_e2e/desktop.py` logs testuser in on the console (the owner of the
+  active session on seat0, whom the session watcher alerts) and reads the
+  records. No test stubs `notify-send`.
 - `forensic-vm-config.nix` and `impermanent-decoy.nix`: an on-disk Nix store
   image (`useNixStoreImage`). The VM start script packs the whole closure into
   an erofs image on every start; `default.nix` gives every machine a copy of
@@ -456,6 +463,11 @@ soft-reboots with `py/nails_e2e/session.py`:
   sessions that deletes the hidden toplevel from the decoy store, the second
   session still starting it, and the decoy store (database, writable store
   layer, profiles and roots) unchanged by each session;
+- `session-alert-delivery`: the notification of `sudo nails rehearse plant` and
+  the watcher's alert for a disk mounted read-write reaching a notification
+  server on the operator's own session bus, from the operator's uid, once on a
+  decoy with `notify-send` and once on one without it, where `busctl` carries
+  them;
 - `session-disk-mounts`: a second disk mounted read-write in the hidden session
   raising the watcher's alert, `deactivate` freeing it while busy, and with
   `[session_mounts] read_only` the disk read-only from the hidden boot on, a
@@ -500,7 +512,8 @@ Layout:
   touches the single decoy disk the forensic check images, with the layout of
   `e2e-tests/lib/hidden-volume.nix`. The tmpfs is below `/run`, which a
   soft-reboot does not carry, so after the switch the file is reachable only
-  through the open loop device and is gone once the session ends. It also
+  through its loop device, which is attached without autoclear so that the
+  hidden root can be opened again on the decoy after a session. It also
   switches to a volatile journal (plus masking an active rsyslog), which the
   decoy-persistence preflight needs.
 - `tests/smoke.nix`: the smoke scenario, generated once per image-table entry.
@@ -523,9 +536,12 @@ service starts again; asserts the kernel log names no session drop-in and no
 failed unmount of the hidden volume; runs a second session
 that ends with `deactivate`, entered with `/boot` and the ESP unmounted where
 `blk-availability.service` runs, so that nothing carried below the hidden
-volume keeps the unit's stop from unmounting it; and runs the host-side decoy
-disk-image check (`lib/disk_forensics.py`, shared with the NixOS suite) with
-null and positive controls.
+volume keeps the unit's stop from unmounting it; rehearses on that session
+(`rehearse plant` in it, a refused scan there, and after the plain
+`deactivate` a clean scan of the raw decoy devices in the same boot, which on
+Ubuntu 24.04's systemd 255 only the session's entry time allows); and runs the
+host-side decoy disk-image check (`lib/disk_forensics.py`, shared with the
+NixOS suite) with null and positive controls.
 
 `nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
 guest writes vanish when QEMU exits and there is no root qcow2 for the forensic
