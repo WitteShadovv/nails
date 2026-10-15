@@ -119,47 +119,76 @@ pub fn execute(
                     tracing::info!(devices = set.len(), "Unused disks set read-only");
                 }
             }
-            // A mount stacked on the hidden root takes every file saved there
-            // from now on; the gate refuses NAILS' own writes, the operator is
-            // told once per mount.
-            if let Some(cover) = cover_watch.observe(&mounts) {
-                tracing::warn!(
-                    mount_point = %cover.mount_point.display(),
-                    "A disk is mounted over the folder in use"
-                );
-                send_in_background(cover_alert(&cover), env, "cover");
-            }
-            if mounts_config.alert {
-                // A cover on a parent of the root lies outside it; its own
-                // alert above already names it.
-                let cover = cover_watch.cover(&mounts).map(|m| m.mount_id);
-                for mount in mount_watch
-                    .observe(&mounts, &is_block)
-                    .into_iter()
-                    .filter(|m| Some(m.mount_id) != cover)
-                {
-                    tracing::warn!(
-                        mount_point = %mount.mount_point.display(),
-                        "A disk is mounted read-write"
-                    );
-                    send_in_background(mount_alert(&mount), env, "disk-mount");
-                }
-            }
+            let alerts = tick_alerts(
+                &mounts,
+                &mut cover_watch,
+                &mut mount_watch,
+                mounts_config.alert,
+                &is_block,
+            );
+            let env = env.clone();
+            send_all_in_background(alerts, move |alert| send_immediate(alert, &env));
         },
     );
 
     ExitStatus::Ok
 }
 
-/// Send `alert` from a thread of its own ([`watcher::in_background`]), so the
-/// watch loop never waits for the notification daemon.
-fn send_in_background(alert: Notification, env: &nails_core::RuntimeEnv, what: &'static str) {
-    let env = env.clone();
-    watcher::in_background(move || {
-        if let Err(e) = send_immediate(&alert, &env) {
-            tracing::warn!(error = %e, "Could not deliver the {what} alert");
+/// The alerts one round of the watch loop raises for the mount table
+/// `mounts`, each with the name the log gives it.
+///
+/// A mount stacked on the hidden root takes every file saved there from now
+/// on: the gate refuses NAILS' own writes, and the operator is told once per
+/// mount. Then, with `alert_mounts`, each disk newly mounted read-write
+/// outside the session; a cover on a parent of the root lies outside it, and
+/// its own alert already names it.
+fn tick_alerts(
+    mounts: &[MountEntry],
+    cover_watch: &mut watcher::CoverWatch,
+    mount_watch: &mut watcher::MountWatch,
+    alert_mounts: bool,
+    is_block: &dyn Fn(&MountEntry) -> bool,
+) -> Vec<(Notification, &'static str)> {
+    let mut alerts = Vec::new();
+    if let Some(cover) = cover_watch.observe(mounts) {
+        tracing::warn!(
+            mount_point = %cover.mount_point.display(),
+            "A disk is mounted over the folder in use"
+        );
+        alerts.push((cover_alert(&cover), "cover"));
+    }
+    if alert_mounts {
+        let cover = cover_watch.cover(mounts).map(|m| m.mount_id);
+        for mount in mount_watch
+            .observe(mounts, is_block)
+            .into_iter()
+            .filter(|m| Some(m.mount_id) != cover)
+        {
+            tracing::warn!(
+                mount_point = %mount.mount_point.display(),
+                "A disk is mounted read-write"
+            );
+            alerts.push((mount_alert(&mount), "disk-mount"));
         }
-    });
+    }
+    alerts
+}
+
+/// Send each alert through `send` from a thread of its own
+/// ([`watcher::in_background`]), so the watch loop never waits for the
+/// notification daemon.
+fn send_all_in_background<S>(alerts: Vec<(Notification, &'static str)>, send: S)
+where
+    S: Fn(&Notification) -> nails_core::Result<()> + Clone + Send + 'static,
+{
+    for (alert, what) in alerts {
+        let send = send.clone();
+        watcher::in_background(move || {
+            if let Err(e) = send(&alert) {
+                tracing::warn!(error = %e, "Could not deliver the {what} alert");
+            }
+        });
+    }
 }
 
 /// The neutral desktop alert raised when a disk is mounted read-write during
@@ -221,6 +250,79 @@ mod tests {
         let text = format!("{} {}", alert.title, alert.body).to_lowercase();
         for word in REVEALING {
             assert!(!text.contains(word), "{word:?} in {text:?}");
+        }
+    }
+
+    fn mounts(table: &str) -> Vec<MountEntry> {
+        nails_teardown::mountinfo::parse_mountinfo(table)
+    }
+
+    fn block(mount: &MountEntry) -> bool {
+        mount.source.starts_with("/dev/")
+    }
+
+    const SESSION: &str = "1 0 0:30 / / rw - overlay overlay rw,upperdir=/u\n\
+                           2 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n";
+
+    #[test]
+    fn a_round_alerts_a_cover_first_then_each_new_read_write_disk_once() {
+        let mut cover_watch = watcher::CoverWatch::new(Path::new("/mnt/data"), Some("253:0"));
+        let mut mount_watch = watcher::MountWatch::new(Path::new("/mnt/data"));
+        let mut round = |table: &str, alert_mounts: bool| {
+            tick_alerts(
+                &mounts(table),
+                &mut cover_watch,
+                &mut mount_watch,
+                alert_mounts,
+                &block,
+            )
+            .into_iter()
+            .map(|(alert, what)| (alert.title, what))
+            .collect::<Vec<_>>()
+        };
+        assert!(round(SESSION, true).is_empty());
+        let usb = format!("{SESSION}3 1 8:33 / /media/usb rw - vfat /dev/sdc1 rw\n");
+        assert_eq!(
+            round(&usb, true),
+            [("Disk mounted with write access".to_string(), "disk-mount")]
+        );
+        assert!(round(&usb, true).is_empty(), "once per mount");
+        let covered = format!("{usb}4 2 8:34 / /mnt/data rw - ext4 /dev/sdc2 rw\n");
+        assert_eq!(
+            round(&covered, false),
+            [("Disk mounted over a folder in use".to_string(), "cover")]
+        );
+    }
+
+    /// A notification daemon that never answers holds up neither the round
+    /// nor the other alerts.
+    #[test]
+    fn an_alert_that_never_returns_holds_up_no_round() {
+        let (sent, received) = std::sync::mpsc::channel();
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(sent));
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            send_all_in_background(
+                vec![(backend_alert(), "backend"), (backend_alert(), "backend")],
+                move |alert: &Notification| -> nails_core::Result<()> {
+                    let _ = sent.lock().map(|sent| sent.send(alert.title.clone()));
+                    loop {
+                        std::thread::park();
+                    }
+                },
+            );
+            let _ = done.send(());
+        });
+        let wait = std::time::Duration::from_secs(10);
+        assert!(
+            finished.recv_timeout(wait).is_ok(),
+            "the round waited for an alert"
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                received.recv_timeout(wait).as_deref(),
+                Ok("Storage unavailable")
+            );
         }
     }
 
