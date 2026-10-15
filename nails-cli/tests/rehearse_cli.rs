@@ -262,6 +262,8 @@ fn an_offline_scan_of_a_clean_image_exits_zero() {
         "{stdout}"
     );
     assert!(stdout.contains("Not visible to this scan:"), "{stdout}");
+    // A token file names no channels: nothing to list as untested.
+    assert!(!stdout.contains("Not tested"), "{stdout}");
 }
 
 #[test]
@@ -461,6 +463,33 @@ fn a_scan_outside_a_hidden_session_runs_in_the_planting_boot() {
         json(&output)["data"]["scan"]["devices"][0]["hits"],
         serde_json::json!([])
     );
+}
+
+#[test]
+fn a_clean_scan_names_the_channels_the_canary_never_went_into() {
+    let harness = Harness::new();
+    harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), Some(0)));
+    let clean = harness.image("clean.img", None);
+
+    let output = harness.run(&["--ascii", "rehearse", "scan", "--device", path(&clean)]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_no_token(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("not found on the scanned devices"),
+        "{stdout}"
+    );
+    let untested = stdout
+        .find("Not tested, because the canary was never planted there:")
+        .unwrap_or_else(|| panic!("no untested channels listed: {stdout}"));
+    let not_visible = stdout.find("Not visible to this scan:").unwrap();
+    assert!(untested < not_visible, "{stdout}");
+    assert!(
+        stdout.contains("  [-] Notification: no session bus"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("OverlayFile: "), "{stdout}");
 }
 
 #[test]

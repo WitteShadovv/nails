@@ -26,9 +26,14 @@ pub(crate) fn print_channels(style: Style, channels: &[ChannelRecord]) {
     }
 }
 
-/// The scan result: the headline, each device with its hits by offset, and
-/// what the scan cannot see.
-pub(crate) fn print_scan(style: Style, report: &ScanReport, token: &str) {
+/// The scan result: the headline, each device with its hits by offset, the
+/// channels the canary never went into, and what the scan cannot see.
+pub(crate) fn print_scan(
+    style: Style,
+    report: &ScanReport,
+    token: &str,
+    channels: &[ChannelRecord],
+) {
     let hits = report.total_hits();
     let headline = if hits > 0 {
         style.paint_bold(
@@ -84,6 +89,7 @@ pub(crate) fn print_scan(style: Style, report: &ScanReport, token: &str) {
             }
         }
     }
+    print_untested(style, channels);
     println!();
     println!("{}", style.paint("Not visible to this scan:", Tone::Dim));
     for line in &report.not_visible {
@@ -91,6 +97,33 @@ pub(crate) fn print_scan(style: Style, report: &ScanReport, token: &str) {
             "  {} {}",
             style.glyph(Mark::Arrow),
             style.paint(line, Tone::Dim)
+        );
+    }
+}
+
+/// The channels the canary was never planted in: a clean scan says nothing
+/// about them, so they are listed with every result.
+fn print_untested(style: Style, channels: &[ChannelRecord]) {
+    let mut untested = channels
+        .iter()
+        .filter_map(|record| Some((record.kind, record.skipped.as_deref()?)))
+        .peekable();
+    if untested.peek().is_none() {
+        return;
+    }
+    println!();
+    println!(
+        "{}",
+        style.paint(
+            "Not tested, because the canary was never planted there:",
+            Tone::Dim
+        )
+    );
+    for (kind, reason) in untested {
+        println!(
+            "  {} {kind:?}: {}",
+            style.glyph(Mark::Neutral),
+            style.paint(reason, Tone::Dim)
         );
     }
 }

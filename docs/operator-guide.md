@@ -686,8 +686,10 @@ check, but a scan in the planting session proves little). To rehearse the
 power-off exit instead, end the session with `nails deactivate --poweroff` and
 boot the decoy again before the scan. Exit `0` means the token was not found,
 `11` that it was (with the device and byte offset of each hit), `9` that a
-device could not be scanned completely. `nails rehearse` alone shows where you
-are and the next step.
+device could not be scanned completely. A channel the canary could not be
+planted in (a notification with no desktop session to show it, say) is listed
+with the result as not tested. `nails rehearse` alone shows where you are and
+the next step.
 
 A clean scan covers only what a host can read. It cannot see SSD cells the
 drive has remapped or keeps in reserve, blocks discarded with TRIM, disks that

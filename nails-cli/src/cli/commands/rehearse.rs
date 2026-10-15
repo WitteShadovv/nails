@@ -420,7 +420,9 @@ fn scan(settings: &OutputSettings, config: &Config, args: &RehearseScanArgs) -> 
         removed: Vec::new(),
         next_step: next_step(state.as_ref(), &here),
     };
-    emit(settings, &data, |style| print_scan(style, &report, &token));
+    emit(settings, &data, |style| {
+        print_scan(style, &report, &token, &data.channels);
+    });
     if report.total_hits() > 0 {
         ExitStatus::VerifyCritical
     } else if report.incomplete() {
