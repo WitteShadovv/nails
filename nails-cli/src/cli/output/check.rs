@@ -16,6 +16,9 @@ use nails_core::output::{Mark, Style};
 
 use super::envelope::Envelope;
 
+mod inherited;
+pub use inherited::{InheritedEntry, InheritedSummary};
+
 /// The command name used in the JSON envelope and in error reports.
 pub const COMMAND: &str = "check";
 
@@ -102,60 +105,6 @@ pub struct ProfileSummary {
     pub mode: &'static str,
     /// A human description of the selected target, if any.
     pub detail: Option<String>,
-}
-
-/// One inherited decoy persona entry.
-#[derive(Debug, Serialize)]
-pub struct InheritedEntry {
-    /// The entry's name (autostart stem, unit name, or operator login).
-    pub name: String,
-    /// Where it comes from (`"user-autostart"`, `"global-unit"`, `"linger"`, …).
-    pub source: &'static str,
-    /// The name looks like a remote-linked client (name-only heuristic).
-    pub remote_linked: bool,
-    /// Whether this entry can be masked with `[persona] mask_inherited`.
-    pub maskable: bool,
-}
-
-/// The decoy persona state the hidden session would inherit.
-#[derive(Debug, Serialize)]
-pub struct InheritedSummary {
-    /// Whether the inventory could be collected (an operator was resolved).
-    pub inspected: bool,
-    /// Every inherited entry, grouped by source.
-    pub entries: Vec<InheritedEntry>,
-    /// The names tagged as remote-linked.
-    pub remote_linked: Vec<String>,
-}
-
-impl InheritedSummary {
-    /// The not-inspected summary used when no operator could be resolved.
-    pub fn not_inspected() -> Self {
-        Self {
-            inspected: false,
-            entries: Vec::new(),
-            remote_linked: Vec::new(),
-        }
-    }
-
-    /// Build the summary from a collected inventory.
-    pub fn from_inventory(inventory: &nails_core::PersonaInventory) -> Self {
-        let entries = inventory
-            .entries
-            .iter()
-            .map(|entry| InheritedEntry {
-                name: entry.name.clone(),
-                source: entry.source.as_str(),
-                remote_linked: entry.remote_linked,
-                maskable: entry.source.is_maskable(),
-            })
-            .collect();
-        Self {
-            inspected: true,
-            entries,
-            remote_linked: inventory.remote_linked_names(),
-        }
-    }
 }
 
 /// The full readiness report.
@@ -292,35 +241,8 @@ pub fn print_check_human(report: &CheckReport, style: Style) {
     println!();
 
     println!("Inherited decoy state:");
-    if !report.inherited.inspected {
-        println!(
-            "  {} not inspected (could not resolve the target user)",
-            style.mark(Mark::Info)
-        );
-    } else if report.inherited.entries.is_empty() {
-        println!("  {} none inherited", style.mark(Mark::Pass));
-    } else {
-        for entry in &report.inherited.entries {
-            let tags = match (entry.remote_linked, entry.maskable) {
-                (true, true) => "  [remote-linked, maskable]",
-                (true, false) => "  [remote-linked]",
-                (false, true) => "  [maskable]",
-                (false, false) => "",
-            };
-            println!(
-                "  {} {} ({}){tags}",
-                style.mark(Mark::Bullet),
-                entry.name,
-                entry.source
-            );
-        }
-        if !report.inherited.remote_linked.is_empty() {
-            println!(
-                "  {} {} look like remote-linked client(s); mask with [persona] mask_inherited",
-                style.mark(Mark::Warn),
-                report.inherited.remote_linked.len()
-            );
-        }
+    for line in inherited::inherited_lines(&report.inherited, report.config.persona_mode, style) {
+        println!("  {line}");
     }
     println!();
 
@@ -381,6 +303,8 @@ mod tests {
                     source: "user-autostart",
                     remote_linked: true,
                     maskable: true,
+                    origin: "added",
+                    status: "review",
                 }],
                 remote_linked: vec!["dropbox".into()],
             },
@@ -436,31 +360,8 @@ mod tests {
             true
         );
         assert_eq!(value["data"]["inherited"]["remote_linked"][0], "dropbox");
-    }
-
-    #[test]
-    fn inherited_summary_from_inventory_maps_fields() {
-        use nails_core::{InheritedSource, PersonaEntry, PersonaInventory};
-        let inventory = PersonaInventory {
-            entries: vec![
-                PersonaEntry {
-                    name: "dropbox".into(),
-                    source: InheritedSource::UserAutostart,
-                    remote_linked: true,
-                },
-                PersonaEntry {
-                    name: "alice".into(),
-                    source: InheritedSource::Linger,
-                    remote_linked: false,
-                },
-            ],
-        };
-        let summary = InheritedSummary::from_inventory(&inventory);
-        assert!(summary.inspected);
-        assert_eq!(summary.entries.len(), 2);
-        assert!(summary.entries[0].maskable);
-        assert!(!summary.entries[1].maskable);
-        assert_eq!(summary.remote_linked, vec!["dropbox".to_string()]);
+        assert_eq!(value["data"]["inherited"]["entries"][0]["origin"], "added");
+        assert_eq!(value["data"]["inherited"]["entries"][0]["status"], "review");
     }
 
     #[test]

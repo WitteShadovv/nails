@@ -164,9 +164,11 @@ account:
 - `shared-home` (default): the hidden session works with the decoy home, so
   logging in there gives it the decoy's browser profiles, SSH and GPG keys,
   password-manager state and shell history. This is a deliberate trade-off — it
-  keeps a single, consistent login. `nails check` prints the persona mode,
-  `nails status --json` reports it, and the `inherited-autostart` pre-flight
-  warning lists what the decoy account brings in.
+  keeps a single, consistent login. `nails check` says so on a line of its own
+  under "Inherited decoy state", `nails status --json` reports the mode, and the
+  `inherited-autostart` pre-flight warning lists the autostart entries and user
+  services of the decoy home that need review (see
+  [Inherited decoy state](#inherited-decoy-state)).
 - `fresh-home`: at the first entry, activation creates the operator's home in
   the upper as an opaque directory, so nothing of the decoy home shows through.
   It stays the hidden home at every later entry. The operator is the account
@@ -181,16 +183,52 @@ decoy user — is planned for a later release. It is not an accepted value yet;
 ## Inherited decoy state
 
 The hidden session inherits whatever the decoy starts: enabled system services,
-autostart entries (`~/.config/autostart` and `/etc/xdg/autostart`), enabled
-systemd user services and timers, lingering, and display-manager autologin.
-Sync, cloud, messaging and account clients configured in the decoy therefore run
-under the decoy identity in the hidden session and can reach remote servers and
-your other devices.
+autostart entries, enabled systemd user services and timers, lingering, and
+display-manager autologin. Sync, cloud, messaging and account clients configured
+in the decoy therefore run under the decoy identity in the hidden session and
+can reach remote servers and your other devices.
 
-`nails check` lists this inherited state and flags names that look like
-remote-linked clients (a name-only heuristic; it makes no claim about signed-in
-state). Activation shows the same summary in its pre-flight output (the
-`inherited-autostart` warning).
+NAILS reads the autostart entries a desktop session starts: those in
+`~/.config/autostart` and `/etc/xdg/autostart`, and on NixOS also the
+`etc/xdg/autostart` of each profile NixOS adds to the search path
+(`~/.nix-profile`, `~/.local/state/nix/profile`,
+`/etc/profiles/per-user/<user>`, `/nix/var/nix/profiles/default` and
+`/run/current-system/sw`, where the desktop's own entries live). When several
+directories hold a file of the same name, the first one in that order decides,
+as it does for the desktop, and a `Hidden=true` there hides the entry. User
+services and timers are those enabled in `~/.config/systemd/user` and
+`/etc/systemd/user`. What lives in the home carries over only in `shared-home`;
+the rest carries over in both modes. On NixOS with a hidden configuration, the
+system-wide entries come from that configuration, which normally imports the
+decoy's.
+
+`nails check` lists the inherited entries that need review, and the
+`inherited-autostart` pre-flight check warns about them; activation shows the
+same warning. They are:
+
+- everything in the home, and every system-wide entry that is not a known
+  component of the desktop or the distribution: those were added by you or by
+  third-party software, such as a Dropbox or Syncthing client or your own
+  scripts;
+- lingering and autologin;
+- every entry on a short list of known trace writers, whoever installed it:
+  clients that carry data, or the fact that the machine is running, off the
+  machine. They are sync and cloud storage clients (Dropbox, Nextcloud,
+  ownCloud, Syncthing, MEGA, Insync, OneDrive, rclone), backup tools (Déjà Dup,
+  Pika Backup, Vorta, Back In Time), messaging and meeting clients (Telegram,
+  Signal, Slack, Discord, Element, Keybase, Zoom, Teams), mail, calendar and
+  account clients (Thunderbird, Evolution, Geary, GNOME Online Accounts, KDE
+  Accounts) and phone links (KDE Connect, GSConnect, Valent). `nails check`
+  tags them remote-linked.
+
+The components the desktop or the distribution ships itself are not reported:
+the settings daemons and session services of GNOME, KDE Plasma, Xfce, MATE,
+Cinnamon, LXQt and Budgie, the keyring, PipeWire, D-Bus, the GnuPG and SSH
+agents, input methods and update notifiers. Masking them would break or degrade
+the hidden desktop. `nails check` counts them, and `nails check --json` lists
+every entry with its `origin` (`desktop` or `added`) and its `status`
+(`ignored`, `masked` or `review`). Both lists match names only: they make no
+claim about what an entry does or whether a client is signed in.
 
 `persona.mask_inherited` lists entries to hide from the hidden session, or the
 single value `"*"` for every maskable entry:
@@ -202,8 +240,9 @@ mask_inherited = ["dropbox", "syncthing.service"]
 
 At each entry, activation writes a `Hidden=true` override (an autostart entry)
 or a `/dev/null` mask (a user unit) for every named entry into the operator's
-home in the next root, so the mask lands in the upper only. You can also
-disable an entry from inside the hidden session (`systemctl --user
+home in the next root, so the mask lands in the upper only. A masked entry
+counts as handled: `nails check` shows it as masked and it no longer warns. You
+can also disable an entry from inside the hidden session (`systemctl --user
 mask <unit>`, or remove or override the autostart file): the change lands in the
 upper, so it affects the hidden session only. Lingering and autologin are
 decoy settings — disable them on the decoy itself if they matter.

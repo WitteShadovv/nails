@@ -275,16 +275,16 @@ pub fn build_registry<F: Filesystem>(
             .with_caller_path(inputs.caller_path.as_deref()),
     ));
 
-    // Warns (never fails) about the decoy autostart entries, enabled user
-    // services, lingering and autologin the hidden session would inherit. When no
-    // operator could be resolved the check degrades to a skipped Pass. Fresh-home
-    // mode reports only system-level inherited state.
-    let fresh_home = config.persona.mode == crate::config::PersonaMode::FreshHome;
+    // Warns (never fails) about the inherited decoy autostart entries, enabled
+    // user services, lingering and autologin that need review: not the desktop's
+    // or distribution's own components, and not what [persona] mask_inherited
+    // masks. When no operator could be resolved the check degrades to a skipped
+    // Pass. Fresh-home mode reports only system-level inherited state.
     registry.add_check(Box::new(match inputs.operator.as_ref() {
         Some(operator) => InheritedAutostartCheck::new(
             operator.home().to_path_buf(),
             operator.name.clone(),
-            fresh_home,
+            config.persona.clone(),
         ),
         None => InheritedAutostartCheck::disabled(),
     }));

@@ -48,7 +48,9 @@ pub mod sleep_guard;
 // The in-session watcher over the hidden backend.
 pub mod watcher;
 
-pub use persona::{InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona};
+pub use persona::{
+    EntryStatus, InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona,
+};
 
 #[cfg(test)]
 mod tests {

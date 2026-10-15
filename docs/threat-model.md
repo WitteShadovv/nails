@@ -182,8 +182,10 @@ upper changes.
   configuration changes it), and in `shared-home` the hidden session also
   inherits the decoy account's autostart entries, enabled user services and
   timers, lingering and display-manager autologin. `nails check` inventories
-  them, and `[persona] mask_inherited` writes masks for autostart entries and
-  user units into the upper at entry, so they never run in the hidden session.
+  them and reports those that need review (anything the desktop or the
+  distribution does not ship, and known trace writers such as sync clients),
+  and `[persona] mask_inherited` writes masks for autostart entries and user
+  units into the upper at entry, so they never run in the hidden session.
   Lingering and autologin are reported, not masked.
 - **Network identity.** The overlay does not change machine-id, hostname, MAC
   addresses or NetworkManager profiles (including VPN autoconnect). The kernel

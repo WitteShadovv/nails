@@ -6,10 +6,10 @@
 //! By default NAILS runs the hidden session as the decoy user, in the decoy
 //! home: the root overlay merges the decoy home read-write, so every account,
 //! credential store and application profile configured there is live in the
-//! hidden session. That shared-account model is the legacy behaviour; it is kept
-//! as the explicit, opt-in [`PersonaMode::SharedHome`] because deployments that
-//! rely on the decoy's existing login still need it, and activation warns when it
-//! is in effect.
+//! hidden session. That shared-account model is the default
+//! [`PersonaMode::SharedHome`], kept because deployments that rely on the
+//! decoy's existing login still need it; `nails check` says on a line of its
+//! own when it is in effect.
 //!
 //! [`PersonaMode::FreshHome`] is the opt-in separation: at the first entry the
 //! operator's home becomes an opaque directory in the upper on the hidden
@@ -28,9 +28,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PersonaMode {
-    /// Legacy shared-account model: the hidden session runs in the decoy home,
-    /// merged read-write through the root overlay. Opt-in, and warned about at
-    /// activation, because the decoy's accounts and secrets are live.
+    /// Shared-account model: the hidden session runs in the decoy home, merged
+    /// read-write through the root overlay. The default; `nails check` names it
+    /// on a line of its own, because the decoy's accounts and secrets are live.
     #[default]
     SharedHome,
 

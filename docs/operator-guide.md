@@ -936,12 +936,18 @@ session as an informed choice.
 #### Inherited autostart, services and autologin
 
 The hidden session inherits what the decoy starts automatically: enabled system
-services, `~/.config/autostart` and `/etc/xdg/autostart` entries, enabled user
-services and timers, lingering, and display-manager autologin. Sync, cloud and
-messaging clients therefore run under the decoy identity and can contact remote
-servers and your other devices. `nails check`, and the `inherited-autostart`
-warning in activation's pre-flight output, list this inherited state and flag names that look like remote-linked clients (a
-name-only heuristic).
+services, autostart entries (`~/.config/autostart`, `/etc/xdg/autostart` and, on
+NixOS, the autostart directories of the Nix profiles), enabled user services and
+timers, lingering, and display-manager autologin. Sync, cloud and messaging
+clients therefore run under the decoy identity and can contact remote servers
+and your other devices. `nails check`, and the `inherited-autostart` warning in
+activation's pre-flight output, report what needs review: what you or
+third-party software added, lingering, autologin, and the clients on a short
+list of known trace writers, tagged remote-linked (a name-only heuristic). The
+desktop's and the distribution's own components are counted but not reported;
+see [Inherited decoy state](configuration.md#inherited-decoy-state). In
+`shared-home`, `nails check` also says on a line of its own that the hidden
+session starts in the decoy home.
 
 Disable what you do not want **inside the hidden session**: mask the unit
 (`systemctl --user mask syncthing.service`), remove or override the autostart

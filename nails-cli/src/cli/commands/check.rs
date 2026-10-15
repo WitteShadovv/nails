@@ -206,7 +206,8 @@ fn profile_summary(target: nails_core::HostTarget) -> ProfileSummary {
     }
 }
 
-/// Collect the decoy persona state the hidden session would inherit.
+/// Collect the decoy persona state the hidden session would inherit, judged
+/// under the configured `[persona]` table.
 ///
 /// The check runs non-interactively and often without privileges, so when the
 /// target user cannot be resolved the inventory is reported as "not inspected"
@@ -226,7 +227,7 @@ fn inherited_summary<F: Filesystem>(
 
     let fresh_home = config.persona.mode == PersonaMode::FreshHome;
     let inventory = collect_inherited_persona(fs, user.home(), &user.name, fresh_home);
-    InheritedSummary::from_inventory(&inventory)
+    InheritedSummary::from_inventory(&inventory, &config.persona)
 }
 
 #[cfg(test)]
