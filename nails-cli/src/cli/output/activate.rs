@@ -129,7 +129,14 @@ fn result_event(result: &ActivateResult<'_>, duration: f64) -> ActivateResultEve
                 .as_ref()
                 .map(|p| p.display().to_string());
             event.filesystems = filesystems(entry);
-            event.masked_units = entry.plan.masks.clone();
+            // The same list `status --json` shows for the session.
+            event.masked_units = entry
+                .plan
+                .masks
+                .iter()
+                .chain(&entry.plan.boot_masks)
+                .cloned()
+                .collect();
             event.warnings = entry.warnings.clone();
             event.message = format!(
                 "Prepared in {}; soft-rebooting into the hidden session",
@@ -296,7 +303,7 @@ mod tests {
                 hidden: side(Some("/nix/store/aaa-nixos-system-hidden")),
                 policy_mounts: Vec::new(),
                 masks: vec!["dev-vda3.swap".to_string()],
-                boot_masks: Vec::new(),
+                boot_masks: vec!["systemd-boot-random-seed.service".to_string()],
                 session_units: Vec::new(),
                 backend: Vec::new(),
                 tools: Tools::default(),
@@ -340,7 +347,11 @@ mod tests {
             event.filesystems,
             vec!["/boot: read-only", "/home: overlaid"]
         );
-        assert_eq!(event.masked_units, vec!["dev-vda3.swap"]);
+        // As `status --json` lists them: the boot-loader masks too.
+        assert_eq!(
+            event.masked_units,
+            vec!["dev-vda3.swap", "systemd-boot-random-seed.service"]
+        );
         assert_eq!(
             event.message,
             "Prepared in 2.3s; soft-rebooting into the hidden session"

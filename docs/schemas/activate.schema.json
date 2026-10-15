@@ -85,7 +85,7 @@
           }
         },
         "masked_units": {
-          "description": "Decoy units masked in the hidden root (swap, unmounted disks).",
+          "description": "The decoy units masked in the hidden root: swap, decoy filesystems it does not mount, and the boot-loader units.",
           "type": "array",
           "items": {
             "type": "string",
