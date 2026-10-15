@@ -18,7 +18,6 @@
 //!   decoy disk before the overlays are mounted.
 //!
 //! Warn (surface the hazard, never block):
-//! - the root filesystem type (the persistent decoy substrate),
 //! - an atime policy that records read access on the decoy (`strictatime` /
 //!   missing `noatime`),
 //! - crash-dump channels that persist memory to the decoy disk: a disk
@@ -64,10 +63,6 @@ const PSTORE_DIR: &str = "/sys/fs/pstore";
 const KEXEC_CRASH_LOADED: &str = "/sys/kernel/kexec_crash_loaded";
 /// Enabled-timer marker for the NixOS automatic-upgrade timer.
 const NIXOS_UPGRADE_TIMER: &str = "/etc/systemd/system/timers.target.wants/nixos-upgrade.timer";
-
-/// Filesystem types that are volatile (RAM-backed) and therefore not a durable
-/// decoy substrate.
-const VOLATILE_FSTYPES: &[&str] = &["tmpfs", "ramfs", "overlay"];
 
 /// Pre-flight check that refuses a forensically persistent decoy.
 #[derive(Debug)]
@@ -166,27 +161,25 @@ impl DecoyPersistenceCheck {
         !Self::blockers(fs, Path::new("/")).is_empty()
     }
 
-    /// The `/` mount entry's filesystem type and mount options, if the mount
-    /// table can be read.
-    fn root_mount<F: Filesystem>(fs: &F) -> Option<(String, String)> {
+    /// The `/` mount entry's options, if the mount table can be read.
+    ///
+    /// The root's filesystem type is not judged here: `decoy-root` accepts
+    /// only a root on a block device, which is always on a disk, and names its
+    /// type.
+    fn root_mount_options<F: Filesystem>(fs: &F) -> Option<String> {
         let content = fs.read_file_content(Path::new(MOUNTINFO)).ok()?;
         parse_mountinfo(&content)
             .into_iter()
             .find(|e| e.mount_point == Path::new("/"))
-            .map(|e| (e.fstype, e.mount_opts))
+            .map(|e| e.mount_opts)
     }
 
-    /// Collect the warning-level findings (root fs, atime, crash channels, timers).
+    /// Collect the warning-level findings (atime, crash channels, sudo logging,
+    /// timers).
     fn warnings<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Vec<String> {
         let mut out = Vec::new();
 
-        if let Some((fstype, opts)) = Self::root_mount(fs) {
-            if !VOLATILE_FSTYPES.contains(&fstype.as_str()) {
-                out.push(format!(
-                    "root filesystem is persistent ({fstype}); the decoy's own \
-                     records remain on disk outside the overlays"
-                ));
-            }
+        if let Some(opts) = Self::root_mount_options(fs) {
             // relatime (the kernel default) and noatime do not record every
             // read; strictatime (or an explicit atime with neither flag) leaves
             // a read-access trail on the decoy.

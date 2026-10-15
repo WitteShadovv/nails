@@ -303,8 +303,8 @@ pub struct Config {
     /// are mounted survive on the decoy disk across deactivation and reboot. Set
     /// this to `true` (or pass `--accept-persistent-decoy`) to accept that risk;
     /// the decoy-persistence check then warns instead of failing. Lower-severity
-    /// findings (root filesystem type, atime policy, crash-dump channels,
-    /// maintenance timers) are always warnings regardless of this setting.
+    /// findings (atime policy, crash-dump channels, sudo logging, maintenance
+    /// timers) are always warnings regardless of this setting.
     ///
     /// **Example**:
     /// ```toml

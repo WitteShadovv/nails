@@ -52,8 +52,6 @@ decoy disk.
 
 ### Warn (surfaced, never blocking)
 
-- **Root filesystem type** — the persistent substrate the decoy's own records
-  live on, outside the overlays.
 - **atime policy** — a root mounted without `noatime`/`relatime` records read
   access, leaving an atime trail on the decoy.
 - **Crash-dump channels** — a disk `kernel.core_pattern`, systemd-coredump

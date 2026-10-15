@@ -248,7 +248,7 @@ pub fn build_registry<F: Filesystem>(
     // active rsyslog/syslog-ng/auditd, where hidden-session records logged before
     // the overlays are mounted would survive on the decoy disk) unless the
     // operator accepts the risk with --accept-persistent-decoy or the config key.
-    // Lower-severity findings (root fs type, atime, crash-dump channels,
+    // Lower-severity findings (atime, crash-dump channels, sudo logging,
     // maintenance timers) are always warnings. The check performs no writes, and
     // its maintenance-timer sub-check applies only on a NixOS host.
     let accept_persistent_decoy =
