@@ -318,13 +318,15 @@ mounting it writes nothing), marks the hidden backend's device-mapper stack for
 deferred removal, records the state as inactive and soft-reboots. The orderly
 shutdown stops every hidden program. The last step before the switch:
 
-- scrubs `/run` of what the hidden session added. It deletes from an allowlist
-  (the hidden runtime journal, logind's session state, runtime units, `utmp`,
-  and entries that the decoy did not leave when it stopped for the entry, such
-  as the PID file of a decoy service that the hidden session's copy wrote
-  again and an emergency's kill left) and never touches sockets, `/run/udev`,
-  credentials or the current/booted system links, which the decoy's next
-  userspace is built to inherit;
+- scrubs the top of `/run` of what the hidden session added: it judges the
+  entries two levels deep (three below `/run/systemd`), so a daemon's state
+  deeper down stays, such as NetworkManager's per-link records. It deletes
+  from an allowlist (the hidden runtime journal, logind's session state,
+  runtime units, `utmp`, and entries that the decoy did not leave when it
+  stopped for the entry, such as the PID file of a decoy service that the
+  hidden session's copy wrote again and an emergency's kill left) and never
+  touches sockets, `/run/udev`, credentials or the current/booted system
+  links, which the decoy's next userspace is built to inherit;
 - puts back the name-server records below `/run/resolvconf` (openresolv, and
   Debian's resolvconf) as the decoy left them: NetworkManager leaves its record
   in place when it stops, and on NixOS the decoy's start would otherwise write
@@ -342,19 +344,28 @@ logs it in again, as at boot). The hidden volume is unmounted and its mapping
 closed by the switch itself, once the overlay that held it is released.
 
 **What a soft-reboot leaves.** Nothing of the hidden session's files, but some
-kernel state, in RAM and gone at power-off:
+kernel state, in RAM until power-off, and one record on the decoy disk:
 
 - the kernel ring buffer (`dmesg`), with the hidden session's kernel messages;
 - `SoftRebootsCount`, two per session, readable with `systemctl show` on
   systemd 256 and newer;
 - the same boot ID and continuous uptime across both transitions;
-- the network links, addresses, routes and VPN tunnels the hidden session
-  created: the way back does not take them down, so they stay up in the decoy
-  until power-off. The decoy's NetworkManager adopts such a link as connected
-  externally and records the profile it generates for it, with the time, in
-  `/var/lib/NetworkManager/timestamps` on the decoy disk. Bring down every
-  connection, tunnel and link you added before you deactivate, or power off
-  after the session.
+- the network state the hidden session set up: the way back does not undo it.
+  Links, addresses, routes and VPN tunnels stay up in the decoy until
+  power-off, and so do the hidden NetworkManager's per-link records below
+  `/run/NetworkManager`. The decoy's NetworkManager adopts a link the session
+  created as connected externally and records the profile it generates for
+  it, with the time, in `/var/lib/NetworkManager/timestamps` on the decoy
+  disk, as soon as the decoy starts, so a power-off after the return comes too
+  late for that record. The random MAC address of the hidden network-identity
+  snippet can stay on the decoy's own network device (a NetworkManager profile
+  that sets no MAC address keeps the current one), and on a decoy without
+  `/etc/hostname` the hidden hostname stays. Before you deactivate, take down
+  every connection and VPN tunnel you brought up and delete every link you
+  created by hand (`ip link delete`; `ip link set down` keeps it), or end the
+  session with `deactivate --poweroff`, which powers off before the decoy's
+  NetworkManager starts. After a session that used the network-identity
+  snippet, power off.
 
 On a persistent decoy journal (which the decoy requirements forbid), the decoy's
 own shutdown and start lines appear under one boot ID, together with the kernel's
@@ -1079,7 +1090,10 @@ NixOS generation, or the upper's `/etc`); NAILS ships optional snippets
 (`nix/modules/hidden-network-identity.nix`,
 `nix/modules/network-identity/00-hidden-identity.conf`). NetworkManager has no
 global VPN-autoconnect switch, so disable it per profile with `nmcli connection
-modify <vpn> connection.autoconnect no`.
+modify <vpn> connection.autoconnect no`. The way back does not undo what the
+snippet changed on the running system: the random MAC address can stay on the
+decoy's device, and so can the hostname on a decoy without `/etc/hostname`.
+End a session that used it with `deactivate --poweroff`.
 
 ### SSD wear-levelling
 

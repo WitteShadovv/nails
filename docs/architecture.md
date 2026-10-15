@@ -43,9 +43,10 @@ The price:
   a freshly started desktop, where the display manager logs in automatically),
   or with the machine off; it cannot leave a desktop running.
 - Kernel and service-manager state is not reset: the boot ID, the uptime, the
-  kernel ring buffer and, on systemd 256 and newer, its soft-reboot counter
-  carry over until the machine powers off (see the
-  [residual channels](threat-model.md#residual-channels)).
+  kernel ring buffer, on systemd 256 and newer its soft-reboot counter, and the
+  network state the hidden session set up (links, addresses, routes, VPN
+  tunnels, a MAC address it changed) carry over until the machine powers off
+  (see the [residual channels](threat-model.md#residual-channels)).
 - The hidden systemd would mount every other filesystem in the decoy's fstab
   directly and read-write, so the
   [fstab policy](configuration.md#what-the-session-covers) decides for each one

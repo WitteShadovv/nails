@@ -20,6 +20,12 @@
 # NetworkManager has no global switch for VPN autoconnect, so it is not set
 # here. Disable it per profile from the hidden session instead (see the user
 # security guide); with /etc overlaid the change lands only in the hidden upper.
+#
+# The way back to the decoy does not undo what this changes on the running
+# system: the random MAC address can stay on the decoy's own device (a decoy
+# profile that sets no MAC address keeps the current one), and on a decoy
+# without /etc/hostname the hostname stays too. End a session that used this
+# module with `nails deactivate --poweroff`.
 
 { lib, ... }:
 {
