@@ -1,0 +1,222 @@
+// SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+//! Unit tests for the next-root primitives that need no privileges.
+
+use super::*;
+use std::os::unix::fs::{PermissionsExt, symlink};
+
+fn executable(path: &Path) {
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(path, "#!/bin/sh\n").unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn an_fhs_root_with_its_init_and_os_release_passes() {
+    let root = tempfile::tempdir().unwrap();
+    executable(&root.path().join("usr/lib/systemd/systemd"));
+    std::fs::create_dir_all(root.path().join("usr/lib")).unwrap();
+    std::fs::write(root.path().join("usr/lib/os-release"), "ID=debian\n").unwrap();
+    std::fs::create_dir_all(root.path().join("etc")).unwrap();
+    symlink("../usr/lib/os-release", root.path().join("etc/os-release")).unwrap();
+    precheck(root.path(), Path::new("/usr/lib/systemd/systemd")).unwrap();
+}
+
+#[test]
+fn absolute_symlinks_resolve_inside_the_root_like_pid1_does() {
+    // NixOS: /run/current-system -> /nix/store/…, an absolute symlink that
+    // must resolve inside the next root, never on the running system.
+    let root = tempfile::tempdir().unwrap();
+    let system = root.path().join("nix/store/aaa-nixos-system");
+    executable(&system.join("systemd/lib/systemd/systemd"));
+    std::fs::create_dir_all(root.path().join("run")).unwrap();
+    symlink(
+        "/nix/store/aaa-nixos-system",
+        root.path().join("run/current-system"),
+    )
+    .unwrap();
+    std::fs::create_dir_all(root.path().join("etc/static")).unwrap();
+    std::fs::write(system.join("os-release"), "ID=nixos\n").unwrap();
+    symlink(
+        "/nix/store/aaa-nixos-system/os-release",
+        root.path().join("etc/os-release"),
+    )
+    .unwrap();
+    precheck(
+        root.path(),
+        Path::new("/run/current-system/systemd/lib/systemd/systemd"),
+    )
+    .unwrap();
+    // A symlink that escapes upwards is clamped to the root.
+    symlink(
+        "../../../../../../nix/store/aaa-nixos-system",
+        root.path().join("run/up"),
+    )
+    .unwrap();
+    precheck(
+        root.path(),
+        Path::new("/run/up/systemd/lib/systemd/systemd"),
+    )
+    .unwrap();
+}
+
+#[test]
+fn files_are_read_through_symlinks_resolved_inside_the_root() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("etc/static")).unwrap();
+    std::fs::write(root.path().join("etc/static/fstab"), "inside\n").unwrap();
+    symlink("/etc/static/fstab", root.path().join("etc/fstab")).unwrap();
+    assert_eq!(
+        read_in_root(root.path(), Path::new("/etc/fstab")).unwrap(),
+        b"inside\n"
+    );
+    assert!(read_in_root(root.path(), Path::new("/etc/absent")).is_err());
+}
+
+/// Lookups through a `..` link while another thread renames files: the
+/// kernel gives some of them up with `EAGAIN` (about one in twenty here
+/// without the retry), and none of them may fail.
+#[test]
+fn lookups_through_a_parent_link_survive_concurrent_renames() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("usr/lib")).unwrap();
+    std::fs::write(root.path().join("usr/lib/os-release"), "ID=debian\n").unwrap();
+    std::fs::create_dir_all(root.path().join("etc")).unwrap();
+    symlink("../usr/lib/os-release", root.path().join("etc/os-release")).unwrap();
+    std::fs::create_dir_all(root.path().join("home/alice/dotfiles/config")).unwrap();
+    symlink("dotfiles/config", root.path().join("home/alice/.config")).unwrap();
+    symlink("../home/alice/.config", root.path().join("home/.shared")).unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let renamer = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let dir = tempfile::tempdir().unwrap();
+            let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+            std::fs::write(&a, "x").unwrap();
+            while !stop.load(Ordering::Relaxed) {
+                std::fs::rename(&a, &b).unwrap();
+                std::fs::rename(&b, &a).unwrap();
+            }
+        })
+    };
+    let mut failures = Vec::new();
+    for _ in 0..20_000 {
+        if let Err(e) = read_in_root(root.path(), Path::new("/etc/os-release")) {
+            failures.push(e.to_string());
+        }
+        if let Err(e) = create_dir_all_in_root(
+            root.path(),
+            Path::new("/home/.shared/autostart"),
+            &mut |_, _| Ok(()),
+        ) {
+            failures.push(e.to_string());
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    renamer.join().unwrap();
+    assert!(
+        failures.is_empty(),
+        "{} lookups failed, first: {}",
+        failures.len(),
+        failures[0]
+    );
+    assert!(
+        root.path()
+            .join("home/alice/dotfiles/config/autostart")
+            .is_dir()
+    );
+}
+
+#[test]
+fn directories_are_created_and_listed_through_links_resolved_inside_the_root() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("srv/people")).unwrap();
+    // Absolute, and a name no host has: a lookup on the running system
+    // would fail, one inside the root reaches srv/people.
+    symlink("/srv/people", root.path().join("nails-test-home")).unwrap();
+    let mut made = Vec::new();
+    let fd = create_dir_all_in_root(
+        root.path(),
+        Path::new("/nails-test-home/alice/.config"),
+        &mut |_, name| {
+            made.push(name.to_owned());
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(made, ["alice", ".config"]);
+    assert_eq!(
+        real_path(&fd).unwrap(),
+        root.path()
+            .canonicalize()
+            .unwrap()
+            .join("srv/people/alice/.config")
+    );
+    assert_eq!(
+        list_in_root(root.path(), Path::new("/nails-test-home")).unwrap(),
+        [OsString::from("alice")]
+    );
+    // An existing directory is opened, not made again.
+    create_dir_all_in_root(root.path(), Path::new("/srv"), &mut |_, _| {
+        panic!("nothing to make")
+    })
+    .unwrap();
+}
+
+#[test]
+fn nothing_is_created_through_a_dangling_link_or_a_dot_dot() {
+    let root = tempfile::tempdir().unwrap();
+    symlink("/gone", root.path().join("away")).unwrap();
+    let mut none = |_: BorrowedFd<'_>, _: &OsStr| -> io::Result<()> { panic!("nothing made") };
+    assert!(create_dir_all_in_root(root.path(), Path::new("/away/x"), &mut none).is_err());
+    assert!(create_dir_all_in_root(root.path(), Path::new("/a/../b"), &mut none).is_err());
+    assert!(!root.path().join("gone").exists() && !root.path().join("a").exists());
+}
+
+#[test]
+fn a_file_the_caller_does_not_own_is_read_without_o_noatime() {
+    // The kernel refuses O_NOATIME (EPERM) on a file the caller neither
+    // owns nor holds CAP_FOWNER for, and the read falls back to a plain
+    // open. /proc/version is root's and has no access time to protect; as
+    // root the first open already succeeds.
+    let text = read_in_root(Path::new("/"), Path::new("/proc/version")).unwrap();
+    assert!(text.starts_with(b"Linux version"), "{text:?}");
+}
+
+#[test]
+fn a_missing_or_unusable_init_or_a_non_os_tree_is_refused() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("etc")).unwrap();
+    std::fs::write(root.path().join("etc/os-release"), "ID=x\n").unwrap();
+    assert!(matches!(
+        precheck(root.path(), Path::new("/sbin/init")),
+        Err(PrecheckError::InitMissing(..))
+    ));
+    std::fs::create_dir_all(root.path().join("sbin")).unwrap();
+    std::fs::write(root.path().join("sbin/init"), "").unwrap();
+    assert!(matches!(
+        precheck(root.path(), Path::new("/sbin/init")),
+        Err(PrecheckError::InitNotExecutable(_))
+    ));
+    std::fs::remove_file(root.path().join("etc/os-release")).unwrap();
+    executable(&root.path().join("sbin/init"));
+    assert_eq!(
+        precheck(root.path(), Path::new("/sbin/init")),
+        Err(PrecheckError::NotAnOsTree)
+    );
+}
+
+#[test]
+fn detach_under_takes_the_deepest_mounts_first_and_only_below_the_path() {
+    // Not mounted in this test: nothing is detached, nothing panics, and
+    // the selection is by path component, never by string prefix.
+    let points = vec![
+        PathBuf::from("/run/nextroot"),
+        PathBuf::from("/run/nextroot/boot"),
+        PathBuf::from("/run/nextrootx"),
+    ];
+    assert!(detach_under(Path::new("/nonexistent-root"), &points).is_empty());
+}
