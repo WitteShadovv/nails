@@ -406,6 +406,63 @@ fn a_decoy_flake_is_refused_across_discovery_and_preflight() {
     );
 }
 
+/// Naming the decoy's own flake is no way around the refusal: in each
+/// spelling of /etc/nixos it fails the build-target check, and activation
+/// refuses it under `--no-preflight` too. With a hidden flake beside it, the
+/// refusal says the decoy's flake was named and how to take the hidden one.
+#[test]
+fn the_decoy_flake_named_explicitly_is_refused_in_every_spelling() {
+    for (spelling, hidden_flake) in [
+        ("/etc/nixos#host", false),
+        ("path:/etc/nixos#host", false),
+        ("/etc/nixos/#host", true),
+        ("git+file:///etc/nixos?ref=main#host", true),
+    ] {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+        fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", hidden_flake);
+        let config = Config {
+            hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+            nixos_flake: Some(spelling.to_string()),
+            ..explicit_config()
+        };
+        let mut manager = NailsManager::new(
+            fs,
+            config,
+            std::path::PathBuf::from("/mnt/hidden/state.json"),
+        );
+        manager.set_host_profile(crate::platform::FakePlatform::nixos().host_profile());
+
+        let result = build_target_result(&manager).expect("the check runs on NixOS");
+        assert!(result.is_fail(), "{spelling}: {result:?}");
+        let fix = result.remediation().unwrap_or_default();
+        if hidden_flake {
+            assert!(
+                result
+                    .message()
+                    .contains("--nixos-flake or nixos_flake names it"),
+                "{spelling}: {result:?}"
+            );
+            assert!(
+                fix.starts_with("Name the hidden flake in /mnt/hidden/nixos instead"),
+                "{spelling}: {fix}"
+            );
+        } else {
+            assert!(
+                result.message().contains("/mnt/hidden/nixos holds none"),
+                "{spelling}: {result:?}"
+            );
+        }
+        // Without the pre-flight, activation refuses it the same way.
+        let Err(NailsError::PreFlightCheckFailed(failed)) = manager.refuse_decoy_flake(false)
+        else {
+            panic!("{spelling}: not refused without the pre-flight");
+        };
+        assert_eq!(failed[0].0, "nixos-build-target");
+        assert_eq!(failed[0].1, result.message(), "{spelling}");
+    }
+}
+
 /// With a fake platform the pre-flight reports exactly the pinned target, with
 /// no NixOS discovery fixtures on the mock host.
 #[test]

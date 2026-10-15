@@ -46,7 +46,7 @@ pub fn get_default_hidden_volume_root() -> String {
 /// use nails_base::CliOverrides;
 ///
 /// let overrides = CliOverrides {
-///     nixos_flake: Some("/etc/nixos#host".to_string()), // --nixos-flake
+///     nixos_flake: Some("/mnt/data/nixos#my-host".to_string()), // --nixos-flake
 /// };
 /// ```
 #[derive(Debug, Clone, Default)]

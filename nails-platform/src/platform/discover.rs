@@ -51,7 +51,9 @@ pub enum HostTarget {
 ///
 /// In order: `overlay_only` short-circuits to [`HostTarget::OverlayOnly`]; an
 /// explicit flake reference (the operator's own choice) is honoured on every
-/// host; otherwise the backend's auto-discovery answers. Tests pass a
+/// host, unless it names the decoy's own `/etc/nixos` flake, which is the
+/// refused [`HostTarget::DecoyFlake`] however it is spelled; otherwise the
+/// backend's auto-discovery answers. Tests pass a
 /// [`FakePlatform`](super::FakePlatform) here to pin the discovered target
 /// without staging any host files.
 pub fn discover_with_platform<F: Filesystem>(
@@ -65,6 +67,12 @@ pub fn discover_with_platform<F: Filesystem>(
         return Ok(HostTarget::OverlayOnly);
     }
     if let Some(flake_ref) = explicit_flake {
+        if let Some(dir) = super::nixos::explicit_decoy_flake(fs, flake_ref) {
+            return Ok(HostTarget::DecoyFlake {
+                dir,
+                hidden_volume_root: hidden_volume_root.to_path_buf(),
+            });
+        }
         return Ok(HostTarget::ExplicitFlake(flake_ref.to_string()));
     }
     platform.discover_build_target(fs, hidden_volume_root)

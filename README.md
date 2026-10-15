@@ -267,7 +267,11 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
    [Changing the hidden configuration](docs/operator-guide.md#changing-the-hidden-configuration)),
    or build the hidden system from a flake that imports that module. Activation
    finds one in `/mnt/data/nixos` by itself, and a decoy whose `/etc/nixos` is a
-   flake needs one; `nixos_flake` names another flake or attribute:
+   flake needs one: write and lock it inside a hidden session, which
+   `activate --overlay-only` enters, never on the decoy, and keep it
+   self-contained (see the operator guide's
+   [How it works](docs/operator-guide.md#how-it-works)). `nixos_flake` names
+   another flake or attribute:
 
    ```toml
    nixos_flake = "/mnt/data/nixos#my-host"

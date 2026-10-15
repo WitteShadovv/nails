@@ -70,7 +70,7 @@ fn config_show_annotates_sources_in_toml_and_json() {
             "config",
             "show",
             "--nixos-flake",
-            "/etc/nixos#host",
+            "/mnt/data/nixos#my-host",
         ])
         .assert()
         .success()

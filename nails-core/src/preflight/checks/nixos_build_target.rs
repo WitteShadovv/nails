@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 /// - The path is absolute (not relative)
 /// - The directory exists
 /// - The directory contains a `flake.nix`
+/// - It is not the decoy's own `/etc/nixos` flake, in any spelling (discovery
+///   reports that as [`HostTarget::DecoyFlake`])
 ///
 /// When no flake is specified, it reports the target the host's platform
 /// discovered ([`discover_host_target`](crate::platform::discover_host_target)),
@@ -138,7 +140,7 @@ impl NixOSBuildTargetCheck {
             HostTarget::DecoyFlake {
                 dir,
                 hidden_volume_root,
-            } => decoy_flake_refusal(dir, hidden_volume_root),
+            } => decoy_flake_refusal(dir, hidden_volume_root, false),
             HostTarget::Legacy(path) => CheckResult::Pass(format!(
                 "Auto-discovered legacy config at {}",
                 path.display()
@@ -160,18 +162,34 @@ impl NixOSBuildTargetCheck {
 
 /// The refusal of the decoy's own flake in `dir`, with what to put in its
 /// place on the hidden volume at `hidden_volume_root`. Activation refuses the
-/// same target under `--no-preflight` too.
-pub(crate) fn decoy_flake_refusal(dir: &Path, hidden_volume_root: &Path) -> CheckResult {
+/// same target under `--no-preflight` too. `hidden_flake_exists` tells a
+/// hidden flake that is there but not chosen (the decoy's flake was named
+/// with `--nixos-flake` or `nixos_flake`) from one that is missing.
+pub(crate) fn decoy_flake_refusal(
+    dir: &Path,
+    hidden_volume_root: &Path,
+    hidden_flake_exists: bool,
+) -> CheckResult {
     let hidden_flake = hidden_volume_root.join("nixos");
-    CheckResult::fail_with(
+    let found = if hidden_flake_exists {
         format!(
-            "{} holds the decoy's own flake and {} holds none. A hidden system built from \
-             the decoy's files would lack the hidden module and the hidden hardware \
-             configuration (the one without the decoy's swap), so activation does not \
-             build it.",
+            "{} holds the decoy's own flake, and --nixos-flake or nixos_flake names it",
+            dir.display()
+        )
+    } else {
+        format!(
+            "{} holds the decoy's own flake and {} holds none",
             dir.display(),
             hidden_flake.display()
-        ),
+        )
+    };
+    let remedy = if hidden_flake_exists {
+        format!(
+            "Name the hidden flake in {} instead, or leave --nixos-flake and nixos_flake \
+             unset: activation then builds that flake by itself.",
+            hidden_flake.display()
+        )
+    } else {
         format!(
             "Write a self-contained flake in {} and lock it from inside a hidden session \
              (`activate --overlay-only` enters one with the decoy's own system), never on \
@@ -185,8 +203,22 @@ pub(crate) fn decoy_flake_refusal(dir: &Path, hidden_volume_root: &Path) -> Chec
                 .join("config/nixos/configuration.nix")
                 .display(),
             dir.display()
+        )
+    };
+    CheckResult::fail_with(
+        format!(
+            "{found}. A hidden system built from the decoy's files would lack the hidden \
+             module and the hidden hardware configuration (the one without the decoy's \
+             swap), so activation does not build it."
         ),
+        remedy,
     )
+}
+
+/// Whether the hidden flake in `<hidden_volume_root>/nixos` exists.
+pub(crate) fn hidden_flake_exists<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> bool {
+    fs.path_exists(&hidden_volume_root.join("nixos/flake.nix"))
+        .unwrap_or(false)
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
@@ -199,6 +231,17 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
+        // The decoy's own flake is refused however it was reached: found by
+        // the probes, or named with --nixos-flake or `nixos_flake` (in any
+        // spelling of /etc/nixos, which discovery resolves).
+        if let HostTarget::DecoyFlake {
+            dir,
+            hidden_volume_root,
+        } = &self.discovered
+        {
+            let hidden = hidden_flake_exists(fs, hidden_volume_root);
+            return Ok(decoy_flake_refusal(dir, hidden_volume_root, hidden));
+        }
         if let Some(ref flake_ref) = self.nixos_flake {
             self.check_explicit_flake(fs, flake_ref)
         } else if let Some(ref selected_flake_dir) = self.selected_flake_dir {

@@ -22,11 +22,11 @@ impl Config {
     ///
     /// let mut config = Config::default();
     /// let overrides = CliOverrides {
-    ///     nixos_flake: Some("/etc/nixos#host".to_string()),
+    ///     nixos_flake: Some("/mnt/data/nixos#my-host".to_string()),
     /// };
     ///
     /// config.apply_cli_overrides(&overrides);
-    /// assert_eq!(config.nixos_flake.as_deref(), Some("/etc/nixos#host"));
+    /// assert_eq!(config.nixos_flake.as_deref(), Some("/mnt/data/nixos#my-host"));
     /// ```
     pub fn apply_cli_overrides(&mut self, overrides: &CliOverrides) {
         if let Some(ref v) = overrides.nixos_flake {
