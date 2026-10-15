@@ -336,12 +336,12 @@ flowchart LR
 
 Both transitions log you out. Save your work first.
 
-<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line, Hidden session prepared in 2.6s, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
+<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line with no known residue, three pre-flight warnings, Hidden session prepared in 0.5s, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
 
 <details>
 <summary><b>What <code>nails status --json</code> reports in the hidden session</b></summary>
 
-<img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: posture active, session hidden, the hidden system path, the overlaid mounts and the last activation's duration" width="820">
+<img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: posture active, session hidden, the hidden system path, the overlaid mounts, the masked boot-loader unit and the last activation's duration" width="820">
 
 Every command accepts `--json` and prints one line with a versioned envelope
 (`schema_version`, `command`, `ok`, then `data` or `error`). The schemas are in

@@ -1,6 +1,6 @@
 title: nails check (NixOS VM, decoy side)
 command: nails --config /mnt/data/config/nails.toml check --overlay-only
-caption: Real output captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-08. The test runs nails from the Nix store with an explicit --config, which is why binary-location warns; an operator runs sudo /mnt/data/nails check.
+caption: Real output captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-15. The test runs nails from the Nix store with an explicit --config, as root without sudo and with nobody logged in: that is why binary-location warns and the inherited decoy state is not inspected. An operator runs sudo /mnt/data/nails check.
 ---
 =======================================
   NAILS Readiness Check
@@ -8,8 +8,9 @@ caption: Real output captured from the session-lifecycle NixOS VM test (nix buil
 
 Pre-flight checks:
   [PASS] hidden-volume: Hidden volume mounted at /mnt/data
+  [PASS] backend-entries: No fstab or crypttab entry opens or mounts the volume at /mnt/data
   [PASS] session-state: on the plain decoy root
-  [PASS] systemd-version: systemd 259 supports soft-reboot
+  [PASS] systemd-version: systemd 261 supports soft-reboot
   [PASS] soft-reboot-units: soft-reboot.target and systemd-soft-reboot.service are installed
   [PASS] decoy-root: the decoy root (ext4 on /dev/vda) can be mounted again for the way back
   [PASS] fstab-policy: decoy filesystems in the hidden root: /nix/.ro-store: overlaid; /nix/store: overlaid; /tmp/shared: overlaid; /tmp/xchg: overlaid
@@ -19,14 +20,14 @@ Pre-flight checks:
   [PASS] upper-fs-capability: Hidden root at /mnt/data can host an overlayfs upper layer
   [PASS] backend-detect: Hidden root backend: ext4 on LUKS mapping dm-0 on block device vdb; no backend-specific hazards detected
   [PASS] storage-readiness: Hidden storage ready: all directories accessible
-  [PASS] suspicious-nails-reference: Base /etc/nixos NixOS config contains no suspicious hidden or NAILS references
+  [PASS] suspicious-nails-reference: The 2 .nix files under /etc/nixos name nothing of the hidden environment
   [PASS] swap: no swap can leak memory to persistent storage (RAM-only zram is permitted)
   [PASS] memory-wipe: Kernel command line does not set init_on_free=1: unless the kernel enables it by default, pages freed by the hidden session keep their contents in RAM until reused. Recommended: add init_on_free=1 to the decoy kernel command line
-  [WARN] sleep-policy: the host would suspend an active session: closing the lid suspends the host (HandleLidSwitch=suspend); closing the lid on external power suspends the host (HandleLidSwitchExternalPower=suspend). A suspend leaves the hidden session resident in RAM behind the decoy lock screen. Set the logind lid switch to ignore/lock (see docs/decoy-requirements.md), or set sleep_policy.mode = "block" or "teardown" in nails.toml.
-  [WARN] decoy-persistence: decoy posture warnings: root filesystem is persistent (ext4); the decoy's own records remain on disk outside the overlays; core dumps are piped to systemd-coredump; check its Storage= setting (external persists to the decoy disk); systemd-coredump Storage=external persists core dumps to the decoy disk. See docs/decoy-requirements.md.
+  [WARN] sleep-policy: the host would suspend an active session: closing the lid suspends the host (HandleLidSwitch=suspend). A suspend leaves the hidden session resident in RAM behind the hidden session's own lock screen. Set the logind lid switch to lock (see docs/decoy-requirements.md), or set sleep_policy.mode = "block" or "teardown" in nails.toml.
+  [WARN] decoy-persistence: decoy posture warnings: systemd-coredump keeps core dumps in /var/lib/systemd/coredump on the decoy disk (Storage unset, so external); set systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; } in the decoy configuration. See docs/decoy-requirements.md.
   [PASS] residue-catalog: no warned residue channel is live (4 catalog probe(s)); noted: timer-stamps (/var/lib/systemd/timers): Session stamps land in the upper; expect catch-up runs at the next decoy boot. (see docs/decoy-requirements.md#session-time-records)
   [PASS] space: 1.8 GB available (18.4x minimum required)
-  [WARN] binary-location: the running binary /nix/store/87jrpvbjgksbijvv83vyn89r2jc9ys06-nails-x86_64-unknown-linux-musl-0.2.0/bin/nails is not under the hidden volume root /mnt/data; a copy on the decoy disk is a forensic artifact; /run/current-system/sw/bin/nails is a decoy PATH symlink pointing at the hidden binary
+  [WARN] binary-location: the running binary /nix/store/1wdk3igdm7psmkf13h064ysq322nr7j1-nails-x86_64-unknown-linux-musl-0.3.0-rc.1/bin/nails is not under the hidden volume root /mnt/data; a copy on the decoy disk is a forensic artifact; /run/current-system/sw/bin/nails is a decoy PATH symlink pointing at the hidden binary
   [PASS] inherited-autostart: Target user could not be resolved; inherited decoy state was not inspected
   [PASS] incremental-history-flush: Target user could not be resolved; shell history-flush settings were not inspected
   [PASS] state: System is inactive - ready for activation
@@ -52,6 +53,7 @@ NixOS profile:
   [INFO] overlay-only mode: the NixOS profile switch is skipped
 
 Inherited decoy state:
+  [INFO] shared-home: the hidden session starts in the decoy home, so the decoy's accounts, keys, browser profiles and shell history are live in it (persona.mode = "fresh-home" starts it in an empty home)
   [INFO] not inspected (could not resolve the target user)
 
-[PASS] Ready to activate  (20 passed, 3 warnings, 0 failed)
+[PASS] Ready to activate  (21 passed, 3 warnings, 0 failed)
