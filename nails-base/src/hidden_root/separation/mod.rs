@@ -58,10 +58,11 @@ use crate::fstab::FstabEntry;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
-/// How an encrypted container file on a claimed filesystem is judged (the
-/// owner's decision): it only warns. Filesystem journals and copy-on-write
-/// snapshots on that filesystem can still keep old copies of the parts of the
-/// container that changed.
+/// How an encrypted container file on a claimed filesystem is judged: it only
+/// warns, a deliberate default (`severity_with(Severity::Refuse)` is the
+/// stricter setting). Filesystem journals and copy-on-write snapshots on that
+/// filesystem can still keep old copies of the parts of the container that
+/// changed.
 pub const CONTAINER_VERDICT: Severity = Severity::Warn;
 
 /// The mount points whose filesystems are the decoy's own wherever they are

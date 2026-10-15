@@ -475,7 +475,7 @@ fn an_encrypted_container_on_home_follows_the_container_setting() {
             at: PathBuf::from("/home"),
         }
     );
-    // The owner's setting warns; refusing is the other setting.
+    // The default warns; refusing is the other setting.
     assert_eq!(CONTAINER_VERDICT, Severity::Warn);
     assert_eq!(verdict.severity(), Severity::Warn);
     assert_eq!(verdict.severity_with(Severity::Refuse), Severity::Refuse);
