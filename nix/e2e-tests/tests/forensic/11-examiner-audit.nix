@@ -1,6 +1,6 @@
 # Test 11: the examiner's view of setup traces on a decoy image
 #
-# T-145. `verify --offline --examiner` reports the traces of the setup an
+# `verify --offline --examiner` reports the traces of the setup an
 # examiner looks for, grouped by what they suggest. The secondary test disk
 # stands in for a seized decoy disk: a GPT with an ext4 "decoy root" partition
 # and a second partition. The clean run builds it with nothing an examiner

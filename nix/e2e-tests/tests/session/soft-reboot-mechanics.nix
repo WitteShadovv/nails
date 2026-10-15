@@ -1,12 +1,12 @@
-# The mechanics of the whole-root session (ADR 0008), by hand: enter a
-# whole-root overlay with `systemctl soft-reboot` and come back, twice.
+# The mechanics of the whole-root session, by hand: enter a whole-root
+# overlay with `systemctl soft-reboot` and come back, twice.
 #
-# This began as the research spike that decided ADR 0008 and is now a regular
-# test: it pins, independently of the `nails` code, the kernel and systemd
-# behaviour the session mode is built on (the /run bind for PID 1's init check,
-# the read-only ESP, the allowlist /run scrub, the kmsg cursor, the utab
-# restore, strict and deferred backend close, and a clean raw decoy disk). The
-# same steps through `nails` are covered by session-lifecycle and the other
+# This began as the research spike that decided the whole-root design and is
+# now a regular test: it pins, independently of the `nails` code, the kernel
+# and systemd behaviour the session mode is built on (the /run bind for PID 1's
+# init check, the read-only ESP, the allowlist /run scrub, the kmsg cursor, the
+# utab restore, strict and deferred backend close, and a clean raw decoy disk).
+# The same steps through `nails` are covered by session-lifecycle and the other
 # session tests.
 #
 # What it does, twice (cycle 1 and cycle 2):
@@ -500,7 +500,7 @@ in
     pre_session = snapshot()
 
 
-    # The /run scrub and kmsg cursor for the way back (ADR 0008, section 5).
+    # The /run scrub and kmsg cursor for the way back.
     #
     # It runs as the ExecStart of systemd-soft-reboot.service in the hidden
     # root, added by a drop-in under the hidden /run. That service is ordered
@@ -965,7 +965,7 @@ in
         # OOM-killed. Each window is 65 MiB read every 64 MiB, so a token that
         # straddles a boundary is still seen whole; grep never holds more than
         # one window. The late kmsg tokens are asserted too: with the kmsg
-        # cursor (ADR 0008, section 5) they must not reach the decoy journal.
+        # cursor they must not reach the decoy journal.
         all_tokens = list(hidden_tokens) + late_kmsg_tokens
         patterns = " ".join(f"-e {t}" for t in all_tokens)
         raw = machine.succeed(

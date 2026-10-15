@@ -1,6 +1,6 @@
 # Test 83: The hidden session leaves no journal trace on a persistent decoy
 #
-# T-094. The decoy here keeps a persistent journal (forensic-vm-config sets
+# The decoy here keeps a persistent journal (forensic-vm-config sets
 # Storage=persistent) and the operator accepts it with
 # --accept-persistent-decoy, so a leak would be durable. Two channels are
 # probed:
@@ -10,7 +10,7 @@
 #   - a late kernel record: a hidden unit that stops after journald during the
 #     soft-reboot back writes a token to /dev/kmsg. No hidden journald sees it,
 #     and the decoy journald must not import it from the ring buffer (the
-#     transition seeks its kmsg cursor, ADR 0008 section 5).
+#     transition seeks its kmsg cursor).
 # After the way back neither token is in the live decoy journal, and a carve of
 # the decoy disk image finds neither in its journal or anywhere on the image.
 # A line logged on the decoy before activation must still be carved from the
@@ -79,7 +79,7 @@ in
         machine.succeed(f"grep -rqaF {hidden_jrnl_token} {UPPER}/var/log/journal")
 
     with subtest("capture the kernel and systemd fixtures of a live session"):
-        # T-139: the parser tests read these (nails-base/tests/fixtures/kernel/
+        # The parser tests read these (nails-base/tests/fixtures/kernel/
         # README.md). Read-only, written under /run, never on the decoy disk.
         # In the hidden root the host share is an overlay with its upper on
         # the hidden volume, so copy_from_host/copy_from_vm cannot reach the

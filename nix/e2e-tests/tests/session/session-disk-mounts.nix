@@ -1,4 +1,4 @@
-# Disks mounted during the hidden session (T-143): the watcher alert, the
+# Disks mounted during the hidden session: the watcher alert, the
 # opt-in read-only guard, and the way back.
 #
 # The fstab policy covers every filesystem the decoy knows about at entry. A

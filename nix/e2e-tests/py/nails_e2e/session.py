@@ -8,7 +8,7 @@ one queued console line per second and a soft-reboot prints a few hundred, so
 these helpers poll the driver's full console log instead (appended directly by
 its reader thread), fail at once if the new userspace lands in emergency mode or
 PID 1 freezes, and reconnect when the new backdoor announces itself. This is
-the mechanism the soft-reboot spike (ADR 0008) proved.
+the mechanism the soft-reboot spike (now ``soft-reboot-mechanics``) proved.
 """
 
 from __future__ import annotations

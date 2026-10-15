@@ -1,6 +1,6 @@
 # Test 82: The decoy-persistence pre-flight refuses a persistent-log decoy
 #
-# T-094. A decoy that keeps a persistent journal, or runs rsyslog or auditd,
+# A decoy that keeps a persistent journal, or runs rsyslog or auditd,
 # records on its own disk what it logs while it shuts down for the soft-reboot
 # into the hidden session and while it starts again on the way back, so
 # activation must fail closed unless the operator explicitly accepts the risk.

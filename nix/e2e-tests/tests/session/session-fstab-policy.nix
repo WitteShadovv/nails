@@ -1,5 +1,5 @@
 # The fstab policy: every decoy filesystem the hidden systemd would mount gets
-# a safe decision before the switch (ADR 0008, section 2).
+# a safe decision before the switch.
 #
 # The decoy here has an ESP at /boot, a separate ext4 filesystem at /srv/data,
 # one on LVM at /srv/files and a swap partition in its fstab, besides the root

@@ -1,4 +1,4 @@
-# Research test for ADR 0007 (emergency architecture). Tagged `research`, so it
+# Research test for the emergency's cgroup kill. Tagged `research`, so it
 # is in no default group (not `ci`, not `all`); run it by name:
 #
 #   nix build .#e2e.research-emergency-cgroup-kill --no-link -L
@@ -22,8 +22,8 @@
 # (index=on probe mount), whether systemd restarted the unit, whether the
 # restarted unit wrote onto the decoy directory, and how many journal lines the
 # teardown produced. A desktop stand-in unit in its own cgroup must survive every
-# variant. Hard assertions cover only the properties the ADR relies on; the rest
-# is printed as findings.
+# variant. Hard assertions cover only the properties the emergency design
+# relies on; the rest is printed as findings.
 _: {
   name = "research-emergency-cgroup-kill";
   meta.tags = [ "research" ];
@@ -128,7 +128,7 @@ _: {
         setup(tag)
         results.append(teardown(tag, prekill, use_kill))
 
-    # What the ADR relies on.
+    # What the emergency design relies on.
     for r in results:
         assert not r["needed_lazy_detach"], f"{r['variant']}: the kill must free the overlay for a non-lazy umount"
         assert r["upper_released"], f"{r['variant']}: the upper must be released after the kill"

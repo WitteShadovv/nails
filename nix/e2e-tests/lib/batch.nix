@@ -1,9 +1,9 @@
 # Run several former single-boot tests as scenarios of one VM boot.
 #
 # Booting is most of what a single-boot test costs, so tests that share an
-# identical node run in one VM instead (see "Batched scenarios" in README.md and
-# docs/history/e2e-performance-live-overlay.md). Each scenario lives in its own file under
-# `nix/e2e-tests/scenarios/<group>/` and evaluates to
+# identical node run in one VM instead (see "Batched scenarios" in README.md).
+# Each scenario lives in its own file under `nix/e2e-tests/scenarios/<group>/`
+# and evaluates to
 #
 #   {
 #     name = "preflight-nixos-config";   # the old test name, now an alias

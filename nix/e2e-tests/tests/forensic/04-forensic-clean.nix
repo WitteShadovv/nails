@@ -44,10 +44,10 @@ in
     machine.start()
     machine.wait_for_unit("multi-user.target")
 
-    # Paths a stock NixOS boot legitimately churns, so they are not findings.
-    # /var/lib/nixos drift is tracked under TODO T-076's /etc/nixos fixture
-    # work; the rest is runtime state (journal, systemd, dhcp, machine-id, ssh
-    # host keys, /run).
+    # Paths a stock NixOS boot legitimately churns, so they are not findings:
+    # /var/lib/nixos (session-nixos-hidden-system checks it across a hidden
+    # session) and runtime state (journal, systemd, dhcp, machine-id, ssh host
+    # keys, /run).
     allowlist = re.compile(
         r"(^|/)("
         r"var/log/|var/lib/nixos|var/lib/systemd|var/lib/dhcp|var/lib/private|"
