@@ -139,16 +139,20 @@ jobs:
           tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
-      # The prompt syntax tests skip a shell that is not installed.
-      - name: Install shells for prompt syntax tests
+      # The prompt syntax tests skip a shell that is not installed. The
+      # chrooted-activation kernel test runs a statically linked busybox when
+      # the host has no Nix store to bind.
+      - name: Install shells for the shell tests
         run: |
           sudo apt-get update
-          sudo apt-get install -y zsh fish
+          sudo apt-get install -y zsh fish busybox-static
 
       # The tests run against an empty private TMPDIR that must still be empty
       # afterwards: a test that leaks temp files makes the suite order-dependent.
+      # It lies under /tmp: a kernel test turns the first directory of a scratch
+      # path into a link in its test decoy, which has a /home of its own.
       - name: Give the tests a private TMPDIR
-        run: echo "TMPDIR=$(mktemp -d "$RUNNER_TEMP/tests.XXXXXX")" >> "$GITHUB_ENV"
+        run: echo "TMPDIR=$(mktemp -d /tmp/tests.XXXXXX)" >> "$GITHUB_ENV"
 
       # The real-kernel tests mount tmpfs and overlayfs in an unprivileged user +
       # mount namespace. AppArmor on ubuntu-26.04 gives such a namespace no

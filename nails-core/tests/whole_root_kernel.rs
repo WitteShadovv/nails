@@ -494,26 +494,70 @@ mod nixos_kernel_tests {
             .find(|shell| shell.starts_with("/nix/store"))
     }
 
+    /// A statically linked `busybox` on `PATH` (Debian's and Ubuntu's
+    /// `busybox-static`), which runs inside a root that holds nothing else.
+    fn static_busybox() -> Option<PathBuf> {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::env::split_paths(&path)
+            .filter_map(|dir| std::fs::canonicalize(dir.join("busybox")).ok())
+            .find(|busybox| is_static_elf(busybox))
+    }
+
+    /// Whether `path` is a 64-bit little-endian ELF file that names no
+    /// program interpreter (no `PT_INTERP` program header).
+    fn is_static_elf(path: &Path) -> bool {
+        let Ok(bytes) = std::fs::read(path) else {
+            return false;
+        };
+        if bytes.len() < 64 || !bytes.starts_with(b"\x7fELF\x02\x01") {
+            return false;
+        }
+        let word = |at: usize, len: usize| {
+            bytes.get(at..at + len).map(|b| {
+                b.iter()
+                    .rev()
+                    .fold(0usize, |value, &byte| value << 8 | usize::from(byte))
+            })
+        };
+        let (Some(offset), Some(size), Some(count)) = (word(0x20, 8), word(0x36, 2), word(0x38, 2))
+        else {
+            return false;
+        };
+        const PT_INTERP: usize = 3;
+        (0..count).all(|index| word(offset + index * size, 4).is_some_and(|kind| kind != PT_INTERP))
+    }
+
     #[test]
     fn the_activation_runs_chrooted_with_a_private_run() {
         let _ = Rerun::new(test_path!(the_activation_runs_chrooted_with_a_private_run))
             .in_user_mount_ns()
             .run(|| {
-                let Some(shell) = store_shell() else {
-                    skip_host("no /nix/store shell on this host");
-                };
                 let root = ScratchTmpfs::new("");
-                for dir in ["nix/store", "dev", "proc", "sys", "run", "etc", "system"] {
+                for dir in ["nix/store", "dev", "proc", "sys", "run", "etc", "system", "bin"] {
                     root.mkdir(dir);
                 }
-                nix::mount::mount(
-                    Some("/nix/store"),
-                    &root.path().join("nix/store"),
-                    None::<&str>,
-                    nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
-                    None::<&str>,
-                )
-                .unwrap();
+                // The shell the activation script runs in: one from the host's
+                // store, which the root binds as the hidden store would be,
+                // or a static busybox copied into the root.
+                let shell = if let Some(shell) = store_shell() {
+                    nix::mount::mount(
+                        Some("/nix/store"),
+                        &root.path().join("nix/store"),
+                        None::<&str>,
+                        nix::mount::MsFlags::MS_BIND | nix::mount::MsFlags::MS_REC,
+                        None::<&str>,
+                    )
+                    .unwrap();
+                    shell
+                } else if let Some(busybox) = static_busybox() {
+                    let sh = root.path().join("bin/sh");
+                    std::fs::copy(&busybox, &sh).unwrap();
+                    std::fs::set_permissions(&sh, std::fs::Permissions::from_mode(0o755))
+                        .unwrap();
+                    PathBuf::from("/bin/sh")
+                } else {
+                    skip_host("no /nix/store shell and no static busybox on this host");
+                };
                 // A marker in the real /run that the activation must not see.
                 let real_run = ScratchTmpfs::new("");
                 std::fs::write(real_run.path().join("marker"), "").unwrap();
