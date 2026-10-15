@@ -95,6 +95,22 @@ fn write_activation_residue_baseline(
     }
 }
 
+/// The progress line before the entry, naming only the steps it runs, in
+/// their order: the pre-flight checks (not under `--no-preflight`), the next
+/// root, and the hidden NixOS system built into it (NixOS with a build target
+/// only, never with `--overlay-only` or on Debian and Ubuntu).
+fn preparing_line(preflight: bool, builds_system: bool) -> String {
+    let mut steps = Vec::new();
+    if preflight {
+        steps.push("pre-flight");
+    }
+    steps.push("next root");
+    if builds_system {
+        steps.push("hidden NixOS system");
+    }
+    format!("Preparing the hidden session ({})...", steps.join(", "))
+}
+
 /// What the residue baseline line says about the decoy: no count when it shows
 /// no known residue, otherwise the warnings and critical findings. The
 /// informational notes every scan adds (the RAM caveat, the scope of the
@@ -298,9 +314,10 @@ pub fn execute(
     if json {
         output::print_activate_progress("preparing");
     } else if settings.verbosity >= Verbosity::Normal {
-        crate::cli::output::eprintln_tolerating_broken_pipe(
-            "Preparing the hidden session (pre-flight, hidden system, next root)...",
-        );
+        crate::cli::output::eprintln_tolerating_broken_pipe(&preparing_line(
+            !options.skip_preflight,
+            manager.builds_hidden_system(&options),
+        ));
     }
     let start = Instant::now();
     let result = manager.enter_session(&options, &RealEntryHost);

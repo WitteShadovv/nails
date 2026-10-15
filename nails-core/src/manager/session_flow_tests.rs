@@ -485,6 +485,37 @@ fn a_detected_profile_decides_nixos_by_its_kind() {
     assert!(!m.require_supported_host(&machine).unwrap());
 }
 
+/// What activation announces it will build is what the entry builds: a hidden
+/// NixOS system only on NixOS, with a build target, without `--overlay-only`.
+#[test]
+fn a_hidden_system_is_built_only_on_nixos_with_a_target_and_without_overlay_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&dir.path().join("hidden"));
+    let plain = EnterOptions::default();
+    let overlay_only = EnterOptions {
+        overlay_only: true,
+        ..EnterOptions::default()
+    };
+
+    m.set_host_profile(FakePlatform::nixos().host_profile());
+    assert!(
+        !m.builds_hidden_system_on(&machine, &plain),
+        "no build target"
+    );
+    m.set_nixos_builder(NixOSBuilder::new_legacy(PathBuf::from(
+        "/etc/nixos/configuration.nix",
+    )));
+    assert!(m.builds_hidden_system_on(&machine, &plain));
+    assert!(!m.builds_hidden_system_on(&machine, &overlay_only));
+
+    m.set_host_profile(FakePlatform::fhs().host_profile());
+    assert!(
+        !m.builds_hidden_system_on(&machine, &plain),
+        "Debian and Ubuntu build nothing"
+    );
+}
+
 #[test]
 fn a_ram_decoy_root_refuses_the_entry_before_anything_is_prepared() {
     // The way back mounts the decoy root again, so it must be a block device.

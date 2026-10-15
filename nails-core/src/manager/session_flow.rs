@@ -153,6 +153,31 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// The builder the entry builds the hidden NixOS system with: only on a
+    /// NixOS host (`nixos`), with a configured build target, and not under
+    /// `--overlay-only`.
+    fn hidden_builder(
+        &self,
+        nixos: bool,
+        options: &EnterOptions,
+    ) -> Option<&crate::nixos::NixOSBuilder> {
+        self.nixos_builder
+            .as_ref()
+            .filter(|_| nixos && !options.overlay_only)
+    }
+
+    /// Whether entering with `options` builds a hidden NixOS system into the
+    /// next root, decided as the entry decides it. False on a host the entry
+    /// would refuse.
+    pub fn builds_hidden_system(&self, options: &EnterOptions) -> bool {
+        self.builds_hidden_system_on(&Machine::system(), options)
+    }
+
+    fn builds_hidden_system_on(&self, machine: &Machine, options: &EnterOptions) -> bool {
+        self.require_supported_host(machine)
+            .is_ok_and(|nixos| self.hidden_builder(nixos, options).is_some())
+    }
+
     /// Prepare the entry into the hidden root: pre-flight, the hidden NixOS
     /// configuration, the next root and the armed plan. The state file records
     /// the session as active before the soft-reboot, because the activating
@@ -205,10 +230,7 @@ impl<F: Filesystem> NailsManager<F> {
         let config_toml = toml::to_string(&self.config).ok();
         let accepted_decoy_storage =
             accepted_decoy_storage(&self.filesystem, &hidden_root, self.allow)?;
-        let builder = self
-            .nixos_builder
-            .as_ref()
-            .filter(|_| nixos && !options.overlay_only);
+        let builder = self.hidden_builder(nixos, options);
         let inputs = EntryInputs {
             hidden_root: &hidden_root,
             decoy_root,

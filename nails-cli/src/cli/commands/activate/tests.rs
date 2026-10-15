@@ -238,6 +238,29 @@ fn execute_colour_settings_paint_dry_run_marks() {
     );
 }
 
+/// The progress line names the hidden NixOS build only when there is one (not
+/// on Debian or Ubuntu, not with `--overlay-only`) and the pre-flight checks
+/// only when they run.
+#[test]
+fn the_progress_line_names_only_the_steps_the_entry_runs() {
+    assert_eq!(
+        super::preparing_line(true, true),
+        "Preparing the hidden session (pre-flight, next root, hidden NixOS system)..."
+    );
+    assert_eq!(
+        super::preparing_line(true, false),
+        "Preparing the hidden session (pre-flight, next root)..."
+    );
+    assert_eq!(
+        super::preparing_line(false, false),
+        "Preparing the hidden session (next root)..."
+    );
+    assert_eq!(
+        super::preparing_line(false, true),
+        "Preparing the hidden session (next root, hidden NixOS system)..."
+    );
+}
+
 /// The notes every baseline carries are not findings: a clean decoy is "no
 /// known residue" without a count, and the other states count only their
 /// warnings and critical findings, in the right number.
