@@ -9,7 +9,7 @@ use std::path::Path;
 use nails_core::output::Mark;
 
 use crate::cli::args::ResetUpperArgs;
-use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
+use crate::cli::output::envelope::{Envelope, ErrorBody, report_cancelled, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// The `data` payload for `reset-upper --json`.
@@ -119,11 +119,11 @@ pub fn execute(
     if !args.yes {
         if std::io::stdin().is_terminal() {
             if !prompt_reset_confirmation(settings, &plan) {
-                return report_error(
+                return report_cancelled(
                     json,
+                    settings.stderr_style(),
                     "reset-upper",
-                    ExitStatus::Failed,
-                    ErrorBody::new("cancelled", "reset-upper cancelled; nothing was removed"),
+                    "Reset cancelled; nothing was removed.",
                 );
             }
         } else {

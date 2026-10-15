@@ -18,7 +18,7 @@ use nails_core::session::{LeaveTo, RealTargetHost};
 
 use crate::cli::args::DeactivateArgs;
 use crate::cli::output::deactivate::{deactivate_error_body, print_deactivate_json};
-use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::envelope::{ErrorBody, report_cancelled, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Execute the deactivate command.
@@ -72,11 +72,11 @@ pub fn execute(
             );
         }
         if !prompt_deactivate_confirmation(settings, args.poweroff) {
-            return report_error(
+            return report_cancelled(
                 json,
+                settings.stderr_style(),
                 "deactivate",
-                ExitStatus::Failed,
-                ErrorBody::new("cancelled", "deactivation cancelled; nothing changed"),
+                "Deactivation cancelled; nothing was changed.",
             );
         }
     }
