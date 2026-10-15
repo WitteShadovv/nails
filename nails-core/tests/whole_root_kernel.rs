@@ -480,7 +480,7 @@ mod entry_kernel_tests {
     use nails_core::{NailsError, nixos::NixOSBuilder};
     use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
     use nails_teardown::whole_root::plan::{
-        DecoyRoot, Direction, Plan, PolicyMountKind, SNAPSHOT_NAME, unix_now,
+        CarriedMount, DecoyRoot, Direction, Plan, PolicyMountKind, SNAPSHOT_NAME, unix_now,
     };
     use nails_teardown::whole_root::transition::{self, DROPIN_DIR, DROPIN_NAME, Env, Outcome};
     use nails_teardown::whole_root::{carry, nextroot};
@@ -878,6 +878,182 @@ mod entry_kernel_tests {
             );
             assert!(Plan::load(&paths.plan()).unwrap().entered_at.is_some());
             entry::rollback(&paths);
+        });
+    }
+
+    /// The mount points outside `inside`, sorted, a stacked mount once per
+    /// layer.
+    fn mounts_outside(inside: &Path) -> Vec<PathBuf> {
+        let mut points: Vec<PathBuf> = read_mountinfo()
+            .unwrap()
+            .into_iter()
+            .map(|e| e.mount_point)
+            .filter(|m| !m.starts_with(inside))
+            .collect();
+        points.sort();
+        points
+    }
+
+    /// Make the tree at `path` shared, as systemd makes `/` at boot.
+    fn make_rshared(path: &Path) {
+        rustix::mount::mount_change(
+            path,
+            rustix::mount::MountPropagationFlags::SHARED
+                | rustix::mount::MountPropagationFlags::REC,
+        )
+        .unwrap();
+    }
+
+    fn bind(source: &Path, target: &Path) {
+        nix::mount::mount(
+            Some(source),
+            target,
+            None::<&str>,
+            nix::mount::MsFlags::MS_BIND,
+            None::<&str>,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn nothing_the_entry_mounts_shows_in_the_decoy_s_shared_tree() {
+        // On the decoy every mount is shared, and a bind of one joins its
+        // peer group: a carried /boot below the hidden volume's bind showed
+        // below the decoy's /mnt/data, and the bind of an ESP nested below
+        // /boot stacked a second ESP on the decoy's /boot/efi. The switch
+        // could then not unmount the hidden volume.
+        let _ = Rerun::new(test_path!(
+            nothing_the_entry_mounts_shows_in_the_decoy_s_shared_tree
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            let esp = ScratchTmpfs::new("");
+            let nested = world.decoy.mkdir("boot/efi");
+            bind(esp.path(), &nested);
+            let fstab = world.decoy.path().join("etc/fstab");
+            let text = std::fs::read_to_string(&fstab).unwrap();
+            std::fs::write(&fstab, text + "/dev/vda15 /boot/efi vfat umask=0077 0 2\n").unwrap();
+            for tree in [world.decoy.path(), world.hidden.path(), world.run.path()] {
+                make_rshared(tree);
+            }
+            let paths = world.paths();
+            let before = mounts_outside(&paths.nextroot());
+
+            let entry =
+                entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+
+            let targets: Vec<_> = entry
+                .plan
+                .carried
+                .iter()
+                .map(|c| c.target.clone())
+                .collect();
+            assert!(targets.contains(&PathBuf::from("/boot/efi")), "{targets:?}");
+            assert_eq!(mounts_outside(&paths.nextroot()), before);
+            // What the switch does in the decoy: nothing below the hidden
+            // volume keeps it busy.
+            nix::mount::umount2(world.hidden.path(), nix::mount::MntFlags::empty())
+                .expect("the hidden volume unmounts");
+            entry::rollback(&paths);
+        });
+    }
+
+    #[test]
+    #[allow(unsafe_code)]
+    fn a_service_s_mount_namespace_sees_the_whole_next_root() {
+        // logind looks for an OS tree at /run/nextroot from a mount namespace
+        // of its own, a slave of the decoy's made long before the entry, to
+        // turn a plain reboot into a soft-reboot that the transition then
+        // disarms. It must find the mounts below the next root there (here a
+        // separate /home, on NixOS the store that holds os-release).
+        let _ = Rerun::new(test_path!(
+            a_service_s_mount_namespace_sees_the_whole_next_root
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            use std::os::unix::process::CommandExt;
+            let world = World::new();
+            for tree in [world.decoy.path(), world.hidden.path(), world.run.path()] {
+                make_rshared(tree);
+            }
+            let paths = world.paths();
+            let done = world.run.path().join("entry-done");
+            let seen = paths.nextroot().join("home/decoy-file");
+            let mut service = std::process::Command::new("sh");
+            service.arg("-c").arg(format!(
+                "i=0; while [ ! -e '{}' ] && [ $i -lt 600 ]; do sleep 0.05; i=$((i+1)); done; \
+                 test -e '{}'",
+                done.display(),
+                seen.display()
+            ));
+            // SAFETY: unshare and mount are plain system calls on constant
+            // arguments, made in the child between fork and exec.
+            unsafe {
+                service.pre_exec(|| {
+                    nix::sched::unshare(nix::sched::CloneFlags::CLONE_NEWNS)?;
+                    nix::mount::mount(
+                        None::<&str>,
+                        "/",
+                        None::<&str>,
+                        nix::mount::MsFlags::MS_REC | nix::mount::MsFlags::MS_SLAVE,
+                        None::<&str>,
+                    )?;
+                    Ok(())
+                });
+            }
+            let mut service = service.spawn().unwrap();
+
+            let entry = entry::prepare(&paths, &world.inputs(), &FakeHost::default());
+            std::fs::write(&done, "").unwrap();
+            let status = service.wait().unwrap();
+            entry.expect("the entry");
+            assert!(
+                status.success(),
+                "the service's namespace lacks {}",
+                seen.display()
+            );
+            entry::rollback(&paths);
+        });
+    }
+
+    #[test]
+    fn nothing_the_way_back_mounts_shows_below_the_hidden_volume() {
+        // In the hidden session the carried filesystems are shared binds on
+        // the hidden volume; the way back binds them into the decoy root at
+        // the next root, the ESP below /boot.
+        let _ = Rerun::new(test_path!(
+            nothing_the_way_back_mounts_shows_below_the_hidden_volume
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let hidden = ScratchTmpfs::new("");
+            let boot = ScratchTmpfs::new("");
+            boot.mkdir("efi");
+            let esp = ScratchTmpfs::new("");
+            let mut carried = Vec::new();
+            for (target, source, name) in [
+                ("/boot", boot.path(), "boot"),
+                ("/boot/efi", esp.path(), "boot-efi"),
+            ] {
+                let at = hidden.mkdir(&format!("root/decoy/{name}"));
+                bind(source, &at);
+                carried.push(CarriedMount {
+                    target: PathBuf::from(target),
+                    at,
+                    read_only: false,
+                });
+            }
+            make_rshared(hidden.path());
+            let back = ScratchTmpfs::new("");
+            back.mkdir("boot");
+            let before = mounts_outside(back.path());
+
+            carry::restore(&carried, back.path()).expect("restored");
+
+            assert!(back.path().join("boot/efi").is_dir());
+            assert_eq!(mounts_outside(back.path()), before);
+            assert!(nextroot::detach_tree(back.path()).is_empty());
         });
     }
 

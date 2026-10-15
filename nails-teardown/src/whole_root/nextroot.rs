@@ -15,6 +15,21 @@
 //! - the decoy root device mounted again, for the way back;
 //! - detaching a whole tree (rollback, a stray `/run/nextroot`).
 //!
+//! Every mount below the next root is private from the moment it exists. The
+//! decoy's `/` is shared (systemd makes it so at boot), so a bind of a decoy
+//! filesystem joins that filesystem's peer group, and a mount below such a
+//! bind would appear below the decoy's own mount too (a carried `/boot` below
+//! the hidden volume's bind would show at `/mnt/data/root/decoy/boot` in the
+//! decoy, and keep the decoy from unmounting the hidden volume at the switch).
+//! Making the finished tree private ([`make_rprivate`]) comes too late for
+//! that, and stays as a backstop. The next root's own mount (the root overlay
+//! at entry, the decoy root on the way back) stays shared until then: logind
+//! decides whether a plain `reboot` becomes a soft-reboot by looking for an
+//! OS tree at `/run/nextroot` from a mount namespace of its own, which
+//! receives the mounts below a shared root only: below a private one it would
+//! miss the `os-release` of a NixOS next root, which lives in a store mounted
+//! there.
+//!
 //! [`precheck`] does what PID 1 (systemd >= 258) does before it switches: the
 //! init must resolve *inside* the new root, and the root must be an OS tree. A
 //! root that fails either freezes the machine with no way back except a power
@@ -40,13 +55,37 @@ fn c_string(text: &str) -> io::Result<CString> {
     CString::new(text).map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "NUL in mount data"))
 }
 
-/// Bind `source` onto `target`, recursively or not.
+/// Bind `source` onto `target`, recursively or not, and make the new mount
+/// (and with `recursive` everything below it) private. A bind is never the
+/// next root's own mount.
 pub fn bind(source: &Path, target: &Path, recursive: bool) -> io::Result<()> {
     if recursive {
-        rustix::mount::mount_bind_recursive(source, target).map_err(to_io)
+        rustix::mount::mount_bind_recursive(source, target).map_err(to_io)?;
     } else {
-        rustix::mount::mount_bind(source, target).map_err(to_io)
+        rustix::mount::mount_bind(source, target).map_err(to_io)?;
     }
+    private_or_detach(target, recursive)
+}
+
+/// Make the mount at `target`, just made below the next root, private: nothing
+/// mounted below it later propagates anywhere (see the module docs).
+pub fn make_private(target: &Path) -> io::Result<()> {
+    rustix::mount::mount_change(target, MountPropagationFlags::PRIVATE).map_err(to_io)
+}
+
+/// Make the mount just made at `target` private, or detach it again: nothing
+/// mounted below it later may propagate to the peers of what it was made
+/// from (see the module docs).
+fn private_or_detach(target: &Path, recursive: bool) -> io::Result<()> {
+    let mut flags = MountPropagationFlags::PRIVATE;
+    if recursive {
+        flags |= MountPropagationFlags::REC;
+    }
+    if let Err(e) = rustix::mount::mount_change(target, flags) {
+        let _ = rustix::mount::unmount(target, UnmountFlags::DETACH);
+        return Err(to_io(e));
+    }
+    Ok(())
 }
 
 /// Make the bind mount at `target` read-only, keeping the per-mount flags it
@@ -123,7 +162,8 @@ pub fn bind_read_only(source: &Path, target: &Path) -> io::Result<()> {
 }
 
 /// Make the tree at `target` recursively private, so nothing propagates
-/// between it and the rest of the system.
+/// between it and the rest of the system. Every mount below the next root is
+/// private already; this is the backstop for the finished tree.
 pub fn make_rprivate(target: &Path) -> io::Result<()> {
     rustix::mount::mount_change(
         target,

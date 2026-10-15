@@ -715,6 +715,7 @@ fn apply_mounts(
                     &work,
                     &target,
                 )
+                .and_then(|()| nextroot::make_private(&target))
             }
         };
         done.map_err(|e| io(&target, e))?;
