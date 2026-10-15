@@ -290,21 +290,28 @@ pub fn execute(
         );
     }
 
-    if let Some(notice) = defaults_notice.filter(|_| !settings.is_quiet()) {
+    // Shown under -q too: every opt-in protection keeps its default without
+    // the file, which a scripted `-y -q` activation must not hide.
+    if let Some(notice) = defaults_notice {
         crate::cli::output::eprintln_tolerating_broken_pipe(&notice);
     }
-    if !args.yes && !confirm_logout(settings, accepted.as_ref()) {
-        return report_error(
-            json,
-            "activate",
-            ExitStatus::Failed,
-            ErrorBody::new("cancelled", "activation cancelled; nothing changed"),
-        );
+    if !args.yes {
+        match confirm_logout(settings, accepted.as_ref()) {
+            Answer::Yes => {}
+            Answer::Cancelled => return report_cancelled(settings),
+            Answer::No => {
+                return report_error(
+                    json,
+                    "activate",
+                    ExitStatus::Failed,
+                    ErrorBody::new("cancelled", "activation cancelled; nothing changed"),
+                );
+            }
+        }
     }
     // Ctrl+C sets a flag that every step from here on reads (see
-    // nails_core::cancel). At the prompt, whose read goes on until Enter, and
-    // during the residue baseline, it ends the activation before the entry
-    // begins.
+    // nails_core::cancel). At the prompt it ends the activation at once;
+    // during the residue baseline, before the entry begins.
     if nails_core::cancel::is_cancelled() {
         return report_cancelled(settings);
     }
@@ -392,11 +399,62 @@ fn print_result(settings: &OutputSettings, result: &ActivateResult<'_>, duration
     }
 }
 
+/// What the operator answered at the confirmation prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// `y` or `yes`.
+    Yes,
+    /// Anything else, or the end of the input.
+    No,
+    /// Ctrl+C (or a SIGTERM) while the prompt waited.
+    Cancelled,
+}
+
+/// How often the prompt looks at the cancel flag while it waits.
+const PROMPT_POLL: u16 = 100;
+
+/// Wait for a line on `input` (read through `reader`) and judge it, giving up
+/// as soon as `cancelled` says so. The signal handler restarts an interrupted
+/// read, so a plain read would go on until Enter and Ctrl+C would only echo
+/// `^C`; polling with a timeout looks at the cancel flag in between.
+fn read_answer(
+    input: std::os::fd::BorrowedFd<'_>,
+    reader: &mut impl std::io::BufRead,
+    cancelled: impl Fn() -> bool,
+) -> Answer {
+    use nix::poll::{PollFd, PollFlags, poll};
+    loop {
+        if cancelled() {
+            return Answer::Cancelled;
+        }
+        let mut fds = [PollFd::new(input, PollFlags::POLLIN)];
+        match poll(&mut fds, PROMPT_POLL) {
+            Ok(0) | Err(nix::errno::Errno::EINTR) => {}
+            Ok(_) => break,
+            Err(_) => return Answer::No,
+        }
+    }
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() {
+        return if cancelled() {
+            Answer::Cancelled
+        } else {
+            Answer::No
+        };
+    }
+    if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Answer::Yes
+    } else {
+        Answer::No
+    }
+}
+
 /// Ask on the terminal before logging the operator out. `accepted` is the
 /// refusal the operator overrode with `--allow-decoy-storage`, repeated here.
-fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> bool {
+fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> Answer {
     use nails_core::output::Mark;
-    use std::io::{BufRead, Write};
+    use std::io::Write;
+    use std::os::fd::AsFd;
     let style = settings.stderr_style();
     let mut stderr = std::io::stderr();
     let _ = writeln!(
@@ -416,11 +474,17 @@ fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> bool
     }
     let _ = write!(stderr, "    Continue? [y/N]: ");
     let _ = stderr.flush();
-    let mut input = String::new();
-    if std::io::stdin().lock().read_line(&mut input).is_err() {
-        return false;
+    let stdin = std::io::stdin();
+    let answer = read_answer(
+        stdin.as_fd(),
+        &mut stdin.lock(),
+        nails_core::cancel::is_cancelled,
+    );
+    if answer == Answer::Cancelled {
+        // End the prompt's line before the result.
+        let _ = writeln!(stderr);
     }
-    matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    answer
 }
 
 #[cfg(test)]

@@ -293,6 +293,41 @@ fn failing_check_is_reported_through_tracing() {
     );
 }
 
+/// The routine pre-flight events stay at debug level: at the default
+/// verbosity the console shows only what needs the operator.
+#[test]
+#[tracing_test::traced_test]
+fn passing_checks_log_at_debug_only() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_mounted(hidden_root, false);
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(fs, config, state_path);
+    let _ = manager.run_preflight_checks(&PreflightOptions {
+        overlay_only: true,
+        ..PreflightOptions::default()
+    });
+
+    assert!(logs_contain("Preflight check passed"), "no check passed");
+    logs_assert(|lines: &[&str]| {
+        match lines.iter().find(|line| {
+            (line.contains("Preflight check passed")
+                || line.contains("All pre-flight checks passed"))
+                && !line.contains("DEBUG")
+        }) {
+            Some(line) => Err(format!("a routine event above debug: {line}")),
+            None => Ok(()),
+        }
+    });
+}
+
 /// The build-target check's verdict for a manager's registry.
 fn build_target_result(manager: &NailsManager<MockFilesystem>) -> Option<CheckResult> {
     let registry = manager

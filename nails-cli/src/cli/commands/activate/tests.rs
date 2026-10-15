@@ -342,3 +342,47 @@ fn a_dry_run_checks_with_the_options_activation_uses() {
         );
     }
 }
+
+/// The prompt's answer, from a pipe standing in for the terminal.
+fn answer_to(input: &[u8], cancelled: bool) -> super::Answer {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    writer.write_all(input).unwrap();
+    drop(writer);
+    let poll_end = reader.try_clone().unwrap();
+    super::read_answer(
+        poll_end.as_fd(),
+        &mut std::io::BufReader::new(reader),
+        || cancelled,
+    )
+}
+
+#[test]
+fn the_prompt_takes_yes_and_nothing_else() {
+    assert_eq!(answer_to(b"y\n", false), super::Answer::Yes);
+    assert_eq!(answer_to(b" YES \n", false), super::Answer::Yes);
+    assert_eq!(answer_to(b"n\n", false), super::Answer::No);
+    assert_eq!(answer_to(b"", false), super::Answer::No, "end of input");
+}
+
+/// Ctrl+C at the prompt ends it at once, with nothing typed: the read is
+/// never left waiting for Enter.
+#[test]
+fn a_cancel_at_the_prompt_ends_it_without_waiting_for_enter() {
+    use std::os::fd::AsFd;
+    let (reader, _writer) = std::io::pipe().unwrap();
+    let poll_end = reader.try_clone().unwrap();
+    let asked = std::cell::Cell::new(0);
+    let answer = super::read_answer(
+        poll_end.as_fd(),
+        &mut std::io::BufReader::new(reader),
+        || {
+            asked.set(asked.get() + 1);
+            asked.get() > 2
+        },
+    );
+    assert_eq!(answer, super::Answer::Cancelled);
+    assert!(asked.get() > 2, "the flag was read while the prompt waited");
+    assert_eq!(answer_to(b"y\n", true), super::Answer::Cancelled);
+}

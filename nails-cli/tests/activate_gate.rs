@@ -240,6 +240,45 @@ mod kernel_tests {
             });
     }
 
+    /// Without a configuration file, activation says so before it goes on,
+    /// `-q` included: every opt-in protection keeps its built-in default. Its
+    /// progress line then names the steps it runs, here without a hidden
+    /// NixOS build. The binary sits on the volume, as the README installs it,
+    /// so the volume is the hidden root and `config/nails.toml` is missing.
+    #[test]
+    fn activation_without_a_config_file_says_so_even_when_quiet() {
+        let _ = Rerun::new(test_path!(
+            activation_without_a_config_file_says_so_even_when_quiet
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let volume = ScratchTmpfs::new("");
+            let binary = volume.path().join("nails");
+            std::fs::copy(assert_cmd::cargo::cargo_bin!("nails"), &binary).unwrap();
+            let notice = "config/nails.toml: activation uses the built-in defaults.";
+            let progress = "Preparing the hidden session (pre-flight, next root)...";
+            for quiet in [false, true] {
+                let mut command = Command::new(&binary);
+                command.args(["activate", "-y", "--overlay-only"]);
+                if quiet {
+                    command.arg("-q");
+                }
+                let output = command.env_remove("NO_COLOR").output().unwrap();
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let line = stderr
+                    .lines()
+                    .position(|line| {
+                        line.starts_with("No config file at ") && line.ends_with(notice)
+                    })
+                    .unwrap_or_else(|| panic!("quiet={quiet}: no notice in {stderr}"));
+                match stderr.lines().position(|line| line == progress) {
+                    Some(at) => assert!(!quiet && line < at, "quiet={quiet}: {stderr}"),
+                    None => assert!(quiet, "no progress line: {stderr}"),
+                }
+            }
+        });
+    }
+
     #[test]
     fn a_second_tmpfs_over_the_root_is_refused_and_neither_is_written() {
         let _ = Rerun::new(test_path!(
