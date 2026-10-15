@@ -246,27 +246,28 @@ pub fn print_check_human(report: &CheckReport, style: Style) {
     }
     println!();
 
+    println!("{}", summary_line(report, style));
+}
+
+/// The verdict that ends the report, with the tally (`1 warning`, `2 warnings`).
+fn summary_line(report: &CheckReport, style: Style) -> String {
     let (mark, verdict) = if report.ready {
-        (Mark::Pass, "Ready to activate".to_string())
+        (Mark::Pass, "Ready to activate")
     } else {
-        (
-            Mark::Fail,
-            "Not ready: resolve the failing checks above".to_string(),
-        )
+        (Mark::Fail, "Not ready: resolve the failing checks above")
     };
     let skipped_suffix = if report.summary.skipped > 0 {
         format!(", {} skipped", report.summary.skipped)
     } else {
         String::new()
     };
-    println!(
-        "{}  ({} passed, {} warnings, {} failed{})",
+    format!(
+        "{}  ({} passed, {}, {} failed{skipped_suffix})",
         style.marked(mark, verdict),
         report.summary.passed,
-        report.summary.warnings,
+        super::count_noun(report.summary.warnings, "warning", "warnings"),
         report.summary.failed,
-        skipped_suffix
-    );
+    )
 }
 
 #[cfg(test)]
@@ -319,6 +320,37 @@ mod tests {
         assert_eq!(report.summary.passed, 1);
         assert_eq!(report.summary.warnings, 1);
         assert_eq!(report.summary.failed, 0);
+    }
+
+    #[test]
+    fn the_summary_line_puts_a_single_warning_in_the_singular() {
+        let style = Style {
+            ascii: true,
+            ..Style::default()
+        };
+        assert_eq!(
+            summary_line(&report(rows()), style),
+            "[PASS] Ready to activate  (1 passed, 1 warning, 0 failed)"
+        );
+
+        let mut rows = rows();
+        rows.push(CheckRow::from_result(
+            "c".into(),
+            &CheckResult::Warn("again".into()),
+        ));
+        rows.push(CheckRow::from_result(
+            "d".into(),
+            &CheckResult::fail("boom".to_string()),
+        ));
+        rows.push(CheckRow::from_result(
+            "e".into(),
+            &CheckResult::Skipped("no volume".into()),
+        ));
+        assert_eq!(
+            summary_line(&report(rows), style),
+            "[FAIL] Not ready: resolve the failing checks above  \
+             (1 passed, 2 warnings, 1 failed, 1 skipped)"
+        );
     }
 
     #[test]

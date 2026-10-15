@@ -165,18 +165,16 @@ pub fn verify_exit_status(status: VerifyStatus) -> ExitStatus {
     }
 }
 
-/// Print verification results in human-readable format
-///
-/// Marks come from the shared table and colour/ASCII follow `style` (the
-/// stdout style from the resolved output settings).
-pub fn print_verify_result(result: &VerifyResult, style: Style) {
-    use nails_core::{Severity, VerifyStatus};
+/// The headline of the human report: the verdict and, on a warning or a
+/// critical result, how many findings it found, in the right number.
+fn header_line(result: &VerifyResult, style: Style) -> String {
+    use nails_core::VerifyStatus;
 
     let depth = match result.scan_depth {
         nails_core::ScanDepth::Standard => "standard",
         nails_core::ScanDepth::Deep => "deep",
     };
-    let header = match result.status {
+    match result.status {
         VerifyStatus::Secure => style.paint_bold(
             format_args!(
                 "{} No known artifacts found ({} checks, {depth} scan). This is not proof of absence.",
@@ -187,22 +185,35 @@ pub fn print_verify_result(result: &VerifyResult, style: Style) {
         ),
         VerifyStatus::Warning => style.paint_bold(
             format_args!(
-                "{} WARNING: Found {} potential issues",
+                "{} WARNING: Found {}",
                 style.glyph(Mark::Warn),
-                attention_count(result)
+                super::count_noun(
+                    attention_count(result),
+                    "potential issue",
+                    "potential issues"
+                )
             ),
             Tone::Yellow,
         ),
         VerifyStatus::Critical => style.paint_bold(
             format_args!(
-                "{} CRITICAL: Found {} artifacts requiring attention",
+                "{} CRITICAL: Found {} requiring attention",
                 style.glyph(Mark::Fail),
-                attention_count(result)
+                super::count_noun(attention_count(result), "artifact", "artifacts")
             ),
             Tone::Red,
         ),
-    };
-    println!("{header}");
+    }
+}
+
+/// Print verification results in human-readable format
+///
+/// Marks come from the shared table and colour/ASCII follow `style` (the
+/// stdout style from the resolved output settings).
+pub fn print_verify_result(result: &VerifyResult, style: Style) {
+    use nails_core::Severity;
+
+    println!("{}", header_line(result, style));
 
     if let nails_core::ScanDepth::Deep = result.scan_depth {
         println!(
@@ -340,6 +351,39 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
+    fn the_headline_puts_a_single_finding_in_the_singular() {
+        let plain = Style::default();
+        let one = |status, severity| {
+            VerifyResult::new(
+                status,
+                vec![Finding::new(severity, "file", "x")],
+                ScanDepth::Standard,
+            )
+        };
+
+        assert_eq!(
+            header_line(&one(VerifyStatus::Warning, Severity::Warn), plain),
+            "\u{26a0} WARNING: Found 1 potential issue"
+        );
+        assert_eq!(
+            header_line(&one(VerifyStatus::Critical, Severity::Critical), plain),
+            "\u{2717} CRITICAL: Found 1 artifact requiring attention"
+        );
+        let two = VerifyResult::new(
+            VerifyStatus::Warning,
+            vec![
+                Finding::new(Severity::Warn, "file", "x"),
+                Finding::new(Severity::Warn, "file", "y"),
+            ],
+            ScanDepth::Standard,
+        );
+        assert_eq!(
+            header_line(&two, plain),
+            "\u{26a0} WARNING: Found 2 potential issues"
+        );
+    }
+
+    #[test]
     fn test_print_verify_result_secure_status() {
         // Test that secure status prints correctly
         let result = VerifyResult::new(VerifyStatus::Secure, vec![], ScanDepth::Standard);
@@ -467,6 +511,10 @@ mod tests {
         ];
         let result = VerifyResult::new(VerifyStatus::Critical, findings, ScanDepth::Deep);
         assert_eq!(attention_count(&result), 2);
+        assert_eq!(
+            header_line(&result, Style::default()),
+            "\u{2717} CRITICAL: Found 2 artifacts requiring attention"
+        );
 
         let notes_only = VerifyResult::new(
             VerifyStatus::Secure,
