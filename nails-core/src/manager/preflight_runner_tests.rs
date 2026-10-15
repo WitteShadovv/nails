@@ -337,6 +337,36 @@ fn lone_system_profile_agrees_across_activation_check_and_preflight() {
     assert!(result.message().contains("/etc/nixos/configuration.nix"));
 }
 
+/// A decoy whose `/etc/nixos` holds its own flake, with no hidden flake: the
+/// detected NixOS host discovers the refused decoy flake (activation wires no
+/// builder for it, so nothing is built), and the build-target check fails
+/// with the instructions, although a legacy configuration sits beside it.
+#[test]
+fn a_decoy_flake_is_refused_across_discovery_and_preflight() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    let mut manager = manager_with(fs);
+    manager.set_host_profile(crate::platform::FakePlatform::nixos().host_profile());
+
+    assert_eq!(
+        manager.discover_host_target(false).unwrap(),
+        crate::platform::HostTarget::DecoyFlake {
+            dir: std::path::PathBuf::from("/etc/nixos"),
+            hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+        }
+    );
+    let result = build_target_result(&manager).expect("the check runs on NixOS");
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .remediation()
+            .is_some_and(|fix| fix.starts_with("Put a flake in /mnt/hidden/nixos")),
+        "{result:?}"
+    );
+}
+
 /// With a fake platform the pre-flight reports exactly the pinned target, with
 /// no NixOS discovery fixtures on the mock host.
 #[test]

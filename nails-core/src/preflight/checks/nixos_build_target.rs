@@ -21,8 +21,9 @@ use std::path::{Path, PathBuf};
 ///
 /// When no flake is specified, it reports the target the host's platform
 /// discovered ([`discover_host_target`](crate::platform::discover_host_target)),
-/// the same answer activation and `check`/`--dry-run` use, and fails when the
-/// platform found none.
+/// the same answer activation and `check`/`--dry-run` use. It fails when the
+/// platform found none, or only the decoy's own flake, which activation
+/// refuses to build (with instructions for a hidden flake).
 ///
 /// This is separate from `NixOSConfigCheck` which validates the hidden storage
 /// overlay structure (symlinks, imports). This check validates the build target
@@ -39,7 +40,7 @@ impl NixOSBuildTargetCheck {
     ///
     /// # Arguments
     ///
-    /// * `nixos_flake` - Optional flake reference from config/CLI (e.g., "/etc/nixos#hostname")
+    /// * `nixos_flake` - Optional flake reference from config/CLI (e.g., "/mnt/data/nixos#my-host")
     /// * `discovered` - The build target the host's platform discovered
     pub fn new(nixos_flake: Option<String>, discovered: HostTarget) -> Self {
         Self {
@@ -134,6 +135,10 @@ impl NixOSBuildTargetCheck {
             HostTarget::Flake(dir) => {
                 CheckResult::Pass(format!("Auto-discovered flake at {}", dir.display()))
             }
+            HostTarget::DecoyFlake {
+                dir,
+                hidden_volume_root,
+            } => decoy_flake_refusal(dir, hidden_volume_root),
             HostTarget::Legacy(path) => CheckResult::Pass(format!(
                 "Auto-discovered legacy config at {}",
                 path.display()
@@ -147,10 +152,35 @@ impl NixOSBuildTargetCheck {
                 CheckResult::Pass("Overlay-only: no NixOS build target".to_string())
             }
             HostTarget::None => CheckResult::fail(
-                "No NixOS configuration found. Provide --nixos-flake or ensure /etc/nixos contains flake.nix or configuration.nix.".to_string()
+                "No NixOS configuration found. Provide --nixos-flake, put a hidden flake in <hidden-root>/nixos, or ensure /etc/nixos contains configuration.nix.".to_string()
             ),
         }
     }
+}
+
+/// The refusal of the decoy's own flake in `dir`, with what to put in its
+/// place on the hidden volume at `hidden_volume_root`.
+fn decoy_flake_refusal(dir: &Path, hidden_volume_root: &Path) -> CheckResult {
+    let hidden_flake = hidden_volume_root.join("nixos");
+    CheckResult::fail_with(
+        format!(
+            "{} holds the decoy's own flake and {} holds none. A hidden system built from \
+             the decoy's files would lack the hidden module and the hidden hardware \
+             configuration, so activation does not build it.",
+            dir.display(),
+            hidden_flake.display()
+        ),
+        format!(
+            "Put a flake in {} whose configuration for this machine's hostname imports {} \
+             and the hidden module {}, or name such a flake with --nixos-flake. \
+             --overlay-only enters with the decoy's own system instead.",
+            hidden_flake.display(),
+            dir.join("configuration.nix").display(),
+            hidden_volume_root
+                .join("config/nixos/configuration.nix")
+                .display()
+        ),
+    )
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
@@ -397,6 +427,33 @@ mod tests {
         let result = auto(HostTarget::ExplicitFlake("gh:me/cfg".into()));
         assert!(result.is_pass());
         assert!(result.message().contains("gh:me/cfg"));
+    }
+
+    /// The decoy's own flake fails with instructions that name the hidden
+    /// flake directory, the decoy's configuration and the hidden module.
+    #[test]
+    fn test_auto_discovery_refuses_the_decoy_flake_with_instructions() {
+        let result = auto(HostTarget::DecoyFlake {
+            dir: PathBuf::from("/etc/nixos"),
+            hidden_volume_root: PathBuf::from("/mnt/data"),
+        });
+        assert!(result.is_fail());
+        assert!(
+            result.message().starts_with(
+                "/etc/nixos holds the decoy's own flake and /mnt/data/nixos holds none"
+            ),
+            "{result:?}"
+        );
+        let remedy = result.remediation().expect("instructions");
+        for part in [
+            "Put a flake in /mnt/data/nixos",
+            "imports /etc/nixos/configuration.nix",
+            "the hidden module /mnt/data/config/nixos/configuration.nix",
+            "--nixos-flake",
+            "--overlay-only",
+        ] {
+            assert!(remedy.contains(part), "{part} missing: {remedy}");
+        }
     }
 
     #[test]

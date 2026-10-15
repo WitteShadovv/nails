@@ -15,7 +15,7 @@ use crate::filesystem::Filesystem;
 
 /// Legacy NixOS configuration, probed when no flake is found.
 const LEGACY_CONFIG: &str = "/etc/nixos/configuration.nix";
-/// System-wide flake location.
+/// The decoy's own flake directory.
 const ETC_FLAKE_DIR: &str = "/etc/nixos";
 /// Newest-generation system profile; its mere presence means the host is NixOS.
 const SYSTEM_PROFILE: &str = "/nix/var/nix/profiles/system";
@@ -28,7 +28,11 @@ pub(crate) const NIXOS_COMMAND_DIRS: &[&str] = &[NIXOS_SYSTEM_PROFILE_BIN, "/run
 /// Run when no explicit flake is configured. In order:
 ///
 /// 1. a `flake.nix` in `<hidden_volume_root>/nixos`.
-/// 2. a `flake.nix` in `/etc/nixos`.
+/// 2. a `flake.nix` in `/etc/nixos`: the decoy's own flake, which
+///    [`HostTarget::DecoyFlake`] reports for refusal. Built from the decoy's
+///    files, it could not import the hidden module (the decoy's `/etc/nixos`
+///    must not name the hidden volume), and the legacy configuration beside it
+///    would be built without the flake's inputs.
 /// 3. a legacy `/etc/nixos/configuration.nix`, or a present system profile.
 /// 4. otherwise [`HostTarget::None`].
 ///
@@ -48,7 +52,10 @@ pub(crate) fn discover_nixos_target<F: Filesystem>(
 
     let etc_flake_dir = PathBuf::from(ETC_FLAKE_DIR);
     if fs.path_exists(&etc_flake_dir.join("flake.nix"))? {
-        return Ok(HostTarget::Flake(etc_flake_dir));
+        return Ok(HostTarget::DecoyFlake {
+            dir: etc_flake_dir,
+            hidden_volume_root: hidden_volume_root.to_path_buf(),
+        });
     }
 
     let legacy_config = PathBuf::from(LEGACY_CONFIG);
@@ -142,14 +149,21 @@ mod discovery_tests {
         );
     }
 
+    /// The decoy's own flake is reported for refusal, never built, and the
+    /// legacy configuration beside it (which the flake imports) is not taken
+    /// instead.
     #[test]
-    fn etc_flake_when_no_hidden_flake() {
+    fn etc_flake_without_a_hidden_flake_is_the_refused_decoy_flake() {
         let fs = MockFilesystem::new();
         fs.mock_set_path_type("/etc/nixos/flake.nix", PathKind::File);
         fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
+        fs.mock_set_path_type("/nix/var/nix/profiles/system", PathKind::Dir);
         assert_eq!(
             discover(&fs),
-            HostTarget::Flake(PathBuf::from("/etc/nixos"))
+            HostTarget::DecoyFlake {
+                dir: PathBuf::from("/etc/nixos"),
+                hidden_volume_root: PathBuf::from(HIDDEN_ROOT),
+            }
         );
     }
 

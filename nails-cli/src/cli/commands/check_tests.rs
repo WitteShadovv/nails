@@ -35,6 +35,18 @@ fn profile_summary_reports_a_discovered_flake() {
 }
 
 #[test]
+fn profile_summary_reports_the_refused_decoy_flake() {
+    let profile = profile_summary(HostTarget::DecoyFlake {
+        dir: PathBuf::from("/etc/nixos"),
+        hidden_volume_root: PathBuf::from("/mnt/vault"),
+    });
+    assert_eq!(profile.mode, "refused");
+    let detail = profile.detail.unwrap();
+    assert!(detail.contains("/etc/nixos is not built"), "{detail}");
+    assert!(detail.contains("nixos-build-target"), "{detail}");
+}
+
+#[test]
 fn profile_summary_reports_a_legacy_target() {
     let profile = profile_summary(HostTarget::Legacy(PathBuf::from("/cfg/configuration.nix")));
     assert_eq!(profile.mode, "legacy");

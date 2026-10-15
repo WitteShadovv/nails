@@ -188,6 +188,13 @@ fn profile_summary(target: nails_core::HostTarget) -> ProfileSummary {
             mode: "flake",
             detail: Some(format!("NixOS flake found at {}", dir.display())),
         },
+        HostTarget::DecoyFlake { dir, .. } => ProfileSummary {
+            mode: "refused",
+            detail: Some(format!(
+                "the decoy's own flake at {} is not built (see nixos-build-target)",
+                dir.display()
+            )),
+        },
         HostTarget::Legacy(path) => ProfileSummary {
             mode: "legacy",
             detail: Some(format!("legacy build target: {}", path.display())),

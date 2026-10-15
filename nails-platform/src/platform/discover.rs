@@ -25,8 +25,20 @@ pub enum HostTarget {
     OverlayOnly,
     /// An explicit flake reference from `--flake` or config `nixos_flake`.
     ExplicitFlake(String),
-    /// A flake directory holding `flake.nix` (hidden volume, or `/etc/nixos`).
+    /// A flake directory holding `flake.nix`: the hidden flake in
+    /// `<hidden_volume_root>/nixos`.
     Flake(PathBuf),
+    /// The decoy's own flake (`/etc/nixos/flake.nix`), found with no hidden
+    /// flake: activation refuses it. A build of it reads only the decoy's
+    /// files, so neither the hidden module nor the hidden hardware
+    /// configuration would be part of the hidden system.
+    DecoyFlake {
+        /// The decoy's flake directory.
+        dir: PathBuf,
+        /// The hidden volume root: where a hidden flake goes (`nixos/`) and
+        /// where the hidden module lives (`config/nixos/configuration.nix`).
+        hidden_volume_root: PathBuf,
+    },
     /// A legacy `configuration.nix` build (also the choice when only the system
     /// profile is present, matching activation).
     Legacy(PathBuf),

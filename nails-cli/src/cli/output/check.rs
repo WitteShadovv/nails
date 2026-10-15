@@ -97,7 +97,8 @@ pub struct ConfigSummary {
 /// Which NixOS profile activation would build and switch to.
 #[derive(Debug, Serialize)]
 pub struct ProfileSummary {
-    /// `"overlay-only"`, `"flake"`, `"legacy"` or `"none"`.
+    /// `"overlay-only"`, `"flake"`, `"legacy"`, `"refused"` (the decoy's own
+    /// flake, which activation does not build) or `"none"`.
     pub mode: &'static str,
     /// A human description of the selected target, if any.
     pub detail: Option<String>,

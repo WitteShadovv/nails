@@ -205,7 +205,8 @@ pub(crate) fn load_config_or_defaults(config_override: Option<&Path>) -> LoadedC
 /// host's platform backend through
 /// [`NailsManager::discover_host_target`](nails_core::NailsManager::discover_host_target):
 /// on NixOS that is overlay-only (no builder) → explicit `config.nixos_flake` →
-/// a flake in the hidden volume → `/etc/nixos/flake.nix` → a legacy
+/// a flake in the hidden volume → the decoy's own `/etc/nixos/flake.nix`
+/// (refused: no builder, and the build-target check fails) → a legacy
 /// `/etc/nixos/configuration.nix` or system profile → no NixOS; a host without
 /// a declarative config layer has no build target at all. Activation, the
 /// `check`/`doctor` command (which also uses this to build its pre-flight
@@ -219,7 +220,7 @@ pub(crate) fn build_nixos_manager(
     overlay_only: bool,
     env: &nails_core::RuntimeEnv,
 ) -> nails_core::NailsManager<nails_core::RealFilesystem> {
-    use nails_core::{HostTarget, NailsManager, NixOSBuilder, RealFilesystem};
+    use nails_core::{HostTarget, NailsManager, RealFilesystem};
 
     let mut manager =
         NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
@@ -227,19 +228,26 @@ pub(crate) fn build_nixos_manager(
         tracing::debug!(error = %e, "platform detection failed; continuing without a host profile");
     }
 
-    let builder = match manager
+    let target = manager
         .discover_host_target(overlay_only)
-        .unwrap_or(HostTarget::None)
-    {
-        HostTarget::OverlayOnly | HostTarget::None => None,
-        HostTarget::ExplicitFlake(flake_ref) => Some(NixOSBuilder::new_with_flake_ref(flake_ref)),
-        HostTarget::Flake(dir) => Some(NixOSBuilder::new(dir)),
-        HostTarget::Legacy(path) => Some(NixOSBuilder::new_legacy(path)),
-    };
-    if let Some(builder) = builder {
+        .unwrap_or(HostTarget::None);
+    if let Some(builder) = nixos_builder_for(target) {
         manager.set_nixos_builder(builder);
     }
     manager
+}
+
+/// The builder of a build target. Overlay-only, no target and the refused
+/// decoy flake get none.
+fn nixos_builder_for(target: nails_core::HostTarget) -> Option<nails_core::NixOSBuilder> {
+    use nails_core::{HostTarget, NixOSBuilder};
+
+    match target {
+        HostTarget::OverlayOnly | HostTarget::None | HostTarget::DecoyFlake { .. } => None,
+        HostTarget::ExplicitFlake(flake_ref) => Some(NixOSBuilder::new_with_flake_ref(flake_ref)),
+        HostTarget::Flake(dir) => Some(NixOSBuilder::new(dir)),
+        HostTarget::Legacy(path) => Some(NixOSBuilder::new_legacy(path)),
+    }
 }
 
 /// Directory holding the state file (and its `.lock`) on the hidden volume.
@@ -328,9 +336,40 @@ pub(crate) fn acquire_state_lock_for_emergency(
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigSource, pick_teardown_config};
-    use nails_core::Config;
-    use std::path::PathBuf;
+    use super::{ConfigSource, nixos_builder_for, pick_teardown_config};
+    use nails_core::{Config, HostTarget};
+    use std::path::{Path, PathBuf};
+
+    /// Activation builds nothing for the refused decoy flake, as for
+    /// overlay-only and no target; every other target gets its builder.
+    #[test]
+    fn the_refused_decoy_flake_gets_no_builder() {
+        let decoy = HostTarget::DecoyFlake {
+            dir: PathBuf::from("/etc/nixos"),
+            hidden_volume_root: PathBuf::from("/mnt/data"),
+        };
+        for target in [decoy, HostTarget::OverlayOnly, HostTarget::None] {
+            assert_eq!(nixos_builder_for(target.clone()), None, "{target:?}");
+        }
+
+        let flake = nixos_builder_for(HostTarget::Flake(PathBuf::from("/mnt/data/nixos")));
+        assert_eq!(
+            flake.as_ref().and_then(|b| b.flake_dir()),
+            Some(Path::new("/mnt/data/nixos"))
+        );
+        let explicit = nixos_builder_for(HostTarget::ExplicitFlake("/srv/cfg#host".into()));
+        assert_eq!(
+            explicit.map(|b| b.effective_flake_arg()).as_deref(),
+            Some("/srv/cfg#host")
+        );
+        let legacy = nixos_builder_for(HostTarget::Legacy(PathBuf::from(
+            "/etc/nixos/configuration.nix",
+        )));
+        assert_eq!(
+            legacy.as_ref().and_then(|b| b.legacy_config()),
+            Some(Path::new("/etc/nixos/configuration.nix"))
+        );
+    }
 
     fn config_rooted_at(root: &str) -> Config {
         Config {
