@@ -15,6 +15,10 @@
 #   - bus_only has no notify-send, as on Debian's GNOME and KDE desktops and a
 #     NixOS desktop without libnotify, so they go out through busctl.
 #
+# Each call comes from a process with testuser's uid and primary gid in every
+# slot, no supplementary groups, no capabilities and no_new_privs set, leading
+# a session of its own without a controlling terminal.
+#
 # In the hidden session testuser logs in on the console, which makes them the
 # owner of the active session on seat0. Then:
 #
@@ -102,6 +106,16 @@ in
         assert record["app_name"] == "System", record
         text = (record["summary"] + " " + record["body"]).lower()
         assert "nails" not in text, record
+        # Nothing of root's is left: the operator's primary group in every
+        # slot, no supplementary group, no capability, no way to gain
+        # privileges again, and a session of its own with no terminal.
+        gid = machine.succeed("id -g testuser").strip()
+        assert record.get("gids") == [gid] * 4, record
+        assert record.get("groups") == [], record
+        assert record.get("cap_eff") == 0, record
+        assert record.get("no_new_privs") == 1, record
+        assert record.get("sid") == record.get("pid"), record
+        assert record.get("tty_nr") == 0, record
 
 
     def scenario(node, program):

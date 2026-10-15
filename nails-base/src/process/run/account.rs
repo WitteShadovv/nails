@@ -11,6 +11,12 @@
 //! drops the child to it after the fork and before `exec`. The drop happens in
 //! the child itself rather than through `runuser` or `su`, which would open a
 //! PAM session that the system logs.
+//!
+//! After the drop the child also leaves the caller's session (`setsid`), so it
+//! has no controlling terminal: a root shell's terminal is out of reach of a
+//! process the operator's account can trace. And it sets `no_new_privs`, so
+//! nothing it executes can gain privileges again (a setuid program included).
+//! The new session is also the process group a deadline kills.
 
 use std::io;
 
@@ -29,9 +35,10 @@ pub struct Account {
 pub(super) fn drop_before_exec(child: &mut std::process::Command, account: Account) {
     use std::os::unix::process::CommandExt;
     // SAFETY: the hook runs in the forked child before exec. It makes only the
-    // getuid(2), geteuid(2), getgid(2), getegid(2), setgroups(2), setgid(2) and
-    // setuid(2) system calls on integers copied into the closure: no
-    // allocation, no lock, nothing that is not async-signal-safe.
+    // getuid(2), geteuid(2), getgid(2), getegid(2), setgroups(2), setgid(2),
+    // setuid(2), setsid(2) and prctl(2) system calls on integers copied into
+    // the closure: no allocation, no lock, nothing that is not
+    // async-signal-safe.
     unsafe {
         child.pre_exec(move || drop_to(account));
     }
@@ -44,7 +51,9 @@ pub(super) fn drop_before_exec(child: &mut std::process::Command, account: Accou
 /// root sets the real, effective and saved uid at once, so nothing can take
 /// root back afterwards. An unprivileged process cannot change its account, so
 /// it can only already be `account`. Either way the result is checked, and a
-/// process that is not `account` afterwards fails with `EPERM`.
+/// process that is not `account` afterwards fails with `EPERM`. Then the
+/// process starts a session of its own and sets `no_new_privs`; a failure of
+/// either fails the start too.
 #[allow(unsafe_code)]
 fn drop_to(account: Account) -> io::Result<()> {
     use nix::libc;
@@ -63,6 +72,9 @@ fn drop_to(account: Account) -> io::Result<()> {
             && libc::getegid() == account.gid;
         if !dropped {
             return Err(io::Error::from_raw_os_error(libc::EPERM));
+        }
+        if libc::setsid() < 0 || libc::prctl(libc::PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0 {
+            return Err(io::Error::last_os_error());
         }
     }
     Ok(())
@@ -113,6 +125,31 @@ mod tests {
         let lines: Vec<&str> = stdout.lines().collect();
         assert_eq!(lines[0], account.uid.to_string(), "{stdout}");
         assert_eq!(lines[1], account.gid.to_string(), "{stdout}");
+    }
+
+    /// The child leads a session of its own (so it has no controlling
+    /// terminal) and cannot gain privileges through what it executes.
+    #[test]
+    fn the_child_leaves_the_session_and_gains_no_privileges() {
+        let (ok, stdout, stderr) = RealProcessRunner
+            .run_text(&shell_as(
+                "set -- $(cut -d' ' -f6,7 /proc/self/stat); echo \"$$ $1 $2\"; \
+                 grep '^NoNewPrivs:' /proc/self/status",
+                this_account(),
+            ))
+            .unwrap();
+        assert!(ok, "{stderr}");
+        let mut lines = stdout.lines();
+        let ids: Vec<&str> = lines.next().unwrap().split(' ').collect();
+        assert_eq!(ids[0], ids[1], "the shell leads its own session: {stdout}");
+        assert_eq!(ids[2], "0", "no controlling terminal: {stdout}");
+        assert_eq!(
+            lines
+                .next()
+                .map(|line| line.split_whitespace().collect::<Vec<_>>()),
+            Some(vec!["NoNewPrivs:", "1"]),
+            "{stdout}"
+        );
     }
 
     #[test]

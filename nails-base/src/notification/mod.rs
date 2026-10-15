@@ -14,10 +14,14 @@
 //!
 //! Both run as root's children, but a session bus admits only the account that
 //! owns it. So the alert runs as the operator: their uid and primary gid, no
-//! supplementary groups (see
-//! [`ProcessCommand::run_as`](crate::process::ProcessCommand::run_as)), with the
-//! bus and display variables pointed at their session. When no operator can be
-//! resolved, nothing is started.
+//! supplementary groups, in a session of its own and unable to gain privileges
+//! (see [`ProcessCommand::run_as`](crate::process::ProcessCommand::run_as)),
+//! with the bus and display variables pointed at their session. When no
+//! operator can be resolved, nothing is started.
+//!
+//! Each command waits for the notification daemon's reply for at most
+//! [`ALERT_BUDGET`]: a daemon that never answers, or a child the operator's
+//! account stopped, costs an alert, never the caller.
 
 use crate::Result;
 use crate::process::{ProcessCommand, ProcessRunner};
@@ -65,6 +69,9 @@ pub struct Notification {
 /// Neutral application name for immediate alerts.
 const NEUTRAL_APP_NAME: &str = "System";
 
+/// How long an alert command may wait for the notification daemon.
+pub const ALERT_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The operator's desktop session an alert goes to: the account it runs as and
 /// the environment that points it at that account's session bus.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,17 +95,21 @@ impl AlertSession {
         }
     }
 
-    /// `command`, run as the operator on their session bus.
+    /// `command`, run as the operator on their session bus, under
+    /// [`ALERT_BUDGET`].
     fn command(&self, mut command: ProcessCommand) -> ProcessCommand {
         for (key, value) in &self.env {
             command = command.set_env(key, value);
         }
-        command.run_as(self.uid, self.gid)
+        command.run_as(self.uid, self.gid).deadline(ALERT_BUDGET)
     }
 }
 
 /// The `notify-send` command for an immediate alert. `notify-send` is a host
 /// tool from the fixed system directories: the alert is started by root.
+///
+/// `--` ends the options before the summary and the body, so a body that
+/// begins with `-` (a mount source in a cover alert) is shown, not parsed.
 fn immediate_alert_command(notification: &Notification, session: &AlertSession) -> ProcessCommand {
     let mut command = ProcessCommand::tool("notify-send")
         .arg("--urgency")
@@ -108,7 +119,12 @@ fn immediate_alert_command(notification: &Notification, session: &AlertSession) 
     if let Some(ref icon) = notification.icon {
         command = command.arg("--icon").arg(icon);
     }
-    session.command(command.arg(&notification.title).arg(&notification.body))
+    session.command(
+        command
+            .arg("--")
+            .arg(&notification.title)
+            .arg(&notification.body),
+    )
 }
 
 /// The same alert as a direct `org.freedesktop.Notifications.Notify` call on

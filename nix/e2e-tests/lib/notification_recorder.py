@@ -3,9 +3,11 @@
 It runs as the operator, owns ``org.freedesktop.Notifications`` on the
 operator's session bus and answers the calls a desktop's notification daemon
 answers. Every ``Notify`` is appended to the file named on the command line as
-one JSON line: the call's arguments, and the uid and the command name of the
-process that made the call, which the bus reports for its connection. The reply
-waits for those, so the caller is still alive when they are looked up.
+one JSON line: the call's arguments, and what the bus and ``/proc`` report
+for the process that made the call: its uid, command name, group ids,
+supplementary groups, effective capabilities, ``no_new_privs``, session and
+controlling terminal. The reply waits for those, so the caller is still alive
+when they are looked up.
 
 Run inside the guest: ``python3 -P notification_recorder.py <records file>``.
 """
@@ -49,10 +51,33 @@ async def connection_facts(bus: MessageBus, sender: str) -> dict[str, Any]:
         if reply is not None and reply.message_type == MessageType.METHOD_RETURN:
             facts[key] = reply.body[0]
     if "pid" in facts:
-        try:
-            facts["comm"] = Path(f"/proc/{facts['pid']}/comm").read_text().strip()
-        except OSError:
-            pass
+        facts.update(process_facts(int(facts["pid"])))
+    return facts
+
+
+def process_facts(pid: int) -> dict[str, Any]:
+    """What ``/proc`` says about ``pid``: its command name, group ids,
+    supplementary groups, effective capabilities, ``no_new_privs``, session
+    and controlling terminal. Whatever cannot be read is left out."""
+    facts: dict[str, Any] = {}
+    proc = Path(f"/proc/{pid}")
+    try:
+        facts["comm"] = (proc / "comm").read_text().strip()
+        lines = (proc / "status").read_text().splitlines()
+        pairs = (line.partition(":") for line in lines)
+        fields = {key: value for key, _, value in pairs}
+        facts["gids"] = fields["Gid"].split()
+        facts["groups"] = fields["Groups"].split()
+        facts["cap_eff"] = int(fields["CapEff"].strip(), 16)
+        facts["no_new_privs"] = int(fields["NoNewPrivs"].strip())
+        # The command name may hold spaces: the fields after it start with
+        # the state (field 3), so the session (6) and the terminal (7)
+        # follow three and four places later.
+        after_comm = (proc / "stat").read_text().rsplit(")", 1)[1].split()
+        facts["sid"] = int(after_comm[3])
+        facts["tty_nr"] = int(after_comm[4])
+    except (OSError, KeyError, IndexError, ValueError):
+        pass
     return facts
 
 

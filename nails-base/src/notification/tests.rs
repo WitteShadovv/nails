@@ -67,7 +67,8 @@ fn the_bus_fallback_is_one_notify_call_on_the_operators_bus() {
         .args(["0", "1", "urgency", "y", "2", "-1"])
         .set_env("XDG_RUNTIME_DIR", "/run/user/1000")
         .set_env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
-        .run_as(1000, 100);
+        .run_as(1000, 100)
+        .deadline(ALERT_BUDGET);
     assert_eq!(bus_alert_command(&alert, &alice()), expected);
 }
 
@@ -106,9 +107,32 @@ fn the_alert_is_attributed_to_a_neutral_application() {
     let text = immediate_alert_command(&alert, &alice()).to_string();
     assert_eq!(
         text,
-        "notify-send --urgency critical --app-name System --icon drive-harddisk \
+        "notify-send --urgency critical --app-name System --icon drive-harddisk -- \
          Storage unavailable A mounted volume stopped responding."
     );
+}
+
+/// A body that begins with `-` (a cover alert names the mount source first)
+/// follows the `--`, so notify-send shows it instead of taking it for an
+/// option; and every alert waits for the daemon for a bounded time only.
+#[test]
+fn notify_send_reads_no_option_after_its_double_dash_and_waits_a_bounded_time() {
+    let alert = Notification {
+        title: "Disk mounted over a folder in use".into(),
+        body: "-weird-source is mounted over /mnt/data".into(),
+        urgency: "critical".into(),
+        icon: None,
+        created_at: String::new(),
+    };
+    let expected = ProcessCommand::tool("notify-send")
+        .args(["--urgency", "critical", "--app-name", "System", "--"])
+        .args([&alert.title, &alert.body])
+        .set_env("XDG_RUNTIME_DIR", "/run/user/1000")
+        .set_env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1000/bus")
+        .run_as(1000, 100)
+        .deadline(ALERT_BUDGET);
+    assert_eq!(immediate_alert_command(&alert, &alice()), expected);
+    assert!(ALERT_BUDGET <= std::time::Duration::from_secs(10));
 }
 
 #[test]

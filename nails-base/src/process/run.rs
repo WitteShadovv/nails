@@ -531,10 +531,15 @@ fn run_with_deadline(
     command: &ProcessCommand,
     budget: Duration,
 ) -> Result<Output> {
-    let mut child = base_command(executable, command)
-        // Own process group so the deadline tears down the whole tree, not just
-        // the immediate child.
-        .process_group(0)
+    let mut child = base_command(executable, command);
+    // Own process group so the deadline tears down the whole tree, not just
+    // the immediate child. A child that drops to another account starts a
+    // session of its own instead (see `account`), which is a new process
+    // group too; a group leader could not.
+    if command.account.is_none() {
+        child.process_group(0);
+    }
+    let mut child = child
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -744,10 +749,10 @@ fn collect(handle: JoinHandle<Vec<u8>>) -> Vec<u8> {
 
 /// Sends `SIGKILL` to the child's whole process group, then reaps the child.
 ///
-/// `child` was spawned with `process_group(0)`, so it leads a new group whose
-/// PGID equals its PID; signalling that group reaches every descendant that has
-/// not escaped it with its own `setsid`. A D-state descendant survives — no
-/// signal can remove one.
+/// `child` was spawned with `process_group(0)`, or started a session of its
+/// own, so it leads a new group whose PGID equals its PID; signalling that
+/// group reaches every descendant that has not escaped it with its own
+/// `setsid`. A D-state descendant survives — no signal can remove one.
 fn kill_group(child: &mut std::process::Child) {
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
