@@ -1008,3 +1008,33 @@ fn a_noexec_run_is_cleared_for_the_session_and_set_again_on_rollback() {
         assert!(nextroot::is_noexec(&paths.run).unwrap());
     });
 }
+
+/// A decoy fstab that cannot be read refuses the entry, which rolls back:
+/// taken for an empty one, it would leave every decoy filesystem without a
+/// decision in the next root.
+#[test]
+fn an_unreadable_decoy_fstab_refuses_the_entry() {
+    let _ = Rerun::new(test_path!(an_unreadable_decoy_fstab_refuses_the_entry))
+        .in_user_mount_ns()
+        .run(|| {
+            let world = World::new();
+            let fstab = world.decoy.path().join("etc/fstab");
+            std::fs::remove_file(&fstab).unwrap();
+            std::fs::create_dir(&fstab).unwrap();
+            let paths = world.paths();
+
+            let Err(error) = entry::prepare(&paths, &world.inputs(), &FakeHost::default()) else {
+                panic!("entered with an unreadable fstab");
+            };
+
+            assert!(error.to_string().contains("etc/fstab"), "{error}");
+            let nextroot = paths.nextroot();
+            assert!(
+                !read_mountinfo()
+                    .unwrap()
+                    .iter()
+                    .any(|e| e.mount_point.starts_with(&nextroot)),
+                "the next root is still mounted"
+            );
+        });
+}

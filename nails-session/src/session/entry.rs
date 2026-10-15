@@ -452,8 +452,8 @@ fn build(
     // The decoy's own fstab first, read the way the decoy resolves it: its
     // filesystems (a separate /nix, the VM store) must be in place inside the
     // next root before anything reads the next root's store.
-    let decoy_fstab =
-        nextroot::read_in_root(&paths.root, Path::new("/etc/fstab")).unwrap_or_default();
+    let decoy_fstab = super::fstab::read_in_root(&paths.root)
+        .map_err(|e| io(&paths.root.join("etc/fstab"), e))?;
     let mut decisions = decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root)?;
     plan.policy_mounts = apply_mounts(paths, &layout, &decisions, inputs.hidden_root, &[])?;
     crate::cancel::checkpoint()?;
@@ -495,8 +495,8 @@ fn build(
         };
         // The hidden generation brings its own /etc/fstab: decide its entries
         // too, and put in place what the decoy's fstab did not already cover.
-        let hidden_fstab =
-            nextroot::read_in_root(&nextroot, Path::new("/etc/fstab")).unwrap_or_default();
+        let hidden_fstab = super::fstab::read_in_root(&nextroot)
+            .map_err(|e| io(&nextroot.join("etc/fstab"), e))?;
         let hidden = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root)?;
         let done: Vec<PathBuf> = plan
             .policy_mounts

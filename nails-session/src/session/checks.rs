@@ -16,7 +16,7 @@
 //! Each check reads the live system in `run` and judges through a pure
 //! function, which the tests exercise directly.
 
-use super::fstab::parse_fstab;
+use super::fstab::{parse_fstab, read_in_root as read_fstab};
 use super::layout::Paths;
 use super::policy::{self, Decision};
 use super::probe::{self, SessionView};
@@ -25,7 +25,6 @@ use crate::error::Result;
 use crate::filesystem::Filesystem;
 use crate::preflight::{CheckResult, PreFlightCheck};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo};
-use nails_teardown::whole_root::nextroot;
 use std::path::{Path, PathBuf};
 
 /// Judge a systemd version.
@@ -269,7 +268,19 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
         "every decoy filesystem has a safe decision in the hidden root"
     }
     fn run(&self, _fs: &F) -> Result<CheckResult> {
-        let text = nextroot::read_in_root(&self.root, Path::new("/etc/fstab")).unwrap_or_default();
+        let text = match read_fstab(&self.root) {
+            Ok(text) => text,
+            Err(e) => {
+                return Ok(CheckResult::fail_with(
+                    format!(
+                        "{} cannot be read: {e}",
+                        self.root.join("etc/fstab").display()
+                    ),
+                    "Every decoy filesystem needs a decision before the switch; make the \
+                     decoy's fstab readable by root and retry.",
+                ));
+            }
+        };
         let entries = parse_fstab(&String::from_utf8_lossy(&text));
         let decisions = policy::decide_all(
             &entries,
@@ -281,73 +292,5 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use nails_teardown::mountinfo::parse_mountinfo;
-
-    #[test]
-    fn old_systemd_is_refused_naming_the_unsupported_releases() {
-        assert!(judge_version(Some(254)).is_pass());
-        assert!(judge_version(Some(259)).is_pass());
-        let old = judge_version(Some(252));
-        assert!(old.is_fail());
-        assert!(old.message().contains("252"));
-        assert!(old.remediation().unwrap().contains("bookworm"));
-        assert!(old.remediation().unwrap().contains("22.04"));
-        assert!(judge_version(None).is_fail());
-    }
-
-    #[test]
-    fn missing_units_on_nixos_come_with_the_module_snippet() {
-        let root = tempfile::tempdir().unwrap();
-        let result = judge_units(root.path(), true);
-        assert!(result.is_fail());
-        assert!(
-            result
-                .remediation()
-                .unwrap()
-                .contains("SuccessAction=soft-reboot-force")
-        );
-        assert!(
-            !judge_units(root.path(), false)
-                .remediation()
-                .unwrap()
-                .contains("nixpkgs")
-        );
-    }
-
-    #[test]
-    fn an_impermanent_root_is_refused() {
-        let ram = parse_mountinfo("1 0 0:20 / / rw - tmpfs none rw\n");
-        assert!(judge_decoy_root(&ram, Path::new("/")).is_fail());
-        let disk = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
-        assert!(judge_decoy_root(&disk, Path::new("/")).is_pass());
-    }
-
-    #[test]
-    fn only_the_plain_decoy_may_activate() {
-        assert!(judge_session(&SessionView::Decoy).is_pass());
-        assert!(judge_session(&SessionView::HiddenWithoutPlan("x".into())).is_fail());
-        let interrupted = judge_session(&SessionView::Interrupted {
-            plan: None,
-            nextroot_mounted: true,
-        });
-        assert!(interrupted.remediation().unwrap().contains("nails recover"));
-    }
-
-    #[test]
-    fn masked_filesystems_warn_and_a_refusal_fails() {
-        let mounts = parse_mountinfo(
-            "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n2 1 8:1 / /boot rw - vfat /dev/vda1 rw\n",
-        );
-        let decide =
-            |text: &str| policy::decide_all(&parse_fstab(text), &mounts, Path::new("/mnt/data"));
-        let boot = judge_fstab(&decide(
-            "/dev/vda1 /boot vfat defaults 0 2\n/dev/vda3 none swap sw 0 0\n",
-        ));
-        assert!(boot.is_pass(), "{boot:?}");
-        assert!(boot.message().contains("/boot: read-only"));
-        assert!(judge_fstab(&decide("/dev/sdb1 /data ext4 defaults 0 2\n")).is_warn());
-        assert!(judge_fstab(&decide("/dev/sdb1 data ext4 defaults 0 2\n")).is_fail());
-    }
-}
+#[path = "checks_tests.rs"]
+mod tests;
