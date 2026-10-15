@@ -536,5 +536,57 @@ mod tests {
                 }
             });
         }
+
+        /// `mask_inherited = ["*"]` masks what the inventory finds, and the
+        /// inventory reads `~/.config` through the absolute link as the hidden
+        /// root resolves it. Read on the running system instead, it would find
+        /// nothing there and mask nothing.
+        #[test]
+        fn a_wildcard_masks_the_entries_behind_an_absolute_link() {
+            let _ = Rerun::new(nails_base::test_path!(
+                a_wildcard_masks_the_entries_behind_an_absolute_link
+            ))
+            .in_user_mount_ns()
+            .run(|| {
+                let decoy = ScratchTmpfs::new("");
+                let config = decoy.mkdir("home/alice/.dotfiles/config/autostart");
+                std::fs::write(
+                    config.join("dropbox.desktop"),
+                    "[Desktop Entry]\nExec=dropbox\n",
+                )
+                .unwrap();
+                std::os::unix::fs::symlink(
+                    "/home/alice/.dotfiles/config",
+                    decoy.path().join("home/alice/.config"),
+                )
+                .unwrap();
+                let before = tree(decoy.path());
+                let hidden = ScratchTmpfs::new("");
+                let next = next_root(decoy.path(), &hidden);
+                let everything = PersonaConfig {
+                    mode: PersonaMode::SharedHome,
+                    mask_inherited: vec!["*".into()],
+                };
+
+                let written = write_masks(&next, &everything, &me(Path::new("/home/alice")));
+
+                // The test host's own system entries are masked too.
+                assert!(
+                    written.contains(&PathBuf::from(
+                        "/home/alice/.config/autostart/dropbox.desktop"
+                    )),
+                    "{written:?}"
+                );
+                let mask = std::fs::read_to_string(
+                    hidden
+                        .path()
+                        .join("upper/home/alice/.dotfiles/config/autostart/dropbox.desktop"),
+                )
+                .unwrap();
+                assert!(mask.contains("Hidden=true"), "{mask}");
+                assert_eq!(tree(decoy.path()), before, "the decoy changed");
+                nextroot::detach_tree(&next);
+            });
+        }
     }
 }

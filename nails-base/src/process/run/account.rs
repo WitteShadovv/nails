@@ -102,6 +102,21 @@ mod tests {
             .allow_in_test_runtime()
     }
 
+    /// Every alert drops to an account and has a deadline. The drop starts a
+    /// session of its own (setsid), which a process group leader cannot, so
+    /// the deadline must not make the child one first.
+    #[test]
+    fn a_command_with_an_account_and_a_deadline_starts() {
+        let (ok, stdout, stderr) = RealProcessRunner
+            .run_text(
+                &shell_as("echo started", this_account())
+                    .deadline(std::time::Duration::from_secs(5)),
+            )
+            .unwrap();
+        assert!(ok, "{stderr}");
+        assert_eq!(stdout.trim(), "started");
+    }
+
     #[test]
     fn a_command_names_the_account_it_runs_as() {
         let command = ProcessCommand::tool("busctl").run_as(1000, 100);

@@ -399,7 +399,11 @@ fn run_loop_stops_after_an_automatic_emergency() {
         alerts.recv_timeout(Duration::from_secs(10)).is_ok(),
         "first failure alerts"
     );
-    assert!(alerts.try_recv().is_err(), "once");
+    // A second alert would come from a thread of its own too: give it time.
+    assert!(
+        alerts.recv_timeout(Duration::from_millis(500)).is_err(),
+        "once"
+    );
     assert_eq!(emergencies, 1, "persistent failure tears down once");
     assert_eq!(ticks, 2, "every round ticks first");
 }

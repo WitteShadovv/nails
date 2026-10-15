@@ -484,10 +484,14 @@ mod nixos_kernel_tests {
     use std::path::{Path, PathBuf};
 
     /// A shell that lives in the host's `/nix/store`, usable inside a root
-    /// that binds the store.
+    /// that binds the store: `/bin/sh` on NixOS, else the `sh` or `bash` a
+    /// Nix development shell puts on `PATH`.
     fn store_shell() -> Option<PathBuf> {
-        let sh = std::fs::canonicalize("/bin/sh").ok()?;
-        sh.starts_with("/nix/store").then_some(sh)
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        std::iter::once(PathBuf::from("/bin/sh"))
+            .chain(std::env::split_paths(&path).flat_map(|dir| [dir.join("sh"), dir.join("bash")]))
+            .filter_map(|shell| std::fs::canonicalize(shell).ok())
+            .find(|shell| shell.starts_with("/nix/store"))
     }
 
     #[test]
@@ -521,6 +525,10 @@ mod nixos_kernel_tests {
                     None::<&str>,
                 )
                 .unwrap();
+                // It also records its process group and the signals it
+                // ignores: a Ctrl+C on the terminal reaches the whole
+                // foreground group, and an activation killed halfway would
+                // leave the hidden /etc half written.
                 let activate = root.path().join("system/activate");
                 std::fs::write(
                     &activate,
@@ -529,7 +537,13 @@ mod nixos_kernel_tests {
                          test -r /proc/self/mountinfo\n\
                          test -e /dev/null\n\
                          n=0; for f in /run/*; do [ -e \"$f\" ] && n=$((n+1)); done\n\
-                         echo \"run-entries=$n\" > /etc/activated\n",
+                         echo \"run-entries=$n\" > /etc/activated\n\
+                         read -r stat < /proc/$$/stat\n\
+                         set -- $stat\n\
+                         echo \"process=$1 group=$5\" >> /etc/activated\n\
+                         while read -r key value; do \
+                           if [ \"$key\" = SigIgn: ]; then echo \"ignored=$value\" >> /etc/activated; fi; \
+                         done < /proc/$$/status\n",
                         shell.display()
                     ),
                 )
@@ -539,10 +553,23 @@ mod nixos_kernel_tests {
 
                 activate_in(root.path(), Path::new("/system")).unwrap();
 
-                assert_eq!(
-                    std::fs::read_to_string(root.path().join("etc/activated")).unwrap(),
-                    "run-entries=0\n"
-                );
+                let activated = std::fs::read_to_string(root.path().join("etc/activated")).unwrap();
+                let lines: Vec<&str> = activated.lines().collect();
+                assert_eq!(lines.first(), Some(&"run-entries=0"), "{activated}");
+                let ids: Vec<&str> = lines[1]
+                    .split(' ')
+                    .filter_map(|field| field.split_once('=').map(|(_, id)| id))
+                    .collect();
+                assert_eq!(ids[0], ids[1], "the activation leads its own group: {activated}");
+                let ignored = lines[2].strip_prefix("ignored=").expect(&activated);
+                let ignored = u64::from_str_radix(ignored, 16).unwrap();
+                for signal in [nix::libc::SIGHUP, nix::libc::SIGINT, nix::libc::SIGTERM] {
+                    assert_ne!(
+                        ignored & (1 << (signal - 1)),
+                        0,
+                        "signal {signal} is not ignored: {activated}"
+                    );
+                }
                 // Nothing the child mounted is visible here.
                 let entries = nails_teardown::mountinfo::read_mountinfo().unwrap();
                 assert!(
