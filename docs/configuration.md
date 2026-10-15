@@ -257,8 +257,8 @@ otherwise. `nails check` names those names, so a typo does not go unnoticed. You
 can also disable an entry from inside the hidden session (`systemctl --user
 mask <unit>`, or remove or override the autostart file): the change lands in the
 upper, so it affects the hidden session only. Lingering is a decoy setting —
-disable it on the decoy itself if it matters. A display manager set to log in
-automatically logs that account in again at every switch, as at boot; the
+disable it on the decoy itself if it matters. A display manager set to log an
+account in automatically logs it in again at every switch, as at boot; the
 operator guide says how to
 [turn that off for the hidden session only](operator-guide.md#inherited-autostart-services-and-autologin).
 

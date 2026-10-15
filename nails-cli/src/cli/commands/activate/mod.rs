@@ -9,7 +9,7 @@
 //! its result and then enqueues the soft-reboot, which stops every program of
 //! the decoy and starts the hidden userspace inside the overlay: the operator
 //! is logged out and logs in again at the hidden session's login screen (a
-//! display manager set to log in automatically logs that account in again, as
+//! display manager set to log an account in automatically logs it in again, as
 //! at boot; NAILS logs nobody in). As its last step it SIGKILLs the decoy's
 //! interactive shells, so none of them writes the activation command to its
 //! history file on the decoy disk.

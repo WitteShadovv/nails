@@ -201,7 +201,7 @@ fn human_lines(
             out.push(
                 "Soft-rebooting into the hidden session now: every program closes and you are \
                  logged out. Log in at the hidden session's login screen (a display manager \
-                 set to log in automatically logs that account in again, as at boot)."
+                 set to log an account in automatically logs it in again, as at boot)."
                     .to_string(),
             );
         }
@@ -385,7 +385,7 @@ mod tests {
                 String::new(),
                 "Soft-rebooting into the hidden session now: every program closes and you are \
                  logged out. Log in at the hidden session's login screen (a display manager \
-                 set to log in automatically logs that account in again, as at boot)."
+                 set to log an account in automatically logs it in again, as at boot)."
                     .to_string(),
             ]
         );

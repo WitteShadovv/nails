@@ -59,8 +59,8 @@ WHAT HAPPENS:
   In the hidden session, deactivation mounts the decoy root at /run/nextroot,
   marks the hidden volume for closing and soft-reboots: every hidden program
   is stopped in order, /run is scrubbed of the hidden session, and the decoy
-  starts again at its own login screen (a display manager set to log in
-  automatically logs that account in again, as at boot). The hidden volume is
+  starts again at its own login screen (a display manager set to log an
+  account in automatically logs it in again, as at boot). The hidden volume is
   unmounted and its encryption mapping closed by the switch itself.
 
 EXAMPLES:

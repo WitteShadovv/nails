@@ -303,7 +303,7 @@ fn human_lines(settings: &OutputSettings, report: &HotReport) -> Vec<String> {
     if report.side == Side::Hidden && report.dispatched == Some(Finish::Return) {
         out.push(
             "  The decoy starts at its own login screen; log in there with the decoy password \
-             (a display manager set to log in automatically logs that account in again, as at \
+             (a display manager set to log an account in automatically logs it in again, as at \
              boot)."
                 .to_string(),
         );

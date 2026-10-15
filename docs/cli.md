@@ -41,7 +41,7 @@ The workflow has four steps:
   2. `init <root>` once, to lay out the hidden volume.
   3. `activate` to soft-reboot into the hidden session. You are logged out;
      the hidden session starts at its own login screen (a display manager set
-     to log in automatically logs that account in again, as at boot).
+     to log an account in automatically logs it in again, as at boot).
   4. `deactivate` to soft-reboot back to the plain decoy, or `emergency` to
      kill the hidden session at once and return (or power off). If an
      activation was interrupted, `recover` removes what it left behind.
@@ -121,7 +121,7 @@ WHAT HAPPENS:
   with every change stored on the hidden volume, and soft-reboots into it
   (systemd 254 or newer). Every program is closed and you are logged out; the
   hidden session starts at its own login screen (a display manager set to log
-  in automatically logs that account in again, as at boot). Nothing of the
+  an account in automatically logs it in again, as at boot). Nothing of the
   hidden session can reach the decoy disk: the ESP is read-only, other decoy
   filesystems are overlaid, and decoy swap is never used.
 
@@ -160,8 +160,8 @@ WHAT HAPPENS:
   In the hidden session, deactivation mounts the decoy root at /run/nextroot,
   marks the hidden volume for closing and soft-reboots: every hidden program
   is stopped in order, /run is scrubbed of the hidden session, and the decoy
-  starts again at its own login screen (a display manager set to log in
-  automatically logs that account in again, as at boot). The hidden volume is
+  starts again at its own login screen (a display manager set to log an
+  account in automatically logs it in again, as at boot). The hidden volume is
   unmounted and its encryption mapping closed by the switch itself.
 
 EXAMPLES:
@@ -191,7 +191,7 @@ WHAT HAPPENS:
   hidden volume is marked for closing, the soft-reboot is enqueued and every
   hidden program is killed at once. The machine returns to the plain decoy,
   which shows its normal login screen; log in with the decoy password (a
-  display manager set to log in automatically logs that account in again, as
+  display manager set to log an account in automatically logs it in again, as
   at boot). With --poweroff the machine powers off instead. On the decoy,
   emergency removes what an interrupted activation left in /run.
 

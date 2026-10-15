@@ -119,8 +119,8 @@ decoy's kernel and shares its network identity (see
 [What the hidden environment shares with the decoy](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
 Both transitions log you out: every program closes, and the hidden session and,
 afterwards, the decoy start at their own login screens. NAILS logs nobody in,
-but a decoy whose display manager logs in automatically logs that account in
-again after each switch, as at boot (see
+but a display manager set to log an account in automatically logs it in again
+after each switch, as at boot (see
 [Inherited autostart, services and autologin](#inherited-autostart-services-and-autologin)).
 
 Two safeguards bracket the session:
@@ -334,8 +334,8 @@ shutdown stops every hidden program. The last step before the switch:
   kernel record of the hidden session.
 
 PID 1 then switches back into the plain decoy root, and the decoy starts at its
-own login screen (a display manager set to log in automatically logs that
-account in again, as at boot). The hidden volume is unmounted and its mapping
+own login screen (a display manager set to log an account in automatically
+logs it in again, as at boot). The hidden volume is unmounted and its mapping
 closed by the switch itself, once the overlay that held it is released.
 
 **What a soft-reboot leaves.** Nothing of the hidden session's files, but some
@@ -437,10 +437,10 @@ In the hidden session, emergency:
 The orderly shutdown then has nothing left to wait for, the `/run` scrub still
 runs as the last step, and the machine returns to the plain decoy, which shows
 its normal display-manager greeter (or a getty). **Log in normally, with the
-decoy password.** NAILS logs nobody in; a decoy whose display manager logs in
-automatically logs that account in again, as at boot, and its desktop then
-opens without a password. The screen goes to a text console for a few seconds
-in between: to an observer this looks like a logout, not a crash, or, with
+decoy password.** NAILS logs nobody in; a display manager set to log an account
+in automatically logs it in again, as at boot, and the decoy's desktop then
+opens without a password. The screen goes to a text console for a few seconds in
+between: to an observer this looks like a logout, not a crash, or, with
 autologin, like a restart of the desktop.
 
 - With `--poweroff` the machine powers off instead. RAM decays: the strongest
