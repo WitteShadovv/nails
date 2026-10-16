@@ -442,8 +442,9 @@ soft-reboots with `py/nails_e2e/session.py`:
   its history, emergency from a hidden login shell, the decoy's avahi-daemon
   and a service with a PID file in `/run` starting again after the emergency
   killed their hidden copies, the boot-loader units masked in the hidden
-  session only, `--poweroff`, and the next cold boot on the plain decoy with
-  the backend closed;
+  session only, the decoy's mounts and `utab` lines back as before the entry
+  after the emergency's way back, `--poweroff`, and the next cold boot on the
+  plain decoy with the backend closed;
 - `session-interrupted-entry`: a killed activation that `status` reports as an
   interrupted entry, a plain reboot that never enters the leftover next root,
   `recover`, Ctrl+C during the build, and emergency during an entry;
@@ -451,6 +452,15 @@ soft-reboots with `py/nails_e2e/session.py`:
   session's NetworkManager uses stay off the decoy after the way back: out of
   the openresolv records in `/run`, out of the `/etc/resolv.conf` that the
   decoy's `resolvconf.service` writes at its start, and out of its journal;
+- `session-decoy-mount-table`: a NixOS decoy booted through a bootloader,
+  with its store on the root disk under NixOS's read-only bind, a store path
+  bound after it, a read-only bind stacked on an fstab filesystem and its ESP
+  behind an automount, has every mount outside `/run`, `/boot` and the hidden
+  volume back after the way back as it had it before the entry (filesystem,
+  directory, place in the tree, options and propagation type, in the same
+  order and no mount more), its `utab` lines with them, a read-only store,
+  and its automount on `/boot`, masked in the hidden session, set up again
+  by its own start;
 - `session-fstab-policy`: the decision `check` reports for every decoy
   filesystem, the read-only ESP, a separate decoy filesystem overlaid with a
   hidden upper, masked swap, and no hidden write on any decoy disk afterwards;

@@ -41,6 +41,7 @@
   "session-alert-delivery": 480,
   "session-disk-mounts": 500,
   "session-dns-records": 360,
+  "session-decoy-mount-table": 240,
   "session-emergency": 560,
   "session-fstab-policy": 300,
   "session-interrupted-entry": 360,

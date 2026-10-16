@@ -160,5 +160,44 @@ class NotGivenBackTest(unittest.TestCase):
         )
 
 
+#: The store of the test VMs after a way back that made both of its layers
+#: again: the overlay (152) and the read-only bind of it on top (153).
+STACKED_BACK_MOUNTINFO = """\
+36 1 253:0 / / rw,relatime shared:1 - ext4 /dev/vda rw
+58 36 0:30 / /nix/.ro-store ro,relatime shared:2 - 9p nix-store rw
+59 36 0:31 / /nix/.rw-store rw,relatime shared:3 - tmpfs tmpfs rw,mode=755
+152 36 0:32 / /nix/store rw,relatime shared:4 - overlay overlay rw
+153 152 0:32 / /nix/store ro,nosuid,nodev,relatime shared:5 - overlay overlay rw
+"""
+
+STACKED_BACK_UTAB = """\
+ID=36 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount
+ID=58 SRC=nix-store TARGET=/sysroot/nix/.ro-store ROOT=/ OPTS=x-initrd.mount
+ID=59 SRC=tmpfs TARGET=/sysroot/nix/.rw-store ROOT=/ OPTS=x-initrd.mount
+ID=152 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount
+SRC=overlay TARGET=/nix/store ROOT=/ OPTS=x-initrd.mount
+SRC=/dev/vda TARGET=/ OPTS=x-initrd.mount
+"""
+
+
+class StackedTest(unittest.TestCase):
+    def check(self, after: str) -> tuple[list[str], list[str]]:
+        return utab.not_given_back(
+            DECOY_UTAB, DECOY_MOUNTINFO, after, STACKED_BACK_MOUNTINFO
+        )
+
+    def test_each_layer_has_its_own_line_again(self) -> None:
+        wrong = utab.wrong_lines(STACKED_BACK_UTAB, STACKED_BACK_MOUNTINFO)
+        self.assertEqual(wrong, [])
+        self.assertEqual(self.check(STACKED_BACK_UTAB), ([], []))
+
+    def test_the_bottom_s_line_on_the_top_layer_is_lost(self) -> None:
+        # By place, source and root the two layers are alike: the line must
+        # name the bottom one, as it did before the session.
+        on_top = STACKED_BACK_UTAB.replace("ID=152 ", "ID=153 ")
+        line = "ID=152 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount"
+        self.assertEqual(self.check(on_top), ([], [line]))
+
+
 if __name__ == "__main__":
     unittest.main()

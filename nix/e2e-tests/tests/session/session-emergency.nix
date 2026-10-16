@@ -31,7 +31,12 @@
 #      entry whose mount came back, under that mount's new ID, and besides
 #      those only lines for filesystems it mounted itself after the switch.
 #      libmount marks the same mount points x-initrd.mount as at boot, so the
-#      decoy's next shutdown leaves them alone as a fresh boot's does.
+#      decoy's next shutdown leaves them alone as a fresh boot's does. Every
+#      mount outside /run and the hidden volume is back as before the entry
+#      (its filesystem, directory, place, options and propagation type, in the
+#      decoy's order, and no mount more): the store's overlay with NixOS's
+#      read-only bind of it stacked on top, and the tmpfs at /nix/.rw-store
+#      that holds the overlay's upper.
 #   3. A scratch disk mounted over the hidden root in the session: the
 #      session watcher, polling every second with its automatic emergency on,
 #      keeps running past its debounce without writing a probe or ending the
@@ -92,7 +97,7 @@ in
   testScript = _: ''
     import secrets
 
-    from nails_e2e import session, utab
+    from nails_e2e import mounts, session, utab
 
     ${testHelpers.canonicalActivateFn}
 
@@ -124,6 +129,14 @@ in
     #: A stale utab line without an ID: libmount joins it to whatever is
     #: mounted at its target with its source and root, also a mount made later.
     STALE_WRAPPERS = "SRC=tmpfs TARGET=/run/wrappers ROOT=/ OPTS=x-initrd.mount"
+
+
+    def outside_the_decoy_tree(point):
+        # A soft-reboot into a new root carries /run without the mounts below
+        # it, and the hidden volume goes with the session.
+        return (
+            point.startswith("/run/") or point == "/mnt/data" or point.startswith("/mnt/data/")
+        )
 
 
     def utab_and_mounts():
@@ -270,6 +283,15 @@ in
             f"lines not its own: {foreign}; its lines not given back: {lost}"
         )
         assert initrd_mounts() == decoy_initrd_mounts, sorted(initrd_mounts())
+
+    with subtest("the decoy has every mount back as it had it before the entry"):
+        # The store is the initrd's overlay with NixOS's read-only bind of it
+        # on top, and /nix/.rw-store the tmpfs that holds the overlay's upper.
+        found = mounts.differences(
+            mounts.shape(decoy_mountinfo, outside_the_decoy_tree),
+            mounts.shape(back_mountinfo, outside_the_decoy_tree),
+        )
+        assert not found, "mounts not as before the entry:\n" + "\n".join(found)
 
     with subtest("nothing typed in either shell reached the decoy history"):
         history = decoy_history()

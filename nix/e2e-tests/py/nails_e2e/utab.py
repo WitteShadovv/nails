@@ -11,9 +11,10 @@ leaves the shutdown order, which is how a stale line hangs a switch.
 
 NAILS keeps a line across a switch only while it names a mount the switch
 carries, and the way back gives the decoy's lines back under the new IDs of
-the mounts it restores. :func:`wrong_lines` finds the lines that name no mount
-or another one than they were written for; :func:`not_given_back` compares the
-decoy's utab after a way back with the copy recorded before the entry.
+the mounts it restores, each to the mount made in its mount's place.
+:func:`wrong_lines` finds the lines that name no mount or another one than
+they were written for; :func:`not_given_back` compares the decoy's utab after
+a way back with the copy recorded before the entry.
 """
 
 from __future__ import annotations
@@ -193,11 +194,12 @@ def not_given_back(
     its mount ID changed, or when it is the decoy's own line for a filesystem
     it mounted after the switch, at the line's own target. A recorded line
     must come back, under the ID of the mount now in its mount's place, when
-    the way back restored that mount: the same filesystem at the same place.
-    A filesystem is told by its device number, which a new filesystem can
-    reuse only once the old one is gone: the filesystems the recorded lines
-    name must stay mounted somewhere until the comparison, as the ones a
-    session carries do.
+    the way back restored that mount: the same filesystem at the same place,
+    and where mounts of it are stacked there (the test VMs' store), at the
+    same height in the stack. A filesystem is told by its device number,
+    which a new filesystem can reuse only once the old one is gone: the
+    filesystems the recorded lines name must stay mounted somewhere until the
+    comparison, as the ones a session carries do.
     """
     then = parse_mountinfo(recorded_mountinfo)
     now = parse_mountinfo(mountinfo)
@@ -208,9 +210,11 @@ def not_given_back(
         mount = joined(line, then)
         if mount is None:
             continue
-        back = next((m for m in reversed(now) if m.identity == mount.identity), None)
-        if back is None:
+        height = [m for m in then if m.identity == mount.identity].index(mount)
+        stack = [m for m in now if m.identity == mount.identity]
+        if not stack:
             continue
+        back = stack[min(height, len(stack) - 1)]
         expected.append(_with_id(line.text, str(back.id)) if line.id > 0 else line.text)
     texts = [line.text for line in current]
     lost = [text for text in expected if text not in texts]
