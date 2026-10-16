@@ -196,10 +196,12 @@ pub fn make_below_private(target: &Path) -> io::Result<()> {
 
 /// Whether a lookup of `path` ends on the mount `id`, as mountinfo numbers
 /// it. A path that no longer exists leads to no mount; without the mount id
-/// in `statx` (Linux before 5.8) every path is taken to reach its mount.
+/// in `statx` (Linux before 5.8) every path is taken to reach its mount. The
+/// lookup never triggers an automount, as the propagation change itself
+/// does not: nothing would answer one below the next root.
 fn reaches(path: &Path, id: i32) -> bool {
     use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
-    match statx(CWD, path, AtFlags::empty(), StatxFlags::MNT_ID) {
+    match statx(CWD, path, AtFlags::NO_AUTOMOUNT, StatxFlags::MNT_ID) {
         Ok(stat) if stat.stx_mask & StatxFlags::MNT_ID.bits() != 0 => {
             u64::try_from(id).is_ok_and(|id| id == stat.stx_mnt_id)
         }
