@@ -13,6 +13,42 @@ of this changelog for that version becomes the release notes word for word, and
 
 ## [Unreleased]
 
+### Fixed
+
+- The attach gate and the storage checks resolve an `/etc/fstab` or `/etc/crypttab` entry that
+  names its device by a tag (`LABEL=`, `UUID=`, `PARTLABEL=`, `PARTUUID=`) whose value holds a
+  space, a slash or another character udev encodes in the link it makes for the tag, or is in
+  single quotes. Such an entry named a path that no link has, and a value starting with a slash
+  named that path itself.
+- A command no longer hangs on a mount table that names one mount ID twice, as a read of
+  `/proc/self/mountinfo` can while a mount is replaced: the lookup of the mount at a path went
+  round in a circle for ever.
+- A `utab` line with an empty value is skipped, as libmount skips it, instead of surviving a
+  switch under its mount ID.
+- The `decoy-persistence` and `sleep-policy` checks read the journald, logind and
+  systemd-coredump configuration as systemd reads it: a line also ends at a carriage return or a
+  NUL byte, a section name with a control character, a quote or a backslash stops the reading of
+  that file and of every file after it, and a byte order mark is dropped from the first line that
+  starts with one, not only from the first line. Assignments that systemd never applies counted,
+  so a check could pass or fail on a setting the daemon does not use.
+- `nails rehearse scan --offline` finds the UTF-16 form of the canary in a sparse disk image also
+  when it ends where a hole starts; it reported such a canary as not found.
+- `nails verify --disk` no longer wraps round the block numbers of a GPT whose byte offsets do not
+  fit in 64 bits, which let a corrupt or crafted table place a partition, the free space or the
+  partition entries anywhere on the disk.
+
+### Security
+
+- The hidden session masks a decoy swap or mount under the unit name systemd gives it also when its
+  `/etc/fstab` entry names the device by a tag whose value holds a character udev encodes in its
+  link or is in single quotes (`LABEL=swap\040space`), or has a path with a `.` component or `..`
+  right after the leading `/` (`/dev/disk/by-id/./x`, `/mnt/./backup`). NAILS masked a name systemd
+  never generates and left the real unit free, so the hidden session could swap onto a decoy disk or
+  mount a decoy filesystem. A decoy filesystem overlaid at such a mount point now keeps its hidden
+  layers under the simplified name, the name of its unit (`<hidden-root>/root/mounts/mnt-backup` for
+  `/mnt/./backup`, where 0.3.0-rc.2 used `mnt-.-backup`): rename the directory while NAILS is
+  inactive, or the hidden files in it stay out of view.
+
 ## [0.3.0-rc.2] - 2026-10-16
 
 NAILS 0.3.0 replaces the per-directory live overlays of 0.2 with one design: the hidden session is
