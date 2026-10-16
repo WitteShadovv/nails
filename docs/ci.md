@@ -11,7 +11,7 @@ Work runs in four tiers. Each is a superset of the one above it in coverage and 
 | 1. pre-commit | On `git commit`, changed files only | under 10 s | Formatting, Rust file sizes, file and secret checks (`.pre-commit-config.yaml`). |
 | 2. pre-push / `just check` | On `git push`, and on demand | about 90 s | `just fmt-check lint line-count test`: the whole offline Rust gate without coverage or Nix. |
 | 3. PR gate | Every pull request to `main`, and every push to `main` | about 10 min p95 | `ci.yml` (summarised by `gate`), the affected `e2e.yml` run (`e2e-result`) and `pr-title.yml`. These three are the required checks. |
-| 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks and the reproducibility check. A release runs on its tag. |
+| 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks, the reproducibility check and the OpenSSF Scorecard analysis. A release runs on its tag. |
 
 Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per-PR budget cannot afford (every VM test, the whole dependency graph, timing and determinism) and reports failures into tracking issues instead of a pull request check (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
 
@@ -25,6 +25,7 @@ Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per
 | `.github/workflows/distro-e2e.yml` | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` | — (informational) | 4 | `runner` input, default `ubuntu-26.04` (KVM) | `nix build .#legacyPackages.x86_64-linux.e2e-distro.<scenario>` |
 | `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-26.04` | `just deny-full`, `just stress`, `cargo bench`, `just mutants` |
 | `.github/workflows/reproducibility.yml` | `workflow_call` from `release.yml`, weekly from `scheduled.yml` | — | 4 | `ubuntu-26.04` | `nix build .#nails-release` |
+| `.github/workflows/scorecard.yml` | Push to `main`, weekly, branch protection rule change, dispatch | — (informational) | 4 | `ubuntu-26.04` | — |
 | `.github/workflows/release.yml` | Push of `v*` tags, dispatch from a tag | — | release | `ubuntu-26.04` (E2E on the `e2e-runner` input) | `python3 -m ci.release check` |
 
 The composite actions `.github/actions/setup-nix` and `.github/actions/report-status` are shared by these workflows and are not workflows themselves.
@@ -151,6 +152,16 @@ Dependabot (`.github/dependabot.yml`) keeps the Cargo workspace, the GitHub Acti
 
 Cargo.lock's transitive dependencies, which no Dependabot update touches, are refreshed by the `lockfile` task of `scheduled.yml` on the first of the month: `cargo update` moves every dependency to its newest allowed version. A pull request opened under the default `GITHUB_TOKEN` does not start CI, so the task opens it under the `DEPENDENCY_UPDATE_TOKEN` secret (scoped to the `dependency-updates` environment) when it is set and prints the diff otherwise.
 
+## OpenSSF Scorecard
+
+`scorecard.yml` runs [OpenSSF Scorecard](https://scorecard.dev), which grades the repository's supply-chain practices from 0 to 10 per check: pinned dependencies, token permissions, dangerous workflow patterns, branch protection, code review, dependency update tooling, signed releases and known vulnerabilities, among others. It reads `main` through the GitHub API, builds and runs nothing, and gates no merge.
+
+- **Triggers.** Every push to `main`, weekly, a change to a branch protection rule, and manual dispatch. GitHub has no workflow trigger for rulesets, which protect `main` here, so a ruleset change shows in the next run. Only the default branch can publish, and the action fails a run on any other branch, so dispatch it from `main`.
+- **Results.** Each run publishes its signed result to the Scorecard API (`api.scorecard.dev`), and the README badge and the [scorecard.dev viewer](https://scorecard.dev/viewer/?uri=github.com/WitteShadovv/nails) show the latest one to everyone. The SARIF goes to code scanning (the Security and quality tab, then Code scanning), where a check that scores below the action's default policy, 10 for most checks, is an alert with its remediation; only people with write access see those alerts. The `scorecard-sarif` artifact keeps the SARIF of a run for 5 days.
+- **Permissions.** The top level stays at `contents: read`, and the job adds two write permissions. `id-token: write` lets it sign the result through Sigstore with its OIDC identity: the Scorecard API accepts a result only with that signature, whose certificate names the repository, branch, commit and workflow file of the run. `security-events: write` lets it upload the SARIF to code scanning. No secret is needed; the default token reads a public repository, rulesets included.
+- **Publishing rules.** Before it stores a result, the Scorecard API reads the workflow file at the analysed commit and rejects the result unless the file keeps to the [workflow restrictions](https://github.com/ossf/scorecard-action#workflow-restrictions): no top-level `env`, `defaults` or write permission, and `id-token: write` only in the Scorecard job; in that job no `env`, `defaults`, container or services, an Ubuntu hosted runner, and only steps that use `actions/checkout`, `actions/upload-artifact`, `github/codeql-action/upload-sarif`, `ossf/scorecard-action` or `step-security/harden-runner`, where a pinned SHA must be a commit of the action's own repository. This is why `scorecard.yml` alone has no top-level `defaults` and no `run:` step; a change that breaks a rule turns the next run red.
+- **Unattended runs.** There is no `report-status` job: a red run shows in the Actions tab only and blocks nothing.
+
 ## Nix setup and binary cache
 
 Every workflow that needs Nix uses the composite action `.github/actions/setup-nix`. The installer (`cachix/install-nix-action`) is pinned there once, Dependabot keeps that pin current, and every job gets the same `nix.conf`: KVM, `system-features = nixos-test benchmark big-parallel kvm`, `always-allow-substitutes = true` and `accept-flake-config = false`.
@@ -260,6 +271,7 @@ GitHub settings that the workflows assume but cannot set themselves:
 - `DEPENDENCY_UPDATE_TOKEN` is optional and used only by the Cargo.lock refresh in `scheduled.yml`, so the pull request it opens starts CI. Without it the job prints the diff to the run summary.
 - No E2E lane needs any other secret. The retired `hetzner-pr` approval environment and the `hetzner` environment with its secrets (`HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID`, `RUNNER_REGISTRATION`) are no longer used and can be deleted.
 - Release attestations are signed with the `attest` job's OIDC identity (`id-token: write`); no long-lived signing secret exists.
+- `scorecard.yml` needs no secret either: its job signs the result it publishes with its OIDC identity (`id-token: write`) and uploads the SARIF to code scanning with `security-events: write` (see [OpenSSF Scorecard](#openssf-scorecard)).
 
 ## Operational caveats
 

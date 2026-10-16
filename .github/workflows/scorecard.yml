@@ -1,0 +1,80 @@
+name: Scorecard
+
+# OpenSSF Scorecard grades the repository's supply-chain practices, among them
+# pinned dependencies, token permissions, dangerous workflow patterns, branch
+# protection, code review and signed releases. It reads main through the GitHub
+# API; nothing is built or run, and nothing is gated. Each run publishes its
+# signed result to api.scorecard.dev, which the README badge and the
+# scorecard.dev viewer show, and uploads the SARIF to code scanning.
+#
+# The results API reads this file again and rejects the result of a workflow
+# that breaks its rules (https://github.com/ossf/scorecard-action#workflow-restrictions):
+# no top-level env, defaults or write permission, and id-token: write only in
+# the Scorecard job; in that job no env, defaults, container or services, an
+# Ubuntu hosted runner, and only steps that use checkout, upload-artifact,
+# codeql-action/upload-sarif, scorecard-action or harden-runner. That is why
+# this workflow, unlike the others, has no top-level defaults and no `run:`
+# step.
+
+on:
+  push:
+    branches: [main]
+  # Classic branch protection rules only: GitHub has no workflow trigger for
+  # rulesets, which protect main here, so a ruleset change shows in the next
+  # run.
+  branch_protection_rule:
+  schedule:
+    # Tuesdays at 04:37 UTC, so the result stays current without a push
+    - cron: "37 4 * * 2"
+  # Only main can publish: the action fails a run on any other branch.
+  workflow_dispatch:
+
+# The results API rejects a write permission at this level.
+permissions:
+  contents: read
+
+# Every run analyses main and publishes its result, so a newer run waits for
+# the one in progress instead of cancelling it.
+concurrency:
+  group: scorecard-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scorecard:
+    name: Scorecard analysis
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write # upload the SARIF to code scanning
+      id-token: write # sign the published result with this job's OIDC identity
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The default token reads a public repository, its rulesets included, so
+      # no repo_token secret is needed.
+      - name: Run Scorecard
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+
+      # Code scanning shows its alerts only to people with write access; the
+      # artifact lets anyone read the SARIF of a recent run.
+      - name: Upload the SARIF as an artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          if-no-files-found: error
+          retention-days: 5
+
+      - name: Upload the SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: results.sarif
