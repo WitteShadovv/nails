@@ -13,7 +13,7 @@ Work runs in four tiers. Each is a superset of the one above it in coverage and 
 | 3. PR gate | Every pull request to `main`, and every push to `main` | about 10 min p95 | `ci.yml` (summarised by `gate`), the affected `e2e.yml` run (`e2e-result`) and `pr-title.yml`. These three are the required checks. |
 | 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks, the reproducibility check, batch fuzzing and the OpenSSF Scorecard analysis. A release runs on its tag. |
 
-Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per-PR budget cannot afford (every VM test, the whole dependency graph, timing and determinism) and reports failures into tracking issues instead of a pull request check (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
+Tier 3 is everything a contributor must pass to merge. The informational `fuzz` job of `fuzz.yml` also runs on pull requests that change fuzzed code, outside the tier-3 budget: it pulls two images and builds every target with the address sanitizer before its five minutes of fuzzing. Tier 4 catches what a per-PR budget cannot afford (every VM test, the whole dependency graph, timing and determinism) and reports failures into tracking issues instead of a pull request check (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
 
 ## Workflow inventory
 
@@ -24,7 +24,7 @@ Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per
 | `.github/workflows/e2e.yml` | PRs to `main`, push to `main`, nightly, dispatch, `workflow_call` | `e2e-result` | 3 (affected) and 4 (nightly full) | `runner` input, default `ubuntu-26.04` | `just e2e` |
 | `.github/workflows/distro-e2e.yml` | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` | — (informational) | 4 | `runner` input, default `ubuntu-26.04` (KVM) | `nix build .#legacyPackages.x86_64-linux.e2e-distro.<scenario>` |
 | `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-26.04` | `just deny-full`, `just stress`, `cargo bench`, `just mutants` |
-| `.github/workflows/fuzz.yml` | PRs to `main` that change fuzzed code, daily schedule, dispatch | — (informational) | 3 (pull requests) and 4 (schedules) | `ubuntu-26.04` | `just fuzz-run <target>` |
+| `.github/workflows/fuzz.yml` | PRs to `main` that change fuzzed code, daily schedule, dispatch | — (informational) | 3 (pull requests, outside its budget) and 4 (schedules) | `ubuntu-26.04` | `just fuzz-run <target>` |
 | `.github/workflows/reproducibility.yml` | `workflow_call` from `release.yml`, weekly from `scheduled.yml` | — | 4 | `ubuntu-26.04` | `nix build .#nails-release` |
 | `.github/workflows/scorecard.yml` | Push to `main`, weekly, branch protection rule change, dispatch | — (informational) | 4 | `ubuntu-26.04` | — |
 | `.github/workflows/release.yml` | Push of `v*` tags, dispatch from a tag | — | release | `ubuntu-26.04` (E2E on the `e2e-runner` input) | `python3 -m ci.release check` |

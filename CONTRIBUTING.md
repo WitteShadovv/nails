@@ -77,7 +77,7 @@ The suite runs in tiers, each with its own command, runtime and prerequisites. E
 |---|---|---|---|
 | Format, lint and unit tests (pre-push gate) | `just check` | about 90 s | dev shell |
 | CI parity, with coverage | `just ci-rust` | a few minutes | dev shell |
-| One fuzz target (see [docs/testing-strategy.md](docs/testing-strategy.md#fuzzing)) | `just fuzz-run mountinfo` | a minute by default | dev shell |
+| One fuzz target (see [docs/testing-strategy.md](docs/testing-strategy.md#fuzzing)) | `just fuzz-run mountinfo` | a minute of fuzzing, after a first build of several minutes | dev shell |
 | Real-kernel tests (rootless) | `just kernel-tests` | seconds | dev shell, unprivileged user namespaces |
 | The one root-only overlay test | see `docs/development-guide.md` | seconds | root, an overlayfs-capable kernel |
 | One E2E test | `just e2e session-lifecycle` | minutes | KVM (`/dev/kvm`), Nix |
