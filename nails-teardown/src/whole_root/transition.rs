@@ -23,8 +23,9 @@
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
 //!   decoy, make the disks the session set read-only writable again and remove
 //!   the rule and the drop-ins, scrub `/run` ([`crate::whole_root::run_scrub`]),
-//!   put the decoy's records back, give the decoy's `utab` lines back to the
-//!   decoy mounts the way back restored, and write the kmsg cursor last.
+//!   put the decoy's records back and, once the hidden units have stopped,
+//!   give the decoy's `utab` lines back to the decoy mounts the way back
+//!   restored and write the kmsg cursor last.
 //!
 //! Before either it checks the next root's init the way PID 1 will; when the
 //! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
@@ -402,13 +403,9 @@ fn narrow_snapshot(env: &Env) {
 /// of the decoy's root and its submounts. Best effort: on any error the file
 /// stays as it is.
 fn prune_utab(env: &Env) {
-    let Ok(text) = std::fs::read(env.run.join(run_scrub::UTAB)) else {
-        return;
-    };
-    let kept = utab::surviving_lines(&text, &env.mounts, &env.nextroot);
-    if kept != text {
-        let _ = run_scrub::restore_utab(&env.run, &kept);
-    }
+    let _ = utab::update(&env.run, |text| {
+        utab::surviving_lines(text, &env.mounts, &env.nextroot)
+    });
 }
 
 fn leave(env: &Env, plan: &Plan) -> Outcome {
@@ -456,27 +453,28 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         ),
     };
     run_records::restore(&env.run, records.as_deref());
-    // The decoy's copy, taken at entry, names mounts by their IDs at that time;
-    // the decoy root and its filesystems come back as new mounts, and the old
-    // IDs may name the session's mounts or none.
-    if let Some(saved) = saved_utab {
-        let kept = utab::restored_lines(&saved, utab_mounts.as_deref(), &env.mounts, &env.nextroot);
-        let _ = run_scrub::restore_utab(&env.run, &kept);
-    }
     // A process exec'd from /run keeps running once it turns noexec again.
     if plan.run_noexec {
         let _ = nextroot::set_noexec(&env.run, true);
     }
-    // Last: anything logged after this is imported by the decoy journald.
     // A hidden unit that is not ordered before the shutdown can still be
-    // stopping now and write to the kernel log after a cursor taken at once
-    // (and PID 1 logs its end): wait, bounded, until only the soft-reboot's
-    // own jobs are left.
+    // stopping now: its unmount rewrites utab, it may write to the kernel log
+    // after a cursor taken at once, and PID 1 logs its end. Wait, bounded,
+    // until only the soft-reboot's own jobs are left.
     if let Some(systemctl) = &env.systemctl {
         reset_new_failures(systemctl, &plan.failed_at_entry);
         let _ =
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
+    // The decoy's copy, taken at entry, names mounts by their IDs at that time;
+    // the decoy root and its filesystems come back as new mounts, and the old
+    // IDs may name the session's mounts or none. The session's lines go.
+    if let Some(saved) = saved_utab {
+        let _ = utab::update(&env.run, |_| {
+            utab::restored_lines(&saved, utab_mounts.as_deref(), &env.mounts, &env.nextroot)
+        });
+    }
+    // Last: anything logged after this is imported by the decoy journald.
     if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {
         let _ = run_scrub::write_kernel_seqnum(&env.run, next);
     }

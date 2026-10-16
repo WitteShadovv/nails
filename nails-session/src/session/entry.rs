@@ -50,7 +50,7 @@ use nails_teardown::whole_root::plan::{
     Arm, CarriedMount, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount,
     PolicyMountKind, RootSide, SNAPSHOT_NAME, Tools, UTAB_MOUNTS_NAME, UTAB_NAME,
 };
-use nails_teardown::whole_root::run_scrub::{Snapshot, UTAB};
+use nails_teardown::whole_root::run_scrub::Snapshot;
 use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
 use nails_teardown::whole_root::{carry, kernel_helpers, ret, transition, utab};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -325,7 +325,7 @@ fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -
     std::fs::create_dir_all(&runtime).map_err(|e| io(&runtime, e))?;
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| io(&runtime, e))?;
-    let saved_utab = std::fs::read(paths.run.join(UTAB)).unwrap_or_default();
+    let saved_utab = std::fs::read(paths.run.join(utab::UTAB)).unwrap_or_default();
     // Read after the copy, so every mount it names by ID is in it: the way
     // back finds each one again where it was (`utab::restored_lines`).
     let mountinfo = std::fs::read_to_string(SELF_MOUNTINFO).unwrap_or_default();

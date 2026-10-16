@@ -260,8 +260,9 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     world.write_plan(&plan);
 
     // A hidden unit not ordered before the shutdown is still stopping when
-    // the transition runs, and logs to the kernel once more on its way out:
-    // the cursor must be taken after it, so the decoy journald skips it.
+    // the transition runs, logs to the kernel once more on its way out and
+    // unmounts, so libmount writes its copy of utab: the cursor and the
+    // decoy's utab must come after it.
     let late = world.dir.path().join("late-stopped");
     let calls = world.dir.path().join("reset-failed-calls");
     plan.failed_at_entry = vec!["decoy-before.service".to_string()];
@@ -281,10 +282,12 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
              if [ ! -e {late} ]; then\n\
                echo '12 late.service stop running'\n\
                printf '6,502,3,-;late hidden record\\n' >> {kmsg}\n\
+               printf 'ID=77 /mnt/hidden-only\\n' > {utab}\n\
                : > {late}\n\
              fi\n",
             late = late.display(),
             kmsg = world.kmsg().display(),
+            utab = r.join("mount/utab").display(),
             calls = calls.display()
         ),
     )

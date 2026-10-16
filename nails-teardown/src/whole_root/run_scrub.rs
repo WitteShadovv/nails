@@ -37,11 +37,14 @@
 //! `/run/booted-system` or `/run/nextroot`. Deleting decoy state the next boot
 //! relies on is what broke the spike's second run, hence the allowlist.
 //!
-//! The scrub then restores `utab` to the decoy's copy, and the caller writes the
-//! kmsg cursor ([`next_kernel_seqnum`], [`write_kernel_seqnum`]) so the decoy
-//! journald skips every kernel record of the hidden session, and every earlier
-//! one with them. Nothing here logs: a name written to `/dev/kmsg` would reach
-//! the decoy's ring buffer.
+//! The scrub keeps the decoy's libmount `utab`, which the transition rewrites
+//! itself ([`crate::whole_root::utab`]): at entry it keeps the lines of the
+//! mounts the switch carries, and on the way back it writes the decoy's lines
+//! under the new mount IDs of the mounts the way back restored. Last, the
+//! caller writes the kmsg cursor ([`next_kernel_seqnum`],
+//! [`write_kernel_seqnum`]) so the decoy journald skips every kernel record of
+//! the hidden session, and every earlier one with them. Nothing here logs: a
+//! name written to `/dev/kmsg` would reach the decoy's ring buffer.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -302,27 +305,6 @@ fn remove(run: &Path, relative: &Path, mount_points: &[PathBuf], report: &mut Sc
     }
 }
 
-/// libmount's userspace mount table below a `/run` root.
-pub const UTAB: &str = "mount/utab";
-
-/// Restore `run/mount/utab` to `saved`, the decoy's copy taken at entry. Every
-/// userspace start appends lines for its `x-*` mounts and mounts dropped by the
-/// switch are never removed, so the hidden session's lines would otherwise
-/// name hidden mount targets in the decoy's `/run`. A missing file stays
-/// missing.
-pub fn restore_utab(run: &Path, saved: &[u8]) -> io::Result<bool> {
-    let path = run.join(UTAB);
-    if std::fs::symlink_metadata(&path).is_err() {
-        return Ok(false);
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(&path)?;
-    file.write_all(saved)?;
-    Ok(true)
-}
-
 /// The sequence number of one `/dev/kmsg` record (`prio,seq,ts,flags;text`).
 pub fn record_seqnum(record: &[u8]) -> Option<u64> {
     let header = record.split(|&b| b == b';').next()?;
@@ -567,20 +549,6 @@ mod tests {
         // Two levels deep and not in the snapshot: its tmpfs was not carried,
         // so what is left is the hidden session's.
         assert!(report.removed.contains(&PathBuf::from("user/1000")));
-    }
-
-    #[test]
-    fn utab_is_restored_and_a_missing_one_stays_missing() {
-        let run = decoy_run();
-        fs::write(run.path().join(UTAB), "ID=1 decoy\nID=99 hidden\n").unwrap();
-        assert!(restore_utab(run.path(), b"ID=1 decoy\n").unwrap());
-        assert_eq!(
-            fs::read_to_string(run.path().join(UTAB)).unwrap(),
-            "ID=1 decoy\n"
-        );
-        let empty = tempfile::tempdir().unwrap();
-        assert!(!restore_utab(empty.path(), b"x").unwrap());
-        assert!(!empty.path().join(UTAB).exists());
     }
 
     #[test]

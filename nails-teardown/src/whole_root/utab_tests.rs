@@ -281,3 +281,74 @@ fn a_restored_line_takes_the_newest_mount_at_its_place() {
     );
 }
 
+/// A `/run` with libmount's `utab`.
+fn run_with_utab(text: &str) -> tempfile::TempDir {
+    let run = tempfile::tempdir().unwrap();
+    std::fs::create_dir(run.path().join("mount")).unwrap();
+    std::fs::write(run.path().join(UTAB), text).unwrap();
+    run
+}
+
+#[test]
+fn utab_is_rewritten_the_way_libmount_writes_it() {
+    let run = run_with_utab("ID=1 decoy\nID=99 hidden\n");
+    let path = run.path().join(UTAB);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let before = std::fs::metadata(&path).unwrap().ino();
+    // What a transition killed halfway left, under this process's ID.
+    std::fs::write(path.with_extension(std::process::id().to_string()), "x").unwrap();
+    let written = update(run.path(), |text| {
+        assert_eq!(text, b"ID=1 decoy\nID=99 hidden\n");
+        b"ID=1 decoy\n".to_vec()
+    });
+    assert!(written.unwrap());
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "ID=1 decoy\n");
+    // A new file with libmount's mode, renamed over the old one; no other
+    // file is left, and no lock file where there was none.
+    let meta = std::fs::metadata(&path).unwrap();
+    assert_ne!(meta.ino(), before);
+    assert_eq!(meta.permissions().mode() & 0o7777, 0o644);
+    let names: Vec<_> = std::fs::read_dir(run.path().join("mount"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect();
+    assert_eq!(names, ["utab"]);
+    // Unchanged, it is not written; missing, it stays missing.
+    assert!(!update(run.path(), <[u8]>::to_vec).unwrap());
+    assert_eq!(std::fs::metadata(&path).unwrap().ino(), meta.ino());
+    let empty = tempfile::tempdir().unwrap();
+    assert!(!update(empty.path(), |_| b"ID=1 decoy\n".to_vec()).unwrap());
+    assert!(!empty.path().join(UTAB).exists());
+}
+
+#[test]
+fn a_libmount_update_in_progress_finishes_first() {
+    // libmount holds its lock while it reads utab and renames its new copy
+    // over it: the switch reads only after that, and its copy is the last.
+    let run = run_with_utab("ID=1 decoy\n");
+    let lock = File::create(run.path().join(UTAB_LOCK)).unwrap();
+    lock.lock().unwrap();
+    let (read, seen) = std::sync::mpsc::channel();
+    let switch = std::thread::spawn({
+        let run = run.path().to_path_buf();
+        move || {
+            update(&run, |text| {
+                read.send(text.to_vec()).unwrap();
+                b"ID=2 back\n".to_vec()
+            })
+        }
+    });
+    assert!(seen.recv_timeout(Duration::from_millis(300)).is_err());
+    std::fs::write(run.path().join(UTAB), "ID=1 decoy\nID=3 libmount\n").unwrap();
+    lock.unlock().unwrap();
+    assert_eq!(
+        seen.recv_timeout(Duration::from_secs(10)).unwrap(),
+        b"ID=1 decoy\nID=3 libmount\n"
+    );
+    assert!(switch.join().unwrap().unwrap());
+    assert_eq!(
+        std::fs::read_to_string(run.path().join(UTAB)).unwrap(),
+        "ID=2 back\n"
+    );
+    assert!(run.path().join(UTAB_LOCK).exists());
+}

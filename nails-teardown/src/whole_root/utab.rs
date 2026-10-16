@@ -40,11 +40,100 @@
 //! soft-reboot does. A line of the decoy's that names no mount the way back
 //! restores is not given back: one already stale when the copy was taken, one
 //! whose mount the session did not carry, one libmount skips.
+//!
+//! The transition writes `utab` the way libmount does ([`update`]): under
+//! libmount's lock, through a new file renamed over the old one.
 
 use crate::mountinfo::{MountEntry, unescape_octal};
 use std::borrow::Cow;
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::{self, Write};
 use std::ops::Range;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
+
+/// libmount's userspace mount table below a `/run` root.
+pub const UTAB: &str = "mount/utab";
+
+/// libmount's lock file for [`UTAB`], below a `/run` root.
+const UTAB_LOCK: &str = "mount/utab.lock";
+
+/// How long a switch waits for a libmount update of `utab` to finish.
+const LOCK_BUDGET: Duration = Duration::from_secs(2);
+
+/// The mode libmount gives `utab`.
+const UTAB_MODE: u32 = 0o644;
+
+/// Rewrite `utab` below the `/run` root `run` to what `new` makes of its text,
+/// the way libmount updates it: under libmount's lock, through a new file with
+/// libmount's mode and the old file's owner, renamed over the old one. No
+/// reader sees half a file, and a libmount update in progress neither reads
+/// the file before this write nor renames its own copy over it afterwards.
+/// The lock is taken only where its file exists, as creating it would leave a
+/// file the other side never had, and after [`LOCK_BUDGET`] the write goes
+/// ahead without it. A missing `utab` stays missing, and an unchanged one is
+/// not written: the result says whether it was.
+pub fn update(run: &Path, new: impl FnOnce(&[u8]) -> Vec<u8>) -> io::Result<bool> {
+    let path = run.join(UTAB);
+    let _lock = lock(&run.join(UTAB_LOCK));
+    let old = match std::fs::read(&path) {
+        Ok(old) => old,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
+    };
+    let text = new(&old);
+    if text == old {
+        return Ok(false);
+    }
+    replace(&path, &text)?;
+    Ok(true)
+}
+
+/// libmount's lock (`flock`) on the existing file `path`, held until the file
+/// is dropped; `None` when there is no such file or the lock stays taken for
+/// [`LOCK_BUDGET`].
+fn lock(path: &Path) -> Option<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)
+        .ok()?;
+    let deadline = Instant::now() + LOCK_BUDGET;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Some(file),
+            Err(TryLockError::WouldBlock) if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Replace the file at `path` with `bytes`: a new file next to it, named the
+/// way libmount names its own (`utab.<suffix>`), renamed over it. A file of
+/// that name that a transition killed halfway left behind goes first.
+fn replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let owner = std::fs::metadata(path)?;
+    let temp = path.with_extension(std::process::id().to_string());
+    let _ = std::fs::remove_file(&temp);
+    let written = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)?;
+        file.write_all(bytes)?;
+        file.set_permissions(std::fs::Permissions::from_mode(UTAB_MODE))?;
+        std::os::unix::fs::fchown(&file, Some(owner.uid()), Some(owner.gid()))?;
+        std::fs::rename(&temp, path)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
 
 /// The lines of `utab` that still name the same mount once PID 1 has switched
 /// to `nextroot`, given the live mount table `mounts`. Kept lines are copied
