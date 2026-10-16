@@ -199,7 +199,9 @@ from the seeds and the dictionary, and keeps what it finds in
 For the exact build CI runs, use OSS-Fuzz's helper on a checkout named `nails`:
 `python3 infra/helper.py build_image --external --no-pull <checkout>`, then
 `build_fuzzers --external --sanitizer address <checkout>` and
-`run_fuzzer --external <checkout> <target>`.
+`run_fuzzer --external <checkout> <target>`. `.dockerignore` sends Docker only
+the files the build reads, so a development checkout with its `target/`
+directories works as well as a fresh clone.
 
 A crash is a bug in NAILS until shown otherwise: fix it with a regression unit
 test next to the code, and add the input to the target's seeds, so every later
