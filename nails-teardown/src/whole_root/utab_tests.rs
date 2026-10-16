@@ -203,6 +203,22 @@ fn restored(saved: &str, named: Option<&str>) -> String {
 }
 
 #[test]
+fn the_mounts_utab_marks_as_an_initrd_s_are_found_as_libmount_joins_them() {
+    let mounts = parse_mountinfo(DECOY_AT_ENTRY);
+    // By ID, and the line without one by its target, source and root; the
+    // line without a root joins no mount, and X-mine is no initrd mount.
+    assert_eq!(
+        initrd_mounts(SAVED.as_bytes(), &mounts),
+        [62, 65, 68, 85, 85]
+    );
+    // A line whose ID names a mount of another source, and options that only
+    // start like the initrd's, mark nothing.
+    let other = "ID=90 SRC=tmpfs TARGET=/srv ROOT=/ OPTS=x-initrd.mount\n\
+                 ID=65 SRC=nix-store TARGET=/nix/.ro-store ROOT=/ OPTS=x-initrd.mounted\n";
+    assert!(initrd_mounts(other.as_bytes(), &mounts).is_empty());
+}
+
+#[test]
 fn the_mounts_utab_names_are_recorded_with_it() {
     let mountinfo = format!("{DECOY_AT_ENTRY}99 62 0:60 / /tmp rw - tmpfs tmpfs rw\n");
     let named = named_mounts(SAVED.as_bytes(), &mountinfo);

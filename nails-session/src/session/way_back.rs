@@ -20,19 +20,23 @@
 //! ([`nails_teardown::whole_root::decoy_mounts`]). The entry warns about the
 //! ones it cannot make again at or below a carried filesystem: the way back
 //! puts that filesystem back without what the decoy had stacked under it or
-//! mounted in it. Another mount it cannot make again (a disk mounted by hand,
-//! a FUSE mount, a filesystem on an automount point) is gone after the
-//! session, as after a plain soft-reboot, and the decoy's own start mounts
-//! again what its fstab and units name.
+//! mounted in it. It also warns about one that systemd keeps at a soft-reboot
+//! (`/usr`, `/etc`, and a mount that the fstab or libmount's `utab` marks
+//! `x-initrd.mount`, as an initrd's mounts are): a plain soft-reboot leaves
+//! the decoy with it, and the decoy's start need not make it again (NixOS's
+//! `/etc` overlay is its initrd's alone). Another mount it cannot make again
+//! (a disk mounted by hand, a FUSE mount, a filesystem on an automount point)
+//! is gone after the session, as after a plain soft-reboot, and the decoy's
+//! own start mounts again what its fstab and units name.
 
 use super::entry::target_in_nextroot;
 use super::fstab::FstabEntry;
 use super::layout::{Layout, Paths};
 use crate::error::{NailsError, Result};
 use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
-use nails_teardown::whole_root::carry;
 use nails_teardown::whole_root::decoy_mounts::{self, Lost};
-use nails_teardown::whole_root::plan::{CarriedMount, Plan, PolicyMountKind};
+use nails_teardown::whole_root::plan::{CarriedMount, Plan, PolicyMountKind, UTAB_NAME};
+use nails_teardown::whole_root::{carry, utab};
 use std::path::{Path, PathBuf};
 
 /// Carry the decoy's filesystems into the next root and record the decoy's
@@ -61,7 +65,35 @@ pub fn keep(
     plan.carried = carry_all(paths, layout, &targets, mounts)?;
     let record = decoy_mounts::record(mounts, &hidden, &plan.carried);
     plan.decoy_mounts = record.mounts;
-    Ok(warnings(&record.lost, &plan.carried))
+    // The copy of utab the entry took with the mount table it read.
+    let saved = std::fs::read(paths.runtime().join(UTAB_NAME)).unwrap_or_default();
+    let kept_by_systemd = KeptBySystemd {
+        fstab,
+        initrd: utab::initrd_mounts(&saved, mounts),
+    };
+    Ok(warnings(&record.lost, &plan.carried, &kept_by_systemd))
+}
+
+/// What tells which decoy mounts systemd keeps at a soft-reboot, the mounts
+/// extrinsic to it.
+struct KeptBySystemd<'a> {
+    /// The decoy's fstab.
+    fstab: &'a [FstabEntry],
+    /// The IDs of the mounts that libmount's `utab` marks `x-initrd.mount`.
+    initrd: Vec<i32>,
+}
+
+impl KeptBySystemd<'_> {
+    /// Whether systemd keeps the decoy mount `mount` at a soft-reboot.
+    fn keeps(&self, mount: &Lost) -> bool {
+        mount.target == Path::new("/usr")
+            || mount.target == Path::new("/etc")
+            || self.initrd.contains(&mount.id)
+            || self
+                .fstab
+                .iter()
+                .any(|entry| entry.file == mount.target && entry.has_option("x-initrd.mount"))
+    }
 }
 
 /// The hidden volume's path as the decoy sees it.
@@ -120,15 +152,22 @@ fn carry_all(
 }
 
 /// The entry's warnings about the decoy mounts in `lost` at or below a
-/// filesystem the session carries; the others go to the debug log.
-fn warnings(lost: &[Lost], carried: &[CarriedMount]) -> Vec<String> {
+/// filesystem the session carries, or that systemd keeps at a soft-reboot;
+/// the others go to the debug log.
+fn warnings(lost: &[Lost], carried: &[CarriedMount], kept: &KeptBySystemd<'_>) -> Vec<String> {
     let mut warnings = Vec::new();
     for mount in lost {
         let at_carried = carried.iter().any(|c| mount.target.starts_with(&c.target));
-        if at_carried && !mount.ends_with_its_server() {
+        let kept_by_systemd = kept.keeps(mount);
+        if (at_carried || kept_by_systemd) && !mount.ends_with_its_server() {
+            let but = if kept_by_systemd {
+                "; a plain soft-reboot keeps it, but"
+            } else {
+                ";"
+            };
             warnings.push(format!(
-                "the way back cannot mount {} ({} {}) again: {}; after the session the decoy is \
-                 without it until it is mounted again",
+                "the way back cannot mount {} ({} {}) again: {}{but} after the session the decoy \
+                 is without it until it is mounted again",
                 mount.target.display(),
                 mount.fstype,
                 mount.source.display(),

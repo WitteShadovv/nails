@@ -83,6 +83,10 @@ fn only_a_mount_lost_at_a_carried_filesystem_is_a_warning() {
             lost("/srv/database", "ext4", Why::NoWayBack),
         ],
         &carried,
+        &KeptBySystemd {
+            fstab: &[],
+            initrd: Vec::new(),
+        },
     );
     assert_eq!(found.len(), 2, "{found:?}");
     assert!(
@@ -93,4 +97,45 @@ fn only_a_mount_lost_at_a_carried_filesystem_is_a_warning() {
     assert!(found[0].contains("carries no mount"), "{}", found[0]);
     assert!(found[1].contains("/srv/data/sub"), "{}", found[1]);
     assert!(found[1].contains("does not come back"), "{}", found[1]);
+}
+
+#[test]
+fn a_lost_mount_systemd_keeps_at_a_soft_reboot_is_a_warning() {
+    // NixOS's /etc overlay, a separate /usr, and initrd mounts by the fstab
+    // or by utab: a plain soft-reboot keeps each, and nothing but the next
+    // boot may mount it again.
+    let fstab = parse_fstab("tmpfs /srv/scratch tmpfs mode=0755,x-initrd.mount 0 0\n");
+    let mut by_utab = lost("/srv/keys", "ramfs", Why::NoWayBack);
+    by_utab.id = 41;
+    let found = warnings(
+        &[
+            lost("/etc", "overlay", Why::NoWayBack),
+            lost("/usr", "ext4", Why::NoWayBack),
+            lost("/srv/scratch", "tmpfs", Why::NoWayBack),
+            by_utab,
+            // Neither carried nor kept by systemd: the debug log alone.
+            lost("/srv/other", "tmpfs", Why::NoWayBack),
+            lost("/etc/nested", "tmpfs", Why::NoWayBack),
+        ],
+        &[],
+        &KeptBySystemd {
+            fstab: &fstab,
+            initrd: vec![41],
+        },
+    );
+    let targets: Vec<&str> = found
+        .iter()
+        .map(|warning| warning.split(' ').nth(5).unwrap_or(""))
+        .collect();
+    assert_eq!(
+        targets,
+        ["/etc", "/usr", "/srv/scratch", "/srv/keys"],
+        "{found:?}"
+    );
+    assert!(
+        found
+            .iter()
+            .all(|w| w.contains("a plain soft-reboot keeps it")),
+        "{found:?}"
+    );
 }

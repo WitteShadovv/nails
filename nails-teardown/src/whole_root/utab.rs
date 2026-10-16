@@ -172,6 +172,19 @@ pub fn named_mounts(utab: &[u8], mountinfo: &str) -> String {
     named
 }
 
+/// The IDs of the mounts in `mounts` that a line of `utab` marks
+/// `x-initrd.mount`, joined the way libmount joins a line: by its ID, or the
+/// newest mount at its target with its source and root. systemd leaves such a
+/// mount alone at a soft-reboot.
+pub fn initrd_mounts(utab: &[u8], mounts: &[MountEntry]) -> Vec<i32> {
+    utab.split(|&b| b == b'\n')
+        .filter_map(Line::parse)
+        .filter(|line| line.joins() && line.has_option("x-initrd.mount"))
+        .filter_map(|line| line.carried(mounts, Path::new("/")))
+        .map(|mount| mount.mount_id)
+        .collect()
+}
+
 /// The lines of the decoy's `utab` copy to put back on the way back, once PID
 /// 1 switches to the decoy root at `nextroot`. `named` holds the mount table
 /// lines [`named_mounts`] recorded with the copy, and `restored` the ID each
@@ -263,6 +276,10 @@ struct Line {
     source: Option<PathBuf>,
     target: Option<PathBuf>,
     root: Option<PathBuf>,
+    /// The options (`OPTS=`), still escaped.
+    options: Option<String>,
+    /// Whether it has attributes (`ATTRS=`).
+    attributes: bool,
 }
 
 impl Line {
@@ -309,12 +326,14 @@ impl Line {
                         .position(|&b| b == b' ' || b == b'\t')
                         .unwrap_or(value.len());
                 set[key] = true;
-                let value =
-                    PathBuf::from(unescape_octal(&String::from_utf8_lossy(&bytes[start..end])));
+                let value = String::from_utf8_lossy(&bytes[start..end]);
+                let path = || Some(PathBuf::from(unescape_octal(&value)));
                 match key {
-                    0 => line.source = Some(value),
-                    1 => line.target = Some(value),
-                    2 => line.root = Some(value),
+                    0 => line.source = path(),
+                    1 => line.target = path(),
+                    2 => line.root = path(),
+                    4 => line.options = Some(value.into_owned()),
+                    5 => line.attributes = true,
                     _ => {}
                 }
                 at = end;
@@ -323,6 +342,22 @@ impl Line {
                 at += rest.iter().position(|&b| b == b' ').unwrap_or(rest.len());
             }
         }
+    }
+
+    /// Whether libmount joins the line to a mount at all: it needs a source,
+    /// a target, a root and options or attributes.
+    fn joins(&self) -> bool {
+        self.source.is_some()
+            && self.target.is_some()
+            && self.root.is_some()
+            && (self.options.is_some() || self.attributes)
+    }
+
+    /// Whether the line's options hold `option`.
+    fn has_option(&self, option: &str) -> bool {
+        self.options
+            .as_deref()
+            .is_some_and(|options| options.split(',').any(|o| o == option))
     }
 
     /// Whether `mount` has the line's source and root, each where the line
