@@ -223,18 +223,22 @@ An activation moves through these layers; each names its modules and crates:
   session's runtime units and masks, narrows the `/run` snapshot to what the
   decoy's own shutdown left, drops the `utab` lines of the mounts the switch
   leaves behind and copies the decoy's name-server records; leaving, it repoints
-  back, scrubs `/run`, puts those records back, gives the decoy's `utab` lines
-  back to the mounts the way back restored and writes the kmsg cursor. libmount
-  joins a `utab` line to the mount with the line's kernel mount ID, or, for a
-  line without one, to the mount at the line's path with its source and root,
-  and the kernel hands the IDs of the mounts a switch leaves behind to the next
-  mounts it makes: a stale line would lend its options to an unrelated mount. An
-  initrd's `x-initrd.mount` takes a mount out of systemd's shutdown order; when
-  that happens while systemd mounts or unmounts it, PID 1 never runs the job
-  that waited for that mount, and the switch or the power-off hangs. The decoy
-  root and the filesystems the session carried come back as new mounts, so each
-  of the decoy's lines that names an ID takes the ID of the mount now where its
-  mount was at entry. An unarmed populated `/run/nextroot` is detached instead.
+  back, scrubs `/run`, puts those records back and, once the hidden units have
+  stopped, gives the decoy's `utab` lines back to the mounts the way back
+  restored and writes the kmsg cursor. libmount joins a `utab` line to the
+  mount with the line's kernel mount ID, or, for a line without one, to the
+  mount at the line's path with its source and root, and the kernel hands the
+  IDs of the mounts a switch leaves behind to the next mounts it makes: a stale
+  line would lend its options to an unrelated mount. An initrd's
+  `x-initrd.mount` takes a mount out of systemd's shutdown order; when that
+  happens while systemd mounts or unmounts it, PID 1 never runs the job that
+  waited for that mount, and the switch or the power-off hangs. The decoy root
+  and the filesystems the session carried come back as new mounts, so each of
+  the decoy's lines that names an ID takes the ID of the mount now where its
+  mount was at entry; a line that names no mount the way back restores is not
+  given back. The transition writes `utab` as libmount does, through a new
+  file renamed over the old one, under libmount's lock where its lock file
+  exists. An unarmed populated `/run/nextroot` is detached instead.
 - **Way back and emergency** (`nails-session`'s `session::leave`, `nails-teardown`'s
   `whole_root::ret` and `whole_root::emergency`) mount the decoy root at
   `/run/nextroot`, mark the backend for deferred removal and enqueue the
