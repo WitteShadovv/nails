@@ -550,14 +550,18 @@ your setup before running the new binary.
 - **NixOS flake decoys.** A decoy whose `/etc/nixos` is a flake needs a hidden
   flake: activation refuses to build the decoy's own flake, `--no-preflight`
   included, also when `nixos_flake` or `--nixos-flake` names it
-  (`/etc/nixos#host`, the form 0.2's examples used, `path:/etc/nixos` or a
-  link to it), because it would leave out the hidden module and the hidden
-  hardware configuration. Write a self-contained flake in
-  `<hidden-root>/nixos` that imports the hidden module and reads none of the
-  decoy's files, and lock it, from inside a hidden session
-  (`activate --overlay-only` enters one), never on the decoy; or name one with
-  `nixos_flake` (see [How it works](docs/operator-guide.md#how-it-works) in
-  the operator guide).
+  (`/etc/nixos#host`, the form 0.2's examples used, `path:/etc/nixos`,
+  `git+file:///etc/nixos`, `path:/etc?dir=nixos` or a link to it) and when
+  `<hidden-root>/nixos` is a link to it, because it would leave out the hidden
+  module and the hidden hardware configuration. Write a self-contained flake
+  in `<hidden-root>/nixos` that imports the hidden module
+  (`<hidden-root>/config/nixos/configuration.nix`) and reads none of the
+  decoy's files, write and lock it inside a hidden session
+  (`activate --overlay-only` enters one), never on the decoy, and build it
+  there with `nixos-rebuild build --flake <hidden-root>/nixos#<host> --impure`,
+  `<host>` being the decoy's hostname; `nixos_flake` names such a flake
+  elsewhere (see [How it works](docs/operator-guide.md#how-it-works) in the
+  operator guide).
 - **Configuration format.** Configuration is strict TOML. Convert any earlier
   YAML configuration to `config/nails.toml` next to the binary on the hidden
   volume (see [docs/configuration.md](docs/configuration.md)). Unknown keys,
