@@ -216,15 +216,25 @@ fn encode_devnode_name(value: &str) -> String {
 }
 
 /// systemd's path escaping (`systemd-escape --path`): the name a unit for
-/// `path` carries (`/mnt/my-disk` is `mnt-my\x2ddisk`). A single file name
+/// `path` carries (`/mnt/my-disk` is `mnt-my\x2ddisk`). The path is first
+/// simplified as systemd's `path_simplify()` does: repeated slashes and `.`
+/// components go, and so does `..` at the start of an absolute path, which
+/// cannot climb above `/` (`/mnt/./data/` is `mnt-data`). A single file name
 /// escapes as an instance name does (`vg-root` is `vg\x2droot`).
 pub fn escape_path(path: &Path) -> String {
     let text = path.to_string_lossy();
-    let trimmed: Vec<&str> = text.split('/').filter(|s| !s.is_empty()).collect();
-    if trimmed.is_empty() {
+    let absolute = text.starts_with('/');
+    let mut kept: Vec<&str> = Vec::new();
+    for component in text.split('/').filter(|c| !c.is_empty() && *c != ".") {
+        if absolute && kept.is_empty() && component == ".." {
+            continue;
+        }
+        kept.push(component);
+    }
+    if kept.is_empty() {
         return "-".to_string();
     }
-    let joined = trimmed.join("/");
+    let joined = kept.join("/");
     let mut out = String::new();
     for (i, byte) in joined.bytes().enumerate() {
         match byte {
@@ -296,6 +306,25 @@ mod tests {
         assert_eq!(spec_device("/dev/vdb"), Some(PathBuf::from("/dev/vdb")));
         assert_eq!(spec_device("tmpfs"), None);
         assert_eq!(spec_device("ID=1"), None);
+    }
+
+    /// A path is simplified as systemd simplifies it before it is escaped.
+    /// Found by the `fstab_crypttab` fuzz target: the swap on
+    /// `/dev/disk/by-/./label/swap` kept its `.` in the unit the session
+    /// masked, so the unit systemd generates stayed free.
+    #[test]
+    fn a_path_is_simplified_as_systemd_simplifies_it() {
+        for (path, name) in [
+            ("/mnt/./data/.", "mnt-data"),
+            ("/./x", "x"),
+            ("//mnt//data//", "mnt-data"),
+            ("/../../mnt/data", "mnt-data"),
+            ("/.", "-"),
+            ("/./.hidden", "\\x2ehidden"),
+            ("./vg-root", "vg\\x2droot"),
+        ] {
+            assert_eq!(escape_path(Path::new(path)), name, "{path}");
+        }
     }
 
     /// A tag names the link udev makes for it, in udev's encoding. Found by

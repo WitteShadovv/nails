@@ -27,6 +27,12 @@ fn units_are_named_the_way_systemd_names_them() {
     );
     assert_eq!(swap_unit("/swapfile").as_deref(), Some("swapfile.swap"));
     assert_eq!(swap_unit("none"), None);
+    // Simplified first, as systemd simplifies a path.
+    assert_eq!(mount_unit(Path::new("/mnt/./data/.")), "mnt-data.mount");
+    assert_eq!(
+        swap_unit("/dev/disk/by-/./label/swap").as_deref(),
+        Some("dev-disk-by\\x2d-label-swap.swap")
+    );
 }
 
 /// A swap on a label with a space is the unit systemd-fstab-generator makes
