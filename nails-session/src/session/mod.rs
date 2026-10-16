@@ -25,6 +25,7 @@ pub mod probe;
 pub mod store;
 pub mod systemd;
 pub mod units;
+pub mod way_back;
 
 pub use entry::{Entry, EntryHost, EntryInputs, RealEntryHost, decoy_root_of};
 pub use layout::{Layout, Paths};

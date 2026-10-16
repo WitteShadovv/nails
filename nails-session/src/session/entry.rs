@@ -25,11 +25,13 @@
 //!    garbage collection cannot break it ([`super::store`]), and activated
 //!    chrooted (see [`super::nixos`]), then the policy applied to the hidden
 //!    generation's own fstab for what the decoy's did not cover;
-//! 7. `/run` bound in and everything below the next root made private (its
-//!    own mount stays shared until the switch, so a rollback reaches the
-//!    copies other mount namespaces hold; see [`nextroot`]); the init checked
-//!    the way PID 1 will, and the soft-reboot units the way back needs found
-//!    in the next root;
+//! 7. the decoy filesystems the way back needs carried onto the hidden volume,
+//!    and the decoy's mounts recorded for the way back to make again
+//!    ([`super::way_back`]); `/run` bound in and everything below the next
+//!    root made private (its own mount stays shared until the switch, so a
+//!    rollback reaches the copies other mount namespaces hold; see
+//!    [`nextroot`]); the init checked the way PID 1 will, and the soft-reboot
+//!    units the way back needs found in the next root;
 //! 8. the plan armed for the entry.
 //!
 //! Any failure undoes all of it ([`rollback`]): a populated `/run/nextroot`
@@ -47,12 +49,12 @@ use crate::nixos::NixOSBuilder;
 use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{
-    Arm, CarriedMount, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount,
-    PolicyMountKind, RootSide, SNAPSHOT_NAME, Tools, UTAB_MOUNTS_NAME, UTAB_NAME,
+    Arm, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount, PolicyMountKind, RootSide,
+    SNAPSHOT_NAME, Tools, UTAB_MOUNTS_NAME, UTAB_NAME,
 };
 use nails_teardown::whole_root::run_scrub::Snapshot;
 use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
-use nails_teardown::whole_root::{carry, kernel_helpers, ret, transition, utab};
+use nails_teardown::whole_root::{kernel_helpers, ret, transition, utab};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -393,6 +395,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         entered_at: None,
         run_noexec: false,
         carried: Vec::new(),
+        decoy_mounts: Vec::new(),
         read_only_disks: inputs.read_only_disks,
         failed_at_entry: Vec::new(),
         kernel_settings: Vec::new(),
@@ -531,7 +534,14 @@ fn build(
         super::persona::write_masks(&nextroot, &inputs.persona, operator);
     }
 
-    plan.carried = carry_decoy_mounts(paths, &layout, &plan.policy_mounts, &decoy_mounts)?;
+    let decoy_fstab = super::fstab::parse_fstab(&String::from_utf8_lossy(&decoy_fstab));
+    warnings.extend(super::way_back::keep(
+        paths,
+        &layout,
+        &mut plan,
+        &decoy_fstab,
+        &decoy_mounts,
+    )?);
     nextroot::bind(&paths.run, &paths.in_nextroot(Path::new("/run")), false)
         .map_err(|e| io(&nextroot, e))?;
     nextroot::make_below_private(&nextroot).map_err(|e| io(&nextroot, e))?;
@@ -556,36 +566,6 @@ fn build(
         decisions,
         warnings,
     })
-}
-
-/// Carry every decoy filesystem the fstab policy placed into the hidden
-/// session, so the way back can put it in place again (see
-/// [`nails_teardown::whole_root::carry`]). Each one goes to its directory on
-/// the hidden volume as the hidden root resolves it, like the policy's own
-/// mount points: through a link on the volume's path the bind would land on
-/// the decoy's own mount of the volume.
-fn carry_decoy_mounts(
-    paths: &Paths,
-    layout: &Layout,
-    policy_mounts: &[PolicyMount],
-    decoy_mounts: &[MountEntry],
-) -> Result<Vec<CarriedMount>> {
-    let mut carried = Vec::new();
-    for mount in policy_mounts {
-        if mount.kind == PolicyMountKind::HiddenVolume {
-            continue;
-        }
-        let at = layout.carried(&mount.target);
-        let in_nextroot = target_in_nextroot(paths, &at)?;
-        carry::carry(&paths.decoy(&mount.target), &at, &in_nextroot)
-            .map_err(|e| io(&in_nextroot, e))?;
-        carried.push(CarriedMount {
-            read_only: top_mount_at(decoy_mounts, &mount.target).is_some_and(MountEntry::read_only),
-            target: mount.target.clone(),
-            at,
-        });
-    }
-    Ok(carried)
 }
 
 /// Refuse a hidden NixOS build when the hidden volume holding `upper` has less
@@ -716,7 +696,7 @@ fn decide_fstab(fstab: &[u8], mounts: &[MountEntry], hidden_root: &Path) -> Resu
 /// elsewhere) stays inside the next root, and returned as a path without
 /// symlinks for the mount calls. A plain path would follow such a link on the
 /// running system and mount, or create a directory, on the decoy.
-fn target_in_nextroot(paths: &Paths, target: &Path) -> Result<PathBuf> {
+pub(super) fn target_in_nextroot(paths: &Paths, target: &Path) -> Result<PathBuf> {
     let nextroot = paths.nextroot();
     let shown = paths.in_nextroot(target);
     let real = nextroot::create_dir_all_in_root(&nextroot, target, &mut |_, _| Ok(()))

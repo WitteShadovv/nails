@@ -16,6 +16,8 @@
 //! - [`ret`]: preparing the way back to the decoy;
 //! - [`carry`]: the decoy filesystems the hidden session holds for the way
 //!   back;
+//! - [`decoy_mounts`]: the decoy's mounts the way back makes again, in the
+//!   decoy's order with their options;
 //! - [`runtime_units`]: runtime units and masks in `/run`;
 //! - [`disk_guard`]: unused disks read-only for the session (opt-in);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
@@ -23,6 +25,7 @@
 //! - [`tools`]: the bounded `systemctl` and `dmsetup` calls.
 
 pub mod carry;
+pub mod decoy_mounts;
 pub mod disk_guard;
 pub mod emergency;
 pub mod kernel_helpers;

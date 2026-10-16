@@ -147,6 +147,7 @@ mod tests {
             entered_at: Some(1),
             run_noexec: false,
             carried: Vec::new(),
+            decoy_mounts: Vec::new(),
             read_only_disks: false,
             failed_at_entry: Vec::new(),
             kernel_settings: Vec::new(),

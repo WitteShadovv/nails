@@ -133,6 +133,62 @@ fn remount_bind(target: &Path, read_only: bool) -> io::Result<()> {
     rustix::mount::mount_remount(target, flags, "").map_err(to_io)
 }
 
+/// The per-mount flags a bind remount sets for `options`, the per-mount field
+/// of the mount table (`ro,nosuid,nodev,relatime`): with an access-time mode
+/// always, so the remount sets exactly these. `None` when a flag in it cannot
+/// be set by a remount (an idmapped mount) or is unknown.
+pub fn per_mount_flags(options: &str) -> Option<MountFlags> {
+    let mut flags = MountFlags::empty();
+    let mut atime = MountFlags::STRICTATIME;
+    for option in options.split(',') {
+        match option {
+            "rw" => {}
+            "ro" => flags |= MountFlags::RDONLY,
+            "nosuid" => flags |= MountFlags::NOSUID,
+            "nodev" => flags |= MountFlags::NODEV,
+            "noexec" => flags |= MountFlags::NOEXEC,
+            "nodiratime" => flags |= MountFlags::NODIRATIME,
+            "nosymfollow" => flags |= MountFlags::NOSYMFOLLOW,
+            "relatime" => atime = MountFlags::RELATIME,
+            "noatime" => atime = MountFlags::NOATIME,
+            _ => return None,
+        }
+    }
+    Some(flags | atime)
+}
+
+/// Give the mount at `target` exactly the per-mount flags of `options` (see
+/// [`per_mount_flags`]), whatever it had.
+pub fn set_per_mount_options(target: &Path, options: &str) -> io::Result<()> {
+    let flags = per_mount_flags(options).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("the mount options {options} cannot be set again"),
+        )
+    })?;
+    rustix::mount::mount_remount(target, MountFlags::BIND | flags, "").map_err(to_io)
+}
+
+/// The ID, as the mount table numbers it, of the mount a lookup of `path`
+/// ends on: from `statx`, or from the mount table where `statx` does not tell
+/// (Linux before 5.8).
+pub fn mount_id_at(path: &Path) -> io::Result<i32> {
+    use rustix::fs::{AtFlags, CWD, StatxFlags, statx};
+    let stat = statx(CWD, path, AtFlags::NO_AUTOMOUNT, StatxFlags::MNT_ID).map_err(to_io)?;
+    if stat.stx_mask & StatxFlags::MNT_ID.bits() != 0 {
+        return i32::try_from(stat.stx_mnt_id)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "mount ID out of range"));
+    }
+    crate::mountinfo::top_mount_at(&read_mountinfo()?, path)
+        .map(|mount| mount.mount_id)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("{} is no mount point", path.display()),
+            )
+        })
+}
+
 /// Whether the mount at `path` is `noexec`.
 pub fn is_noexec(path: &Path) -> io::Result<bool> {
     let flags = rustix::fs::statvfs(path).map_err(to_io)?.f_flag;
@@ -364,6 +420,18 @@ fn open_in_root_with(root: &Path, path: &Path, flags: OFlags) -> io::Result<Owne
         Mode::empty(),
     )
     .map_err(to_io)?;
+    open_at(&dir, path, flags, ResolveFlags::IN_ROOT)
+}
+
+/// Open `path` below the directory `dir` with the open flags `flags` and the
+/// lookup restrictions `resolve`: a leading `/` is dropped, and an empty
+/// path opens `dir` itself.
+fn open_at(
+    dir: &OwnedFd,
+    path: &Path,
+    flags: OFlags,
+    resolve: ResolveFlags,
+) -> io::Result<OwnedFd> {
     let relative = path.strip_prefix("/").unwrap_or(path);
     let relative = if relative.as_os_str().is_empty() {
         Path::new(".")
@@ -372,13 +440,40 @@ fn open_in_root_with(root: &Path, path: &Path, flags: OFlags) -> io::Result<Owne
     };
     retry_lookup(|| {
         rustix::fs::openat2(
-            &dir,
+            dir,
             relative.as_os_str().as_bytes(),
             flags | OFlags::CLOEXEC,
             Mode::empty(),
-            ResolveFlags::IN_ROOT,
+            resolve,
         )
     })
+    .map_err(to_io)
+}
+
+/// Open (`O_PATH`) the file or directory at `path` below `dir` without
+/// leaving the mount `dir` is on and without following a symlink: a lookup
+/// that would cross into another mount fails (`EXDEV`), one that would leave
+/// `dir` or meet a symlink fails too. An empty `path` opens `dir` itself.
+pub fn open_in_mount(dir: &OwnedFd, path: &Path) -> io::Result<OwnedFd> {
+    let resolve = ResolveFlags::BENEATH | ResolveFlags::NO_XDEV | ResolveFlags::NO_SYMLINKS;
+    open_at(dir, path, OFlags::PATH, resolve)
+}
+
+/// Open (`O_PATH`) the file or directory at `path` as if the directory `root`
+/// were `/`, through the mounts below it but without following a symlink.
+pub fn open_in_tree(root: &OwnedFd, path: &Path) -> io::Result<OwnedFd> {
+    let resolve = ResolveFlags::IN_ROOT | ResolveFlags::NO_SYMLINKS;
+    open_at(root, path, OFlags::PATH, resolve)
+}
+
+/// Open (`O_PATH`) the directory at `path`: the root of the mount a lookup of
+/// a mount point ends on.
+pub fn open_mount_root(path: &Path) -> io::Result<OwnedFd> {
+    rustix::fs::open(
+        path,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
     .map_err(to_io)
 }
 

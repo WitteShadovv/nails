@@ -127,6 +127,48 @@ pub struct CarriedMount {
     pub at: PathBuf,
     /// Whether the decoy had it read-only.
     pub read_only: bool,
+    /// The carried mount's filesystem (`major:minor`, as the mount table
+    /// shows it) and the directory of it that the mount shows. The way back
+    /// takes a mount from it only while the mount at [`at`](Self::at) is still
+    /// that one. Absent from a plan written before they were recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev: Option<String>,
+    /// See [`dev`](Self::dev).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<PathBuf>,
+}
+
+/// Where the way back takes a decoy mount from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MountSource {
+    /// The decoy root, mounted again from its device.
+    Root,
+    /// The carried decoy filesystem with this index in [`Plan::carried`].
+    Carried(usize),
+}
+
+/// A mount of the decoy that the way back makes again (see
+/// [`crate::whole_root::decoy_mounts`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecoyMount {
+    /// Its mount ID in the decoy at entry: libmount's `utab` lines name it by
+    /// this ID.
+    pub id: i32,
+    /// Its mount point in the decoy root.
+    pub target: PathBuf,
+    /// The filesystem it shows.
+    pub source: MountSource,
+    /// The directory of that filesystem it shows, relative to the one the
+    /// source shows (empty for the same).
+    pub path: PathBuf,
+    /// Its per-mount options, as the mount table shows them
+    /// (`ro,nosuid,nodev,relatime`).
+    pub options: String,
+    /// The mount ID the way back gave it, which the transition gives its
+    /// `utab` lines. Absent until the way back is prepared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored: Option<i32>,
 }
 
 /// Absolute paths of the tools a transition-side step runs, resolved at
@@ -254,6 +296,13 @@ pub struct Plan {
     /// [`crate::whole_root::carry`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub carried: Vec<CarriedMount>,
+    /// The decoy's mounts the way back makes again, the decoy root first and
+    /// the others in the order the decoy mounted them (see
+    /// [`crate::whole_root::decoy_mounts`]). Absent from a plan written before
+    /// they were recorded: the way back then puts back the decoy root and the
+    /// carried filesystems alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decoy_mounts: Vec<DecoyMount>,
     /// Whether the disks the session does not use are read-only for the
     /// session (`[session_mounts] read_only`): the entry transition installs
     /// the udev rule, the way back makes them writable again (see
@@ -430,6 +479,7 @@ pub(crate) fn sample() -> Plan {
         entered_at: None,
         run_noexec: false,
         carried: Vec::new(),
+        decoy_mounts: Vec::new(),
         read_only_disks: false,
         failed_at_entry: Vec::new(),
         kernel_settings: Vec::new(),

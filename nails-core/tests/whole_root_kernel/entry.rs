@@ -935,6 +935,8 @@ fn nothing_the_way_back_mounts_shows_below_the_hidden_volume() {
                 target: PathBuf::from(target),
                 at,
                 read_only: false,
+                dev: None,
+                root: None,
             });
         }
         make_rshared(hidden.path());
