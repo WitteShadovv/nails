@@ -43,12 +43,12 @@
 <tspan x="16" y="633">      /var/lib/systemd/coredump on the decoy disk (Storage unset, so external); set</tspan>
 <tspan x="16" y="651">      systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; } in the decoy</tspan>
 <tspan x="16" y="669">      configuration. See docs/decoy-requirements.md.</tspan>
-<tspan x="16" y="687">  <tspan fill="#7ec699" font-weight="bold">[PASS]</tspan> residue-catalog: no warned residue channel is live (4 catalog probe(s)); noted:</tspan>
-<tspan x="16" y="705">      timer-stamps (/var/lib/systemd/timers): Session stamps land in the upper; expect catch-up runs</tspan>
-<tspan x="16" y="723">      at the next decoy boot. (see docs/decoy-requirements.md#session-time-records)</tspan>
+<tspan x="16" y="687">  <tspan fill="#7ec699" font-weight="bold">[PASS]</tspan> residue-catalog: no warned residue channel is live (4 catalog probes); noted: timer-stamps</tspan>
+<tspan x="16" y="705">      (/var/lib/systemd/timers): Session stamps land in the upper; expect catch-up runs at the next</tspan>
+<tspan x="16" y="723">      decoy boot. (see docs/decoy-requirements.md#session-time-records)</tspan>
 <tspan x="16" y="741">  <tspan fill="#7ec699" font-weight="bold">[PASS]</tspan> space: 1.8 GB available (18.4x minimum required)</tspan>
 <tspan x="16" y="759">  <tspan fill="#e0b45c" font-weight="bold">[WARN]</tspan> binary-location: the running binary</tspan>
-<tspan x="16" y="777">      /nix/store/1wdk3igdm7psmkf13h064ysq322nr7j1-nails-x86_64-unknown-linux-musl-0.3.0-rc.1/bin/nai</tspan>
+<tspan x="16" y="777">      /nix/store/c502lz4w8dgk6frd4clzjsilqgxiq67g-nails-x86_64-unknown-linux-musl-0.3.0-rc.1/bin/nai</tspan>
 <tspan x="16" y="795">      ls is not under the hidden volume root /mnt/data; a copy on the decoy disk is a forensic</tspan>
 <tspan x="16" y="813">      artifact; /run/current-system/sw/bin/nails is a decoy PATH symlink pointing at the hidden</tspan>
 <tspan x="16" y="831">      binary</tspan>
@@ -76,7 +76,7 @@
 <tspan x="16" y="1227">  <tspan fill="#7fb0e0" font-weight="bold">[INFO]</tspan> activation soft-reboots into the hidden root: every program closes and you are logged out</tspan>
 <tspan x="16" y="1245"></tspan>
 <tspan x="16" y="1263">NixOS profile:</tspan>
-<tspan x="16" y="1281">  <tspan fill="#7fb0e0" font-weight="bold">[INFO]</tspan> overlay-only mode: the NixOS profile switch is skipped</tspan>
+<tspan x="16" y="1281">  <tspan fill="#7fb0e0" font-weight="bold">[INFO]</tspan> overlay-only: no hidden NixOS system is built; the session runs the decoy's own system</tspan>
 <tspan x="16" y="1299"></tspan>
 <tspan x="16" y="1317">Inherited decoy state:</tspan>
 <tspan x="16" y="1335">  <tspan fill="#7fb0e0" font-weight="bold">[INFO]</tspan> shared-home: the hidden session starts in the decoy home, so the decoy's accounts, keys,</tspan>
@@ -86,7 +86,7 @@
 <tspan x="16" y="1407"></tspan>
 <tspan x="16" y="1425"><tspan fill="#7ec699" font-weight="bold">[PASS]</tspan> Ready to activate  (21 passed, 3 warnings, 0 failed)</tspan>
 </text>
-<text x="2" y="1466" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real output captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-15.</text>
+<text x="2" y="1466" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real output captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-16.</text>
 <text x="2" y="1483" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">The test runs nails from the Nix store with an explicit --config, as root without sudo and with nobody logged</text>
 <text x="2" y="1500" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">in: that is why binary-location warns and the inherited decoy state is not inspected. An operator runs sudo</text>
 <text x="2" y="1517" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">/mnt/data/nails check.</text>

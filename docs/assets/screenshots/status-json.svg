@@ -16,11 +16,11 @@
 <tspan x="16" y="147">  "kind": "active"</tspan>
 <tspan x="16" y="165"> },</tspan>
 <tspan x="16" y="183"> "state_source": "loaded",</tspan>
-<tspan x="16" y="201"> "entered_at": "2026-10-15T17:51:43+00:00",</tspan>
+<tspan x="16" y="201"> "entered_at": "2026-10-16T03:50:42+00:00",</tspan>
 <tspan x="16" y="219"> "uptime_seconds": 3,</tspan>
 <tspan x="16" y="237"> "uptime_formatted": "0 minutes",</tspan>
-<tspan x="16" y="255"> "hidden_system": "/nix/store/fh4cprbp6101mip98gqdgkmk2933zkbi-nixos-system-machine-test",</tspan>
-<tspan x="16" y="273"> "decoy_system": "/nix/store/fh4cprbp6101mip98gqdgkmk2933zkbi-nixos-system-machine-test",</tspan>
+<tspan x="16" y="255"> "hidden_system": "/nix/store/dy2xc6n3hqrnnvs0za8s26238npf1sf7-nixos-system-machine-test",</tspan>
+<tspan x="16" y="273"> "decoy_system": "/nix/store/dy2xc6n3hqrnnvs0za8s26238npf1sf7-nixos-system-machine-test",</tspan>
 <tspan x="16" y="291"> "hidden_root": "/mnt/data",</tspan>
 <tspan x="16" y="309"> "hidden_root_mounted": true,</tspan>
 <tspan x="16" y="327"> "policy_mounts": [</tspan>
@@ -52,12 +52,12 @@
 <tspan x="16" y="795"> "decoy_persistent": false,</tspan>
 <tspan x="16" y="813"> "persona_mode": "shared-home",</tspan>
 <tspan x="16" y="831"> "last_activation": {</tspan>
-<tspan x="16" y="849">  "duration_ms": 479,</tspan>
-<tspan x="16" y="867">  "finished_at": "2026-10-15T17:51:42.928574859Z"</tspan>
+<tspan x="16" y="849">  "duration_ms": 422,</tspan>
+<tspan x="16" y="867">  "finished_at": "2026-10-16T03:50:42.526340777Z"</tspan>
 <tspan x="16" y="885"> },</tspan>
 <tspan x="16" y="903"> "opsec_reminders": []</tspan>
 <tspan x="16" y="921">}</tspan>
 </text>
-<text x="2" y="962" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real data captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-15,</text>
+<text x="2" y="962" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real data captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-16,</text>
 <text x="2" y="979" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">right after the first activation: the `data` object of the JSON envelope, pretty-printed by the test.</text>
 </svg>

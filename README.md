@@ -340,7 +340,7 @@ flowchart LR
 
 Both transitions log you out. Save your work first.
 
-<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line with no known residue, three pre-flight warnings, Hidden session prepared in 0.5s, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
+<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line with no known residue, three pre-flight warnings, Hidden session prepared in 0.4s, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
 
 <details>
 <summary><b>What <code>nails status --json</code> reports in the hidden session</b></summary>

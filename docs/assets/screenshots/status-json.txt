@@ -1,6 +1,6 @@
 title: nails status --json (NixOS VM, hidden session)
 command: nails --config /mnt/data/config/nails.toml status --json
-caption: Real data captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-15, right after the first activation: the `data` object of the JSON envelope, pretty-printed by the test.
+caption: Real data captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-16, right after the first activation: the `data` object of the JSON envelope, pretty-printed by the test.
 ---
 {
  "posture": "active",
@@ -9,11 +9,11 @@ caption: Real data captured from the session-lifecycle NixOS VM test (nix build 
   "kind": "active"
  },
  "state_source": "loaded",
- "entered_at": "2026-10-15T17:51:43+00:00",
+ "entered_at": "2026-10-16T03:50:42+00:00",
  "uptime_seconds": 3,
  "uptime_formatted": "0 minutes",
- "hidden_system": "/nix/store/fh4cprbp6101mip98gqdgkmk2933zkbi-nixos-system-machine-test",
- "decoy_system": "/nix/store/fh4cprbp6101mip98gqdgkmk2933zkbi-nixos-system-machine-test",
+ "hidden_system": "/nix/store/dy2xc6n3hqrnnvs0za8s26238npf1sf7-nixos-system-machine-test",
+ "decoy_system": "/nix/store/dy2xc6n3hqrnnvs0za8s26238npf1sf7-nixos-system-machine-test",
  "hidden_root": "/mnt/data",
  "hidden_root_mounted": true,
  "policy_mounts": [
@@ -45,8 +45,8 @@ caption: Real data captured from the session-lifecycle NixOS VM test (nix build 
  "decoy_persistent": false,
  "persona_mode": "shared-home",
  "last_activation": {
-  "duration_ms": 479,
-  "finished_at": "2026-10-15T17:51:42.928574859Z"
+  "duration_ms": 422,
+  "finished_at": "2026-10-16T03:50:42.526340777Z"
  },
  "opsec_reminders": []
 }

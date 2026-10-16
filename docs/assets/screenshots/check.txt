@@ -1,6 +1,6 @@
 title: nails check (NixOS VM, decoy side)
 command: nails --config /mnt/data/config/nails.toml check --overlay-only
-caption: Real output captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-15. The test runs nails from the Nix store with an explicit --config, as root without sudo and with nobody logged in: that is why binary-location warns and the inherited decoy state is not inspected. An operator runs sudo /mnt/data/nails check.
+caption: Real output captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-16. The test runs nails from the Nix store with an explicit --config, as root without sudo and with nobody logged in: that is why binary-location warns and the inherited decoy state is not inspected. An operator runs sudo /mnt/data/nails check.
 ---
 =======================================
   NAILS Readiness Check
@@ -25,9 +25,9 @@ Pre-flight checks:
   [PASS] memory-wipe: Kernel command line does not set init_on_free=1: unless the kernel enables it by default, pages freed by the hidden session keep their contents in RAM until reused. Recommended: add init_on_free=1 to the decoy kernel command line
   [WARN] sleep-policy: the host would suspend an active session: closing the lid suspends the host (HandleLidSwitch=suspend). A suspend leaves the hidden session resident in RAM behind the hidden session's own lock screen. Set the logind lid switch to lock (see docs/decoy-requirements.md), or set sleep_policy.mode = "block" or "teardown" in nails.toml.
   [WARN] decoy-persistence: decoy posture warnings: systemd-coredump keeps core dumps in /var/lib/systemd/coredump on the decoy disk (Storage unset, so external); set systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; } in the decoy configuration. See docs/decoy-requirements.md.
-  [PASS] residue-catalog: no warned residue channel is live (4 catalog probe(s)); noted: timer-stamps (/var/lib/systemd/timers): Session stamps land in the upper; expect catch-up runs at the next decoy boot. (see docs/decoy-requirements.md#session-time-records)
+  [PASS] residue-catalog: no warned residue channel is live (4 catalog probes); noted: timer-stamps (/var/lib/systemd/timers): Session stamps land in the upper; expect catch-up runs at the next decoy boot. (see docs/decoy-requirements.md#session-time-records)
   [PASS] space: 1.8 GB available (18.4x minimum required)
-  [WARN] binary-location: the running binary /nix/store/1wdk3igdm7psmkf13h064ysq322nr7j1-nails-x86_64-unknown-linux-musl-0.3.0-rc.1/bin/nails is not under the hidden volume root /mnt/data; a copy on the decoy disk is a forensic artifact; /run/current-system/sw/bin/nails is a decoy PATH symlink pointing at the hidden binary
+  [WARN] binary-location: the running binary /nix/store/c502lz4w8dgk6frd4clzjsilqgxiq67g-nails-x86_64-unknown-linux-musl-0.3.0-rc.1/bin/nails is not under the hidden volume root /mnt/data; a copy on the decoy disk is a forensic artifact; /run/current-system/sw/bin/nails is a decoy PATH symlink pointing at the hidden binary
   [PASS] inherited-autostart: Target user could not be resolved; inherited decoy state was not inspected
   [PASS] incremental-history-flush: Target user could not be resolved; shell history-flush settings were not inspected
   [PASS] state: System is inactive - ready for activation
@@ -50,7 +50,7 @@ Session:
   [INFO] activation soft-reboots into the hidden root: every program closes and you are logged out
 
 NixOS profile:
-  [INFO] overlay-only mode: the NixOS profile switch is skipped
+  [INFO] overlay-only: no hidden NixOS system is built; the session runs the decoy's own system
 
 Inherited decoy state:
   [INFO] shared-home: the hidden session starts in the decoy home, so the decoy's accounts, keys, browser profiles and shell history are live in it (persona.mode = "fresh-home" starts it in an empty home)

@@ -1,17 +1,16 @@
 title: nails activate (NixOS VM, decoy side)
 command: nails --config /mnt/data/config/nails.toml activate -y --overlay-only
-caption: Real output captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-15, standard output and standard error together, as the test records them. The test runs nails from the Nix store, which is why binary-location warns. The soft-reboot follows the last line.
+caption: Real output captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-16, standard output and standard error together, as the test records them. The test runs nails from the Nix store, which is why binary-location warns. The soft-reboot follows the last line.
 ---
-Pre-activation decoy residue baseline: no known residue -> /mnt/data/reports/activation-residue-2026-10-15T17-51-42-436203902-00-00.json
+Pre-activation decoy residue baseline: no known residue -> /mnt/data/reports/activation-residue-2026-10-16T03-50-42-090251832-00-00.json
 Preparing the hidden session (pre-flight, next root)...
 [WARN] sleep-policy: the host would suspend an active session: closing the lid suspends the host (HandleLidSwitch=suspend). A suspend leaves the hidden session resident in RAM behind the hidden session's own lock screen. Set the logind lid switch to lock (see docs/decoy-requirements.md), or set sleep_policy.mode = "block" or "teardown" in nails.toml.
 [WARN] decoy-persistence: decoy posture warnings: systemd-coredump keeps core dumps in /var/lib/systemd/coredump on the decoy disk (Storage unset, so external); set systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; } in the decoy configuration. See docs/decoy-requirements.md.
-[WARN] binary-location: the running binary /nix/store/1wdk3igdm7psmkf13h064ysq322nr7j1-nails-x86_64-unknown-linux-musl-0.3.0-rc.1/bin/nails is not under the hidden volume root /mnt/data; a copy on the decoy disk is a forensic artifact; /run/current-system/sw/bin/nails is a decoy PATH symlink pointing at the hidden binary
-[PASS] Hidden session prepared in 0.5s
-  Hidden system: /nix/store/fh4cprbp6101mip98gqdgkmk2933zkbi-nixos-system-machine-test
+[WARN] binary-location: the running binary /nix/store/c502lz4w8dgk6frd4clzjsilqgxiq67g-nails-x86_64-unknown-linux-musl-0.3.0-rc.1/bin/nails is not under the hidden volume root /mnt/data; a copy on the decoy disk is a forensic artifact; /run/current-system/sw/bin/nails is a decoy PATH symlink pointing at the hidden binary
+[PASS] Hidden session prepared in 0.4s
   /nix/.ro-store: overlaid
   /nix/store: overlaid
   /tmp/shared: overlaid
   /tmp/xchg: overlaid
 
-Soft-rebooting into the hidden session now: every program closes and you are logged out. Log in at the hidden session's login screen (a display manager set to log in automatically logs that account in again, as at boot).
+Soft-rebooting into the hidden session now: every program closes and you are logged out. Log in at the hidden session's login screen (a display manager set to log an account in automatically logs it in again, as at boot).
