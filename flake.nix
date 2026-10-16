@@ -338,6 +338,7 @@
           cargo-deny
           cargo-nextest
           cargo-llvm-cov
+          cargo-fuzz # `just fuzz-run`: the fuzz targets in fuzz/
         ];
 
         # A fresh clone has no git hooks. Install them on first shell entry so

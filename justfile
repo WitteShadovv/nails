@@ -39,6 +39,26 @@ test:
 fuzz cases="100000":
     PROPTEST_CASES={{ cases }} cargo test -p nails-core --lib --locked --release -- fuzz_
 
+# Run one cargo-fuzz target of fuzz/ (`just fuzz-run mountinfo 600`) built as
+# CI builds it: release, with debug assertions, overflow checks and the address
+# sanitizer. The pinned stable compiler accepts cargo-fuzz's sanitizer flag under
+# RUSTC_BOOTSTRAP, as in `shuffle`. It starts from the target's seeds and
+# dictionary; new inputs collect in fuzz/corpus/, a crash in fuzz/artifacts/.
+fuzz-run target seconds="60":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p fuzz/corpus/{{ target }}
+    args=(-max_total_time={{ seconds }})
+    if [ -f fuzz/dicts/{{ target }}.dict ]; then
+        args+=(-dict=fuzz/dicts/{{ target }}.dict)
+    fi
+    options=fuzz/options/{{ target }}.options
+    if [ -f "$options" ]; then
+        args+=("-max_len=$(sed -n 's/^max_len = //p' "$options")")
+    fi
+    RUSTC_BOOTSTRAP=1 cargo fuzz run --release --debug-assertions {{ target }} \
+        fuzz/corpus/{{ target }} fuzz/seeds/{{ target }} -- "${args[@]}"
+
 # Run the documentation tests, which nextest does not execute.
 doctest:
     cargo test --doc --workspace --all-features --locked
