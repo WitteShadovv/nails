@@ -18,8 +18,10 @@ use std::path::{Path, PathBuf};
 /// - The path is absolute (not relative)
 /// - The directory exists
 /// - The directory contains a `flake.nix`
-/// - It is not the decoy's own `/etc/nixos` flake, in any spelling (discovery
-///   reports that as [`HostTarget::DecoyFlake`])
+/// - It is not the decoy's own `/etc/nixos` flake, named as a local path or a
+///   `path:`, `git+file:` or `file:` reference, with a query, a `dir`
+///   parameter or through a link (discovery reports that as
+///   [`HostTarget::DecoyFlake`])
 ///
 /// When no flake is specified, it reports the target the host's platform
 /// discovered ([`discover_host_target`](crate::platform::discover_host_target)),
@@ -236,8 +238,8 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSBuildTargetCheck {
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
         // The decoy's own flake is refused however it was reached: found by
-        // the probes, or named with --nixos-flake or `nixos_flake` (in any
-        // spelling of /etc/nixos, which discovery resolves).
+        // the probes, or named with --nixos-flake or `nixos_flake` (in each
+        // local spelling of /etc/nixos that discovery resolves).
         if let HostTarget::DecoyFlake {
             dir,
             hidden_volume_root,

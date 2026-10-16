@@ -233,9 +233,12 @@ Keep all of it `root`-owned on the hidden volume.
 next root's store (`nix build --store /run/nextroot`) from the first of:
 
 1. a flake given with `--nixos-flake` or `nixos_flake`, unless it is the
-   decoy's own `/etc/nixos` (in any spelling: `path:/etc/nixos`,
-   `git+file:///etc/nixos`, `path:/etc?dir=nixos`, a link to the directory),
-   which is refused;
+   decoy's own `/etc/nixos`, which is refused when it is named as a local
+   path or a `path:`, `git+file:` or `file:` reference, also with a query
+   (`?ref=main`), a `dir` parameter (`path:/etc?dir=nixos`) or through a link
+   to the directory. Other spellings, such as a registry alias, `hg+file:` or
+   a percent-encoded path, are not recognised, so the refusal does not catch
+   them;
 2. a flake in `<hidden-root>/nixos`, built for this machine's hostname; a link
    there to `/etc/nixos` is the decoy's own flake and refused the same way;
 3. the legacy configuration: the decoy's `/etc/nixos` plus the hidden hardware

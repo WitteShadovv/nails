@@ -58,8 +58,8 @@ fn etc_flake_without_a_hidden_flake_is_the_refused_decoy_flake() {
     );
 }
 
-/// The decoy's own flake named explicitly, in each spelling Nix accepts
-/// for it, is the refused decoy flake; another directory is not, and
+/// The decoy's own flake named explicitly, in each local spelling discovery
+/// resolves, is the refused decoy flake; another directory is not, and
 /// neither is `/etc/nixos` without a flake in it.
 #[test]
 fn the_decoy_flake_named_explicitly_is_the_refused_decoy_flake() {
