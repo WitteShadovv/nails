@@ -116,7 +116,10 @@ One workflow runs the NixOS VM suite in every lane. A `plan` job decides what ru
 
 Every test VM gets 2 cores and 2 GB of memory, 4 GB for graphical nodes (`nix/e2e-tests/lib/vm-config.nix`, `graphical-vm-config.nix`). The size is fixed rather than derived from the runner, so a test evaluates to the same derivation on every host, no build needs `--impure`, and two VMs fit a four-vCPU hosted runner. Every test runs with a 900 s driver timeout unless it declares a longer `globalTimeout`.
 
-The target is that `mode=all` finishes in at most 10 shards and about 20 minutes on hosted runners. No full hosted run has been measured yet.
+The target is that `mode=all` finishes in at most 10 shards and about 20 minutes on hosted runners. In October 2026 one commit ran in both modes on hosted `ubuntu-24.04` runners, with no project cache to substitute from, so every test booted:
+
+- **`all` passed.** The push to `main` and a dispatched run each passed every test except the `performance` group, 58 tests, in 10 shards of 7 to 22 minutes, and took 21 to 26 minutes from plan to result. `nix build` may run as many tests of a shard at once as the runner has vCPUs, four on a hosted runner (the Nix installer sets `max-jobs = auto`).
+- **`execute` failed.** The next two nightly runs failed alike: eight of the ten shards reached their job timeouts of 54 to 57 minutes, and `session-nixos-store-gc`, alone in its shard, failed on both attempts, although it passed in both `all` runs. `execute` builds the driver of every test of its shard and then runs the drivers one after another, against shard timeouts computed from the same weights as in `all`. The cause is not known yet; until it is, a red nightly run does not mean that `all`, the mode of pushes to `main` and of releases, fails.
 
 ### The portable distribution lane
 
