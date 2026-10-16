@@ -13,8 +13,9 @@ name: Scorecard
 # the Scorecard job; in that job no env, defaults, container or services, an
 # Ubuntu hosted runner, and only steps that use checkout, upload-artifact,
 # codeql-action/upload-sarif, scorecard-action or harden-runner. That is why
-# this workflow, unlike the others, has no top-level defaults and no `run:`
-# step.
+# this workflow has no top-level defaults and the Scorecard job must not gain a
+# `run:` step. A rejected result is only a warning in the run, which stays
+# green.
 
 on:
   push:
