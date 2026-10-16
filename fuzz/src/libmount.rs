@@ -18,11 +18,13 @@ pub struct UtabLine {
     pub root: Option<String>,
 }
 
-/// Whether libmount can have written `line`. Its `mangle()` writes the bytes
-/// up to a space, DEL and the backslash as three-digit octal escapes and
-/// every other byte as it is, so a backslash in a line it wrote always starts
-/// one of those escapes. A line with any other backslash comes from no
-/// libmount, and the two decoders need not agree on it.
+/// Whether libmount can have written `line`. Its `mangle()` writes a space, a
+/// tab, a newline and the backslash as three-digit octal escapes and every
+/// other byte as it is, so a backslash in a line it wrote always starts one
+/// of those escapes. A line with any other backslash comes from no libmount,
+/// and the two decoders need not agree on it. This takes the escape of any
+/// byte up to a space, of DEL and of the backslash for one: a superset of
+/// what `mangle()` writes, which only compares the decoders on more lines.
 pub fn producible(line: &str) -> bool {
     let bytes = line.as_bytes();
     let mut at = 0;
