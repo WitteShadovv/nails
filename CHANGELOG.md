@@ -13,12 +13,14 @@ of this changelog for that version becomes the release notes word for word, and
 
 ## [Unreleased]
 
-## [0.3.0-rc.1] - 2026-10-14
+## [0.3.0-rc.2] - 2026-10-16
 
 NAILS 0.3.0 replaces the per-directory live overlays of 0.2 with one design: the hidden session is
 an overlay over the whole decoy root, entered and left with `systemctl soft-reboot`.
 Debian 13 or newer, Ubuntu 24.04 or newer and, provisionally, their derivatives join NixOS as
 decoys.
+
+0.3.0-rc.1 was tagged but never published: its release run stopped at the SBOM attestation.
 
 ### Upgrade notes
 
@@ -541,7 +543,7 @@ config and CLI surfaces; there are no compatibility shims.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for public contribution guidance.
 
-[Unreleased]: https://github.com/WitteShadovv/nails/compare/v0.3.0-rc.1...HEAD
-[0.3.0-rc.1]: https://github.com/WitteShadovv/nails/compare/v0.2.0...v0.3.0-rc.1
+[Unreleased]: https://github.com/WitteShadovv/nails/compare/v0.3.0-rc.2...HEAD
+[0.3.0-rc.2]: https://github.com/WitteShadovv/nails/compare/v0.2.0...v0.3.0-rc.2
 [0.2.0]: https://github.com/WitteShadovv/nails/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/WitteShadovv/nails/releases/tag/v0.1.0
