@@ -466,6 +466,10 @@ fn build(
     let decoy_fstab = super::fstab::read_in_root(&paths.root)
         .map_err(|e| io(&paths.root.join("etc/fstab"), e))?;
     let mut decisions = decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root)?;
+    let decoy_fstab = super::fstab::parse_fstab(&String::from_utf8_lossy(&decoy_fstab));
+    // Every entry the hidden systemd may read: the decoy's, and those of the
+    // hidden generation once it is built.
+    let mut fstab = decoy_fstab.clone();
     plan.policy_mounts = apply_mounts(paths, &layout, &decisions, inputs.hidden_root, &[])?;
     crate::cancel::checkpoint()?;
 
@@ -509,6 +513,9 @@ fn build(
         let hidden_fstab = super::fstab::read_in_root(&nextroot)
             .map_err(|e| io(&nextroot.join("etc/fstab"), e))?;
         let hidden = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root)?;
+        fstab.extend(super::fstab::parse_fstab(&String::from_utf8_lossy(
+            &hidden_fstab,
+        )));
         let done: Vec<PathBuf> = plan
             .policy_mounts
             .iter()
@@ -524,8 +531,7 @@ fn build(
     } else if !inputs.nixos {
         plan.hidden.init = fhs_init(&nextroot);
     }
-    plan.masks = policy::masked_units(&decisions);
-    plan.masks.dedup();
+    plan.masks = policy::masks(&fstab, &decisions);
     plan.boot_masks = super::systemd::units_in_root(&nextroot, policy::BOOT_WRITER_UNITS)
         .into_iter()
         .filter(|unit| !plan.masks.contains(unit))
@@ -534,7 +540,6 @@ fn build(
         super::persona::write_masks(&nextroot, &inputs.persona, operator);
     }
 
-    let decoy_fstab = super::fstab::parse_fstab(&String::from_utf8_lossy(&decoy_fstab));
     warnings.extend(super::way_back::keep(
         paths,
         &layout,

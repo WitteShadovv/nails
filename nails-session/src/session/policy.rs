@@ -33,6 +33,13 @@
 //! checks the init: NixOS test VMs mount `/nix/store` as an overlay of a 9p
 //! share and a tmpfs, and the next root would otherwise have an empty store.
 //!
+//! An entry behind an automount (`x-systemd.automount`, often the ESP) whose
+//! filesystem the policy binds or overlays itself keeps its automount masked
+//! too ([`masks`]): the hidden systemd would find the mount point taken and
+//! fail to set the automount up, and `local-fs.target`, which requires it
+//! unless the entry is `nofail`, would fail with it and start the hidden
+//! session in emergency mode.
+//!
 //! Nothing is refused outright today: every entry has a safe decision. The
 //! `Refuse` decision exists for entries whose target cannot be mounted inside
 //! the next root (a relative or odd mount point).
@@ -262,6 +269,30 @@ pub fn masked_units(decisions: &[Decision]) -> Vec<String> {
         .collect()
 }
 
+/// Every unit the hidden session keeps masked, each once: the units the
+/// `decisions` mask, and the automount of each entry of `fstab` whose
+/// filesystem they put in place themselves, read-only or overlaid (see the
+/// module docs).
+pub fn masks(fstab: &[FstabEntry], decisions: &[Decision]) -> Vec<String> {
+    let placed = |file: &Path| {
+        decisions.iter().any(|decision| match decision {
+            Decision::ReadOnlyBind { target } | Decision::Overlay { target } => target == file,
+            _ => false,
+        })
+    };
+    let automounts = fstab
+        .iter()
+        .filter(|entry| entry.is_automount() && placed(&entry.file))
+        .map(|entry| automount_unit(&entry.file));
+    let mut masks: Vec<String> = Vec::new();
+    for unit in masked_units(decisions).into_iter().chain(automounts) {
+        if !masks.contains(&unit) {
+            masks.push(unit);
+        }
+    }
+    masks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,5 +432,30 @@ mod tests {
         );
         assert!(matches!(&decisions[2], Decision::Mask { .. }));
         assert_eq!(masked_units(&decisions), ["home-alice-media.mount"]);
+    }
+
+    #[test]
+    fn the_automount_of_a_filesystem_put_in_place_is_masked_once() {
+        // The ESP and /home behind automounts, both put in place; /data
+        // masked with its automount; /srv put in place without one. The
+        // hidden generation's fstab names /boot again.
+        let fstab = parse_fstab(
+            "UUID=AB /boot vfat umask=0077,x-systemd.automount 0 2
+             LABEL=home /home ext4 x-systemd.automount,nofail 0 2
+             /dev/sdb1 /data ext4 noauto,x-systemd.automount 0 2
+             /dev/vda4 /srv ext4 ro 0 2
+             UUID=AB /boot vfat x-systemd.automount 0 2
+",
+        );
+        let decisions = decide_all(&fstab, &mounts(), Path::new(HIDDEN));
+        assert_eq!(
+            masks(&fstab, &decisions),
+            [
+                "data.mount",
+                "data.automount",
+                "boot.automount",
+                "home.automount"
+            ]
+        );
     }
 }
