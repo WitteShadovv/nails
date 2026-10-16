@@ -6,7 +6,10 @@
 # alone. Import this module into the hidden NixOS configuration to give the
 # hidden session a different network identity. It takes effect when activation
 # builds the hidden system (or `nixos-rebuild test` applies it in a hidden
-# session), so it is a setting of the hidden system, never of the decoy.
+# session, with `--flake <hidden-root>/nixos#<host> --impure` for a hidden
+# flake), so it is a setting of the hidden system, never of the decoy. `<host>`
+# is the decoy's hostname, the configuration activation builds: in a session
+# that uses this module, `hostname` prints the hidden name instead.
 #
 # The hidden configuration imports the decoy configuration, which normally sets
 # these options itself, so they are forced here: a default-priority value would

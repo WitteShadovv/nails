@@ -267,10 +267,11 @@ part of the hidden system. Give such a decoy a self-contained hidden flake:
    so it must exist.
 4. Build it there before you rely on it:
    `sudo nixos-rebuild build --flake <hidden-root>/nixos#<host> --impure`.
-   `<host>` is the configuration activation builds, the one named after this
-   machine's hostname, and `--impure` lets the flake import the hidden module
-   by its absolute path. `test` in place of `build` also applies it to the
-   running session.
+   `<host>` is the decoy's hostname, the configuration activation builds (in
+   a session that uses the network-identity module, `hostname` prints the
+   hidden name instead), and `--impure` lets the flake import the hidden
+   module by its absolute path. `test` in place of `build` also applies it to
+   the running session.
 5. Deactivate. The next activation builds the hidden flake.
 
 Never write or lock the flake on the decoy: the editor's state, root's
@@ -801,10 +802,11 @@ Give it the target activation builds:
   the hidden configuration (the decoy's files plus the hidden hardware
   configuration in the upper);
 - a hidden flake: `sudo nixos-rebuild test --flake <hidden-root>/nixos#<host>
-  --impure`, with `<host>` the configuration activation builds (named after
-  this machine's hostname) and `--impure` because the flake imports the hidden
-  module by its absolute path. A flake you name with `nixos_flake`, the same
-  way with that reference.
+  --impure`, with `<host>` the decoy's hostname, the configuration activation
+  builds (in a session that uses the network-identity module, `hostname`
+  prints the hidden name instead), and `--impure` because the flake imports
+  the hidden module by its absolute path. For a flake named with
+  `nixos_flake`, pass that reference instead.
 
 On a decoy whose `/etc/nixos` holds a flake, a plain `nixos-rebuild test`
 builds that flake, the decoy's own, which activation refuses to build: it
