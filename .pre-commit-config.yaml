@@ -124,11 +124,12 @@ repos:
             done
           - --
 
-      # Rust formatting is checked (never rewritten) on every commit; the
-      # heavier lint and test gate runs on push through `just check` below.
+      # Rust formatting, of the workspace and the fuzz crate, is checked
+      # (never rewritten) on every commit; the heavier lint and test gate runs
+      # on push through `just check` below.
       - id: cargo-fmt-check
         name: cargo fmt --check
-        entry: cargo fmt --all -- --check
+        entry: just fmt-check
         language: system
         types: [rust]
         pass_filenames: false

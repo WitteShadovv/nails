@@ -7,8 +7,9 @@
 # NixOS configuration, udev's records, and raw disks. docs/testing-strategy.md
 # says how to run a target; .clusterfuzzlite/ builds them for CI.
 #
-# This crate is its own workspace, outside the NAILS one: `just check`,
-# cargo-deny and the release build never see it or its dependencies.
+# This crate is its own workspace, outside the NAILS one: `just check` checks
+# its formatting only, and clippy, cargo-deny and the release build never see it
+# or its dependencies.
 
 [package]
 name = "nails-fuzz"
@@ -30,6 +31,11 @@ nails-forensics = { path = "../nails-forensics" }
 nails-platform = { path = "../nails-platform" }
 nails-session = { path = "../nails-session" }
 nails-teardown = { path = "../nails-teardown" }
+
+# The lint policy of the workspace (Cargo.toml's [workspace.lints]), which a
+# workspace of its own does not inherit: no unsafe code.
+[lints.rust]
+unsafe_code = "deny"
 
 [workspace]
 members = ["."]

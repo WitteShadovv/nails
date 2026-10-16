@@ -17,9 +17,11 @@ shipped_targets := "x86_64-unknown-linux-musl x86_64-unknown-linux-gnu"
 
 # --- Rust quality gate ---
 
-# Check formatting without rewriting files.
+# Check formatting without rewriting files: the workspace, then the fuzz crate,
+# a workspace of its own.
 fmt-check:
     cargo fmt --all -- --check
+    cargo fmt --manifest-path fuzz/Cargo.toml -- --check
 
 # Clippy over every target and feature, with warnings denied.
 lint:
