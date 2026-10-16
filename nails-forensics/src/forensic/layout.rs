@@ -171,13 +171,23 @@ fn parse_gpt(source: &RawSource, header_at: u64, block: u64) -> io::Result<Optio
     if source.read_at(&mut header, header_at)? < header.len() || &header[..8] != b"EFI PART" {
         return Ok(None);
     }
-    let first_usable = le_u64(&header, 40) * block;
-    let last_usable = (le_u64(&header, 48) + 1) * block;
-    let entries_at = le_u64(&header, 72) * block;
+    // A block number is whatever the disk says. One whose byte offset does
+    // not fit 64 bits lies past the end of any disk, so the offset saturates
+    // there rather than wrapping round to a small one.
+    let offset = |lba: u64| lba.saturating_mul(block);
+    let first_usable = offset(le_u64(&header, 40));
+    let last_usable = offset(le_u64(&header, 48).saturating_add(1));
+    let entries_at = offset(le_u64(&header, 72));
     let count = le_u32(&header, 80).min(256);
     let entry_size = le_u32(&header, 84).clamp(128, 1024);
     let mut table = vec![0u8; (count * entry_size) as usize];
-    let read = source.read_at(&mut table, entries_at)?;
+    // Past the end of the source there is nothing to read, and a read at an
+    // offset beyond 2^63 bytes fails rather than reading nothing.
+    let read = if entries_at < source.size() {
+        source.read_at(&mut table, entries_at)?
+    } else {
+        0
+    };
     table.truncate(read);
 
     let mut partitions = Vec::new();
@@ -190,8 +200,8 @@ fn parse_gpt(source: &RawSource, header_at: u64, block: u64) -> io::Result<Optio
         if entry[..16].iter().all(|&b| b == 0) {
             continue;
         }
-        let first = le_u64(entry, 32) * block;
-        let last = (le_u64(entry, 40) + 1) * block;
+        let first = offset(le_u64(entry, 32));
+        let last = offset(le_u64(entry, 40).saturating_add(1));
         if last <= first || first >= source.size() {
             continue;
         }
@@ -376,6 +386,57 @@ pub(crate) mod tests {
         assert_eq!(layout.partitions[0].size, 4 << 20);
         assert_eq!(layout.gaps.len(), 2);
         assert_eq!(layout.gaps[1], (5 << 20, 32_735 * 512));
+    }
+
+    /// Block numbers whose byte offsets do not fit 64 bits, found by the
+    /// `disk_layout` fuzz target: the multiplication overflowed, and in a
+    /// release build wrapped round to a small offset on the disk.
+    #[test]
+    fn block_numbers_past_any_disk_do_not_wrap() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gpt.img");
+        let mut file = std::fs::File::create(&path).unwrap();
+        file.set_len(16 << 20).unwrap();
+        let mut header = [0u8; 92];
+        header[..8].copy_from_slice(b"EFI PART");
+        header[40..48].copy_from_slice(&u64::MAX.to_le_bytes()); // first usable LBA
+        header[48..56].copy_from_slice(&u64::MAX.to_le_bytes()); // last usable LBA
+        header[72..80].copy_from_slice(&2u64.to_le_bytes()); // entries LBA
+        header[80..84].copy_from_slice(&128u32.to_le_bytes());
+        header[84..88].copy_from_slice(&128u32.to_le_bytes());
+        put(&mut file, 512, &header);
+        let entry = |first: u64, last: u64| {
+            let mut entry = [0u8; 128];
+            entry[..16].copy_from_slice(&[0xAF; 16]);
+            entry[32..40].copy_from_slice(&first.to_le_bytes());
+            entry[40..48].copy_from_slice(&last.to_le_bytes());
+            entry
+        };
+        // 2^55 + 2 blocks are 2^64 + 1 KiB bytes, which wrapped to 1 KiB.
+        put(&mut file, 1024, &entry((1 << 55) + 2, (1 << 55) + 10));
+        // The last block there is: the partition runs to the end of the disk.
+        put(&mut file, 1024 + 128, &entry(2048, u64::MAX));
+        file.sync_all().unwrap();
+
+        let layout = read_layout(&RawSource::open(&path).unwrap()).unwrap();
+        assert_eq!(layout.table, TableKind::Gpt);
+        assert_eq!(layout.partitions.len(), 1, "{layout:?}");
+        assert_eq!(layout.partitions[0].number, 2);
+        assert_eq!(layout.partitions[0].start, 1 << 20);
+        assert_eq!(layout.partitions[0].end(), 16 << 20);
+        // The first usable block lies past the disk, so nothing is free.
+        assert!(layout.gaps.is_empty(), "{layout:?}");
+
+        // An entry array past the end of the disk holds no entry: beyond
+        // 2^63 bytes the read itself failed, and beyond 2^64 it wrapped.
+        for lba in [1u64 << 54, 1 << 60] {
+            header[72..80].copy_from_slice(&lba.to_le_bytes());
+            put(&mut file, 512, &header);
+            file.sync_all().unwrap();
+            let layout = read_layout(&RawSource::open(&path).unwrap()).unwrap();
+            assert_eq!(layout.table, TableKind::Gpt);
+            assert!(layout.partitions.is_empty(), "{layout:?}");
+        }
     }
 
     #[test]
