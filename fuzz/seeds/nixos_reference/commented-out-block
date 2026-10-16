@@ -1,0 +1,21 @@
+{ lib, ... }:
+{
+  # boot.initrd.luks = {
+  #   devices = {
+  #     data = {
+  #       device = "/dev/disk/by-partlabel/vault";
+  #     };
+  #   };
+  # };
+#  fileSystems."/srv" = {
+#    device = "LABEL=vault";
+#  };
+  boot.initrd.luks.devices = with lib; mkForce {
+    root = { device = "/dev/sda2"; postOpenCommands = ''echo "{"''; };
+  };
+  boot.initrd.luks.devices = [
+    { name = "data"; device = "/dev/sdb2"; }
+  ];
+  systemd.services."systemd-cryptsetup@data".enable = false;
+  encrypted.label = "data";
+}

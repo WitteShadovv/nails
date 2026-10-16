@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: the fields and escapes of /proc/self/mountinfo and of
+# overlay options.
+" - "
+"shared:"
+"master:"
+"propagate_from:"
+"unbindable"
+"rw,relatime"
+"ro,nosuid,nodev"
+"overlay"
+"tmpfs"
+"ext4"
+"9p"
+"lowerdir="
+"upperdir="
+"workdir="
+"redirect_dir=nofollow"
+"uuid=null"
+"/dev/mapper/"
+"/mnt/data"
+"/run/nextroot"
+"\\040"
+"\\011"
+"\\012"
+"\\134"
+"\\054"
+"\\,"
+"\\:"

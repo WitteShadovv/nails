@@ -1,0 +1,6 @@
+1 0 8:1 / / rw - ext4 /dev/sda1 rw
+2 1 0:30 / /tmp rw - tmpfs tmpfs rw
+3 2 0:31 / /tmp/xchg rw - 9p xchg rw
+4 2 0:50 / /tmp rw - overlay overlay rw,lowerdir=/tmp,upperdir=/h/u,workdir=/h/w
+5 4 0:31 / /tmp/xchg ro - 9p xchg rw
+6 4 0:51 / /tmp rw - overlay overlay rw,lowerdir=/x,upperdir=/h/x,workdir=/h/y

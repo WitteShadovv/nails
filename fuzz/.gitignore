@@ -1,0 +1,6 @@
+# cargo-fuzz's working files. The seed corpora in seeds/ are tracked; the
+# corpus a run grows, the crashes it saves and coverage data are not.
+/target/
+/corpus/
+/artifacts/
+/coverage/

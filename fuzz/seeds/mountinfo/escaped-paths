@@ -1,0 +1,4 @@
+36 35 98:0 / /mnt/hidden\040root\011x\134y rw - ext4 /dev/sda1 rw
+40 22 0:50 / /mnt/x rw,relatime shared:9 - tmpfs  rw,size=10k
+41 22 0:51 /sub\012dir /srv/a\054b rw master:3 propagate_from:2 unbindable - ext4 /dev/disk/by-label/My\040Disk rw
+42 22 0:52 / /var rw - overlay overlay rw,lowerdir=/l\134\054x\134:y:/m,upperdir=/u\040p,workdir=/w

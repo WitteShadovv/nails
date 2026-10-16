@@ -1,0 +1,9 @@
+# A derivative that declares its family.
+NAME='Pop!_OS'
+ID=pop
+ID_LIKE="ubuntu debian"
+VERSION_ID="24.04"
+ID="Linux\$Mint\"x\`y\\z"
+ID_LIKE='ubuntu  "debian"'
+  VERSION_ID = 22.1
+ID_LIKE=fedora

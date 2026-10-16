@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: partition table and on-disk format signatures.
+"EFI PART"
+"\x55\xaa"
+"\xee"
+"\x83"
+"LUKS\xba\xbe"
+"SKUL\xba\xbe"
+"XFSB"
+"hsqs"
+"NTFS    "
+"EXFAT   "
+"-FVE-FS-"
+"FAT32   "
+"FAT16   "
+"LVM2 001"
+"SWAPSPACE2"
+"CD001"
+"_BHRfS_M"
+"\x53\xef"
+"\xff\xff\xff\xff\xff\xff\xff\xff"
