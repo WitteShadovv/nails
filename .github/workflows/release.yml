@@ -9,10 +9,12 @@ name: Release
 #   rebuild        reproducibility.yml builds it again on a fresh runner; the
 #                  binary, the archive and checksums.txt must match byte for
 #                  byte
-#   e2e            the whole E2E suite (e2e.yml) on the tagged commit
 #   sbom           CycloneDX SBOM of the binary for the musl target, musl
 #                  included, and an OpenVEX document that marks the CVEs
-#                  nixpkgs patches musl against as fixed
+#                  nixpkgs patches musl against as fixed; an SBOM that
+#                  actions/attest would refuse fails here, in minutes
+#   e2e            the whole E2E suite (e2e.yml) on the tagged commit, once
+#                  the SBOM passed
 #   attest         build provenance for the archive and the binary, and the
 #                  SBOM as an attestation of its own
 #   draft-release  a draft whose notes are the CHANGELOG.md section
@@ -121,9 +123,6 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-    outputs:
-      musl-version: ${{ steps.musl.outputs.version }}
-      musl-cves: ${{ steps.musl.outputs.cves }}
 
     steps:
       - name: Checkout the tagged commit
@@ -153,23 +152,6 @@ jobs:
           test "$(result/nails --version)" = "nails $VERSION"
           (cd result && sha256sum --check --strict checksums.txt)
 
-      # musl is linked statically, so the SBOM names it. The build links the
-      # musl of the nixpkgs revision that flake.lock pins, not the copy that
-      # ships with the Rust toolchain, and fails if the link took libc.a from
-      # anywhere else (flake.nix); .#nails.libc is that musl. nixpkgs names a
-      # security patch after the CVE it fixes, so the CVE IDs in the patch
-      # names are the fixes the SBOM records on top of the release version.
-      - name: Read the musl version and its security patches
-        id: musl
-        run: |
-          version=$(nix eval --raw .#nails.libc.version --option accept-flake-config false)
-          patches=$(nix eval --raw .#nails.libc.patches --option accept-flake-config false \
-            --apply 'ps: builtins.concatStringsSep "\n" (map (p: baseNameOf (toString p)) ps)')
-          cves=$(grep -oE 'CVE-[0-9]{4}-[0-9]{4,}' <<< "$patches" | sort -u | paste -sd ' ' -) || true
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "cves=$cves" >> "$GITHUB_OUTPUT"
-          echo "musl $version, patched for: ${cves:-nothing}"
-
       - name: Collect the release bundle
         run: mkdir dist && cp result/* dist/
 
@@ -190,26 +172,12 @@ jobs:
     with:
       reference-artifact: release-bundle
 
-  # GitHub refuses a call that grants less than any job of the called workflow
-  # declares. e2e.yml's report-status job declares issues: write, but it runs
-  # only for main and the nightly schedule, never for a release.
-  e2e:
-    name: E2E
-    needs: version
-    permissions:
-      contents: read
-      issues: write # declared by e2e.yml's report-status job, unused here
-    uses: ./.github/workflows/e2e.yml
-    with:
-      mode: all
-      runner: ${{ inputs.e2e-runner || '"ubuntu-26.04"' }}
-      max-shards: ${{ inputs.e2e-max-shards || 10 }}
-    secrets:
-      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
-
+  # The SBOM is written and checked before the E2E suite starts: an SBOM
+  # that actions/attest would refuse stops the run within minutes, before the
+  # suite and before anything is attested. It needs no build.
   sbom:
     name: SBOM
-    needs: [version, build]
+    needs: version
     runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
@@ -220,6 +188,29 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
+
+      # Only to read the musl of the pinned nixpkgs; nothing is built here.
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cache: 'false'
+
+      # musl is linked statically, so the SBOM names it. The build links the
+      # musl of the nixpkgs revision that flake.lock pins, not the copy that
+      # ships with the Rust toolchain, and fails if the link took libc.a from
+      # anywhere else (flake.nix); .#nails.libc is that musl. nixpkgs names a
+      # security patch after the CVE it fixes, so the CVE IDs in the patch
+      # names are the fixes the SBOM records on top of the release version.
+      - name: Read the musl version and its security patches
+        id: musl
+        run: |
+          version=$(nix eval --raw .#nails.libc.version --option accept-flake-config false)
+          patches=$(nix eval --raw .#nails.libc.patches --option accept-flake-config false \
+            --apply 'ps: builtins.concatStringsSep "\n" (map (p: baseNameOf (toString p)) ps)')
+          cves=$(grep -oE 'CVE-[0-9]{4}-[0-9]{4,}' <<< "$patches" | sort -u | paste -sd ' ' -) || true
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "cves=$cves" >> "$GITHUB_OUTPUT"
+          echo "musl $version, patched for: ${cves:-nothing}"
 
       # No arguments: rustup installs the channel from rust-toolchain.toml.
       - name: Install Rust toolchain
@@ -234,11 +225,13 @@ jobs:
 
       # Only the nails binary, resolved for the release target without
       # build-time dependencies; the commit time keeps the file reproducible.
+      # With it, cargo-cyclonedx leaves out its random serial number, which
+      # actions/attest requires; sbom-libc sets one derived from the release.
       - name: Generate the SBOM
         env:
           VERSION: ${{ needs.version.outputs.version }}
-          MUSL_VERSION: ${{ needs.build.outputs.musl-version }}
-          MUSL_CVES: ${{ needs.build.outputs.musl-cves }}
+          MUSL_VERSION: ${{ steps.musl.outputs.version }}
+          MUSL_CVES: ${{ steps.musl.outputs.cves }}
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           mkdir "$RUNNER_TEMP/release-sbom"
@@ -250,12 +243,19 @@ jobs:
           for cve in $MUSL_CVES; do cve_args+=(--musl-cve "$cve"); done
           python3 -m ci.release sbom-libc --sbom nails-cli/nails_bin.cdx.json \
             --version "$VERSION" --musl-version "$MUSL_VERSION" "${cve_args[@]}" \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" \
             --output "$RUNNER_TEMP/release-sbom/sbom.cdx.json"
           # Scanners ignore the SBOM's record of the patches; this document
           # tells them (grype --vex) that the patched CVEs are fixed.
           python3 -m ci.release musl-vex --musl-version "$MUSL_VERSION" "${cve_args[@]}" \
             --repo "$GITHUB_REPOSITORY" --tag "$TAG" --epoch "$(git log -1 --format=%ct)" \
             --output "$RUNNER_TEMP/release-sbom/musl.openvex.json"
+
+      # actions/attest takes the SBOM for CycloneDX only with a bomFormat, a
+      # serialNumber and a specVersion; without one, the attest job fails
+      # after it has signed the build provenance.
+      - name: Check that actions/attest accepts the SBOM
+        run: python3 -m ci.release sbom-check --sbom "$RUNNER_TEMP/release-sbom/sbom.cdx.json"
 
       - name: Validate the SBOM
         run: |
@@ -269,6 +269,23 @@ jobs:
           path: ${{ runner.temp }}/release-sbom/
           if-no-files-found: error
           retention-days: 14
+
+  # GitHub refuses a call that grants less than any job of the called workflow
+  # declares. e2e.yml's report-status job declares issues: write, but it runs
+  # only for main and the nightly schedule, never for a release.
+  e2e:
+    name: E2E
+    needs: [version, sbom]
+    permissions:
+      contents: read
+      issues: write # declared by e2e.yml's report-status job, unused here
+    uses: ./.github/workflows/e2e.yml
+    with:
+      mode: all
+      runner: ${{ inputs.e2e-runner || '"ubuntu-26.04"' }}
+      max-shards: ${{ inputs.e2e-max-shards || 10 }}
+    secrets:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
   # Only a bundle that passed every gate is attested: an attestation is a
   # public statement, and it outlives a deleted draft.

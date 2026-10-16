@@ -1,8 +1,8 @@
 # Releasing NAILS
 
 A release is one annotated `v*` tag on `main`. Pushing it starts `.github/workflows/release.yml`,
-which checks the tag, builds the bundle from source, rebuilds it on a fresh runner, runs the whole
-E2E suite, generates the SBOM, attests the files and drafts the GitHub release. Publishing the
+which checks the tag, builds the bundle from source, rebuilds it on a fresh runner, generates the
+SBOM, runs the whole E2E suite, attests the files and drafts the GitHub release. Publishing the
 draft is the only manual step after the tag. [docs/ci.md](docs/ci.md#release-workflow) describes
 the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on the result.
 
@@ -50,8 +50,9 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
 
    A lightweight tag fails the first job.
 7. **Watch the run.** The first job fails within seconds when the tag, `Cargo.lock` or the
-   changelog section is wrong; the whole run takes about as long as the E2E suite. A failed run
-   opens or comments on the `CI red: Release` issue.
+   changelog section is wrong, and the `sbom` job within minutes, before the E2E suite starts,
+   when `actions/attest` would refuse the SBOM; the whole run takes about as long as the E2E
+   suite. A failed run opens or comments on the `CI red: Release` issue.
 8. **Review the draft** on the Releases page: the notes, and the five assets (the archive,
    `nails`, `checksums.txt`, `sbom.cdx.json`, `musl.openvex.json`). Drafts are visible to maintainers only. Download
    `nails` and `checksums.txt` from the draft and follow
