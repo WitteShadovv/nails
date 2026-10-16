@@ -79,3 +79,30 @@ jobs:
         uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
           sarif_file: results.sarif
+
+  # Runs on main are unattended: a red one opens or comments on the
+  # 'CI red: Scorecard' issue, and the next green run closes it. A dispatch
+  # from another branch fails by design and reports nothing. A rejected result
+  # leaves the run green, so it never reaches the issue. The results API checks
+  # this job only for id-token: write, which it must never get.
+  report-status:
+    name: Report status
+    needs: [scorecard]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
