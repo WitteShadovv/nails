@@ -379,6 +379,26 @@ pub const CATALOG: &[ResidueClass] = &[
         conclusion: None,
     },
     ResidueClass {
+        id: "decoy-mount-table",
+        title: "The decoy's mounts made again by the way back",
+        kind: ResidueKind::Session,
+        channel: Channel::Mechanism(
+            "the mount table after the way back: the decoy's mounts made again with new mount IDs and peer groups, its root and its initrd's mounts (the store bind) included; /run/credentials a mount of its own; the boot's mounts below /run gone",
+        ),
+        platforms: Platforms::All,
+        risk: "Anyone with a shell sees with findmnt that the decoy's root and the mounts its initrd made (such as the store bind) were made again after the boot, where a plain soft-reboot keeps them. A mount made after the boot by hand or by a service comes back as well, where a plain soft-reboot unmounts it. A decoy mount the way back cannot make again (a filesystem that another mount covers at a place the session carries, NixOS's /etc overlay) is missing until it is mounted again.",
+        preflight: Probe::None(
+            "the mount table is kernel state; activation warns about a decoy mount the way back cannot make again at a place the session carries, and about one a plain soft-reboot keeps",
+        ),
+        preflight_blocks: false,
+        verify: Probe::None("RAM only, gone at power-off"),
+        mitigation: "The way back makes every decoy mount it can take from the decoy root or a filesystem the session carried again as the decoy had it when the entry began (its filesystem, the directory of it the mount shows, its place in a stack, its options), NixOS's read-only store bind included, and gives the decoy its utab lines back with them. Power off after the session.",
+        doc_anchor: "operator-guide.md#how-it-works",
+        e2e: E2e::Tests(&["session-decoy-mount-table", "session-emergency"]),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
         id: "firmware-state",
         title: "EFI NVRAM, RTC and firmware pstore",
         kind: ResidueKind::Session,
