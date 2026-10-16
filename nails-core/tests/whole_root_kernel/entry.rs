@@ -10,10 +10,11 @@ use nails_core::session::layout::Paths;
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs, skip_host};
 use nails_core::{NailsError, nixos::NixOSBuilder};
-use nails_teardown::mountinfo::{read_mountinfo, top_mount_at};
+use nails_teardown::mountinfo::{MountEntry, parse_mountinfo, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::kernel_helpers::{self, KernelSetting};
 use nails_teardown::whole_root::plan::{
-    CarriedMount, DecoyRoot, Direction, Plan, PolicyMountKind, SNAPSHOT_NAME, unix_now,
+    CarriedMount, DecoyRoot, Direction, Plan, PolicyMountKind, SNAPSHOT_NAME, UTAB_MOUNTS_NAME,
+    unix_now,
 };
 use nails_teardown::whole_root::transition::{self, DROPIN_DIR, DROPIN_NAME, Env, Outcome};
 use nails_teardown::whole_root::{carry, nextroot, runtime_units};
@@ -324,8 +325,10 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
             "/home/alice",
             "/bin/sh",
         ));
+        let decoy_root = seed_utab(&world);
         let entry = entry::prepare(&paths, &inputs, &host).expect("the entry");
         let nextroot = paths.nextroot();
+        assert_named_mount(&paths, &decoy_root);
         // The drop-in is live before anything is mounted at the next root,
         // so an activation killed during the build leaves nothing a later
         // soft-reboot would enter.
@@ -435,7 +438,11 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
             .expect("the hidden tmpfs is mounted");
         assert_eq!(plan.hidden_dev.as_deref(), Some(hidden_dev.as_str()));
 
-        // The transition consumes it: masks in place, entry recorded.
+        // A line for a mount the switch carries: the next root's /home.
+        let carried = add_utab_line(&world, &nextroot.join("home"), "/home");
+
+        // The transition consumes it: masks in place, entry recorded, and of
+        // utab only the line of the mount the switch carries is left.
         let env = Env {
             run: paths.run.clone(),
             nextroot: nextroot.clone(),
@@ -454,8 +461,60 @@ fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
                 .exists()
         );
         assert!(Plan::load(&paths.plan()).unwrap().entered_at.is_some());
+        assert_utab(&world, &carried);
         entry::rollback(&paths);
     });
+}
+
+/// libmount's utab line for `mount` at `target`, with `options`.
+fn utab_line(mount: &MountEntry, target: &str, options: &str) -> String {
+    format!(
+        "ID={} SRC={} TARGET={target} ROOT={} OPTS={options}\n",
+        mount.mount_id,
+        mount.source.display(),
+        mount.root.display()
+    )
+}
+
+/// Make the decoy's utab hold libmount's line for the decoy root, as an
+/// initrd writes it, under the root's real mount ID; returns that mount.
+fn seed_utab(world: &World) -> MountEntry {
+    let root = top_mount_at(&read_mountinfo().unwrap(), world.decoy.path())
+        .unwrap()
+        .clone();
+    std::fs::write(
+        world.run.path().join("mount/utab"),
+        utab_line(&root, "/sysroot", "x-initrd.mount"),
+    )
+    .unwrap();
+    root
+}
+
+/// Add to the decoy's utab a line for the mount at `path`, as libmount
+/// writes it for `target` inside the next root; returns the line.
+fn add_utab_line(world: &World, path: &Path, target: &str) -> String {
+    let mount = top_mount_at(&read_mountinfo().unwrap(), path)
+        .unwrap()
+        .clone();
+    let line = utab_line(&mount, target, "X-kept");
+    let utab = world.run.path().join("mount/utab");
+    let mut text = std::fs::read_to_string(&utab).unwrap();
+    text.push_str(&line);
+    std::fs::write(&utab, text).unwrap();
+    line
+}
+
+/// Beside its copy of utab, the entry keeps the mount table line of each
+/// mount the copy names, here `mount`: the way back finds it by that line.
+fn assert_named_mount(paths: &Paths, mount: &MountEntry) {
+    let named = std::fs::read_to_string(paths.runtime().join(UTAB_MOUNTS_NAME)).unwrap();
+    assert_eq!(parse_mountinfo(&named), std::slice::from_ref(mount));
+}
+
+/// The decoy's utab holds `expected` and nothing else.
+fn assert_utab(world: &World, expected: &str) {
+    let text = std::fs::read_to_string(world.run.path().join("mount/utab")).unwrap();
+    assert_eq!(text, expected);
 }
 
 /// The mount points outside `inside`, sorted, a stacked mount once per
