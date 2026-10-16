@@ -110,7 +110,8 @@ mod kernel_tests {
                     system: None,
                 },
                 policy_mounts: Vec::new(),
-                masks: vec!["dev-vdb1.swap".to_string()],
+                // Decoy swap, and an automount the policy masks.
+                masks: vec!["dev-vdb1.swap".to_string(), "boot.automount".to_string()],
                 boot_masks: Vec::new(),
                 session_units: Vec::new(),
                 backend: Vec::new(),
@@ -272,8 +273,10 @@ mod kernel_tests {
                 .unwrap();
             assert_eq!(transition::run(&world.env()), Outcome::Entered);
             assert!(!mounted_below(&world.nextroot()).is_empty());
-            let link = world.run.path().join("systemd/system/dev-vdb1.swap");
-            assert_eq!(std::fs::read_link(link).unwrap(), Path::new("/dev/null"));
+            for unit in ["dev-vdb1.swap", "boot.automount"] {
+                let link = world.run.path().join("systemd/system").join(unit);
+                assert_eq!(std::fs::read_link(link).unwrap(), Path::new("/dev/null"));
+            }
             nextroot::detach_tree(&world.nextroot());
         });
     }

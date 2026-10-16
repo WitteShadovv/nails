@@ -29,9 +29,18 @@ pub const RUNTIME_UNIT_DIR: &str = "systemd/system";
 /// hides a unit installed below `/usr` (or generated from fstab).
 pub const RUNTIME_CONTROL_DIR: &str = "systemd/system.control";
 
-/// The unit suffixes a runtime unit may have.
+/// The unit suffixes a runtime unit or mask may have. The fstab policy masks
+/// an automount with its mount.
 const UNIT_SUFFIXES: &[&str] = &[
-    ".service", ".target", ".socket", ".timer", ".path", ".mount", ".swap", ".scope",
+    ".service",
+    ".target",
+    ".socket",
+    ".timer",
+    ".path",
+    ".mount",
+    ".automount",
+    ".swap",
+    ".scope",
 ];
 
 /// One unit file to install in `/run/systemd/system`.
@@ -254,8 +263,19 @@ mod tests {
     #[test]
     fn masks_point_at_dev_null() {
         let run = tempfile::tempdir().unwrap();
-        mask_units(run.path(), &["dev-vda3.swap".to_string()]).unwrap();
-        let link = run.path().join(RUNTIME_UNIT_DIR).join("dev-vda3.swap");
-        assert_eq!(std::fs::read_link(link).unwrap(), Path::new("/dev/null"));
+        // A swap, and a filesystem the policy masks with its automount.
+        let units = ["dev-vda3.swap", "data.mount", "data.automount"].map(String::from);
+        mask_units(run.path(), &units).unwrap();
+        for unit in &units {
+            let link = run.path().join(RUNTIME_UNIT_DIR).join(unit);
+            assert_eq!(std::fs::read_link(link).unwrap(), Path::new("/dev/null"));
+        }
+        assert!(remove_masks(run.path(), &units, &[], &Snapshot::default()));
+        assert!(
+            std::fs::read_dir(run.path().join(RUNTIME_UNIT_DIR))
+                .unwrap()
+                .next()
+                .is_none()
+        );
     }
 }
