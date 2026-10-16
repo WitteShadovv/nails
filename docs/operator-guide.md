@@ -327,9 +327,19 @@ hidden session like any system configuration.
 
 **The way back.** `nails deactivate`, in the hidden session, mounts the decoy
 root at `/run/nextroot` (the same filesystem the overlay reads as its lower, so
-mounting it writes nothing), marks the hidden backend's device-mapper stack for
-deferred removal, records the state as inactive and soft-reboots. The orderly
-shutdown stops every hidden program. The last step before the switch:
+mounting it writes nothing) and makes the decoy's other mounts again below it,
+as the decoy had them when the entry began: every one it can take from the
+decoy root or a filesystem the session carried (the filesystems its fstab
+names, the RAM filesystems its initrd mounted, binds such as the read-only
+bind NixOS puts over a `/nix/store` on the root filesystem, and mounts stacked
+at one place), each with its own options, in the order the decoy mounted them.
+A mount the entry recorded but the way back cannot make again from what it
+holds (the hidden session unmounted a carried filesystem, or mounted something
+on one) stops the way back instead of being left out or replaced: `deactivate`
+then refuses, and `emergency` powers off. It then marks the hidden backend's
+device-mapper stack for deferred removal, records the state as inactive and
+soft-reboots. The orderly shutdown stops every hidden program. The last step
+before the switch:
 
 - scrubs the top of `/run`: it judges the entries two levels deep (three
   below `/run/systemd`), so a daemon's state deeper down stays, such as
@@ -350,12 +360,12 @@ shutdown stops every hidden program. The last step before the switch:
 - gives the kernel back the decoy's module loader, hotplug helper and firmware
   path, which a hidden NixOS activation pointed at its own store;
 - rewrites libmount's `utab` to the lines the decoy had at entry, each under
-  the kernel mount ID of the mount now in its mount's place: the decoy root
-  and the filesystems the session carried come back as new mounts, and
-  libmount joins a line to the mount with its ID, so it never joins one to
-  another mount that got the old ID. None of the hidden session's lines stay,
-  and a line of the decoy's that names no mount the way back restores is not
-  given back;
+  the kernel mount ID of the mount the way back made in its mount's place,
+  also where mounts are stacked at one place: the decoy's mounts come back as
+  new mounts, and libmount joins a line to the mount with its ID, so it never
+  joins one to another mount that got the old ID. None of the hidden session's
+  lines stay, and a line of the decoy's that names no mount the way back
+  restores is not given back;
 - writes journald's kernel-message cursor, so the decoy journal imports no
   kernel record of the hidden session.
 
@@ -396,15 +406,31 @@ and, on a volatile decoy, a journal that starts late:
   hidden build's progress, its shutdown) are gone with the hidden ones, and the
   kernel's boot messages are not read in again. `uptime` and `dmesg` still go
   back to the boot.
-- the decoy's mounts, where a plain soft-reboot keeps the mounts of the boot:
-  every one of them has a new mount ID (`findmnt -o ID`), `/run/credentials`
-  is a mount of its own, and a mount that the way back does not make again is
-  gone until the next boot. The way back mounts the decoy root and the
-  filesystems the session carried, one mount at each of their mount points: a
-  mount stacked under another at the same place does not come back, and
-  neither does a bind the boot made outside the fstab, such as the read-only
-  bind NixOS puts over a `/nix/store` that lives on the root filesystem, which
-  leaves that store writable until the next boot.
+- the decoy's root and the mounts its initrd made (NixOS's store bind) as new
+  mounts, where a plain soft-reboot keeps them; it unmounts the decoy's other
+  mounts and mounts again what its fstab and units name, under new mount IDs
+  as well. The way back makes every decoy mount it can take from the decoy
+  root or a filesystem the session carried again as the decoy had it when the
+  entry began (its filesystem, the directory of it the mount shows, its place
+  in a stack, its options), NixOS's read-only store included, and PID 1 brings
+  the API filesystems below `/dev`, `/proc` and `/sys` along itself. Each has a
+  new mount ID (`findmnt -o ID`) and, once the decoy's PID 1 has marked the
+  tree shared again, a peer group of its own: two mounts that propagated to
+  each other (a bind made after the boot and its source) no longer do. Such a
+  mount comes back also when it was made after the boot, by hand or by a
+  service, where a plain soft-reboot unmounts it; a service that makes one at
+  its start without looking whether it is there leaves it twice.
+  `/run/credentials` is a mount of its own, and the mounts the boot made below
+  `/run` (NixOS's `/run/keys`) are gone, as after a plain soft-reboot. A mount
+  the way back does not make again is gone until it is mounted again, as
+  after a plain soft-reboot: a mount of a filesystem the session does not
+  carry (one the decoy's units mount outside its fstab, such as Debian's
+  `/tmp` or a snap, an overlay or FUSE mount, a disk mounted by hand) and a
+  filesystem on an automount point. The decoy's start mounts again what its
+  fstab and units name and sets up its automounts again. `activate` warns
+  about the others: one at a place the session carries (a filesystem another
+  mount covers there, say), and one that a plain soft-reboot keeps (`/usr`,
+  `/etc`, one marked `x-initrd.mount`), such as NixOS's `/etc` overlay.
 
 On a persistent decoy journal (which the decoy requirements forbid), the decoy's
 own shutdown and start lines appear under one boot ID, together with the kernel's

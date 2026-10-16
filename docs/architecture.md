@@ -210,8 +210,11 @@ An activation moves through these layers; each names its modules and crates:
   the binary to `/run/overlay-runtime` with a copy of libmount's `utab` and the
   mount table lines of the mounts it names, mounts the root overlay at
   `/run/nextroot`, builds and activates the hidden NixOS system there, applies
-  the fstab policy, checks the init and installs the transition drop-in. Any
-  failure undoes all of it, so a populated `/run/nextroot` is never left behind.
+  the fstab policy, carries the decoy filesystems the way back needs onto the
+  hidden volume, records the decoy's mounts for the way back
+  (`session::way_back`), checks the init and installs the transition drop-in.
+  Any failure undoes all of it, so a populated `/run/nextroot` is never left
+  behind.
   How a path under the hidden root is resolved without following a planted link
   is described in `nails_base::filesystem::safe_path`; why the overlay covers
   the whole root and is entered with a soft-reboot is explained
@@ -232,19 +235,35 @@ An activation moves through these layers; each names its modules and crates:
   line would lend its options to an unrelated mount. An initrd's
   `x-initrd.mount` takes a mount out of systemd's shutdown order; when that
   happens while systemd mounts or unmounts it, PID 1 never runs the job that
-  waited for that mount, and the switch or the power-off hangs. The decoy root
-  and the filesystems the session carried come back as new mounts, so each of
-  the decoy's lines that names an ID takes the ID of the mount now where its
-  mount was at entry; a line that names no mount the way back restores is not
-  given back. The transition writes `utab` as libmount does, through a new
-  file renamed over the old one, under libmount's lock where its lock file
-  exists. An unarmed populated `/run/nextroot` is detached instead.
+  waited for that mount, and the switch or the power-off hangs. The decoy's
+  mounts come back as new mounts, and the way back records the ID of the
+  mount it made in place of each, so each of the decoy's lines that names an
+  ID takes the ID of the mount made where its mount was at entry, also where
+  mounts are stacked at one place; a line that names no mount the way back
+  restores is not given back. The transition writes `utab` as libmount does,
+  through a new file renamed over the old one, under libmount's lock where its
+  lock file exists. An unarmed populated `/run/nextroot` is detached instead.
 - **Way back and emergency** (`nails-session`'s `session::leave`, `nails-teardown`'s
   `whole_root::ret` and `whole_root::emergency`) mount the decoy root at
-  `/run/nextroot`, mark the backend for deferred removal and enqueue the
-  soft-reboot; the emergency kills every hidden cgroup first. Emergency runs
-  the hot path from `main` before clap, the configuration and tracing, so a
-  failed hidden volume or an unreadable configuration cannot stop it.
+  `/run/nextroot`, make the decoy's other mounts again below it
+  (`whole_root::decoy_mounts`), mark the backend for deferred removal and
+  enqueue the soft-reboot; the emergency kills every hidden cgroup first. The
+  entry recorded every mount of the decoy's tree (all but the API filesystems,
+  what is below `/run` and the hidden volume) that the way back can take from
+  the decoy root or a filesystem the session carried: the fstab's filesystems,
+  the RAM filesystems an initrd mounted, binds such as NixOS's read-only store
+  and mounts stacked at one place. It reported the others, among them a bind
+  of a deleted file and a filesystem on an automount point, which the decoy's
+  start sets up again. The way back first looks up the directory of each
+  recorded mount inside that one mount, while nothing is mounted on it yet,
+  then makes each again in the decoy's order, a bind of that directory with
+  its per-mount options, before the decoy's userspace starts; a recorded mount
+  it cannot make that way (a carried filesystem the hidden session let go)
+  fails the way back rather than being left out or replaced. Propagation needs
+  no record: PID 1 makes every mount private before it switches root, and the
+  decoy's PID 1 marks the tree shared again. Emergency runs the hot path from
+  `main` before clap, the configuration and tracing, so a failed hidden volume
+  or an unreadable configuration cannot stop it.
 - **Verification** (`verify`, `nails-forensics`) scans for known residue, live or offline against
   a decoy image.
 
