@@ -18,15 +18,20 @@
 #      The boot-loader units are masked in the hidden session only, and the
 #      kernel log names no session drop-in and no failed unmount of the hidden
 #      volume. On either side of each switch, every line of libmount's utab
-#      that names a mount ID names a live mount with the line's source, and
-#      every line without one that libmount can join names a live mount at its
-#      target with its source and root: the kernel reuses the IDs of the
-#      mounts a switch leaves behind, and a stale x-initrd.mount line would
-#      take a reused or a new mount out of the shutdown order. After the way
-#      back libmount marks the same decoy mounts x-initrd.mount as at boot:
-#      the decoy's root and the filesystems the session carried come back as
-#      new mounts, and the decoy's initrd lines follow them, so its next
-#      shutdown leaves them alone as a fresh boot's does.
+#      that libmount joins to a mount names the mount it was written for: by
+#      its mount ID, a live mount with the line's source and root at the
+#      line's target (an initrd's target seen from the root it switched to);
+#      without an ID, a live mount at its target with its source and root.
+#      The kernel reuses the IDs of the mounts a switch leaves behind, and a
+#      stale x-initrd.mount line would take a reused or a new mount out of the
+#      shutdown order. A stale line without an ID for /run/wrappers, added on
+#      the decoy before the first entry, is gone in the hidden session, whose
+#      start would have joined it to its own /run/wrappers. After the way
+#      back the decoy has its own lines again: each line it had before the
+#      entry whose mount came back, under that mount's new ID, and besides
+#      those only lines for filesystems it mounted itself after the switch.
+#      libmount marks the same mount points x-initrd.mount as at boot, so the
+#      decoy's next shutdown leaves them alone as a fresh boot's does.
 #   3. A scratch disk mounted over the hidden root in the session: the
 #      session watcher, polling every second with its automatic emergency on,
 #      keeps running past its debounce without writing a probe or ending the
@@ -87,7 +92,7 @@ in
   testScript = _: ''
     import secrets
 
-    from nails_e2e import session
+    from nails_e2e import session, utab
 
     ${testHelpers.canonicalActivateFn}
 
@@ -116,29 +121,22 @@ in
             assert rc != 0, f"{where}: {command}:\n{out}"
 
 
+    #: A stale utab line without an ID: libmount joins it to whatever is
+    #: mounted at its target with its source and root, also a mount made later.
+    STALE_WRAPPERS = "SRC=tmpfs TARGET=/run/wrappers ROOT=/ OPTS=x-initrd.mount"
+
+
+    def utab_and_mounts():
+        return (
+            machine.succeed("cat /run/mount/utab 2>/dev/null || true"),
+            machine.succeed("cat /proc/self/mountinfo"),
+        )
+
+
     def assert_utab_names_live_mounts(where):
-        # libmount joins a utab line to the mount with the line's mount ID, or,
-        # without one, to the mount at the line's target with its source and
-        # root; a line without a source, target or root joins no mount.
-        live = {}
-        for line in machine.succeed("cat /proc/self/mountinfo").splitlines():
-            fields = line.split(" ")
-            sep = fields.index("-")
-            live[fields[0]] = (fields[4], fields[sep + 2], fields[3])
-        utab = machine.succeed("cat /run/mount/utab 2>/dev/null || true")
-        stale = []
-        for line in utab.splitlines():
-            values = dict(f.split("=", 1) for f in line.split(" ") if "=" in f)
-            if "ID" in values:
-                _, source, root = live.get(values["ID"], (None, None, None))
-                named = (values.get("SRC", source), values.get("ROOT", root))
-                if source is None or named != (source, root):
-                    stale.append(line)
-            elif all(key in values for key in ("SRC", "TARGET", "ROOT")):
-                named = (values["TARGET"], values["SRC"], values["ROOT"])
-                if named not in live.values():
-                    stale.append(line)
-        assert not stale, f"{where}: utab lines naming no live mount: {stale}"
+        text, mountinfo = utab_and_mounts()
+        wrong = utab.wrong_lines(text, mountinfo)
+        assert not wrong, f"{where}: utab lines naming no live mount or another: {wrong}"
 
 
     def initrd_mounts():
@@ -194,6 +192,9 @@ in
     decoy_initrd_mounts = initrd_mounts()
     machine.log(f"initrd mounts on the decoy: {sorted(decoy_initrd_mounts)}")
     assert "/" in decoy_initrd_mounts, decoy_initrd_mounts
+    decoy_utab, decoy_mountinfo = utab_and_mounts()
+    machine.log(f"utab on the decoy:\n{decoy_utab}")
+    machine.succeed(f"echo '{STALE_WRAPPERS}' >> /run/mount/utab")
 
     activation_token = "act-" + secrets.token_hex(6)
     with subtest("activation typed on the decoy tty never reaches its history"):
@@ -218,6 +219,8 @@ in
                 assert state == "masked", f"{unit} in the hidden session: {state}"
         assert_quiet_kernel_log("the hidden session")
         assert_utab_names_live_mounts("the hidden session")
+        hidden_utab, _ = utab_and_mounts()
+        assert STALE_WRAPPERS not in hidden_utab.splitlines(), hidden_utab
         # The hidden copies that the emergency below kills.
         machine.wait_for_unit("avahi-daemon.service")
         machine.wait_until_succeeds("test -s /run/pidfile-probe/pid", timeout=30)
@@ -258,6 +261,14 @@ in
         assert load_states() == decoy_boot_writers, "the decoy's own units again"
         assert_quiet_kernel_log("after the emergency")
         assert_utab_names_live_mounts("after the emergency")
+        back_utab, back_mountinfo = utab_and_mounts()
+        foreign, lost = utab.not_given_back(
+            decoy_utab, decoy_mountinfo, back_utab, back_mountinfo
+        )
+        assert not foreign and not lost, (
+            f"the decoy's utab after the way back:\n{back_utab}\n"
+            f"lines not its own: {foreign}; its lines not given back: {lost}"
+        )
         assert initrd_mounts() == decoy_initrd_mounts, sorted(initrd_mounts())
 
     with subtest("nothing typed in either shell reached the decoy history"):
