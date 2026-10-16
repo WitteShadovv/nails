@@ -2,8 +2,8 @@ name: Fuzz
 
 # Coverage-guided fuzzing of the parsers that read text and data NAILS does
 # not control, with ClusterFuzzLite: .clusterfuzzlite/ builds the cargo-fuzz
-# targets in fuzz/ with libFuzzer and the address sanitizer, and the actions
-# run them. One workflow serves three lanes:
+# targets in fuzz/ with libFuzzer and the address sanitizer, and
+# ClusterFuzzLite's images run them. One workflow serves three lanes:
 #
 #   pull request to main  fuzz: five minutes over every target, from the
 #                         stored corpus; a crash fails the job and is
@@ -17,6 +17,11 @@ name: Fuzz
 # job's token. No other repository and no secret is involved, and a pull
 # request only reads it. docs/ci.md#fuzzing describes the lanes, and
 # docs/testing-strategy.md#fuzzing how to run a target locally.
+#
+# The steps run the images of ClusterFuzzLite's build_fuzzers and run_fuzzers
+# actions (its v1 tag) pinned by digest, with the environment those actions
+# set from their inputs. Dependabot does not read docker:// references, so the
+# digests are bumped by hand (docs/ci.md#fuzzing).
 
 on:
   pull_request:
@@ -66,21 +71,26 @@ jobs:
     steps:
       - name: Build the fuzz targets
         id: build
-        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
-        with:
-          language: rust
-          sanitizer: address
-          github-token: ${{ github.token }}
+        uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-build-fuzzers:v1@sha256:9e71cd3238c6fd807012039c4cfb32a9657bc58641e4f15b88cb76599c6e8d30
+        env:
+          CFL_PLATFORM: github
+          LANGUAGE: rust
+          SANITIZER: address
+          LOW_DISK_SPACE: "True"
+          GITHUB_TOKEN: ${{ github.token }}
 
       - name: Fuzz the change
-        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
-        with:
-          github-token: ${{ github.token }}
-          mode: code-change
-          sanitizer: address
-          fuzz-seconds: 300
-          parallel-fuzzing: true
-          output-sarif: true
+        uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-run-fuzzers:v1@sha256:8a49dc0608aeb210c44e276614702de4cd876928b7ee782f10be0f23580931f6
+        env:
+          CFL_PLATFORM: github
+          LANGUAGE: rust
+          SANITIZER: address
+          LOW_DISK_SPACE: "True"
+          GITHUB_TOKEN: ${{ github.token }}
+          MODE: code-change
+          FUZZ_SECONDS: "300"
+          PARALLEL_FUZZING: "true"
+          OUTPUT_SARIF: "true"
 
       # The read-only token of a fork's pull request cannot upload.
       - name: Upload the results to code scanning
@@ -104,20 +114,25 @@ jobs:
     steps:
       - name: Build the fuzz targets
         id: build
-        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
-        with:
-          language: rust
-          sanitizer: address
+        uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-build-fuzzers:v1@sha256:9e71cd3238c6fd807012039c4cfb32a9657bc58641e4f15b88cb76599c6e8d30
+        env:
+          CFL_PLATFORM: github
+          LANGUAGE: rust
+          SANITIZER: address
+          LOW_DISK_SPACE: "True"
 
       - name: Fuzz every target
-        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
-        with:
-          github-token: ${{ github.token }}
-          mode: batch
-          sanitizer: address
-          fuzz-seconds: 3600
-          parallel-fuzzing: true
-          output-sarif: true
+        uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-run-fuzzers:v1@sha256:8a49dc0608aeb210c44e276614702de4cd876928b7ee782f10be0f23580931f6
+        env:
+          CFL_PLATFORM: github
+          LANGUAGE: rust
+          SANITIZER: address
+          LOW_DISK_SPACE: "True"
+          GITHUB_TOKEN: ${{ github.token }}
+          MODE: batch
+          FUZZ_SECONDS: "3600"
+          PARALLEL_FUZZING: "true"
+          OUTPUT_SARIF: "true"
 
       - name: Upload the results to code scanning
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
@@ -140,18 +155,23 @@ jobs:
 
     steps:
       - name: Build the fuzz targets
-        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
-        with:
-          language: rust
-          sanitizer: address
+        uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-build-fuzzers:v1@sha256:9e71cd3238c6fd807012039c4cfb32a9657bc58641e4f15b88cb76599c6e8d30
+        env:
+          CFL_PLATFORM: github
+          LANGUAGE: rust
+          SANITIZER: address
+          LOW_DISK_SPACE: "True"
 
       - name: Prune the corpus
-        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
-        with:
-          github-token: ${{ github.token }}
-          mode: prune
-          sanitizer: address
-          fuzz-seconds: 600
+        uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-run-fuzzers:v1@sha256:8a49dc0608aeb210c44e276614702de4cd876928b7ee782f10be0f23580931f6
+        env:
+          CFL_PLATFORM: github
+          LANGUAGE: rust
+          SANITIZER: address
+          LOW_DISK_SPACE: "True"
+          GITHUB_TOKEN: ${{ github.token }}
+          MODE: prune
+          FUZZ_SECONDS: "600"
 
   # Scheduled and dispatched runs are unattended: a red one opens or comments
   # on the 'CI red: Fuzz' issue. Only a run of both jobs (the weekly one)
