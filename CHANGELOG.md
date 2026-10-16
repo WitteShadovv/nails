@@ -121,8 +121,18 @@ config and CLI surfaces; there are no compatibility shims.
   of a decoy service wrote again; puts the decoy's name-server records below `/run/resolvconf` back
   as the decoy left them, so the hidden session's name servers and search domains (a VPN's, say) do
   not reach `/etc/resolv.conf` on the decoy disk; removes the session's drop-ins by name, leaving
-  the decoy's own; restores libmount's `utab`; writes journald's kmsg cursor so the decoy journal
-  imports no hidden kernel record; and resets units the session left failed. Every way back to the
+  the decoy's own; resets units the session left failed; and, once the hidden units have stopped,
+  gives the decoy's libmount `utab` lines back under the new mount IDs of the mounts the way back
+  restores, without the hidden session's lines, and writes journald's kmsg cursor so the decoy
+  journal imports no hidden kernel record. Each switch keeps only the `utab` lines whose mount it
+  carries, by the line's mount ID or, for a line without one, by its path, source and root, and
+  writes the file as libmount does (a new file renamed over the old one, under libmount's lock): the
+  kernel hands the IDs of the mounts a switch leaves behind to later mounts, and a stale line would
+  lend its options to one of those or to a new mount at its path; an `x-initrd.mount` lent that way
+  could hang the next soft-reboot or power-off. After a session the decoy's root and the filesystems
+  the session carried have their `utab` lines back, so those that the decoy's initrd marked
+  `x-initrd.mount` are left to the final unmount at its next shutdown, as after a boot; a decoy line
+  that names no mount the way back restores is not given back. Every way back to the
   decoy (the return, an emergency, an entry rolled back or recovered, a leftover next root disarmed
   at a reboot) also writes back the kernel's module loader, hotplug and firmware paths, which every
   entry records before anything runs and which a NixOS activation in the session points at the
@@ -426,6 +436,16 @@ config and CLI surfaces; there are no compatibility shims.
   brought up and delete the links you created before deactivating, or end with
   `deactivate --poweroff`; end a session that used the network-identity snippet with
   `deactivate --poweroff` (or `emergency --poweroff`).
+
+### Known issues
+
+- On a NixOS decoy whose `/nix/store` is not a filesystem of its own in its fstab, as on a usual
+  install, the read-only bind that the boot puts over the store does not come back after a
+  session: the store stays writable until the next boot.
+- A decoy mount stacked under one that the session carried does not come back after a session
+  either: the way back mounts the decoy root again and binds back only the top mount of each
+  filesystem the session carried, one at each mount point. Where either matters, end the session
+  with `deactivate --poweroff`; the next boot makes both mounts again.
 
 ## [0.2.0] - 2026-05-08
 
