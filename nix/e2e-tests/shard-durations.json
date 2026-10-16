@@ -48,6 +48,7 @@
   "session-lifecycle": 480,
   "session-nixos-hidden-system": 700,
   "session-nixos-store-gc": 2400,
+  "session-readme-captures": 150,
   "session-sleep-guard": 480,
   "shell-history-fish": 128,
   "shell-history-zsh": 115,

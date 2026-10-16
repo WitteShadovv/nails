@@ -487,6 +487,12 @@ soft-reboots with `py/nails_e2e/session.py`:
   disk hot-plugged during the session made read-only by the udev rule alone,
   every write failing, and both disks writable again and unchanged after the
   way back;
+- `session-readme-captures`: the source of the README's `check`, `activate`
+  and `status --json` captures (`docs/assets/screenshots/`). The standard VM
+  is set up as `docs/decoy-requirements.md` recommends for a clean decoy (a
+  closed lid locks, systemd-coredump keeps no core), and the binary sits on the
+  hidden volume and runs by its full path through sudo, as the README's quick
+  start shows; `check` and `activate` print no warning there;
 - `session-sleep-guard`: each `sleep_policy.mode` against a virtual lid switch
   that logind watches like a laptop's: with `warn` a closed lid suspends the
   session, with `block` the guard holds sleep, idle and lid-switch inhibitors
