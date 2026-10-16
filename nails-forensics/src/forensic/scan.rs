@@ -127,7 +127,8 @@ impl TokenScan {
         hits
     }
 
-    /// Scan every data extent of `source`.
+    /// Scan every data extent of `source`, each with the bytes of the holes
+    /// next to it that a token reaching into them would cover.
     ///
     /// # Errors
     ///
@@ -137,7 +138,7 @@ impl TokenScan {
         let mut buffer = vec![0u8; self.window + carry_len];
         let mut counts = vec![0usize; self.needles.len()];
         let mut outcome = ScanOutcome::default();
-        let extents = source.data_extents();
+        let extents = widened(source.data_extents(), carry_len as u64, source.size());
         let covered: u64 = extents.iter().map(|(start, end)| end - start).sum();
         outcome.bytes_skipped = source.size().saturating_sub(covered);
 
@@ -209,6 +210,24 @@ impl TokenScan {
             }
         }
     }
+}
+
+/// `extents` (in order) widened by `reach` bytes into the holes on either
+/// side, within `size`, and merged where they come to touch. A hole reads as
+/// zeros, so it holds no token, but a token can end in one: the last byte of
+/// a UTF-16LE token is the zero high byte of its last character, which a
+/// hole holds when the data before it ends one byte short.
+fn widened(extents: Vec<(u64, u64)>, reach: u64, size: u64) -> Vec<(u64, u64)> {
+    let mut out: Vec<(u64, u64)> = Vec::with_capacity(extents.len());
+    for (start, end) in extents {
+        let start = start.saturating_sub(reach);
+        let end = end.saturating_add(reach).min(size);
+        match out.last_mut() {
+            Some(last) if start <= last.1 => last.1 = last.1.max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -291,6 +310,40 @@ mod tests {
 
         assert_eq!(outcome.hits.len(), 1);
         assert_eq!(outcome.hits[0].offset, size - 4096);
+    }
+
+    /// A UTF-16LE token whose last byte, the zero high byte of its last
+    /// character, lies in the hole after a data block. Found by the
+    /// `raw_token_scan` fuzz target: the scan read the block only, so it
+    /// missed a token a scan of the whole image finds.
+    #[test]
+    fn a_utf16_token_ending_in_a_hole_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let wide = utf16le(TOKEN);
+        let short = &wide[..wide.len() - 1];
+        let at = 8192 - short.len() as u64;
+        let source = image(&dir, 64 << 10, &[(at, short)]);
+
+        let outcome = TokenScan::new(TOKEN).window(64).scan(&source).unwrap();
+
+        assert_eq!(
+            outcome.hits,
+            vec![Hit {
+                offset: at,
+                encoding: Encoding::Utf16Le
+            }]
+        );
+        assert_eq!(outcome.bytes_scanned + outcome.bytes_skipped, 64 << 10);
+    }
+
+    #[test]
+    fn extents_widen_into_their_holes_and_merge() {
+        assert_eq!(widened(vec![], 31, 100), vec![]);
+        assert_eq!(
+            widened(vec![(0, 10), (50, 60), (70, 100)], 5, 100),
+            vec![(0, 15), (45, 100)]
+        );
+        assert_eq!(widened(vec![(10, 20)], 31, 25), vec![(0, 25)]);
     }
 
     #[test]
