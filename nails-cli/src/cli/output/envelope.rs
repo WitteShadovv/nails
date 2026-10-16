@@ -132,9 +132,11 @@ pub fn report_error(
 }
 
 /// Report an answer of `n` at a confirmation prompt, which changed nothing:
-/// on a terminal the neutral notice `activate` gives (`style` is stderr's),
-/// in JSON the error envelope with the code `cancelled`. The command exits 1.
-pub fn report_cancelled(
+/// for a human the neutral notice `activate` gives, on `err` (stderr, whose
+/// `style` it takes), in JSON the error envelope with the code `cancelled` on
+/// stdout. The command exits 1.
+pub fn report_cancelled<W: std::io::Write>(
+    err: &mut W,
     json: bool,
     style: nails_core::output::Style,
     command: &'static str,
@@ -143,7 +145,7 @@ pub fn report_cancelled(
     if json {
         error_envelope(command, ErrorBody::new("cancelled", message)).print();
     } else {
-        write_cancelled(&mut std::io::stderr().lock(), style, message);
+        write_cancelled(err, style, message);
     }
     ExitStatus::Failed
 }

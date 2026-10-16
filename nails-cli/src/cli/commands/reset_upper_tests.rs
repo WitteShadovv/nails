@@ -67,3 +67,32 @@ fn only_yes_in_any_case_confirms_the_reset() {
     // Input that is not UTF-8 is a read error, and declines.
     assert!(!confirm(&plan, b"\xff\n").0);
 }
+
+/// An answer other than yes reads as `activate`'s cancel: the neutral notice
+/// after the prompt, no error, and exit 1. A yes goes on without one.
+#[test]
+fn a_declined_reset_is_a_neutral_notice_and_exits_1() {
+    let plan = plan("/srv/data", &["/mnt/data/root/upper/srv/data"]);
+    let ask = |answer: &[u8]| {
+        let mut err = Vec::new();
+        let status = confirm_or_cancel(
+            &OutputSettings::default(),
+            &plan,
+            &mut err,
+            &mut std::io::Cursor::new(answer),
+        );
+        (status, String::from_utf8(err).unwrap())
+    };
+    for answer in ["n\n", "\n", ""] {
+        let (status, shown) = ask(answer.as_bytes());
+        assert_eq!(status, Some(ExitStatus::Failed), "{answer:?}");
+        assert!(
+            shown.ends_with("Continue? [y/N]: \u{25cb} Reset cancelled; nothing was removed.\n"),
+            "{shown}"
+        );
+        assert!(!shown.contains("error:"), "{shown}");
+    }
+    let (status, shown) = ask(b"y\n");
+    assert_eq!(status, None);
+    assert!(!shown.contains("cancelled"), "{shown}");
+}

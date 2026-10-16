@@ -118,13 +118,13 @@ pub fn execute(
     // directories and confirms on a terminal, refusing off one.
     if !args.yes {
         if std::io::stdin().is_terminal() {
-            if !prompt_reset_confirmation(settings, &plan) {
-                return report_cancelled(
-                    json,
-                    settings.stderr_style(),
-                    "reset-upper",
-                    "Reset cancelled; nothing was removed.",
-                );
+            if let Some(status) = confirm_or_cancel(
+                settings,
+                &plan,
+                &mut std::io::stderr(),
+                &mut std::io::stdin().lock(),
+            ) {
+                return status;
             }
         } else {
             return report_error(
@@ -184,21 +184,36 @@ pub fn execute(
     ExitStatus::Ok
 }
 
-/// Prompt on the terminal before deleting, returning whether the operator
-/// confirmed. The warning and the list of directories go to stderr so stdout
-/// stays clean for `--json`.
-fn prompt_reset_confirmation(settings: &OutputSettings, plan: &nails_core::ResetUpperPlan) -> bool {
-    confirm_reset(
-        settings,
-        plan,
-        &mut std::io::stderr(),
-        &mut std::io::stdin().lock(),
-    )
+/// The notice of an answer other than yes at the prompt.
+const CANCELLED: &str = "Reset cancelled; nothing was removed.";
+
+/// Ask before deleting ([`confirm_reset`]), on stderr (`err`) so stdout stays
+/// clean for `--json`. On an answer other than yes, report the cancel, which
+/// removed nothing, and return the status to exit with: the neutral notice
+/// `activate` gives on `err`, or under `--json` the error envelope with the
+/// code `cancelled` on stdout. `None` when the operator confirmed.
+fn confirm_or_cancel(
+    settings: &OutputSettings,
+    plan: &nails_core::ResetUpperPlan,
+    err: &mut impl std::io::Write,
+    input: &mut impl std::io::BufRead,
+) -> Option<ExitStatus> {
+    if confirm_reset(settings, plan, err, input) {
+        return None;
+    }
+    Some(report_cancelled(
+        err,
+        settings.is_json(),
+        settings.stderr_style(),
+        "reset-upper",
+        CANCELLED,
+    ))
 }
 
-/// [`prompt_reset_confirmation`] on the given streams: the warning goes to
-/// `out`, the answer is read from `input`. Only `y` or `yes` (any case)
-/// confirms; anything else, or a read error, declines.
+/// Prompt before deleting, returning whether the operator confirmed: the
+/// warning and the list of directories go to `out`, the answer is read from
+/// `input`. Only `y` or `yes` (any case) confirms; anything else, or a read
+/// error, declines.
 fn confirm_reset(
     settings: &OutputSettings,
     plan: &nails_core::ResetUpperPlan,
