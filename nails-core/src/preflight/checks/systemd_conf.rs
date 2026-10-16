@@ -38,7 +38,8 @@
 //! - an assignment splits at the first `=`, key and value are stripped. Values
 //!   are not unquoted and there are no trailing comments: `Storage="volatile"`
 //!   and `Storage=volatile # x` are both invalid values to journald;
-//! - a malformed section header (a `[` line not ending in `]`) makes systemd
+//! - a malformed section header (a `[` line not ending in `]`, or a section
+//!   name with a control character, a quote or a backslash) makes systemd
 //!   stop reading that file and skip all the remaining ones; the assignments
 //!   already read stay in effect.
 //!
@@ -251,6 +252,13 @@ fn parse_line(
     }
     if let Some(header) = line.strip_prefix('[') {
         let name = header.strip_suffix(']').ok_or(MalformedSectionHeader)?;
+        // systemd's string_is_safe() refuses these in a section name.
+        if name
+            .chars()
+            .any(|c| c.is_ascii_control() || matches!(c, '"' | '\'' | '\\'))
+        {
+            return Err(MalformedSectionHeader);
+        }
         *in_section = name == section;
         return Ok(());
     }
@@ -308,6 +316,28 @@ mod tests {
 
     fn pair(key: &str, value: &str) -> (String, String) {
         (key.to_string(), value.to_string())
+    }
+
+    /// systemd refuses a section name with a control character, a quote or a
+    /// backslash, and stops reading there as at a header without its `]`.
+    /// Found by the `systemd_conf` fuzz target with a DEL in the name, after
+    /// which NAILS read on into the drop-ins.
+    #[test]
+    fn a_section_name_systemd_refuses_stops_the_reading() {
+        for header in [
+            "[Log\u{7f}in]",
+            "[Lo\tgin]",
+            "[\"Journal\"]",
+            "['Journal']",
+            "[Jour\\nal]",
+        ] {
+            let text = format!("[Journal]\nStorage=volatile\n{header}\n[Journal]\nStorage=none\n");
+            assert_eq!(
+                parse(&text),
+                (vec![pair("Storage", "volatile")], false),
+                "{header}"
+            );
+        }
     }
 
     /// systemd ends a line at a carriage return or a NUL too. Found by the
