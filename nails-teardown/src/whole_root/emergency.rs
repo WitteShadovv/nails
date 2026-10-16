@@ -24,7 +24,9 @@
 //!
 //! On the decoy side (an activation was interrupted after building the next
 //! root) it signals the activation, detaches `/run/nextroot` and removes the
-//! runtime pieces, so a later reboot never enters the tree.
+//! runtime pieces, so a later reboot never enters the tree. A requested power
+//! action is enqueued right after that; only a decoy that keeps running gets
+//! PID 1 reloaded and `/run` made `noexec` again, as after a rollback.
 //!
 //! Every phase is timed. Nothing here reads the configuration, the state file
 //! or the hidden volume, and nothing logs; the caller prints and logs the
@@ -181,10 +183,11 @@ pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
     match (side, plan) {
         (Side::Hidden, Some(mut plan)) => hidden(&mut plan, host, &mut report),
         (Side::Decoy, Some(plan)) => {
-            decoy(&plan, host, &mut report);
+            let unloaded = decoy(&plan, host, &mut report);
             if requested != Finish::Return {
                 dispatch(&plan, host, requested, &mut report);
             }
+            settle(&plan, host, unloaded, &mut report);
         }
         _ => {
             if requested != Finish::Return {
@@ -306,7 +309,9 @@ fn kernel_power_off() -> bool {
 }
 
 /// The decoy side: an activation left a plan (and perhaps a next root).
-fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) {
+/// Returns whether it removed a drop-in or a mask, which PID 1 keeps loaded
+/// until its next reload.
+fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) -> bool {
     report.timed("signal-activation", |_| {
         if host.act {
             signal_owner(plan);
@@ -320,27 +325,40 @@ fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) {
         }
     });
     report.timed("remove-runtime", |_| {
-        if host.act {
-            // Nothing hidden runs on the decoy: the backend goes with the
-            // last close, as the way back would close it.
-            let _ = ret::close_backend_deferred(plan);
-            let kept = Snapshot::load(&host.runtime_dir.join(SNAPSHOT_NAME)).unwrap_or_default();
-            let dropins = transition::remove_dropin(&host.run, &kept);
-            let masks =
-                runtime_units::remove_masks(&host.run, &plan.masks, &plan.boot_masks, &kept);
-            kernel_helpers::restore(&plan.kernel_settings);
-            nextroot::remove_runtime_dir(&host.runtime_dir);
-            // As a rollback does: `/run` is `noexec` again where the decoy
-            // had it so, and PID 1 forgets the drop-ins and masks, which it
-            // keeps loaded until a reload.
-            if plan.run_noexec {
-                let _ = nextroot::set_noexec(&host.run, true);
-            }
-            if (dropins || masks)
-                && let Some(systemctl) = &plan.tools.systemctl
-            {
-                let _ = tools::daemon_reload(systemctl);
-            }
+        if !host.act {
+            return false;
+        }
+        // Nothing hidden runs on the decoy: the backend goes with the last
+        // close, as the way back would close it.
+        let _ = ret::close_backend_deferred(plan);
+        let kept = Snapshot::load(&host.runtime_dir.join(SNAPSHOT_NAME)).unwrap_or_default();
+        let dropins = transition::remove_dropin(&host.run, &kept);
+        let masks = runtime_units::remove_masks(&host.run, &plan.masks, &plan.boot_masks, &kept);
+        kernel_helpers::restore(&plan.kernel_settings);
+        nextroot::remove_runtime_dir(&host.runtime_dir);
+        dropins || masks
+    })
+}
+
+/// What a decoy that keeps running needs after the cleanup, as a rollback
+/// does it: `/run` is `noexec` again where the decoy had it so, and PID 1 is
+/// reloaded when the cleanup removed a drop-in or a mask (`unloaded`). It
+/// keeps running when nothing was enqueued: no power action was asked for,
+/// or none could be. An enqueued power action discards both, so it waits for
+/// neither (a reload reruns every generator).
+fn settle(plan: &Plan, host: &Host, unloaded: bool, report: &mut HotReport) {
+    if report.dispatched.is_some() {
+        return;
+    }
+    report.timed("reload", |_| {
+        if !host.act {
+            return;
+        }
+        if plan.run_noexec {
+            let _ = nextroot::set_noexec(&host.run, true);
+        }
+        if unloaded && let Some(systemctl) = &plan.tools.systemctl {
+            let _ = tools::daemon_reload(systemctl);
         }
     });
 }
