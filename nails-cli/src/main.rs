@@ -7,32 +7,21 @@
 //!
 //! The actual CLI logic is in lib.rs to allow for proper unit test coverage.
 
-use nails::cli::logging::StdoutFormat;
 use nails::cli::{Cli, Commands, OutputSettings, execute_command};
-
-/// `activate --json` streams progress events as NDJSON on stdout ahead of the
-/// final result; every other command keeps diagnostics on stderr.
-fn stdout_format_for(command: &Commands, settings: &OutputSettings) -> StdoutFormat {
-    match command {
-        Commands::Activate(_) if settings.is_json() => StdoutFormat::ActivateJsonStream,
-        _ => StdoutFormat::Human,
-    }
-}
 
 /// Whether a command may write a log file onto the hidden volume.
 ///
 /// Only the commands that act on an attached hidden volume do. Read-only
-/// commands (`status`, `verify`, `check`, `config`, `transition`) and `init` — which
+/// commands (`status`, `verify`, `check` and its alias `activate --dry-run`,
+/// `config`, `transition`) and `init` — which
 /// runs before the volume holds any NAILS structure — never create a log
 /// directory or file, so running them from the decoy or a download directory
 /// leaves nothing behind there. The attach gate is still the backstop: even a
 /// writing command logs to a file only when the hidden volume is really mounted.
 fn command_writes_logs(command: &Commands) -> bool {
     match command {
-        Commands::Activate(_)
-        | Commands::Deactivate(_)
-        | Commands::Emergency(_)
-        | Commands::ResetUpper(_) => true,
+        Commands::Activate(args) => !args.dry_run,
+        Commands::Deactivate(_) | Commands::Emergency(_) | Commands::ResetUpper(_) => true,
         // The rehearsal steps act on the attached hidden volume; the status view
         // only reads.
         Commands::Rehearse(args) => !matches!(
@@ -48,10 +37,10 @@ fn main() -> std::process::ExitCode {
     let core_dump_error = nails::cli::disable_core_dumps();
 
     // The emergency hot path and the soft-reboot transition step run here,
-    // before clap, the environment snapshot, the configuration and tracing exist
-    // (ADR 0007, ADR 0008). The emergency command then prints and logs the
-    // result; the transition step ends the process itself. Any other command
-    // line is left untouched.
+    // before clap, the environment snapshot, the configuration and tracing exist,
+    // so a failed hidden volume or an unreadable configuration cannot stop them.
+    // The emergency command then prints and logs the result; the transition
+    // step ends the process itself. Any other command line is left untouched.
     nails::cli::early::dispatch();
 
     let cli = Cli::parse_checked();
@@ -76,13 +65,10 @@ fn main() -> std::process::ExitCode {
         return status.to_exit_code();
     }
 
+    // Diagnostics go to stderr for every command; stdout carries only the
+    // command's own output (under --json, its documented JSON).
     let log_file = !cli.global.no_log_file && command_writes_logs(&cli.command);
-    nails::cli::logging::init_subscriber(
-        &settings,
-        log_file,
-        cli.global.config.as_deref(),
-        stdout_format_for(&cli.command, &settings),
-    );
+    nails::cli::logging::init_subscriber(&settings, log_file, cli.global.config.as_deref());
 
     // Route panics through tracing (the hidden-root log when one is active) and
     // keep source paths and payloads off stderr, so a detached worker's crash
@@ -100,38 +86,6 @@ fn main() -> std::process::ExitCode {
 mod tests {
     use super::*;
     use nails::cli::args::{ActivateArgs, VerifyArgs};
-    use nails::cli::output::OutputMode;
-
-    fn json() -> OutputSettings {
-        OutputSettings {
-            mode: OutputMode::Json,
-            ..OutputSettings::default()
-        }
-    }
-
-    #[test]
-    fn activate_json_uses_json_stream_stdout_format() {
-        let activate = Commands::Activate(ActivateArgs::default());
-        assert_eq!(
-            stdout_format_for(&activate, &json()),
-            StdoutFormat::ActivateJsonStream
-        );
-    }
-
-    #[test]
-    fn activate_without_json_uses_human_stdout_format() {
-        let activate = Commands::Activate(ActivateArgs::default());
-        assert_eq!(
-            stdout_format_for(&activate, &OutputSettings::default()),
-            StdoutFormat::Human
-        );
-    }
-
-    #[test]
-    fn other_commands_with_json_keep_tracing_on_stderr() {
-        let verify = Commands::Verify(VerifyArgs::default());
-        assert_eq!(stdout_format_for(&verify, &json()), StdoutFormat::Human);
-    }
 
     #[test]
     fn writing_commands_enable_the_log_file() {
@@ -155,6 +109,10 @@ mod tests {
         use nails::cli::args::InitArgs;
         use std::path::PathBuf;
 
+        assert!(!command_writes_logs(&Commands::Activate(ActivateArgs {
+            dry_run: true,
+            ..ActivateArgs::default()
+        })));
         assert!(!command_writes_logs(&Commands::Verify(
             VerifyArgs::default()
         )));

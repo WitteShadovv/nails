@@ -109,7 +109,7 @@ pub fn survive_session_stop() {
 /// Set SIGTERM, SIGINT and SIGHUP to ignored in the child. An ignored
 /// disposition survives `exec`.
 #[allow(unsafe_code)]
-fn ignore_stop_signals(command: &mut Command) {
+pub fn ignore_stop_signals(command: &mut Command) {
     use std::os::unix::process::CommandExt;
     // SAFETY: the closure only calls `signal(2)`, which is async-signal-safe,
     // with constant arguments. It allocates nothing and touches no shared

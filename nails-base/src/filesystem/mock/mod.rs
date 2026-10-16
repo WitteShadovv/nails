@@ -15,9 +15,12 @@ mod operations_profiles;
 mod setup_directory;
 mod setup_state;
 mod state;
+mod sysfs;
 
 #[cfg(test)]
 mod tests_basic;
+#[cfg(test)]
+mod tests_mounts;
 
 pub use setup_state::PathKind;
 pub use state::{MockFilesystem, MockOp};

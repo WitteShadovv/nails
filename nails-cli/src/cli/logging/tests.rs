@@ -4,8 +4,10 @@
 use std::io;
 use std::sync::{Arc, Mutex};
 
-use super::{StdoutFormat, logging_init_line};
-use crate::cli::output::OutputSettings;
+use tracing_subscriber::layer::SubscriberExt;
+
+use super::logging_init_line;
+use crate::cli::output::{OutputMode, OutputSettings};
 use nails_core::Verbosity;
 
 #[derive(Clone, Default)]
@@ -32,59 +34,138 @@ impl io::Write for SharedWriter {
     }
 }
 
+/// What the console layer for `settings` writes while `emit` runs.
+fn console_output(settings: &OutputSettings, emit: impl FnOnce()) -> String {
+    let buffer = SharedBuffer::default();
+    let captured = Arc::clone(&buffer.0);
+    let subscriber = tracing_subscriber::registry().with(super::console::layer(settings, buffer));
+    tracing::subscriber::with_default(subscriber, emit);
+    let bytes = captured.lock().unwrap().clone();
+    String::from_utf8(bytes).unwrap()
+}
+
+/// A field rendered the way the stock formatter writes it: `key=value`.
+fn has_raw_field(text: &str) -> bool {
+    text.split_whitespace()
+        .any(|word| word.split_once('=').is_some_and(|(key, _)| !key.is_empty()))
+}
+
 #[test]
-fn activate_json_stream_formats_progress_events_as_structured_json() {
-    let output = SharedBuffer::default();
-    let captured = Arc::clone(&output.0);
-
-    let subscriber = tracing_subscriber::fmt()
-        .json()
-        .flatten_event(true)
-        .with_current_span(false)
-        .with_span_list(false)
-        .with_target(false)
-        .with_level(true)
-        .with_writer(output)
-        .finish();
-
-    tracing::subscriber::with_default(subscriber, || {
+fn the_default_console_prints_an_info_event_as_its_message_alone() {
+    let output = console_output(&OutputSettings::default(), || {
         tracing::info!(
             event = "progress",
-            phase = "session_management",
-            current = 1,
-            total = 6,
-            "[1/6] Preparing session management..."
+            phase = "nixos_build",
+            files = 3,
+            "copying 3 files (2 MB) onto the hidden volume"
+        );
+        // The progress fallback, as the store copy reports it.
+        nails_core::reporter::progress::detail("nixos_build", "checking the hidden store database");
+    });
+
+    assert_eq!(
+        output,
+        "copying 3 files (2 MB) onto the hidden volume\nchecking the hidden store database\n"
+    );
+    assert!(!output.contains("INFO"), "{output}");
+    assert!(!has_raw_field(&output), "{output}");
+}
+
+#[test]
+fn the_default_console_marks_a_warning_and_keeps_its_fields() {
+    let output = console_output(&OutputSettings::default(), || {
+        tracing::warn!(
+            file = %"/etc/nixos/configuration.nix",
+            reason = "the mapper name",
+            "Base NixOS config contains a hidden-environment reference"
         );
     });
 
-    let payload = String::from_utf8(captured.lock().unwrap().clone()).unwrap();
-    let line = payload
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .expect("expected one JSON log line");
-    let json: serde_json::Value = serde_json::from_str(line).unwrap();
+    assert_eq!(
+        output,
+        "\u{26a0} Base NixOS config contains a hidden-environment reference \
+         (file: /etc/nixos/configuration.nix, reason: the mapper name)\n"
+    );
+    assert!(!output.contains("WARN"), "{output}");
+    assert!(!has_raw_field(&output), "{output}");
+}
 
+#[test]
+fn the_default_console_uses_ascii_marks_and_colour_when_asked() {
+    let ascii = OutputSettings {
+        ascii: true,
+        ..OutputSettings::default()
+    };
+    let output = console_output(&ascii, || {
+        tracing::warn!("inherited-autostart: 3 items");
+        tracing::error!(error = %"boom", "could not write the report");
+    });
     assert_eq!(
-        json.get("event").and_then(|value| value.as_str()),
-        Some("progress")
+        output,
+        "[WARN] inherited-autostart: 3 items\n[FAIL] could not write the report (error: boom)\n"
     );
-    assert_eq!(
-        json.get("phase").and_then(|value| value.as_str()),
-        Some("session_management")
-    );
-    assert_eq!(
-        json.get("current").and_then(|value| value.as_u64()),
-        Some(1)
-    );
-    assert_eq!(json.get("total").and_then(|value| value.as_u64()), Some(6));
-    assert_eq!(
-        json.get("level").and_then(|value| value.as_str()),
-        Some("INFO")
-    );
-    assert_eq!(
-        json.get("message").and_then(|value| value.as_str()),
-        Some("[1/6] Preparing session management...")
-    );
+
+    let colour = OutputSettings {
+        color_stderr: true,
+        ..OutputSettings::default()
+    };
+    let output = console_output(&colour, || tracing::warn!("careful"));
+    assert_eq!(output, "\u{1b}[1;33m\u{26a0}\u{1b}[0m careful\n");
+}
+
+#[test]
+fn the_default_console_hides_debug_events() {
+    let output = console_output(&OutputSettings::default(), || {
+        tracing::debug!(check = "state", result = "pass", "Preflight check passed");
+        tracing::trace!("a trace line");
+    });
+    assert_eq!(output, "");
+}
+
+#[test]
+fn the_quiet_console_shows_errors_only() {
+    let quiet = OutputSettings {
+        verbosity: Verbosity::Quiet,
+        ..OutputSettings::default()
+    };
+    let output = console_output(&quiet, || {
+        tracing::info!("an info line");
+        tracing::warn!("a warning");
+        tracing::error!("an error");
+    });
+    assert_eq!(output, "\u{2717} an error\n");
+}
+
+#[test]
+fn the_verbose_console_shows_full_records() {
+    let verbose = OutputSettings {
+        verbosity: Verbosity::Verbose,
+        ..OutputSettings::default()
+    };
+    let output = console_output(&verbose, || {
+        tracing::debug!(check = "state", "Preflight check passed");
+    });
+    assert!(output.contains("DEBUG"), "{output}");
+    assert!(output.contains("check=\"state\""), "{output}");
+    assert!(output.contains("Preflight check passed"), "{output}");
+}
+
+#[test]
+fn the_panic_event_never_reaches_the_console() {
+    for verbosity in [Verbosity::Quiet, Verbosity::Normal, Verbosity::Debug] {
+        let settings = OutputSettings {
+            verbosity,
+            ..OutputSettings::default()
+        };
+        let output = console_output(&settings, || {
+            tracing::error!(
+                target: super::console::PANIC_TARGET,
+                detail = "panicked at nails-cli/src/main.rs:1:1",
+                "aborted by an internal error"
+            );
+        });
+        assert_eq!(output, "", "{verbosity:?}");
+    }
 }
 
 #[test]
@@ -177,14 +258,7 @@ fn run_subprocess(case: &str, config_path: Option<&std::path::Path>) -> std::pro
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command
         .args(["--exact", SUBPROCESS_TEST_NAME, "--nocapture"])
-        .env("NAILS_LOGGING_SUBPROCESS_CASE", case)
-        // The attach gate refuses a hidden root that shares a device with `/`,
-        // which every temp directory does. The test binary is built with the
-        // attach-gate test hook compiled in, so this env var makes the gate skip
-        // the device comparison and judge the temp root attached by existence
-        // alone, exercising the real file-logging path. The child reads it into
-        // its startup snapshot, as `main` does.
-        .env("NAILS_TEST_FORCE_ATTACHED", "1");
+        .env("NAILS_LOGGING_SUBPROCESS_CASE", case);
 
     if let Some(path) = config_path {
         command.env("NAILS_LOGGING_SUBPROCESS_CONFIG", path);
@@ -213,16 +287,15 @@ fn subprocess_logging_entrypoint() {
         verbosity,
         ..OutputSettings::default()
     };
+    let json = OutputSettings {
+        mode: OutputMode::Json,
+        ..OutputSettings::default()
+    };
     let config = config_override.as_deref();
 
     match case.as_str() {
         "stdout-human" => {
-            super::init_subscriber(
-                &with(Verbosity::Verbose),
-                false,
-                config,
-                StdoutFormat::Human,
-            );
+            super::init_subscriber(&with(Verbosity::Verbose), false, config);
             tracing::debug!(phase = "logging", "debug line from subprocess");
         }
         "stdout-human-color" => {
@@ -230,45 +303,42 @@ fn subprocess_logging_entrypoint() {
                 color_stderr: true,
                 ..OutputSettings::default()
             };
-            super::init_subscriber(&colored, false, config, StdoutFormat::Human);
-            tracing::info!(phase = "logging", "coloured line from subprocess");
+            super::init_subscriber(&colored, false, config);
+            tracing::warn!(phase = "logging", "coloured line from subprocess");
         }
         "stdout-human-with-file-layer" => {
-            super::init_subscriber(&with(Verbosity::Verbose), true, config, StdoutFormat::Human);
+            super::init_subscriber(&with(Verbosity::Verbose), true, config);
             tracing::debug!(phase = "logging", "debug line with file layer");
         }
         "stdout-json" => {
-            super::init_subscriber(&normal, false, config, StdoutFormat::ActivateJsonStream);
+            super::init_subscriber(&json, false, config);
             tracing::info!(
                 event = "progress",
                 phase = "logging",
-                current = 1,
-                total = 1,
                 "json line from subprocess"
             );
+            tracing::warn!(file = "/x", "json warning from subprocess");
         }
         "stdout-json-with-file-layer" => {
-            super::init_subscriber(&normal, true, config, StdoutFormat::ActivateJsonStream);
+            super::init_subscriber(&json, true, config);
             tracing::info!(
                 event = "progress",
                 phase = "logging",
-                current = 1,
-                total = 1,
                 "json line with file layer"
             );
         }
         "stdout-quiet" => {
-            super::init_subscriber(&with(Verbosity::Quiet), false, config, StdoutFormat::Human);
+            super::init_subscriber(&with(Verbosity::Quiet), false, config);
             tracing::info!(phase = "logging", "quiet info line");
             tracing::warn!(phase = "logging", "quiet warn line");
             tracing::error!(phase = "logging", "quiet error line");
         }
         "stdout-trace" => {
-            super::init_subscriber(&with(Verbosity::Debug), false, config, StdoutFormat::Human);
+            super::init_subscriber(&with(Verbosity::Debug), false, config);
             tracing::trace!(phase = "logging", "trace line from subprocess");
         }
         "stdout-normal" => {
-            super::init_subscriber(&normal, false, config, StdoutFormat::Human);
+            super::init_subscriber(&normal, false, config);
             tracing::debug!(phase = "logging", "hidden debug line");
             tracing::info!(phase = "logging", "visible info line");
         }
@@ -283,23 +353,23 @@ fn subprocess_logging_entrypoint() {
             super::emit_logging_init_message(&normal, true, "no color error");
         }
         "invalid-file-layer-config" => {
-            super::init_subscriber(&normal, true, config, StdoutFormat::Human);
+            super::init_subscriber(&normal, true, config);
             tracing::info!(phase = "logging", "fallback stdout line");
         }
         "unreadable-config-no-silent-default" => {
             // The config path is invalid, so file logging must stay off rather
-            // than fall back to the binary-derived default root (which this
-            // subprocess force-attaches). The marker line may reach the console
-            // but must never land in a log file under that default root.
-            super::init_subscriber(&normal, true, config, StdoutFormat::Human);
+            // than fall back to the binary-derived default root. The marker line
+            // may reach the console but must never land in a log file under that
+            // default root.
+            super::init_subscriber(&normal, true, config);
             tracing::info!(phase = "logging", "no-silent-default marker line");
         }
         "directory-log-target-human" => {
-            super::init_subscriber(&normal, true, config, StdoutFormat::Human);
+            super::init_subscriber(&normal, true, config);
             tracing::info!(phase = "logging", "directory fallback line");
         }
         "directory-log-target-quiet" => {
-            super::init_subscriber(&with(Verbosity::Quiet), true, config, StdoutFormat::Human);
+            super::init_subscriber(&with(Verbosity::Quiet), true, config);
             tracing::error!(phase = "logging", "quiet directory fallback line");
         }
         other => panic!("unknown logging subprocess case: {other}"),
@@ -319,52 +389,21 @@ fn init_subscriber_wrapper_emits_debug_to_stderr_in_subprocess() {
     );
 }
 
+/// Under `--json` stdout carries the command's documented JSON alone, so the
+/// log stays on stderr, in the same compact form as without `--json`.
 #[test]
-fn init_subscriber_json_mode_emits_structured_stdout_in_subprocess() {
+fn init_subscriber_json_mode_keeps_the_log_off_stdout_in_subprocess() {
     let output = run_subprocess("stdout-json", None);
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert!(output.status.success(), "stdout={stdout}");
-    assert!(stdout.contains("\"event\":\"progress\""), "stdout={stdout}");
-    assert!(stdout.contains("\"phase\":\"logging\""), "stdout={stdout}");
+    assert!(output.status.success(), "stderr={stderr}");
+    assert!(!stdout.contains("json line"), "stdout={stdout}");
+    assert!(!stdout.contains("json warning"), "stdout={stdout}");
+    assert!(stderr.contains("json line from subprocess\n"), "{stderr}");
     assert!(
-        stdout.contains("\"message\":\"json line from subprocess\""),
-        "stdout={stdout}"
-    );
-}
-
-#[test]
-fn init_subscriber_json_mode_with_file_layer_emits_stdout_and_writes_log() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::TempDir::new().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    let log_dir = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.toml");
-
-    std::fs::create_dir_all(&log_dir).unwrap();
-
-    let mut config_file = std::fs::File::create(&config_path).unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
-        hidden_root.display(),
-        log_dir.display(),
-    )
-    .unwrap();
-
-    let output = run_subprocess("stdout-json-with-file-layer", Some(&config_path));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let log_contents = std::fs::read_to_string(log_dir.join("nails.log")).unwrap();
-
-    assert!(output.status.success(), "stdout={stdout}");
-    assert!(
-        stdout.contains("\"message\":\"json line with file layer\""),
-        "stdout={stdout}"
-    );
-    assert!(
-        log_contents.contains("json line with file layer"),
-        "log_contents={log_contents}"
+        stderr.contains("\u{26a0} json warning from subprocess (file: /x)"),
+        "{stderr}"
     );
 }
 
@@ -407,6 +446,22 @@ fn init_subscriber_normal_mode_hides_debug() {
     assert!(output.status.success(), "stderr={stderr}");
     assert!(stderr.contains("visible info line"), "stderr={stderr}");
     assert!(!stderr.contains("hidden debug line"), "stderr={stderr}");
+}
+
+/// The installed subscriber is the compact console: an info event is its
+/// message, with neither the level word nor its fields.
+#[test]
+fn init_subscriber_normal_mode_prints_the_message_alone() {
+    let output = run_subprocess("stdout-normal", None);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(output.status.success(), "stderr={stderr}");
+    assert!(
+        stderr.lines().any(|line| line == "visible info line"),
+        "stderr={stderr}"
+    );
+    assert!(!stderr.contains("INFO"), "stderr={stderr}");
+    assert!(!stderr.contains("phase="), "stderr={stderr}");
 }
 
 #[test]
@@ -458,10 +513,9 @@ fn emit_logging_init_message_no_color_error_uses_unicode_without_ansi() {
 }
 
 // The attached happy path (init_file_layer returns Some and writes the log) is
-// covered deterministically by the subprocess file-layer tests above, which can
-// set NAILS_TEST_FORCE_ATTACHED per child process. An in-process equivalent
-// cannot: a temp directory may or may not share `/`'s device depending on the
-// host.
+// covered by the subprocess file-layer tests in `kernel_tests`, whose hidden
+// root is a tmpfs in a user + mount namespace the subprocess inherits. An
+// in-process equivalent would need this whole test binary in that namespace.
 
 #[test]
 fn init_file_layer_gracefully_returns_none_for_missing_hidden_volume() {
@@ -486,82 +540,13 @@ fn init_file_layer_gracefully_returns_none_for_missing_hidden_volume() {
 }
 
 #[test]
-fn init_subscriber_with_file_layer_writes_json_log_and_stderr() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::TempDir::new().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    let log_dir = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.toml");
-
-    std::fs::create_dir_all(&log_dir).unwrap();
-
-    let mut config_file = std::fs::File::create(&config_path).unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
-        hidden_root.display(),
-        log_dir.display(),
-    )
-    .unwrap();
-
-    let output = run_subprocess("stdout-human-with-file-layer", Some(&config_path));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let log_contents = std::fs::read_to_string(log_dir.join("nails.log")).unwrap();
-
-    assert!(output.status.success(), "stderr={stderr}");
-    assert!(
-        stderr.contains("debug line with file layer"),
-        "stderr={stderr}"
-    );
-    assert!(
-        log_contents.contains("debug line with file layer"),
-        "log_contents={log_contents}"
-    );
-    assert!(
-        log_contents.contains("\"level\":\"DEBUG\""),
-        "log_contents={log_contents}"
-    );
-}
-
-#[test]
-fn init_subscriber_falls_back_when_log_path_is_invalid() {
-    use std::io::Write;
-
-    let temp_dir = tempfile::TempDir::new().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    let config_path = temp_dir.path().join("nails.toml");
-    std::fs::create_dir_all(&hidden_root).unwrap();
-    // A log path outside the hidden volume no longer loads at all, so make
-    // the log directory impossible to create instead: its parent is a file.
-    let blocker = hidden_root.join("blocker");
-    std::fs::write(&blocker, "").unwrap();
-
-    let mut config_file = std::fs::File::create(&config_path).unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
-        hidden_root.display(),
-        blocker.join("logs").display(),
-    )
-    .unwrap();
-
-    let output = run_subprocess("invalid-file-layer-config", Some(&config_path));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-
-    assert!(output.status.success(), "stderr={stderr}");
-    assert!(stderr.contains("Logging init failed"), "stderr={stderr}");
-    assert!(stderr.contains("fallback stdout line"), "stderr={stderr}");
-}
-
-#[test]
 fn invalid_explicit_config_never_logs_to_the_default_root() {
     // An explicit `--config` that cannot be loaded must not be silently replaced
     // by the binary-derived default configuration. Before this was fixed, file
     // logging re-loaded the config on its own and fell back to `Config::default`,
-    // which — on a force-attached root like the subprocess's own directory —
-    // opened a log file right next to the binary even though the operator named a
-    // config that failed to load. File logging must now simply stay off; the
+    // which — on an attached root like the subprocess's own directory — opened a
+    // log file right next to the binary even though the operator named a config
+    // that failed to load. File logging must now simply stay off; the
     // command surfaces the config error and exits.
     let temp_dir = tempfile::TempDir::new().unwrap();
     let config_path = temp_dir.path().join("nails.toml");
@@ -569,8 +554,8 @@ fn invalid_explicit_config_never_logs_to_the_default_root() {
     std::fs::write(&config_path, "definitely_not_a_key = true\n").unwrap();
 
     // Where a silent default would place the log: `{binary parent}/logs`, the
-    // default root the subprocess force-attaches. The subprocess runs the same
-    // test binary, so its derived root matches this one.
+    // subprocess's default root. The subprocess runs the same test binary, so
+    // its derived root matches this one.
     let exe = std::env::current_exe().unwrap().canonicalize().unwrap();
     let default_log = exe.parent().unwrap().join("logs").join("nails.log");
     // Start from a clean slate so a log left by a regressed earlier run cannot
@@ -595,71 +580,218 @@ fn invalid_explicit_config_never_logs_to_the_default_root() {
     );
 }
 
-#[test]
-fn init_subscriber_warns_when_log_file_target_is_a_directory() {
-    use std::io::Write;
+/// The file-layer cases, which need the attach gate to accept the hidden root:
+/// each runs in an unprivileged user + mount namespace with a tmpfs as the
+/// hidden root, and the logging subprocess inherits that namespace.
+mod kernel_tests {
+    use super::run_subprocess;
+    use nails_core::test_path;
+    use nails_core::test_support::{Rerun, ScratchTmpfs};
 
-    let temp_dir = tempfile::TempDir::new().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    let log_dir = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.toml");
+    #[test]
+    fn init_subscriber_json_mode_with_file_layer_keeps_stdout_clean_and_writes_log() {
+        let _ = Rerun::new(test_path!(
+            init_subscriber_json_mode_with_file_layer_keeps_stdout_clean_and_writes_log
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            use std::io::Write;
 
-    std::fs::create_dir_all(log_dir.join("nails.log")).unwrap();
+            let temp_dir = tempfile::TempDir::new().unwrap();
+            let volume = ScratchTmpfs::new("");
+            let hidden_root = volume.path().to_path_buf();
+            let log_dir = hidden_root.join("logs");
+            let config_path = temp_dir.path().join("nails.toml");
 
-    let mut config_file = std::fs::File::create(&config_path).unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
-        hidden_root.display(),
-        log_dir.display(),
-    )
-    .unwrap();
+            std::fs::create_dir_all(&log_dir).unwrap();
 
-    let output = run_subprocess("directory-log-target-human", Some(&config_path));
-    let stderr = String::from_utf8_lossy(&output.stderr);
+            let mut config_file = std::fs::File::create(&config_path).unwrap();
+            writeln!(
+                config_file,
+                "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
+                hidden_root.display(),
+                log_dir.display(),
+            )
+            .unwrap();
 
-    assert!(output.status.success(), "stderr={stderr}");
-    assert!(
-        stderr.contains("Failed to open log file"),
-        "stderr={stderr}"
-    );
-    assert!(
-        stderr.contains("directory fallback line"),
-        "stderr={stderr}"
-    );
-}
+            let output = run_subprocess("stdout-json-with-file-layer", Some(&config_path));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let log_contents = std::fs::read_to_string(log_dir.join("nails.log")).unwrap();
 
-#[test]
-fn init_subscriber_quiet_mode_suppresses_log_file_open_warning() {
-    use std::io::Write;
+            assert!(output.status.success(), "stderr={stderr}");
+            assert!(!stdout.contains("json line"), "stdout={stdout}");
+            assert!(stderr.contains("json line with file layer"), "{stderr}");
+            assert!(
+                log_contents.contains("json line with file layer"),
+                "log_contents={log_contents}"
+            );
+        });
+    }
 
-    let temp_dir = tempfile::TempDir::new().unwrap();
-    let hidden_root = temp_dir.path().join("hidden-volume");
-    let log_dir = hidden_root.join("logs");
-    let config_path = temp_dir.path().join("nails.toml");
+    #[test]
+    fn init_subscriber_with_file_layer_writes_json_log_and_stderr() {
+        let _ = Rerun::new(test_path!(
+            init_subscriber_with_file_layer_writes_json_log_and_stderr
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            use std::io::Write;
 
-    std::fs::create_dir_all(log_dir.join("nails.log")).unwrap();
+            let temp_dir = tempfile::TempDir::new().unwrap();
+            let volume = ScratchTmpfs::new("");
+            let hidden_root = volume.path().to_path_buf();
+            let log_dir = hidden_root.join("logs");
+            let config_path = temp_dir.path().join("nails.toml");
 
-    let mut config_file = std::fs::File::create(&config_path).unwrap();
-    writeln!(
-        config_file,
-        "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
-        hidden_root.display(),
-        log_dir.display(),
-    )
-    .unwrap();
+            std::fs::create_dir_all(&log_dir).unwrap();
 
-    let output = run_subprocess("directory-log-target-quiet", Some(&config_path));
-    let stderr = String::from_utf8_lossy(&output.stderr);
+            let mut config_file = std::fs::File::create(&config_path).unwrap();
+            writeln!(
+                config_file,
+                "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
+                hidden_root.display(),
+                log_dir.display(),
+            )
+            .unwrap();
 
-    assert!(output.status.success(), "stderr={stderr}");
-    assert!(
-        stderr.contains("quiet directory fallback line"),
-        "stderr={stderr}"
-    );
-    assert!(
-        !stderr.contains("Failed to open log file"),
-        "stderr={stderr}"
-    );
-    assert!(!stderr.contains('\u{001b}'), "stderr={stderr}");
+            let output = run_subprocess("stdout-human-with-file-layer", Some(&config_path));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let log_contents = std::fs::read_to_string(log_dir.join("nails.log")).unwrap();
+
+            assert!(output.status.success(), "stderr={stderr}");
+            assert!(
+                stderr.contains("debug line with file layer"),
+                "stderr={stderr}"
+            );
+            assert!(
+                log_contents.contains("debug line with file layer"),
+                "log_contents={log_contents}"
+            );
+            assert!(
+                log_contents.contains("\"level\":\"DEBUG\""),
+                "log_contents={log_contents}"
+            );
+        });
+    }
+
+    #[test]
+    fn init_subscriber_falls_back_when_log_path_is_invalid() {
+        let _ = Rerun::new(test_path!(
+            init_subscriber_falls_back_when_log_path_is_invalid
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            use std::io::Write;
+
+            let temp_dir = tempfile::TempDir::new().unwrap();
+            let volume = ScratchTmpfs::new("");
+            let hidden_root = volume.path().to_path_buf();
+            let config_path = temp_dir.path().join("nails.toml");
+            std::fs::create_dir_all(&hidden_root).unwrap();
+            // A log path outside the hidden volume no longer loads at all, so make
+            // the log directory impossible to create instead: its parent is a file.
+            let blocker = hidden_root.join("blocker");
+            std::fs::write(&blocker, "").unwrap();
+
+            let mut config_file = std::fs::File::create(&config_path).unwrap();
+            writeln!(
+                config_file,
+                "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
+                hidden_root.display(),
+                blocker.join("logs").display(),
+            )
+            .unwrap();
+
+            let output = run_subprocess("invalid-file-layer-config", Some(&config_path));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            assert!(output.status.success(), "stderr={stderr}");
+            assert!(stderr.contains("Logging init failed"), "stderr={stderr}");
+            assert!(stderr.contains("fallback stdout line"), "stderr={stderr}");
+        });
+    }
+
+    #[test]
+    fn init_subscriber_warns_when_log_file_target_is_a_directory() {
+        let _ = Rerun::new(test_path!(
+            init_subscriber_warns_when_log_file_target_is_a_directory
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            use std::io::Write;
+
+            let temp_dir = tempfile::TempDir::new().unwrap();
+            let volume = ScratchTmpfs::new("");
+            let hidden_root = volume.path().to_path_buf();
+            let log_dir = hidden_root.join("logs");
+            let config_path = temp_dir.path().join("nails.toml");
+
+            std::fs::create_dir_all(log_dir.join("nails.log")).unwrap();
+
+            let mut config_file = std::fs::File::create(&config_path).unwrap();
+            writeln!(
+                config_file,
+                "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
+                hidden_root.display(),
+                log_dir.display(),
+            )
+            .unwrap();
+
+            let output = run_subprocess("directory-log-target-human", Some(&config_path));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            assert!(output.status.success(), "stderr={stderr}");
+            assert!(
+                stderr.contains("Failed to open log file"),
+                "stderr={stderr}"
+            );
+            assert!(
+                stderr.contains("directory fallback line"),
+                "stderr={stderr}"
+            );
+        });
+    }
+
+    #[test]
+    fn init_subscriber_quiet_mode_suppresses_log_file_open_warning() {
+        let _ = Rerun::new(test_path!(
+            init_subscriber_quiet_mode_suppresses_log_file_open_warning
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            use std::io::Write;
+
+            let temp_dir = tempfile::TempDir::new().unwrap();
+            let volume = ScratchTmpfs::new("");
+            let hidden_root = volume.path().to_path_buf();
+            let log_dir = hidden_root.join("logs");
+            let config_path = temp_dir.path().join("nails.toml");
+
+            std::fs::create_dir_all(log_dir.join("nails.log")).unwrap();
+
+            let mut config_file = std::fs::File::create(&config_path).unwrap();
+            writeln!(
+                config_file,
+                "hidden_volume_root = \"{}\"\nlog_path = \"{}\"",
+                hidden_root.display(),
+                log_dir.display(),
+            )
+            .unwrap();
+
+            let output = run_subprocess("directory-log-target-quiet", Some(&config_path));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            assert!(output.status.success(), "stderr={stderr}");
+            assert!(
+                stderr.contains("quiet directory fallback line"),
+                "stderr={stderr}"
+            );
+            assert!(
+                !stderr.contains("Failed to open log file"),
+                "stderr={stderr}"
+            );
+            assert!(!stderr.contains('\u{001b}'), "stderr={stderr}");
+        });
+    }
 }

@@ -19,14 +19,13 @@ Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per
 
 | Workflow | Trigger | Required check | Tier | Runner | Local `just` recipe |
 |---|---|---|---|---|---|
-| `.github/workflows/ci.yml` | PRs to `main`, push to `main`, dispatch | `gate` | 3 | `ubuntu-24.04` | `just ci-rust`, `just deny` |
-| `.github/workflows/pr-title.yml` | Pull request opened, edited, synchronized, reopened | `pr-title` | 3 | `ubuntu-24.04` | the commit-msg hook |
-| `.github/workflows/e2e.yml` | PRs to `main`, push to `main`, nightly, dispatch, `workflow_call` | `e2e-result` | 3 (affected) and 4 (nightly full) | `runner` input, default `ubuntu-24.04` | `just e2e` |
-| `.github/workflows/e2e-hetzner.yml` | Manual dispatch only | — | 4 | a provisioned Hetzner server | `just e2e` on that runner |
-| `.github/workflows/distro-e2e.yml` | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` | — (informational) | 4 | `runner` input, default `ubuntu-24.04` (KVM) | `nix build .#legacyPackages.x86_64-linux.e2e-distro.<scenario>` |
-| `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-24.04` | `just deny-full`, `just stress`, `cargo bench`, `just mutants` |
-| `.github/workflows/reproducibility.yml` | `workflow_call` from `release.yml`, weekly from `scheduled.yml` | — | 4 | `ubuntu-24.04` | `nix build .#nails-release` |
-| `.github/workflows/release.yml` | Push of `v*` tags, dispatch from a tag | — | release | `ubuntu-24.04` (E2E on the `e2e-runner` input) | `python3 -m ci.release check` |
+| `.github/workflows/ci.yml` | PRs to `main`, push to `main`, dispatch | `gate` | 3 | `ubuntu-26.04` | `just ci-rust`, `just deny` |
+| `.github/workflows/pr-title.yml` | Pull request opened, edited, synchronized, reopened | `pr-title` | 3 | `ubuntu-26.04` | the commit-msg hook |
+| `.github/workflows/e2e.yml` | PRs to `main`, push to `main`, nightly, dispatch, `workflow_call` | `e2e-result` | 3 (affected) and 4 (nightly full) | `runner` input, default `ubuntu-26.04` | `just e2e` |
+| `.github/workflows/distro-e2e.yml` | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` | — (informational) | 4 | `runner` input, default `ubuntu-26.04` (KVM) | `nix build .#legacyPackages.x86_64-linux.e2e-distro.<scenario>` |
+| `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-26.04` | `just deny-full`, `just stress`, `cargo bench`, `just mutants` |
+| `.github/workflows/reproducibility.yml` | `workflow_call` from `release.yml`, weekly from `scheduled.yml` | — | 4 | `ubuntu-26.04` | `nix build .#nails-release` |
+| `.github/workflows/release.yml` | Push of `v*` tags, dispatch from a tag | — | release | `ubuntu-26.04` (E2E on the `e2e-runner` input) | `python3 -m ci.release check` |
 
 The composite actions `.github/actions/setup-nix` and `.github/actions/report-status` are shared by these workflows and are not workflows themselves.
 
@@ -102,32 +101,25 @@ One workflow runs the NixOS VM suite in every lane. A `plan` job decides what ru
 | Pull request with the `full-e2e` label | `all` | Every test except the `performance` group. |
 | Push to `main` | `all` | Every test except the `performance` group; a test whose derivation already passed is substituted from the binary cache instead of booting again. |
 | Nightly schedule | `execute` | Every test driver runs directly (`run --execute`), so cached results do not count. The performance tests run here only, in an informational job of their own that never fails the run. |
-| Manual dispatch or `workflow_call` | input | `mode` (`affected`, `ci`, `all`, `execute`), `runner` and `max-shards`. `release.yml` calls it with `all` for the tagged commit; `e2e-hetzner.yml` calls it with a provisioned runner. |
+| Manual dispatch or `workflow_call` | input | `mode` (`affected`, `ci`, `all`, `execute`), `runner` and `max-shards`. `release.yml` calls it with `all` for the tagged commit. |
 
 - **One path filter.** The `plan` job of a pull request or push run compares the change with its base; a dispatch or a call runs the mode it asked for. When nothing under `nails-base/`, `nails-core/`, `nails-cli/`, `nails-forensics/`, `nails-platform/`, `nails-session/`, `nails-teardown/`, `nix/`, `ci/e2e/`, the setup-nix action, this workflow, the flake, the Cargo manifests or `rust-toolchain.toml` changed, no VM boots and `e2e-result` passes. A docs-only pull request therefore costs one short job.
-- **No secrets for untrusted code.** There is no `pull_request_target` and no approval environment. Fork and Dependabot pull requests run like any other and read the binary cache without being able to write to it.
+- **No secrets for untrusted code.** There is no `pull_request_target` and no approval environment. Fork pull requests and the runs Dependabot starts itself run like any other and read the binary cache without being able to write to it. A run that a person starts on a Dependabot pull request, by adding a label or pushing to it, gets the secrets like a run for any other branch of this repository (see [Cache trust rules](#cache-trust-rules)).
 - **Sharding.** `python3 -m ci.e2e plan --max-shards N --format github-matrix` balances the selected tests over as many shards as hold about 900 weighted seconds each (`SHARD_SECONDS` in `ci/e2e/plan.py`), never more than `max-shards` (10 by default) and never an empty one. Each shard's job timeout is 1.5 times its weighted load plus a 15-minute setup allowance (at least 30 minutes).
 - **Performance tests.** Wall-clock budgets on shared runners cannot gate a merge, so the shards of every mode exclude the `performance` group, and the `performance` job runs it on the selected runner in `execute` mode only. `07-performance.nix` times each sample inside the guest and holds the slowest of a few samples to its budget: `status` and `check`, which only read; `activate` and `deactivate` from the trigger until the new userspace has settled after the soft-reboot (`trigger_to_settled`, over two `--overlay-only` round trips); and `emergency` until a shell on the plain decoy is back (`trigger_to_backdoor`).
-- **Runner.** `runner` is the `runs-on` value as JSON and applies to the shards; `plan`, `e2e-result` and the reporting jobs always run on `ubuntu-24.04`. Hosted runners get KVM from setup-nix; a self-hosted runner must provide `/dev/kvm`. A single-use self-hosted runner can serve one job only, so dispatch with `max-shards: 1` for it.
+- **Runner.** `runner` is the `runs-on` value as JSON and applies to the shards; `plan`, `e2e-result` and the reporting jobs always run on `ubuntu-26.04`. Hosted runners get KVM from setup-nix; a self-hosted runner must provide `/dev/kvm`. A single-use self-hosted runner can serve one job only, so dispatch with `max-shards: 1` for it.
 - **Execution.** Each shard runs its tests with `python3 -m ci.e2e run --retries 1`: one `nix build --keep-going` over all of them (or, in `execute` mode, one driver after another). A test whose output is missing after the build failed. Failed tests run once more; a pass on that retry is listed as FLAKY in the step summary and raises a warning annotation, and the shard stays green. A test that fails twice fails the shard.
 - **Artifacts.** Each shard uploads its per-test durations (`e2e-durations-shard-N`, kept 90 days) and, only when it failed, the logs of its failed tests (`e2e-logs-shard-N`, kept 14 days). No privileged job uploads `**/*.log`, a performance file or metrics; nothing else from the runner leaves it.
 - **Weights.** Every shard appends a weight-drift report to its summary. The nightly run regenerates `nix/e2e-tests/shard-durations.json` from its durations and offers the result as the `shard-durations` artifact with a diff in the summary; committing it is a deliberate change.
 - **Unattended runs.** Pushes to `main` and nightly runs end in `report-status`, which keeps the `CI red: E2E` issue in step with the latest run (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
-- **Concurrency.** A newer push to a pull request cancels its older run; runs on `main` always finish, because each one fills the cache for the next.
+- **Concurrency.** A newer push to a pull request cancels its older run, and so does any label added to it: the new run plans and runs the selection again, and the cancelled run still reports a failed `e2e-result` on the same commit. A run on `main` that has started always finishes, because each one fills the cache for the next; GitHub keeps only one waiting run per concurrency group, so a newer push replaces a run that has not started yet.
 
 Every test VM gets 2 cores and 2 GB of memory, 4 GB for graphical nodes (`nix/e2e-tests/lib/vm-config.nix`, `graphical-vm-config.nix`). The size is fixed rather than derived from the runner, so a test evaluates to the same derivation on every host, no build needs `--impure`, and two VMs fit a four-vCPU hosted runner. Every test runs with a 900 s driver timeout unless it declares a longer `globalTimeout`.
 
-The target is that `mode=all` finishes in at most 10 shards and about 20 minutes on hosted runners. Record the measured shard count and wall-clock time of a full hosted run here once one has completed.
+The target is that `mode=all` finishes in at most 10 shards and about 20 minutes on hosted runners. In October 2026 one commit ran in both modes on hosted `ubuntu-24.04` runners, with no project cache to substitute from, so every test booted:
 
-### The manual Hetzner lane
-
-`e2e-hetzner.yml` is the one lane that runs the suite on a self-hosted Hetzner Cloud server, for when a hosted runner is too small or too slow. It is dispatch-only and gates nothing.
-
-- **Trigger.** `workflow_dispatch` with an exact `ref` input; `provision` refuses a `ref` that does not match the dispatched revision, because a reusable-workflow call always runs the caller's commit. Dispatch at the ref to test: `gh workflow run e2e-hetzner.yml --ref <ref> -f ref=<ref>`.
-- **Provisioning.** One job loops over a short ladder of `(server type, location)` candidates, checks the API is reachable, and creates the first available dedicated-vCPU server (nested KVM needs the `ccx` line). The server boots as a **single-use, ephemeral** GitHub runner from a just-in-time config minted through the API, so no reusable registration token sits in cloud-init.
-- **Run and teardown.** The `e2e` job calls `e2e.yml` with the provisioned runner label; `teardown` deletes the server with `if: always()`, even when the run failed. There is no six-hour budget check and no approval environment.
-- **Secrets.** `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID` and `RUNNER_REGISTRATION` (a fine-grained PAT with repository `administration: write`) live in a `hetzner` deployment environment for secret scoping; the environment carries no required reviewers, so it is not an approval gate. `CACHIX_AUTH_TOKEN` is passed on to `e2e.yml` as usual.
-- **Status.** The server-type ladder, the pinned runner version and KVM nesting need a live dispatch to confirm against current Hetzner inventory; adjust `HCLOUD_CANDIDATES` and `RUNNER_VERSION` in the workflow if a run reports none available.
+- **`all` passed.** The push to `main` and a dispatched run each passed every test except the `performance` group, 58 tests, in 10 shards of 7 to 22 minutes, and took 21 to 26 minutes from plan to result. `nix build` may run as many tests of a shard at once as the runner has vCPUs, four on a hosted runner (the Nix installer sets `max-jobs = auto`).
+- **`execute` failed.** The next two nightly runs failed alike: eight of the ten shards reached their job timeouts of 54 to 57 minutes, and `session-nixos-store-gc`, alone in its shard, failed on both attempts, although it passed in both `all` runs. `execute` builds the driver of every test of its shard and then runs the drivers one after another, against shard timeouts computed from the same weights as in `all`. The cause is not known yet; until it is, a red nightly run does not mean that `all`, the mode of pushes to `main` and of releases, fails.
 
 ### The portable distribution lane
 
@@ -140,9 +132,10 @@ There used to be a second, per-PR container lane (`distro-smoke` in `ci.yml`). I
 `distro-e2e.yml` boots real Debian and Ubuntu cloud images on the NixOS test driver through `numtide/nix-vm-test` (`nix/distro-tests/`).
 
 - **Trigger.** A nightly schedule, a pull request that gets the `distro-e2e` label, manual dispatch, and `workflow_call`.
-- **Runner.** Each VM needs KVM, so the `runner` input selects where the jobs run (a hosted `ubuntu-24.04` exposes `/dev/kvm`; a self-hosted KVM runner is a label list). The matrix is planned by `python3 -m ci.e2e distro-plan` and kept at or below eight parallel jobs (distributions times their shards).
+- **Runner.** Each VM needs KVM, so the `runner` input selects where the jobs run (a hosted `ubuntu-26.04` exposes `/dev/kvm`; a self-hosted KVM runner is a label list). The matrix is planned by `python3 -m ci.e2e distro-plan` and kept at or below eight parallel jobs (distributions times their shards).
 - **Coverage.** One smoke scenario per distribution (`nix/distro-tests/tests/smoke.nix`): platform detection, the decoy-persistence preflight, activation soft-rebooting the stock cloud image into an overlay of its own root (every hidden write, `/usr` included, lands on the hidden root; the ESP stays read-only), deactivation and emergency soft-rebooting back, and the host-side decoy disk-image leak check with null and positive controls.
 - **Adding a distribution** is one entry in `nix/distro-tests/images.nix`; see `nix/e2e-tests/README.md`. The image hashes and the `nix-vm-test` lock are pinned on a networked KVM host, not in the sandbox.
+- **Concurrency.** Every label added to a pull request to `main` starts a run, but only a run for the `distro-e2e` label tests anything. Any other pull request run skips `plan` and the VM jobs and gets a concurrency group of its own, so it can neither cancel the suite nor be cancelled. Adding `distro-e2e` again cancels the pull request's run in progress, and the cancelled run reports nothing: `distro-result` runs only in a run that was not cancelled. A scheduled or dispatched run never cancels a run in progress: it waits for an earlier run of the same event and ref, and since GitHub keeps only one waiting run per group, a newer run replaces one that has not started. A call counts as its caller's event, so call the workflow from a scheduled, dispatched or push-triggered workflow, not from a pull request one.
 
 ### Post-merge contract and the red-main rule
 
@@ -154,15 +147,9 @@ Merge queues are not available for a repository owned by a personal account, so 
 
 ## Pinned-input and dependency automation
 
-Dependabot covers the two ecosystems it understands, the Cargo workspace and the GitHub Actions in the workflows (`.github/dependabot.yml`): monthly, grouped into one pull request per ecosystem with the security updates kept separate, titled `build(deps):` / `ci(deps):` so the commit-msg hook and `pr-title.yml` accept them.
+Dependabot (`.github/dependabot.yml`) keeps the Cargo workspace, the GitHub Actions in the workflows, the Nix inputs in `flake.lock`, the pre-commit hook revisions and `rust-toolchain.toml` current: monthly, after a 7-day cooldown, grouped into one pull request per ecosystem with the security updates kept separate, titled `build(deps):` / `ci(deps):` so the commit-msg hook and `pr-title.yml` accept them. `rust-toolchain.toml` and the `rust-overlay` input share one pull request (a multi-ecosystem group), because the flake builds the pinned toolchain from `rust-overlay`: a new channel only evaluates with an overlay that knows it.
 
-The version sources Dependabot has no ecosystem for are refreshed by `scheduled.yml`, each on the first of the month and each opening its own pull request:
-
-- `lockfile` — `cargo update` moves every transitive dependency to its newest allowed version.
-- `flake-lock` — `nix flake update` refreshes the pinned Nix inputs.
-- `pre-commit` — `pre-commit autoupdate` bumps the hook revisions.
-
-`rust-toolchain.toml` is bumped by hand, because the `deny.toml` RUSTSEC ignores are tied to the exact pin. A pull request these jobs open under the default `GITHUB_TOKEN` does not start CI, so they open it under the `DEPENDENCY_UPDATE_TOKEN` secret (scoped to the `dependency-updates` environment) when it is set and fall back to printing the diff otherwise.
+Cargo.lock's transitive dependencies, which no Dependabot update touches, are refreshed by the `lockfile` task of `scheduled.yml` on the first of the month: `cargo update` moves every dependency to its newest allowed version. A pull request opened under the default `GITHUB_TOKEN` does not start CI, so the task opens it under the `DEPENDENCY_UPDATE_TOKEN` secret (scoped to the `dependency-updates` environment) when it is set and prints the diff otherwise.
 
 ## Nix setup and binary cache
 
@@ -180,7 +167,7 @@ The action also connects the project's public Cachix cache.
   - `vm-test-run-*`: passed VM tests, which later runs fetch instead of booting the test again.
 
   `nails-release-*` is never pushed. Each path goes up with its closure, except what cache.nixos.org already serves. To push more, add a prefix to `PUSH_ALLOW` in `cache_plan.py`.
-- **Who gets the token.** Only `e2e.yml` (also when `release.yml` or `e2e-hetzner.yml` call it) and the `nix-build` job of `ci.yml` pass it. GitHub withholds secrets from fork pull requests and Dependabot runs, so those stay read-only too.
+- **Who gets the token.** Only `e2e.yml` (also when `release.yml` calls it), the `plan` and `distro` jobs of `distro-e2e.yml` and the `nix-build` job of `ci.yml` pass it. GitHub withholds secrets from fork pull requests and from the runs Dependabot starts itself, so those stay read-only too. A run that a person starts on a Dependabot pull request, by adding a label or pushing to it, does get the token and may push, because the branch is in this repository; review the bumped versions before doing either.
 - **Release builds.** The `build` job of `release.yml` and `reproducibility.yml` set `cache: 'false'` and never read the project cache. `nails` is therefore compiled from source in every release and rebuild job, and nothing from the cache can end up in a release. The release's E2E run reads the cache like any other E2E run; it gates the release but produces none of its files.
 - **Trust boundary.** Anyone who can push a branch to this repository can push to the cache: once a run has configured the token, the code under test can read it. Write access already implies that trust, and release artifacts never come from the cache.
 
@@ -204,15 +191,15 @@ A release is one annotated `v*` tag on `main`; [RELEASING.md](../RELEASING.md) i
 | `build` | `version` | Builds `.#nails-release` without the project cache, so `nails` is compiled from source, with cargo's `--locked`. Smoke-tests the bundle: the archive `nails-<version>-x86_64-unknown-linux-musl.tar.gz` and its contents, `nails --version` and `checksums.txt`. |
 | `rebuild` | `build` | Calls `reproducibility.yml`, which builds the bundle again on a fresh runner and compares every file with the `build` output byte for byte; a mismatch uploads a diffoscope report. |
 | `e2e` | `version` | Calls `e2e.yml` with mode `all` on the tagged commit. A dispatch can pick the runner with `e2e-runner` and `e2e-max-shards`. |
-| `sbom` | `build` | `cargo cyclonedx` (a checked binary from `taiki-e/install-action`) describes the `nails` binary for `x86_64-unknown-linux-musl`, without build-time dependencies. `python3 -m ci.release sbom-libc` adds the statically linked musl, whose version `build` reads from the pinned nixpkgs, and `cyclonedx validate --fail-on-errors` checks the result against CycloneDX 1.5. |
-| `attest` | all of the above | `actions/attest` signs build provenance for the subjects of `checksums.txt` (the archive and the binary), and a second attestation binds the SBOM to them. Nothing is attested before every gate passed. |
-| `draft-release` | `attest` | `gh release create --draft --verify-tag` with the four assets, marked as a prerelease for an `X.Y.Z-rc.N` version. An existing release is never modified. |
+| `sbom` | `build` | `cargo cyclonedx` (a checked binary from `taiki-e/install-action`) describes the `nails` binary for `x86_64-unknown-linux-musl`, without build-time dependencies. `python3 -m ci.release sbom-libc` adds the statically linked musl, and `cyclonedx validate --fail-on-errors` checks the result against CycloneDX 1.5. `build` reads the musl version from `.#nails.libc`, the musl of the pinned nixpkgs: the release build links it instead of the copy that ships with the Rust toolchain, and fails if its linker map shows libc.a or one of musl's crt files (crt1.o, rcrt1.o, Scrt1.o, crti.o, crtn.o) from anywhere else. The link's crtbeginS.o and crtendS.o are GCC's own, from the musl C toolchain of nixpkgs that links the release build. `build` also collects the CVE IDs in the names of nixpkgs' musl patches, and `sbom-libc --musl-cve` records each as a backported fix in the musl component's `pedigree`. The musl component carries a CPE, so scanners match it; they ignore `pedigree`, so `python3 -m ci.release musl-vex` also writes `musl.openvex.json`, which marks those CVEs as fixed in musl (`grype --vex`). |
+| `attest` | all of the above | `actions/attest` signs build provenance for the subjects of `checksums.txt` (the archive and the binary), a second attestation binds the SBOM to them, and a third the VEX document. Nothing is attested before every gate passed. |
+| `draft-release` | `attest` | `gh release create --draft --verify-tag` with the five assets, marked as a prerelease for an `X.Y.Z-rc.N` version. An existing release is never modified. |
 | `report-status` | every job | Keeps the `CI red: Release` issue in step (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)). |
 
 - **Provenance level.** GitHub artifact attestations are SLSA v1.0 Build Level 2: signed provenance from a hosted build platform. The build does not run in an isolated reusable workflow, so the project does not claim Build Level 3. There is no provenance file among the assets; `gh attestation verify` fetches the attestation from GitHub.
 - **Reproducibility.** The cross-runner comparison of `rebuild` is the evidence that the binary is reproducible. `nix-store --realise --check` is not used: it repeats only the archive packaging, on the same runner and with the same compiled binary. `scheduled.yml` runs `reproducibility.yml` every week on `main` with two independent builds, so a regression shows up before a release does.
 - **Concurrency.** Runs for the same tag queue in the group `release-<tag>`; none cancels another.
-- **Assets.** `nails`, `nails-<version>-x86_64-unknown-linux-musl.tar.gz`, `checksums.txt` and `sbom.cdx.json`.
+- **Assets.** `nails`, `nails-<version>-x86_64-unknown-linux-musl.tar.gz`, `checksums.txt`, `sbom.cdx.json` and `musl.openvex.json`.
 
 ## Verifying a release
 
@@ -227,11 +214,11 @@ The pre-overhaul layout had 14 workflows and about 38 jobs; the mapping below sa
 | `ci.yml` with a `schedule:` and a `CI Success` aggregate | `ci.yml` is PR/push only, summarised by `gate`; the schedule moved to `scheduled.yml`. |
 | `nix-pr-verify.yml` | Folded into the `nix-build` and `lint-misc` jobs of `ci.yml`. |
 | `e2e-tests.yml` (dev-branch smoke) | `e2e.yml` in `affected` mode on every pull request. |
-| `e2e-tests-full.yml`, `e2e-tests-full-shard.yml` (`pull_request_target` + `hetzner-pr`) | `e2e.yml` in `all` mode (push, label, nightly); the Hetzner part is `e2e-hetzner.yml`, dispatch-only. |
+| `e2e-tests-full.yml`, `e2e-tests-full-shard.yml` (`pull_request_target` + `hetzner-pr`) | `e2e.yml` in `all` mode (push, label, nightly). The Hetzner runners are gone: Hetzner Cloud servers offer no KVM, which the VM tests need. |
 | The five standalone disk-forensics workflows | Removed; the decoy disk-image checks are now ordinary tests in the E2E suite's `forensic` group. |
 | `release.yml` (verify) + `publish-release.yml` + `release-core.yml` | One `release.yml` on the tag: build, rebuild, E2E, SBOM, attest, draft. |
 | `reproducibility.yml` with duplicated inputs | `reproducibility.yml` declares its inputs once (`workflow_call`) and also runs weekly from `scheduled.yml`. |
-| `update-flake-lock.yml` | The `flake-lock` and `pre-commit` tasks of `scheduled.yml`. |
+| `update-flake-lock.yml` | Dependabot's `nix` and `pre-commit` ecosystems (`.github/dependabot.yml`). |
 | Benchmarks and cargo-geiger in a PR job | `scheduled.yml` benchmarks (alerts, not budgets); geiger replaced by the compile-time `unsafe_code = "deny"` lint. |
 
 ## Local commands that mirror CI
@@ -263,16 +250,15 @@ GitHub settings that the workflows assume but cannot set themselves:
 
 - **Required checks.** The `main` branch ruleset requires `gate` (from `ci.yml`), `e2e-result` (from `e2e.yml`) and `pr-title` (from `pr-title.yml`). Make `e2e-result` required only after it has been green for about two weeks.
 - **Tag ruleset.** Protect `v*` tags to annotated tags only, and enable immutable releases.
-- **Environments.** `dependency-updates` holds `DEPENDENCY_UPDATE_TOKEN`; `hetzner` holds `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID` and `RUNNER_REGISTRATION`. Neither needs required reviewers. Delete the retired `hetzner-pr` environment.
+- **Environments.** `dependency-updates` holds `DEPENDENCY_UPDATE_TOKEN` and needs no required reviewers. The `hetzner-pr` and `hetzner` environments are no longer used: delete them, with the `hetzner` environment's secrets `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID` and `RUNNER_REGISTRATION`.
 - **Secrets.** `CACHIX_AUTH_TOKEN` as an Actions secret (see [Setting up the cache](#setting-up-the-cache)); never add it as a Dependabot secret.
 - **Schedules.** GitHub disables a workflow's schedule after 60 days without repository activity; a quiet period needs a manual dispatch of `scheduled.yml` (or any push) to re-arm it.
 
 ## Secrets and permissions
 
-- `CACHIX_AUTH_TOKEN` is optional. With it, `e2e.yml` and the `nix-build` job of `ci.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
-- `DEPENDENCY_UPDATE_TOKEN` is optional and used only by the pinned-input refresh jobs in `scheduled.yml`, so the pull requests they open start CI. Without it they print the diff to the run summary.
-- The Hetzner lane's secrets (`HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID`, `RUNNER_REGISTRATION`) live in the `hetzner` environment and are used by no other lane.
-- No E2E lane on a hosted runner needs any other secret. The retired `hetzner-pr` approval environment is no longer used and can be deleted.
+- `CACHIX_AUTH_TOKEN` is optional. With it, `e2e.yml`, the `plan` and `distro` jobs of `distro-e2e.yml` and the `nix-build` job of `ci.yml` push build results to the project binary cache for trusted events (see [Nix setup and binary cache](#nix-setup-and-binary-cache)). Store it as an Actions secret only.
+- `DEPENDENCY_UPDATE_TOKEN` is optional and used only by the Cargo.lock refresh in `scheduled.yml`, so the pull request it opens starts CI. Without it the job prints the diff to the run summary.
+- No E2E lane needs any other secret. The retired `hetzner-pr` approval environment and the `hetzner` environment with its secrets (`HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID`, `RUNNER_REGISTRATION`) are no longer used and can be deleted.
 - Release attestations are signed with the `attest` job's OIDC identity (`id-token: write`); no long-lived signing secret exists.
 
 ## Operational caveats

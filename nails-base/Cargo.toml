@@ -21,9 +21,9 @@ path = "src/lib.rs"
 
 [features]
 # The test-only hooks of this crate (the runtime host-interaction skip, the
-# attach-gate device-check bypass, the override environment variables). Off by
-# default; nails-core's `test-hooks` turns it on for the test builds, so none of
-# it reaches a shipped binary. See nails-core/Cargo.toml.
+# override environment variables). Off by default; nails-core's `test-hooks`
+# turns it on for the test builds, so none of it reaches a shipped binary. See
+# nails-core/Cargo.toml.
 test-hooks = []
 # Exposes the test fixtures (`Config::test_default`, `MockFilesystem`, the
 # real-kernel test support and the captured kernel fixtures) to the test code

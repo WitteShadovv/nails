@@ -21,7 +21,7 @@ Options:
           Check as for `activate --overlay-only` (skip the hidden NixOS build checks)
 
       --nixos-flake <FLAKE_REF>
-          NixOS layer: check a specific flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
+          NixOS layer: check a specific flake reference as <path>#<host> (e.g. /mnt/data/nixos#my-host)
 
   -v, --verbose...
           More diagnostics on stderr: -v for debug, -vv for trace
@@ -33,6 +33,11 @@ Options:
 
   -q, --quiet
           Print only errors and the final result
+
+      --allow-decoy-storage
+          Report a hidden root on this computer's own storage as a warning
+
+          Mirrors `activate --allow-decoy-storage`: a root this computer's own storage seems to hold then warns instead of failing. A folder that is no mount point, a covered root and storage that cannot be judged still fail.
 
       --color <WHEN>
           When to use colour

@@ -230,6 +230,25 @@ fn strict_load_reports_missing_file() {
     assert!(matches!(result, Err(NailsError::ConfigNotFound { .. })));
 }
 
+/// A file that cannot be read keeps the kind of its error, so the CLI can
+/// tell a refused read (it then names the `sudo` line) from the others. A
+/// directory stands in for the file: it fails the read for root as well.
+#[test]
+fn strict_load_keeps_the_kind_of_a_read_error() {
+    let dir = tempfile::tempdir().unwrap();
+    match LoadedConfig::load(dir.path()) {
+        Err(error @ NailsError::IoError { .. }) => {
+            assert_eq!(error.io_kind(), Some(std::io::ErrorKind::IsADirectory));
+            assert!(
+                error
+                    .to_string()
+                    .contains(&dir.path().display().to_string())
+            );
+        }
+        other => panic!("expected an I/O error, got {other:?}"),
+    }
+}
+
 #[test]
 fn annotated_toml_notes_unset_optional_keys_and_missing_file() {
     let loaded = LoadedConfig::defaults(Path::new("/nonexistent/nails.toml"));

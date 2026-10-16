@@ -29,8 +29,9 @@
 //!
 //! Every probe reads the filesystem through the [`Filesystem`] trait; nothing
 //! here calls `swapoff` or mutates anything. The same classifier backs the
-//! pre-flight check, `verify`, and the post-switch re-check, so all three report
-//! identical verdicts.
+//! pre-flight check (which `nails check` runs too) and `verify`, so both report
+//! identical verdicts. Nothing re-checks swap during the session: swap enabled
+//! after activation shows only when `verify` or `check` is run.
 
 use super::{CheckResult, PreFlightCheck};
 use crate::{Filesystem, Result};
@@ -245,23 +246,13 @@ fn crypttab_random_key<F: Filesystem>(fs: &F, name: &str) -> bool {
     let Ok(content) = fs.read_file_content(Path::new(CRYPTTAB)) else {
         return false;
     };
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.first() != Some(&name) {
-            continue;
-        }
-        let keyfile = fields.get(2).copied().unwrap_or("");
-        let options = fields.get(3).copied().unwrap_or("");
-        if keyfile == "/dev/urandom" || keyfile == "/dev/random" {
-            return true;
-        }
-        return options.split(',').any(|o| o.trim() == "swap");
-    }
-    false
+    crate::crypttab::parse_crypttab(&content)
+        .into_iter()
+        .find(|entry| entry.name == name)
+        .is_some_and(|entry| {
+            matches!(entry.key.as_deref(), Some("/dev/urandom" | "/dev/random"))
+                || entry.has_option("swap")
+        })
 }
 
 /// Hibernation findings: a configured resume device or a `resume=` kernel
@@ -497,6 +488,23 @@ mod tests {
         fs.mock_add_file(CRYPTTAB, "cryptswap /dev/sda2 /etc/keys/swap.key luks\n");
         let result = SwapCheck::new().run(&fs).unwrap();
         assert!(result.is_fail(), "{result:?}");
+    }
+
+    #[test]
+    fn a_one_field_crypttab_line_is_skipped_as_systemd_skips_it() {
+        // systemd ignores a line with fewer than two fields, so the full line
+        // after it is the swap's entry.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            PROC_SWAPS,
+            &proc_swaps(&["/dev/mapper/cryptswap partition 8388604 0 -2"]),
+        );
+        fs.mock_add_file(
+            CRYPTTAB,
+            "cryptswap\ncryptswap /dev/sda2 /dev/urandom swap\n",
+        );
+        let result = SwapCheck::new().run(&fs).unwrap();
+        assert!(result.is_warn(), "{result:?}");
     }
 
     #[test]

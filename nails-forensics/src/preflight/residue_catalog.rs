@@ -117,14 +117,21 @@ impl<F: Filesystem> PreFlightCheck<F> for ResidueCatalogCheck {
         if !warnings.is_empty() {
             let mut lines: Vec<String> = warnings.iter().map(describe).collect();
             lines.extend(notes.iter().map(|hit| format!("note: {}", describe(hit))));
+            let live = if warnings.len() == 1 {
+                "1 residue channel is live".to_string()
+            } else {
+                format!("{} residue channels are live", warnings.len())
+            };
             return Ok(CheckResult::Warn(format!(
-                "{} residue channel(s) are live on this decoy: {}",
-                warnings.len(),
+                "{live} on this decoy: {}",
                 lines.join("; ")
             )));
         }
 
-        let mut message = format!("no warned residue channel is live ({probed} catalog probe(s))");
+        let mut message = format!(
+            "no warned residue channel is live ({})",
+            nails_base::output::count_noun(probed, "catalog probe", "catalog probes")
+        );
         if !notes.is_empty() {
             let lines: Vec<String> = notes.iter().map(describe).collect();
             message.push_str(&format!("; noted: {}", lines.join("; ")));
@@ -164,6 +171,11 @@ mod tests {
             .run(&RealFilesystem)
             .unwrap();
         assert!(result.is_pass(), "{}", result.message());
+        assert!(
+            result.message().ends_with(" catalog probes)"),
+            "{}",
+            result.message()
+        );
     }
 
     #[test]
@@ -178,11 +190,33 @@ mod tests {
             .unwrap();
 
         assert!(result.is_warn(), "{}", result.message());
+        assert!(
+            result
+                .message()
+                .starts_with("1 residue channel is live on this decoy: "),
+            "{}",
+            result.message()
+        );
         assert!(result.message().contains("lvm-metadata-archive"));
         assert!(
             result
                 .message()
                 .contains("decoy-requirements.md#lvm-metadata-archives")
+        );
+
+        // A second live channel: the plural.
+        let udisks = root.path().join("var/lib/udisks2");
+        std::fs::create_dir_all(&udisks).unwrap();
+        std::fs::write(udisks.join("drive.conf"), "x").unwrap();
+        let result = ResidueCatalogCheck::with_root(root.path())
+            .run(&RealFilesystem)
+            .unwrap();
+        assert!(
+            result
+                .message()
+                .starts_with("2 residue channels are live on this decoy: "),
+            "{}",
+            result.message()
         );
     }
 

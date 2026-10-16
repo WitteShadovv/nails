@@ -28,7 +28,7 @@ let
     {
       imports = [ ./vm-config.nix ];
       environment.systemPackages = [
-        self.packages.${pkgs.system}.nails
+        self.packages.${pkgs.stdenv.hostPlatform.system}.nails
       ]
       ++ pkgs.lib.optional python3 pkgs.python3
       ++ extraPackages;

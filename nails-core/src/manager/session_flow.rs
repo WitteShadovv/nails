@@ -8,7 +8,7 @@
 //! this adds the pre-flight registry, the hidden NixOS configuration, the
 //! state file and the backend chain.
 
-use super::NailsManager;
+use super::{NailsManager, PreflightOptions};
 use crate::error::{NailsError, Result};
 use crate::filesystem::Filesystem;
 use crate::platform::PlatformKind;
@@ -31,6 +31,33 @@ pub struct EnterOptions {
     pub accept_persistent_decoy: bool,
     /// The running binary, copied to RAM for the panic path.
     pub binary: PathBuf,
+    /// Accept a hidden root on storage the attach gate takes for the decoy's
+    /// (`--allow-decoy-storage`). The activation's own writes accept it, the
+    /// pre-flight check warns, and the plan records it.
+    pub allow_decoy_storage: bool,
+}
+
+impl EnterOptions {
+    /// The pre-flight options of this activation: what `nails check` builds
+    /// from the same flags, so both run the same checks. The registry stays
+    /// read-only, as it does for `check`.
+    pub fn preflight(&self) -> PreflightOptions {
+        PreflightOptions {
+            overlay_only: self.overlay_only,
+            accept_persistent_decoy: self.accept_persistent_decoy,
+            allow_decoy_storage: self.allow_decoy_storage,
+            ..PreflightOptions::default()
+        }
+    }
+
+    /// The attach-gate override these options ask for.
+    pub fn allow(&self) -> crate::hidden_root::Allow {
+        if self.allow_decoy_storage {
+            crate::hidden_root::Allow::DecoyStorage
+        } else {
+            crate::hidden_root::Allow::Nothing
+        }
+    }
 }
 
 /// What [`NailsManager::enter_session`] did.
@@ -40,7 +67,14 @@ pub enum EnterOutcome {
     AlreadyActive,
     /// The entry is prepared and armed; [`NailsManager::trigger_entry`] starts
     /// the soft-reboot.
-    Prepared(Box<entry::Entry>),
+    Prepared {
+        /// The prepared entry.
+        entry: Box<entry::Entry>,
+        /// How long the activation took, from its start to the commit to
+        /// Active: the duration the state file records as the last
+        /// activation, so `activate` and `status` show the same time.
+        elapsed: std::time::Duration,
+    },
 }
 
 /// What [`NailsManager::recover_session`] did.
@@ -82,6 +116,29 @@ impl Machine {
     }
 }
 
+/// Why `hidden_root` is not a volume of its own, when only the operator's
+/// override (`allow`) lets the entry use it: what the plan records.
+fn accepted_decoy_storage<F: Filesystem>(
+    fs: &F,
+    hidden_root: &std::path::Path,
+    allow: crate::hidden_root::Allow,
+) -> Result<Option<String>> {
+    use crate::hidden_root::{Assessment, HiddenRoot};
+    Ok(match HiddenRoot::assess_allowing(fs, hidden_root, allow)? {
+        Assessment::Warned(refusal) if refusal.overridden() => Some(refusal.reason),
+        _ => None,
+    })
+}
+
+/// `step`, between two cancel checkpoints: a Ctrl+C reaches the step's
+/// child processes too, so a cancel outranks the failure it caused.
+fn cancellable<T>(step: impl FnOnce() -> Result<T>) -> Result<T> {
+    crate::cancel::checkpoint()?;
+    let result = step();
+    crate::cancel::checkpoint()?;
+    result
+}
+
 impl<F: Filesystem> NailsManager<F> {
     /// Where the machine is right now.
     pub fn session_view(&self) -> SessionView {
@@ -103,10 +160,40 @@ impl<F: Filesystem> NailsManager<F> {
         }
     }
 
+    /// The builder the entry builds the hidden NixOS system with: only on a
+    /// NixOS host (`nixos`), with a configured build target, and not under
+    /// `--overlay-only`.
+    fn hidden_builder(
+        &self,
+        nixos: bool,
+        options: &EnterOptions,
+    ) -> Option<&crate::nixos::NixOSBuilder> {
+        self.nixos_builder
+            .as_ref()
+            .filter(|_| nixos && !options.overlay_only)
+    }
+
+    /// Whether entering with `options` builds a hidden NixOS system into the
+    /// next root, decided as the entry decides it. False on a host the entry
+    /// would refuse.
+    pub fn builds_hidden_system(&self, options: &EnterOptions) -> bool {
+        self.builds_hidden_system_on(&Machine::system(), options)
+    }
+
+    fn builds_hidden_system_on(&self, machine: &Machine, options: &EnterOptions) -> bool {
+        self.require_supported_host(machine)
+            .is_ok_and(|nixos| self.hidden_builder(nixos, options).is_some())
+    }
+
     /// Prepare the entry into the hidden root: pre-flight, the hidden NixOS
     /// configuration, the next root and the armed plan. The state file records
     /// the session as active before the soft-reboot, because the activating
     /// process dies in it.
+    ///
+    /// A SIGINT or SIGTERM ([`crate::cancel`]) stops it at the next step
+    /// boundary with [`NailsError::Cancelled`], everything undone: the last
+    /// boundary is right before the state is recorded, after which the caller
+    /// only enqueues the soft-reboot.
     pub fn enter_session(
         &mut self,
         options: &EnterOptions,
@@ -124,12 +211,23 @@ impl<F: Filesystem> NailsManager<F> {
         if self.session_view_on(machine).is_hidden() {
             return Ok(EnterOutcome::AlreadyActive);
         }
-        let nixos = self.require_supported_host(machine)?;
-        if !options.skip_preflight {
-            self.stage_hidden_config(options.overlay_only)?;
-            self.run_preflight_checks(options.overlay_only, options.accept_persistent_decoy)?;
-        }
+        crate::cancel::checkpoint()?;
+        // The activation's one clock: it covers the staging and the pre-flight
+        // checks too, as the progress line and the recorded duration say.
         let started = std::time::Instant::now();
+        // What the operator accepted holds for every write of this activation.
+        self.allow = options.allow();
+        let nixos = self.require_supported_host(machine)?;
+        // A decoy entry that opens the hidden volume, and the decoy's own
+        // flake as the hidden system, are refused in every case;
+        // --no-preflight skips the other checks only.
+        if options.skip_preflight {
+            cancellable(|| self.run_backend_entries_check())?;
+            self.refuse_decoy_flake(options.overlay_only)?;
+        } else {
+            cancellable(|| self.stage_hidden_config(options.overlay_only))?;
+            cancellable(|| self.run_preflight_checks(&options.preflight()))?;
+        }
         let hidden_root = self.config.hidden_volume_root.clone();
         let entries = machine
             .mounts()
@@ -141,10 +239,9 @@ impl<F: Filesystem> NailsManager<F> {
             .map(|chain| chain.dm_names)
             .unwrap_or_default();
         let config_toml = toml::to_string(&self.config).ok();
-        let builder = self
-            .nixos_builder
-            .as_ref()
-            .filter(|_| nixos && !options.overlay_only);
+        let accepted_decoy_storage =
+            accepted_decoy_storage(&self.filesystem, &hidden_root, self.allow)?;
+        let builder = self.hidden_builder(nixos, options);
         let inputs = EntryInputs {
             hidden_root: &hidden_root,
             decoy_root,
@@ -158,14 +255,23 @@ impl<F: Filesystem> NailsManager<F> {
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
             rebuild_space_mb: self.config.rebuild_space_mb,
             read_only_disks: self.config.session_mounts.read_only,
+            accepted_decoy_storage,
         };
         let prepared = entry::prepare(&machine.paths, &inputs, host)?;
-        if let Err(e) = self.record_entry(&prepared, started.elapsed()) {
+        let elapsed = started.elapsed();
+        // The last boundary: once recorded, the caller only enqueues the
+        // soft-reboot.
+        let recorded =
+            crate::cancel::checkpoint().and_then(|()| self.record_entry(&prepared, elapsed));
+        if let Err(e) = recorded {
             entry::rollback(&machine.paths);
             let _ = host.daemon_reload();
             return Err(e);
         }
-        Ok(EnterOutcome::Prepared(Box::new(prepared)))
+        Ok(EnterOutcome::Prepared {
+            entry: Box::new(prepared),
+            elapsed,
+        })
     }
 
     fn record_entry(

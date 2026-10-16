@@ -36,7 +36,9 @@ pub fn requires_root(command: &Commands) -> bool {
         | Commands::GuardDevice { .. } => true,
         // Planting writes into the overlays, a live scan reads raw block devices
         // and reset deletes from the hidden volume. An offline scan of image
-        // files and the status view need no privileges.
+        // files and the status view are not gated here: they still read the
+        // configuration, which `init` leaves readable by root only, and a
+        // refused read names the `sudo` line (`commands::config_read_hint`).
         Commands::Rehearse(args) => match &args.step {
             Some(RehearseStep::Plant(_) | RehearseStep::Reset) => true,
             Some(RehearseStep::Scan(scan)) => !scan.offline,
@@ -68,21 +70,69 @@ fn subcommand_name(command: &Commands) -> &'static str {
     }
 }
 
-/// Build the "must run as root" message for `subcommand`.
+/// The `sudo` line that runs this invocation again as root: the running
+/// binary followed by `args`, the arguments it was given (the global
+/// `--config` and every flag included), each quoted for a POSIX shell where it
+/// needs it. Without arguments it names `subcommand` alone.
 ///
 /// The absolute path to the running binary is used so the suggested `sudo`
-/// invocation works regardless of the caller's `PATH` and regardless of whether
-/// the binary is reached through a decoy symlink. When the path cannot be
-/// resolved the bare command name is used as a last resort.
-fn needs_root_message(argv0: Option<&std::path::Path>, subcommand: &str) -> String {
+/// invocation works regardless of the caller's `PATH` (sudo's `secure_path`
+/// never includes the hidden volume) and regardless of whether the binary is
+/// reached through a decoy symlink. When the path cannot be resolved the bare
+/// command name is used as a last resort.
+pub(crate) fn sudo_command(
+    argv0: Option<&std::path::Path>,
+    subcommand: &str,
+    args: &[std::ffi::OsString],
+) -> String {
     let binary = argv0
-        .map(|p| p.display().to_string())
+        .map(|path| shell_word(path.as_os_str()))
         .unwrap_or_else(|| "nails".to_string());
-    format!("this command must run as root: try `sudo {binary} {subcommand}`")
+    let args = if args.is_empty() {
+        subcommand.to_string()
+    } else {
+        args.iter()
+            .map(|arg| shell_word(arg))
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    format!("sudo {binary} {args}")
+}
+
+/// `text` as one word for a POSIX shell: as it is when no shell treats any of
+/// its characters specially, otherwise in single quotes (a `'` as `'\''`).
+fn shell_word(text: &std::ffi::OsStr) -> String {
+    let text = text.to_string_lossy();
+    let plain = !text.is_empty()
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-./:=@%+,".contains(&b));
+    if plain {
+        text.into_owned()
+    } else {
+        format!("'{}'", text.replace('\'', "'\\''"))
+    }
+}
+
+/// The arguments this process was started with, without the program name.
+pub(crate) fn invocation_args() -> Vec<std::ffi::OsString> {
+    std::env::args_os().skip(1).collect()
+}
+
+/// Build the "must run as root" message for `subcommand`, run with `args`.
+fn needs_root_message(
+    argv0: Option<&std::path::Path>,
+    subcommand: &str,
+    args: &[std::ffi::OsString],
+) -> String {
+    format!(
+        "this command must run as root: try `{}`",
+        sudo_command(argv0, subcommand, args)
+    )
 }
 
 /// True when the effective user is root.
-fn effective_user_is_root() -> bool {
+pub(crate) fn effective_user_is_root() -> bool {
     nix::unistd::geteuid().is_root()
 }
 
@@ -119,7 +169,11 @@ pub fn enforce_root(
     }
 
     let argv0 = std::env::current_exe().ok();
-    let message = needs_root_message(argv0.as_deref(), subcommand_name(command));
+    let message = needs_root_message(
+        argv0.as_deref(),
+        subcommand_name(command),
+        &invocation_args(),
+    );
     emit_needs_root(settings, &message);
     Some(ExitStatus::NeedsRoot)
 }
@@ -166,18 +220,45 @@ mod tests {
         assert!(!requires_root(&Commands::Check(Default::default())));
     }
 
+    fn args(args: &[&str]) -> Vec<std::ffi::OsString> {
+        args.iter().map(std::ffi::OsString::from).collect()
+    }
+
     #[test]
-    fn message_names_the_absolute_binary_and_subcommand() {
-        let msg = needs_root_message(Some(Path::new("/opt/hidden/nails")), "activate");
+    fn message_names_the_absolute_binary_and_every_argument() {
+        let msg = needs_root_message(
+            Some(Path::new("/opt/hidden/nails")),
+            "activate",
+            &args(&[
+                "--config",
+                "/opt/hidden/config/nails.toml",
+                "activate",
+                "-y",
+            ]),
+        );
         assert_eq!(
             msg,
-            "this command must run as root: try `sudo /opt/hidden/nails activate`"
+            "this command must run as root: try \
+             `sudo /opt/hidden/nails --config /opt/hidden/config/nails.toml activate -y`"
         );
     }
 
     #[test]
-    fn message_falls_back_to_bare_name_without_argv0() {
-        let msg = needs_root_message(None, "deactivate");
+    fn message_falls_back_to_bare_name_without_argv0_or_arguments() {
+        let msg = needs_root_message(None, "deactivate", &[]);
         assert!(msg.contains("sudo nails deactivate"));
+    }
+
+    #[test]
+    fn an_argument_a_shell_would_split_or_expand_is_quoted() {
+        assert_eq!(
+            sudo_command(
+                Some(Path::new("/mnt/my data/nails")),
+                "status",
+                &args(&["--config", "/mnt/my data/it's.toml", "status", "--details"]),
+            ),
+            "sudo '/mnt/my data/nails' --config '/mnt/my data/it'\\''s.toml' status --details"
+        );
+        assert_eq!(sudo_command(None, "x", &args(&[""])), "sudo nails ''");
     }
 }

@@ -52,18 +52,24 @@ decoy disk.
 
 ### Warn (surfaced, never blocking)
 
-- **Root filesystem type** — the persistent substrate the decoy's own records
-  live on, outside the overlays.
 - **atime policy** — a root mounted without `noatime`/`relatime` records read
   access, leaving an atime trail on the decoy.
-- **Crash-dump channels** — a disk `kernel.core_pattern`, systemd-coredump
-  `Storage=external`, registered pstore records, or an armed kdump. Each can
-  persist process or kernel memory (which may contain hidden-session data) to the
-  decoy disk or firmware-backed storage.
+- **Crash-dump channels** — a disk `kernel.core_pattern`, systemd-coredump with
+  any setting other than `Storage=none` together with `ProcessSizeMax=0`,
+  registered pstore records, or an armed kdump. Each can persist process or
+  kernel memory (which may contain hidden-session data) to the decoy disk or
+  firmware-backed storage. systemd-coredump writes every core it processes to
+  `/var/lib/systemd/coredump` first, so `Storage=none` alone still puts each
+  one on the decoy disk for as long as it takes; `ProcessSizeMax=0` stops the
+  processing, and with both set it only logs that a program crashed. Keep
+  systemd-coredump running with those two settings rather than turning it off:
+  without it the kernel writes a `core` file into the crashing program's
+  working directory.
 - **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which rebuilds the
   decoy on its own schedule (and can touch EFI NVRAM). The generated hidden
-  module force-disables `system.autoUpgrade`, but with `--overlay-only` the
-  decoy's own system, timer included, runs in the hidden session.
+  module force-disables `system.autoUpgrade`, but with `--overlay-only`, or
+  with a hidden flake that does not import that module, the decoy's own timer
+  runs in the hidden session.
 - **sudo's own logs** — `Defaults logfile=` in `/etc/sudoers` or
   `/etc/sudoers.d/*` writes every sudo command line to a file, and I/O logging
   (`log_input`, `log_output`, the `log_stdin`/`log_ttyout`/... flags, or the
@@ -83,16 +89,19 @@ leaves the whole hidden environment — the root overlay, the open dm-crypt
 mapper and the master key — resident in RAM behind the hidden session's lock
 screen. The decoy is not running at all, and whoever unlocks that screen is in
 the live hidden session. logind's defaults make this the normal
-case: `HandleLidSwitch` and `HandleLidSwitchExternalPower` both default to
-`suspend`, and desktops add their own idle auto-suspend.
+case: `HandleLidSwitch` defaults to `suspend`, `HandleLidSwitchExternalPower`
+takes `HandleLidSwitch`'s value unless it is set, and desktops add their own
+idle auto-suspend.
 
 The `sleep-policy` pre-flight check parses `/etc/systemd/logind.conf` and its
 `logind.conf.d/*.conf` drop-ins and warns (never blocks) when the effective lid
-or idle settings would suspend an active session.
+or idle settings would suspend an active session, and when a closed lid is set
+to `ignore` (on battery, or on external power), which leaves the session running
+and unlocked behind the lid.
 
-Set the decoy's lid switch so a closed lid does not suspend. The neutral choice
-is `lock` (lock the screen, stay running) or `ignore`; add a drop-in rather than
-editing the main file:
+Set the decoy's lid switch so a closed lid does not suspend. Use `lock` (lock the
+screen, stay running): `ignore` also keeps the host awake but leaves the screen
+unlocked behind a closed lid. Add a drop-in rather than editing the main file:
 
 ```ini
 # /etc/systemd/logind.conf.d/10-lid.conf
@@ -118,12 +127,18 @@ services.logind.settings.Login = {
 Also disable any desktop-level auto-suspend (GNOME/KDE power settings), which
 logind does not govern.
 
-For defence in depth, set `sleep_policy.mode` in `nails.toml`. `block` holds a
-sleep/idle inhibitor for the life of the session so the host cannot suspend while
-active; `teardown` holds a sleep *delay* inhibitor and powers the machine off
-when the host is about to sleep, within logind's `InhibitDelayMaxSec` window
-(default 5s). Both run as runtime units of the hidden session. The inhibitor is a runtime backstop — still fix the lid
-switch above, since a blocked suspend with the lid shut can overheat a laptop.
+For defence in depth, set `sleep_policy.mode` in `nails.toml`. `block` holds
+sleep and idle block inhibitors for the life of the session so the host cannot suspend while
+active. logind ignores sleep inhibitors for the lid switch by default
+(`LidSwitchIgnoreInhibited=yes`), so when a closed lid would sleep, `block` also
+takes the lid switch from logind (a `handle-lid-switch` inhibitor): the closed lid
+then does nothing, and does not lock the screen either. `teardown` holds a sleep
+*delay* inhibitor, which logind honours for the lid too, and powers the machine
+off when the host is about to sleep, within logind's `InhibitDelayMaxSec` window
+(default 5s). Both run as runtime units of the hidden session. The inhibitors are
+a runtime backstop — still set the lid switch to `lock` above, since a laptop kept
+running with the lid shut can overheat and `block` leaves a lid that locks to
+logind.
 
 ## Satisfying the requirements per platform
 
@@ -139,8 +154,87 @@ switch above, since a blocked suspend with the lid shut can overheat a laptop.
 - **No classic syslog / audit**: do not enable `services.rsyslogd`,
   `services.syslog-ng` or `security.auditd` / the audit framework on the decoy.
 - **noatime**: add `"noatime"` to the root filesystem's mount options.
+- **Core dumps kept off the disk**:
+  `systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; };`.
 - **No swap / hibernation**: leave `swapDevices` empty and do not configure
   `boot.resumeDevice` or a resume kernel parameter.
+- **Nothing in `/etc/nixos` names the hidden environment**. The
+  `suspicious-nails-reference` check reads every `.nix` file there and refuses
+  activation with the file, the line and the text it found, in comments as in
+  code, when a line holds:
+  - the hidden volume's mount point as a whole path (`/mnt/data`, also
+    `/mnt/data/nixos`, but not `/mnt/data2`), or the units systemd names after
+    it (`mnt-data.mount`, `mnt-data.automount`);
+  - its device as a whole path (`/dev/mapper/data`,
+    `/dev/disk/by-id/dm-name-data`, the `/dev/disk/by-id/dm-uuid-CRYPT-…-data`
+    link of a mapping called `data`), or the unit systemd names after it
+    (`dev-mapper-data.device`);
+  - what it is stored on, unless the decoy's own volumes sit on it too: its
+    device paths, every link udev made for it, its uuids and its labels.
+    NAILS reads the layers below the mount from the kernel and their names
+    from udev: the partition or disk as a whole path (`/dev/sdb2`), the
+    mapping below a logical volume, the image file behind a loop device;
+    every link udev made for one of these layers or for the hidden volume's
+    own device, among them each `/dev/disk/by-id`, `by-path`, `by-partlabel`,
+    `by-partuuid`, `by-diskseq`, `by-uuid` and `by-label` name and the LVM
+    path `/dev/<vg>/<lv>`; their uuids (the partition's, the LUKS header's
+    and the filesystem's own, as in `UUID=<uuid>` or a `luks-<uuid>` name);
+    and their labels written as a tag (`LABEL=`, `PARTLABEL=`) or as the
+    `label` of a `fileSystems` or `swapDevices` entry;
+  - its mapping name where a line opens the volume: a
+    `boot.initrd.luks.devices` or `boot.initrd.clevis.devices` entry
+    (`luks.devices.data`, `luks.devices."data"`, `data = { … }` inside
+    `luks.devices = { … }` or a `lib.mkForce`, `lib.mkMerge`, `with` or
+    `let … in` value of it, `devices.data` inside `luks = { … }`, the same in
+    fully nested blocks, or `inherit data;`), also in a block commented out
+    line by line whose lines are indented at least as deep as its first; the
+    `name` of such an entry or of one in the old list form
+    (`luks.devices = [ { name = "data"; … } ]`);
+    `fileSystems.<path>.encrypted.label`; `systemd-cryptsetup@data.service`;
+    a crypttab line, at the start of a line or of a string, that starts with
+    the name (`data UUID=… none luks`, `data /var/lib/vault.img none luks`);
+    or a word after `cryptsetup` (or `systemd-cryptsetup`) and one of the
+    verbs that open, close or ask about a mapping: `open`, `create`, `close`,
+    `remove`, `status`, `resize`, `refresh`, `luksSuspend`, `luksResume`, the
+    `luks`, `plain`, `tcrypt`, `loopaes`, `bitlk` and `fvault2` forms of
+    `Open` and `Close` (`luksOpen`, `plainClose`, …), and
+    `systemd-cryptsetup`'s `attach` and `detach`. Every word after such a
+    verb that is not part of a path counts, up to the end of the command: a
+    `;`, `|`, `&` or `#`, or the end of a line that is not continued with
+    `\`. A comment or prose counts the same as a script:
+    `cryptsetup open /dev/sdb2 data` and
+    `# use cryptsetup open for the data volume` are both refused;
+  - text NAILS writes during a session, or the word `nails`.
+
+  A unit name with a character systemd escapes counts in both spellings: with
+  one backslash, as a comment or an indented `''…''` string holds it
+  (`mnt-my\x2ddata.mount` for `/mnt/my-data`), and with two, as a
+  double-quoted string must write it (`"mnt-my\\x2ddata.mount"`).
+
+  Ordinary configuration passes. The mapping name as an ordinary word passes
+  (`description = "Back up user data"`, `cryptsetup` next to it in a package
+  list, or in prose that puts none of those verbs between `cryptsetup` and
+  the name, such as `# cryptsetup keeps the data safe`, or the comment
+  `nixos-generate-config` writes above `system.stateVersion`), and so do a
+  directory such as `/var/lib/postgresql/data`, the decoy's own mapping whose
+  name merely ends like the hidden one (`user-data` beside `data`), the word
+  `hidden` and options such as `services.plausible`.
+
+  The check reads text; it does not evaluate Nix. It does not follow a
+  mapping defined through a `let` binding, `lib.listToAttrs` or an
+  interpolated name (`luks.devices.${"data"}`), and it does not know these
+  names of the storage: the kernel's name without `/dev/` (`KERNEL=="sdb2"`
+  in a udev rule), `/dev/dm-<n>`, `/dev/block/<major>:<minor>`, and a path
+  written with a doubled slash (`/dev/mapper//data`, `/mnt//data`). Keep
+  such lines out of `/etc/nixos` yourself; an entry defined in one of these
+  ways still counts by its device when that is written in one of the forms
+  above. Run `nixos-generate-config` only while the hidden volume is closed:
+  it writes an entry for every mounted filesystem.
+
+  The check reads `.nix` files only. Keep the other files in `/etc/nixos`
+  (notes, scripts, a README) free of these names too, and, where
+  `/etc/nixos` is a git repository, as a flake often is, its history: a line
+  removed from a file stays in the commit that added it.
 
 ### Ubuntu
 
@@ -152,6 +246,9 @@ switch above, since a blocked suspend with the lid shut can overheat a laptop.
   file and every `journald.conf.d/*.conf` drop-in the way systemd does, so a
   drop-in that sets `Storage=persistent` is caught too.
 - Remove or disable `rsyslog` and `auditd` if installed.
+- If `systemd-coredump` is installed, set `Storage=none` and `ProcessSizeMax=0`
+  under `[Coredump]` in a drop-in such as
+  `/etc/systemd/coredump.conf.d/50-discard.conf`.
 - Mount the root with `noatime`; disable swap and hibernation.
 
 ### Debian
@@ -161,6 +258,8 @@ switch above, since a blocked suspend with the lid shut can overheat a laptop.
 - **Volatile journald**: `Storage=volatile` in `journald.conf` or a
   `journald.conf.d/*.conf` drop-in.
 - Remove or disable `rsyslog`/`syslog-ng` and `auditd`.
+- With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
+  `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
 
 ## The sudo-log exposure and its mitigation
@@ -176,6 +275,26 @@ no sudo `logfile` or I/O logging in sudoers) so the sudo record is never durably
 written, and keep the binary at a neutral path
 on the hidden volume. NAILS cannot suppress sudo's own logging without tampering
 with the decoy, which would itself be a tell.
+
+### What the decoy journal keeps
+
+The decoy journal logs the window around each soft-reboot: the sudo line of the
+activation, the hidden build's progress and the decoy's own shutdown before the
+switch, and its start after the way back, all under one boot ID. Where those
+records end up depends on the journal:
+
+- **Persistent** (accepted with `--accept-persistent-decoy`): they are on the
+  decoy disk and stay there, with a gap where the hidden session ran.
+- **Volatile** (the amnesic setup): they are in RAM, in the runtime journal
+  below `/run/log/journal`, which the hidden session's journald writes to as
+  well. The way back deletes that journal whole, the decoy's own records from
+  before the session included, so the decoy journal starts at the return: it
+  holds neither the activation nor anything the decoy logged earlier, nor any
+  of the kernel's boot messages, because the kernel-message cursor that keeps
+  the hidden session's kernel records out is set past them too. `uptime` and
+  `dmesg` still go back to the boot, so until the machine is powered off,
+  anyone with a shell can see that the journal starts long after the boot.
+  Power off after the session.
 
 ## Shell history hardening
 
@@ -287,6 +406,18 @@ VeraCrypt mapping, a loop-mounted container, an unexplained mapper name) tells a
 examiner where to look. The decoy's own full-disk encryption legitimately has an
 entry; the hidden backend never should. Open it by hand each time.
 
+The `backend-entries` pre-flight check enforces this for the mounted hidden
+volume: `nails check` and activation fail while a crypttab line opens it or a
+device it is stored on, while a crypttab line with `tcrypt-hidden` opens a
+device on the hidden volume's drive or one that cannot be found, or while an
+fstab line mounts it or a device below it, `noauto` lines included. A crypttab
+line that opens only another volume on the same drive (a VeraCrypt outer volume
+on another partition) warns. Remove such a line long before the next use, since
+the decoy's configuration history can keep it. If the check cannot read
+`/etc/crypttab` (some distributions make it readable by root only), it fails and
+asks you to run the command with sudo. `--allow-decoy-storage` does not cover
+it, and `activate --no-preflight` runs it on its own.
+
 ### Encryption headers, high-entropy space and containers
 
 The audit reads the raw disk when given `--disk` and reports:
@@ -333,23 +464,26 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | Class | Where | Platforms | Pre-flight | Verify | Mitigation | VM test |
 |---|---|---|---|---|---|---|
 | [Persistent systemd journal](#fail-closed-activation-is-refused) (`persistent-journal`) | `/var/log/journal` | all | `decoy-persistence` (refuses) | `journal-scan` | Set Storage=volatile under [Journal] in journald.conf or a journald.conf.d drop-in. | `decoy-persistence-preflight` |
-| [Journal window around each soft-reboot](#the-sudo-log-exposure-and-its-mitigation) (`pre-entry-journal-window`) | journald records of `sudo nails activate`, the decoy shutdown before the soft-reboot and the decoy start after the way back | all | `decoy-persistence` (refuses) | `journal-scan` | Run on a volatile journal, so the window stays in RAM; keep the binary at a neutral path. | `decoy-journal-leak` |
+| [Journal window around each soft-reboot](#what-the-decoy-journal-keeps) (`pre-entry-journal-window`) | journald records of `sudo nails activate`, the decoy shutdown before the soft-reboot and the decoy start after the way back | all | `decoy-persistence` (refuses) | `journal-scan` | Run on a volatile journal, so the window never reaches the decoy disk; keep the binary at a neutral path. | `decoy-journal-leak` |
+| [Decoy journal reset by the way back](#what-the-decoy-journal-keeps) (`runtime-journal-reset`) | the runtime journal below /run/log/journal, which the decoy and the hidden journald write alike and the way back deletes | all | none: the scrub causes it, as the last step before the switch back | none: RAM only, gone at power-off | Power off after the session. | `session-lifecycle` |
 | [Classic syslog daemon](#fail-closed-activation-is-refused) (`classic-syslog`) | `/var/log/syslog`, `/var/log/messages`, `/var/log/auth.log` | all | `decoy-persistence` (refuses) | `deep-scan-files` | Remove or disable rsyslog and syslog-ng on the decoy. | `decoy-persistence-preflight` |
 | [Audit daemon log](#fail-closed-activation-is-refused) (`auditd`) | `/var/log/audit` | all | `decoy-persistence` (refuses) | path probe (warn) | Disable auditd and the audit framework on the decoy. | `decoy-persistence-preflight` |
 | [sudo log file](#the-sudo-log-exposure-and-its-mitigation) (`sudo-logfile`) | `/var/log/sudo.log` | all | `decoy-persistence` | path probe (warn) | Remove `Defaults logfile=` from sudoers and sudoers.d. | `examiner-audit` |
 | [sudo I/O logging](#the-sudo-log-exposure-and-its-mitigation) (`sudo-io-log`) | `/var/log/sudo-io` | all | `decoy-persistence` | path probe (warn) | Remove every I/O logging option and tag from sudoers and sudoers.d. | `examiner-audit` |
 | [Swap and hibernation](threat-model.md#assumptions) (`swap-hibernation`) | swap partitions and files, the hibernation image | all | `swap` (refuses) | `memory-swap` | No disk or file swap and no resume device; RAM-only zram is fine. | `preflight-swap` |
-| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Send core dumps nowhere persistent and disarm kdump on the decoy. | `examiner-audit` |
+| [Crash dumps](#warn-surfaced-never-blocking) (`crash-dumps`) | `/var/lib/systemd/coredump`, `/var/crash` | all | `decoy-persistence` | path probe (warn) | Set systemd-coredump to Storage=none and ProcessSizeMax=0, send other core dumps nowhere persistent, and disarm kdump on the decoy. | `examiner-audit` |
 | [Shell history](#shell-history-hardening) (`shell-history`) | `~/.bash_history`, `~/.zsh_history` | all | `incremental-history-flush` | `deep-scan-history` | Harden the decoy shells' history and do not flush history during a session. | `session-emergency` |
 | [Desktop recent-files lists](threat-model.md#what-the-hidden-environment-shares-with-the-decoy) (`desktop-recent-files`) | `~/.local/share/recently-used.xbel` | all | none: written by desktop applications during the session, into the upper on the hidden volume | `deep-scan-recent-files` | Hidden sessions write recent-file lists into the upper; never open hidden files from a decoy session. | `rehearse-canary` |
 | [NAILS's own files and markers](threat-model.md#invariant) (`nails-artifacts`) | the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs) | all | `suspicious-nails-reference` (refuses) | `artifact-files` | Deactivate normally; `nails recover` finishes an interrupted teardown. | `verify-seeded-artifacts` |
 | [NixOS account bookkeeping](threat-model.md#known-residual-changes) (`var-lib-nixos`) | `/var/lib/nixos` | NixOS | none: the decoy rewrites these files on every boot; only a control run tells noise from a leak | `platform-scanners` | Overlay /var; the drift test compares against a plain-reboot control. | `session-nixos-hidden-system` |
 | [Decoy filesystems the hidden systemd would mount](#writes-that-bypass-the-overlays) (`decoy-filesystems`) | fstab entries of the hidden root: a separate /home or /var, the ESP, decoy swap, a second disk | all | `fstab-policy` (refuses) | none: verify cannot tell what a session wrote to another filesystem | NAILS binds the ESP and boot filesystems read-only, overlays other mounted decoy filesystems with an upper on the hidden volume, and masks swap and unmounted disks before the switch. | `soft-reboot-mechanics` |
 | [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) (`session-disk-mounts`) | a USB drive udisks automounts, a decoy partition the policy masked mounted by hand, a Windows partition | all | none: the disk is mounted after activation | none: verify cannot tell what a session wrote to another disk | The session watcher alerts on every read-write disk mount outside the hidden volume; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again. | `session-disk-mounts` |
-| [The hidden session's /run carried into the decoy](threat-model.md#residual-channels) (`run-carry-over`) | a soft-reboot carries /run: logind state, utmp, the runtime journal, utab lines, stray files | all | none: the scrub runs as the last step before the switch back | `session-leftovers` | The transition step deletes everything the hidden session added two levels below /run (three below /run/systemd), restores utab, and never touches sockets or /run/udev. | `soft-reboot-mechanics` |
+| [The hidden session's /run carried into the decoy](threat-model.md#residual-channels) (`run-carry-over`) | a soft-reboot carries /run: logind state, utmp, the runtime journal, utab lines, name-server records, stray files | all | none: the scrub runs as the last step before the switch back | `session-leftovers` | The transition step deletes the runtime journal and logind's session state whole, and whatever else the hidden session added two levels below /run (three below /run/systemd), judged against what the decoy left when it stopped for the entry; it puts the decoy's name-server records below /run/resolvconf back, gives the decoy's utab lines back to the mounts it restores, under their new mount IDs, and never touches sockets or /run/udev. | `session-lifecycle`, `session-emergency`, `session-dns-records` |
 | [An interrupted entry's runtime files in /run](threat-model.md#residual-channels) (`interrupted-entry`) | an activation killed before the soft-reboot leaves /run/nextroot, the session plan and the transition drop-in | all | `session-state` (refuses) | `session-leftovers` | The transition drop-in is installed before the next root is populated, so an unarmed entry is disarmed by any soft-reboot; `nails recover` removes the leftovers. | `session-interrupted-entry` |
 | [Hidden kernel records imported by the decoy journal](threat-model.md#residual-channels) (`kmsg-import`) | journald reads /dev/kmsg from its stored sequence number after every soft-reboot | all | `decoy-persistence` | `journal-scan` | The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last generic lines and the hidden filesystem's unmount line follow it. | `soft-reboot-mechanics` |
-| [Soft-reboot counter and boot ID](threat-model.md#residual-channels) (`soft-reboot-counter`) | SoftRebootsCount and the unchanged boot ID and uptime, readable with systemctl and journalctl | all | none: kernel and PID 1 state, not a file | none: RAM only, gone at power-off | Power off after the session; keep the decoy journal volatile. | `soft-reboot-mechanics` |
+| [Network state the hidden session created or changed](operator-guide.md#how-it-works) (`network-state`) | a soft-reboot keeps the kernel's network state: links, addresses, routes and VPN tunnels the hidden session set up stay as they are, and so can a MAC address or a hostname it changed | all | none: the hidden session creates them after activation | none: a link the decoy adopted looks like one the decoy made itself | Before deactivating, take down every connection and VPN tunnel you brought up and delete every link you created by hand (`ip link delete`), or end the session with `deactivate --poweroff`, which powers off before the decoy's NetworkManager starts. End a session that used the hidden network-identity snippet with `deactivate --poweroff` (or `emergency --poweroff`). | none: session-dns-records only logs the link the hidden session leaves: what the way back does with it is not decided yet |
+| [Soft-reboot counter and boot ID](threat-model.md#residual-channels) (`soft-reboot-counter`) | SoftRebootsCount (systemd 256 and newer) and the unchanged boot ID and uptime, readable with systemctl and journalctl | all | none: kernel and PID 1 state, not a file | none: RAM only, gone at power-off | Power off after the session; keep the decoy journal volatile. | `soft-reboot-mechanics` |
+| [The decoy's mounts made again by the way back](operator-guide.md#how-it-works) (`decoy-mount-table`) | the mount table after the way back: the decoy's mounts made again with new mount IDs and peer groups, its root and its initrd's mounts (the store bind) included; /run/credentials a mount of its own; the boot's mounts below /run gone | all | none: the mount table is kernel state; activation warns about a decoy mount the way back cannot make again at a place the session carries, and about one a plain soft-reboot keeps | none: RAM only, gone at power-off | The way back makes every decoy mount it can take from the decoy root or a filesystem the session carried again as the decoy had it when the entry began (its filesystem, the directory of it the mount shows, its place in a stack, its options), NixOS's read-only store bind included, and gives the decoy its utab lines back with them. Power off after the session. | `session-decoy-mount-table`, `session-emergency` |
 | [EFI NVRAM, RTC and firmware pstore](threat-model.md#invariant) (`firmware-state`) | EFI variables, the real-time clock, firmware-backed pstore | all | none: not filesystem state, so nothing on the decoy root shows it | none: EFI variables and firmware storage are not part of a disk image | NAILS never writes NVRAM; avoid firmware tools inside the session. | `uefi-esp-nvram-invariant` |
 | [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) (`ram-remanence`) | DRAM contents until power-off | all | `memory-wipe` | `memory-swap` | Power off (`--poweroff`) before handing the machine over; boot the decoy with init_on_free=1. | none: memory forensics is out of scope; no VM test images RAM |
 | [timesyncd clock stamp](#session-time-records) (`timesync-clock`) | `/var/lib/systemd/timesync/clock` | all | path probe (info) | path probe (info) | Session touches land in the upper; on a persistent decoy, use the decoy normally after a session so its own activity follows the stamp. | `examiner-audit` |
@@ -365,7 +499,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 |---|---|---|---|---|---|---|
 | [LVM metadata archive and backup](#lvm-metadata-archives) (`lvm-metadata-archive`) | `/etc/lvm/archive`, `/etc/lvm/backup` | all | path probe (warn) | `examiner-lvm` | Never run LVM tools on the hidden backend from the decoy, or disable archive and backup in the decoy's lvm.conf first. | `examiner-audit` |
 | [udisks2 state](#udisks2-state) (`udisks2-state`) | `/var/lib/udisks2` | all | path probe (warn) | path probe (warn) | Unlock and mount the backend with cryptsetup and mount from a shell, not through the desktop. | `examiner-audit` |
-| [crypttab and fstab entries](#crypttab-and-fstab) (`crypttab-fstab`) | `/etc/crypttab`, `/etc/fstab` | all | none: the decoy's own full-disk encryption legitimately lists entries here; review them with verify --examiner | `examiner-config` | Never add the hidden backend to the decoy's crypttab or fstab; open it by hand each time. | `examiner-audit` |
+| [crypttab and fstab entries](#crypttab-and-fstab) (`crypttab-fstab`) | `/etc/crypttab`, `/etc/fstab` | all | `backend-entries` (refuses) | `examiner-config` | Never add the hidden backend to the decoy's crypttab or fstab; open it by hand each time. Activation refuses an entry that opens or mounts the hidden volume; the decoy's own entries are reviewed with verify --examiner. | `preflight-decoy-filesystem` |
 | [LUKS headers on partitions](#encryption-headers-high-entropy-space-and-containers) (`luks-headers`) | LUKS1/LUKS2 signatures at partition starts, in gaps and in LUKS2 secondary-header slots | all | `backend-detect` | `examiner-disk` | Prefer a deniable backend (a VeraCrypt hidden volume) over a bare LUKS volume next to the decoy. | `examiner-audit` |
 | [High-entropy unpartitioned space](#encryption-headers-high-entropy-space-and-containers) (`high-entropy-space`) | partition gaps, space after the last partition, partitions with no known signature | all | none: needs the raw disk, which verify --offline --examiner --disk reads | `examiner-disk` | Fill free space with random data when the disk is set up, so the hidden region does not stand out; explain it as wiped space. | `examiner-audit` |
 | [Encrypted container candidates](#encryption-headers-high-entropy-space-and-containers) (`container-candidates`) | large files whose size is a multiple of 512, with no known header and high entropy | all | `backend-detect` | `examiner-containers` | Put the hidden volume on a whole device or partition rather than in a file on the decoy. | `examiner-audit` |

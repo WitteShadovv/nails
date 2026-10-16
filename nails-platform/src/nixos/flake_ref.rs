@@ -19,18 +19,43 @@ pub(crate) fn local_flake_dir(base_ref: &str) -> Option<PathBuf> {
     resolve_local_flake_dir(base_ref).ok().flatten()
 }
 
+/// A flake reference without its `#` fragment, split into its location and
+/// its `dir` parameter, the subdirectory that holds `flake.nix`: `path:/etc?dir=nixos`
+/// is `path:/etc` and `nixos`. Other parameters (`?ref=main`) are dropped.
+pub fn location_and_dir(base_ref: &str) -> (&str, Option<&str>) {
+    let (location, query) = base_ref.split_once('?').unwrap_or((base_ref, ""));
+    let dir = query
+        .split('&')
+        .find_map(|parameter| parameter.strip_prefix("dir="))
+        .filter(|dir| !dir.is_empty());
+    (location, dir)
+}
+
+/// `path` with the flake reference's `dir` parameter applied.
+pub fn with_dir(path: PathBuf, dir: Option<&str>) -> PathBuf {
+    match dir {
+        Some(dir) => path.join(dir),
+        None => path,
+    }
+}
+
+/// The local flake directory a flake reference without its fragment names:
+/// a path (absolute, or `./`, `../`, `.` and `..` against the working
+/// directory) or a `path:` reference, with any query dropped and its `dir`
+/// parameter applied. `None` for any other reference (`github:`,
+/// `git+file:`, …), which the pre-flight cannot judge from the filesystem.
 pub fn resolve_local_flake_dir(base_ref: &str) -> crate::Result<Option<PathBuf>> {
-    if base_ref.starts_with('/') {
-        return Ok(Some(PathBuf::from(base_ref)));
+    let (location, dir) = location_and_dir(base_ref);
+    if location.starts_with('/') {
+        return Ok(Some(with_dir(PathBuf::from(location), dir)));
     }
 
-    if let Some(path_ref) = base_ref.strip_prefix("path:") {
-        let (path_ref, _) = path_ref.split_once('?').unwrap_or((path_ref, ""));
-        return resolved_local_path(path_ref).map(Some);
+    if let Some(path_ref) = location.strip_prefix("path:") {
+        return resolved_local_path(path_ref).map(|path| Some(with_dir(path, dir)));
     }
 
-    if looks_like_explicit_relative_flake_ref(base_ref) {
-        return resolved_local_path(base_ref).map(Some);
+    if looks_like_explicit_relative_flake_ref(location) {
+        return resolved_local_path(location).map(|path| Some(with_dir(path, dir)));
     }
 
     if looks_like_generic_flake_ref(base_ref) {
@@ -101,39 +126,5 @@ pub fn selected_nixos_configuration_fragment(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn split_flake_ref_separates_base_and_fragment() {
-        assert_eq!(split_flake_ref("/cfg#host"), ("/cfg", Some("host")));
-        assert_eq!(split_flake_ref("/cfg#"), ("/cfg", None));
-        assert_eq!(split_flake_ref("github:me/cfg"), ("github:me/cfg", None));
-    }
-
-    #[test]
-    fn local_flake_dir_only_returns_paths_for_local_refs() {
-        assert_eq!(
-            local_flake_dir("/etc/nixos"),
-            Some(PathBuf::from("/etc/nixos"))
-        );
-        assert_eq!(
-            local_flake_dir("path:/etc/nixos?x=1"),
-            Some(PathBuf::from("/etc/nixos"))
-        );
-        assert_eq!(local_flake_dir("github:me/cfg"), None);
-        assert!(resolve_local_flake_dir("relative").is_err());
-        assert!(local_flake_dir("./cfg").unwrap().ends_with("cfg"));
-    }
-
-    #[test]
-    fn an_explicit_fragment_wins_over_the_hostname() {
-        assert_eq!(
-            selected_nixos_configuration_fragment(Some("hidden")).unwrap(),
-            ("hidden".to_string(), true)
-        );
-        let (name, explicit) = selected_nixos_configuration_fragment(None).unwrap();
-        assert!(!name.is_empty());
-        assert!(!explicit);
-    }
-}
+#[path = "flake_ref_tests.rs"]
+mod tests;

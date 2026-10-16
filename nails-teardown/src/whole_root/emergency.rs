@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The emergency hot path of a whole-root session (ADR 0008, section 6).
+//! The emergency hot path of a whole-root session.
 //!
 //! In the hidden session the fastest safe path is:
 //!
@@ -24,7 +24,9 @@
 //!
 //! On the decoy side (an activation was interrupted after building the next
 //! root) it signals the activation, detaches `/run/nextroot` and removes the
-//! runtime pieces, so a later reboot never enters the tree.
+//! runtime pieces, so a later reboot never enters the tree. A requested power
+//! action is enqueued right after that; only a decoy that keeps running gets
+//! PID 1 reloaded and `/run` made `noexec` again, as after a rollback.
 //!
 //! Every phase is timed. Nothing here reads the configuration, the state file
 //! or the hidden volume, and nothing logs; the caller prints and logs the
@@ -34,10 +36,11 @@ use crate::mountinfo::read_mountinfo;
 use crate::proc::{self, Invocation, ProcessHandle};
 use crate::whole_root::kill::{self, KillReport};
 use crate::whole_root::nextroot::{self, NEXTROOT};
-use crate::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR};
-use crate::whole_root::ret;
+use crate::whole_root::plan::{PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME};
+use crate::whole_root::run_scrub::Snapshot;
 use crate::whole_root::tools;
 use crate::whole_root::transition;
+use crate::whole_root::{kernel_helpers, ret, runtime_units};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -180,10 +183,11 @@ pub fn run(plan: Option<Plan>, host: &Host, requested: Finish) -> HotReport {
     match (side, plan) {
         (Side::Hidden, Some(mut plan)) => hidden(&mut plan, host, &mut report),
         (Side::Decoy, Some(plan)) => {
-            decoy(&plan, host, &mut report);
+            let unloaded = decoy(&plan, host, &mut report);
             if requested != Finish::Return {
                 dispatch(&plan, host, requested, &mut report);
             }
+            settle(&plan, host, unloaded, &mut report);
         }
         _ => {
             if requested != Finish::Return {
@@ -305,7 +309,9 @@ fn kernel_power_off() -> bool {
 }
 
 /// The decoy side: an activation left a plan (and perhaps a next root).
-fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) {
+/// Returns whether it removed a drop-in or a mask, which PID 1 keeps loaded
+/// until its next reload.
+fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) -> bool {
     report.timed("signal-activation", |_| {
         if host.act {
             signal_owner(plan);
@@ -319,15 +325,40 @@ fn decoy(plan: &Plan, host: &Host, report: &mut HotReport) {
         }
     });
     report.timed("remove-runtime", |_| {
-        if host.act {
-            // Nothing hidden runs on the decoy: the backend goes with the
-            // last close, as the way back would close it.
-            let _ = ret::close_backend_deferred(plan);
-            transition::remove_dropin(&host.run);
-            for unit in &plan.masks {
-                let _ = std::fs::remove_file(host.run.join("systemd/system").join(unit));
-            }
-            nextroot::remove_runtime_dir(&host.runtime_dir);
+        if !host.act {
+            return false;
+        }
+        // Nothing hidden runs on the decoy: the backend goes with the last
+        // close, as the way back would close it.
+        let _ = ret::close_backend_deferred(plan);
+        let kept = Snapshot::load(&host.runtime_dir.join(SNAPSHOT_NAME)).unwrap_or_default();
+        let dropins = transition::remove_dropin(&host.run, &kept);
+        let masks = runtime_units::remove_masks(&host.run, &plan.masks, &plan.boot_masks, &kept);
+        kernel_helpers::restore(&plan.kernel_settings);
+        nextroot::remove_runtime_dir(&host.runtime_dir);
+        dropins || masks
+    })
+}
+
+/// What a decoy that keeps running needs after the cleanup, as a rollback
+/// does it: `/run` is `noexec` again where the decoy had it so, and PID 1 is
+/// reloaded when the cleanup removed a drop-in or a mask (`unloaded`). It
+/// keeps running when nothing was enqueued: no power action was asked for,
+/// or none could be. An enqueued power action discards both, so it waits for
+/// neither (a reload reruns every generator).
+fn settle(plan: &Plan, host: &Host, unloaded: bool, report: &mut HotReport) {
+    if report.dispatched.is_some() {
+        return;
+    }
+    report.timed("reload", |_| {
+        if !host.act {
+            return;
+        }
+        if plan.run_noexec {
+            let _ = nextroot::set_noexec(&host.run, true);
+        }
+        if unloaded && let Some(systemctl) = &plan.tools.systemctl {
+            let _ = tools::daemon_reload(systemctl);
         }
     });
 }
@@ -356,98 +387,5 @@ fn signal_owner(plan: &Plan) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::whole_root::plan::sample;
-
-    fn host(dir: &Path) -> Host {
-        Host {
-            run: dir.join("run"),
-            nextroot: dir.join("run/nextroot"),
-            runtime_dir: dir.join("run/overlay-runtime"),
-            cgroup_root: dir.join("cgroup"),
-            protected_pids: Vec::new(),
-            act: false,
-        }
-    }
-
-    #[test]
-    fn without_a_plan_only_an_explicit_power_action_is_dispatched() {
-        let dir = tempfile::tempdir().unwrap();
-        let report = run(None, &host(dir.path()), Finish::Return);
-        assert_eq!(report.side, Side::None);
-        assert!(report.found_nothing());
-        assert_eq!(report.dispatched, None);
-        let report = run(None, &host(dir.path()), Finish::Poweroff);
-        assert_eq!(report.dispatched, Some(Finish::Poweroff));
-    }
-
-    #[test]
-    fn a_plan_outside_the_hidden_root_is_a_decoy_side_cleanup() {
-        // This test process does not run in the plan's overlay root.
-        let dir = tempfile::tempdir().unwrap();
-        let report = run(Some(sample()), &host(dir.path()), Finish::Return);
-        assert_eq!(report.side, Side::Decoy);
-        assert_eq!(report.dispatched, None, "the decoy needs no soft-reboot");
-        let names: Vec<_> = report.phases.iter().map(|(n, _)| *n).collect();
-        assert_eq!(
-            names,
-            ["signal-activation", "detach-nextroot", "remove-runtime"]
-        );
-        let report = run(Some(sample()), &host(dir.path()), Finish::Reboot);
-        assert_eq!(report.dispatched, Some(Finish::Reboot));
-    }
-
-    #[test]
-    fn the_hidden_side_prepares_arms_kills_shells_enqueues_then_kills_in_that_order() {
-        let dir = tempfile::tempdir().unwrap();
-        let h = host(dir.path());
-        std::fs::create_dir_all(&h.runtime_dir).unwrap();
-        let mut plan = sample();
-        plan.armed = None;
-        let mut report = HotReport::new(Side::Hidden, Finish::Return);
-        hidden(&mut plan, &h, &mut report);
-        let names: Vec<_> = report.phases.iter().map(|(n, _)| *n).collect();
-        assert_eq!(
-            names,
-            [
-                "prepare-return",
-                "close-backend",
-                "arm",
-                "kill-shells",
-                "enqueue",
-                "kill"
-            ]
-        );
-        assert_eq!(report.dispatched, Some(Finish::Return));
-        let written = Plan::load(&h.plan_path()).unwrap();
-        assert!(written.armed_for(
-            crate::whole_root::plan::Direction::Leave,
-            crate::whole_root::plan::unix_now()
-        ));
-    }
-
-    #[test]
-    fn a_way_back_that_cannot_be_armed_powers_off_instead() {
-        let dir = tempfile::tempdir().unwrap();
-        // No runtime directory: the plan cannot be written.
-        let h = host(dir.path());
-        let mut plan = sample();
-        let mut report = HotReport::new(Side::Hidden, Finish::Return);
-        hidden(&mut plan, &h, &mut report);
-        assert_eq!(report.dispatched, Some(Finish::Poweroff));
-        assert!(report.fallback.unwrap().contains("powering off"));
-    }
-
-    #[test]
-    fn a_requested_power_off_skips_the_way_back() {
-        let dir = tempfile::tempdir().unwrap();
-        let h = host(dir.path());
-        let mut plan = sample();
-        let mut report = HotReport::new(Side::Hidden, Finish::Poweroff);
-        hidden(&mut plan, &h, &mut report);
-        let names: Vec<_> = report.phases.iter().map(|(n, _)| *n).collect();
-        assert_eq!(names, ["kill-shells", "enqueue", "kill"]);
-        assert_eq!(report.dispatched, Some(Finish::Poweroff));
-    }
-}
+#[path = "emergency_tests.rs"]
+mod tests;

@@ -18,7 +18,7 @@
 # the two nodes only ever talk to each other over the test network.
 { self, pkgs }:
 let
-  inherit (pkgs) system;
+  inherit (pkgs.stdenv.hostPlatform) system;
 
   # Shared Syncthing options for both nodes: no discovery, no relays, no usage
   # reporting. The nodes reach each other by static addresses the test sets when

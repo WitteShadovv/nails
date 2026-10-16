@@ -108,5 +108,5 @@
   # A volatile journal: the decoy journal lives only in RAM, so a journal carve
   # of the image sees only lines a hidden session forced onto a persisted tree.
   # mkForce overrides the persistent journal forensic-vm-config.nix sets.
-  services.journald.extraConfig = lib.mkForce "Storage=volatile";
+  services.journald.settings.Journal.Storage = lib.mkForce "volatile";
 }

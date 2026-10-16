@@ -10,7 +10,7 @@ build-backend = "setuptools.build_meta"
 name = "nails-e2e"
 version = "0"
 description = "In-VM helpers for the NAILS NixOS end-to-end test driver."
-requires-python = ">=3.11"
+requires-python = ">=3.14"
 
 [tool.setuptools.packages.find]
 include = ["nails_e2e*"]

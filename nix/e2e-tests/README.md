@@ -96,12 +96,18 @@ redirects it to the hidden volume.
 
 ### VM profiles
 
-- `vm-config.nix`: base forensic-safe profile. It imports `soft-reboot-units.nix`,
-  which declares `soft-reboot.target` and `systemd-soft-reboot.service` (the
-  upstream v259 unit text): the pinned nixpkgs ships systemd 259 without them,
-  and every decoy and hidden NixOS configuration needs them. It is also the
-  module an operator on such a nixpkgs adds, as `nails check` prints it.
+- `vm-config.nix`: base forensic-safe profile. The pinned nixpkgs installs
+  `soft-reboot.target` and `systemd-soft-reboot.service` itself, so the decoy and
+  every hidden NixOS configuration can soft-reboot without the module that
+  `nails check` prints for an older nixpkgs.
 - `graphical-vm-config.nix`: LightDM + autologin + shell/notification tooling
+- `notification-server.nix`: a user service of testuser that owns
+  `org.freedesktop.Notifications` on testuser's session bus and records every
+  call, with the uid and the program that made it, in testuser's runtime
+  directory. NAILS shows its alerts as the operator, on the operator's bus;
+  `py/nails_e2e/desktop.py` logs testuser in on the console (the owner of the
+  active session on seat0, whom the session watcher alerts) and reads the
+  records. No test stubs `notify-send`.
 - `forensic-vm-config.nix` and `impermanent-decoy.nix`: an on-disk Nix store
   image (`useNixStoreImage`). The VM start script packs the whole closure into
   an erofs image on every start; `default.nix` gives every machine a copy of
@@ -109,8 +115,8 @@ redirects it to the hidden volume.
   machine while it is unchanged (`py/nails_e2e/store_image.py`), so only the
   first start of a test pays for it. The driver log says `Reusing Nix store
   image.` on each later start.
-- `blk-availability.nix`: the `blk-availability.service` Debian and Ubuntu
-  enable wherever `dmsetup` is installed. Its stop, which every soft-reboot
+- `blk-availability.nix`: the `blk-availability.service` that Debian's and
+  Ubuntu's lvm2 package enables. Its stop, which every soft-reboot
   runs, unmounts the filesystems on device-mapper devices (`blkdeactivate
   -u`). A NixOS VM always carries its store mounts below the hidden volume, so
   the stop cannot unmount the volume itself there; a decoy filesystem on LVM
@@ -194,15 +200,14 @@ per-test node stays minimal.
 On the local KVM workstation a boot to `multi-user.target` took a median of
 21.8 s (p90 27.7 s) before dhcpcd stopped gating the boot, about 6 s less
 after, and booting was 38% of all test-script time in a full run of the earlier
-live-overlay suite (190 boots for 106 tests); see
-[the historical measurements](../../docs/history/e2e-performance-live-overlay.md).
+live-overlay suite (190 boots for 106 tests).
 
 **GitHub-hosted runners: not measured yet.** No number is recorded here
 because none has been measured, and the CI lanes cannot provide one as they
 stand: `ci.e2e run` reads `nix build` output as `internal-json` and keeps the
 driver log only of a failed test, so a green job log holds no driver lines. A
 measurement needs one dispatched run that keeps the driver output, for
-example a temporary job on `ubuntu-24.04` (after the usual checkout and Nix
+example a temporary job on `ubuntu-26.04` (after the usual checkout and Nix
 setup steps of `e2e.yml`) that builds a handful of tests with one VM at a
 time and uploads the log:
 
@@ -400,23 +405,26 @@ needs no entry in `shard-durations.json`. Its log is the deliverable: lines
 starting with `FINDING:` are research output, not assertions.
 
 - `research-emergency-cgroup-kill`: shows that systemd restarts a killed
-  `Restart=always` unit onto the decoy unless a stop job is enqueued first
-  ([ADR 0007](../../docs/adr/0007-emergency-architecture.md)); the emergency
-  enqueues the soft-reboot before its `cgroup.kill` for this reason.
+  `Restart=always` unit onto the decoy unless a stop job is enqueued first; the
+  emergency enqueues the soft-reboot before its `cgroup.kill` for this reason.
 - `research-dual-root-vt-emergency`: runs a hidden display and session on their
   own VT inside a whole-root overlay while the decoy desktop keeps running, and
-  makes emergency a cgroup kill plus a VT switch
-  ([ADR 0009](../../docs/adr/0009-dual-root-emergency.md)).
+  makes emergency a cgroup kill plus a VT switch. This dual-root design was
+  evaluated as a way to keep the decoy desktop through an emergency and was not
+  adopted.
 - `research-dual-root-risks`: probes the dual-root design's risks (mount
-  namespace copies, display and VT handling, shared-daemon writes)
-  ([ADR 0009](../../docs/adr/0009-dual-root-emergency.md#risk-assessment)).
+  namespace copies, display and VT handling, shared-daemon writes).
+- `research-blockdev-fixtures`: builds an LVM-on-LUKS stack on a loop device
+  and captures what sysfs says about it for the block-device walk's tests
+  (`scripts/capture-kernel-fixtures.sh blockdev`); copy the contents of its
+  `result/kernel-fixtures/` into `nails-base/tests/fixtures/kernel/vm/`.
 
 The spike that proved the whole-root soft-reboot, formerly
 `research-soft-reboot-whole-root`, is now the regular test
 `soft-reboot-mechanics` in `tests/session/`: it enters a whole-root overlay with
 `systemctl soft-reboot` and returns twice, checks the vital paths, the `/run`
 scrub and the decoy journal, then power-cycles through the firmware and scans
-the raw decoy disk ([ADR 0008](../../docs/adr/0008-whole-root-soft-reboot.md)).
+the raw decoy disk.
 
 ## Session tests (`tests/session/`)
 
@@ -425,14 +433,34 @@ soft-reboots with `py/nails_e2e/session.py`:
 
 - `session-lifecycle`: `init` and `check`, activation into the hidden root, a
   hidden write that lands only in the upper, deactivation without hidden `/run`
-  residue, the upper persisting into the next session, an emergency and its
-  timed log, and `recover`/`emergency` on the plain decoy changing nothing;
+  residue and with the volatile decoy journal reset (a line the decoy logged
+  before activation is gone, and the journal starts at the deactivation, with
+  no kernel record the kernel logged earlier), the upper persisting into the
+  next session, an emergency and its timed log, and `recover`/`emergency` on
+  the plain decoy changing nothing;
 - `session-emergency`: the activation command typed on a decoy tty never reaches
-  its history, emergency from a hidden login shell, `--poweroff`, and the next
-  cold boot on the plain decoy with the backend closed;
+  its history, emergency from a hidden login shell, the decoy's avahi-daemon
+  and a service with a PID file in `/run` starting again after the emergency
+  killed their hidden copies, the boot-loader units masked in the hidden
+  session only, the decoy's mounts and `utab` lines back as before the entry
+  after the emergency's way back, `--poweroff`, and the next cold boot on the
+  plain decoy with the backend closed;
 - `session-interrupted-entry`: a killed activation that `status` reports as an
   interrupted entry, a plain reboot that never enters the leftover next root,
   `recover`, Ctrl+C during the build, and emergency during an entry;
+- `session-dns-records`: a name server and a search domain that only the hidden
+  session's NetworkManager uses stay off the decoy after the way back: out of
+  the openresolv records in `/run`, out of the `/etc/resolv.conf` that the
+  decoy's `resolvconf.service` writes at its start, and out of its journal;
+- `session-decoy-mount-table`: a NixOS decoy booted through a bootloader,
+  with its store on the root disk under NixOS's read-only bind, a store path
+  bound after it, a read-only bind stacked on an fstab filesystem and its ESP
+  behind an automount, has every mount outside `/run`, `/boot` and the hidden
+  volume back after the way back as it had it before the entry (filesystem,
+  directory, place in the tree, options and propagation type, in the same
+  order and no mount more), its `utab` lines with them, a read-only store,
+  and its automount on `/boot`, masked in the hidden session, set up again
+  by its own start;
 - `session-fstab-policy`: the decision `check` reports for every decoy
   filesystem, the read-only ESP, a separate decoy filesystem overlaid with a
   hidden upper, masked swap, and no hidden write on any decoy disk afterwards;
@@ -448,12 +476,28 @@ soft-reboots with `py/nails_e2e/session.py`:
   sessions that deletes the hidden toplevel from the decoy store, the second
   session still starting it, and the decoy store (database, writable store
   layer, profiles and roots) unchanged by each session;
+- `session-alert-delivery`: the notification of `sudo nails rehearse plant` and
+  the watcher's alert for a disk mounted read-write reaching a notification
+  server on the operator's own session bus, from the operator's uid, once on a
+  decoy with `notify-send` and once on one without it, where `busctl` carries
+  them;
 - `session-disk-mounts`: a second disk mounted read-write in the hidden session
   raising the watcher's alert, `deactivate` freeing it while busy, and with
   `[session_mounts] read_only` the disk read-only from the hidden boot on, a
   disk hot-plugged during the session made read-only by the udev rule alone,
   every write failing, and both disks writable again and unchanged after the
   way back;
+- `session-readme-captures`: the source of the README's `check`, `activate`
+  and `status --json` captures (`docs/assets/screenshots/`). The standard VM
+  is set up as `docs/decoy-requirements.md` recommends for a clean decoy (a
+  closed lid locks, systemd-coredump keeps no core), and the binary sits on the
+  hidden volume and runs by its full path through sudo, as the README's quick
+  start shows; `check` and `activate` print no warning there;
+- `session-sleep-guard`: each `sleep_policy.mode` against a virtual lid switch
+  that logind watches like a laptop's: with `warn` a closed lid suspends the
+  session, with `block` the guard holds sleep, idle and lid-switch inhibitors
+  and a closed lid does not, and with `teardown` a closed lid powers the
+  machine off before the suspend runs;
 - `soft-reboot-mechanics`: the mechanism itself, described above.
 
 ## Adding a fixture
@@ -487,7 +531,8 @@ Layout:
   touches the single decoy disk the forensic check images, with the layout of
   `e2e-tests/lib/hidden-volume.nix`. The tmpfs is below `/run`, which a
   soft-reboot does not carry, so after the switch the file is reachable only
-  through the open loop device and is gone once the session ends. It also
+  through its loop device, which is attached without autoclear so that the
+  hidden root can be opened again on the decoy after a session. It also
   switches to a volatile journal (plus masking an active rsyslog), which the
   decoy-persistence preflight needs.
 - `tests/smoke.nix`: the smoke scenario, generated once per image-table entry.
@@ -497,16 +542,25 @@ Each smoke scenario shares the static musl `nails` binary into the guest over
 9p (on `/run`, off the decoy disk); asserts platform detection selects the
 Debian-family backend; images the decoy as booted for a baseline; runs the
 decoy-persistence preflight (a stock persistent journal is refused, and passes
-once the decoy is amnesic); where the image ships `dmsetup` (Ubuntu), runs
-Debian's `blk-availability.service`; activates, soft-rebooting into the
-whole-root overlay and writing canaries, including under `/usr`, that must land
-in the upper; asserts the ESP is read-only in the hidden root; runs
-`emergency`, which soft-reboots back to the plain decoy; runs a second session
+once the decoy is amnesic); runs `blk-availability.service` as lvm2 ships it
+(the image's own unit on Ubuntu, Debian's copy where only `dmsetup` is
+installed) and asserts that it stays loaded and active in the hidden session;
+runs a decoy service that keeps a PID file in `/run`; cancels an activation
+with SIGINT while it runs its checks (exit 130, nothing left behind);
+activates, soft-rebooting into the whole-root overlay and writing canaries,
+including under `/usr`, that must land in the upper; asserts the ESP is
+read-only in the hidden root and the boot-loader units masked there; runs
+`emergency`, which soft-reboots back to the plain decoy, where the PID-file
+service starts again; asserts the kernel log names no session drop-in and no
+failed unmount of the hidden volume; runs a second session
 that ends with `deactivate`, entered with `/boot` and the ESP unmounted where
 `blk-availability.service` runs, so that nothing carried below the hidden
-volume keeps the unit's stop from unmounting it; and runs the host-side decoy
-disk-image check (`lib/disk_forensics.py`, shared with the NixOS suite) with
-null and positive controls.
+volume keeps the unit's stop from unmounting it; rehearses on that session
+(`rehearse plant` in it, a refused scan there, and after the plain
+`deactivate` a clean scan of the raw decoy devices in the same boot, which on
+Ubuntu 24.04's systemd 255 only the session's entry time allows); and runs the
+host-side decoy disk-image check (`lib/disk_forensics.py`, shared with the
+NixOS suite) with null and positive controls.
 
 `nix-vm-test` boots the image from the Nix store under QEMU `-snapshot`, so
 guest writes vanish when QEMU exits and there is no root qcow2 for the forensic
@@ -531,7 +585,7 @@ derived by mapping over this table, so nothing else changes.
 ### Running and CI
 
 The tier needs KVM, so it is a VM tier, not a container one. A hosted
-`ubuntu-24.04` runner exposes `/dev/kvm`; a self-hosted KVM runner is selected by
+`ubuntu-26.04` runner exposes `/dev/kvm`; a self-hosted KVM runner is selected by
 passing its label list. The CI matrix is planned by
 `python3 -m ci.e2e distro-plan` and kept at or below eight parallel jobs
 (distributions times their shards). `.github/workflows/distro-e2e.yml` runs it on

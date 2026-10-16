@@ -8,7 +8,7 @@
 
 [tool.ruff]
 line-length = 88
-target-version = "py311"
+target-version = "py314"
 
 [tool.ruff.lint]
 select = [
@@ -21,7 +21,7 @@ select = [
 ]
 
 [tool.mypy]
-python_version = "3.11"
+python_version = "3.14"
 # Non-strict: catch obvious mistakes without demanding annotations everywhere.
 warn_redundant_casts = true
 warn_unused_ignores = true

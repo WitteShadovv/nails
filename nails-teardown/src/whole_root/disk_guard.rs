@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Disks the hidden session does not use, read-only for the session (T-143).
+//! Disks the hidden session does not use, read-only for the session.
 //!
 //! The fstab policy covers every filesystem the decoy knows about at entry. A
 //! disk the hidden session mounts itself (a USB drive automounted by udisks, a
@@ -99,8 +99,11 @@ pub fn install_rule(run: &Path, binary: &Path) -> io::Result<PathBuf> {
     let dir = run.join(RULE_DIR);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(RULE_NAME);
-    crate::whole_root::plan::write_private_atomic(&path, rule_text(binary).as_bytes())?;
-    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
+    crate::whole_root::plan::write_atomic_with_mode(
+        &path,
+        rule_text(binary).as_bytes(),
+        crate::whole_root::plan::SERVICE_CONFIG_MODE,
+    )?;
     Ok(path)
 }
 

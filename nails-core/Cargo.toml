@@ -25,8 +25,7 @@ path = "src/lib.rs"
 
 [features]
 # The single switch for every test-only hook and heuristic bypass: the runtime
-# host-interaction skip, the attach-gate device-check bypass (keyed on
-# NAILS_TEST_FORCE_ATTACHED), the activation/deactivation gates, the reboot and
+# host-interaction skip, the activation/deactivation gates, the reboot and
 # systemctl path overrides, the shell-cleanup protected-PID handoff and the
 # service exemption. Off by default, so none of these hooks (nor the NAILS_TEST_*
 # environment strings) exist in a shipped binary. This crate's own unit tests get

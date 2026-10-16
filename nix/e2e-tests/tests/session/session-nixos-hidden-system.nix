@@ -1,5 +1,5 @@
-# Entering a hidden NixOS toplevel without touching the bootloader (ADR 0008,
-# section 3, variant B), through `nails activate --nixos-flake`.
+# Entering a hidden NixOS toplevel without touching the bootloader, through
+# `nails activate --nixos-flake`.
 #
 # Replaces the live-overlay full-rebuild, flake-override, rebuild-failure and
 # /var/lib/nixos drift tests. The hidden system is the VM's own `nails-hidden`
@@ -40,7 +40,7 @@ in
     {
       imports = [ ./../../lib/vm-config.nix ];
       environment.systemPackages = [ self.packages.${pkgs.stdenv.hostPlatform.system}.nails ];
-      # The hidden system's closure is copied onto the hidden volume (T-137).
+      # The hidden system's closure is copied onto the hidden volume.
       virtualisation.emptyDiskImages = lib.mkForce [
         {
           size = 8192;

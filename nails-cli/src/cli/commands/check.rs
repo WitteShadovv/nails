@@ -10,19 +10,25 @@
 //! effective configuration, the overlay targets, how the session would be handled
 //! and which NixOS profile would be built. `activate --dry-run` is a thin alias
 //! for this command, so the two always agree.
+//!
+//! A root the attach gate refuses is reported first, on stderr and in the words
+//! `init` and `activate` use, then the readiness report follows; under `--json`
+//! the refusal is the report's `refusal`.
 
 use std::io::Write;
 use std::path::Path;
 
-use nails_core::{CliOverrides, Config, Filesystem};
+use nails_core::{CliOverrides, Config, Filesystem, PreflightOptions};
 
 use crate::cli::args::CheckArgs;
 use crate::cli::output::check::{
     CheckReport, CheckRow, ConfigSummary, InheritedSummary, ProfileSummary, print_check_human,
     print_check_json,
 };
-use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::envelope::{ErrorBody, report_error, write_human_error};
+use crate::cli::output::refusal::refusal_error;
 use crate::cli::output::{ExitStatus, OutputSettings};
+use nails_core::hidden_root::{Allow, Assessment};
 
 /// The command name used in the JSON envelope and error reports.
 const COMMAND: &str = "check";
@@ -59,18 +65,26 @@ pub fn execute(
     // hidden NixOS layout only happens on the activation path, never here.
     let manager = super::build_nixos_manager(config, state_path, overlay_only, env);
 
-    let registry =
-        match manager.preflight_registry(overlay_only, true, args.accept_persistent_decoy) {
-            Ok(registry) => registry,
-            Err(e) => {
-                return report_error(
-                    json,
-                    COMMAND,
-                    ExitStatus::Failed,
-                    ErrorBody::new("check_error", format!("could not assemble checks: {e}")),
-                );
-            }
-        };
+    let refusal = refusal(
+        manager.filesystem(),
+        &manager.config().hidden_volume_root,
+        args,
+    );
+    if let Some(error) = refusal.as_ref().filter(|_| !json) {
+        write_human_error(&mut std::io::stderr().lock(), error);
+    }
+
+    let registry = match manager.preflight_registry(&preflight_options(args)) {
+        Ok(registry) => registry,
+        Err(e) => {
+            return report_error(
+                json,
+                COMMAND,
+                ExitStatus::Failed,
+                ErrorBody::new("check_error", format!("could not assemble checks: {e}")),
+            );
+        }
+    };
 
     let (results, _) = registry.run_all_detailed(manager.filesystem());
     let checks: Vec<CheckRow> = results
@@ -98,7 +112,8 @@ pub fn execute(
     );
     let inherited = inherited_summary(config, manager.filesystem(), env);
 
-    let report = CheckReport::finalize(checks, config_summary, filesystems, profile, inherited);
+    let mut report = CheckReport::finalize(checks, config_summary, filesystems, profile, inherited);
+    report.refusal = refusal;
 
     if json {
         print_check_json(&report);
@@ -114,10 +129,34 @@ pub fn execute(
     }
 }
 
-/// Describe how the graphical session would be handled.
-///
-/// The check runs non-interactively and without privileges, so a session it
-/// cannot classify is reported as `unknown` rather than surfaced as an error.
+/// The pre-flight options of `check`: what activation builds from the same
+/// flags (`EnterOptions::preflight`), so both run the same checks.
+pub(super) fn preflight_options(args: &CheckArgs) -> PreflightOptions {
+    PreflightOptions {
+        overlay_only: args.overlay_only,
+        accept_persistent_decoy: args.accept_persistent_decoy,
+        allow_decoy_storage: args.allow_decoy_storage,
+        ..PreflightOptions::default()
+    }
+}
+
+/// The attach gate's refusal of the hidden root, as `activate` would report
+/// it, for the JSON report's `refusal` (the gate only reads).
+fn refusal<F: Filesystem>(fs: &F, root: &Path, args: &CheckArgs) -> Option<ErrorBody> {
+    let allow = if args.allow_decoy_storage {
+        Allow::DecoyStorage
+    } else {
+        Allow::Nothing
+    };
+    match nails_core::HiddenRoot::assess_allowing(fs, root, allow) {
+        Ok(Assessment::Refused(refusal)) => {
+            let exe = std::env::current_exe().ok();
+            Some(refusal_error(&refusal, exe.as_deref()))
+        }
+        _ => None,
+    }
+}
+
 /// What the fstab policy would do with each decoy filesystem.
 fn decoy_filesystems(hidden_root: &Path) -> Vec<String> {
     use nails_core::session::{fstab, policy};
@@ -139,7 +178,11 @@ fn profile_summary(target: nails_core::HostTarget) -> ProfileSummary {
     match target {
         HostTarget::OverlayOnly => ProfileSummary {
             mode: "overlay-only",
-            detail: Some("overlay-only mode: the NixOS profile switch is skipped".into()),
+            detail: Some(
+                "overlay-only: no hidden NixOS system is built; the session runs the decoy's \
+                 own system"
+                    .into(),
+            ),
         },
         HostTarget::ExplicitFlake(flake) => ProfileSummary {
             mode: "flake",
@@ -148,6 +191,13 @@ fn profile_summary(target: nails_core::HostTarget) -> ProfileSummary {
         HostTarget::Flake(dir) => ProfileSummary {
             mode: "flake",
             detail: Some(format!("NixOS flake found at {}", dir.display())),
+        },
+        HostTarget::DecoyFlake { dir, .. } => ProfileSummary {
+            mode: "refused",
+            detail: Some(format!(
+                "the decoy's own flake at {} is not built (see nixos-build-target)",
+                dir.display()
+            )),
         },
         HostTarget::Legacy(path) => ProfileSummary {
             mode: "legacy",
@@ -160,7 +210,8 @@ fn profile_summary(target: nails_core::HostTarget) -> ProfileSummary {
     }
 }
 
-/// Collect the decoy persona state the hidden session would inherit.
+/// Collect the decoy persona state the hidden session would inherit, judged
+/// under the configured `[persona]` table.
 ///
 /// The check runs non-interactively and often without privileges, so when the
 /// target user cannot be resolved the inventory is reported as "not inspected"
@@ -180,7 +231,7 @@ fn inherited_summary<F: Filesystem>(
 
     let fresh_home = config.persona.mode == PersonaMode::FreshHome;
     let inventory = collect_inherited_persona(fs, user.home(), &user.name, fresh_home);
-    InheritedSummary::from_inventory(&inventory)
+    InheritedSummary::from_inventory(&inventory, &config.persona)
 }
 
 #[cfg(test)]

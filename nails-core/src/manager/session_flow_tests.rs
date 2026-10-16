@@ -29,10 +29,15 @@ const DECOY_TABLE: &str = "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n";
 #[derive(Default)]
 struct FakeEntryHost {
     reloads: Cell<u32>,
+    /// Request a cancel during the first reload, as a Ctrl+C would.
+    cancel_at_reload: bool,
 }
 
 impl EntryHost for FakeEntryHost {
     fn daemon_reload(&self) -> Result<()> {
+        if self.cancel_at_reload && self.reloads.get() == 0 {
+            crate::cancel::testing::request();
+        }
         self.reloads.set(self.reloads.get() + 1);
         Ok(())
     }
@@ -113,6 +118,8 @@ fn plan(hidden: &Path) -> Plan {
     Plan {
         version: PLAN_VERSION,
         hidden_root: hidden.to_path_buf(),
+        hidden_dev: None,
+        accepted_decoy_storage: None,
         upper: hidden.join("root/upper"),
         work: hidden.join("root/work"),
         owner: None,
@@ -125,6 +132,7 @@ fn plan(hidden: &Path) -> Plan {
         hidden: side,
         policy_mounts: Vec::new(),
         masks: Vec::new(),
+        boot_masks: Vec::new(),
         session_units: Vec::new(),
         backend: Vec::new(),
         tools: Tools::default(),
@@ -132,8 +140,10 @@ fn plan(hidden: &Path) -> Plan {
         entered_at: None,
         run_noexec: false,
         carried: Vec::new(),
+        decoy_mounts: Vec::new(),
         read_only_disks: false,
         failed_at_entry: Vec::new(),
+        kernel_settings: Vec::new(),
     }
 }
 
@@ -477,6 +487,37 @@ fn a_detected_profile_decides_nixos_by_its_kind() {
     assert!(!m.require_supported_host(&machine).unwrap());
 }
 
+/// What activation announces it will build is what the entry builds: a hidden
+/// NixOS system only on NixOS, with a build target, without `--overlay-only`.
+#[test]
+fn a_hidden_system_is_built_only_on_nixos_with_a_target_and_without_overlay_only() {
+    let dir = tempfile::tempdir().unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&dir.path().join("hidden"));
+    let plain = EnterOptions::default();
+    let overlay_only = EnterOptions {
+        overlay_only: true,
+        ..EnterOptions::default()
+    };
+
+    m.set_host_profile(FakePlatform::nixos().host_profile());
+    assert!(
+        !m.builds_hidden_system_on(&machine, &plain),
+        "no build target"
+    );
+    m.set_nixos_builder(NixOSBuilder::new_legacy(PathBuf::from(
+        "/etc/nixos/configuration.nix",
+    )));
+    assert!(m.builds_hidden_system_on(&machine, &plain));
+    assert!(!m.builds_hidden_system_on(&machine, &overlay_only));
+
+    m.set_host_profile(FakePlatform::fhs().host_profile());
+    assert!(
+        !m.builds_hidden_system_on(&machine, &plain),
+        "Debian and Ubuntu build nothing"
+    );
+}
+
 #[test]
 fn a_ram_decoy_root_refuses_the_entry_before_anything_is_prepared() {
     // The way back mounts the decoy root again, so it must be a block device.
@@ -498,6 +539,88 @@ fn a_ram_decoy_root_refuses_the_entry_before_anything_is_prepared() {
     );
     assert!(!machine.paths.runtime().exists());
     assert_eq!(host.reloads.get(), 0);
+}
+
+/// The decoy's own `/etc/nixos` flake is refused under `--no-preflight` too,
+/// before anything is prepared: the entry would otherwise run the decoy's own
+/// system, without the hidden module, and say nothing.
+#[test]
+fn the_decoy_flake_is_refused_without_the_preflight_too() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&hidden);
+    m.set_fake_platform(FakePlatform::nixos().with_build_target(
+        crate::platform::HostTarget::DecoyFlake {
+            dir: PathBuf::from("/etc/nixos"),
+            hidden_volume_root: hidden.clone(),
+        },
+    ));
+    let options = EnterOptions {
+        skip_preflight: true,
+        ..EnterOptions::default()
+    };
+    let host = FakeEntryHost::default();
+
+    let error = m.enter_session_on(&machine, &options, &host).unwrap_err();
+
+    let NailsError::PreFlightCheckFailed(failed) = &error else {
+        panic!("not a pre-flight refusal: {error}");
+    };
+    assert_eq!(failed.len(), 1, "{failed:?}");
+    assert_eq!(failed[0].0, "nixos-build-target");
+    assert!(
+        failed[0]
+            .1
+            .contains("/etc/nixos holds the decoy's own flake"),
+        "{failed:?}"
+    );
+    assert!(
+        failed[0]
+            .2
+            .as_deref()
+            .is_some_and(|fix| fix.contains("never on the decoy")),
+        "{failed:?}"
+    );
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 0);
+    // --overlay-only builds nothing, so it has no build target to refuse.
+    assert!(m.refuse_decoy_flake(true).is_ok());
+}
+
+#[test]
+fn a_cancel_before_the_entry_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&hidden);
+    m.set_host_profile(FakePlatform::fhs().host_profile());
+    let options = EnterOptions {
+        skip_preflight: true,
+        ..EnterOptions::default()
+    };
+    let host = FakeEntryHost::default();
+
+    crate::cancel::testing::request();
+    let result = m.enter_session_on(&machine, &options, &host);
+    crate::cancel::testing::reset();
+
+    assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 0);
+    assert!(!hidden.join("state.json").exists());
+}
+
+#[test]
+fn a_step_that_fails_while_a_cancel_is_pending_reports_the_cancel() {
+    // A Ctrl+C from the terminal reaches the step's processes too.
+    crate::cancel::testing::request();
+    let result: Result<()> = cancellable(|| Err(NailsError::InvalidState("killed".into())));
+    crate::cancel::testing::reset();
+    assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
+    assert_eq!(cancellable(|| Ok(7)).unwrap(), 7);
 }
 
 // ---------------------------------------------------------------------------
@@ -636,7 +759,7 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
 
         let outcome = m.enter_session_on(&machine, &options, &host).unwrap();
 
-        let EnterOutcome::Prepared(entry) = outcome else {
+        let EnterOutcome::Prepared { entry, elapsed } = outcome else {
             panic!("expected a prepared entry, got {outcome:?}");
         };
         // The plan is armed for the entry, read from the given mount table,
@@ -660,7 +783,12 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         let state = recorded(hidden.path());
         assert!(state.state.is_active(), "{:?}", state.state);
         assert_eq!(state.platform, Some(PlatformState::DebianFamily));
-        assert!(state.last_activation.is_some());
+        // `activate` prints the outcome's time and `status` the recorded one:
+        // one measurement.
+        assert_eq!(
+            state.last_activation.map(|last| last.duration_ms),
+            Some(u64::try_from(elapsed.as_millis()).unwrap())
+        );
 
         let target = FakeTarget {
             refuse: true,
@@ -679,4 +807,101 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         assert!(!machine.paths.runtime().exists());
         assert_eq!(recorded(hidden.path()).state, SystemState::Inactive);
     });
+}
+
+#[test]
+fn a_cancel_during_the_entry_rolls_it_back_and_records_nothing() {
+    let _ = Rerun::new(crate::test_path!(
+        a_cancel_during_the_entry_rolls_it_back_and_records_nothing
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let decoy = fhs_decoy();
+        let hidden = ScratchTmpfs::new("");
+        let run = ScratchTmpfs::new("");
+        let machine = Machine {
+            paths: Paths {
+                root: decoy.path().to_path_buf(),
+                run: run.path().to_path_buf(),
+            },
+            mounts: Some(parse_mountinfo(DECOY_TABLE)),
+        };
+        let mut m = manager(hidden.path());
+        m.set_host_profile(FakePlatform::fhs().host_profile());
+        let options = EnterOptions {
+            skip_preflight: true,
+            binary: PathBuf::from("/proc/self/exe"),
+            ..EnterOptions::default()
+        };
+        // The signal arrives while the service manager loads the drop-in.
+        let host = FakeEntryHost {
+            cancel_at_reload: true,
+            ..FakeEntryHost::default()
+        };
+
+        let result = m.enter_session_on(&machine, &options, &host);
+        crate::cancel::testing::reset();
+
+        assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
+        let mounts = read_mountinfo().unwrap();
+        assert!(
+            mounts
+                .iter()
+                .all(|e| !e.mount_point.starts_with(machine.paths.nextroot())),
+            "the next root is detached"
+        );
+        assert!(!machine.paths.runtime().exists());
+        assert!(
+            !run.path()
+                .join(nails_teardown::whole_root::transition::DROPIN_DIR)
+                .exists()
+        );
+        assert_eq!(host.reloads.get(), 2, "one loads the drop-in, one drops it");
+        assert!(!hidden.path().join("state.json").exists());
+    });
+}
+
+#[test]
+fn the_plan_records_only_what_the_override_alone_accepted() {
+    use crate::filesystem::MockFilesystem;
+    use crate::hidden_root::Allow;
+    use std::path::Path;
+
+    // A folder of the decoy's /srv bound at /mnt/data.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/data", true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         2 1 8:2 / /srv rw - ext4 /dev/vda2 rw\n\
+         3 1 8:2 /x /mnt/data rw - ext4 /dev/vda2 rw\n",
+    );
+    let bind = Path::new("/mnt/data");
+    assert_eq!(
+        accepted_decoy_storage(&fs, bind, Allow::DecoyStorage)
+            .unwrap()
+            .as_deref(),
+        Some("/mnt/data is not a volume of its own: it is a bind mount of a folder of /srv")
+    );
+    // Without the override the bind is refused, which the entry never
+    // reaches; nothing is recorded either way.
+    assert_eq!(
+        accepted_decoy_storage(&fs, bind, Allow::Nothing).unwrap(),
+        None
+    );
+    // A folder is refused with the override too.
+    fs.mock_set_path_exists("/srv/x", true);
+    assert_eq!(
+        accepted_decoy_storage(&fs, Path::new("/srv/x"), Allow::DecoyStorage).unwrap(),
+        None
+    );
+
+    // A volume of its own needs no override.
+    let volume = Path::new("/mnt/data");
+    let mounted = MockFilesystem::new();
+    mounted.mock_set_path_exists("/mnt/data", true);
+    mounted.mock_set_mounted(volume, true);
+    assert_eq!(
+        accepted_decoy_storage(&mounted, volume, Allow::DecoyStorage).unwrap(),
+        None
+    );
 }

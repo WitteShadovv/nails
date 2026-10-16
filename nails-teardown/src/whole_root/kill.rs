@@ -5,10 +5,10 @@
 //!
 //! In a whole-root session every userspace process is a hidden process: the
 //! desktop, its applications, every service. The emergency path enqueues the
-//! soft-reboot first (a pending stop job keeps `Restart=` from reviving a unit,
-//! ADR 0007) and then kills every unit that can hold a hidden program with
-//! `cgroup.kill`, so the orderly shutdown has little left to wait for. Spared
-//! are `init.scope` (PID 1), the service manager's own machinery (mount, swap
+//! soft-reboot first (a pending stop job keeps `Restart=` from reviving a unit)
+//! and then kills every unit that can hold a hidden program with `cgroup.kill`,
+//! so the orderly shutdown has little left to wait for. Spared are
+//! `init.scope` (PID 1), the service manager's own machinery (mount, swap
 //! and socket units, `systemd-*` services and the bus; see
 //! [`left_to_the_shutdown`]), which the shutdown stops itself, and the branch
 //! holding this invocation, where every other process is killed one by one

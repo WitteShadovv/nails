@@ -1,13 +1,15 @@
-# Research spike (ADR 0009, "Risk assessment"): probes for the risks of the
-# dual-root design. It is independent of dual-root-vt-emergency.nix, so the two
-# spikes fail separately; it repeats the small amount of setup it needs.
+# Research spike: probes for the risks of the dual-root design, in which the
+# decoy desktop keeps running on its own VT next to a hidden session in a
+# whole-root overlay (evaluated, not adopted). It is independent of
+# dual-root-vt-emergency.nix, so the two spikes fail separately; it repeats
+# the small amount of setup it needs.
 #
 # This is NOT a regression test. It carries the `research` tag, which keeps it
 # out of every default group; build it explicitly:
 #
 #   nix build .#legacyPackages.x86_64-linux.e2e.research-dual-root-risks -L
 #
-# What it probes, in this order (the numbers are the ADR's risk numbers):
+# What it probes, in this order (R1 to R7 number the design's risks):
 #
 #   setup  Graphical decoy (lightdm autologin, icewm) with a full-screen blue
 #          marker window; whole-root overlay at /run/aux/root on the LUKS
@@ -45,8 +47,8 @@
 #          it, strict teardown.
 #
 # How to read the log: lines starting with `FINDING:` are research output.
-# Assertions are used only for the mitigations ADR 0009 claims work, and for
-# the decoy still rendering after the hidden display server was killed.
+# Assertions are used only for the mitigations the dual-root design relied on,
+# and for the decoy still rendering after the hidden display server was killed.
 { pkgs, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;

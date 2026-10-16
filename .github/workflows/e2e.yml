@@ -41,10 +41,10 @@ on:
         options: [affected, ci, all, execute]
       runner:
         description: >-
-          runs-on for the shards, as JSON: "ubuntu-24.04" or a label list such
+          runs-on for the shards, as JSON: "ubuntu-26.04" or a label list such
           as ["self-hosted","nails-e2e"]
         type: string
-        default: '"ubuntu-24.04"'
+        default: '"ubuntu-26.04"'
       max-shards:
         description: >-
           Upper bound on parallel shards; use 1 for a single-use self-hosted
@@ -58,7 +58,7 @@ on:
         default: all
       runner:
         type: string
-        default: '"ubuntu-24.04"'
+        default: '"ubuntu-26.04"'
       max-shards:
         type: number
         default: 10
@@ -82,7 +82,7 @@ defaults:
 jobs:
   plan:
     name: Plan
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     outputs:
       mode: ${{ steps.select.outputs.mode }}
@@ -91,7 +91,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           # Full history: the path filter and the affected selection compare
           # against the base revision.
@@ -149,7 +149,7 @@ jobs:
             mode=all
           fi
 
-          runner=$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))' "${RUNNER_INPUT:-\"ubuntu-24.04\"}")
+          runner=$(python3 -c 'import json, sys; print(json.dumps(json.loads(sys.argv[1]), separators=(",", ":")))' "${RUNNER_INPUT:-\"ubuntu-26.04\"}")
           max_shards=${MAX_SHARDS_INPUT:-10}
           if ! [[ "$max_shards" =~ ^[1-9][0-9]*$ ]]; then
             echo "::error::max-shards must be a positive integer, got '$max_shards'"
@@ -221,7 +221,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -312,7 +312,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -344,12 +344,12 @@ jobs:
     name: Refresh shard weights
     needs: [plan, shard, performance]
     if: ${{ !cancelled() && needs.plan.outputs.mode == 'execute' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -397,7 +397,7 @@ jobs:
     name: e2e-result
     needs: [plan, shard]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
 
     steps:
@@ -428,7 +428,7 @@ jobs:
     name: Report status
     needs: [plan, shard]
     if: ${{ !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -436,7 +436,7 @@ jobs:
 
     steps:
       - name: Checkout the report action
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           sparse-checkout: .github/actions/report-status

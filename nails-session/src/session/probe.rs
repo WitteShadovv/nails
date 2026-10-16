@@ -10,7 +10,7 @@
 //! entry is under way or was interrupted.
 
 use super::layout::Paths;
-use nails_teardown::mountinfo::{MountEntry, parse_overlay_opts, read_mountinfo, top_mount_at};
+use nails_teardown::mountinfo::{MountEntry, read_mountinfo, root_is_hidden_overlay};
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{Direction, Plan, PlanError, unix_now};
 use nails_teardown::whole_root::ret;
@@ -46,18 +46,6 @@ impl SessionView {
             SessionView::Hidden(_) | SessionView::HiddenWithoutPlan(_)
         )
     }
-}
-
-/// Whether `/` is an overlay whose upper lies under `hidden_root`.
-pub fn root_is_hidden_overlay(entries: &[MountEntry], hidden_root: &Path) -> Option<String> {
-    let root = top_mount_at(entries, Path::new("/"))?;
-    if root.fstype != "overlay" {
-        return None;
-    }
-    let upper = parse_overlay_opts(&root.super_opts).upperdir?;
-    upper
-        .starts_with(hidden_root)
-        .then(|| upper.display().to_string())
 }
 
 fn owner_alive(plan: &Plan) -> bool {
@@ -153,24 +141,6 @@ mod tests {
                 plan: None,
                 nextroot_mounted: true
             }
-        );
-    }
-
-    /// The mount table of a live hidden session, captured as root in the
-    /// decoy-journal-leak VM test (fixture README): `/` is the overlay whose
-    /// upper is on the hidden volume at `/mnt/data`.
-    #[test]
-    fn the_captured_hidden_session_has_a_hidden_overlay_root() {
-        let Some(mountinfo) = crate::kernel_fixtures::vm("mountinfo-host.txt") else {
-            return;
-        };
-        let entries = parse_mountinfo(&mountinfo);
-        let upper = root_is_hidden_overlay(&entries, Path::new("/mnt/data"))
-            .expect("the captured root is the hidden overlay");
-        assert!(upper.starts_with("/mnt/data/"), "{upper}");
-        assert_eq!(
-            root_is_hidden_overlay(&entries, Path::new("/mnt/other")),
-            None
         );
     }
 }

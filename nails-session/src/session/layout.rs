@@ -14,7 +14,7 @@
 //!                                  hidden session carries for the way back
 //! <hidden>/root/cache              nix's evaluation cache during the build
 //! <hidden>/root/store-kept         the hidden system's store paths already
-//!                                  copied into the store upper (T-137)
+//!                                  copied into the store upper
 //! <hidden>/config/nixos/           the hidden NixOS module (NixOS)
 //! ```
 //!

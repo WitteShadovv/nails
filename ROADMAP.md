@@ -15,8 +15,7 @@ Work in progress for the current release line.
 - **Debian/Ubuntu support.** Debian 13 and Ubuntu 24.04+ are the first non-NixOS platform. The
   platform layer detects the host, refuses unsupported layouts (ostree/rpm-ostree,
   transactional-update and non-systemd init), and runs the same whole-root session, with the hidden
-  configuration in the upper's `/etc` instead of a NixOS build. Tracked in [#5](https://github.com/WitteShadovv/nails/issues/5) and
-  [#6](https://github.com/WitteShadovv/nails/issues/6).
+  configuration in the upper's `/etc` instead of a NixOS build.
 - **Safer activation, deactivation and recovery.** Reduce partial-failure cases during activation
   and the way back, tighten handling of a lost hidden volume, and improve recovery when an
   operation is interrupted or the operator falls back to `nails emergency` / `nails recover`.
@@ -32,10 +31,12 @@ Work in progress for the current release line.
 Planned once the current line is stable.
 
 - **Fedora backend.** A validated backend for the Fedora family, covering its usr-merge layout
-  and dnf/rpm package-drift scanning.
+  and dnf/rpm package-drift scanning. It ships only after the attach gate refuses a hidden root on
+  the decoy's own storage (a subvolume, a bind of a folder, a volume in its volume group): Fedora's
+  default btrfs layout makes a subvolume of the decoy an easy mistake.
 - **Arch backend.** A validated backend for Arch and close derivatives, with pacman-based drift
-  scanning. The platform layer is built so a new distribution is a backend plus a detection-table
-  entry, not a rewrite.
+  scanning. Like Fedora, it ships after the attach gate's decoy-storage refusal. The platform
+  layer is built so a new distribution is a backend plus a detection-table entry, not a rewrite.
 - **aarch64 support.** Build, test and release the binary for 64-bit ARM alongside x86-64, and
   exercise it in the E2E suite.
 
@@ -43,10 +44,14 @@ Planned once the current line is stable.
 
 Longer-horizon work and open questions, not yet scheduled.
 
-- **Memory forensics.** Study and harden against RAM-resident traces of a hidden session.
+- **Memory forensics.** Study and harden against RAM-resident traces of a hidden session. The
+  open items (RAM after the way back, crash-dump channels, swap enabled mid-session) are tracked
+  in [#5](https://github.com/WitteShadovv/nails/issues/5).
 - **Cross-backend evaluation.** Extend the disk-image leak checks and the VM/container smoke tiers so
   every supported distribution is exercised end-to-end, with adding a distribution being one
-  detection-table entry.
+  detection-table entry. The open disk-image work (the full checks on Debian and Ubuntu, a decoy
+  imaged after a power cut mid-session) is tracked in
+  [#6](https://github.com/WitteShadovv/nails/issues/6).
 - **OpenRC / ostree support.** Explore whether non-systemd init systems and image-based
   (ostree/rpm-ostree) hosts can be supported safely rather than refused.
 - **Usability study.** Evaluate the operator workflow with real users to find where setup, recovery

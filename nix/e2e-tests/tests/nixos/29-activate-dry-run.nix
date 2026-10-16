@@ -4,7 +4,9 @@
 # check --nixos-flake` reports its sections (pre-flight checks, the decoy
 # filesystems of the hidden root, the session, the NixOS profile) and refuses
 # with exit 4. `activate --dry-run` with the same arguments is a thin alias:
-# identical output and exit code. Neither builds anything (no `nix build` or
+# identical output and exit code. With only the decoy's own flake in
+# /etc/nixos and no hidden flake, both refuse that flake with instructions
+# instead of building it. Neither builds anything (no `nix build` or
 # `nix-build` runs), prepares a next root at /run/nextroot, writes a state
 # file or the hidden layout, or leaves the plain decoy root.
 
@@ -35,6 +37,8 @@ in
   testScript = _: ''
     ${testHelpers.writeHeadlessConfigFn}
     ${testHelpers.readStatusJsonFn}
+
+    import json
 
     from nails_e2e import run_command_capture, session
 
@@ -132,6 +136,43 @@ in
         assert dry["rc"] == check["rc"], f"dry-run rc={dry['rc']} must match check rc={check['rc']}"
         assert dry["stdout"] == check["stdout"], "dry-run and check must produce identical output"
         assert_no_build()
+
+    with subtest("the decoy's own /etc/nixos flake is refused, not built"):
+        # As nixos-generate-config --flake leaves it, with no hidden flake.
+        machine.succeed("mv /mnt/data/nixos/flake.nix /mnt/data/nixos/flake.nix.away")
+        machine.succeed("""cat > /etc/nixos/flake.nix <<'EOF'
+    {
+      inputs.nixpkgs.url = "path:${nixpkgsPath}";
+      outputs = { self, nixpkgs }: {
+        nixosConfigurations.nixos = nixpkgs.lib.nixosSystem {
+          system = "x86_64-linux";
+          modules = [ ./configuration.nix ];
+        };
+      };
+    }
+    EOF""")
+        rc, out = machine.execute(
+            f"{shim_env} nails --config {headless_config} --json check 2>/run/decoy-flake.err"
+        )
+        assert rc == 4, f"check must refuse the decoy flake (rc=4), got {rc}"
+        report = json.loads(out)["data"]
+        target = {row["name"]: row for row in report["checks"]}["nixos-build-target"]
+        assert target["status"] == "fail", target
+        assert "/etc/nixos holds the decoy's own flake" in target["message"], target
+        assert target["remediation"].startswith(
+            "Write a self-contained flake in /mnt/data/nixos and lock it from inside a hidden session"
+        ), target
+        assert report["profile"]["mode"] == "refused", report["profile"]
+        dry = run_command_capture(
+            machine,
+            "activate-dry-run-decoy-flake",
+            f"{shim_env} nails --config {headless_config} activate --dry-run",
+        )
+        assert dry["rc"] == 4, f"dry-run must refuse the decoy flake: {dry}"
+        assert "holds the decoy's own flake" in dry["stdout"], dry["stdout"]
+        assert_no_build()
+        machine.succeed("rm /etc/nixos/flake.nix")
+        machine.succeed("mv /mnt/data/nixos/flake.nix.away /mnt/data/nixos/flake.nix")
 
     with subtest("state, hidden volume and root remain untouched"):
         status = read_status_json(config_path=headless_config)

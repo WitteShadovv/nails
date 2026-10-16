@@ -56,7 +56,7 @@ pub use config_layer::{ConfigLayer, NixOsConfigLayer};
 pub use detect::detect;
 pub use discover::{HostTarget, discover_host_target, discover_with_platform};
 pub use fhs::FhsPlatform;
-pub use nixos::NixOsPlatform;
+pub use nixos::{HiddenFlake, NixOsPlatform, hidden_flake};
 pub use unsupported::UnsupportedPlatform;
 
 #[cfg(any(test, feature = "test-support"))]

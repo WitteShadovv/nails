@@ -155,10 +155,12 @@ impl Config {
     /// # Errors
     ///
     /// - `NailsError::ConfigNotFound` if the file does not exist.
-    /// - `NailsError::ConfigError` if the file cannot be read, is not valid
-    ///   TOML, contains an unknown key at any level, or has a value of the
-    ///   wrong type. The message is one line and names the line and column;
-    ///   for a misspelt key it suggests the closest valid key.
+    /// - `NailsError::IoError` if the file cannot be read (permission denied,
+    ///   a directory, an I/O error), carrying the error's kind.
+    /// - `NailsError::ConfigError` if the file is not valid TOML, contains an
+    ///   unknown key at any level, or has a value of the wrong type. The
+    ///   message is one line and names the line and column; for a misspelt
+    ///   key it suggests the closest valid key.
     /// - `NailsError::UnsafeConfigPath` if a path breaks a rule of
     ///   [`Config::validate_paths`].
     ///
@@ -246,7 +248,11 @@ fn render_template(root: &Path, title: &str) -> String {
 # Free space required when a hidden NixOS system is built (NixOS), in MB.
 # rebuild_space_mb = 4096
 
-# NixOS flake reference for the hidden environment. Unset: auto-detected.
+# NixOS flake reference for the hidden environment; the flake must import the
+# hidden module. Unset: a flake in <hidden_volume_root>/nixos; else, when
+# /etc/nixos is the decoy's own flake, activation refuses; otherwise the legacy
+# hidden configuration. Write and lock a hidden flake inside a hidden session,
+# never on the decoy.
 # nixos_flake = {flake_value}
 
 # Accept a persistent decoy posture instead of refusing activation. Activation
@@ -259,7 +265,7 @@ fn render_template(root: &Path, title: &str) -> String {
 # How the hidden session relates to the decoy account.
 #   "shared-home" (default): the hidden session starts from the decoy home (the
 #     root overlay's lower). The decoy's accounts, keys and app profiles are live
-#     in the hidden session; activation warns while this mode is in effect.
+#     in the hidden session; `nails check` says so on a line of its own.
 #   "fresh-home": the operator's home starts empty in the hidden session (an
 #     opaque directory in the root upper), so the decoy home is not visible.
 # (A separate fixed-UID hidden account, "separate-user", is planned for a later
@@ -296,15 +302,18 @@ fn render_template(root: &Path, title: &str) -> String {
 
 # What to do about system sleep (suspend/hibernate) while the hidden environment
 # is active. Suspending an active session leaves it resident in RAM behind the
-# decoy lock screen, so on resume the decoy login unlocks a still-live session.
+# hidden session's own lock screen, so whoever unlocks it on resume is in the
+# still-live session.
 #   "warn" (default): pre-flight warns when the host would suspend an active
 #     session (lid switch, idle auto-suspend); nothing runs at runtime.
-#   "block": hold a sleep/idle inhibitor for the whole session so the host cannot
-#     suspend while active; released at deactivation. A blocked suspend with the
-#     lid shut can overheat a laptop.
+#   "block": hold sleep and idle block inhibitors for the whole session so the
+#     host cannot suspend while active, and take the lid switch from logind when
+#     a closed lid would sleep (the lid then does nothing, not even lock the
+#     screen); released at deactivation. A laptop kept running with the lid shut
+#     can overheat.
 #   "teardown": hold a sleep *delay* inhibitor and power off when the host is
 #     about to sleep, within logind's InhibitDelayMaxSec.
-# Also set the logind lid switch to "ignore" or "lock" on the decoy; see
+# Also set the logind lid switch to "lock" on the decoy; see
 # docs/decoy-requirements.md.
 # [sleep_policy]
 # mode = "warn"

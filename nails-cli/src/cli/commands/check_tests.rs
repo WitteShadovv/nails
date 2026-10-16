@@ -35,6 +35,18 @@ fn profile_summary_reports_a_discovered_flake() {
 }
 
 #[test]
+fn profile_summary_reports_the_refused_decoy_flake() {
+    let profile = profile_summary(HostTarget::DecoyFlake {
+        dir: PathBuf::from("/etc/nixos"),
+        hidden_volume_root: PathBuf::from("/mnt/vault"),
+    });
+    assert_eq!(profile.mode, "refused");
+    let detail = profile.detail.unwrap();
+    assert!(detail.contains("/etc/nixos is not built"), "{detail}");
+    assert!(detail.contains("nixos-build-target"), "{detail}");
+}
+
+#[test]
 fn profile_summary_reports_a_legacy_target() {
     let profile = profile_summary(HostTarget::Legacy(PathBuf::from("/cfg/configuration.nix")));
     assert_eq!(profile.mode, "legacy");
@@ -77,6 +89,11 @@ fn summary_follows_the_platform_discovery() {
 
     let profile = profile_summary(manager.discover_host_target(true).unwrap());
     assert_eq!(profile.mode, "overlay-only");
+    // 0.3 switches no system profile: overlay-only builds no hidden system.
+    assert_eq!(
+        profile.line(),
+        "overlay-only: no hidden NixOS system is built; the session runs the decoy's own system"
+    );
 }
 
 /// A host without a config layer auto-discovers no profile switch, matching
@@ -86,6 +103,8 @@ fn summary_is_none_on_a_host_without_a_config_layer() {
     let manager = manager_on(FakePlatform::fhs(), None);
     let profile = profile_summary(manager.discover_host_target(false).unwrap());
     assert_eq!(profile.mode, "none");
+    assert_eq!(profile.detail, None);
+    assert_eq!(profile.line(), "no hidden NixOS build target");
 }
 
 /// An explicit flake is the operator's own choice and is reported on every

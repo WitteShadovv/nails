@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! What happens to each decoy filesystem in the hidden root (ADR 0008, §2).
+//! What happens to each decoy filesystem in the hidden root.
 //!
 //! The root overlay covers only the root filesystem. Every other filesystem
 //! in the fstab the hidden systemd reads would be mounted by it **directly and
@@ -33,6 +33,13 @@
 //! checks the init: NixOS test VMs mount `/nix/store` as an overlay of a 9p
 //! share and a tmpfs, and the next root would otherwise have an empty store.
 //!
+//! An entry behind an automount (`x-systemd.automount`, often the ESP) whose
+//! filesystem the policy binds or overlays itself keeps its automount masked
+//! too ([`masks`]): the hidden systemd would find the mount point taken and
+//! fail to set the automount up, and `local-fs.target`, which requires it
+//! unless the entry is `nofail`, would fail with it and start the hidden
+//! session in emergency mode.
+//!
 //! Nothing is refused outright today: every entry has a safe decision. The
 //! `Refuse` decision exists for entries whose target cannot be mounted inside
 //! the next root (a relative or odd mount point).
@@ -43,6 +50,17 @@ use std::path::{Component, Path, PathBuf};
 
 /// Mount points whose filesystem is kept read-only in the hidden root.
 pub const BOOT_PATHS: &[&str] = &["/boot", "/boot/efi", "/efi"];
+
+/// Units that write to the boot filesystems at every start: systemd-boot's
+/// random seed, and GRUB's record of a good boot on Debian and Ubuntu. On the
+/// read-only boot filesystems they would only fail in every hidden session,
+/// so the entry masks those the hidden root has, in the hidden root alone. The
+/// decoy runs them at its own start, as it always does.
+pub const BOOT_WRITER_UNITS: &[&str] = &[
+    "systemd-boot-random-seed.service",
+    "grub-common.service",
+    "grub-initrd-fallback.service",
+];
 
 /// What to do with one fstab entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -251,6 +269,30 @@ pub fn masked_units(decisions: &[Decision]) -> Vec<String> {
         .collect()
 }
 
+/// Every unit the hidden session keeps masked, each once: the units the
+/// `decisions` mask, and the automount of each entry of `fstab` whose
+/// filesystem they put in place themselves, read-only or overlaid (see the
+/// module docs).
+pub fn masks(fstab: &[FstabEntry], decisions: &[Decision]) -> Vec<String> {
+    let placed = |file: &Path| {
+        decisions.iter().any(|decision| match decision {
+            Decision::ReadOnlyBind { target } | Decision::Overlay { target } => target == file,
+            _ => false,
+        })
+    };
+    let automounts = fstab
+        .iter()
+        .filter(|entry| entry.is_automount() && placed(&entry.file))
+        .map(|entry| automount_unit(&entry.file));
+    let mut masks: Vec<String> = Vec::new();
+    for unit in masked_units(decisions).into_iter().chain(automounts) {
+        if !masks.contains(&unit) {
+            masks.push(unit);
+        }
+    }
+    masks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,5 +432,30 @@ mod tests {
         );
         assert!(matches!(&decisions[2], Decision::Mask { .. }));
         assert_eq!(masked_units(&decisions), ["home-alice-media.mount"]);
+    }
+
+    #[test]
+    fn the_automount_of_a_filesystem_put_in_place_is_masked_once() {
+        // The ESP and /home behind automounts, both put in place; /data
+        // masked with its automount; /srv put in place without one. The
+        // hidden generation's fstab names /boot again.
+        let fstab = parse_fstab(
+            "UUID=AB /boot vfat umask=0077,x-systemd.automount 0 2
+             LABEL=home /home ext4 x-systemd.automount,nofail 0 2
+             /dev/sdb1 /data ext4 noauto,x-systemd.automount 0 2
+             /dev/vda4 /srv ext4 ro 0 2
+             UUID=AB /boot vfat x-systemd.automount 0 2
+",
+        );
+        let decisions = decide_all(&fstab, &mounts(), Path::new(HIDDEN));
+        assert_eq!(
+            masks(&fstab, &decisions),
+            [
+                "data.mount",
+                "data.automount",
+                "boot.automount",
+                "home.automount"
+            ]
+        );
     }
 }

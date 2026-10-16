@@ -1,13 +1,13 @@
-# The mechanics of the whole-root session (ADR 0008), by hand: enter a
-# whole-root overlay with `systemctl soft-reboot` and come back, twice.
+# The mechanics of the whole-root session, by hand: enter a whole-root
+# overlay with `systemctl soft-reboot` and come back, twice.
 #
-# This began as the research spike that decided ADR 0008 and is now a regular
-# test: it pins, independently of the `nails` code, the kernel and systemd
-# behaviour the session mode is built on (the /run bind for PID 1's init check,
-# the read-only ESP, the allowlist /run scrub, the kmsg cursor, the utab
-# restore, strict and deferred backend close, and a clean raw decoy disk). The
-# same steps through `nails` are covered by session-lifecycle and the other
-# session tests.
+# This began as the research spike that decided the whole-root design and is
+# now a regular test: it pins, independently of the `nails` code, the kernel
+# and systemd behaviour the session mode is built on (the /run bind for PID 1's
+# init check, the read-only ESP, the allowlist /run scrub, the kmsg cursor,
+# the utab lines a switch carries, strict and deferred backend close, and a
+# clean raw decoy disk). The same steps through `nails` are covered by
+# session-lifecycle, session-emergency and the other session tests.
 #
 # What it does, twice (cycle 1 and cycle 2):
 #
@@ -15,17 +15,22 @@
 #      root, upper/work on the LUKS hidden volume (/mnt/data/root/{upper,work}).
 #   2. Writes a canary through the overlay, so it lands in the upper.
 #   3. `systemctl soft-reboot`: PID 1 stops userspace, switches root into
-#      /run/nextroot and starts a fresh userspace there.
+#      /run/nextroot and starts a fresh userspace there. Its last step keeps
+#      of libmount's utab only the lines whose mount the switch carries, as
+#      nails does: libmount joins a line to the mount with the line's mount ID,
+#      and the kernel hands the IDs of the mounts left behind to the next ones.
 #   4. In the hidden root: asserts the canary is at /, a new write lands in the
 #      upper and not on the decoy disk, and that the vital paths work (units,
 #      network, login, modprobe, /boot untouched, the Nix store and daemon,
 #      the hidden volume, journald writing into the overlay).
 #   5. Mounts the decoy root at /run/nextroot, installs the last-step /run
 #      scrub and kmsg cursor (a runtime drop-in on systemd-soft-reboot.service)
-#      and soft-reboots back. On the decoy it asserts the same vital paths,
-#      that no overlay or nextroot mount is left, that the hidden volume can be
-#      closed, that nothing of the hidden /run survived and that no hidden
-#      kernel record reached the decoy journal.
+#      and soft-reboots back; the scrub gives the decoy's utab lines back to the
+#      mounts it gets back, under their new mount IDs. On the decoy it asserts
+#      the same vital paths, that no overlay or nextroot mount is left, that
+#      the hidden volume can be closed, that nothing of the hidden /run
+#      survived, that every utab line names the mount it was written for and
+#      that no hidden kernel record reached the decoy journal.
 #
 # Timings are measured in the guest from PID 1's own timestamps
 # (ShutdownStart, Userspace and Finish) and /proc/uptime, not on the host.
@@ -36,7 +41,7 @@
 # token.
 #
 # The VM boots through a real bootloader (as forensic/80 does), so the Nix
-# store lives on the root disk like on a real install, not on a 9p share, and
+# store lives on the root disk like on a real install, not on a host share, and
 # the root overlay covers it. journald is set to persistent storage on purpose:
 # that is the stricter case for "the hidden journal lands in the overlay".
 #
@@ -79,11 +84,10 @@ in
       # Stricter than the suite default (volatile): the hidden journal must be
       # shown to land in the overlay upper, never in the decoy's
       # /var/log/journal.
-      services.journald.storage = lib.mkForce "persistent";
+      services.journald.settings.Journal.Storage = lib.mkForce "persistent";
 
-      # soft-reboot.target and systemd-soft-reboot.service come from
-      # vm-config.nix (lib/soft-reboot-units.nix): the pinned nixpkgs does not
-      # install them.
+      # soft-reboot.target and systemd-soft-reboot.service are among the
+      # units the pinned nixpkgs installs from systemd.
 
       # The trivial offline build uses this bash as its builder, so it must be
       # in the system closure (and therefore registered in the VM's Nix DB).
@@ -100,6 +104,8 @@ in
     import shlex
     import signal
     import time
+
+    from nails_e2e import utab
 
     BASH_STORE_PATH = "${pkgs.bash}"
     HIDDEN = "/mnt/data"
@@ -501,7 +507,81 @@ in
     pre_session = snapshot()
 
 
-    # The /run scrub and kmsg cursor for the way back (ADR 0008, section 5).
+    # libmount's utab across a switch, the rule nails follows: a line stays only
+    # while it names a mount the switch carries, one at or below /run/nextroot,
+    # under that mount's ID now. Entering (mode=enter) reads the mount table and
+    # utab; the way back (mode=leave) reads the decoy's mount table and utab,
+    # both copied at entry, and the mount table now, and gives each of the
+    # decoy's lines the ID of the mount now in its mount's place, with the same
+    # source and root. ENTER_UTAB runs it as the last step of the entry.
+    UTAB_AWK = r"""
+    function sep(    j) { for (j = 7; j <= NF; j++) if ($j == "-") return j; return 0 }
+    FNR == 1 { file++ }
+    mode == "leave" && file == 1 {
+        if ((j = sep())) { point[$1] = $5; src[$1] = $(j + 2); root[$1] = $4 }
+        next
+    }
+    (mode == "enter" && file == 1) || (mode == "leave" && file == 2) {
+        if (!(j = sep())) next
+        if ($5 != "/run/nextroot" && index($5, "/run/nextroot/") != 1) next
+        at = substr($5, 14); if (at == "") at = "/"
+        carried[$1] = at SUBSEP $(j + 2) SUBSEP $4
+        newest[at SUBSEP $(j + 2) SUBSEP $4] = $1
+        next
+    }
+    {
+        line = $0; sub(/\r$/, "", line)
+        if (line ~ /^[ \t]*(#|$)/) next
+        n = split(line, tok, / /); id = ""; s = t = r = "\001"
+        for (i = 1; i <= n; i++) {
+            v = tok[i]; sub(/\t.*/, "", v)
+            if (id == "" && v ~ /^ID=/) {
+                id = substr(v, 4)
+                if (id == "" && i == n) continue
+                if (id !~ /^[+-]?[0-9]+$/) next
+                id += 0
+            }
+            else if (s == "\001" && v ~ /^SRC=/) s = substr(v, 5)
+            else if (t == "\001" && v ~ /^TARGET=/) t = substr(v, 8)
+            else if (r == "\001" && v ~ /^ROOT=/) r = substr(v, 6)
+        }
+        if (id > 0 && mode == "enter") {
+            if (!(id in carried)) next
+            split(carried[id], c, SUBSEP)
+            if ((s == "\001" || s == c[2]) && (r == "\001" || r == c[3])) print line
+            next
+        }
+        if (id > 0) {
+            if (!(id in point)) next
+            if ((s != "\001" && s != src[id]) || (r != "\001" && r != root[id])) next
+            key = point[id] SUBSEP src[id] SUBSEP root[id]
+            if (!(key in newest)) next
+            sub("(^| )ID=[^ ]*", "&\001", line)
+            sub("ID=[^ \001]*\001", "ID=" newest[key], line)
+            print line
+            next
+        }
+        if (t == "\001") next
+        for (k in newest) {
+            split(k, c, SUBSEP)
+            if (c[1] == t && (s == "\001" || s == c[2]) && (r == "\001" || r == c[3])) { print line; next }
+        }
+    }
+    """
+
+    ENTER_UTAB = r"""#!/run/current-system/sw/bin/bash
+    PATH=/run/current-system/sw/bin
+    if [ -e /run/mount/utab ]; then
+        awk -v mode=enter '@UTAB_AWK@' /proc/self/mountinfo /run/mount/utab > /run/mount/utab.new &&
+            mv /run/mount/utab.new /run/mount/utab
+    fi
+    # Once only: the next userspace must not run it again on its way out.
+    rm -f /run/systemd/system/systemd-soft-reboot.service.d/40-nails-utab.conf /run/nails-enter-utab.sh
+    exit 0
+    """.replace("@UTAB_AWK@", UTAB_AWK)
+
+
+    # The /run scrub and kmsg cursor for the way back.
     #
     # It runs as the ExecStart of systemd-soft-reboot.service in the hidden
     # root, added by a drop-in under the hidden /run. That service is ordered
@@ -535,6 +615,7 @@ in
     #    the start of the ring buffer. Writing "last record + 1" here makes it
     #    skip every record the hidden session produced, including those logged
     #    after the hidden journald stopped.
+    # Before the sweep it writes the decoy's utab lines back (UTAB_AWK).
     #
     # The script lives in the hidden /run: the hidden volume is already
     # unmounted when it runs, and nothing of it reaches any disk.
@@ -566,10 +647,12 @@ in
     for p in /run/user/*; do
         [ -d "$p" ] && rmdir -- "$p" 2>/dev/null
     done
-    # Restore utab first: the utab snapshot is younger than the /run snapshot,
-    # so the sweep below would delete it before it could be used.
+    # utab first: the decoy's copy is younger than the /run snapshot, so the
+    # sweep below would delete it before it could be used.
     if [ -f /run/nails-utab-snapshot ] && [ -e /run/mount/utab ]; then
-        cat /run/nails-utab-snapshot > /run/mount/utab
+        awk -v mode=leave '@UTAB_AWK@' /run/nails-utab-mounts /proc/self/mountinfo \
+            /run/nails-utab-snapshot > /run/mount/utab.new &&
+            mv /run/mount/utab.new /run/mount/utab
     fi
     if [ -r "$snap" ]; then
         # The same two levels the snapshot and the residue check cover.
@@ -580,7 +663,7 @@ in
             grep -qxF -- "$p" "$snap" || del "$p"
         done
     fi
-    rm -f -- "$snap" /run/nails-utab-snapshot /run/nails-leave-scrub.sh
+    rm -f -- "$snap" /run/nails-utab-snapshot /run/nails-utab-mounts /run/nails-leave-scrub.sh
     last=$(dd if=/dev/kmsg bs=16384 iflag=nonblock 2>/dev/null | grep -av '^ ' | tail -n 1 | cut -d, -f2)
     if [ -n "$last" ]; then
         next=$((last + 1))
@@ -592,13 +675,24 @@ in
         printf "$bytes" > /run/systemd/journal/kernel-seqnum
     fi
     exit 0
-    """
+    """.replace("@UTAB_AWK@", UTAB_AWK)
 
     LEAVE_DROPIN = (
         "[Service]\n"
         "Type=oneshot\n"
         "ExecStart=-/run/current-system/sw/bin/bash /run/nails-leave-scrub.sh\n"
     )
+
+
+    def install_enter_utab():
+        machine.succeed(
+            "cat > /run/nails-enter-utab.sh <<'NAILS_EOF'\n" + ENTER_UTAB + "NAILS_EOF\n"
+            "mkdir -p /run/systemd/system/systemd-soft-reboot.service.d\n"
+            "printf '[Service]\\nType=oneshot\\n"
+            "ExecStart=-/run/current-system/sw/bin/bash /run/nails-enter-utab.sh\\n' "
+            "> /run/systemd/system/systemd-soft-reboot.service.d/40-nails-utab.conf\n"
+            "systemctl daemon-reload"
+        )
 
 
     def install_leave_scrub():
@@ -640,11 +734,11 @@ in
             # libmount's utab (userspace mount options) is a kept file whose
             # content the hidden session extends: every userspace start adds
             # lines for its x-* mounts, and mounts dropped by the switch are
-            # never removed from it. Save the decoy's copy; the scrub restores
-            # it.
+            # never removed from it. Save the decoy's copy and the mount table
+            # it names mounts in; the scrub gives the lines back from them.
             utab_snapshots[cycle] = machine.succeed(
                 "if [ -e /run/mount/utab ]; then cp /run/mount/utab /run/nails-utab-snapshot; "
-                "cat /run/mount/utab; fi"
+                "cat /proc/self/mountinfo > /run/nails-utab-mounts; cat /run/mount/utab; fi"
             )
             machine.succeed(
                 "set -eux; "
@@ -682,11 +776,32 @@ in
             machine.fail("test -e /nails-canary")
             precheck_nextroot()
 
+        with subtest(f"cycle {cycle}: keep the static address through the switch"):
+            # NixOS starts network-addresses-<interface>.service only when its
+            # device appears, which a soft-reboot does not replay, and the
+            # unit's stop deletes the address. As nails does (STOP_GUARDED_UNITS
+            # in nails-teardown), clear that stop for the session, so the kernel
+            # keeps the address in both directions. The leave scrub removes the
+            # drop-in with the rest of /run/systemd/system.
+            machine.succeed(
+                "mkdir -p /run/systemd/system/network-addresses-.service.d && "
+                "printf '[Service]\\nExecStop=\\n' "
+                "> /run/systemd/system/network-addresses-.service.d/zz-overlay-runtime.conf && "
+                "systemctl daemon-reload"
+            )
+
+        install_enter_utab()
         soft_reboot(f"cycle{cycle}-enter")
 
         with subtest(f"cycle {cycle}: the hidden root is the overlay"):
             assert machine.succeed("findmnt -no FSTYPE /").strip() == "overlay"
             assert machine.succeed("cat /nails-canary").strip() == canary
+            # The switch kept no line whose mount it left behind.
+            wrong = utab.wrong_lines(
+                machine.succeed("cat /run/mount/utab 2>/dev/null || true"),
+                machine.succeed("cat /proc/self/mountinfo"),
+            )
+            assert not wrong, f"utab lines naming no live mount or another: {wrong}"
             if cycle > 1:
                 # The upper persists across sessions on the hidden volume.
                 machine.succeed("test -s /root/nails-hidden-write-1")
@@ -868,26 +983,19 @@ in
                 "{ echo \"== $f\"; cat \"$f\" 2>/dev/null | head -n 20; }; done; true"
             )
             finding(f"{label}: content of kept files the hidden session could touch:\n{kept_content}")
-            # Every utab line must either predate entering (restored by the
-            # scrub) or describe a mount that is live in the decoy now.
-            live_ids = set(
-                machine.succeed("cut -d' ' -f1 /proc/self/mountinfo").split()
-            )
+            # Every utab line names the mount it was written for: the decoy's
+            # own lines came back under the IDs of the mounts the way back
+            # restored, and no line of the hidden session or left behind names
+            # a mount that reused its ID.
             _, utab_now = out_of("cat /run/mount/utab 2>/dev/null || true")
-            before = set(utab_snapshots[cycle].splitlines())
-            foreign = []
-            for line in utab_now.splitlines():
-                if not line.strip() or line in before:
-                    continue
-                ident = next((f[3:] for f in line.split() if f.startswith("ID=")), None)
-                if ident not in live_ids:
-                    foreign.append(line)
-            stale = [line for line in before if line.strip() and line in utab_now.splitlines()]
+            wrong = utab.wrong_lines(utab_now, machine.succeed("cat /proc/self/mountinfo"))
+            before = {utab.without_id(line) for line in utab_snapshots[cycle].splitlines()}
+            kept = [line for line in utab_now.splitlines() if utab.without_id(line) in before]
             finding(
-                f"{label}: utab lines kept from before entering: {len(stale)}, "
-                f"lines from the decoy's new mounts: {len(utab_now.splitlines()) - len(stale)}"
+                f"{label}: utab lines from before entering: {len(kept)}, "
+                f"lines from the decoy's new mounts: {len(utab_now.splitlines()) - len(kept)}"
             )
-            assert not foreign, f"utab lines from the hidden session in the decoy: {foreign}"
+            assert not wrong, f"utab lines naming no live mount or another: {wrong}"
             _, scrub_log = out_of("dmesg | grep 'nails-scrub:' | tail -n 40 || true")
             finding(f"{label}: what the scrub removed (from its own kmsg lines):\n{scrub_log}")
             assert not residue, f"hidden /run residue in the decoy: {residue}"
@@ -952,7 +1060,7 @@ in
         # OOM-killed. Each window is 65 MiB read every 64 MiB, so a token that
         # straddles a boundary is still seen whole; grep never holds more than
         # one window. The late kmsg tokens are asserted too: with the kmsg
-        # cursor (ADR 0008, section 5) they must not reach the decoy journal.
+        # cursor they must not reach the decoy journal.
         all_tokens = list(hidden_tokens) + late_kmsg_tokens
         patterns = " ".join(f"-e {t}" for t in all_tokens)
         raw = machine.succeed(

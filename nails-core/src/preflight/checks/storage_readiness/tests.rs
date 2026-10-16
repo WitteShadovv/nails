@@ -386,3 +386,50 @@ fn test_storage_readiness_debug() {
     let debug = format!("{:?}", check);
     assert!(debug.contains("StorageReadinessCheck"));
 }
+
+/// The read-only check on the root overlay as activation and `check` build
+/// it: lower `/`, upper and work under `root/`.
+fn root_check() -> StorageReadinessCheck {
+    StorageReadinessCheck::new(
+        PathBuf::from("/mnt/data"),
+        vec![OverlayDirs::new(
+            "root".to_string(),
+            PathBuf::from("/"),
+            PathBuf::from("/mnt/data/root/upper"),
+            PathBuf::from("/mnt/data/root/work"),
+        )],
+    )
+    .read_only()
+}
+
+/// A fresh volume as `init` leaves it on Debian and Ubuntu: `root/work`
+/// but no `root/upper`, which the entry makes with the decoy root's mode and
+/// owner. That is no warning, and nothing is listed twice.
+#[test]
+fn a_missing_root_upper_is_part_of_the_pass() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/", true);
+    fs.mock_set_readable("/", true);
+    for dir in ["/mnt/data/root", "/mnt/data/root/work"] {
+        fs.mock_set_path_exists(dir, true);
+        fs.mock_set_path_type(dir, PathKind::Dir);
+        fs.mock_set_writable(dir, true);
+    }
+    let result = root_check().run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        "Hidden storage ready: activation creates /mnt/data/root/upper with the decoy \
+         root's mode and owner"
+    );
+
+    // A missing work directory still warns, once, beside the note.
+    fs.mock_set_path_exists("/mnt/data/root/work", false);
+    let result = root_check().run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert_eq!(
+        result.message(),
+        "Hidden storage usable; activation will create: root/work/; activation creates \
+         /mnt/data/root/upper with the decoy root's mode and owner"
+    );
+}

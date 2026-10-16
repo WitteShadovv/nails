@@ -14,6 +14,8 @@
 
 use std::path::Path;
 
+use nails_core::preflight::checks::sleep_policy::effective_logind_sleep;
+use nails_core::sleep_guard::LidSwitch;
 use nails_core::{RealFilesystem, runtime_copy, sleep_guard};
 
 use crate::cli::output::{ExitStatus, OutputSettings};
@@ -21,8 +23,10 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// Execute the sleep guard.
 ///
 /// Reads the mirrored configuration from the `/run` copy, then holds the logind
-/// inhibitor the configured mode calls for. In `teardown` mode the guard runs the
-/// bounded emergency teardown when the host is about to sleep.
+/// inhibitors the configured mode calls for: in `block` mode the lid switch's
+/// too when the session's logind would sleep on a closed lid. In `teardown`
+/// mode the guard runs the bounded emergency teardown and powers the machine
+/// off when the host is about to sleep.
 ///
 /// Always exits [`ExitStatus::Ok`]: like the backend watcher, this is a
 /// best-effort safety net, so a missing copy or an unreachable bus is a logged
@@ -47,7 +51,15 @@ pub fn execute(
         return ExitStatus::Ok;
     }
 
-    tracing::info!(?mode, "Sleep guard started");
+    // The session's own logind configuration decides whether a closed lid
+    // would sleep, and so whether `block` takes the lid switch from logind.
+    let lid = if effective_logind_sleep(&filesystem).lid_switch_sleeps() {
+        LidSwitch::Take
+    } else {
+        LidSwitch::Leave
+    };
+
+    tracing::info!(?mode, ?lid, "Sleep guard started");
 
     let _ = env;
     let on_prepare_for_sleep = || {
@@ -57,7 +69,7 @@ pub fn execute(
         );
     };
 
-    if let Err(e) = sleep_guard::run_guard(mode, on_prepare_for_sleep) {
+    if let Err(e) = sleep_guard::run_guard(mode, lid, on_prepare_for_sleep) {
         tracing::warn!(error = %e, "Sleep guard exiting; the session runs without sleep protection");
     }
 

@@ -25,7 +25,9 @@ upper's `/etc` holds. See the
   it, reads `/mnt/data/config/nails.toml`, so the configuration
   always travels with the binary on the hidden volume.
 - `--config PATH` reads any TOML file instead. A file named by `--config` must
-  exist; a missing file at the default location means "use the defaults".
+  exist; a missing file at the default location means "use the defaults", and
+  `activate` says so before it asks for confirmation, since every opt-in
+  protection then keeps its default.
 - `nails init <root>` writes a commented starter file with every assignment
   commented out.
 - Activation copies the effective configuration, with the binary, into RAM
@@ -47,6 +49,11 @@ On an invalid file, `activate`, `check`, `status`, `verify`, `rehearse`,
 never refuse: they log one warning and carry on with defaults derived from the
 binary location (`recover` uses the RAM copy under `/run/overlay-runtime` when
 it can). `emergency` reads no configuration at all.
+
+`nails init` writes the file readable by root only. A command run without root
+that cannot read it exits with status 3 too, and names the full line to run
+instead (`sudo /mnt/data/nails status`), in its text and as the hint of its
+JSON error.
 
 | Command | Purpose |
 |---|---|
@@ -82,15 +89,15 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 <!-- BEGIN config-keys -->
 | Key | Type | Default | Effect |
 |---|---|---|---|
-| `hidden_volume_root` | path | derived from the binary location | Root of the hidden volume; the hidden root's layers (`root/upper`, `root/work`, `root/mounts`, `root/cache`), the state file and logs live under it. Unset, it is the directory holding the `nails` binary (symlinks resolved). nails writes nothing under it until a separate volume is mounted there. Leave it unset so the file keeps working when the volume is mounted somewhere else. See [Path rules](#path-rules). |
+| `hidden_volume_root` | path | derived from the binary location | Root of the hidden volume; the hidden root's layers (`root/upper`, `root/work`, `root/mounts`, `root/cache`), the state file and logs live under it. Unset, it is the directory holding the `nails` binary (symlinks resolved). nails writes nothing under it until a volume of its own is mounted there: not a folder, not a subvolume or bind mount of a filesystem the computer uses, and not a volume inside its storage (see [the attach gate](threat-model.md#the-attach-gate)). Leave it unset so the file keeps working when the volume is mounted somewhere else. See [Path rules](#path-rules). |
 | `state_file_path` | path | `<hidden_volume_root>/state.json` | Activation state file. Must lie inside `hidden_volume_root`. |
 | `log_path` | path | `<hidden_volume_root>/logs` | Directory of `nails.log`. Must lie inside `hidden_volume_root`. `--no-log-file` turns file logging off for one run. |
 | `minimum_space_mb` | integer (MB) | `500` | Base free-space floor for the hidden volume. The pre-flight check fails below this value (no warn band); `activate --no-preflight` skips the check. |
 | `rebuild_space_mb` | integer (MB) | `4096` | Free-space floor for building a hidden NixOS system into the hidden root's store (NixOS). A full build writes the store delta into the upper, often several GB. The hidden system's closure is then copied onto the hidden volume (once, the whole closure at the first entry); that copy is checked against the free space separately. |
 | `show_opsec_reminders` | boolean | `true` | Show reminders in `nails status` once the hidden environment has been active for 6, 12 and 24 hours. |
-| `nixos_flake` | string (flake reference) | unset | Flake of the hidden NixOS system, for example `/mnt/data/nixos#my-host`; it is built into the hidden root's store before the soft-reboot. Unset, the legacy hidden configuration is built (the decoy's `/etc/nixos` plus the hidden hardware configuration in the upper). `activate --nixos-flake` overrides it. |
+| `nixos_flake` | string (flake reference) | unset | Flake of the hidden NixOS system, for example `/mnt/data/nixos#my-host`; it is built into the hidden root's store before the soft-reboot. Unset, activation takes the first of: a flake in `<hidden_volume_root>/nixos`, built for this machine's hostname; the decoy's own flake in `/etc/nixos`, which it refuses (`--no-preflight` included), because a hidden system built from the decoy's files would lack the hidden module and the hidden hardware configuration; the legacy hidden configuration, the decoy's `/etc/nixos/configuration.nix` with the hidden hardware configuration in the upper, which imports the hidden module `<hidden_volume_root>/config/nixos/configuration.nix`. A flake includes the hidden module only if it imports it. Write and lock a hidden flake inside a hidden session, never on the decoy, and keep it self-contained: one that imports `/etc/nixos/configuration.nix` reads the decoy's files and its hardware configuration, swap included (see the [operator guide](operator-guide.md#how-it-works)). `nails check` names the choice under "NixOS profile". `activate --nixos-flake` overrides it. Naming the decoy's own flake here or with `--nixos-flake` (`/etc/nixos#host`, `path:/etc/nixos`, `git+file:///etc/nixos`, `path:/etc?dir=nixos`, a link to it) is refused the same way, and so is a link from `<hidden_volume_root>/nixos` to it. |
 | `accept_persistent_decoy` | boolean | `false` | Accept a persistent decoy posture instead of refusing activation. When `false` (the default), activation fails closed if the decoy keeps a persistent journald journal on disk or runs an active rsyslog/syslog-ng/auditd: what the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on its disk. Overridden by `--accept-persistent-decoy`. See [decoy-requirements.md](decoy-requirements.md). |
-| `persona.mask_inherited` | list of entry names, or `["*"]` | `[]` | Inherited decoy autostart entries and user units to hide from the hidden session. Each value is a name as `nails check` lists it: the `.desktop` stem for an autostart entry, or the full unit name for a user unit. `["*"]` names every maskable inherited entry. Lingering and autologin are reported but not masked. See [Inherited decoy state](#inherited-decoy-state). |
+| `persona.mask_inherited` | list of entry names, or `["*"]` | `[]` | Inherited decoy autostart entries and user units to hide from the hidden session. Each value is a name as `nails check` lists it: the `.desktop` stem for an autostart entry, or the full unit name for a user unit. `["*"]` names every maskable inherited entry. A name `nails check` does not list is masked too, as a user unit when it ends in a unit suffix and as an autostart entry otherwise; a value with a `/` is refused. Lingering and autologin are reported but not masked. See [Inherited decoy state](#inherited-decoy-state). |
 | `persona.mode` | `"shared-home"` or `"fresh-home"` | `"shared-home"` | How the hidden session relates to the decoy account. `shared-home` starts it from the decoy home (the root overlay's lower), so the decoy's accounts, keys and app profiles are live. `fresh-home` gives the operator an empty home, created in the upper at the first entry. See [Persona modes](#persona-modes). |
 | `backend_watch.auto_emergency` | boolean | `false` | Opt into an automatic emergency when the hidden backend fails. When `false` (the default) the watcher is alert-only, so a transient I/O stall can never end the session; when `true`, the emergency runs on its own, returning to the decoy, only after the failure outlasts `backend_watch.debounce_secs`. See [Backend watcher](#backend-watcher). |
 | `backend_watch.debounce_secs` | integer (seconds) | `15` | How long a failure must persist before an opted-in automatic emergency fires. Ignored unless `backend_watch.auto_emergency` is `true`. |
@@ -98,7 +105,7 @@ Nested keys are written with dots: `persona.mode` is the `mode` key of the
 | `backend_watch.poll_interval_secs` | integer (seconds) | `5` | Seconds between the watcher's probes of the hidden backend. |
 | `session_mounts.alert` | boolean | `true` | Alert when a disk outside the hidden volume is mounted read-write during the hidden session (a USB drive udisks automounts, a manual `mount`). The session watcher raises the alert, and runs for it even with `backend_watch.enabled = false`. See [Disks mounted during the session](#disks-mounted-during-the-session). |
 | `session_mounts.read_only` | boolean | `false` | Opt-in: make every disk the hidden session does not use read-only at the block layer for the session, the disks present at entry and every disk attached during it, so a mount comes up read-only and writes fail. The way back makes them writable again. See [Disks mounted during the session](#disks-mounted-during-the-session). |
-| `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) during a session. Suspending keeps the whole session — the overlay, the open dm-crypt mapper and the master key — resident in RAM. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds a sleep/idle inhibitor for the life of the session so the host cannot suspend. `teardown` holds a sleep *delay* inhibitor and powers the machine off when it is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `ignore`/`lock`. See [Sleep policy](#sleep-policy). |
+| `sleep_policy.mode` | `"warn"`, `"block"` or `"teardown"` | `"warn"` | What to do about system sleep (suspend/hibernate) during a session. Suspending keeps the whole session — the overlay, the open dm-crypt mapper and the master key — resident in RAM. `warn` only surfaces a pre-flight warning when the host would suspend an active session. `block` holds sleep and idle block inhibitors for the life of the session so the host cannot suspend, and takes the lid switch from logind when a closed lid would sleep. `teardown` holds a sleep *delay* inhibitor and powers the machine off when it is about to sleep, within logind's `InhibitDelayMaxSec` window. Also set the decoy's logind lid switch to `lock`. See [Sleep policy](#sleep-policy). |
 <!-- END config-keys -->
 
 The Key and Default columns are generated from the code, and
@@ -134,14 +141,25 @@ gets a fixed decision before the switch:
 | RAM and kernel filesystems | left to the hidden systemd (nothing reaches a disk) |
 | the hidden volume, or a path inside it | bound at its own path |
 
+An entry behind an automount (`x-systemd.automount`, often the ESP) that is
+bound read-only or overlaid keeps its automount masked: the hidden systemd
+would find the mount point taken and fail the automount, and with it
+`local-fs.target`, which would start the hidden session in emergency mode.
 Masks are runtime masks in `/run`, gone with the session. `nails check` prints
 the decision for every entry (the `fstab-policy` check). A decoy partition you
 mount by hand inside the hidden session is outside this policy and is written
 directly.
 
-The hidden volume must be a mount point of its own (the `hidden-volume`
-pre-flight check refuses a plain directory), because everything nails writes
-there would otherwise land on the decoy disk. The decoy root must be a disk
+The hidden volume must be storage of its own, because everything nails writes
+there would otherwise land on the decoy disk. The attach gate refuses a plain
+directory, a btrfs subvolume or bind mount of a filesystem the decoy uses, a
+volume stacked on the decoy's storage, an image file on a decoy filesystem, a
+filesystem that shows no disk it stores its data on (an overlay, FUSE, a network
+filesystem or a ZFS dataset), and a root with a second filesystem mounted over
+it; it runs before `init`, `activate` and `check` write or probe anything, and
+`--no-preflight` does not skip it. `--allow-decoy-storage` turns the refusal of
+the decoy's storage into a warning; a folder is always refused (see [the attach
+gate](threat-model.md#the-attach-gate)). The decoy root must be a disk
 filesystem that can be mounted again by its device for the way back (the
 `decoy-root` check refuses a tmpfs, ZFS or overlay root).
 
@@ -157,9 +175,11 @@ account:
 - `shared-home` (default): the hidden session works with the decoy home, so
   logging in there gives it the decoy's browser profiles, SSH and GPG keys,
   password-manager state and shell history. This is a deliberate trade-off — it
-  keeps a single, consistent login. `nails check` prints the persona mode,
-  `nails status --json` reports it, and the `inherited-autostart` pre-flight
-  warning lists what the decoy account brings in.
+  keeps a single, consistent login. `nails check` says so on a line of its own
+  under "Inherited decoy state", `nails status --json` reports the mode, and the
+  `inherited-autostart` pre-flight warning lists the autostart entries and user
+  services of the decoy home that need review (see
+  [Inherited decoy state](#inherited-decoy-state)).
 - `fresh-home`: at the first entry, activation creates the operator's home in
   the upper as an opaque directory, so nothing of the decoy home shows through.
   It stays the hidden home at every later entry. The operator is the account
@@ -174,16 +194,53 @@ decoy user — is planned for a later release. It is not an accepted value yet;
 ## Inherited decoy state
 
 The hidden session inherits whatever the decoy starts: enabled system services,
-autostart entries (`~/.config/autostart` and `/etc/xdg/autostart`), enabled
-systemd user services and timers, lingering, and display-manager autologin.
-Sync, cloud, messaging and account clients configured in the decoy therefore run
-under the decoy identity in the hidden session and can reach remote servers and
-your other devices.
+autostart entries, enabled systemd user services and timers, lingering, and
+display-manager autologin. Sync, cloud, messaging and account clients configured
+in the decoy therefore run under the decoy identity in the hidden session and
+can reach remote servers and your other devices.
 
-`nails check` lists this inherited state and flags names that look like
-remote-linked clients (a name-only heuristic; it makes no claim about signed-in
-state). Activation shows the same summary in its pre-flight output (the
-`inherited-autostart` warning).
+NAILS reads the autostart entries a desktop session starts: those in
+`~/.config/autostart` and `/etc/xdg/autostart`, and on NixOS also the
+`etc/xdg/autostart` of each profile NixOS adds to the search path
+(`~/.nix-profile`, `~/.local/state/nix/profile`,
+`/etc/profiles/per-user/<user>`, `/nix/var/nix/profiles/default` and
+`/run/current-system/sw`, where the desktop's own entries live). When several
+directories hold a file of the same name, the first one in that order decides,
+as it does for the desktop, and a `Hidden=true` there hides the entry. User
+services and timers are those enabled in `~/.config/systemd/user` and
+`/etc/systemd/user`. What lives in the home carries over only in `shared-home`;
+the rest carries over in both modes. On NixOS with a hidden configuration, the
+system-wide entries come from that configuration, which normally imports the
+decoy's.
+
+`nails check` lists the inherited entries that need review, and the
+`inherited-autostart` pre-flight check warns about them; activation shows the
+same warning. They are:
+
+- everything in the home, and every system-wide entry that is not a known
+  component of the desktop or the distribution: those were added by you or by
+  third-party software, such as a Dropbox or Syncthing client or your own
+  scripts;
+- lingering and autologin;
+- every entry on a short list of known trace writers, whoever installed it:
+  clients that carry data, or the fact that the machine is running, off the
+  machine. They are sync and cloud storage clients (Dropbox, Nextcloud,
+  ownCloud, Syncthing, MEGA, Insync, OneDrive, rclone), backup tools (Déjà Dup,
+  Pika Backup, Vorta, Back In Time), messaging and meeting clients (Telegram,
+  Signal, Slack, Discord, Element, Keybase, Zoom, Teams), mail, calendar and
+  account clients (Thunderbird, Evolution, Geary, GNOME Online Accounts, KDE
+  Accounts) and phone links (KDE Connect, GSConnect, Valent). `nails check`
+  tags them remote-linked.
+
+The components the desktop or the distribution ships itself are not reported:
+the settings daemons and session services of GNOME, KDE Plasma, Xfce, MATE,
+Cinnamon, LXQt and Budgie, the keyring, PipeWire, D-Bus, the GnuPG and SSH
+agents, input methods, the screen reader's speech service, NixOS's own user
+units and update notifiers. Masking them would break or degrade the hidden
+desktop. `nails check` counts them, and `nails check --json` lists
+every entry with its `origin` (`desktop` or `added`) and its `status`
+(`ignored`, `masked` or `review`). Both lists match names only: they make no
+claim about what an entry does or whether a client is signed in.
 
 `persona.mask_inherited` lists entries to hide from the hidden session, or the
 single value `"*"` for every maskable entry:
@@ -195,11 +252,19 @@ mask_inherited = ["dropbox", "syncthing.service"]
 
 At each entry, activation writes a `Hidden=true` override (an autostart entry)
 or a `/dev/null` mask (a user unit) for every named entry into the operator's
-home in the next root, so the mask lands in the upper only. You can also
-disable an entry from inside the hidden session (`systemctl --user
+home in the next root, so the mask lands in the upper only. A masked entry
+counts as handled: `nails check` shows it as masked and it no longer warns. A
+name that matches no inherited entry `nails check` lists, such as an entry in a
+directory NAILS does not read, is masked as well: as a user unit when it ends in
+a unit suffix such as `.service` or `.timer`, and as an autostart entry
+otherwise. `nails check` names those names, so a typo does not go unnoticed. You
+can also disable an entry from inside the hidden session (`systemctl --user
 mask <unit>`, or remove or override the autostart file): the change lands in the
-upper, so it affects the hidden session only. Lingering and autologin are
-decoy settings — disable them on the decoy itself if they matter.
+upper, so it affects the hidden session only. Lingering is a decoy setting —
+disable it on the decoy itself if it matters. A display manager set to log an
+account in automatically logs it in again at every switch, as at boot; the
+operator guide says how to
+[turn that off for the hidden session only](operator-guide.md#inherited-autostart-services-and-autologin).
 
 Masking hides what *runs*; it does not roll back remote or account state. Shared
 accounts, tokens and sync history remain shared and are never undone. Correlation
@@ -229,6 +294,12 @@ probes the hidden backend every `backend_watch.poll_interval_secs` seconds and
 raises a desktop alert the moment a probe fails, so an unresponsive volume is
 explained instead of showing up only as unrelated application errors.
 
+The watcher's alerts go to the account logged in on the machine's own screen
+(the active session of its first seat), and they run as that account, because a
+desktop session bus admits no other: through `notify-send`, or `busctl` where
+`notify-send` is not installed. While nobody is logged in there, no alert can be
+shown.
+
 The watcher is **alert-only by default**: a transient I/O stall must never be able
 to end a live session on its own. The automatic emergency is strictly opt-in —
 set `backend_watch.auto_emergency = true` — and even then it fires only after the
@@ -251,7 +322,10 @@ and a read-write mount of it takes the hidden session's writes.
   never alert: the root and the decoy filesystems are overlays, the ESP is a
   read-only bind, and the carried decoy filesystems are inside the hidden
   volume. A mount made inside another mount namespace (a service with private
-  mounts) is not in the watcher's table.
+  mounts) is not in the watcher's table. A disk mounted over the hidden root
+  itself, or over one of its parents, always raises its own alert ("Disk
+  mounted over a folder in use") instead, whatever this setting, while the
+  watcher runs.
 - **Read-only** (`session_mounts.read_only`, opt-in). Every disk the session
   does not use is made read-only at the block layer for the session. The kernel
   then refuses a read-write mount: `mount` falls back to read-only with a
@@ -290,28 +364,41 @@ auto-suspend.
 The `sleep-policy` pre-flight check resolves `logind.conf` the way systemd
 does (the main file from `/etc`, `/run`, `/usr/local/lib` or `/usr/lib`, then
 every `logind.conf.d/*.conf` drop-in by file name, `/etc` shadowing the others)
-and **warns** (never blocks) when the effective
-lid-switch or idle settings would suspend an active session. Fix the host
-first: set the decoy's logind lid switch to `ignore` or `lock` and disable
-desktop auto-suspend (see [decoy-requirements.md](decoy-requirements.md)). The
-hidden session starts from the decoy's `/etc`, so it inherits the fix unless the
-hidden configuration changes it.
+and **warns** (never blocks) when the effective lid-switch or idle settings
+would suspend an active session, and when a closed lid is set to `ignore` (on
+battery, or on external power), which keeps the session running and unlocked
+behind the lid. Fix the host first: set the decoy's logind lid switch to `lock`
+and disable desktop auto-suspend (see
+[decoy-requirements.md](decoy-requirements.md)). The hidden session starts from
+the decoy's `/etc`, so it inherits the fix unless the hidden configuration
+changes it.
 
 `sleep_policy.mode` adds a runtime backstop: a sleep guard that runs from the RAM
 copy as a runtime unit of the hidden session (the same mechanism as the backend
-watcher) and holds a logind inhibitor for the life of the session:
+watcher) and holds logind inhibitors for the life of the session:
 
-- `warn` (default) — pre-flight warning only; nothing runs at runtime.
-- `block` — hold a sleep/idle **block** inhibitor, so logind refuses to suspend
-  or idle-sleep while the session is up. A suspend blocked with the lid shut can
-  overheat a laptop, so still fix the lid switch.
+- `warn` (default) — pre-flight warning only; nothing runs at runtime, and a
+  closed lid or an idle timeout suspends the session as logind is configured to.
+- `block` — hold a `sleep:idle` **block** inhibitor, so logind refuses a
+  suspend that is asked for (a sleep key, a desktop's or a user's suspend) or
+  that an idle timeout would start. logind ignores that inhibitor for the lid
+  switch by default (`LidSwitchIgnoreInhibited=yes`), so when the session's
+  logind would sleep on a closed lid, the guard also takes a
+  `handle-lid-switch` **block** inhibitor, which logind always honours: a
+  closed lid then does nothing at all, neither suspend nor lock the screen. A
+  lid switch set to `lock`, `ignore` or `poweroff` is left to logind and keeps
+  working. A laptop kept running with the lid shut can overheat, so still set
+  the lid switch to `lock`. Both inhibitors are released together at the way
+  back.
 - `teardown` — hold a sleep **delay** inhibitor and, on the host's
   `PrepareForSleep` signal, power the machine off within logind's
   `InhibitDelayMaxSec` window (default 5s) instead of letting it sleep with the
-  session in RAM.
+  session in RAM. logind honours delay inhibitors for every sleep, so this
+  covers a closed lid too.
 
-The inhibitor appears in `systemd-inhibit --list` under neutral, non-product
-names, and nothing is written to the decoy disk.
+The `session-sleep-guard` VM test closes a virtual lid in a hidden session in
+each mode. The inhibitors appear in `systemd-inhibit --list` under neutral,
+non-product names, and nothing is written to the decoy disk.
 
 ## Closing the backend
 

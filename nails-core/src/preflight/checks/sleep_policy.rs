@@ -6,8 +6,11 @@
 //! Parses the effective systemd-logind lid-switch and idle settings and warns
 //! when the host would put an *active* hidden session to sleep. Suspending (or
 //! hibernating) while the hidden environment is up leaves its overlays, dm-crypt
-//! mapper and master key resident in RAM behind the decoy lock screen; on resume
-//! the decoy login unlocks a still-live hidden session.
+//! mapper and master key resident in RAM behind the hidden session's own lock
+//! screen (the decoy is not running), and whoever unlocks that screen on resume
+//! is in the live hidden session. It also warns when a closed lid is set to
+//! `ignore`: the host stays awake, but the session stays unlocked behind the
+//! lid.
 //!
 //! # Security
 //!
@@ -60,7 +63,7 @@ pub struct LogindSleepSettings {
     /// powered. logind default: `suspend`.
     pub handle_lid_switch: Option<String>,
     /// `HandleLidSwitchExternalPower`: action on lid close when on external
-    /// power. logind default: `suspend`.
+    /// power. logind default: unset, so the `HandleLidSwitch` action applies.
     pub handle_lid_switch_external_power: Option<String>,
     /// `HandleLidSwitchDocked`: action on lid close when docked / with an
     /// external monitor. logind default: `ignore`.
@@ -78,11 +81,14 @@ impl LogindSleepSettings {
         self.handle_lid_switch.as_deref().unwrap_or("suspend")
     }
 
-    /// Effective lid-close action on external power (default `suspend`).
+    /// Effective lid-close action on external power.
+    ///
+    /// logind ignores this setting unless it is assigned: unset, a closed lid on
+    /// external power does what [`Self::effective_lid_switch`] says.
     pub fn effective_lid_switch_external_power(&self) -> &str {
         self.handle_lid_switch_external_power
             .as_deref()
-            .unwrap_or("suspend")
+            .unwrap_or_else(|| self.effective_lid_switch())
     }
 
     /// Effective lid-close action when docked (default `ignore`).
@@ -93,6 +99,20 @@ impl LogindSleepSettings {
     /// Effective idle action (default `ignore`).
     pub fn effective_idle_action(&self) -> &str {
         self.idle_action.as_deref().unwrap_or("ignore")
+    }
+
+    /// Whether a closed lid sends the machine to sleep in any of the three
+    /// cases logind tells apart (on battery, on external power, docked or
+    /// with an external display). The sleep guard's `block` mode then takes
+    /// the lid switch from logind.
+    pub fn lid_switch_sleeps(&self) -> bool {
+        [
+            self.effective_lid_switch(),
+            self.effective_lid_switch_external_power(),
+            self.effective_lid_switch_docked(),
+        ]
+        .into_iter()
+        .any(action_sleeps)
     }
 }
 
@@ -113,8 +133,9 @@ pub fn action_sleeps(value: &str) -> bool {
 /// Apply one `[Login]` assignment to `settings`.
 ///
 /// Keys match case-sensitively, as logind does. A `Handle*=`/`IdleAction=`
-/// value logind would reject leaves the previous value in place; an empty one
-/// resets the setting to logind's default. `IdleActionSec=` is kept verbatim.
+/// value logind would reject leaves the previous value in place, and logind
+/// rejects an empty one too: unlike most systemd settings these do not reset
+/// to the default. `IdleActionSec=` is kept verbatim, and an empty one resets it.
 fn apply_logind(settings: &mut LogindSleepSettings, assignment: &Assignment) {
     let field = match assignment.key.as_str() {
         "HandleLidSwitch" => &mut settings.handle_lid_switch,
@@ -129,9 +150,7 @@ fn apply_logind(settings: &mut LogindSleepSettings, assignment: &Assignment) {
         _ => return,
     };
     let value = assignment.value.as_str();
-    if value.is_empty() {
-        *field = None;
-    } else if HANDLE_ACTIONS.contains(&value) {
+    if HANDLE_ACTIONS.contains(&value) {
         *field = Some(value.to_string());
     }
 }
@@ -188,11 +207,21 @@ impl SleepPolicyCheck {
                 settings.effective_lid_switch()
             ));
         }
-        if action_sleeps(settings.effective_lid_switch_external_power()) {
+        // Unset, the external-power case follows HandleLidSwitch, which the
+        // line above already reports.
+        if let Some(external) = settings.handle_lid_switch_external_power.as_deref()
+            && action_sleeps(external)
+        {
             risks.push(format!(
                 "closing the lid on external power suspends the host \
-                 (HandleLidSwitchExternalPower={})",
-                settings.effective_lid_switch_external_power()
+                 (HandleLidSwitchExternalPower={external})"
+            ));
+        }
+        // Unset, the docked case ignores the lid, so only an assignment counts.
+        if action_sleeps(settings.effective_lid_switch_docked()) {
+            risks.push(format!(
+                "closing the lid while docked suspends the host (HandleLidSwitchDocked={})",
+                settings.effective_lid_switch_docked()
             ));
         }
         if action_sleeps(settings.effective_idle_action()) {
@@ -207,6 +236,79 @@ impl SleepPolicyCheck {
         }
         risks
     }
+
+    /// The lid settings that leave an active session running and unlocked
+    /// behind a closed lid: `ignore` on battery, or on external power when
+    /// assigned there (unset, it follows the battery case, reported already).
+    /// The docked case is left out: the session then shows on the external
+    /// display.
+    fn unlocked_lid(settings: &LogindSleepSettings) -> Vec<String> {
+        let mut out = Vec::new();
+        if settings.effective_lid_switch() == "ignore" {
+            out.push("HandleLidSwitch=ignore".to_string());
+        }
+        if settings.handle_lid_switch_external_power.as_deref() == Some("ignore") {
+            out.push("HandleLidSwitchExternalPower=ignore".to_string());
+        }
+        out
+    }
+
+    /// The warning about the sleep risks, worded for the configured mode.
+    fn sleep_warning(&self, settings: &LogindSleepSettings, risks: &[String]) -> String {
+        let findings = risks.join("; ");
+        match self.mode {
+            SleepPolicyMode::Warn => format!(
+                "the host would suspend an active session: {findings}. A suspend leaves the \
+                 hidden session resident in RAM behind the hidden session's own lock screen. \
+                 Set the logind lid switch to lock (see docs/decoy-requirements.md), or set \
+                 sleep_policy.mode = \"block\" or \"teardown\" in nails.toml."
+            ),
+            SleepPolicyMode::Block if settings.lid_switch_sleeps() => format!(
+                "the host would suspend an active session: {findings}. sleep_policy.mode = \
+                 \"block\" holds sleep and idle inhibitors and takes the lid switch from logind \
+                 for the session, so the host stays awake while it is active, but a closed lid \
+                 then does nothing, not even lock the screen. Set the logind lid switch to lock \
+                 (see docs/decoy-requirements.md)."
+            ),
+            SleepPolicyMode::Block => format!(
+                "the host would suspend an active session: {findings}. sleep_policy.mode = \
+                 \"block\" holds sleep and idle inhibitors for the session, so the host stays \
+                 awake while it is active."
+            ),
+            SleepPolicyMode::Teardown => format!(
+                "the host would suspend an active session: {findings}. sleep_policy.mode = \
+                 \"teardown\" runs the bounded emergency teardown when the host is about to \
+                 sleep; a teardown is destructive to the live session, so confirm the logind \
+                 delay window (InhibitDelayMaxSec) is long enough (see docs/decoy-requirements.md)."
+            ),
+        }
+    }
+}
+
+/// The warning about a closed lid that leaves the session unlocked. No
+/// `sleep_policy.mode` changes it: none of them acts on a lid that does not
+/// sleep.
+fn unlocked_warning(settings: &LogindSleepSettings, unlocked: &[String]) -> String {
+    let when = if settings.effective_lid_switch() == "ignore" {
+        "a closed lid"
+    } else {
+        "a closed lid on external power"
+    };
+    format!(
+        "{when} leaves the active session running and unlocked ({}): whoever opens the lid is \
+         in the hidden session. Set the logind lid switch to lock (see \
+         docs/decoy-requirements.md).",
+        unlocked.join(", ")
+    )
+}
+
+/// `text` with its first letter in upper case, to start a sentence.
+fn sentence(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 impl<F: Filesystem> PreFlightCheck<F> for SleepPolicyCheck {
@@ -215,14 +317,16 @@ impl<F: Filesystem> PreFlightCheck<F> for SleepPolicyCheck {
     }
 
     fn description(&self) -> &'static str {
-        "Reports whether the host would suspend an active hidden session"
+        "Reports whether the host would suspend an active hidden session or leave it unlocked \
+         behind a closed lid"
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
         let settings = effective_logind_sleep(fs);
         let risks = Self::sleep_risks(&settings);
+        let unlocked = Self::unlocked_lid(&settings);
 
-        if risks.is_empty() {
+        if risks.is_empty() && unlocked.is_empty() {
             return Ok(CheckResult::Pass(format!(
                 "host will not suspend an active session (HandleLidSwitch={}, IdleAction={})",
                 settings.effective_lid_switch(),
@@ -230,245 +334,23 @@ impl<F: Filesystem> PreFlightCheck<F> for SleepPolicyCheck {
             )));
         }
 
-        let findings = risks.join("; ");
-        let message = match self.mode {
-            SleepPolicyMode::Warn => format!(
-                "the host would suspend an active session: {findings}. A suspend leaves the \
-                 hidden session resident in RAM behind the decoy lock screen. Set the logind lid \
-                 switch to ignore/lock (see docs/decoy-requirements.md), or set \
-                 sleep_policy.mode = \"block\" or \"teardown\" in nails.toml."
-            ),
-            SleepPolicyMode::Block => format!(
-                "the host would suspend an active session: {findings}. sleep_policy.mode = \
-                 \"block\" holds a sleep inhibitor for the session, so this is prevented while \
-                 active; the inhibitor is best-effort, so also set the logind lid switch to \
-                 ignore/lock (see docs/decoy-requirements.md)."
-            ),
-            SleepPolicyMode::Teardown => format!(
-                "the host would suspend an active session: {findings}. sleep_policy.mode = \
-                 \"teardown\" runs the bounded emergency teardown when the host is about to \
-                 sleep; a teardown is destructive to the live session, so confirm the logind \
-                 delay window (InhibitDelayMaxSec) is long enough (see docs/decoy-requirements.md)."
-            ),
+        let mut message = if risks.is_empty() {
+            String::new()
+        } else {
+            self.sleep_warning(&settings, &risks)
         };
+        if !unlocked.is_empty() {
+            let warning = unlocked_warning(&settings, &unlocked);
+            if message.is_empty() {
+                message = warning;
+            } else {
+                message.push(' ');
+                message.push_str(&sentence(&warning));
+            }
+        }
         Ok(CheckResult::Warn(message))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::RealFilesystem;
-    use crate::filesystem::MockFilesystem;
-    use std::path::PathBuf;
-
-    const MAIN: &str = "/etc/systemd/logind.conf";
-    const DROP_IN_DIR: &str = "/etc/systemd/logind.conf.d";
-
-    fn write(root: &Path, rel: &str, content: &str) {
-        let path = root.join(rel);
-        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
-        std::fs::write(path, content).unwrap();
-    }
-
-    #[test]
-    fn parses_lid_and_idle_keys_like_logind() {
-        let mut settings = LogindSleepSettings::default();
-        parse_logind_sleep(
-            "[Login]\nhandlelidswitch=ignore\nIdleAction=suspend\nIdleActionSec=600\n",
-            &mut settings,
-        );
-        // logind keys are case-sensitive: the lower-case key is not a setting.
-        assert_eq!(settings.handle_lid_switch, None);
-        assert_eq!(settings.idle_action.as_deref(), Some("suspend"));
-        assert_eq!(settings.idle_action_sec.as_deref(), Some("600"));
-    }
-
-    #[test]
-    fn only_the_login_section_counts() {
-        let mut settings = LogindSleepSettings::default();
-        parse_logind_sleep(
-            "HandleLidSwitch=ignore\n[Other]\nHandleLidSwitch=lock\n",
-            &mut settings,
-        );
-        assert_eq!(settings.handle_lid_switch, None);
-    }
-
-    #[test]
-    fn ignores_comments_and_last_valid_assignment_wins() {
-        let mut settings = LogindSleepSettings::default();
-        parse_logind_sleep(
-            "[Login]\n#HandleLidSwitch=ignore\nHandleLidSwitch=suspend\nHandleLidSwitch=lock\n\
-             HandleLidSwitch=junk\n",
-            &mut settings,
-        );
-        assert_eq!(settings.handle_lid_switch.as_deref(), Some("lock"));
-        parse_logind_sleep("[Login]\nHandleLidSwitch=\n", &mut settings);
-        assert_eq!(settings.effective_lid_switch(), "suspend");
-    }
-
-    #[test]
-    fn effective_defaults_apply_when_unset() {
-        let settings = LogindSleepSettings::default();
-        assert_eq!(settings.effective_lid_switch(), "suspend");
-        assert_eq!(settings.effective_lid_switch_external_power(), "suspend");
-        assert_eq!(settings.effective_lid_switch_docked(), "ignore");
-        assert_eq!(settings.effective_idle_action(), "ignore");
-    }
-
-    #[test]
-    fn action_sleeps_matrix() {
-        for sleepy in [
-            "suspend",
-            "hibernate",
-            "hybrid-sleep",
-            "suspend-then-hibernate",
-            "sleep",
-            "SUSPEND",
-        ] {
-            assert!(action_sleeps(sleepy), "{sleepy} should count as sleep");
-        }
-        for awake in ["ignore", "lock", "poweroff", "halt", "reboot", ""] {
-            assert!(!action_sleeps(awake), "{awake} should not count as sleep");
-        }
-    }
-
-    #[test]
-    fn drop_in_overrides_main_file_in_lexical_order() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write(
-            root,
-            "etc/systemd/logind.conf",
-            "[Login]\nHandleLidSwitch=suspend\n",
-        );
-        write(
-            root,
-            "etc/systemd/logind.conf.d/10-first.conf",
-            "[Login]\nHandleLidSwitch=hibernate\n",
-        );
-        write(
-            root,
-            "usr/lib/systemd/logind.conf.d/20-last.conf",
-            "[Login]\nHandleLidSwitch=ignore\n",
-        );
-        let settings = effective_logind_sleep_at(&RealFilesystem, root);
-        assert_eq!(settings.effective_lid_switch(), "ignore");
-    }
-
-    #[test]
-    fn etc_drop_in_shadows_vendor_drop_in() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write(
-            root,
-            "usr/lib/systemd/logind.conf",
-            "[Login]\nHandleLidSwitch=ignore\n",
-        );
-        write(
-            root,
-            "usr/lib/systemd/logind.conf.d/50-lid.conf",
-            "[Login]\nHandleLidSwitch=lock\n",
-        );
-        write(
-            root,
-            "etc/systemd/logind.conf.d/50-lid.conf",
-            "[Login]\nIdleAction=suspend\n",
-        );
-        let settings = effective_logind_sleep_at(&RealFilesystem, root);
-        assert_eq!(settings.effective_lid_switch(), "ignore");
-        assert_eq!(settings.effective_idle_action(), "suspend");
-    }
-
-    #[test]
-    fn default_host_warns_because_lid_suspends() {
-        // No logind.conf at all: logind defaults HandleLidSwitch to suspend.
-        let fs = MockFilesystem::new();
-        let check = SleepPolicyCheck::new(SleepPolicyMode::Warn);
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_warn(), "default host suspends on lid close");
-        assert!(result.message().contains("HandleLidSwitch=suspend"));
-    }
-
-    #[test]
-    fn reports_effective_settings_from_fixture() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(
-            MAIN,
-            "[Login]\nHandleLidSwitch=suspend\nIdleAction=ignore\n",
-        );
-        let settings = effective_logind_sleep(&fs);
-        assert_eq!(settings.effective_lid_switch(), "suspend");
-        assert_eq!(settings.effective_idle_action(), "ignore");
-
-        let check = SleepPolicyCheck::new(SleepPolicyMode::Warn);
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_warn());
-        assert!(
-            result
-                .message()
-                .contains("closing the lid suspends the host")
-        );
-    }
-
-    #[test]
-    fn idle_suspend_is_reported_with_timeout() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(
-            MAIN,
-            "[Login]\nHandleLidSwitch=ignore\nHandleLidSwitchExternalPower=ignore\n\
-             IdleAction=suspend\nIdleActionSec=300\n",
-        );
-        let check = SleepPolicyCheck::new(SleepPolicyMode::Warn);
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_warn());
-        assert!(result.message().contains("IdleActionSec=300"));
-        assert!(!result.message().contains("closing the lid"));
-    }
-
-    #[test]
-    fn safe_host_passes() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(
-            MAIN,
-            "[Login]\nHandleLidSwitch=lock\nHandleLidSwitchExternalPower=ignore\nIdleAction=lock\n",
-        );
-        let check = SleepPolicyCheck::new(SleepPolicyMode::Warn);
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_pass(), "no sleep action configured");
-    }
-
-    #[test]
-    fn block_mode_notes_the_inhibitor() {
-        let fs = MockFilesystem::new();
-        let check = SleepPolicyCheck::new(SleepPolicyMode::Block);
-        let result = check.run(&fs).unwrap();
-        assert!(result.is_warn());
-        assert!(result.message().contains("holds a sleep inhibitor"));
-    }
-
-    #[test]
-    fn check_performs_no_writes() {
-        let fs = MockFilesystem::new();
-        fs.mock_add_file(MAIN, "[Login]\nHandleLidSwitch=suspend\n");
-        let drop_in = format!("{DROP_IN_DIR}/10-lid.conf");
-        fs.mock_add_file(&drop_in, "[Login]\nHandleLidSwitch=ignore\n");
-        fs.mock_set_directory_contents(Path::new(DROP_IN_DIR), vec![PathBuf::from(&drop_in)]);
-
-        let before = fs.mock_ops().len();
-        let check = SleepPolicyCheck::new(SleepPolicyMode::Warn);
-        let _ = check.run(&fs).unwrap();
-        assert!(fs.mock_written_paths().is_empty(), "nothing was written");
-        assert_eq!(
-            fs.read_file_content(Path::new(&drop_in)).unwrap(),
-            "[Login]\nHandleLidSwitch=ignore\n",
-            "the drop-in is left as it was"
-        );
-        let after = fs.mock_ops();
-        assert_eq!(
-            after.len(),
-            before,
-            "sleep-policy check must not write: {after:?}"
-        );
-    }
-}
+mod tests;

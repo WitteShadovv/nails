@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a release tag against its tree, write its notes, complete its SBOM.
 
-release.yml runs this from a checkout of the tag. Two subcommands:
+release.yml runs this from a checkout of the tag. Three subcommands:
 
 check
     Fails unless the tag is ``v`` plus the workspace version, that version is
@@ -14,6 +14,14 @@ sbom-libc
     Adds musl to the CycloneDX SBOM of the nails binary. cargo-cyclonedx only
     sees crates, but the release binary links musl statically, so the C
     library it ships would otherwise be missing from the bill of materials.
+    The musl component carries a CPE, so scanners match it against
+    vulnerability data. Each ``--musl-cve`` names a vulnerability that the
+    linked musl is patched against on top of its release; the SBOM records it
+    as a backported fix in the component's pedigree.
+musl-vex
+    Writes an OpenVEX document that marks each ``--musl-cve`` as fixed in the
+    linked musl. Scanners ignore the SBOM's pedigree, so without this
+    document they report the patched CVEs as open (``grype --vex`` reads it).
 
 Every check runs before the first build, so a mistake costs one short job
 instead of a release run.
@@ -29,7 +37,9 @@ import json
 import re
 import sys
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -46,8 +56,11 @@ _SECTION = re.compile(r"##\s+\[(?P<version>[^\]]+)\](?:\s+-\s+\S.*)?\s*")
 _SECTION_END = re.compile(r"(##\s|\[[^\]]+\]:\s)")
 _LIST_ITEM = re.compile(r"([-*+]|\d+[.)])\s")
 _MUSL_VERSION = re.compile(r"\d+\.\d+\.\d+")
+_CVE = re.compile(r"CVE-\d{4}-\d{4,}")
 
 TARGET_TRIPLE = "x86_64-unknown-linux-musl"
+VEX_ASSET = "musl.openvex.json"
+_OPENVEX_CONTEXT = "https://openvex.dev/ns/v0.2.0"
 BINARY = "nails"
 _TRIPLE_PROPERTY = "cdx:rustc:sbom:target:triple"
 
@@ -203,10 +216,35 @@ def check_release(source: Path, tag: str) -> tuple[Release, str]:
     return release, changelog_section(changelog, release.version)
 
 
-def add_musl(sbom: dict[str, Any], version: str, musl_version: str) -> None:
-    """Record musl as a statically linked dependency of the nails binary."""
+def _check_musl(musl_version: str, cves: Sequence[str]) -> None:
     if not _MUSL_VERSION.fullmatch(musl_version):
         raise ReleaseError(f"musl version {musl_version!r} is not X.Y.Z")
+    for cve in cves:
+        if not _CVE.fullmatch(cve):
+            raise ReleaseError(f"{cve!r} is not a CVE ID")
+
+
+def musl_purl(musl_version: str) -> str:
+    return f"pkg:generic/musl@{musl_version}"
+
+
+def musl_cpe(musl_version: str) -> str:
+    """The CPE under which NVD lists musl's vulnerabilities."""
+    return f"cpe:2.3:a:musl-libc:musl:{musl_version}:*:*:*:*:*:*:*"
+
+
+def add_musl(
+    sbom: dict[str, Any],
+    version: str,
+    musl_version: str,
+    cves: Sequence[str] = (),
+) -> None:
+    """Record musl as a statically linked dependency of the nails binary.
+
+    ``cves`` are the vulnerabilities the linked musl carries fixes for on top
+    of ``musl_version``; each becomes a backported patch in its pedigree.
+    """
+    _check_musl(musl_version, cves)
     root = sbom.get("metadata", {}).get("component", {})
     if root.get("name") != BINARY or root.get("version") != version:
         raise ReleaseError(
@@ -227,30 +265,51 @@ def add_musl(sbom: dict[str, Any], version: str, musl_version: str) -> None:
     if any(component.get("name") == "musl" for component in components):
         raise ReleaseError("the SBOM already lists musl")
 
-    ref = f"pkg:generic/musl@{musl_version}"
-    components.append(
-        {
-            "type": "library",
-            "bom-ref": ref,
-            "name": "musl",
-            "version": musl_version,
-            "description": (
-                f"C standard library, statically linked into {BINARY} ({TARGET_TRIPLE})"
-            ),
-            "scope": "required",
-            "licenses": [{"license": {"id": "MIT"}}],
-            "purl": ref,
-            "externalReferences": [
-                {"type": "website", "url": "https://musl.libc.org"},
+    ref = musl_purl(musl_version)
+    component: dict[str, Any] = {
+        "type": "library",
+        "bom-ref": ref,
+        "name": "musl",
+        "version": musl_version,
+        "description": (
+            f"C standard library, statically linked into {BINARY} ({TARGET_TRIPLE})"
+        ),
+        "scope": "required",
+        "licenses": [{"license": {"id": "MIT"}}],
+        "purl": ref,
+        "cpe": musl_cpe(musl_version),
+        "externalReferences": [
+            {"type": "website", "url": "https://musl.libc.org"},
+            {
+                "type": "distribution",
+                "url": f"https://musl.libc.org/releases/musl-{musl_version}.tar.gz",
+            },
+        ],
+    }
+    if cves:
+        component["pedigree"] = {
+            "patches": [
                 {
-                    "type": "distribution",
-                    "url": (
-                        f"https://musl.libc.org/releases/musl-{musl_version}.tar.gz"
-                    ),
-                },
+                    "type": "backport",
+                    "resolves": [
+                        {
+                            "type": "security",
+                            "id": cve,
+                            "source": {
+                                "name": "NVD",
+                                "url": f"https://nvd.nist.gov/vuln/detail/{cve}",
+                            },
+                        }
+                    ],
+                }
+                for cve in sorted(set(cves))
             ],
+            "notes": (
+                f"The release links musl {musl_version} as nixpkgs builds it, "
+                "with these fixes applied on top of the release."
+            ),
         }
-    )
+    components.append(component)
     dependencies = sbom.setdefault("dependencies", [])
     entry = next((d for d in dependencies if d.get("ref") == root["bom-ref"]), None)
     if entry is None:
@@ -258,6 +317,43 @@ def add_musl(sbom: dict[str, Any], version: str, musl_version: str) -> None:
         dependencies.append(entry)
     entry.setdefault("dependsOn", []).append(ref)
     dependencies.append({"ref": ref, "dependsOn": []})
+
+
+def musl_vex(
+    musl_version: str, cves: Sequence[str], repo: str, tag: str, epoch: int
+) -> dict[str, Any]:
+    """An OpenVEX document that marks each CVE as fixed in the linked musl.
+
+    The product is musl itself, not nails: grype applies a statement only to
+    the package it names. ``epoch`` is the tagged commit's time, so the
+    document is the same for every run on the tag.
+    """
+    _check_musl(musl_version, cves)
+    purl = musl_purl(musl_version)
+    return {
+        "@context": _OPENVEX_CONTEXT,
+        "@id": f"https://github.com/{repo}/releases/download/{tag}/{VEX_ASSET}",
+        "author": f"https://github.com/{repo}",
+        "timestamp": datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "version": 1,
+        "statements": [
+            {
+                "vulnerability": {"name": cve},
+                "products": [
+                    {
+                        "@id": purl,
+                        "identifiers": {"purl": purl, "cpe23": musl_cpe(musl_version)},
+                    }
+                ],
+                "status": "fixed",
+                "status_notes": (
+                    f"{BINARY} {tag} links musl {musl_version} as nixpkgs builds "
+                    "it, with a backported fix for this vulnerability."
+                ),
+            }
+            for cve in sorted(set(cves))
+        ],
+    }
 
 
 def _check(args: argparse.Namespace) -> int:
@@ -276,9 +372,21 @@ def _sbom_libc(args: argparse.Namespace) -> int:
         sbom = json.loads(args.sbom.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
         raise OSError(f"cannot read {args.sbom}: {err}") from err
-    add_musl(sbom, args.version, args.musl_version)
+    add_musl(sbom, args.version, args.musl_version, args.musl_cve)
     args.output.write_text(json.dumps(sbom, indent=2) + "\n", encoding="utf-8")
-    print(f"{args.output}: added musl {args.musl_version}", file=sys.stderr)
+    fixes = f" with fixes for {', '.join(args.musl_cve)}" if args.musl_cve else ""
+    print(f"{args.output}: added musl {args.musl_version}{fixes}", file=sys.stderr)
+    return 0
+
+
+def _musl_vex(args: argparse.Namespace) -> int:
+    vex = musl_vex(args.musl_version, args.musl_cve, args.repo, args.tag, args.epoch)
+    args.output.write_text(json.dumps(vex, indent=2) + "\n", encoding="utf-8")
+    fixed = ", ".join(s["vulnerability"]["name"] for s in vex["statements"])
+    print(
+        f"{args.output}: musl {args.musl_version} fixed: {fixed or 'none'}",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -301,8 +409,30 @@ def main(argv: list[str] | None = None) -> int:
     libc.add_argument("--sbom", type=Path, required=True, help="cargo-cyclonedx output")
     libc.add_argument("--version", required=True, help="the nails version")
     libc.add_argument("--musl-version", required=True, help="the linked musl")
+    libc.add_argument(
+        "--musl-cve",
+        action="append",
+        default=[],
+        help="a CVE the linked musl is patched against; repeatable",
+    )
     libc.add_argument("--output", type=Path, required=True, help="completed SBOM")
     libc.set_defaults(run=_sbom_libc)
+
+    vex = sub.add_parser("musl-vex", help="mark musl's patched CVEs as fixed")
+    vex.add_argument("--musl-version", required=True, help="the linked musl")
+    vex.add_argument(
+        "--musl-cve",
+        action="append",
+        default=[],
+        help="a CVE the linked musl is patched against; repeatable",
+    )
+    vex.add_argument("--repo", required=True, help="OWNER/NAME on GitHub")
+    vex.add_argument("--tag", required=True, help="the release tag, vX.Y.Z")
+    vex.add_argument(
+        "--epoch", type=int, required=True, help="the tagged commit's Unix time"
+    )
+    vex.add_argument("--output", type=Path, required=True, help="the document")
+    vex.set_defaults(run=_musl_vex)
 
     args = parser.parse_args(argv)
     try:

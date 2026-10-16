@@ -174,8 +174,8 @@ pub const ARTIFACTS: &[Artifact] = &[
         kind: ArtifactKind::HiddenRootPath,
         scope: ArtifactScope::HiddenRoot,
         severity: ArtifactSeverity::Info,
-        value: "etc/nixos/nails/configuration.nix",
-        description: "Staged hidden NixOS module source on the hidden root.",
+        value: "root/upper/etc/nixos/nails/configuration.nix",
+        description: "Link to the hidden NixOS module, staged in the root overlay's upper on the hidden root; the hidden session sees it as /etc/nixos/nails/configuration.nix.",
     },
     Artifact {
         id: "runtime-dir-legacy",

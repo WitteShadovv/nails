@@ -8,8 +8,8 @@ for the CI layout, [docs/ci.md](ci.md).
 
 ## Crates
 
-The library is split into crates along the session's boundaries
-([ADR 0010](adr/0010-library-crate-split.md)), from the bottom up:
+The library is split into crates along the session's boundaries (see the
+[architecture overview](architecture.md#crates)), from the bottom up:
 `nails-teardown`, `nails-base`, `nails-platform`, `nails-session`,
 `nails-forensics` and `nails-core`, with `nails-cli` on top. A crate depends
 only on crates below it; `nails-core/tests/crate_graph.rs` fails on a new edge,
@@ -21,7 +21,8 @@ re-exports every module of the crates below.
 
 When you add a crate:
 
-- list it in the workspace `members`, in `crate_graph.rs` and in ADR 0010;
+- list it in the workspace `members`, in `crate_graph.rs` and in the crate list
+  and graph of [docs/architecture.md](architecture.md#crates);
 - give it `[lints] workspace = true`, the `#![cfg_attr(test, allow(unsafe_code))]`
   line and `nails_base::unit_test_mode!();` in its `lib.rs`, `test-hooks` and
   `test-support` features that forward to the crates below, and a self
@@ -93,10 +94,10 @@ let manager = NailsManager::new(fs, config, state_path)
     .with_runtime_env(env.clone());
 ```
 
-The test-only knobs (`NAILS_TEST_RUNTIME`, `NAILS_TEST_FORCE_ATTACHED` and
-`NAILS_TEST_ENFORCE_ROOT`) live in `RuntimeEnv::test_hooks`, compiled only with the `test-hooks`
-feature. A test that exercises a leaf helper scopes a snapshot to its own thread
-with `nails_core::runtime_env::ScopedRuntimeEnv`. A subprocess test sets the
+The test-only knobs (`NAILS_TEST_RUNTIME` and `NAILS_TEST_ENFORCE_ROOT`) live
+in `RuntimeEnv::test_hooks`, compiled only with the `test-hooks` feature. A
+test that exercises a leaf helper scopes a snapshot to its own thread with
+`nails_core::runtime_env::ScopedRuntimeEnv`. A subprocess test sets the
 child's variables on the `Command` and the child reads them once with
 `RuntimeEnv::from_process_env` and installs them, exactly as `main` does. Never
 call `std::env::set_var` or `remove_var`, and never change the working directory
@@ -120,9 +121,9 @@ private mount namespace, which keeps every mount invisible to
 the host and discards all of them when the process exits — a failing test cannot
 leave a mount behind on your machine.
 
-Build the test binary unprivileged, then run it elevated. On ubuntu-24.04 the
-AppArmor policy blocks unprivileged user namespaces, so the run step is the only
-part that needs `sudo`:
+Build the test binary unprivileged, then run it elevated. On the ubuntu-26.04
+runners the AppArmor policy blocks unprivileged user namespaces, so the run step
+is the only part that needs `sudo`:
 
 ```sh
 # 1. Build the test binary without running it, and capture its path.

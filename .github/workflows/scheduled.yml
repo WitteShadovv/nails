@@ -3,10 +3,10 @@ name: Scheduled
 # Maintenance that watches for problems appearing without a change to this
 # repository: new advisories, expiring deny.toml ignores, a crate fetcher that
 # crates.io stopped serving, a release build that is no longer reproducible,
-# evicted caches and flaky tests. It also refreshes the pinned versions that
-# Dependabot has no ecosystem for (Cargo.lock transitively, flake.lock and the
-# pre-commit hooks), each as its own pull request. Nothing here gates a pull
-# request; the report jobs at the end track red runs in issues instead.
+# evicted caches and flaky tests. It also refreshes Cargo.lock transitively,
+# which Dependabot's direct-dependency updates leave alone, as a pull request of
+# its own. Nothing here gates a pull request; the report jobs at the end track
+# red runs in issues instead.
 # GitHub disables a schedule after 60 days without repository activity, so a
 # dormant fork sees no scheduled run until a maintainer dispatches one.
 
@@ -18,9 +18,8 @@ on:
     # after 7 days without access, so a weekly touch alone can come too late.
     # The tasks job below repeats this expression.
     - cron: "0 3 * * 4"
-    # First of the month at 04:00 UTC: the pinned-input refreshes alone
-    # (Cargo.lock, flake.lock, pre-commit). The tasks job below repeats this
-    # expression.
+    # First of the month at 04:00 UTC: the Cargo.lock refresh alone. The tasks
+    # job below repeats this expression.
     - cron: "0 4 1 * *"
   workflow_dispatch:
     inputs:
@@ -38,8 +37,6 @@ on:
           - benchmarks
           - mutants
           - lockfile
-          - flake-lock
-          - pre-commit
 
 permissions:
   contents: read
@@ -57,7 +54,7 @@ jobs:
   # whether its own task is in the list.
   tasks:
     name: Select tasks
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       run: ${{ steps.select.outputs.run }}
@@ -72,11 +69,11 @@ jobs:
           if [ "$SCHEDULE" = "0 3 * * 4" ]; then
             run='["cache-warm"]'
           elif [ "$SCHEDULE" = "0 4 1 * *" ]; then
-            run='["lockfile","flake-lock","pre-commit"]'
+            run='["lockfile"]'
           elif [ "${TASK:-all}" = all ]; then
-            # The pinned-input refreshes are opt-in: they run only on their
-            # monthly schedule or when dispatched by name, because each opens a
-            # pull request.
+            # The Cargo.lock refresh is opt-in: it runs only on its monthly
+            # schedule or when dispatched by name, because it opens a pull
+            # request.
             run='["advisories","fetcher-canary","reproducibility","cache-warm","stress","benchmarks","mutants"]'
           else
             run=$(jq -cn --arg task "$TASK" '[$task]')
@@ -90,12 +87,12 @@ jobs:
     name: Dependency Policy (full graph)
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'advisories')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -105,9 +102,9 @@ jobs:
         run: rustup toolchain install
 
       - name: Install policy tools
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-deny@0.19.1,just@1.49.0
+          tool: cargo-deny@0.20.2,just@1.58.0
           fallback: none
 
       - name: Check every target and dev-dependency
@@ -117,12 +114,12 @@ jobs:
     name: deny.toml ignore expiry
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'advisories')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -137,12 +134,12 @@ jobs:
     name: Crate fetcher canary
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'fetcher-canary')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -184,7 +181,7 @@ jobs:
     name: Warm Rust cache
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'cache-warm')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     # rust-cache hashes every CARGO* and RUST* variable into its key, so these
     # must equal the top-level env of ci.yml or every restore misses.
@@ -194,7 +191,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -205,7 +202,7 @@ jobs:
 
       - name: Restore the cache
         id: restore
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           # The one shared-key of ci.yml
           shared-key: ci
@@ -224,12 +221,12 @@ jobs:
     name: Stress (flaky tests)
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'stress')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -242,9 +239,9 @@ jobs:
           sudo apt-get install -y zsh fish
 
       - name: Install test tools
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-nextest@0.9.72,just@1.49.0
+          tool: cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
       - name: Repeat the test suite
@@ -259,7 +256,7 @@ jobs:
     name: Benchmarks
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'benchmarks')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     permissions:
       contents: read
@@ -269,7 +266,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -366,12 +363,12 @@ jobs:
     name: Mutation testing
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'mutants')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 90
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -379,9 +376,9 @@ jobs:
         run: rustup toolchain install
 
       - name: Install test tools
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.72,just@1.49.0
+          tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
       # `just mutants` scopes the run to state/, overlay/ and cleanup/.
@@ -411,7 +408,7 @@ jobs:
     name: Refresh Cargo.lock
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'lockfile')
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     # Bind the DEPENDENCY_UPDATE_TOKEN to a dedicated deployment environment so
     # the secret is scoped (and can carry protection rules) rather than being
     # readable by every job in the repository.
@@ -423,7 +420,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -431,9 +428,9 @@ jobs:
         run: rustup toolchain install
 
       - name: Install policy tools
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-deny@0.19.1
+          tool: cargo-deny@0.20.2
           fallback: none
 
       - name: Move every dependency to its newest allowed version
@@ -458,7 +455,7 @@ jobs:
 
       - name: Open a pull request
         if: steps.token.outputs.present == 'true'
-        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
         with:
           token: ${{ secrets.DEPENDENCY_UPDATE_TOKEN }}
           add-paths: Cargo.lock
@@ -493,106 +490,6 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # flake.lock has no Dependabot ecosystem, so the pinned Nix inputs are
-  # refreshed here. `nix flake update` rewrites the lock in place; the pull
-  # request opens under DEPENDENCY_UPDATE_TOKEN (so it starts CI) when the
-  # secret is set, and under GITHUB_TOKEN otherwise.
-  flake-lock-refresh:
-    name: Refresh flake.lock
-    needs: tasks
-    if: contains(fromJSON(needs.tasks.outputs.run), 'flake-lock')
-    runs-on: ubuntu-24.04
-    environment: dependency-updates
-    timeout-minutes: 20
-    permissions:
-      contents: write
-      pull-requests: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          persist-credentials: false
-
-      - name: Set up Nix without the project cache
-        uses: ./.github/actions/setup-nix
-        with:
-          cache: 'false'
-
-      - name: Update every flake input
-        run: nix flake update
-
-      - name: Open a pull request
-        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
-        with:
-          token: ${{ secrets.DEPENDENCY_UPDATE_TOKEN || secrets.GITHUB_TOKEN }}
-          add-paths: flake.lock
-          branch: update/flake-lock
-          delete-branch: true
-          commit-message: |
-            build(nix): update flake.lock
-
-            Refresh the pinned Nix inputs to their latest revisions.
-          title: "build(nix): update flake.lock"
-          body: |
-            Monthly refresh of the pinned Nix inputs (`nix flake update`).
-
-            Review the input revision changes, then let the gate run before
-            merging.
-          labels: |
-            dependencies
-            nix
-
-  # pre-commit hook revisions have no Dependabot ecosystem either, so
-  # `pre-commit autoupdate` bumps them here on the same monthly cadence.
-  pre-commit-autoupdate:
-    name: Update pre-commit hooks
-    needs: tasks
-    if: contains(fromJSON(needs.tasks.outputs.run), 'pre-commit')
-    runs-on: ubuntu-24.04
-    environment: dependency-updates
-    timeout-minutes: 15
-    permissions:
-      contents: write
-      pull-requests: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
-        with:
-          persist-credentials: false
-
-      - name: Set up Python
-        uses: actions/setup-python@42375524e23c412d93fb67b49958b491fce71c38 # v6.0.0
-        with:
-          python-version: "3.12"
-
-      - name: Install pre-commit
-        run: python -m pip install --disable-pip-version-check pre-commit
-
-      - name: Bump hook revisions
-        run: pre-commit autoupdate
-
-      - name: Open a pull request
-        uses: peter-evans/create-pull-request@5e914681df9dc83aa4e4905692ca88beb2f9e91f # v7.0.5
-        with:
-          token: ${{ secrets.DEPENDENCY_UPDATE_TOKEN || secrets.GITHUB_TOKEN }}
-          add-paths: .pre-commit-config.yaml
-          branch: update/pre-commit
-          delete-branch: true
-          commit-message: |
-            ci(pre-commit): autoupdate hook revisions
-
-            Refresh the pinned pre-commit hook revisions.
-          title: "ci(pre-commit): autoupdate hook revisions"
-          body: |
-            Monthly `pre-commit autoupdate` of the hook revisions.
-
-            Review the revision changes, then let the gate run before merging.
-          labels: |
-            dependencies
-            ci
-
   # Advisories and expired ignores are triaged on their own, under the
   # advisory label, apart from broken infrastructure.
   report-advisories:
@@ -601,7 +498,7 @@ jobs:
     # !cancelled() rather than always(): a run cancelled by hand says nothing
     # about the jobs, while a job that hit its timeout still reports as red.
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -609,7 +506,7 @@ jobs:
 
     steps:
       - name: Checkout the report action
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           sparse-checkout: .github/actions/report-status
@@ -628,7 +525,7 @@ jobs:
     name: Report CI status
     needs: [tasks, fetcher-canary, reproducibility, cache-warm, stress, benchmarks, mutants]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -636,7 +533,7 @@ jobs:
 
     steps:
       - name: Checkout the report action
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           sparse-checkout: .github/actions/report-status

@@ -187,7 +187,7 @@ fn test_load_or_default_with_invalid_file_returns_error() {
 #[test]
 fn test_apply_cli_overrides_nixos_flake_overrides_config() {
     let mut config = Config {
-        nixos_flake: Some("/etc/nixos#from-config".to_string()),
+        nixos_flake: Some("/mnt/hidden/nixos#from-config".to_string()),
         ..Config::default()
     };
 

@@ -50,11 +50,13 @@ fn runs_hermetically_under_test_runtime() {
     // The host probe is skipped under the test binary, so the check passes
     // against the mock without touching any real filesystem. This also keeps
     // the registry wiring compiled and exercised. The mock presents an
-    // attached hidden root (its own device) so the attach gate passes and the
-    // check reaches the test-runtime skip rather than the not-attached skip.
+    // attached hidden root (a volume mounted there) so the attach gate passes
+    // and the check reaches the test-runtime skip rather than the not-attached
+    // skip.
     let root = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_mounted(&root, true);
     fs.mock_set_device_id(std::path::Path::new("/"), 1);
     fs.mock_set_device_id(&root, 42);
     let check = UpperFsCapabilityCheck::default();
@@ -65,7 +67,7 @@ fn runs_hermetically_under_test_runtime() {
 
 #[test]
 fn skips_without_writing_when_hidden_root_is_not_attached() {
-    // A hidden root that exists but shares `/`'s device is an unmounted mount
+    // A hidden root that exists but is no mount point is an unmounted mount
     // point on the decoy disk. The probe must not create its `.probe-*`
     // scratch directory there, so the attach gate turns the check into a skip
     // (the hidden-volume check owns the operator-facing failure) before any
@@ -73,8 +75,6 @@ fn skips_without_writing_when_hidden_root_is_not_attached() {
     let root = PathBuf::from(DEFAULT_HIDDEN_VOLUME_ROOT);
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(root.to_str().unwrap(), true);
-    fs.mock_set_device_id(std::path::Path::new("/"), 1);
-    fs.mock_set_device_id(&root, 1);
     let check = UpperFsCapabilityCheck::default();
     let result = check.run(&fs).unwrap();
     assert!(result.is_skipped(), "expected a skip, got {result:?}");
@@ -171,6 +171,30 @@ fn a_missing_capability_names_the_filesystem_the_mount_table_reports() {
         result
             .message()
             .contains("The hidden root is on a nfs4 filesystem."),
+        "{}",
+        result.message()
+    );
+}
+
+#[test]
+fn a_missing_capability_names_the_filesystem_on_top_of_the_hidden_root() {
+    // A FAT stick mounted over the hidden volume: the probe ran on the stick,
+    // so the message names its filesystem, not the volume's below it.
+    let fs = MockFilesystem::new();
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+         30 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         31 30 8:17 / /mnt/data rw - vfat /dev/sdb1 rw\n",
+    );
+    let check = UpperFsCapabilityCheck::new(PathBuf::from("/mnt/data"));
+    let result = check.verdict(
+        &fs,
+        Err(ProbeError::Missing(MissingCapability::TrustedXattr)),
+    );
+    assert!(
+        result
+            .message()
+            .contains("The hidden root is on a vfat filesystem."),
         "{}",
         result.message()
     );

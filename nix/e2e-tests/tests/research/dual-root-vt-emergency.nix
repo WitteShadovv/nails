@@ -1,7 +1,7 @@
-# Research spike (ADR 0009): two roots, one seat. The decoy desktop keeps
-# running on its own VT while a hidden display server and session run on
-# another VT inside a whole-root overlay, and emergency is "kill the hidden
-# cgroups, switch back to the decoy VT".
+# Research spike for a design NAILS did not adopt: two roots, one seat. The
+# decoy desktop keeps running on its own VT while a hidden display server and
+# session run on another VT inside a whole-root overlay, and emergency is
+# "kill the hidden cgroups, switch back to the decoy VT".
 #
 # This is NOT a regression test. It carries the `research` tag, which keeps it
 # out of every default group (`ci`, `all`, the shards and `--affected`); build

@@ -24,7 +24,12 @@ fn format_preflight_errors(errors: &[PreFlightFailure]) -> String {
     errors
         .iter()
         .map(|(name, msg, remediation)| match remediation {
-            Some(fix) => format!("  - [{}] {}\n    fix: {}", name, msg, fix),
+            Some(fix) => format!(
+                "  - [{}] {}\n    fix: {}",
+                name,
+                msg,
+                fix.replace('\n', "\n         ")
+            ),
             None => format!("  - [{}] {}", name, msg),
         })
         .collect::<Vec<_>>()
@@ -218,8 +223,8 @@ pub enum NailsError {
     /// writes cannot land on the decoy disk. The operator finishes the job with
     /// `nails emergency` or `nails recover`.
     #[error(
-        "Deactivation incomplete: {} NAILS mount(s) still live: {}\nRun `nails emergency` or `nails recover` to finish the teardown.",
-        .remaining_mounts.len(),
+        "Deactivation incomplete: {} still live: {}\nRun `nails emergency` or `nails recover` to finish the teardown.",
+        crate::output::count_noun(.remaining_mounts.len(), "NAILS mount", "NAILS mounts"),
         format_remaining_mounts(.remaining_mounts)
     )]
     DeactivationIncomplete {

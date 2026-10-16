@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The emergency hot path acts before the CLI reads its configuration (ADR
-//! 0007, ADR 0008).
+//! The emergency hot path acts before the CLI reads its configuration.
 //!
 //! The real `nails` binary runs `emergency` on the decoy side of an interrupted
 //! activation: a session plan in `/run` and a real overlay populating
@@ -145,6 +144,8 @@ mod kernel_tests {
             let plan = Plan {
                 version: PLAN_VERSION,
                 hidden_root: hidden.path().to_path_buf(),
+                hidden_dev: None,
+                accepted_decoy_storage: None,
                 upper,
                 work,
                 owner: None,
@@ -157,6 +158,7 @@ mod kernel_tests {
                 hidden: side,
                 policy_mounts: Vec::new(),
                 masks: Vec::new(),
+                boot_masks: Vec::new(),
                 session_units: Vec::new(),
                 backend: Vec::new(),
                 tools: Tools::default(),
@@ -164,8 +166,10 @@ mod kernel_tests {
                 entered_at: None,
                 run_noexec: false,
                 carried: Vec::new(),
+                decoy_mounts: Vec::new(),
                 read_only_disks: false,
                 failed_at_entry: Vec::new(),
+                kernel_settings: Vec::new(),
             };
             let plan_path = nails_teardown::whole_root::plan::default_plan_path();
             std::fs::create_dir_all(plan_path.parent().unwrap()).unwrap();

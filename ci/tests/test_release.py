@@ -351,6 +351,71 @@ class MuslTest(unittest.TestCase):
                 with self.assertRaisesRegex(ReleaseError, "is not X.Y.Z"):
                     release.add_musl(sbom(), "0.3.0", version)
 
+    def test_musl_carries_the_cpe_nvd_lists_it_under(self) -> None:
+        bom = sbom()
+        release.add_musl(bom, "0.3.0", "1.2.6")
+        self.assertEqual(
+            bom["components"][-1]["cpe"],
+            "cpe:2.3:a:musl-libc:musl:1.2.6:*:*:*:*:*:*:*",
+        )
+
+    def test_without_cves_musl_has_no_pedigree(self) -> None:
+        bom = sbom()
+        release.add_musl(bom, "0.3.0", "1.2.6")
+        self.assertNotIn("pedigree", bom["components"][-1])
+
+    def test_each_cve_becomes_a_backported_security_fix(self) -> None:
+        bom = sbom()
+        cves = ["CVE-2026-6042", "CVE-2026-40200", "CVE-2026-6042"]
+        release.add_musl(bom, "0.3.0", "1.2.6", cves)
+        patches = bom["components"][-1]["pedigree"]["patches"]
+        self.assertEqual([p["type"] for p in patches], ["backport", "backport"])
+        resolves = [r for p in patches for r in p["resolves"]]
+        self.assertEqual(
+            [r["id"] for r in resolves], ["CVE-2026-40200", "CVE-2026-6042"]
+        )
+        self.assertEqual({r["type"] for r in resolves}, {"security"})
+        self.assertEqual(
+            resolves[1]["source"],
+            {"name": "NVD", "url": "https://nvd.nist.gov/vuln/detail/CVE-2026-6042"},
+        )
+
+    def test_malformed_cve_fails_before_the_sbom_changes(self) -> None:
+        for cve in ("", "CVE-2026-1", "cve-2026-6042", "CVE-2026-6042\n", "GHSA-x"):
+            with self.subTest(cve=cve):
+                bom = sbom()
+                before = copy.deepcopy(bom)
+                with self.assertRaisesRegex(ReleaseError, "is not a CVE ID"):
+                    release.add_musl(bom, "0.3.0", "1.2.6", [cve])
+                self.assertEqual(bom, before)
+
+    def test_command_records_repeated_musl_cves(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        source, output = root / "in.cdx.json", root / "sbom.cdx.json"
+        source.write_text(json.dumps(sbom()))
+        argv = [
+            "sbom-libc",
+            "--sbom",
+            str(source),
+            "--version",
+            "0.3.0",
+            "--musl-version",
+            "1.2.6",
+            "--musl-cve",
+            "CVE-2026-6042",
+            "--musl-cve",
+            "CVE-2026-40200",
+            "--output",
+            str(output),
+        ]
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(release.main(argv), 0)
+        musl = json.loads(output.read_text())["components"][-1]
+        ids = [r["id"] for p in musl["pedigree"]["patches"] for r in p["resolves"]]
+        self.assertEqual(ids, ["CVE-2026-40200", "CVE-2026-6042"])
+        self.assertIn("with fixes for CVE-2026-6042, CVE-2026-40200", err.getvalue())
+
     def test_command_writes_the_completed_sbom(self) -> None:
         root = Path(self.enterContext(tempfile.TemporaryDirectory()))
         source, output = root / "in.cdx.json", root / "sbom.cdx.json"
@@ -390,6 +455,66 @@ class MuslTest(unittest.TestCase):
         with contextlib.redirect_stderr(err):
             self.assertEqual(release.main(argv), 2)
         self.assertIn("cannot read", err.getvalue())
+
+
+class MuslVexTest(unittest.TestCase):
+    # 2026-10-14T00:00:00Z
+    EPOCH = 1791936000
+
+    def vex(self, cves: list[str]) -> dict[str, Any]:
+        return release.musl_vex("1.2.6", cves, "o/n", "v0.3.0", self.EPOCH)
+
+    def test_each_cve_is_fixed_in_musl_itself(self) -> None:
+        doc = self.vex(["CVE-2026-6042", "CVE-2026-40200", "CVE-2026-6042"])
+        self.assertEqual(doc["@context"], "https://openvex.dev/ns/v0.2.0")
+        names = [s["vulnerability"]["name"] for s in doc["statements"]]
+        self.assertEqual(names, ["CVE-2026-40200", "CVE-2026-6042"])
+        for statement in doc["statements"]:
+            self.assertEqual(statement["status"], "fixed")
+            self.assertEqual(
+                [p["@id"] for p in statement["products"]], ["pkg:generic/musl@1.2.6"]
+            )
+
+    def test_document_is_fixed_by_the_tag_and_its_commit_time(self) -> None:
+        doc = self.vex(["CVE-2026-6042"])
+        self.assertEqual(
+            doc["@id"],
+            "https://github.com/o/n/releases/download/v0.3.0/musl.openvex.json",
+        )
+        self.assertEqual(doc["timestamp"], "2026-10-14T00:00:00Z")
+        self.assertEqual(doc, self.vex(["CVE-2026-6042"]))
+
+    def test_no_cves_gives_an_empty_document(self) -> None:
+        self.assertEqual(self.vex([])["statements"], [])
+
+    def test_malformed_input_fails(self) -> None:
+        with self.assertRaisesRegex(ReleaseError, "is not a CVE ID"):
+            self.vex(["CVE-26-1"])
+        with self.assertRaisesRegex(ReleaseError, "is not X.Y.Z"):
+            release.musl_vex("1.2", [], "o/n", "v0.3.0", self.EPOCH)
+
+    def test_command_writes_the_document(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        output = root / "musl.openvex.json"
+        argv = [
+            "musl-vex",
+            "--musl-version",
+            "1.2.6",
+            "--musl-cve",
+            "CVE-2026-6042",
+            "--repo",
+            "o/n",
+            "--tag",
+            "v0.3.0",
+            "--epoch",
+            str(self.EPOCH),
+            "--output",
+            str(output),
+        ]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(release.main(argv), 0)
+        doc = json.loads(output.read_text())
+        self.assertEqual(doc["statements"][0]["vulnerability"]["name"], "CVE-2026-6042")
 
 
 if __name__ == "__main__":

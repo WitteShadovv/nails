@@ -66,7 +66,9 @@ impl LoadedConfig {
     ///
     /// # Errors
     ///
-    /// `NailsError::ConfigNotFound` when the file does not exist, otherwise
+    /// `NailsError::ConfigNotFound` when the file does not exist,
+    /// `NailsError::IoError` when it cannot be read (with the error's kind, so
+    /// a caller can tell a permission problem from the others), otherwise
     /// `NailsError::ConfigError` as described on [`Config::load`].
     pub fn load(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path).map_err(|e| {
@@ -75,7 +77,7 @@ impl LoadedConfig {
                     path: path.to_path_buf(),
                 }
             } else {
-                NailsError::ConfigError(format!("cannot read config {}: {}", path.display(), e))
+                NailsError::io(path, e)
             }
         })?;
         let parsed = parse_config_file(path, &contents)?;
@@ -91,13 +93,18 @@ impl LoadedConfig {
 
     /// Load `path` strictly, using defaults when the file does not exist.
     ///
+    /// A missing file is reported through [`LoadedConfig::file_found`]: each
+    /// command says so in its own output (`check`, `status --details` and
+    /// `config show` name the source, `activate` prints a notice before it
+    /// asks for confirmation), so the log records it at debug level only.
+    ///
     /// # Errors
     ///
     /// Every error of [`LoadedConfig::load`] except `ConfigNotFound`.
     pub fn load_or_default(path: &Path) -> Result<Self> {
         match Self::load(path) {
             Err(NailsError::ConfigNotFound { .. }) => {
-                tracing::info!("No config file found at {}, using defaults", path.display());
+                tracing::debug!("No config file found at {}, using defaults", path.display());
                 Ok(Self::defaults(path))
             }
             other => other,

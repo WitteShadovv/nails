@@ -41,10 +41,10 @@ fn activate_accepts_its_flags() {
     ]);
     assert!(args.yes && args.no_preflight && args.overlay_only && args.accept_persistent_decoy);
     assert_eq!(
-        activate(&["--nixos-flake", "/etc/nixos#host"])
+        activate(&["--nixos-flake", "/mnt/data/nixos#my-host"])
             .nixos_flake
             .as_deref(),
-        Some("/etc/nixos#host")
+        Some("/mnt/data/nixos#my-host")
     );
     assert!(activate(&["--dry-run"]).dry_run);
 }

@@ -10,6 +10,10 @@
 //! a plain open when the kernel refuses the flag because the caller neither owns
 //! the inode nor holds `CAP_FOWNER` (`EPERM`). Root always holds `CAP_FOWNER`, so
 //! the fallback only applies to unprivileged runs, which cannot avoid the update.
+//!
+//! The flag covers the inode that is opened and nothing else: a lookup still
+//! updates the access time of each symlink it follows, such as a NixOS decoy's
+//! links into `/etc/static` ([`nails_teardown::noatime`]).
 
 use std::ffi::OsString;
 use std::io::{self, Read};
@@ -29,7 +33,9 @@ pub enum OpenKind {
     FileNoFollow,
 }
 
-/// Open `path` read-only with `O_NOATIME`, retrying without it on `EPERM`.
+/// Open `path` read-only with `O_NOATIME`, retrying without it on `EPERM`
+/// ([`with_noatime`](nails_teardown::noatime::with_noatime), the rule the
+/// next root's reads follow too).
 pub fn open_noatime(path: &Path, kind: OpenKind) -> io::Result<OwnedFd> {
     use rustix::fs::{Mode, OFlags, open};
 
@@ -40,12 +46,8 @@ pub fn open_noatime(path: &Path, kind: OpenKind) -> io::Result<OwnedFd> {
         OpenKind::FileNoFollow => base |= OFlags::NOFOLLOW,
     }
 
-    match open(path, base | OFlags::NOATIME, Mode::empty()) {
-        Ok(fd) => Ok(fd),
-        // O_NOATIME needs file ownership or CAP_FOWNER; retry without it.
-        Err(rustix::io::Errno::PERM) => open(path, base, Mode::empty()).map_err(io::Error::from),
-        Err(e) => Err(io::Error::from(e)),
-    }
+    nails_teardown::noatime::with_noatime(|noatime| open(path, base | noatime, Mode::empty()))
+        .map_err(io::Error::from)
 }
 
 /// Read a whole file as UTF-8 without updating its access time.

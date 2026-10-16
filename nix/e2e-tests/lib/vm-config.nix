@@ -1,11 +1,19 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
 # Base VM Configuration for E2E Tests
 # Simplified: let NixOS test framework handle boot/filesystems
 # Secondary disk (serial "data", /dev/disk/by-id/virtio-data) is available for LUKS hidden volume testing
 
-{ lib, pkgs, ... }:
 {
-  # NAILS enters and leaves the hidden session with `systemctl soft-reboot`.
-  imports = [ ./soft-reboot-units.nix ];
+  config,
+  lib,
+  pkgs,
+  ...
+}:
+{
+  # Reports what PID 1 waits on when a switch or a power-off never ends.
+  imports = [ ./stall-report.nix ];
 
   # Virtual hardware configuration
   virtualisation = {
@@ -28,13 +36,6 @@
       }
     ];
 
-    # Most tests read the host Nix store over 9p. The 16 KiB default msize
-    # splits every larger read and readdir into many round trips, and QEMU's
-    # own 9p documentation recommends raising it. 256 KiB stays below the
-    # virtio transport's ceiling (PAGE_SIZE * (VIRTQUEUE_NUM - 3), about
-    # 500 KiB), so no kernel clamps it.
-    msize = 262144;
-
     # Keeping restrictNetwork = false is harmless and avoids the QEMU "-net none"
     # flag that can interfere with the test framework's own virtual network.
     restrictNetwork = false;
@@ -43,11 +44,23 @@
   # No swap for forensic safety
   swapDevices = lib.mkForce [ ];
 
+  # The QEMU VM module registers the VM's store paths (the closure that
+  # regInfo= on the kernel command line names) from register-nix-paths.service,
+  # which sysinit.target pulls in at every start of the service manager, the
+  # one after a soft-reboot included. Run again on the decoy after it collected
+  # garbage, it puts the collected paths back into the decoy's store database,
+  # a change no session made. The registration belongs to the boot: a marker in
+  # /run, which a soft-reboot carries over, keeps it to the first start.
+  systemd.services.register-nix-paths = lib.mkIf config.nix.enable {
+    unitConfig.ConditionPathExists = "!/run/register-nix-paths.done";
+    serviceConfig.ExecStartPost = "${pkgs.coreutils}/bin/touch /run/register-nix-paths.done";
+  };
+
   # Model an amnesic decoy: journald keeps no persistent journal on the decoy
   # disk, so the decoy-persistence pre-flight check passes and the E2E suite
   # exercises the supported posture. A test that wants to exercise the refusal
   # path overrides this back to "persistent".
-  services.journald.storage = lib.mkDefault "volatile";
+  services.journald.settings.Journal.Storage = lib.mkDefault "volatile";
 
   # Test user with sudo privileges
   users.users.testuser = {
@@ -80,7 +93,17 @@
   # it, environment.etc stores the content under /etc/static and links /etc/nixos
   # entries to it, which a real install never does and which some tests (and the
   # forensic baseline) must not see: a stock /etc/nixos/*.nix is a plain file.
+  #
+  # configuration.nix keeps the comment nixos-generate-config writes above
+  # system.stateVersion. It holds the word "data", the mapping name of the
+  # hidden volume these tests open, and a stock decoy must still pass the
+  # check that refuses an /etc/nixos naming the hidden volume.
   environment.etc = {
+    # The stateVersion comment below is the configuration.nix template from
+    # Nixpkgs, under its MIT licence.
+    # SPDX-SnippetBegin
+    # SPDX-SnippetCopyrightText: Eelco Dolstra and the Nixpkgs/NixOS contributors
+    # SPDX-License-Identifier: MIT
     "nixos/configuration.nix" = {
       mode = "0644";
       text = ''
@@ -92,10 +115,29 @@
             device = "/dev/disk/by-label/nixos";
             fsType = "ext4";
           };
-          system.stateVersion = "25.11";
+
+          # This option defines the first version of NixOS you have installed on this particular machine,
+          # and is used to maintain compatibility with application data (e.g. databases) created on older NixOS versions.
+          #
+          # Most users should NEVER change this value after the initial install, for any reason,
+          # even if you've upgraded your system to a new NixOS release.
+          #
+          # This value does NOT affect the Nixpkgs version your packages and OS are pulled from,
+          # so changing it will NOT upgrade your system - see https://nixos.org/manual/nixos/stable/#sec-upgrading for how
+          # to actually do that.
+          #
+          # This value being lower than the current NixOS release does NOT mean your system is
+          # out of date, out of support, or vulnerable.
+          #
+          # Do NOT change this value unless you have manually inspected all the changes it would make to your configuration,
+          # and migrated your data accordingly.
+          #
+          # For more information, see `man configuration.nix` or https://nixos.org/manual/nixos/stable/options#opt-system.stateVersion .
+          system.stateVersion = "25.11"; # Did you read the comment?
         }
       '';
     };
+    # SPDX-SnippetEnd
 
     "nixos/hardware-configuration.nix" = {
       mode = "0644";

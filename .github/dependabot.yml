@@ -1,17 +1,19 @@
 # Dependency automation for the NAILS workspace.
 #
-# Dependabot only covers the two ecosystems it understands natively: the Cargo
-# workspace and the GitHub Actions used by the workflows. The three remaining
-# sources of pinned versions are updated elsewhere, because Dependabot has no
-# ecosystem for them:
-#   - flake.lock (Nix inputs)    -> the flake-lock task in scheduled.yml
-#   - .pre-commit-config.yaml    -> the pre-commit task in scheduled.yml
-#   - rust-toolchain.toml        -> bumped by hand; the deny.toml RUSTSEC ignores
-#                                   are tied to the exact pin, so a bump is a
-#                                   reviewed change, not an automated one.
+# Dependabot keeps five sources of pinned versions current:
+#   - the Cargo workspace (Cargo.toml / Cargo.lock)
+#   - the GitHub Actions in the workflows and composite actions
+#   - flake.lock (the Nix inputs)
+#   - .pre-commit-config.yaml (the hook revisions)
+#   - rust-toolchain.toml (the Rust toolchain)
+# The rust-toolchain update and the rust-overlay flake input share one pull
+# request: flake.nix builds the pinned channel from rust-overlay, so a new
+# toolchain is only usable together with an overlay that knows it. Cargo.lock's
+# transitive dependencies, which no Dependabot update touches, are refreshed by
+# the lockfile task in scheduled.yml.
 #
-# Both ecosystems run monthly, group their updates into a single pull request
-# and wait a 7-day cooldown after a release before proposing it, so a freshly
+# Every ecosystem runs monthly, groups its updates into a single pull request
+# and waits a 7-day cooldown after a release before proposing it, so a freshly
 # published version has time to be yanked before it reaches a branch.
 #
 # Merge policy: Dependabot opens the pull requests; merging is manual. Only a
@@ -20,6 +22,18 @@
 # surfaced in their own groups so they are never lost in the monthly batch.
 
 version: 2
+
+multi-ecosystem-groups:
+  # rust-toolchain.toml and the rust-overlay input it is built from.
+  rust-toolchain:
+    schedule:
+      interval: "monthly"
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "rust"
 
 updates:
   # Rust workspace (Cargo.toml / Cargo.lock at the repository root).
@@ -98,3 +112,62 @@ updates:
         applies-to: security-updates
         patterns:
           - "*"
+
+  # The flake inputs in flake.lock, except rust-overlay, which moves with the
+  # toolchain below. A nixpkgs update changes every VM test derivation, so the
+  # pull request's affected E2E selection runs the whole suite.
+  - package-ecosystem: "nix"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    # "build(deps): ..." like the Cargo updates.
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "nix"
+    groups:
+      nix:
+        patterns:
+          - "*"
+    ignore:
+      - dependency-name: "rust-overlay"
+
+  # The hook revisions in .pre-commit-config.yaml.
+  - package-ecosystem: "pre-commit"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "ci"
+    groups:
+      pre-commit:
+        patterns:
+          - "*"
+
+  # rust-toolchain.toml and the rust-overlay input, one pull request through
+  # the rust-toolchain group above.
+  - package-ecosystem: "rust-toolchain"
+    directory: "/"
+    patterns:
+      - "*"
+    multi-ecosystem-group: "rust-toolchain"
+    cooldown:
+      default-days: 7
+
+  - package-ecosystem: "nix"
+    directory: "/"
+    patterns:
+      - "rust-overlay"
+    multi-ecosystem-group: "rust-toolchain"
+    cooldown:
+      default-days: 7

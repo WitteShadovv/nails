@@ -10,19 +10,36 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 use nails_core::rehearse::{self, ChannelKind, ChannelRecord, Phase, RehearsalState, ScanSummary};
+use nails_core::test_support::ScratchTmpfs;
 
 const TOKEN: &str = "5a17c0ffee5a17c0ffee5a17c0ffee00";
 
 struct Harness {
+    // Declared first so a tmpfs hidden root is detached before the directories go.
+    _volume: Option<ScratchTmpfs>,
     dir: tempfile::TempDir,
     config: PathBuf,
+    hidden: PathBuf,
 }
 
 impl Harness {
+    /// A hidden root that is a plain directory: the attach gate refuses it.
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let hidden = dir.path().join("hidden");
         std::fs::create_dir_all(&hidden).unwrap();
+        Self::with_root(dir, hidden, None)
+    }
+
+    /// A hidden root that is a tmpfs of its own, which the attach gate accepts.
+    /// Build it only inside a [`Rerun::in_user_mount_ns`] body.
+    fn on_a_volume() -> Self {
+        let volume = ScratchTmpfs::new("");
+        let hidden = volume.path().to_path_buf();
+        Self::with_root(tempfile::tempdir().unwrap(), hidden, Some(volume))
+    }
+
+    fn with_root(dir: tempfile::TempDir, hidden: PathBuf, volume: Option<ScratchTmpfs>) -> Self {
         let config = dir.path().join("nails.toml");
         std::fs::write(
             &config,
@@ -34,7 +51,12 @@ impl Harness {
             ),
         )
         .unwrap();
-        Self { dir, config }
+        Self {
+            _volume: volume,
+            dir,
+            config,
+            hidden,
+        }
     }
 
     fn image(&self, name: &str, token_at: Option<u64>) -> PathBuf {
@@ -56,24 +78,19 @@ impl Harness {
     }
 
     fn run(&self, args: &[&str]) -> Output {
-        self.run_with(&[], args)
-    }
-
-    fn run_with(&self, envs: &[(&str, &str)], args: &[&str]) -> Output {
-        let mut cmd = Command::new(assert_cmd::cargo::cargo_bin!("nails"));
-        cmd.env_remove("NO_COLOR")
+        Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+            .env_remove("NO_COLOR")
             .arg("--no-log-file")
             .arg("--config")
-            .arg(&self.config);
-        for (key, value) in envs {
-            cmd.env(key, value);
-        }
-        cmd.args(args).output().expect("run nails")
+            .arg(&self.config)
+            .args(args)
+            .output()
+            .expect("run nails")
     }
 
     /// The hidden root, resolved the way the binary resolves it.
     fn hidden(&self) -> PathBuf {
-        self.dir.path().join("hidden").canonicalize().unwrap()
+        self.hidden.canonicalize().unwrap()
     }
 
     fn state_path(&self) -> PathBuf {
@@ -87,8 +104,8 @@ impl Harness {
         std::fs::write(&path, serde_json::to_string_pretty(state).unwrap()).unwrap();
     }
 
-    /// Mark the temp hidden root as a NAILS volume, so the attach check (with
-    /// `NAILS_TEST_FORCE_ATTACHED`) accepts it.
+    /// Mark the hidden root as a NAILS volume, so the attach check accepts it
+    /// once it is a volume of its own.
     fn write_marker(&self) {
         std::fs::write(self.hidden().join("state.json"), "{}").unwrap();
     }
@@ -99,7 +116,11 @@ const OTHER_BOOT: &str = "00000000-0000-0000-0000-000000000000";
 
 /// A planted rehearsal: one overlay file whose upper copy carries the token in
 /// its name, and one skipped channel.
-fn planted(harness: &Harness, boot_id: Option<String>, soft_reboots: u64) -> RehearsalState {
+fn planted(
+    harness: &Harness,
+    boot_id: Option<String>,
+    soft_reboots: Option<u64>,
+) -> RehearsalState {
     let upper = harness.hidden().join(format!(
         "root/upper/home/op/{}{TOKEN}",
         rehearse::FILE_PREFIX
@@ -110,7 +131,8 @@ fn planted(harness: &Harness, boot_id: Option<String>, soft_reboots: u64) -> Reh
         phase: Phase::Planted,
         planted_at: "2026-01-01T10:00:00Z".to_string(),
         planted_boot_id: boot_id,
-        planted_soft_reboots: Some(soft_reboots),
+        planted_entered_at: Some(1_700_000_000),
+        planted_soft_reboots: soft_reboots,
         channels: vec![
             ChannelRecord {
                 kind: ChannelKind::OverlayFile,
@@ -130,8 +152,8 @@ fn planted(harness: &Harness, boot_id: Option<String>, soft_reboots: u64) -> Reh
 }
 
 /// The running boot as the binary sees it: its boot ID and systemd's
-/// soft-reboot count (`0` when the service manager does not report one).
-fn this_boot() -> (String, u64) {
+/// soft-reboot count (`None` where the service manager does not report one).
+fn this_boot() -> (String, Option<u64>) {
     let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id")
         .unwrap()
         .trim()
@@ -141,8 +163,7 @@ fn this_boot() -> (String, u64) {
         .output()
         .ok()
         .filter(|out| out.status.success())
-        .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse().ok())
-        .unwrap_or(0);
+        .and_then(|out| String::from_utf8_lossy(&out.stdout).trim().parse().ok());
     (boot_id, soft_reboots)
 }
 
@@ -241,6 +262,8 @@ fn an_offline_scan_of_a_clean_image_exits_zero() {
         "{stdout}"
     );
     assert!(stdout.contains("Not visible to this scan:"), "{stdout}");
+    // A token file names no channels: nothing to list as untested.
+    assert!(!stdout.contains("Not tested"), "{stdout}");
 }
 
 #[test]
@@ -273,19 +296,20 @@ fn a_scan_without_a_token_source_is_refused() {
 }
 
 #[test]
-fn plant_outside_an_active_session_is_refused() {
+fn plant_on_a_folder_is_refused_by_the_attach_gate() {
     let harness = Harness::new();
-    let output = harness.run(&["rehearse", "plant"]);
-    // The tempdir hidden root is not a mounted volume, or no session is active;
-    // either way nothing is planted.
-    assert_eq!(output.status.code(), Some(6), "{output:?}");
+    let output = harness.run(&["--json", "rehearse", "plant"]);
+    // The tempdir hidden root is a folder, not a volume of its own: the gate
+    // refuses it before anything is planted.
+    assert_eq!(output.status.code(), Some(4), "{output:?}");
+    assert_eq!(json(&output)["error"]["code"], "not_separate_volume");
     assert!(!harness.dir.path().join("hidden/rehearse").exists());
 }
 
 #[test]
 fn status_of_a_planted_rehearsal_shows_its_fingerprint_channels_and_the_scan_step() {
     let harness = Harness::new();
-    harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), 0));
+    harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), Some(0)));
 
     let output = harness.run(&["--ascii", "rehearse", "status"]);
 
@@ -312,7 +336,10 @@ fn status_of_a_planted_rehearsal_shows_its_fingerprint_channels_and_the_scan_ste
 }
 
 #[test]
-fn status_in_the_planting_session_says_to_deactivate_first() {
+fn status_outside_a_hidden_session_names_the_scan_step_in_the_planting_boot() {
+    // Planted in this boot, and the soft-reboots of a plain deactivation keep
+    // the boot ID (with no count on systemd 255): with no hidden session live,
+    // the planting session has ended all the same.
     let harness = Harness::new();
     let (boot_id, soft_reboots) = this_boot();
     harness.write_state(&planted(&harness, Some(boot_id), soft_reboots));
@@ -322,11 +349,8 @@ fn status_in_the_planting_session_says_to_deactivate_first() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let value = json(&output);
     assert_eq!(value["data"]["phase"], "planted");
-    assert!(
-        value["data"]["next_step"]
-            .as_str()
-            .unwrap()
-            .starts_with("Step 2 of 3: deactivate as usual"),
+    assert_eq!(
+        value["data"]["next_step"], "Step 3 of 3: run `nails rehearse scan`.",
         "{value:#}"
     );
 }
@@ -334,7 +358,7 @@ fn status_in_the_planting_session_says_to_deactivate_first() {
 #[test]
 fn status_of_a_scanned_rehearsal_lists_each_scan_and_is_done() {
     let harness = Harness::new();
-    let mut state = planted(&harness, Some(OTHER_BOOT.to_string()), 0);
+    let mut state = planted(&harness, Some(OTHER_BOOT.to_string()), Some(0));
     state.phase = Phase::Scanned;
     state.scans.push(ScanSummary {
         at: "2026-01-02T08:00:00Z".to_string(),
@@ -347,7 +371,7 @@ fn status_of_a_scanned_rehearsal_lists_each_scan_and_is_done() {
     let human = harness.run(&["--ascii", "rehearse", "status"]);
     let stdout = String::from_utf8_lossy(&human.stdout);
     assert!(
-        stdout.contains("- scan at 2026-01-02T08:00:00Z: 0 hit(s) on /dev/vda, /dev/vdb"),
+        stdout.contains("- scan at 2026-01-02T08:00:00Z: 0 hits on /dev/vda, /dev/vdb"),
         "{stdout}"
     );
     assert!(stdout.contains("-> Done. Scan again any time"), "{stdout}");
@@ -421,51 +445,51 @@ fn an_offline_scan_with_the_state_token_records_the_scan_phase() {
 }
 
 #[test]
-fn a_device_scan_records_the_scan_in_the_state_on_an_attached_volume() {
-    let harness = Harness::new();
-    harness.write_marker();
-    harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), 0));
-    let clean = harness.image("clean.img", None);
-
-    let output = harness.run_with(
-        &[("NAILS_TEST_FORCE_ATTACHED", "1")],
-        &["--json", "rehearse", "scan", "--device", path(&clean)],
-    );
-
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    assert_eq!(json(&output)["data"]["phase"], "scanned");
-    let saved: RehearsalState =
-        serde_json::from_str(&std::fs::read_to_string(harness.state_path()).unwrap()).unwrap();
-    assert_eq!(saved.phase, Phase::Scanned);
-    assert_eq!(saved.scans.len(), 1);
-    assert_eq!(saved.scans[0].devices, vec![clean.display().to_string()]);
-    assert_eq!(saved.scans[0].hits, 0);
-}
-
-#[test]
-fn a_scan_in_the_planting_session_is_refused_unless_allowed() {
+fn a_scan_outside_a_hidden_session_runs_in_the_planting_boot() {
+    // The boot ID and soft-reboot count of this very boot, as a deactivation
+    // back to the decoy leaves them: only a live hidden session can be the
+    // planting session, so the scan runs without --allow-same-boot. The
+    // refusal inside that session is the NixOS VM test's and the distribution
+    // smoke test's to show; the decision itself has unit tests.
     let harness = Harness::new();
     let (boot_id, soft_reboots) = this_boot();
     harness.write_state(&planted(&harness, Some(boot_id), soft_reboots));
     let clean = harness.image("clean.img", None);
 
-    let refused = harness.run(&["--json", "rehearse", "scan", "--device", path(&clean)]);
-    assert_eq!(refused.status.code(), Some(6), "{refused:?}");
-    assert_eq!(json(&refused)["error"]["code"], "same_boot");
+    let output = harness.run(&["--json", "rehearse", "scan", "--device", path(&clean)]);
 
-    let allowed = harness.run(&[
-        "--json",
-        "rehearse",
-        "scan",
-        "--device",
-        path(&clean),
-        "--allow-same-boot",
-    ]);
-    assert_eq!(allowed.status.code(), Some(0), "{allowed:?}");
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(
-        json(&allowed)["data"]["scan"]["devices"][0]["hits"],
+        json(&output)["data"]["scan"]["devices"][0]["hits"],
         serde_json::json!([])
     );
+}
+
+#[test]
+fn a_clean_scan_names_the_channels_the_canary_never_went_into() {
+    let harness = Harness::new();
+    harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), Some(0)));
+    let clean = harness.image("clean.img", None);
+
+    let output = harness.run(&["--ascii", "rehearse", "scan", "--device", path(&clean)]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_no_token(&output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("not found on the scanned devices"),
+        "{stdout}"
+    );
+    let untested = stdout
+        .find("Not tested, because the canary was never planted there:")
+        .unwrap_or_else(|| panic!("no untested channels listed: {stdout}"));
+    let not_visible = stdout.find("Not visible to this scan:").unwrap();
+    assert!(untested < not_visible, "{stdout}");
+    assert!(
+        stdout.contains("  [-] Notification: no session bus"),
+        "{stdout}"
+    );
+    assert!(!stdout.contains("OverlayFile: "), "{stdout}");
 }
 
 #[test]
@@ -515,9 +539,9 @@ fn a_token_file_without_a_valid_token_is_refused() {
 }
 
 #[test]
-fn reset_removes_the_planted_copy_and_the_state_with_the_token_redacted() {
+fn reset_on_a_folder_is_refused_and_removes_nothing() {
     let harness = Harness::new();
-    let state = planted(&harness, Some(OTHER_BOOT.to_string()), 0);
+    let state = planted(&harness, Some(OTHER_BOOT.to_string()), Some(0));
     let upper = state.channels[0].upper_copy.clone().unwrap();
     std::fs::create_dir_all(upper.parent().unwrap()).unwrap();
     std::fs::write(&upper, TOKEN).unwrap();
@@ -525,43 +549,11 @@ fn reset_removes_the_planted_copy_and_the_state_with_the_token_redacted() {
 
     let output = harness.run(&["--json", "rehearse", "reset"]);
 
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
     assert_no_token(&output);
-    let value = json(&output);
-    assert_eq!(value["data"]["phase"], "none");
-    let hidden = harness.hidden().display().to_string();
-    assert_eq!(
-        value["data"]["removed"],
-        serde_json::json!([
-            format!("{hidden}/root/upper/home/op/rehearse-<canary>"),
-            format!("{hidden}/rehearse/state.json"),
-        ])
-    );
-    assert!(!upper.exists());
-    assert!(!harness.state_path().exists());
-}
-
-#[test]
-fn reset_in_human_form_lists_what_it_removed() {
-    let harness = Harness::new();
-    harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), 0));
-
-    let output = harness.run(&["--ascii", "rehearse", "reset"]);
-
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("[PASS] Removed rehearsal 5a17c0"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains(&format!("  removed {}", harness.state_path().display())),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains("-> Step 1 of 3: activate a hidden session"),
-        "{stdout}"
-    );
+    assert_eq!(json(&output)["error"]["code"], "reset");
+    assert!(upper.exists());
+    assert!(harness.state_path().exists());
 }
 
 #[test]
@@ -574,35 +566,138 @@ fn reset_without_a_rehearsal_is_refused() {
     assert_eq!(value["error"]["message"], "no rehearsal to reset");
 }
 
-#[test]
-fn plant_on_an_attached_volume_without_a_session_names_the_missing_session() {
-    let harness = Harness::new();
-    harness.write_marker();
-    let output = harness.run_with(
-        &[("NAILS_TEST_FORCE_ATTACHED", "1")],
-        &["--json", "rehearse", "plant"],
-    );
-    assert_eq!(output.status.code(), Some(6), "{output:?}");
-    assert_eq!(json(&output)["error"]["code"], "not_active");
-    assert!(!harness.state_path().exists());
-}
+/// The tests that need the attach gate to accept the hidden root: each runs in
+/// an unprivileged user + mount namespace with a tmpfs as the hidden root, and
+/// the binary it spawns inherits that namespace.
+mod kernel_tests {
+    use super::*;
+    use nails_core::test_path;
+    use nails_core::test_support::Rerun;
 
-#[test]
-fn plant_on_an_unattached_volume_names_the_attach_problem() {
-    let harness = Harness::new();
-    // No marker: even with the device check bypassed, the root is no NAILS volume.
-    let output = harness.run_with(
-        &[("NAILS_TEST_FORCE_ATTACHED", "1")],
-        &["--json", "rehearse", "plant"],
-    );
-    assert_eq!(output.status.code(), Some(6), "{output:?}");
-    let value = json(&output);
-    assert_eq!(value["error"]["code"], "not_attached");
-    assert!(
-        value["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("holds no NAILS marker"),
-        "{value:#}"
-    );
+    #[test]
+    fn reset_removes_the_planted_copy_and_the_state_with_the_token_redacted() {
+        let _ = Rerun::new(test_path!(
+            reset_removes_the_planted_copy_and_the_state_with_the_token_redacted
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let harness = Harness::on_a_volume();
+            harness.write_marker();
+            let state = planted(&harness, Some(OTHER_BOOT.to_string()), Some(0));
+            let upper = state.channels[0].upper_copy.clone().unwrap();
+            std::fs::create_dir_all(upper.parent().unwrap()).unwrap();
+            std::fs::write(&upper, TOKEN).unwrap();
+            harness.write_state(&state);
+
+            let output = harness.run(&["--json", "rehearse", "reset"]);
+
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            assert_no_token(&output);
+            let value = json(&output);
+            assert_eq!(value["data"]["phase"], "none");
+            let hidden = harness.hidden().display().to_string();
+            assert_eq!(
+                value["data"]["removed"],
+                serde_json::json!([
+                    format!("{hidden}/root/upper/home/op/rehearse-<canary>"),
+                    format!("{hidden}/rehearse/state.json"),
+                ])
+            );
+            assert!(!upper.exists());
+            assert!(!harness.state_path().exists());
+        });
+    }
+
+    #[test]
+    fn reset_in_human_form_lists_what_it_removed() {
+        let _ = Rerun::new(test_path!(reset_in_human_form_lists_what_it_removed))
+            .in_user_mount_ns()
+            .run(|| {
+                let harness = Harness::on_a_volume();
+                harness.write_marker();
+                harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), Some(0)));
+
+                let output = harness.run(&["--ascii", "rehearse", "reset"]);
+
+                assert_eq!(output.status.code(), Some(0), "{output:?}");
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert!(
+                    stdout.contains("[PASS] Removed rehearsal 5a17c0"),
+                    "{stdout}"
+                );
+                assert!(
+                    stdout.contains(&format!("  removed {}", harness.state_path().display())),
+                    "{stdout}"
+                );
+                assert!(
+                    stdout.contains("-> Step 1 of 3: activate a hidden session"),
+                    "{stdout}"
+                );
+            });
+    }
+
+    #[test]
+    fn a_device_scan_records_the_scan_in_the_state_on_an_attached_volume() {
+        let _ = Rerun::new(test_path!(
+            a_device_scan_records_the_scan_in_the_state_on_an_attached_volume
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let harness = Harness::on_a_volume();
+            harness.write_marker();
+            harness.write_state(&planted(&harness, Some(OTHER_BOOT.to_string()), Some(0)));
+            let clean = harness.image("clean.img", None);
+
+            let output = harness.run(&["--json", "rehearse", "scan", "--device", path(&clean)]);
+
+            assert_eq!(output.status.code(), Some(0), "{output:?}");
+            assert_eq!(json(&output)["data"]["phase"], "scanned");
+            let saved: RehearsalState =
+                serde_json::from_str(&std::fs::read_to_string(harness.state_path()).unwrap())
+                    .unwrap();
+            assert_eq!(saved.phase, Phase::Scanned);
+            assert_eq!(saved.scans.len(), 1);
+            assert_eq!(saved.scans[0].devices, vec![clean.display().to_string()]);
+            assert_eq!(saved.scans[0].hits, 0);
+        });
+    }
+
+    #[test]
+    fn plant_on_an_attached_volume_without_a_session_names_the_missing_session() {
+        let _ = Rerun::new(test_path!(
+            plant_on_an_attached_volume_without_a_session_names_the_missing_session
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let harness = Harness::on_a_volume();
+            harness.write_marker();
+            let output = harness.run(&["--json", "rehearse", "plant"]);
+            assert_eq!(output.status.code(), Some(6), "{output:?}");
+            assert_eq!(json(&output)["error"]["code"], "not_active");
+            assert!(!harness.state_path().exists());
+        });
+    }
+
+    #[test]
+    fn plant_on_an_unattached_volume_names_the_attach_problem() {
+        let _ = Rerun::new(test_path!(
+            plant_on_an_unattached_volume_names_the_attach_problem
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            let harness = Harness::on_a_volume();
+            // No marker: the root is a volume of its own, but no NAILS volume.
+            let output = harness.run(&["--json", "rehearse", "plant"]);
+            assert_eq!(output.status.code(), Some(6), "{output:?}");
+            let value = json(&output);
+            assert_eq!(value["error"]["code"], "not_attached");
+            assert!(
+                value["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("holds no NAILS marker"),
+                "{value:#}"
+            );
+        });
+    }
 }

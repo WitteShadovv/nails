@@ -13,7 +13,7 @@ default:
 # without dev-dependencies. Crates that only build for other platforms (wasm,
 # Windows, macOS) or only for tests and benchmarks never ship.
 
-shipped_graph := "--exclude-dev --target x86_64-unknown-linux-musl --target x86_64-unknown-linux-gnu"
+shipped_targets := "x86_64-unknown-linux-musl x86_64-unknown-linux-gnu"
 
 # --- Rust quality gate ---
 
@@ -109,12 +109,13 @@ coverage:
 
 # The tests that ask the kernel directly from an unprivileged user + mount
 # namespace (overlay mount ids and st_dev, live mountinfo, fdinfo, strictatime,
-# a real broken pipe, the mount contract and the rootless privileged_mounts
-# tests; see docs/testing-strategy.md). They run in `just test`
-# too, where a host without user namespaces skips them; here a skip fails.
+# a real broken pipe, the mount contract, the rootless privileged_mounts tests
+# and the CLI's write paths on a tmpfs hidden root; see
+# docs/testing-strategy.md). They run in `just test` too, where a host without
+# user namespaces skips them; here a skip fails.
 kernel-tests:
     NAILS_REQUIRE_USERNS=1 cargo nextest run --workspace --all-features --locked \
-        -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract) | binary(privileged_mounts)'
+        -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract) | binary(privileged_mounts) | binary(maintenance_cli)'
 
 # The pre-push gate: formatting, lints, file sizes and the test suite.
 check: fmt-check lint line-count test
@@ -125,8 +126,14 @@ ci-rust: fmt-check lint line-count coverage doctest
 # --- Dependency policy ---
 
 # Check the shipped dependency graph against deny.toml (the CI merge gate).
+# One run per target: cargo-deny 0.20 accepts `--target` only once (fixed
+# upstream after 0.20.2), and the targets' graphs together are the shipped one.
 deny *checks="advisories bans licenses sources":
-    cargo deny --locked {{ shipped_graph }} check {{ checks }}
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for target in {{ shipped_targets }}; do
+        cargo deny --locked --exclude-dev --target "$target" check {{ checks }}
+    done
 
 # Check every target and dev-dependency against deny.toml (weekly, never gates).
 deny-full *checks="advisories bans licenses sources":

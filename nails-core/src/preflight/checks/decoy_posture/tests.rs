@@ -17,13 +17,13 @@ fn root_mountinfo(fstype: &str, opts: &str) -> String {
 }
 
 #[test]
-fn clean_volatile_decoy_passes() {
+fn clean_decoy_on_a_disk_root_passes() {
     let fs = MockFilesystem::new();
     fs.mock_add_file(
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
 
     let check = DecoyPersistenceCheck::new(false, true);
     let result = check.run(&fs).unwrap();
@@ -37,7 +37,7 @@ fn sudo_io_logging_warns() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     fs.mock_add_file(
         "/etc/sudoers",
         "Defaults env_reset\nDefaults log_output\nDefaults logfile=/var/log/sudo.log\n",
@@ -56,7 +56,7 @@ fn persistent_journal_fails_closed() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=persistent\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
 
     let check = DecoyPersistenceCheck::new(false, true);
     let result = check.run(&fs).unwrap();
@@ -68,7 +68,7 @@ fn persistent_journal_fails_closed() {
 fn journald_auto_without_dir_passes() {
     let fs = MockFilesystem::new();
     fs.mock_add_file("/etc/systemd/journald.conf", "[Journal]\nStorage=auto\n");
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
 
     let check = DecoyPersistenceCheck::new(false, true);
     assert!(check.run(&fs).unwrap().is_pass());
@@ -79,7 +79,7 @@ fn journald_auto_with_disk_dir_fails() {
     let fs = MockFilesystem::new();
     fs.mock_add_file("/etc/systemd/journald.conf", "[Journal]\nStorage=auto\n");
     fs.mock_set_path_type("/var/log/journal", PathKind::Dir);
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
 
     let check = DecoyPersistenceCheck::new(false, true);
     assert!(check.run(&fs).unwrap().is_fail());
@@ -91,7 +91,7 @@ fn journald_auto_with_tmpfs_dir_passes() {
     fs.mock_add_file("/etc/systemd/journald.conf", "[Journal]\nStorage=auto\n");
     fs.mock_set_path_type("/var/log/journal", PathKind::Dir);
     fs.mock_set_filesystem_type(Path::new("/var/log/journal"), "tmpfs");
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
 
     let check = DecoyPersistenceCheck::new(false, true);
     assert!(check.run(&fs).unwrap().is_pass());
@@ -104,7 +104,7 @@ fn active_rsyslog_fails_closed() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     set_unit_active(&fs, "rsyslog.service");
 
     let check = DecoyPersistenceCheck::new(false, true);
@@ -121,7 +121,7 @@ fn a_syslog_service_named_syslog_fails_closed() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     set_unit_active(&fs, "syslog.service");
 
     let check = DecoyPersistenceCheck::new(false, true);
@@ -140,7 +140,7 @@ fn active_syslog_ng_fails_closed() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     set_unit_active(&fs, "syslog-ng.service");
 
     let check = DecoyPersistenceCheck::new(false, true);
@@ -154,7 +154,7 @@ fn active_auditd_fails_closed() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     set_unit_active(&fs, "auditd.service");
 
     let check = DecoyPersistenceCheck::new(false, true);
@@ -170,7 +170,7 @@ fn override_turns_blocker_into_warning() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=persistent\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
 
     let check = DecoyPersistenceCheck::new(true, true);
     let result = check.run(&fs).unwrap();
@@ -178,18 +178,20 @@ fn override_turns_blocker_into_warning() {
 }
 
 #[test]
-fn persistent_root_fs_warns() {
-    let fs = MockFilesystem::new();
-    fs.mock_add_file(
-        "/etc/systemd/journald.conf",
-        "[Journal]\nStorage=volatile\n",
-    );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+fn a_disk_root_alone_does_not_warn() {
+    // decoy-root accepts only a root on a block device, so a disk root is the
+    // only kind a supported decoy has: its type is no finding.
+    for fstype in ["ext4", "xfs", "btrfs", "f2fs"] {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            "/etc/systemd/journald.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        fs.mock_add_file(MOUNTINFO, &root_mountinfo(fstype, "rw,relatime"));
 
-    let check = DecoyPersistenceCheck::new(false, true);
-    let result = check.run(&fs).unwrap();
-    assert!(result.is_warn(), "persistent root fs must warn: {result:?}");
-    assert!(result.message().contains("persistent"));
+        let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+        assert!(result.is_pass(), "{fstype}: {result:?}");
+    }
 }
 
 #[test]
@@ -199,8 +201,7 @@ fn strictatime_root_warns() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    // tmpfs root so only the atime finding fires.
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,strictatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,strictatime"));
 
     let check = DecoyPersistenceCheck::new(false, true);
     let result = check.run(&fs).unwrap();
@@ -215,7 +216,7 @@ fn core_pattern_disk_path_warns() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     fs.mock_add_file(CORE_PATTERN, "/var/crash/core.%e.%p\n");
 
     let check = DecoyPersistenceCheck::new(false, true);
@@ -224,44 +225,82 @@ fn core_pattern_disk_path_warns() {
     assert!(result.message().contains("core_pattern"));
 }
 
-#[test]
-fn coredump_external_warns() {
+/// A clean decoy on a disk root whose kernel pipes core dumps to
+/// systemd-coredump, with `coredump.conf` set to `text` (none when empty).
+fn coredump_decoy(text: &str) -> MockFilesystem {
     let fs = MockFilesystem::new();
     fs.mock_add_file(
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     fs.mock_add_file(
         CORE_PATTERN,
-        "|/run/current-system/sw/lib/systemd/systemd-coredump %P\n",
+        "|/run/current-system/sw/lib/systemd/systemd-coredump %P %u %g %s %t %c %h %d\n",
     );
-    fs.mock_add_file(
-        "/etc/systemd/coredump.conf",
-        "[Coredump]\nStorage=external\n",
-    );
-
-    let check = DecoyPersistenceCheck::new(false, true);
-    let result = check.run(&fs).unwrap();
-    assert!(result.is_warn());
-    assert!(result.message().contains("coredump") || result.message().contains("systemd-coredump"));
+    if !text.is_empty() {
+        fs.mock_add_file("/etc/systemd/coredump.conf", text);
+    }
+    fs
 }
 
 #[test]
-fn coredump_none_does_not_warn_on_that_axis() {
-    let external = |text: &str| {
-        let mut assignments = Vec::new();
-        let _ = systemd_conf::parse_section(text, "Coredump", &mut assignments);
-        coredump_external_from(&assignments)
-    };
-    assert!(!external("[Coredump]\nStorage=none\n"));
-    assert!(!external("[Coredump]\nStorage=journal\n"));
-    assert!(external("[Coredump]\nStorage=external\n"));
-    // Unset defaults to external; outside [Coredump] nothing counts.
-    assert!(external("[Coredump]\n"));
-    assert!(external("Storage=none\n"));
-    // Last assignment wins.
-    assert!(!external("[Coredump]\nStorage=external\nStorage=none\n"));
+fn coredump_with_storage_none_and_no_processing_passes() {
+    let fs = coredump_decoy("[Coredump]\nStorage=none\nProcessSizeMax=0\n");
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_pass(), "{result:?}");
+}
+
+#[test]
+fn coredump_with_storage_none_alone_still_warns_and_names_process_size_max() {
+    let fs = coredump_decoy("[Coredump]\nStorage=none\n");
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    let message = result.message();
+    assert_eq!(message.matches("systemd-coredump").count(), 1, "{message}");
+    assert!(message.contains("ProcessSizeMax"), "{message}");
+    assert!(message.contains("/var/lib/systemd/coredump"), "{message}");
+}
+
+#[test]
+fn coredump_external_warns_once() {
+    let fs = coredump_decoy("[Coredump]\nStorage=external\n");
+    let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    let message = result.message();
+    assert_eq!(message.matches("systemd-coredump").count(), 1, "{message}");
+    assert!(message.contains("Storage=external"), "{message}");
+    assert!(
+        message.contains("/etc/systemd/coredump.conf.d/"),
+        "outside NixOS the fix is a drop-in: {message}"
+    );
+}
+
+#[test]
+fn coredump_without_any_configuration_takes_the_defaults_and_warns() {
+    // The pipe shows systemd-coredump is installed; with no coredump.conf at
+    // all it keeps every core (Storage=external by default).
+    let fs = coredump_decoy("");
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert!(
+        result
+            .message()
+            .contains("systemd.coredump.settings.Coredump"),
+        "on NixOS the fix is the option: {result:?}"
+    );
+}
+
+#[test]
+fn coredump_settings_count_only_while_the_kernel_pipes_to_it() {
+    // A coredump.conf left behind while the kernel pipes elsewhere, or the
+    // pattern is the plain `core`, raises nothing about systemd-coredump.
+    for pattern in ["|/bin/false\n", "core\n"] {
+        let fs = coredump_decoy("[Coredump]\nStorage=external\n");
+        fs.mock_add_file(CORE_PATTERN, pattern);
+        let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+        assert!(result.is_pass(), "{pattern:?}: {result:?}");
+    }
 }
 
 fn write(root: &Path, rel: &str, content: &str) {
@@ -271,28 +310,32 @@ fn write(root: &Path, rel: &str, content: &str) {
 }
 
 #[test]
-fn coredump_drop_in_overrides_the_main_file() {
+fn coredump_drop_ins_override_the_main_file() {
+    use super::coredump::CoredumpSettings;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     assert!(
-        !coredump_storage_external(&RealFilesystem, root),
-        "not installed"
+        !CoredumpSettings::read(&RealFilesystem, root).keeps_cores_off_disk(),
+        "the defaults keep cores"
     );
     write(
         root,
         "usr/lib/systemd/coredump.conf",
-        "[Coredump]\n#Storage=external\n",
-    );
-    assert!(
-        coredump_storage_external(&RealFilesystem, root),
-        "default external"
+        "[Coredump]\n#Storage=external\n#ProcessSizeMax=32G\n",
     );
     write(
         root,
-        "etc/systemd/coredump.conf.d/50-none.conf",
-        "[Coredump]\nStorage=none\n",
+        "etc/systemd/coredump.conf.d/50-discard.conf",
+        "[Coredump]\nStorage=none\nProcessSizeMax=0\n",
     );
-    assert!(!coredump_storage_external(&RealFilesystem, root));
+    assert!(CoredumpSettings::read(&RealFilesystem, root).keeps_cores_off_disk());
+    // A later drop-in that turns processing back on wins again.
+    write(
+        root,
+        "etc/systemd/coredump.conf.d/60-size.conf",
+        "[Coredump]\nProcessSizeMax=2G\n",
+    );
+    assert!(!CoredumpSettings::read(&RealFilesystem, root).keeps_cores_off_disk());
 }
 
 #[test]
@@ -350,7 +393,7 @@ fn pstore_records_warn() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     fs.mock_set_directory_contents(
         Path::new(PSTORE_DIR),
         vec![std::path::PathBuf::from(format!(
@@ -371,7 +414,7 @@ fn kdump_armed_warns() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     fs.mock_add_file(KEXEC_CRASH_LOADED, "1\n");
 
     let check = DecoyPersistenceCheck::new(false, true);
@@ -387,7 +430,7 @@ fn nixos_upgrade_timer_warns_only_on_nixos() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     fs.mock_set_path_exists(NIXOS_UPGRADE_TIMER, true);
 
     // On NixOS the timer warns.
@@ -438,7 +481,7 @@ fn decoy_is_persistent_tracks_blockers_and_writes_nothing() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    volatile.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    volatile.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     let before = volatile.mock_ops().len();
     assert!(!DecoyPersistenceCheck::decoy_is_persistent(&volatile));
     assert_eq!(
@@ -453,7 +496,7 @@ fn decoy_is_persistent_tracks_blockers_and_writes_nothing() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=persistent\n",
     );
-    persistent.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    persistent.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     assert!(DecoyPersistenceCheck::decoy_is_persistent(&persistent));
 
     // Active auditd alone is enough to count as a persistent decoy.
@@ -462,7 +505,7 @@ fn decoy_is_persistent_tracks_blockers_and_writes_nothing() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    auditd.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    auditd.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     set_unit_active(&auditd, "auditd.service");
     assert!(DecoyPersistenceCheck::decoy_is_persistent(&auditd));
 }
@@ -474,7 +517,7 @@ fn a_unit_with_a_populated_cgroup_counts_as_active_without_a_marker() {
         "/etc/systemd/journald.conf",
         "[Journal]\nStorage=volatile\n",
     );
-    fs.mock_add_file(MOUNTINFO, &root_mountinfo("tmpfs", "rw,noatime"));
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
     fs.mock_add_file(
         "/sys/fs/cgroup/system.slice/auditd.service/cgroup.events",
         "populated 1\nfrozen 0\n",

@@ -34,6 +34,40 @@ impl MockFilesystem {
             .insert(path.to_path_buf());
     }
 
+    /// Make `mountinfo` (lines in `/proc/self/mountinfo` form) the mount table.
+    ///
+    /// From then on [`mount_table`](crate::Filesystem::mount_table) returns it
+    /// and every mount query answers from it for the visible mount, as the real
+    /// filesystem does: a mount stacked on another wins, one covered by a later
+    /// mount on its parent is not mounted. The source names a device-mapper
+    /// device only as `/dev/mapper/<name>`, and no label is known.
+    ///
+    /// Without a table the mock has two views that can disagree. The queries
+    /// answer from what a test set for each path
+    /// ([`mock_set_mounted`](Self::mock_set_mounted),
+    /// [`mock_set_filesystem_type`](Self::mock_set_filesystem_type), …), with
+    /// no stacking, while `mount_table` renders `/` plus every mounted path and
+    /// fills in `ext4` and a `/dev/mock<N>` source where the test set none. So
+    /// the rendered table lists `/` while `is_mounted("/")` is false unless a
+    /// test marked it. A test of code that reads the table and a query
+    /// together sets a table here.
+    pub fn mock_set_mount_table(&self, mountinfo: &str) {
+        *self
+            .mount_table
+            .lock()
+            .expect("MockFilesystem mutex poisoned") = Some(mountinfo.to_string());
+    }
+
+    /// Make [`mount_table`](crate::Filesystem::mount_table) fail with
+    /// `message`, as a mount table that cannot be read does. The other mount
+    /// queries are unaffected.
+    pub fn mock_set_mount_table_error(&self, message: &str) {
+        *self
+            .mount_table_error
+            .lock()
+            .expect("MockFilesystem mutex poisoned") = Some(message.to_string());
+    }
+
     /// Set whether a path is mounted.
     pub fn mock_set_mounted(&self, path: &Path, mounted: bool) {
         let mut mounts = self.mounted.lock().expect("MockFilesystem mutex poisoned");
@@ -168,15 +202,25 @@ impl MockFilesystem {
     /// Set the device id reported for a path by
     /// [`Filesystem::device_id`](crate::Filesystem::device_id).
     ///
-    /// Map a path onto the same id as `/` to make the attach gate treat it as an
-    /// unmounted mount point; give it a distinct id to simulate a mounted hidden
-    /// volume. Unset paths already report distinct ids, so only the "shares a
-    /// device with /" case needs an explicit call.
+    /// Unset paths report distinct ids. The attach gate needs a mount at the
+    /// hidden root ([`mock_set_mounted`](Self::mock_set_mounted) or an explicit
+    /// table); mapping that root onto `/`'s id makes it a mount of `/`'s own
+    /// filesystem, which the gate's backstop refuses.
     pub fn mock_set_device_id(&self, path: &Path, device_id: u64) {
         self.device_ids
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .insert(path.to_path_buf(), device_id);
+    }
+
+    /// Set the device of the file the loop device `node` is bound to, as
+    /// [`Filesystem::loop_backing_device`](crate::Filesystem::loop_backing_device)
+    /// reports it. Unset, the node cannot be read, as without root.
+    pub fn mock_set_loop_backing_device(&self, node: &Path, device_id: u64) {
+        self.loop_backing_devices
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .insert(node.to_path_buf(), device_id);
     }
 
     /// Set whether copy_tree should fail for a source path

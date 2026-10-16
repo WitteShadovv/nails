@@ -40,5 +40,5 @@
 <tspan x="16" y="579">  -h, --help           Print help (see more with '--help')</tspan>
 <tspan x="16" y="597">  -V, --version        Print version</tspan>
 </text>
-<text x="2" y="638" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real output of `nails -h` from nails 0.2.0, built from this repository with `cargo build -p nails-cli`.</text>
+<text x="2" y="638" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real output of `nails -h`, built from this repository with `cargo build -p nails-cli`.</text>
 </svg>

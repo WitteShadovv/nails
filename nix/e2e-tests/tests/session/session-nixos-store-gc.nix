@@ -1,6 +1,6 @@
 # The hidden NixOS system survives a decoy garbage collection and rebuild
-# between two sessions (T-137, ADR 0008 §3), and the hidden sessions leave the
-# decoy store unchanged.
+# between two sessions, and the hidden sessions leave the decoy store
+# unchanged.
 #
 # The hidden store is an overlay over the decoy's: a path the hidden closure
 # shares with the decoy is read from the lower, and the hidden store database
@@ -63,9 +63,6 @@ in
         nailsTest.hiddenSystem = hidden.config.system.build.toplevel;
         virtualisation = {
           additionalPaths = [ hidden.config.system.build.toplevel ];
-          # Verifying the whole closure over the 9p store share needs large
-          # contiguous buffers; 2 GB fragments too much for that.
-          memorySize = lib.mkForce 4096;
           # The whole hidden closure is copied onto the hidden volume.
           emptyDiskImages = lib.mkForce [
             {

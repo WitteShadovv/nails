@@ -44,7 +44,7 @@ pub fn inject_import_block<F: Filesystem>(fs: &F) -> Result<()> {
     }
 
     if ensure_hardware_wrapper(fs, dir)? {
-        tracing::info!(
+        tracing::debug!(
             "inject_import_block: staged hardware-configuration wrapper under {}",
             dir.display()
         );

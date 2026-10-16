@@ -29,7 +29,7 @@ def only(*names: str) -> dict[str, bool]:
 
 class SelectTest(unittest.TestCase):
     def test_documentation_runs_the_docs_check(self) -> None:
-        paths = ["README.md", "CHANGELOG.md", "TODO.md", "docs/ci.md", "LICENSE"]
+        paths = ["README.md", "CHANGELOG.md", "ROADMAP.md", "docs/ci.md", "LICENSE"]
         self.assertEqual(changes.select(paths), only("docs"))
 
     def test_no_change_runs_nothing(self) -> None:

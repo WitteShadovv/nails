@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Early dispatch, before clap, the configuration, the environment snapshot and
-//! tracing exist (ADR 0007, ADR 0008).
+//! tracing exist: these paths must act even when the hidden volume has failed
+//! or the configuration cannot be read.
 //!
 //! `main` calls [`dispatch`] first. Two command lines are handled here:
 //!

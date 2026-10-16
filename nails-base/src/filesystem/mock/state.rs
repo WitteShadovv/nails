@@ -60,6 +60,17 @@ pub enum MockOp {
     OverwriteInPlace {
         path: PathBuf,
     },
+    /// A write probe (`is_writable`). The real filesystem creates and deletes
+    /// a file to answer it, which changes the directory's timestamps, so tests
+    /// assert where it must not run.
+    WritableProbe {
+        path: PathBuf,
+    },
+    /// A symlink probe (`supports_symlinks`), which on the real filesystem
+    /// creates and deletes a symlink in `dir`.
+    SymlinkProbe {
+        dir: PathBuf,
+    },
 }
 
 /// Mock filesystem for testing (no root privileges required)
@@ -84,6 +95,17 @@ pub enum MockOp {
 #[derive(Debug, Clone)]
 pub struct MockFilesystem {
     pub(super) mounted: Arc<Mutex<HashSet<PathBuf>>>,
+    /// An explicit mount table in mountinfo form, set with
+    /// [`mock_set_mount_table`](Self::mock_set_mount_table). When set, it is
+    /// the mount table and every mount query answers from it; when unset, the
+    /// table is rendered from `mounted` and the queries read their own maps.
+    pub(super) mount_table: Arc<Mutex<Option<String>>>,
+    /// When set, [`mount_table`](crate::Filesystem::mount_table) fails with
+    /// this message, standing in for an unreadable `/proc/self/mountinfo`.
+    pub(super) mount_table_error: Arc<Mutex<Option<String>>>,
+    /// When set, no block device is rendered in `/sys/class/block` (see
+    /// [`mock_hide_block_devices`](Self::mock_hide_block_devices)).
+    pub(super) block_devices_hidden: Arc<Mutex<bool>>,
     /// Mounts [`Filesystem::is_mount_read_only`](crate::Filesystem::is_mount_read_only) reports read-only.
     pub(super) read_only_mounts: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) paths: Arc<Mutex<HashMap<PathBuf, PathInfo>>>,
@@ -110,6 +132,10 @@ pub struct MockFilesystem {
     /// and only reads as unattached when a test maps it onto `/`'s id with
     /// [`mock_set_device_id`](Self::mock_set_device_id).
     pub(super) device_ids: Arc<Mutex<HashMap<PathBuf, u64>>>,
+    /// Backing-file devices reported by
+    /// [`Filesystem::loop_backing_device`](crate::Filesystem::loop_backing_device),
+    /// keyed by loop device node. An unset node cannot be read.
+    pub(super) loop_backing_devices: Arc<Mutex<HashMap<PathBuf, u64>>>,
     pub(super) written_files: Arc<Mutex<HashMap<PathBuf, String>>>,
     pub(super) remove_should_fail: Arc<Mutex<HashSet<PathBuf>>>,
     pub(super) directory_contents: Arc<Mutex<HashMap<PathBuf, Vec<PathBuf>>>>,
@@ -152,6 +178,9 @@ impl MockFilesystem {
     pub fn new() -> Self {
         Self {
             mounted: Arc::new(Mutex::new(HashSet::new())),
+            mount_table: Arc::new(Mutex::new(None)),
+            mount_table_error: Arc::new(Mutex::new(None)),
+            block_devices_hidden: Arc::new(Mutex::new(false)),
             read_only_mounts: Arc::new(Mutex::new(HashSet::new())),
             paths: Arc::new(Mutex::new(HashMap::new())),
             is_mounted_errors: Arc::new(Mutex::new(HashMap::new())),
@@ -161,6 +190,7 @@ impl MockFilesystem {
             files_with_pattern: Arc::new(Mutex::new(HashMap::new())),
             mount_sources: Arc::new(Mutex::new(HashMap::new())),
             device_ids: Arc::new(Mutex::new(HashMap::new())),
+            loop_backing_devices: Arc::new(Mutex::new(HashMap::new())),
             written_files: Arc::new(Mutex::new(HashMap::new())),
             remove_should_fail: Arc::new(Mutex::new(HashSet::new())),
             directory_contents: Arc::new(Mutex::new(HashMap::new())),
@@ -199,6 +229,18 @@ impl MockFilesystem {
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();
+        *self
+            .mount_table
+            .lock()
+            .expect("MockFilesystem mutex poisoned") = None;
+        *self
+            .mount_table_error
+            .lock()
+            .expect("MockFilesystem mutex poisoned") = None;
+        *self
+            .block_devices_hidden
+            .lock()
+            .expect("MockFilesystem mutex poisoned") = false;
         self.read_only_mounts
             .lock()
             .expect("MockFilesystem mutex poisoned")
@@ -216,6 +258,10 @@ impl MockFilesystem {
             .expect("MockFilesystem mutex poisoned")
             .clear();
         self.device_ids
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .clear();
+        self.loop_backing_devices
             .lock()
             .expect("MockFilesystem mutex poisoned")
             .clear();

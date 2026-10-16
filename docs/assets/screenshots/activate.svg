@@ -8,21 +8,21 @@
 <circle cx="50" cy="15.5" r="5" fill="#4b5561"/>
 <text x="407.5" y="20.0" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a96a3">nails activate (NixOS VM, decoy side)</text>
 <text font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" fill="#d5dde6" xml:space="preserve">
-<tspan x="16" y="57"><tspan fill="#9fb7d6">$ </tspan><tspan fill="#d5dde6" font-weight="bold">nails --config /mnt/data/config/nails.toml activate -y --overlay-only</tspan></tspan>
-<tspan x="16" y="75">Pre-activation decoy residue baseline: clean (3 findings) -&gt;</tspan>
-<tspan x="16" y="93">    /mnt/data/reports/activation-residue-2026-10-08T09-57-49-515000229-00-00.json</tspan>
-<tspan x="16" y="111">Preparing the hidden session (pre-flight, hidden system, next root)...</tspan>
-<tspan x="16" y="129"><tspan fill="#7ec699" font-weight="bold">[PASS]</tspan> Hidden session prepared in 2.6s</tspan>
-<tspan x="16" y="147">  Hidden system: /nix/store/bcg6mz0dzwry6zw7l3ramqpliww7f82y-nixos-system-machine-test</tspan>
-<tspan x="16" y="165">  /nix/.ro-store: overlaid</tspan>
-<tspan x="16" y="183">  /nix/store: overlaid</tspan>
-<tspan x="16" y="201">  /tmp/shared: overlaid</tspan>
-<tspan x="16" y="219">  /tmp/xchg: overlaid</tspan>
-<tspan x="16" y="237"></tspan>
-<tspan x="16" y="255">Soft-rebooting into the hidden session now: every program closes and you are logged out. Log in at</tspan>
-<tspan x="16" y="273">    the hidden session's login screen.</tspan>
+<tspan x="16" y="57"><tspan fill="#9fb7d6">$ </tspan><tspan fill="#d5dde6" font-weight="bold">sudo /mnt/data/nails activate -y --overlay-only</tspan></tspan>
+<tspan x="16" y="75">Pre-activation decoy residue baseline: no known residue -&gt;</tspan>
+<tspan x="16" y="93">    /mnt/data/reports/activation-residue-2026-10-16T07-09-08-355362622-00-00.json</tspan>
+<tspan x="16" y="111">Preparing the hidden session (pre-flight, next root)...</tspan>
+<tspan x="16" y="129"><tspan fill="#7ec699" font-weight="bold">[PASS]</tspan> Hidden session prepared in 0.4s</tspan>
+<tspan x="16" y="147">  /nix/.ro-store: overlaid</tspan>
+<tspan x="16" y="165">  /nix/store: overlaid</tspan>
+<tspan x="16" y="183">  /tmp/shared: overlaid</tspan>
+<tspan x="16" y="201">  /tmp/xchg: overlaid</tspan>
+<tspan x="16" y="219"></tspan>
+<tspan x="16" y="237">Soft-rebooting into the hidden session now: every program closes and you are logged out. Log in at</tspan>
+<tspan x="16" y="255">    the hidden session's login screen (a display manager set to log an account in automatically logs</tspan>
+<tspan x="16" y="273">    it in again, as at boot).</tspan>
 </text>
-<text x="2" y="314" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real output captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-08.</text>
-<text x="2" y="331" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">The INFO/WARN log lines that interleave on standard error (one per pre-flight check) are left out; nothing else</text>
-<text x="2" y="348" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">is changed. The soft-reboot follows the last line.</text>
+<text x="2" y="314" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real output captured from the session-readme-captures NixOS VM test (nix build .#e2e.session-readme-captures),</text>
+<text x="2" y="331" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">2026-10-16, standard output and standard error together, as the test records them. -y skips the confirmation</text>
+<text x="2" y="348" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">prompt. The soft-reboot follows the last line.</text>
 </svg>

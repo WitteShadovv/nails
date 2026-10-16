@@ -4,6 +4,7 @@
 //! Filesystem trait definition and helper functions
 
 use crate::Result;
+use crate::filesystem::MountEntry;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
 
@@ -104,11 +105,29 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     // ------------------------------------------------------------------------
     // Mount Queries
     // ------------------------------------------------------------------------
+    //
+    // Every query answers for the mount a lookup of the path reaches (see
+    // `nails_teardown::mountinfo::top_mount_at`): the last of several mounts
+    // stacked on one point, and no mount at all where a later mount on a
+    // parent directory covers the path.
+    //
+    // `MockFilesystem` answers so only from an explicit table
+    // (`mock_set_mount_table`). Without one, each query reads what a test set
+    // for that path, while `mount_table` renders `/` and every mounted path
+    // with defaults for what the test left unset, so the two can disagree: the
+    // rendered table lists `/`, which `is_mounted` denies unless a test marked
+    // it. A test of code that reads the table and a query together sets a
+    // table.
 
-    /// Check if a path is currently mounted.
+    /// The mount table of this process's mount namespace, in the order
+    /// `/proc/self/mountinfo` lists it.
+    fn mount_table(&self) -> Result<Vec<MountEntry>>;
+
+    /// Whether a mount is visible at `target`.
     fn is_mounted(&self, target: &Path) -> Result<bool>;
 
-    /// Get the filesystem type at a mount point. Returns `None` if not a mount point.
+    /// The filesystem type of the mount visible at `target`; `None` when
+    /// `target` is not a mount point.
     fn get_filesystem_type(&self, target: &Path) -> Result<Option<String>>;
 
     /// Whether the mount visible at `target` is mounted read-only.
@@ -125,7 +144,7 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     }
 
     /// Identify the device, device-mapper name and filesystem label backing the
-    /// mount at `mount_point`.
+    /// mount visible at `mount_point`.
     ///
     /// Returns `Ok(None)` when `mount_point` is not itself a mount point. This is
     /// a read-only query used to warn about names that hint at hidden storage; a
@@ -146,11 +165,20 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// The id of the device that holds `path` (the `st_dev` of its inode).
     ///
     /// Two paths share a device id only when they sit on the same mounted
-    /// filesystem, so comparing a candidate hidden root against `/` tells the
-    /// attach gate ([`crate::hidden_root::HiddenRoot::verify_attached`]) whether
-    /// anything is actually mounted at that path: an unmounted mount point still
-    /// reports its parent's device, a mounted volume reports its own.
+    /// filesystem. The attach gate ([`crate::hidden_root::HiddenRoot::assess`])
+    /// compares the hidden root against `/` as a backstop, after the mount
+    /// table has shown a volume mounted there.
     fn device_id(&self, path: &Path) -> Result<u64>;
+
+    /// The device (`st_dev`) of the file the loop device `node` is bound to,
+    /// as the loop driver recorded it when the file was attached
+    /// (`LOOP_GET_STATUS64`'s `lo_device`).
+    ///
+    /// The path in `loop/backing_file` is only a name: a filesystem mounted
+    /// over a folder on that path later leads a lookup elsewhere. The device
+    /// is what the file is really on. Reading it opens the device node, which
+    /// most systems let only root and the `disk` group do.
+    fn loop_backing_device(&self, node: &Path) -> Result<u64>;
 
     /// Check if a path is a symbolic link.
     fn is_symlink(&self, path: &Path) -> Result<bool>;

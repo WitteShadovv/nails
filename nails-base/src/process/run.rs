@@ -15,6 +15,8 @@
 //!   an error instead of stopping services or signalling host processes;
 //! - **what environment it inherits**: the child starts from a *cleared*
 //!   environment (see [below](#environment)), never the caller's;
+//! - **which account it runs as**: nails' own, unless the command names an
+//!   unprivileged account with [`ProcessCommand::run_as`];
 //! - **how the child starts**: stdin is closed and stdout/stderr are captured;
 //! - **how long it may run**: a command may carry a [deadline](ProcessCommand::deadline).
 //!
@@ -137,11 +139,9 @@ pub enum Program {
     ///
     /// Used where resolving from the caller's `PATH` is correct rather than a
     /// hijack risk: the Nix toolchain (`nix`, `nixos-rebuild`), whose VM tests
-    /// substitute stub builds by prepending a directory to `PATH`, and the
-    /// login-time `notify-send` dispatch, which runs in the operator's own login
-    /// session (so their `PATH` is theirs to choose). The backend watcher's
-    /// immediate alert runs as root from a system unit instead and resolves
-    /// `notify-send` as a [`Program::Tool`].
+    /// substitute stub builds by prepending a directory to `PATH`. The desktop
+    /// alerts, started by root (the watcher's system unit, or a command run
+    /// with sudo), resolve `notify-send` and `busctl` as a [`Program::Tool`].
     CallerPath(&'static str),
     /// An exact executable, such as a system generation's
     /// `switch-to-configuration` script.
@@ -167,6 +167,7 @@ pub struct ProcessCommand {
     search_path: Option<OsString>,
     allowed_in_test_runtime: bool,
     timeout: Option<Duration>,
+    account: Option<Account>,
 }
 
 impl ProcessCommand {
@@ -180,6 +181,7 @@ impl ProcessCommand {
             search_path: None,
             allowed_in_test_runtime: false,
             timeout: None,
+            account: None,
         }
     }
 
@@ -232,10 +234,11 @@ impl ProcessCommand {
     ///
     /// Unlike [`allow_env`](Self::allow_env), which passes a variable through
     /// from the caller only when it holds it, this writes a value the call site
-    /// computed. It exists for the one case where a root command must reach a
-    /// *different* account's session: `notify-send`, which needs
+    /// computed. It exists for the one case where a command must reach a
+    /// *different* account's session: a desktop alert, which needs
     /// `XDG_RUNTIME_DIR`, `DBUS_SESSION_BUS_ADDRESS` and the display variables
-    /// pointed at the operator's session rather than root's. The value is applied
+    /// pointed at the operator's session rather than root's (and runs as the
+    /// operator, see [`run_as`](Self::run_as)). The value is applied
     /// on top of the cleared, allowlisted environment (see the
     /// [module docs](self#environment)) and cannot override the fixed `PATH`,
     /// which is always set last.
@@ -278,6 +281,24 @@ impl ProcessCommand {
     pub fn deadline(mut self, budget: Duration) -> Self {
         self.timeout = Some(budget);
         self
+    }
+
+    /// Runs the child as the account `uid` with the primary group `gid` and no
+    /// supplementary groups.
+    ///
+    /// The real runner drops the child to it after the fork and before `exec`
+    /// (see [`Account`]); a drop that fails stops the start, so the program
+    /// never runs with nails' own privilege instead. Use it for a command that
+    /// acts in the operator's session: a session bus admits only the account
+    /// that owns it.
+    pub fn run_as(mut self, uid: u32, gid: u32) -> Self {
+        self.account = Some(Account { uid, gid });
+        self
+    }
+
+    /// The account the child runs as, `None` when it keeps nails' own.
+    pub fn account(&self) -> Option<Account> {
+        self.account
     }
 }
 
@@ -399,7 +420,8 @@ impl ProcessRunner for RealProcessRunner {
 }
 
 /// Builds the `std::process::Command` shared by both run modes: the resolved
-/// executable, the arguments, and the cleared, allowlisted environment.
+/// executable, the arguments, the cleared, allowlisted environment and, when
+/// the command names one, the account the child drops to.
 fn base_command(executable: &Path, command: &ProcessCommand) -> std::process::Command {
     let mut child = std::process::Command::new(executable);
     child.args(&command.args);
@@ -409,6 +431,11 @@ fn base_command(executable: &Path, command: &ProcessCommand) -> std::process::Co
         &crate::runtime_env::current().inherited,
     );
     reset_child_oom_score(&mut child);
+    // After the score reset: the hooks run in order, and the reset may need
+    // the privilege the drop gives up.
+    if let Some(account) = command.account {
+        account::drop_before_exec(&mut child, account);
+    }
     child
 }
 
@@ -461,7 +488,7 @@ fn apply_environment(
         }
     }
     // Explicit, call-site-computed values (e.g. the operator's session bus for
-    // `notify-send`) override anything the allowlist let through.
+    // a desktop alert) override anything the allowlist let through.
     for (key, value) in &command.session_env {
         child.env(key, value);
     }
@@ -504,10 +531,15 @@ fn run_with_deadline(
     command: &ProcessCommand,
     budget: Duration,
 ) -> Result<Output> {
-    let mut child = base_command(executable, command)
-        // Own process group so the deadline tears down the whole tree, not just
-        // the immediate child.
-        .process_group(0)
+    let mut child = base_command(executable, command);
+    // Own process group so the deadline tears down the whole tree, not just
+    // the immediate child. A child that drops to another account starts a
+    // session of its own instead (see `account`), which is a new process
+    // group too; a group leader could not.
+    if command.account.is_none() {
+        child.process_group(0);
+    }
+    let mut child = child
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -717,10 +749,10 @@ fn collect(handle: JoinHandle<Vec<u8>>) -> Vec<u8> {
 
 /// Sends `SIGKILL` to the child's whole process group, then reaps the child.
 ///
-/// `child` was spawned with `process_group(0)`, so it leads a new group whose
-/// PGID equals its PID; signalling that group reaches every descendant that has
-/// not escaped it with its own `setsid`. A D-state descendant survives — no
-/// signal can remove one.
+/// `child` was spawned with `process_group(0)`, or started a session of its
+/// own, so it leads a new group whose PGID equals its PID; signalling that
+/// group reaches every descendant that has not escaped it with its own
+/// `setsid`. A D-state descendant survives — no signal can remove one.
 fn kill_group(child: &mut std::process::Child) {
     use nix::sys::signal::{Signal, killpg};
     use nix::unistd::Pid;
@@ -806,6 +838,9 @@ fn not_found(program: &str, message: String) -> NailsError {
         std::io::Error::new(std::io::ErrorKind::NotFound, message),
     )
 }
+
+mod account;
+pub use account::Account;
 
 #[cfg(test)]
 mod mock;

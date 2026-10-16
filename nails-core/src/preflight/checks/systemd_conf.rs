@@ -41,7 +41,11 @@
 //!   already read stay in effect.
 //!
 //! Files are read through [`Filesystem`], whose real implementation opens them
-//! with `O_NOATIME`, so the probe leaves no access-time trace on the decoy.
+//! with `O_NOATIME`, so the probe does not update the access time of a file it
+//! reads. The flag covers that file alone: on NixOS `/etc/systemd/NAME.conf` is
+//! a link into `/etc/static`, and a lookup that follows the links, an existence
+//! test as much as a read, can still update their access times
+//! ([`nails_teardown::noatime`]).
 
 use crate::Filesystem;
 use std::collections::BTreeMap;

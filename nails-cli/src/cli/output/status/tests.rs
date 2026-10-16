@@ -6,7 +6,7 @@ use super::json::status_envelope;
 use nails_core::SystemState;
 use nails_core::config::PersonaMode;
 use nails_core::output::Style;
-use nails_core::status::{PolicyMountView, Posture, StatusReport};
+use nails_core::status::{CoverView, PolicyMountView, Posture, StatusReport};
 use std::path::PathBuf;
 
 fn report(posture: Posture, session: &'static str) -> StatusReport {
@@ -24,6 +24,8 @@ fn report(posture: Posture, session: &'static str) -> StatusReport {
         hidden_root: PathBuf::from("/mnt/data"),
         hidden_root_mounted: true,
         hidden_root_source: None,
+        accepted_decoy_storage: None,
+        hidden_root_covered_by: None,
         policy_mounts: Vec::new(),
         masked_units: Vec::new(),
         nextroot_mounted: false,
@@ -47,7 +49,7 @@ fn an_active_session_lists_its_policy_mounts_and_system() {
         ascii: true,
         ..Style::default()
     };
-    let lines = status_lines(&active, false, style).join("\n");
+    let lines = status_lines(&active, false, style, &chrono::Utc).join("\n");
     assert!(lines.contains("[ACTIVE]"), "{lines}");
     assert!(lines.contains("/boot (read-only)"), "{lines}");
     assert!(lines.contains("dev-vda3.swap"), "{lines}");
@@ -56,11 +58,65 @@ fn an_active_session_lists_its_policy_mounts_and_system() {
 }
 
 #[test]
+fn a_cover_is_shown_in_both_forms() {
+    let mut active = report(Posture::Active, "hidden");
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert!(value["data"].get("hidden_root_covered_by").is_none());
+
+    active.hidden_root_covered_by = Some(CoverView {
+        source: "/dev/sdc1".into(),
+        mount_point: "/mnt/data".into(),
+    });
+    let lines = status_lines(&active, false, Style::default(), &chrono::Utc).join("\n");
+    assert!(
+        lines.contains(
+            "/dev/sdc1 is mounted over it: files saved there go to that disk \
+             (`sudo umount /mnt/data` takes it off)"
+        ),
+        "{lines}"
+    );
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert_eq!(value["data"]["hidden_root_covered_by"], "/dev/sdc1");
+    // The committed schema the contract tests share admits it.
+    let schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../docs/schemas/status.schema.json"
+    ))
+    .unwrap();
+    let validator = jsonschema::validator_for(&schema).expect("the schema compiles");
+    let errors: Vec<String> = validator
+        .iter_errors(&value)
+        .map(|e| e.to_string())
+        .collect();
+    assert!(errors.is_empty(), "{errors:#?}\n{value:#}");
+}
+
+#[test]
+fn an_accepted_override_is_shown_in_both_forms() {
+    let mut active = report(Posture::Active, "hidden");
+    let lines = status_lines(&active, false, Style::default(), &chrono::Utc).join("\n");
+    assert!(!lines.contains("--allow-decoy-storage"), "{lines}");
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert!(value["data"].get("accepted_decoy_storage").is_none());
+
+    let reason = "/mnt is not a volume of its own: it is a bind mount of a folder of /srv";
+    active.accepted_decoy_storage = Some(reason.into());
+    let lines = status_lines(&active, false, Style::default(), &chrono::Utc).join("\n");
+    assert!(
+        lines.contains(&format!(
+            "--allow-decoy-storage: {reason}; everything written there lands on that storage"
+        )),
+        "{lines}"
+    );
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert_eq!(value["data"]["accepted_decoy_storage"], reason);
+}
+
+#[test]
 fn a_degraded_posture_shows_its_reason_and_remedy() {
     let mut degraded = report(Posture::Degraded, "interrupted");
     degraded.reason = Some("an interrupted activation left a populated /run/nextroot".into());
     degraded.remediation = Some("Run `nails recover` to remove them");
-    let lines = status_lines(&degraded, false, Style::default()).join("\n");
+    let lines = status_lines(&degraded, false, Style::default(), &chrono::Utc).join("\n");
     assert!(lines.contains("/run/nextroot"), "{lines}");
     assert!(lines.contains("nails recover"), "{lines}");
 }
@@ -80,6 +136,69 @@ fn the_json_envelope_carries_the_live_view_and_the_record() {
             .to_lowercase()
             .contains("overlay_verification")
     );
+}
+
+/// The report shows its times in the given zone with the offset, as the
+/// desktop clock does, and the activation time as `activate` printed it; the
+/// JSON keeps UTC.
+#[test]
+fn times_are_shown_in_the_local_zone_with_their_offset() {
+    use chrono::{FixedOffset, TimeZone, Utc};
+
+    let mut active = report(Posture::Active, "hidden");
+    let entered = Utc.with_ymd_and_hms(2026, 10, 14, 19, 41, 59).unwrap();
+    active.entered_at = Some(entered);
+    active.last_activation = Some(nails_core::LastActivation {
+        duration_ms: 10_960,
+        finished_at: entered,
+    });
+    let zone = FixedOffset::east_opt(2 * 3600).unwrap();
+
+    let lines = status_lines(&active, false, Style::default(), &zone).join("\n");
+
+    assert!(
+        lines.contains("Entered:            2026-10-14 21:41:59 +02:00"),
+        "{lines}"
+    );
+    assert!(
+        lines.contains("Last activation:    took 11.0s (finished 2026-10-14 21:41:59 +02:00)"),
+        "{lines}"
+    );
+    assert!(!lines.contains("UTC"), "{lines}");
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert_eq!(value["data"]["entered_at"], "2026-10-14T19:41:59+00:00");
+}
+
+/// An activation under a second shows its tenths, as `activate` printed it,
+/// never "took 0s".
+#[test]
+fn a_sub_second_activation_shows_its_tenths() {
+    use chrono::{TimeZone, Utc};
+
+    let mut decoy = report(Posture::Decoy, "decoy");
+    decoy.last_activation = Some(nails_core::LastActivation {
+        duration_ms: 640,
+        finished_at: Utc.with_ymd_and_hms(2026, 10, 14, 19, 41, 59).unwrap(),
+    });
+
+    let lines = status_lines(&decoy, false, plain(), &Utc).join("\n");
+
+    assert!(
+        lines.contains("Last activation:    took 0.6s (finished 2026-10-14 19:41:59 +00:00)"),
+        "{lines}"
+    );
+    assert!(!lines.contains("took 0s"), "{lines}");
+}
+
+/// The log lines of `status --details` are in the same zone as the report.
+#[test]
+fn recent_logs_are_shown_in_the_given_zone() {
+    let dir = log_dir(&[log_line("2026-01-01T23:30:01Z", "INFO", "late")]);
+    let zone = chrono::FixedOffset::east_opt(2 * 3600).unwrap();
+
+    let lines = super::read_recent_logs(dir.path(), None, false, plain(), &zone).unwrap();
+
+    assert_eq!(lines, vec!["[01:30:01] INFO late".to_string()]);
 }
 
 /// Write `lines` as `nails.log` in a fresh log directory.
@@ -127,7 +246,7 @@ fn the_config_label_notes_a_missing_file_and_names_a_present_one() {
 fn recent_logs_are_none_without_a_log_file() {
     let dir = tempfile::tempdir().unwrap();
     assert_eq!(
-        super::read_recent_logs(dir.path(), None, false, plain()),
+        super::read_recent_logs(dir.path(), None, false, plain(), &chrono::Utc),
         None
     );
 }
@@ -147,7 +266,8 @@ fn recent_logs_skip_entries_before_the_activation_and_debug_noise() {
         .unwrap()
         .with_timezone(&chrono::Utc);
 
-    let lines = super::read_recent_logs(dir.path(), Some(activated), false, plain()).unwrap();
+    let lines =
+        super::read_recent_logs(dir.path(), Some(activated), false, plain(), &chrono::Utc).unwrap();
 
     assert_eq!(
         lines,
@@ -166,7 +286,7 @@ fn recent_logs_keep_debug_and_trace_when_asked() {
         log_line("2026-01-01T10:00:04Z", "NOTICE", "unknown level"),
     ]);
 
-    let lines = super::read_recent_logs(dir.path(), None, true, plain()).unwrap();
+    let lines = super::read_recent_logs(dir.path(), None, true, plain(), &chrono::Utc).unwrap();
 
     assert_eq!(
         lines,
@@ -191,7 +311,7 @@ fn recent_logs_keep_only_the_newest_twenty_in_order() {
         .collect();
     let dir = log_dir(&lines);
 
-    let recent = super::read_recent_logs(dir.path(), None, false, plain()).unwrap();
+    let recent = super::read_recent_logs(dir.path(), None, false, plain(), &chrono::Utc).unwrap();
 
     assert_eq!(recent.len(), super::RECENT_LOG_LIMIT);
     assert_eq!(recent.first().unwrap(), "[10:00:05] INFO entry 5");
@@ -211,7 +331,7 @@ fn recent_logs_fall_back_to_a_top_level_message_and_paint_levels() {
         ascii: false,
     };
 
-    let lines = super::read_recent_logs(dir.path(), None, false, style).unwrap();
+    let lines = super::read_recent_logs(dir.path(), None, false, style, &chrono::Utc).unwrap();
 
     assert_eq!(
         lines,
@@ -231,8 +351,8 @@ fn recent_logs_fold_a_unicode_mark_to_ascii_in_ascii_mode() {
         ascii: true,
     };
 
-    let folded = super::read_recent_logs(dir.path(), None, false, ascii).unwrap();
-    let kept = super::read_recent_logs(dir.path(), None, false, plain()).unwrap();
+    let folded = super::read_recent_logs(dir.path(), None, false, ascii, &chrono::Utc).unwrap();
+    let kept = super::read_recent_logs(dir.path(), None, false, plain(), &chrono::Utc).unwrap();
 
     assert_eq!(folded, vec!["[10:00:01] INFO [PASS] Activation complete"]);
     assert_eq!(kept, vec!["[10:00:01] INFO \u{2713} Activation complete"]);
@@ -242,7 +362,7 @@ fn recent_logs_fold_a_unicode_mark_to_ascii_in_ascii_mode() {
 fn recent_logs_are_none_when_nothing_matches() {
     let dir = log_dir(&[log_line("2026-01-01T10:00:02Z", "DEBUG", "probe detail")]);
     assert_eq!(
-        super::read_recent_logs(dir.path(), None, false, plain()),
+        super::read_recent_logs(dir.path(), None, false, plain(), &chrono::Utc),
         None
     );
 }

@@ -115,7 +115,7 @@ pub fn session_disk_mounts(
     found
 }
 
-/// Unmount the disks mounted during the session before the way back (T-143),
+/// Unmount the disks mounted during the session before the way back,
 /// so a filesystem the decoy mounts again is not still held, read-only, by the
 /// hidden session. A busy mount is detached instead; the soft-reboot ends its
 /// users.

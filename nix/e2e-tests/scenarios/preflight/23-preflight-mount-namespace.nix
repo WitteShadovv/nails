@@ -38,9 +38,11 @@ in
 
         with subtest("activation in a private mount namespace is refused before mounting"):
             # A real ext4 hidden volume so the namespace check is the decisive
-            # failure rather than an unrelated storage check.
+            # failure rather than an unrelated storage check. Its image lives on
+            # the /run tmpfs: an image file on the decoy's own disk is refused by
+            # the attach gate before any check runs.
             machine.succeed(
-                    "bash -lc 'truncate -s 128M /tmp/hidden.img && mkfs.ext4 -q /tmp/hidden.img && mkdir -p /mnt/data && mount -o loop /tmp/hidden.img /mnt/data'"
+                    "bash -lc 'truncate -s 128M /run/hidden.img && mkfs.ext4 -q /run/hidden.img && mkdir -p /mnt/data && mount -o loop /run/hidden.img /mnt/data'"
                 )
             write_hidden_config("/tmp/preflight-mount-namespace.toml")
 

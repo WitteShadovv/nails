@@ -1,6 +1,6 @@
 # Test 82: The decoy-persistence pre-flight refuses a persistent-log decoy
 #
-# T-094. A decoy that keeps a persistent journal, or runs rsyslog or auditd,
+# A decoy that keeps a persistent journal, or runs rsyslog or auditd,
 # records on its own disk what it logs while it shuts down for the soft-reboot
 # into the hidden session and while it starts again on the way back, so
 # activation must fail closed unless the operator explicitly accepts the risk.
@@ -34,7 +34,7 @@ in
       environment.systemPackages = [ self.packages.x86_64-linux.nails ];
       # vm-config models an amnesic decoy (volatile journald). Force a persistent
       # journal so the decoy-persistence check must fail closed.
-      services.journald.storage = lib.mkForce "persistent";
+      services.journald.settings.Journal.Storage = lib.mkForce "persistent";
       # Two more persistent log sinks the check must refuse.
       services.rsyslogd.enable = true;
       security.auditd.enable = true;

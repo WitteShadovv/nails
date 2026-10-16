@@ -19,11 +19,28 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
    to the release version, run `cargo update --workspace`, and commit `Cargo.toml` together with
    `Cargo.lock`. The release build runs cargo with `--locked` and fails on a stale `Cargo.lock`;
    `cargo metadata --locked` shows the same failure locally.
-2. **Write the changelog.** In `CHANGELOG.md`, rename `## [Unreleased]` to
+2. **Refresh the screenshots.** The README shows real output, rendered from the captures in
+   `docs/assets/screenshots/`, and nothing checks that a capture still matches what NAILS
+   prints. On the branch, with the version set, run
+   `nix build -L .#e2e.session-readme-captures` (a decoy set up as the docs recommend; the test
+   fails when `check` or `activate` prints a warning) and copy the `check`, `activate` and
+   `status --json` output of that one run, unedited, below the `---` line of `check.txt`,
+   `activate.txt` and `status-json.txt`. Replace the output in `help.txt` with what `nails -h`
+   prints from a build of the branch. Update the dates in the captions, run
+   `scripts/render-terminal-svg.py --all docs/assets/screenshots`, and commit the captures with
+   their SVGs. [docs/assets/README.md](docs/assets/README.md) has the details.
+3. **Write the changelog.** In `CHANGELOG.md`, rename `## [Unreleased]` to
    `## [X.Y.Z] - YYYY-MM-DD` and open a new, empty `## [Unreleased]` above it. That section
    becomes the release notes word for word, so write it for users.
-3. **Merge** the pull request into `main` once `gate` and `e2e-result` are green.
-4. **Tag** the merge commit with an annotated tag and push only that tag:
+4. **Merge** the pull request into `main` once `gate` and `e2e-result` are green.
+5. **Wait for the runs on `main`.** The push of the merge commit starts `ci.yml` and `e2e.yml`.
+   On `main`, `e2e.yml` runs the whole suite (mode `all`) on the runners the release run uses,
+   while the pull request's `e2e-result` may have covered only the affected tests. Tag only once
+   both runs are green: a test that fails there costs a fix on `main`, one that fails in the
+   release run costs the version, because a pushed tag is never re-created (see
+   [When something fails](#when-something-fails)). If the path filter skipped the E2E run, the
+   last E2E run on `main` must be green.
+6. **Tag** the merge commit with an annotated tag and push only that tag:
 
    ```bash
    git switch main && git pull --ff-only
@@ -32,17 +49,17 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
    ```
 
    A lightweight tag fails the first job.
-5. **Watch the run.** The first job fails within seconds when the tag, `Cargo.lock` or the
+7. **Watch the run.** The first job fails within seconds when the tag, `Cargo.lock` or the
    changelog section is wrong; the whole run takes about as long as the E2E suite. A failed run
    opens or comments on the `CI red: Release` issue.
-6. **Review the draft** on the Releases page: the notes, and the four assets (the archive,
-   `nails`, `checksums.txt`, `sbom.cdx.json`). Drafts are visible to maintainers only. Download
+8. **Review the draft** on the Releases page: the notes, and the five assets (the archive,
+   `nails`, `checksums.txt`, `sbom.cdx.json`, `musl.openvex.json`). Drafts are visible to maintainers only. Download
    `nails` and `checksums.txt` from the draft and follow
    [docs/verify-release.md](docs/verify-release.md).
-7. **Publish** the draft. Once published, a release, its assets and its tag never change. For a
+9. **Publish** the draft. Once published, a release, its assets and its tag never change. For a
    candidate, keep "Set as a pre-release"; the workflow ticks it for `-rc.N` versions.
-8. **Open the next cycle.** Bump `main` to the next `-dev` version (for example `0.3.1-dev` or
-   `0.4.0-dev`) with `Cargo.lock`, in a pull request of its own.
+10. **Open the next cycle.** Bump `main` to the next `-dev` version (for example `0.3.1-dev` or
+    `0.4.0-dev`) with `Cargo.lock`, in a pull request of its own.
 
 ## When something fails
 

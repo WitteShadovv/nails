@@ -7,8 +7,9 @@
 //! copy as a runtime unit of the hidden session (installed in `/run` by the
 //! entry transition) for the life of the session, polling the hidden backend
 //! and alerting the operator the moment it fails, alerting on every disk
-//! mounted read-write outside the hidden volume (`[session_mounts] alert`), and
-//! sweeping unused disks read-only when that is opted into. It is marked
+//! mounted read-write outside the hidden volume (`[session_mounts] alert`) and
+//! on every mount stacked on the hidden root, and sweeping unused disks
+//! read-only when that is opted into. It is marked
 //! `hide = true` so it never appears in help, and it keeps all of its state in the
 //! `/run` copy so it keeps working even after the hidden volume is gone.
 
@@ -82,14 +83,20 @@ pub fn execute(
     .ok()
     .filter(|plan| mounts_config.read_only && plan.read_only_disks);
     let sysfs = disk_guard::Sysfs::system();
-    let mut mount_watch = watcher::MountWatch::new(&manifest.hidden_root);
+    // The mount table names the root with its symlinks resolved.
+    let hidden_root = watcher::resolved_root(&filesystem, &manifest);
+    let mut mount_watch = watcher::MountWatch::new(&hidden_root);
+    let mut cover_watch = watcher::CoverWatch::new(&hidden_root, manifest.hidden_dev.as_deref());
     let is_block = |mount: &MountEntry| disk_guard::mount_device(mount).is_some();
 
+    let alert_env = env.clone();
     watcher::run_loop(
         &watch_config,
-        || !watch_config.enabled || watcher::probe_backend(&filesystem, &manifest),
-        || {
-            if let Err(e) = send_immediate(&backend_alert(), env) {
+        // A probe of a covered hidden root writes nothing and is no failure of
+        // the backend: it neither alerts as one nor leads to an emergency.
+        || !watch_config.enabled || !watcher::probe_backend(&filesystem, &manifest).is_failure(),
+        move || {
+            if let Err(e) = send_immediate(&backend_alert(), &alert_env) {
                 tracing::warn!(error = %e, "Could not deliver the backend-failure alert");
             }
         },
@@ -112,21 +119,76 @@ pub fn execute(
                     tracing::info!(devices = set.len(), "Unused disks set read-only");
                 }
             }
-            if mounts_config.alert {
-                for mount in mount_watch.observe(&mounts, &is_block) {
-                    tracing::warn!(
-                        mount_point = %mount.mount_point.display(),
-                        "A disk is mounted read-write"
-                    );
-                    if let Err(e) = send_immediate(&mount_alert(&mount), env) {
-                        tracing::warn!(error = %e, "Could not deliver the disk-mount alert");
-                    }
-                }
-            }
+            let alerts = tick_alerts(
+                &mounts,
+                &mut cover_watch,
+                &mut mount_watch,
+                mounts_config.alert,
+                &is_block,
+            );
+            let env = env.clone();
+            send_all_in_background(alerts, move |alert| send_immediate(alert, &env));
         },
     );
 
     ExitStatus::Ok
+}
+
+/// The alerts one round of the watch loop raises for the mount table
+/// `mounts`, each with the name the log gives it.
+///
+/// A mount stacked on the hidden root takes every file saved there from now
+/// on: the gate refuses NAILS' own writes, and the operator is told once per
+/// mount. Then, with `alert_mounts`, each disk newly mounted read-write
+/// outside the session; a cover on a parent of the root lies outside it, and
+/// its own alert already names it.
+fn tick_alerts(
+    mounts: &[MountEntry],
+    cover_watch: &mut watcher::CoverWatch,
+    mount_watch: &mut watcher::MountWatch,
+    alert_mounts: bool,
+    is_block: &dyn Fn(&MountEntry) -> bool,
+) -> Vec<(Notification, &'static str)> {
+    let mut alerts = Vec::new();
+    if let Some(cover) = cover_watch.observe(mounts) {
+        tracing::warn!(
+            mount_point = %cover.mount_point.display(),
+            "A disk is mounted over the folder in use"
+        );
+        alerts.push((cover_alert(&cover), "cover"));
+    }
+    if alert_mounts {
+        let cover = cover_watch.cover(mounts).map(|m| m.mount_id);
+        for mount in mount_watch
+            .observe(mounts, is_block)
+            .into_iter()
+            .filter(|m| Some(m.mount_id) != cover)
+        {
+            tracing::warn!(
+                mount_point = %mount.mount_point.display(),
+                "A disk is mounted read-write"
+            );
+            alerts.push((mount_alert(&mount), "disk-mount"));
+        }
+    }
+    alerts
+}
+
+/// Send each alert through `send` from a thread of its own
+/// ([`watcher::in_background`]), so the watch loop never waits for the
+/// notification daemon.
+fn send_all_in_background<S>(alerts: Vec<(Notification, &'static str)>, send: S)
+where
+    S: Fn(&Notification) -> nails_core::Result<()> + Clone + Send + 'static,
+{
+    for (alert, what) in alerts {
+        let send = send.clone();
+        watcher::in_background(move || {
+            if let Err(e) = send(&alert) {
+                tracing::warn!(error = %e, "Could not deliver the {what} alert");
+            }
+        });
+    }
 }
 
 /// The neutral desktop alert raised when a disk is mounted read-write during
@@ -138,6 +200,24 @@ fn mount_alert(mount: &MountEntry) -> Notification {
             "{} ({}) is mounted read-write. Files written there stay on that disk.",
             mount.mount_point.display(),
             mount.source.display()
+        ),
+        urgency: "critical".to_string(),
+        icon: Some("drive-removable-media".to_string()),
+        created_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+/// The neutral desktop alert raised when a disk is mounted over the hidden
+/// root, or over one of its parents: it names the disk and how to take it off
+/// again (at the root, the cover's mount point is the root).
+fn cover_alert(cover: &MountEntry) -> Notification {
+    let source = cover.source.display();
+    let root = cover.mount_point.display();
+    Notification {
+        title: "Disk mounted over a folder in use".to_string(),
+        body: format!(
+            "{source} is mounted over {root}, a folder in use. Files saved there now go to \
+             {source}. To undo it, run: sudo umount {root}"
         ),
         urgency: "critical".to_string(),
         icon: Some("drive-removable-media".to_string()),
@@ -173,6 +253,79 @@ mod tests {
         }
     }
 
+    fn mounts(table: &str) -> Vec<MountEntry> {
+        nails_teardown::mountinfo::parse_mountinfo(table)
+    }
+
+    fn block(mount: &MountEntry) -> bool {
+        mount.source.starts_with("/dev/")
+    }
+
+    const SESSION: &str = "1 0 0:30 / / rw - overlay overlay rw,upperdir=/u\n\
+                           2 1 253:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n";
+
+    #[test]
+    fn a_round_alerts_a_cover_first_then_each_new_read_write_disk_once() {
+        let mut cover_watch = watcher::CoverWatch::new(Path::new("/mnt/data"), Some("253:0"));
+        let mut mount_watch = watcher::MountWatch::new(Path::new("/mnt/data"));
+        let mut round = |table: &str, alert_mounts: bool| {
+            tick_alerts(
+                &mounts(table),
+                &mut cover_watch,
+                &mut mount_watch,
+                alert_mounts,
+                &block,
+            )
+            .into_iter()
+            .map(|(alert, what)| (alert.title, what))
+            .collect::<Vec<_>>()
+        };
+        assert!(round(SESSION, true).is_empty());
+        let usb = format!("{SESSION}3 1 8:33 / /media/usb rw - vfat /dev/sdc1 rw\n");
+        assert_eq!(
+            round(&usb, true),
+            [("Disk mounted with write access".to_string(), "disk-mount")]
+        );
+        assert!(round(&usb, true).is_empty(), "once per mount");
+        let covered = format!("{usb}4 2 8:34 / /mnt/data rw - ext4 /dev/sdc2 rw\n");
+        assert_eq!(
+            round(&covered, false),
+            [("Disk mounted over a folder in use".to_string(), "cover")]
+        );
+    }
+
+    /// A notification daemon that never answers holds up neither the round
+    /// nor the other alerts.
+    #[test]
+    fn an_alert_that_never_returns_holds_up_no_round() {
+        let (sent, received) = std::sync::mpsc::channel();
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(sent));
+        let (done, finished) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            send_all_in_background(
+                vec![(backend_alert(), "backend"), (backend_alert(), "backend")],
+                move |alert: &Notification| -> nails_core::Result<()> {
+                    let _ = sent.lock().map(|sent| sent.send(alert.title.clone()));
+                    loop {
+                        std::thread::park();
+                    }
+                },
+            );
+            let _ = done.send(());
+        });
+        let wait = std::time::Duration::from_secs(10);
+        assert!(
+            finished.recv_timeout(wait).is_ok(),
+            "the round waited for an alert"
+        );
+        for _ in 0..2 {
+            assert_eq!(
+                received.recv_timeout(wait).as_deref(),
+                Ok("Storage unavailable")
+            );
+        }
+    }
+
     #[test]
     fn the_backend_alert_reads_as_an_ordinary_storage_warning() {
         let alert = backend_alert();
@@ -185,6 +338,30 @@ mod tests {
         assert_eq!(alert.icon.as_deref(), Some("drive-harddisk"));
         chrono::DateTime::parse_from_rfc3339(&alert.created_at)
             .expect("the alert carries an RFC 3339 timestamp");
+        assert_neutral(&alert);
+    }
+
+    #[test]
+    fn the_cover_alert_names_the_disk_and_how_to_unmount_it() {
+        let cover = MountEntry {
+            mount_id: 91,
+            parent_id: 10,
+            dev: "8:33".to_string(),
+            root: "/".into(),
+            mount_point: "/mnt".into(),
+            mount_opts: "rw,relatime".to_string(),
+            fstype: "vfat".to_string(),
+            source: "/dev/sdc1".into(),
+            super_opts: "rw".to_string(),
+        };
+        let alert = cover_alert(&cover);
+        assert_eq!(alert.title, "Disk mounted over a folder in use");
+        assert_eq!(
+            alert.body,
+            "/dev/sdc1 is mounted over /mnt, a folder in use. Files saved there now go to \
+             /dev/sdc1. To undo it, run: sudo umount /mnt"
+        );
+        assert_eq!(alert.urgency, "critical");
         assert_neutral(&alert);
     }
 

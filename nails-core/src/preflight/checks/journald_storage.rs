@@ -12,14 +12,18 @@
 //!
 //! # Security
 //!
-//! When journald stores its journal persistently under `/var/log/journal`, the
-//! records a hidden session produces before `/var` is overlaid — and anything
-//! journald fails to re-home onto the overlay — survive on the decoy disk across
-//! deactivation and reboot. The overlay re-home and the detach-time relinquish
-//! shrink that window, but a persistent decoy journal remains a standing hazard,
-//! so this is surfaced before any state is written. Nothing here vacuums or
-//! rotates the decoy journal: destroying the decoy's own log history is itself a
-//! deniability tell.
+//! With a persistent journal under `/var/log/journal`, the decoy journald
+//! writes the window around each soft-reboot to the decoy disk: the sudo line
+//! of the activation, the hidden build's progress, the decoy's shutdown before
+//! the switch and its start after the way back, under one boot ID. The hidden
+//! session's own records stay off that disk only while every barrier holds:
+//! the root overlay keeps the hidden journald's files below `/var` on the
+//! hidden volume, the scrub on the way back deletes the runtime journal before
+//! the decoy journald can flush it to disk, and the kmsg cursor keeps the
+//! hidden session's kernel records out. A volatile journal keeps all of this
+//! in RAM, so a persistent one is surfaced before any state is written.
+//! Nothing here vacuums or rotates the decoy journal: destroying the decoy's
+//! own log history is itself a deniability tell.
 
 use super::systemd_conf::{self, Assignment};
 use crate::Filesystem;
@@ -255,6 +259,31 @@ mod tests {
         fs.mock_set_path_type(DIR, PathKind::Dir);
         fs.mock_set_filesystem_type(Path::new(DIR), "tmpfs");
         assert!(!journald_persists_to_decoy(&fs));
+    }
+
+    #[test]
+    fn the_journal_directory_is_judged_by_the_mount_a_lookup_reaches() {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(MAIN, "[Journal]\nStorage=auto\n");
+        fs.mock_set_path_type(DIR, PathKind::Dir);
+
+        // A tmpfs stacked on the on-disk journal directory: the journal lands
+        // in RAM.
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             40 1 8:1 /var/log/journal /var/log/journal rw - ext4 /dev/vda1 rw\n\
+             41 40 0:50 / /var/log/journal rw - tmpfs tmpfs rw\n",
+        );
+        assert!(!journald_persists_to_decoy(&fs));
+
+        // A tmpfs on the journal directory that a later mount on /var/log
+        // covers: the journal lands on that disk.
+        fs.mock_set_mount_table(
+            "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n\
+             41 1 0:50 / /var/log/journal rw - tmpfs tmpfs rw\n\
+             42 1 8:2 / /var/log rw - ext4 /dev/vda2 rw\n",
+        );
+        assert!(journald_persists_to_decoy(&fs));
     }
 
     #[test]

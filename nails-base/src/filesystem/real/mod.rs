@@ -17,6 +17,7 @@
 
 mod dir_ops;
 mod file_ops;
+mod loop_ops;
 mod mount_ops;
 mod noatime;
 mod system_ops;
@@ -31,7 +32,7 @@ pub use noatime::{EntryType, NoatimeEntry, OpenKind, open_noatime, read_dir_noat
 /// user-home write path.
 pub(crate) use file_ops::unique_temp_name;
 
-use super::{Filesystem, MountSource};
+use super::{Filesystem, MountEntry, MountSource};
 use crate::Result;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
@@ -63,6 +64,10 @@ impl Default for RealFilesystem {
 }
 
 impl Filesystem for RealFilesystem {
+    fn mount_table(&self) -> Result<Vec<MountEntry>> {
+        mount_ops::mount_table()
+    }
+
     fn is_mounted(&self, target: &Path) -> Result<bool> {
         mount_ops::is_mounted(target)
     }
@@ -89,6 +94,10 @@ impl Filesystem for RealFilesystem {
 
     fn device_id(&self, path: &Path) -> Result<u64> {
         file_ops::device_id(path)
+    }
+
+    fn loop_backing_device(&self, node: &Path) -> Result<u64> {
+        loop_ops::loop_backing_device(node)
     }
 
     fn is_symlink(&self, path: &Path) -> Result<bool> {

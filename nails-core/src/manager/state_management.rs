@@ -87,7 +87,12 @@ impl<F: Filesystem> NailsManager<F> {
             .state_file_path
             .parent()
             .unwrap_or(&self.config.hidden_volume_root);
-        crate::hidden_root::ensure_state_dir_attached(&self.filesystem, state_dir)?;
+        crate::hidden_root::ensure_state_dir_attached_allowing(
+            &self.filesystem,
+            &self.config.hidden_volume_root,
+            state_dir,
+            self.allow,
+        )?;
         state_file.save_with_custom_root(&self.state_file_path, &self.config.hidden_volume_root)
     }
 

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::MockFilesystem;
-use super::state::DEFAULT_MOCK_FREE_SPACE_BYTES;
+use super::state::{DEFAULT_MOCK_FREE_SPACE_BYTES, MockOp};
 use crate::filesystem::DiskUsage;
 use crate::{NailsError, Result};
 use std::path::{Path, PathBuf};
@@ -23,15 +23,29 @@ impl MockFilesystem {
         {
             return Ok(id);
         }
-        // Default: a stable, per-path distinct id so an unmapped path reads as a
-        // mounted filesystem of its own (different from `/`). A test that wants a
-        // path to look unattached maps it onto `/`'s id with `mock_set_device_id`.
+        // Default: a stable, per-path distinct id, different from `/`'s. A test
+        // that wants two paths on one filesystem maps them onto one id with
+        // `mock_set_device_id`.
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hasher = DefaultHasher::new();
         path.hash(&mut hasher);
         // Keep it clear of 0 so callers never confuse it with "unset".
         Ok(hasher.finish() | 1)
+    }
+
+    pub(super) fn loop_backing_device_impl(&self, node: &Path) -> Result<u64> {
+        self.loop_backing_devices
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .get(node)
+            .copied()
+            .ok_or_else(|| {
+                crate::NailsError::io(
+                    node,
+                    std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+                )
+            })
     }
 
     pub(super) fn is_directory_impl(&self, path: &Path) -> Result<bool> {
@@ -89,6 +103,12 @@ impl MockFilesystem {
     }
 
     pub(super) fn supports_symlinks_impl(&self, dir: &Path) -> Result<bool> {
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::SymlinkProbe {
+                dir: dir.to_path_buf(),
+            });
         let support = self
             .symlink_support
             .lock()
@@ -280,6 +300,12 @@ impl MockFilesystem {
     }
 
     pub(super) fn is_writable_impl(&self, path: &Path) -> Result<bool> {
+        self.op_log
+            .lock()
+            .expect("MockFilesystem mutex poisoned")
+            .push(MockOp::WritableProbe {
+                path: path.to_path_buf(),
+            });
         let paths = self.paths.lock().expect("MockFilesystem mutex poisoned");
         Ok(paths
             .get(path)

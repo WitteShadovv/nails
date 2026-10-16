@@ -6,6 +6,7 @@ test appends to, so following a soft-reboot is exercised without a VM.
 
 from __future__ import annotations
 
+import subprocess
 import unittest
 from typing import Any
 
@@ -23,6 +24,7 @@ class FakeMachine:
         self.connects = 0
         self.logged: list[str] = []
         self.process: Any = None
+        self.qmp_client: Any = None
 
     def succeed(self, *commands: str, timeout: int | None = None) -> str:
         for prefix, out in self.outputs.items():
@@ -79,6 +81,16 @@ class FollowSoftRebootTest(unittest.TestCase):
         self.assertEqual(timings["startup_phase"], 7.0)
         self.assertEqual(timings["grey_out"], 8.0)
 
+    def test_a_switch_that_never_ends_says_what_pid1_waits_on(self) -> None:
+        machine = FakeMachine(["Soft-rebooting."])
+        with self.assertRaises(AssertionError) as raised:
+            session.follow_soft_reboot(machine, "true", "leave", deadline_s=0)
+        # Without QMP the report says so, and the failure stays the stall.
+        failure = str(raised.exception)
+        self.assertIn("leave: no backdoor 0 s after the soft-reboot (", failure)
+        self.assertIn("QMP is not connected", failure)
+        self.assertIn("what PID 1 waits on", machine.logged[-1])
+
     def test_a_userspace_in_emergency_mode_fails_at_once(self) -> None:
         machine = FakeMachine(
             ["Timed out waiting for device", "Reached target Emergency Mode"]
@@ -87,6 +99,20 @@ class FollowSoftRebootTest(unittest.TestCase):
             session.follow_soft_reboot(machine, "true", "leave", deadline_s=5)
         self.assertIn("stuck", str(raised.exception))
         self.assertEqual(machine.connects, 0)
+
+
+class PowerOffTest(unittest.TestCase):
+    def test_a_power_off_that_never_ends_says_what_pid1_waits_on(self) -> None:
+        class Running:
+            def wait(self, timeout: float) -> int:
+                raise subprocess.TimeoutExpired("qemu", timeout)
+
+        machine = FakeMachine([])
+        machine.process = Running()
+        with self.assertRaises(AssertionError) as raised:
+            session.wait_for_power_off(machine, timeout=0)
+        self.assertIn("did not power off within 0 s (", str(raised.exception))
+        self.assertIn("what PID 1 waits on", machine.logged[-1])
 
 
 class TriggerFailureTest(unittest.TestCase):

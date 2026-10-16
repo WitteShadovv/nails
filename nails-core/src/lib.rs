@@ -5,7 +5,7 @@
 //!
 //! Core library for the nails overlay environment manager: a hidden session
 //! on a decoy system, entered and left with `systemctl soft-reboot` into a
-//! whole-root overlay (ADR 0008).
+//! whole-root overlay.
 //!
 //! This crate holds the orchestration that needs every area at once: the
 //! manager (enter, leave, recover, reset-upper), the pre-flight registry and
@@ -21,7 +21,7 @@
 //!   probes, persona and runtime units;
 //! - `nails-forensics`: verification, the residue catalog, rehearse.
 //!
-//! The dependency direction is recorded in ADR 0010.
+//! The dependency direction is pinned by `tests/crate_graph.rs`.
 //!
 //! The core library is designed to be reusable by different interfaces:
 //! - CLI (nails-cli)
@@ -48,8 +48,9 @@ nails_base::unit_test_mode!();
 // Re-exported so `nails_core::<module>` paths keep working for the CLI.
 pub(crate) use nails_base::runtime_safety;
 pub use nails_base::{
-    artifacts, cancel, constants, error, filesystem, hidden_root, logging, notification, output,
-    process, reporter, runtime_env, state, target_user, timing, verbosity,
+    artifacts, blockdev, cancel, constants, crypttab, error, filesystem, fstab, hidden_root,
+    logging, naming, notification, output, process, reporter, runtime_env, state, target_user,
+    timing, verbosity,
 };
 
 // Configuration module: the base crate's, plus the manager-building test
@@ -76,8 +77,8 @@ pub mod preflight;
 // Status command module (live session view)
 pub mod status;
 
-// The whole-root session (ADR 0008): entry, way back, fstab policy, probes,
-// the persona and the session's runtime units.
+// The whole-root session: entry, way back, fstab policy, probes, the persona
+// and the session's runtime units.
 pub use nails_session::{persona, runtime_copy, session, sleep_guard, watcher};
 
 // Host detection, the platform backends, the NixOS configuration layer and
@@ -109,8 +110,8 @@ pub use filesystem::{Filesystem, RealFilesystem};
 pub use filesystem::{MockFilesystem, PathKind};
 pub use hidden_root::{AttachState, HiddenRoot, ensure_state_dir_attached};
 pub use manager::{
-    EnterOptions, EnterOutcome, NailsManager, RegistryInputs, ResetUpperPlan, SessionRecovery,
-    build_registry,
+    EnterOptions, EnterOutcome, NailsManager, PreflightOptions, RegistryInputs, ResetUpperPlan,
+    SessionRecovery, build_registry,
 };
 // Platform seam exports
 pub use platform::{
@@ -121,7 +122,9 @@ pub use runtime_env::RuntimeEnv;
 pub use target_user::TargetUser;
 
 // Persona inventory exports
-pub use persona::{InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona};
+pub use persona::{
+    EntryStatus, InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona,
+};
 
 // State management exports
 pub use state::{
@@ -187,6 +190,6 @@ mod tests {
     fn test_workspace_version_exists() {
         // Verify workspace version is accessible
         let version = env!("CARGO_PKG_VERSION");
-        assert_eq!(version, "0.2.0");
+        assert_eq!(version, "0.3.0-rc.1");
     }
 }

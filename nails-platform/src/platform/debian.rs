@@ -69,7 +69,7 @@ const SUPPORTED: &[SupportedDistro] = &[
     SupportedDistro {
         id: "debian",
         label: "Debian",
-        minimum: DistroVersion::new(12, 0),
+        minimum: DistroVersion::new(13, 0),
     },
     SupportedDistro {
         id: "ubuntu",
@@ -166,16 +166,13 @@ fn unknown_reason(id: Option<&str>) -> String {
 
 /// The documented refusal for a Debian-family host that is not usr-merged.
 ///
-/// A merged layout keeps `/bin`, `/sbin` and `/lib` as symlinks into `/usr`, so
-/// the read-only `/usr` guard is the single invariant that keeps package writes
-/// off the decoy disk. On a split (non-merged) layout those are real directories
-/// outside `/usr`, which the guard would not cover, so NAILS refuses rather than
-/// risk leaking payloads to the decoy.
+/// NAILS is tested only on the merged layout, where `/bin`, `/sbin` and `/lib`
+/// are symlinks into `/usr`; every supported release ships it. A split layout
+/// is refused rather than run untested.
 pub(crate) const USR_MERGE_REFUSAL: &str = "this Debian-family host is not usr-merged (/bin, /sbin or /lib is a real \
-     directory rather than a symlink into /usr). NAILS keeps /usr read-only as \
-     its leak guard, which only holds on a merged layout. Convert the host with \
-     usrmerge, or use a release that ships the merged layout (Debian 13+, \
-     Ubuntu 24.04+).";
+     directory rather than a symlink into /usr). NAILS is tested only on the merged \
+     layout, which every supported release ships. Convert the host with usrmerge, \
+     or use Debian 13+ or Ubuntu 24.04+.";
 
 #[cfg(test)]
 mod tests {
@@ -215,10 +212,10 @@ mod tests {
 
     #[test]
     fn debian_at_and_above_minimum_is_supported() {
-        assert_eq!(
+        assert!(matches!(
             classify_family(Some("debian"), &[], Some("12")),
-            FamilySupport::Supported
-        );
+            FamilySupport::Refused(_)
+        ));
         assert_eq!(
             classify_family(Some("debian"), &[], Some("13")),
             FamilySupport::Supported

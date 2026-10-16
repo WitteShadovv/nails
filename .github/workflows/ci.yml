@@ -37,7 +37,7 @@ jobs:
   # first parent of its merge commit; every other event runs everything.
   changes:
     name: changes
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
@@ -48,7 +48,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 2 # the merge commit and both of its parents
           persist-credentials: false
@@ -63,12 +63,12 @@ jobs:
     name: lint
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -79,15 +79,15 @@ jobs:
 
       # One cache for the whole workflow, saved only by the rust job on main.
       - name: Restore Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: ci
           save-if: false
 
       - name: Install just
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: just@1.49.0
+          tool: just@1.58.0
           fallback: none
 
       # A manifest change (a version bump, a new dependency) without the
@@ -111,7 +111,7 @@ jobs:
     name: rust
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     env:
       # The ci profile in .config/nextest.toml: one retry, a hang limit and a
@@ -120,7 +120,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -128,30 +128,34 @@ jobs:
         run: rustup toolchain install
 
       - name: Set up Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: ci
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Install test tools
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-llvm-cov@0.8.4,cargo-nextest@0.9.72,just@1.49.0
+          tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
-      # The prompt syntax tests skip a shell that is not installed.
-      - name: Install shells for prompt syntax tests
+      # The prompt syntax tests skip a shell that is not installed. The
+      # chrooted-activation kernel test runs a statically linked busybox when
+      # the host has no Nix store to bind.
+      - name: Install shells for the shell tests
         run: |
           sudo apt-get update
-          sudo apt-get install -y zsh fish
+          sudo apt-get install -y zsh fish busybox-static
 
       # The tests run against an empty private TMPDIR that must still be empty
       # afterwards: a test that leaks temp files makes the suite order-dependent.
+      # It lies under /tmp: a kernel test turns the first directory of a scratch
+      # path into a link in its test decoy, which has a /home of its own.
       - name: Give the tests a private TMPDIR
-        run: echo "TMPDIR=$(mktemp -d "$RUNNER_TEMP/tests.XXXXXX")" >> "$GITHUB_ENV"
+        run: echo "TMPDIR=$(mktemp -d /tmp/tests.XXXXXX)" >> "$GITHUB_ENV"
 
       # The real-kernel tests mount tmpfs and overlayfs in an unprivileged user +
-      # mount namespace. AppArmor on ubuntu-24.04 gives such a namespace no
+      # mount namespace. AppArmor on ubuntu-26.04 gives such a namespace no
       # capabilities until this sysctl is cleared. NAILS_REQUIRE_USERNS turns a
       # skipped kernel test into a failure, so they cannot pass vacuously here.
       - name: Allow unprivileged user namespaces
@@ -205,11 +209,11 @@ jobs:
     name: shuffle
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -217,15 +221,15 @@ jobs:
         run: rustup toolchain install
 
       - name: Set up Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: ci
           save-if: false
 
       - name: Install just
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: just@1.49.0
+          tool: just@1.58.0
           fallback: none
 
       # The suite must leave an empty private TMPDIR, as in the `rust` job.
@@ -243,12 +247,12 @@ jobs:
     name: deps
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.deps == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -257,9 +261,9 @@ jobs:
         run: rustup toolchain install
 
       - name: Install policy tools
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-deny@0.19.1,just@1.49.0
+          tool: cargo-deny@0.20.2,just@1.58.0
           fallback: none
 
       - name: Check bans, licenses and sources
@@ -281,12 +285,12 @@ jobs:
     name: privileged-mounts
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -294,12 +298,12 @@ jobs:
         run: rustup toolchain install
 
       - name: Restore Rust cache
-        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: ci
           save-if: false
 
-      # AppArmor on ubuntu-24.04 blocks unprivileged user namespaces, so only
+      # AppArmor on ubuntu-26.04 blocks unprivileged user namespaces, so only
       # the run step is elevated.
       - name: Build privileged test binary
         id: build
@@ -321,12 +325,12 @@ jobs:
     name: nix-build
     needs: changes
     if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.nix == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -357,12 +361,12 @@ jobs:
     name: lint-misc
     needs: changes
     if: needs.changes.outputs.nix == 'true' || needs.changes.outputs.workflows == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -389,12 +393,12 @@ jobs:
     name: docs-check
     needs: changes
     if: needs.changes.outputs.docs == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -411,7 +415,7 @@ jobs:
     name: gate
     needs: [changes, lint, rust, shuffle, deps, privileged-mounts, nix-build, lint-misc, docs-check]
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     outputs:
       # report-status reads the results of the work jobs through this.
@@ -435,7 +439,7 @@ jobs:
     name: report-status
     needs: gate
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -443,7 +447,7 @@ jobs:
 
     steps:
       - name: Checkout the report action
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           sparse-checkout: .github/actions/report-status

@@ -1,13 +1,17 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-use super::super::{Filesystem, MountSource};
+use super::super::{Filesystem, MountEntry, MountSource};
 use super::MockFilesystem;
 use crate::Result;
 use crate::target_user::TargetUser;
 use std::path::{Path, PathBuf};
 
 impl Filesystem for MockFilesystem {
+    fn mount_table(&self) -> Result<Vec<MountEntry>> {
+        self.mount_table_result()
+    }
+
     fn is_mounted(&self, target: &Path) -> Result<bool> {
         self.is_mounted_impl(target)
     }
@@ -34,6 +38,10 @@ impl Filesystem for MockFilesystem {
 
     fn device_id(&self, path: &Path) -> Result<u64> {
         self.device_id_impl(path)
+    }
+
+    fn loop_backing_device(&self, node: &Path) -> Result<u64> {
+        self.loop_backing_device_impl(node)
     }
 
     fn is_symlink(&self, path: &Path) -> Result<bool> {

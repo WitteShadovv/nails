@@ -31,8 +31,7 @@ Read these before relying on NAILS, in roughly this order.
 
 | Document | What it covers |
 |---|---|
-| [Architecture overview](architecture.md) | The crates and how they depend on each other, the platform seam, and the runtime layers of a session. |
-| [Architecture decision records](adr/README.md) | The decisions that shape NAILS. [ADR 0008](adr/0008-whole-root-soft-reboot.md) (the whole-root soft-reboot session) is the one to read first. |
+| [Architecture overview](architecture.md) | Why the session is one overlay over the whole root, entered with a soft-reboot, and what that costs; the crates and how they depend on each other, the platform seam, and the runtime layers of a session. |
 | [Threat model](threat-model.md) | Listed under operators as well; it is also the design's yardstick. |
 
 ## Development
@@ -48,12 +47,6 @@ Read these before relying on NAILS, in roughly this order.
 | [Release artifact reproducibility](release-artifact-reproducibility.md) | What the reproducible-build claim covers and how to rebuild a release. |
 | [Releasing](../RELEASING.md) | The maintainer's release checklist. |
 | [Documentation assets](assets/README.md) | The logo, the banner and the terminal screenshots, and how to regenerate them. |
-
-## History
-
-[history/](history/README.md) keeps records that describe NAILS before the
-whole-root session (the live-overlay mode): the earlier testing-strategy
-evidence and the VM suite measurements. They are not current guidance.
 
 ## Project
 

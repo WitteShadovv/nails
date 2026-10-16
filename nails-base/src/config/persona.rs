@@ -6,10 +6,10 @@
 //! By default NAILS runs the hidden session as the decoy user, in the decoy
 //! home: the root overlay merges the decoy home read-write, so every account,
 //! credential store and application profile configured there is live in the
-//! hidden session. That shared-account model is the legacy behaviour; it is kept
-//! as the explicit, opt-in [`PersonaMode::SharedHome`] because deployments that
-//! rely on the decoy's existing login still need it, and activation warns when it
-//! is in effect.
+//! hidden session. That shared-account model is the default
+//! [`PersonaMode::SharedHome`], kept because deployments that rely on the
+//! decoy's existing login still need it; `nails check` says on a line of its
+//! own when it is in effect.
 //!
 //! [`PersonaMode::FreshHome`] is the opt-in separation: at the first entry the
 //! operator's home becomes an opaque directory in the upper on the hidden
@@ -22,15 +22,15 @@
 //! switched before login, so it is not an activation-time decision and is not an
 //! accepted value here yet.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// How the hidden session relates to the decoy account.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum PersonaMode {
-    /// Legacy shared-account model: the hidden session runs in the decoy home,
-    /// merged read-write through the root overlay. Opt-in, and warned about at
-    /// activation, because the decoy's accounts and secrets are live.
+    /// Shared-account model: the hidden session runs in the decoy home, merged
+    /// read-write through the root overlay. The default; `nails check` names it
+    /// on a line of its own, because the decoy's accounts and secrets are live.
     #[default]
     SharedHome,
 
@@ -72,10 +72,34 @@ pub struct PersonaConfig {
     /// inherited entry. Masking happens at entry, before the soft-reboot: a
     /// `Hidden=true` autostart override or a `/dev/null` user-unit mask is
     /// written through the next root's home, so it lands only in the upper on
-    /// the hidden volume and never on the decoy. Lingering and autologin are
-    /// reported but cannot be masked this way. Empty by default.
-    #[serde(default)]
+    /// the hidden volume and never on the decoy. A name the inventory does not
+    /// list is masked too: as a user unit when it ends in a unit suffix, as an
+    /// autostart entry otherwise. Lingering and autologin are reported but
+    /// cannot be masked this way. Empty by default; every value must be a file
+    /// name ([`is_entry_name`]) or `"*"`.
+    #[serde(default, deserialize_with = "entry_names")]
     pub mask_inherited: Vec<String>,
+}
+
+/// Whether `name` can name an inherited entry: one non-empty file name, so a
+/// mask written for it stays in the directory it belongs to.
+pub fn is_entry_name(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\0'])
+}
+
+/// Deserialize `mask_inherited`, refusing a value that is neither `"*"` nor an
+/// entry name.
+fn entry_names<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>, D::Error> {
+    let names = Vec::<String>::deserialize(deserializer)?;
+    if let Some(bad) = names
+        .iter()
+        .find(|name| name.as_str() != "*" && !is_entry_name(name))
+    {
+        return Err(serde::de::Error::custom(format!(
+            "{bad:?} is not an entry name: use a name as `nails check` lists it, without `/`"
+        )));
+    }
+    Ok(names)
 }
 
 impl PersonaConfig {
@@ -153,6 +177,21 @@ mod tests {
         let serialized = toml::to_string(&config).unwrap();
         let parsed: PersonaConfig = toml::from_str(&serialized).unwrap();
         assert_eq!(parsed, config);
+    }
+
+    #[test]
+    fn a_mask_name_that_is_not_a_file_name_is_refused() {
+        for bad in ["../x", "a/b", "", ".", ".."] {
+            let text = format!("mask_inherited = [\"dropbox\", {bad:?}]");
+            let error = toml::from_str::<PersonaConfig>(&text).unwrap_err();
+            assert!(
+                error.to_string().contains("not an entry name"),
+                "{bad:?}: {error}"
+            );
+        }
+        assert!(is_entry_name("org.gnome.Evolution-alarm-notify"));
+        assert!(is_entry_name("syncthing.service"));
+        assert!(!is_entry_name("*/x"));
     }
 
     #[test]

@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+use chrono::{DateTime, TimeZone, Utc};
 use nails_core::output::{Mark, Style};
 use nails_core::status::{Posture, StatusReport};
 
@@ -21,8 +22,30 @@ pub fn print_status_header(style: Style) {
     println!();
 }
 
-/// The lines of the human status report (without the header and logs).
-pub(super) fn status_lines(report: &StatusReport, details: bool, style: Style) -> Vec<String> {
+/// `instant` in `zone` with its offset from UTC, as `status` shows a time:
+/// `2026-10-14 21:41:59 +02:00`. In the local zone that is the time the desktop
+/// clock shows; the JSON output and the files on the volume keep UTC.
+pub(super) fn stamp<Tz: TimeZone>(instant: DateTime<Utc>, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    instant
+        .with_timezone(zone)
+        .format("%Y-%m-%d %H:%M:%S %:z")
+        .to_string()
+}
+
+/// The lines of the human status report (without the header and logs), with
+/// the times in `zone`.
+pub(super) fn status_lines<Tz: TimeZone>(
+    report: &StatusReport,
+    details: bool,
+    style: Style,
+    zone: &Tz,
+) -> Vec<String>
+where
+    Tz::Offset: std::fmt::Display,
+{
     let mut out = Vec::new();
     out.push(format!(
         "Security Posture:   {}",
@@ -39,10 +62,7 @@ pub(super) fn status_lines(report: &StatusReport, details: bool, style: Style) -
         system_state_label(&report.state)
     ));
     if let Some(entered) = report.entered_at {
-        out.push(format!(
-            "Entered:            {}",
-            entered.format("%Y-%m-%d %H:%M:%S UTC")
-        ));
+        out.push(format!("Entered:            {}", stamp(entered, zone)));
     }
     if let Some(uptime) = report.uptime {
         out.push(format!(
@@ -78,6 +98,22 @@ pub(super) fn status_lines(report: &StatusReport, details: bool, style: Style) -
             "not mounted"
         }
     ));
+    if let Some(reason) = &report.accepted_decoy_storage {
+        out.push(format!(
+            "  {} --allow-decoy-storage: {reason}; {}",
+            style.mark(Mark::Warn),
+            nails_core::hidden_root::refusal::OVERRIDE_CONSEQUENCE
+        ));
+    }
+    if let Some(cover) = &report.hidden_root_covered_by {
+        out.push(format!(
+            "  {} {} is mounted over it: files saved there go to that disk \
+             (`sudo umount {}` takes it off)",
+            style.mark(Mark::Warn),
+            cover.source,
+            cover.mount_point.display()
+        ));
+    }
     if report.decoy_persistent && report.posture != Posture::Active {
         out.push(style.marked(
             Mark::Warn,
@@ -87,8 +123,8 @@ pub(super) fn status_lines(report: &StatusReport, details: bool, style: Style) -
     if let Some(last) = &report.last_activation {
         out.push(format!(
             "Last activation:    took {} (finished {})",
-            nails_core::timing::format_elapsed(std::time::Duration::from_millis(last.duration_ms)),
-            last.finished_at.format("%Y-%m-%d %H:%M:%S UTC")
+            nails_core::timing::format_duration(std::time::Duration::from_millis(last.duration_ms)),
+            stamp(last.finished_at, zone)
         ));
     }
     for reminder in &report.opsec_reminders {
@@ -109,7 +145,7 @@ pub fn print_status_human(
     style: Style,
 ) {
     print_status_header(style);
-    for line in status_lines(report, details, style) {
+    for line in status_lines(report, details, style, &chrono::Local) {
         println!("{line}");
     }
     if details {
@@ -128,7 +164,9 @@ pub fn print_status_human(
                 _ => "corrupt (state unknown, using defaults)",
             }
         );
-        if let Some(logs) = read_recent_logs(log_path, report.entered_at, false, style) {
+        if let Some(logs) =
+            read_recent_logs(log_path, report.entered_at, false, style, &chrono::Local)
+        {
             println!();
             println!("Recent log lines:");
             for line in logs {

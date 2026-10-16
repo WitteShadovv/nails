@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The session plan of a whole-root session (ADR 0008).
+//! The session plan of a whole-root session.
 //!
 //! Activation writes it on the decoy's `/run` tmpfs before the soft-reboot into
 //! the hidden root. `/run` is carried across every soft-reboot, so the same file
@@ -26,8 +26,8 @@ use std::path::{Path, PathBuf};
 pub const PLAN_VERSION: u32 = 2;
 
 /// The neutral runtime directory on the decoy's `/run` tmpfs. It holds the plan,
-/// the `/run` snapshot, the saved `utab` and the RAM copy of the binary. The
-/// return scrub removes it as a whole.
+/// the `/run` snapshot, the saved `utab` with the mounts it names and the RAM
+/// copy of the binary. The return scrub removes it as a whole.
 pub const RUNTIME_DIR: &str = "/run/overlay-runtime";
 
 /// The plan's file name inside [`RUNTIME_DIR`].
@@ -38,6 +38,15 @@ pub const SNAPSHOT_NAME: &str = "run-entries";
 
 /// The saved `/run/mount/utab` inside [`RUNTIME_DIR`].
 pub const UTAB_NAME: &str = "mount-table";
+
+/// The decoy's mount table lines for the mounts the saved `utab` names by ID,
+/// read with it, inside [`RUNTIME_DIR`]
+/// ([`crate::whole_root::utab::named_mounts`]).
+pub const UTAB_MOUNTS_NAME: &str = "mount-ids";
+
+/// The copy of the decoy's records ([`crate::whole_root::run_records`])
+/// inside [`RUNTIME_DIR`].
+pub const RECORDS_NAME: &str = "run-records";
 
 /// The RAM copy of the binary inside [`RUNTIME_DIR`] (neutral name).
 pub const BINARY_NAME: &str = "control";
@@ -118,6 +127,48 @@ pub struct CarriedMount {
     pub at: PathBuf,
     /// Whether the decoy had it read-only.
     pub read_only: bool,
+    /// The carried mount's filesystem (`major:minor`, as the mount table
+    /// shows it) and the directory of it that the mount shows. The way back
+    /// takes a mount from it only while the mount at [`at`](Self::at) is still
+    /// that one. Absent from a plan written before they were recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dev: Option<String>,
+    /// See [`dev`](Self::dev).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<PathBuf>,
+}
+
+/// Where the way back takes a decoy mount from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum MountSource {
+    /// The decoy root, mounted again from its device.
+    Root,
+    /// The carried decoy filesystem with this index in [`Plan::carried`].
+    Carried(usize),
+}
+
+/// A mount of the decoy that the way back makes again (see
+/// [`crate::whole_root::decoy_mounts`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DecoyMount {
+    /// Its mount ID in the decoy at entry: libmount's `utab` lines name it by
+    /// this ID.
+    pub id: i32,
+    /// Its mount point in the decoy root.
+    pub target: PathBuf,
+    /// The filesystem it shows.
+    pub source: MountSource,
+    /// The directory of that filesystem it shows, relative to the one the
+    /// source shows (empty for the same).
+    pub path: PathBuf,
+    /// Its per-mount options, as the mount table shows them
+    /// (`ro,nosuid,nodev,relatime`).
+    pub options: String,
+    /// The mount ID the way back gave it, which the transition gives its
+    /// `utab` lines. Absent until the way back is prepared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restored: Option<i32>,
 }
 
 /// Absolute paths of the tools a transition-side step runs, resolved at
@@ -181,6 +232,19 @@ pub struct Plan {
     pub version: u32,
     /// The hidden volume root.
     pub hidden_root: PathBuf,
+    /// The device (`major:minor`, as the mount table shows it) of the mount at
+    /// the hidden root when the entry began. In the session the attach gate
+    /// accepts the root only while this device is mounted there, so a disk
+    /// mounted over the hidden root receives no write. Absent from a plan
+    /// written before it was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hidden_dev: Option<String>,
+    /// Why the hidden root is not a volume of its own, when the operator
+    /// accepted that with `activate --allow-decoy-storage`. In the session the
+    /// attach gate then accepts a root that is no mount point; `status` shows
+    /// it and `rehearse plant` refuses. Absent when nothing was overridden.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_decoy_storage: Option<String>,
     /// The root overlay's upper directory on the hidden volume.
     pub upper: PathBuf,
     /// The root overlay's work directory on the hidden volume.
@@ -201,6 +265,12 @@ pub struct Plan {
     /// (decoy swap, decoy filesystems that would be mounted read-write).
     #[serde(default)]
     pub masks: Vec<String>,
+    /// Boot-loader units masked in the hidden root, best effort: they write
+    /// to the boot filesystems at every start, which the hidden root has
+    /// read-only, so they would only fail there. Kept apart from
+    /// [`masks`](Self::masks), without which the entry must not happen.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub boot_masks: Vec<String>,
     /// Runtime units installed in `/run` at entry, for the hidden session.
     #[serde(default)]
     pub session_units: Vec<RuntimeUnit>,
@@ -226,6 +296,13 @@ pub struct Plan {
     /// [`crate::whole_root::carry`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub carried: Vec<CarriedMount>,
+    /// The decoy's mounts the way back makes again, the decoy root first and
+    /// the others in the order the decoy mounted them (see
+    /// [`crate::whole_root::decoy_mounts`]). Absent from a plan written before
+    /// they were recorded: the way back then puts back the decoy root and the
+    /// carried filesystems alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decoy_mounts: Vec<DecoyMount>,
     /// Whether the disks the session does not use are read-only for the
     /// session (`[session_mounts] read_only`): the entry transition installs
     /// the udev rule, the way back makes them writable again (see
@@ -238,6 +315,11 @@ pub struct Plan {
     /// while the decoy's own earlier failures stay.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_at_entry: Vec<String>,
+    /// The kernel's helper paths as the decoy had them before a hidden NixOS
+    /// activation rewrote them; every way back to the decoy writes them back
+    /// (see [`crate::whole_root::kernel_helpers`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub kernel_settings: Vec<crate::whole_root::kernel_helpers::KernelSetting>,
 }
 
 /// Why a plan could not be used.
@@ -313,9 +395,24 @@ impl Plan {
     }
 }
 
+/// The mode of the files the session writes for the service manager and udev
+/// (drop-ins, runtime units, the read-only rule). Both read them as root, but
+/// PID 1 warns about a configuration file that is not readable by everyone and
+/// names it in the log: at the start of the other root, before its journald
+/// runs, that is the kernel log, which outlives the session in RAM.
+pub const SERVICE_CONFIG_MODE: u32 = 0o644;
+
 /// Write `bytes` to `path` through a private temporary file in the same
 /// directory, renamed over the target, so a reader never sees a torn write.
 pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    write_atomic_with_mode(path, bytes, 0o600)
+}
+
+/// [`write_private_atomic`], with the file's final `mode` set on the open
+/// temporary file before the rename: the name never shows another mode, and
+/// a restrictive umask cannot take bits away.
+pub fn write_atomic_with_mode(path: &Path, bytes: &[u8], mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
     let dir = path.parent().unwrap_or(Path::new("/"));
     let name = path
         .file_name()
@@ -330,6 +427,7 @@ pub fn write_private_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
             .mode(0o600)
             .open(&temp)?;
         file.write_all(bytes)?;
+        file.set_permissions(std::fs::Permissions::from_mode(mode))?;
         drop(file);
         std::fs::rename(&temp, path)
     })();
@@ -344,6 +442,8 @@ pub(crate) fn sample() -> Plan {
     Plan {
         version: PLAN_VERSION,
         hidden_root: PathBuf::from("/mnt/data"),
+        hidden_dev: None,
+        accepted_decoy_storage: None,
         upper: PathBuf::from("/mnt/data/root/upper"),
         work: PathBuf::from("/mnt/data/root/work"),
         owner: Some(Owner {
@@ -368,6 +468,7 @@ pub(crate) fn sample() -> Plan {
             kind: PolicyMountKind::ReadOnlyBind,
         }],
         masks: vec!["dev-vda3.swap".to_string()],
+        boot_masks: Vec::new(),
         session_units: Vec::new(),
         backend: vec!["sample-backend-unmapped".to_string()],
         tools: Tools::default(),
@@ -378,8 +479,10 @@ pub(crate) fn sample() -> Plan {
         entered_at: None,
         run_noexec: false,
         carried: Vec::new(),
+        decoy_mounts: Vec::new(),
         read_only_disks: false,
         failed_at_entry: Vec::new(),
+        kernel_settings: Vec::new(),
     }
 }
 
@@ -391,6 +494,40 @@ mod tests {
     fn a_plan_round_trips_through_its_file_format() {
         let plan = sample();
         assert_eq!(Plan::from_json(&plan.to_json()).unwrap(), plan);
+    }
+
+    #[test]
+    fn the_hidden_device_is_kept_and_a_plan_without_it_still_loads() {
+        let recorded = Plan {
+            hidden_dev: Some("253:0".to_string()),
+            ..sample()
+        };
+        let text = recorded.to_json();
+        assert!(text.contains("\"hidden_dev\":\"253:0\""), "{text}");
+        assert_eq!(Plan::from_json(&text).unwrap(), recorded);
+
+        // A plan written before the field existed has no key at all.
+        let older = sample().to_json();
+        assert!(!older.contains("hidden_dev"), "{older}");
+        assert_eq!(Plan::from_json(&older).unwrap().hidden_dev, None);
+    }
+
+    #[test]
+    fn an_accepted_override_is_kept_and_a_plan_without_it_still_loads() {
+        let accepted = Plan {
+            accepted_decoy_storage: Some("it is a folder on the filesystem mounted at /".into()),
+            ..sample()
+        };
+        let text = accepted.to_json();
+        assert!(text.contains("\"accepted_decoy_storage\":"), "{text}");
+        assert_eq!(Plan::from_json(&text).unwrap(), accepted);
+
+        let plain = sample().to_json();
+        assert!(!plain.contains("accepted_decoy_storage"), "{plain}");
+        assert_eq!(
+            Plan::from_json(&plain).unwrap().accepted_decoy_storage,
+            None
+        );
     }
 
     #[test]
@@ -431,12 +568,28 @@ mod tests {
     }
 
     #[test]
+    fn a_file_written_with_a_mode_has_it_and_replaces_the_old_one_whole() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("unit.conf");
+        std::fs::write(&path, "old").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        write_atomic_with_mode(&path, b"[Service]\n", SERVICE_CONFIG_MODE).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[Service]\n");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode, 0o644);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
     fn the_runtime_names_carry_no_product_name() {
         for name in [
             RUNTIME_DIR,
             PLAN_NAME,
             SNAPSHOT_NAME,
             UTAB_NAME,
+            UTAB_MOUNTS_NAME,
+            RECORDS_NAME,
             BINARY_NAME,
         ] {
             assert!(!name.to_lowercase().contains("nails"), "{name}");

@@ -10,20 +10,18 @@ use std::collections::BTreeSet;
 
 /// The names of every pre-flight check the registry can contain.
 fn preflight_check_names() -> BTreeSet<&'static str> {
-    use crate::manager::{RegistryInputs, build_registry};
+    use crate::manager::{PreflightOptions, RegistryInputs, build_registry};
     use crate::{Config, MockFilesystem, SystemState};
 
     let fs = MockFilesystem::new();
     let config = Config::test_default();
     let inputs = RegistryInputs {
-        overlay_only: false,
-        read_only: true,
+        options: PreflightOptions::default(),
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
-        accept_persistent_decoy: false,
         caller_path: None,
     };
     let registry = build_registry(

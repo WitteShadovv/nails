@@ -49,7 +49,7 @@ pub use prepare::{
     ensure_hidden_configuration_module, ensure_hidden_hardware_configuration,
     prepare_nixos_config_overlay, stage_hidden_config_symlink, stage_hidden_nixos_config,
 };
-pub use verify::verify_base_config_clean;
+pub use verify::{BaseConfigReference, BaseConfigScan, ReferenceKind, verify_base_config_clean};
 
 use std::path::PathBuf;
 

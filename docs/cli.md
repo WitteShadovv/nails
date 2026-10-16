@@ -40,7 +40,8 @@ The workflow has four steps:
   1. Open and mount the hidden backend (e.g. unlock the LUKS/VeraCrypt volume).
   2. `init <root>` once, to lay out the hidden volume.
   3. `activate` to soft-reboot into the hidden session. You are logged out;
-     the hidden session starts at its own login screen.
+     the hidden session starts at its own login screen (a display manager set
+     to log an account in automatically logs it in again, as at boot).
   4. `deactivate` to soft-reboot back to the plain decoy, or `emergency` to
      kill the hidden session at once and return (or power off). If an
      activation was interrupted, `recover` removes what it left behind.
@@ -51,7 +52,7 @@ EXAMPLES:
   # Run by full path from the mounted backend, never from a decoy copy.
   sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
   sudo /mnt/data/nails activate         Soft-reboot into the hidden session
-  /mnt/data/nails status --json         Machine-readable state and uptime
+  sudo /mnt/data/nails status --json    Machine-readable state and uptime
   sudo /mnt/data/nails deactivate       Soft-reboot back to the decoy
   sudo /mnt/data/nails emergency        Kill the hidden session and return now
   source <(/mnt/data/nails completions bash)   Load completions in the session
@@ -119,9 +120,11 @@ WHAT HAPPENS:
   Activation builds one overlay over the whole decoy root at /run/nextroot,
   with every change stored on the hidden volume, and soft-reboots into it
   (systemd 254 or newer). Every program is closed and you are logged out; the
-  hidden session starts at its own login screen. Nothing of the hidden session
-  can reach the decoy disk: the ESP is read-only, other decoy filesystems are
-  overlaid, and decoy swap is never used.
+  hidden session starts at its own login screen (a display manager set to log
+  an account in automatically logs it in again, as at boot). Nothing the
+  hidden session writes through the decoy's filesystems reaches the decoy
+  disk: the ESP is read-only, other decoy filesystems are overlaid, and decoy
+  swap is never used. docs/threat-model.md lists the residual channels.
 
 EXAMPLES:
   nails activate                      Enter the hidden session
@@ -142,6 +145,9 @@ EXAMPLES:
 * `--accept-persistent-decoy` — Accept a persistent decoy posture instead of refusing activation
 
    By default activation refuses a host that keeps forensic traces on the decoy disk: a persistent systemd-journald journal, or an active rsyslog/syslog-ng/auditd. What the decoy logs while it shuts down for the soft-reboot, and while it starts again afterwards, would survive on the decoy disk. This flag accepts that risk (and overrides `accept_persistent_decoy` in `nails.toml`).
+* `--allow-decoy-storage` — Use a hidden root that this computer's own storage seems to hold
+
+   By default activation refuses a root that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it): everything the session writes there lands on this computer's disk. Use this flag only for storage you know this computer does not use, such as a disk its fstab lists but never mounts. It turns those refusals into a warning, adds a line to the logout confirmation and records the choice for `status`. A folder that is no mount point, a root with a second filesystem mounted over it, storage that cannot be judged, and a decoy entry that opens the volume are still refused.
 
 
 
@@ -154,9 +160,13 @@ Soft-reboot from the hidden session back to the plain decoy
 WHAT HAPPENS:
   In the hidden session, deactivation mounts the decoy root at /run/nextroot,
   marks the hidden volume for closing and soft-reboots: every hidden program
-  is stopped in order, /run is scrubbed of the hidden session, and the decoy
-  starts again at its own login screen. The hidden volume is unmounted and
-  its encryption mapping closed by the switch itself.
+  is stopped in order, the top of /run is scrubbed of the hidden session
+  (network links it set up stay), and the decoy starts again at its own login
+  screen (a display manager set to log an account in automatically logs it in
+  again, as at boot). The scrub also deletes the runtime journal, which the
+  decoy shares with the hidden session, so a volatile decoy's journal starts
+  again at the return. The hidden volume is unmounted and its encryption
+  mapping closed by the switch itself.
 
 EXAMPLES:
   nails deactivate                    Soft-reboot back to the decoy
@@ -184,9 +194,10 @@ WHAT HAPPENS:
   In the hidden session: the decoy root is mounted at /run/nextroot, the
   hidden volume is marked for closing, the soft-reboot is enqueued and every
   hidden program is killed at once. The machine returns to the plain decoy,
-  which shows its normal login screen; log in with the decoy password. With
-  --poweroff the machine powers off instead. On the decoy, emergency removes
-  what an interrupted activation left in /run.
+  which shows its normal login screen; log in with the decoy password (a
+  display manager set to log an account in automatically logs it in again, as
+  at boot). With --poweroff the machine powers off instead. On the decoy,
+  emergency removes what an interrupted activation left in /run.
 
 EXAMPLES:
   nails emergency                     Kill the hidden session and return now
@@ -224,9 +235,13 @@ Show the session, security posture and hidden volume
 **Usage:** `nails status [OPTIONS]`
 
 EXAMPLES:
-  nails status                        Show the current state and uptime
-  nails status --details              Add resolved paths and overlay details
-  nails status --json                 Emit a machine-readable envelope
+  sudo /mnt/data/nails status             Show the current state and uptime
+  sudo /mnt/data/nails status --details   Add resolved paths and overlay details
+  sudo /mnt/data/nails status --json      Emit a machine-readable envelope
+
+The configuration `init` writes is readable by root only, so status runs with
+sudo like the other commands, by the binary's full path: sudo's secure_path
+never includes the hidden volume.
 
 ###### **Options:**
 
@@ -347,10 +362,13 @@ EXAMPLES:
 ###### **Options:**
 
 * `--overlay-only` — Check as for `activate --overlay-only` (skip the hidden NixOS build checks)
-* `--nixos-flake <FLAKE_REF>` — NixOS layer: check a specific flake reference as <path>#<host> (e.g. /etc/nixos#myhost)
+* `--nixos-flake <FLAKE_REF>` — NixOS layer: check a specific flake reference as <path>#<host> (e.g. /mnt/data/nixos#my-host)
 * `--accept-persistent-decoy` — Report a persistent decoy posture as a warning instead of a failure
 
    Mirrors `activate --accept-persistent-decoy` so `check`/`--dry-run` reflects what activation would do.
+* `--allow-decoy-storage` — Report a hidden root on this computer's own storage as a warning
+
+   Mirrors `activate --allow-decoy-storage`: a root this computer's own storage seems to hold then warns instead of failing. A folder that is no mount point, a covered root and storage that cannot be judged still fail.
 
 
 
@@ -370,9 +388,9 @@ EXAMPLES:
 
 ###### **Options:**
 
-* `--allow-unmounted` — Initialize a path that is not a mounted volume of its own
+* `--allow-decoy-storage` — Initialize a volume that this computer's own storage seems to hold
 
-   By default `init` refuses a target that shares a device with `/`, because writing the NAILS layout onto the decoy disk is exactly the mistake that leaves an identifying tree where the real volume later hides it. Pass this for a directory-style backend that is deliberately not a separate mount.
+   By default `init` refuses a target that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it), because writing the NAILS layout there leaves an identifying tree on this computer's disk. Use this flag only for storage you know this computer does not use; it turns those refusals into a warning. A folder that is no mount point, a target with a second filesystem mounted over it, and one whose storage cannot be judged are still refused.
 * `--hardware-config <PATH>` — Base hardware configuration to seed the hidden NixOS layout from
 
    Overrides the default `/etc/nixos/hardware-configuration.nix`. On a non-NixOS host the layout is skipped unless this is given.

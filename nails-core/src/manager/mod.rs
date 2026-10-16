@@ -16,7 +16,7 @@ pub mod preflight_runner;
 pub mod session_flow;
 pub mod state_management;
 
-pub use preflight_runner::{RegistryInputs, build_registry};
+pub use preflight_runner::{PreflightOptions, RegistryInputs, build_registry};
 pub use session_flow::{EnterOptions, EnterOutcome, SessionRecovery};
 pub use state_management::ResetUpperPlan;
 
@@ -45,6 +45,9 @@ pub struct NailsManager<F: Filesystem> {
     verbosity: crate::verbosity::Verbosity,
     /// The startup environment snapshot.
     runtime_env: crate::RuntimeEnv,
+    /// The attach-gate refusals this activation's own writes accept (set from
+    /// [`EnterOptions::allow_decoy_storage`]).
+    allow: crate::hidden_root::Allow,
 }
 
 impl<F: Filesystem> std::fmt::Debug for NailsManager<F> {
@@ -79,6 +82,7 @@ impl<F: Filesystem> NailsManager<F> {
             platform_override: None,
             verbosity: crate::verbosity::Verbosity::default(),
             runtime_env: (*crate::runtime_env::current()).clone(),
+            allow: crate::hidden_root::Allow::Nothing,
         }
     }
 
@@ -186,7 +190,12 @@ impl<F: Filesystem> NailsManager<F> {
     /// only; `overlay_only` stages nothing).
     pub fn stage_hidden_config(&self, overlay_only: bool) -> Result<()> {
         if let Some(layer) = self.config_layer().filter(|_| !overlay_only) {
-            layer.stage(&self.filesystem, &self.config.hidden_volume_root, false)?;
+            layer.stage(
+                &self.filesystem,
+                &self.config.hidden_volume_root,
+                false,
+                self.allow,
+            )?;
         }
         Ok(())
     }
@@ -225,7 +234,7 @@ mod platform_wiring_tests {
     /// needs no real /etc files.
     fn fhs_host() -> MockFilesystem {
         let fs = MockFilesystem::new();
-        fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"12\"\n");
+        fs.mock_add_file("/etc/os-release", "ID=debian\nVERSION_ID=\"13\"\n");
         fs.mock_add_file("/proc/1/comm", "systemd");
         fs
     }

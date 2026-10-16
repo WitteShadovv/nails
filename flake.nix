@@ -49,10 +49,13 @@
         targets = [ targetTriple ];
       };
 
-      # Dedicated musl cross toolchain for the canonical release build.
+      # Dedicated musl cross toolchain for the canonical release build. It has
+      # no rust-src: with the sources installed, rustc writes their store path
+      # into std's panic locations, and the binary then keeps this whole
+      # toolchain alive at run time. Without them the locations keep rustc's
+      # own /rustc/<commit> prefix.
       pkgsMusl = pkgs.pkgsCross.musl64;
       rustToolchainMusl = pkgsMusl.buildPackages.rust-bin.stable.${rustChannel}.default.override {
-        extensions = [ "rust-src" ];
         targets = [ targetTriple ];
       };
       rustPlatformMusl = pkgsMusl.makeRustPlatform {
@@ -80,8 +83,25 @@
         ];
       };
 
+      # rustc links a +crt-static musl binary against the musl that ships with
+      # the Rust toolchain (1.2.5 in Rust 1.93), not the C toolchain's, unless
+      # self-contained linking is off. With it off, libc.a and musl's crt files
+      # (crt1/rcrt1/Scrt1.o, crti.o, crtn.o) come from pkgsMusl's musl: the one
+      # nixpkgs patches and the one the release SBOM names (nails.libc). The
+      # crtbegin/crtend files come from the GCC of pkgsMusl's C toolchain. The
+      # link still needs the Rust toolchain's libunwind.a; this directory holds
+      # it alone, so the bundled libc.a cannot come along.
+      rustLibunwind = pkgs.linkFarm "rust-libunwind-${rustChannel}" [
+        {
+          name = "libunwind.a";
+          path = "${rustToolchainMusl}/lib/rustlib/${targetTriple}/lib/self-contained/libunwind.a";
+        }
+      ];
+
       reproducibleRustFlags = lib.concatStringsSep " " [
         "-C target-feature=+crt-static"
+        "-C link-self-contained=no"
+        "-L native=${rustLibunwind}"
         "-C link-arg=-Wl,--build-id=none"
         "--remap-path-prefix=/build/source=."
       ];
@@ -92,35 +112,11 @@
       releaseName = "nails-${workspaceVersion}-${targetTriple}";
       releaseArchiveName = "${releaseName}.tar.gz";
 
-      # Vendored crate dependencies. crates.io now returns HTTP 403 for the legacy
-      # /api/v1/<name>/<version>/download endpoint that this pinned nixpkgs'
-      # importCargoLock uses by default (it rejects the fetcher's default curl
-      # User-Agent), which breaks vendoring whenever Cargo.lock changes. We rewrite
-      # only the download URL to the static CDN, which serves the same
-      # content-addressed tarballs. This is scoped to importCargoLock's fetchurl, so
-      # the global package set (and cross-compilation splicing) is untouched, and it
-      # leaves the generated cargo config's crates-io source alone (unlike
-      # extraRegistries, which would define a duplicate crates-io source).
-      cratesVendor =
-        (pkgs.rustPlatform.importCargoLock.override {
-          fetchurl =
-            args:
-            pkgs.fetchurl (
-              args
-              // {
-                url =
-                  builtins.replaceStrings
-                    [ "https://crates.io/api/v1/crates" ]
-                    [
-                      "https://static.crates.io/crates"
-                    ]
-                    args.url;
-              }
-            );
-        })
-          {
-            lockFile = ./Cargo.lock;
-          };
+      # Vendored crate dependencies, downloaded from crates.io's static CDN
+      # (static.crates.io), which importCargoLock uses by default.
+      cratesVendor = pkgs.rustPlatform.importCargoLock {
+        lockFile = ./Cargo.lock;
+      };
 
       # Canonical release binary: static x86_64-unknown-linux-musl.
       nails = rustPlatformMusl.buildRustPackage rec {
@@ -154,6 +150,29 @@
         # the same from one commit to the next.
         SOURCE_DATE_EPOCH = "315532800";
         CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS = reproducibleRustFlags;
+
+        # The C library linked into the binary; release.yml puts its version
+        # into the SBOM.
+        passthru.libc = pkgsMusl.stdenv.cc.libc;
+
+        # The linker map lists every file the link loaded. The build fails
+        # unless libc.a and musl's crt files (crt1/rcrt1/Scrt1.o, crti.o,
+        # crtn.o) all came from passthru.libc. GCC's crtbegin/crtend files are
+        # not musl's, so the check leaves them out.
+        preBuild = ''
+          export NIX_LDFLAGS_AFTER_${pkgsMusl.stdenv.cc.suffixSalt}+=" -Map=$NIX_BUILD_TOP/nails.map"
+        '';
+        postBuild = ''
+          libc=${passthru.libc}/lib
+          loaded=$(grep -oE '[^ ()]+/(libc\.a|[rS]?crt1\.o|crt[in]\.o)' "$NIX_BUILD_TOP/nails.map" | sort -u) || true
+          if ! grep -qxF "$libc/libc.a" <<< "$loaded" || grep -vqF "$libc/" <<< "$loaded"; then
+            printf 'nails must take libc.a and the musl crt files (crt1/rcrt1/Scrt1.o, crti.o, crtn.o) from %s only; the link loaded:\n%s\n' "$libc" "$loaded" >&2
+            exit 1
+          fi
+        '';
+
+        # The binary must not name the toolchain that built it.
+        disallowedReferences = [ rustToolchainMusl ];
 
         doCheck = false;
 
@@ -311,7 +330,9 @@
           zizmor
           lychee # scripts/docs-check.sh link-checks the Markdown docs
           just
-          python3 # ci/*.py checks; tomllib needs Python 3.11 or newer
+          # The Python that pyproject.toml targets, for ci/, scripts/ and the
+          # E2E helpers; nix/checks.nix runs the same one.
+          python314
           ruff
           mypy
           cargo-deny

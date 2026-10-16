@@ -15,7 +15,7 @@ use crate::filesystem::Filesystem;
 
 /// Legacy NixOS configuration, probed when no flake is found.
 const LEGACY_CONFIG: &str = "/etc/nixos/configuration.nix";
-/// System-wide flake location.
+/// The decoy's own flake directory.
 const ETC_FLAKE_DIR: &str = "/etc/nixos";
 /// Newest-generation system profile; its mere presence means the host is NixOS.
 const SYSTEM_PROFILE: &str = "/nix/var/nix/profiles/system";
@@ -27,8 +27,13 @@ pub(crate) const NIXOS_COMMAND_DIRS: &[&str] = &[NIXOS_SYSTEM_PROFILE_BIN, "/run
 ///
 /// Run when no explicit flake is configured. In order:
 ///
-/// 1. a `flake.nix` in `<hidden_volume_root>/nixos`.
-/// 2. a `flake.nix` in `/etc/nixos`.
+/// 1. a `flake.nix` in `<hidden_volume_root>/nixos`, unless that directory is
+///    a link to `/etc/nixos`: the decoy's own flake then, as in step 2.
+/// 2. a `flake.nix` in `/etc/nixos`: the decoy's own flake, which
+///    [`HostTarget::DecoyFlake`] reports for refusal. Built from the decoy's
+///    files, it could not import the hidden module (the decoy's `/etc/nixos`
+///    must not name the hidden volume), and the legacy configuration beside it
+///    would be built without the flake's inputs.
 /// 3. a legacy `/etc/nixos/configuration.nix`, or a present system profile.
 /// 4. otherwise [`HostTarget::None`].
 ///
@@ -41,14 +46,23 @@ pub(crate) fn discover_nixos_target<F: Filesystem>(
     fs: &F,
     hidden_volume_root: &Path,
 ) -> Result<HostTarget> {
-    let hidden_flake_dir = hidden_volume_root.join("nixos");
-    if fs.path_exists(&hidden_flake_dir.join("flake.nix"))? {
-        return Ok(HostTarget::Flake(hidden_flake_dir));
+    match hidden_flake(fs, hidden_volume_root) {
+        HiddenFlake::Present => return Ok(HostTarget::Flake(hidden_volume_root.join("nixos"))),
+        HiddenFlake::DecoyFlake => {
+            return Ok(HostTarget::DecoyFlake {
+                dir: PathBuf::from(ETC_FLAKE_DIR),
+                hidden_volume_root: hidden_volume_root.to_path_buf(),
+            });
+        }
+        HiddenFlake::Missing => {}
     }
 
     let etc_flake_dir = PathBuf::from(ETC_FLAKE_DIR);
     if fs.path_exists(&etc_flake_dir.join("flake.nix"))? {
-        return Ok(HostTarget::Flake(etc_flake_dir));
+        return Ok(HostTarget::DecoyFlake {
+            dir: etc_flake_dir,
+            hidden_volume_root: hidden_volume_root.to_path_buf(),
+        });
     }
 
     let legacy_config = PathBuf::from(LEGACY_CONFIG);
@@ -57,6 +71,78 @@ pub(crate) fn discover_nixos_target<F: Filesystem>(
     }
 
     Ok(HostTarget::None)
+}
+
+/// What `<hidden_volume_root>/nixos` holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HiddenFlake {
+    /// No flake.
+    Missing,
+    /// A flake of its own.
+    Present,
+    /// The decoy's own flake: the directory resolves to `/etc/nixos`, through
+    /// a link.
+    DecoyFlake,
+}
+
+/// What `<hidden_volume_root>/nixos` holds: a flake of its own, none, or the
+/// decoy's own flake through a link, which is no way around the refusal
+/// [`HostTarget::DecoyFlake`] carries.
+pub fn hidden_flake<F: Filesystem>(fs: &F, hidden_volume_root: &Path) -> HiddenFlake {
+    let dir = hidden_volume_root.join("nixos");
+    if !fs.path_exists(&dir.join("flake.nix")).unwrap_or(false) {
+        HiddenFlake::Missing
+    } else if is_decoy_flake_dir(fs, &dir) {
+        HiddenFlake::DecoyFlake
+    } else {
+        HiddenFlake::Present
+    }
+}
+
+/// The decoy's own flake directory when `flake_ref` names it and `/etc/nixos`
+/// holds a flake: a local reference (an absolute path, `path:`, `git+file:`
+/// or `file:`, or a relative one) whose directory is `/etc/nixos` once both
+/// are resolved and its `dir` parameter is applied, so `/etc/nixos/`,
+/// `/etc/nixos?ref=main`, `path:/etc?dir=nixos`, `git+file:///etc?dir=nixos`
+/// and a link to the directory name it too. Naming it explicitly is no way
+/// around the refusal [`HostTarget::DecoyFlake`] carries.
+pub(crate) fn explicit_decoy_flake<F: Filesystem>(fs: &F, flake_ref: &str) -> Option<PathBuf> {
+    let (base, _) = crate::nixos::split_flake_ref(flake_ref);
+    let dir = local_flake_path(base)?;
+    is_decoy_flake_dir(fs, &dir).then(|| PathBuf::from(ETC_FLAKE_DIR))
+}
+
+/// Whether `/etc/nixos` holds a flake and `dir` is that directory once both
+/// are resolved.
+fn is_decoy_flake_dir<F: Filesystem>(fs: &F, dir: &Path) -> bool {
+    let etc = Path::new(ETC_FLAKE_DIR);
+    fs.path_exists(&etc.join("flake.nix")).unwrap_or(false)
+        && resolved(fs, dir) == resolved(fs, etc)
+}
+
+/// The directory a local flake reference names, its `dir` parameter applied;
+/// `None` for a remote one.
+fn local_flake_path(base: &str) -> Option<PathBuf> {
+    let (location, dir) = crate::nixos::location_and_dir(base);
+    for scheme in ["git+file:", "file:"] {
+        if let Some(rest) = location.strip_prefix(scheme) {
+            // `git+file:///etc/nixos`: an empty authority before the path.
+            let path = rest.strip_prefix("//").unwrap_or(rest);
+            return path
+                .starts_with('/')
+                .then(|| crate::nixos::with_dir(PathBuf::from(path), dir));
+        }
+    }
+    crate::nixos::resolve_local_flake_dir(base).ok().flatten()
+}
+
+/// `path` with its links resolved where it can be, and with `.` components
+/// and a trailing slash dropped.
+fn resolved<F: Filesystem>(fs: &F, path: &Path) -> PathBuf {
+    fs.canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .components()
+        .collect()
 }
 
 /// First-class NixOS backend.
@@ -102,82 +188,6 @@ pub(super) mod tests_support {
     }
 }
 
-/// The discovery cascade, exercised against NixOS host fixtures. These are the
-/// only `/etc/nixos` discovery fixtures: callers (manager, pre-flight, CLI) pin
-/// the target with a `FakePlatform` instead.
 #[cfg(test)]
-mod discovery_tests {
-    use super::*;
-    use crate::filesystem::{MockFilesystem, PathKind};
-
-    const HIDDEN_ROOT: &str = "/mnt/hidden";
-
-    fn discover(fs: &MockFilesystem) -> HostTarget {
-        Platform::discover_build_target(&NixOsPlatform, fs, Path::new(HIDDEN_ROOT)).unwrap()
-    }
-
-    #[test]
-    fn explicit_flake_wins_over_probes() {
-        let fs = tests_support::full_nixos_host();
-        let target = super::super::discover_with_platform(
-            &NixOsPlatform,
-            &fs,
-            Path::new(HIDDEN_ROOT),
-            Some("gh:me/cfg#host"),
-            false,
-        )
-        .unwrap();
-        assert_eq!(
-            target,
-            HostTarget::ExplicitFlake("gh:me/cfg#host".to_string())
-        );
-    }
-
-    #[test]
-    fn hidden_volume_flake_preferred() {
-        let fs = tests_support::full_nixos_host();
-        assert_eq!(
-            discover(&fs),
-            HostTarget::Flake(PathBuf::from("/mnt/hidden/nixos"))
-        );
-    }
-
-    #[test]
-    fn etc_flake_when_no_hidden_flake() {
-        let fs = MockFilesystem::new();
-        fs.mock_set_path_type("/etc/nixos/flake.nix", PathKind::File);
-        fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
-        assert_eq!(
-            discover(&fs),
-            HostTarget::Flake(PathBuf::from("/etc/nixos"))
-        );
-    }
-
-    #[test]
-    fn legacy_config_when_present() {
-        let fs = MockFilesystem::new();
-        fs.mock_set_path_type("/etc/nixos/configuration.nix", PathKind::File);
-        assert_eq!(
-            discover(&fs),
-            HostTarget::Legacy(PathBuf::from("/etc/nixos/configuration.nix"))
-        );
-    }
-
-    /// The agreement case: with only the system profile present, every path must
-    /// resolve to the same legacy target activation uses — no drift between
-    /// activate, `--dry-run`/`check`, and the `nixos-build-target` pre-flight.
-    #[test]
-    fn only_system_profile_resolves_to_legacy() {
-        let fs = MockFilesystem::new();
-        fs.mock_set_path_type("/nix/var/nix/profiles/system", PathKind::Dir);
-        assert_eq!(
-            discover(&fs),
-            HostTarget::Legacy(PathBuf::from("/etc/nixos/configuration.nix"))
-        );
-    }
-
-    #[test]
-    fn nothing_found_is_none() {
-        assert_eq!(discover(&MockFilesystem::new()), HostTarget::None);
-    }
-}
+#[path = "nixos_tests.rs"]
+mod discovery_tests;

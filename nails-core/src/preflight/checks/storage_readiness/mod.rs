@@ -9,7 +9,7 @@
 use super::super::{CheckResult, PreFlightCheck};
 use super::OverlayDirs;
 use crate::{Filesystem, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Required directories in hidden storage (design.tex Section 4.3.5)
 const REQUIRED_DIRS: &[&str] = &[
@@ -51,7 +51,7 @@ const REQUIRED_DIRS: &[&str] = &[
 /// ```rust,no_run
 /// use nails_core::preflight::{StorageReadinessCheck, OverlayDirs, PreFlightCheck};
 /// use nails_core::filesystem::MockFilesystem;
-/// use std::path::PathBuf;
+/// use std::path::{Path, PathBuf};
 ///
 /// let fs = MockFilesystem::new();
 /// let check = StorageReadinessCheck::new(
@@ -105,7 +105,7 @@ impl StorageReadinessCheck {
         &self,
         fs: &F,
         issues: &mut Vec<String>,
-        pending: &mut Vec<String>,
+        pending: &mut Vec<(PathBuf, String)>,
     ) -> Result<()> {
         let mut missing = Vec::new();
         for dir in REQUIRED_DIRS {
@@ -122,7 +122,7 @@ impl StorageReadinessCheck {
 
             for dir in &missing {
                 if self.read_only {
-                    pending.push(format!("{}/", dir));
+                    pending.push((self.hidden_volume_root.join(dir), format!("{}/", dir)));
                     continue;
                 }
                 let path = self.hidden_volume_root.join(dir);
@@ -158,7 +158,7 @@ impl StorageReadinessCheck {
         fs: &F,
         overlay: &OverlayDirs,
         issues: &mut Vec<String>,
-        pending: &mut Vec<String>,
+        pending: &mut Vec<(PathBuf, String)>,
     ) -> Result<()> {
         let mut lower_ok = true;
         // Lower must exist and be readable
@@ -198,10 +198,9 @@ impl StorageReadinessCheck {
         let mut upper_exists = fs.path_exists(&overlay.upper)?;
         if !upper_exists {
             if self.read_only {
-                pending.push(format!(
-                    "{} upper ({})",
-                    overlay.name,
-                    overlay.upper.display()
+                pending.push((
+                    overlay.upper.clone(),
+                    format!("{} upper ({})", overlay.name, overlay.upper.display()),
                 ));
             } else {
                 match fs.create_directory(&overlay.upper) {
@@ -248,10 +247,9 @@ impl StorageReadinessCheck {
         let mut work_exists = fs.path_exists(&overlay.work)?;
         if !work_exists {
             if self.read_only {
-                pending.push(format!(
-                    "{} work ({})",
-                    overlay.name,
-                    overlay.work.display()
+                pending.push((
+                    overlay.work.clone(),
+                    format!("{} work ({})", overlay.name, overlay.work.display()),
                 ));
             } else {
                 match fs.create_directory(&overlay.work) {
@@ -314,12 +312,36 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
         // Directories activation would auto-create. In read-only mode they are
         // reported here instead of being created, so a fresh-but-sound volume
         // warns rather than fails.
-        let mut pending: Vec<String> = Vec::new();
+        let mut pending: Vec<(PathBuf, String)> = Vec::new();
 
         self.ensure_required_dirs(fs, &mut issues, &mut pending)?;
         for overlay in &self.overlays {
             self.check_overlay(fs, overlay, &mut issues, &mut pending)?;
         }
+        // Each directory once, and the root overlay's upper apart: the entry
+        // makes it itself, with the decoy root's mode and owner (an overlay's
+        // root directory takes them from its upper), so a fresh volume
+        // has none yet by design.
+        let mut listed: Vec<PathBuf> = Vec::new();
+        pending.retain(|(path, _)| {
+            let first = !listed.contains(path);
+            listed.push(path.clone());
+            first
+        });
+        let root_upper = self
+            .overlays
+            .iter()
+            .find(|overlay| overlay.lower == Path::new("/"))
+            .map(|overlay| overlay.upper.clone());
+        let (by_design, pending): (Vec<_>, Vec<_>) = pending
+            .into_iter()
+            .partition(|(path, _)| Some(path) == root_upper.as_ref());
+        let made_at_entry = (!by_design.is_empty()).then(|| {
+            format!(
+                "activation creates {} with the decoy root's mode and owner",
+                by_design[0].0.display()
+            )
+        });
 
         if !issues.is_empty() {
             Ok(CheckResult::fail(format!(
@@ -327,14 +349,23 @@ impl<F: Filesystem> PreFlightCheck<F> for StorageReadinessCheck {
                 issues.join(". ")
             )))
         } else if !pending.is_empty() {
-            Ok(CheckResult::Warn(format!(
+            let mut message = format!(
                 "Hidden storage usable; activation will create: {}",
-                pending.join(", ")
-            )))
+                pending
+                    .iter()
+                    .map(|(_, label)| label.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+            if let Some(note) = made_at_entry {
+                message.push_str(&format!("; {note}"));
+            }
+            Ok(CheckResult::Warn(message))
         } else {
-            Ok(CheckResult::Pass(
-                "Hidden storage ready: all directories accessible".to_string(),
-            ))
+            Ok(CheckResult::Pass(match made_at_entry {
+                Some(note) => format!("Hidden storage ready: {note}"),
+                None => "Hidden storage ready: all directories accessible".to_string(),
+            }))
         }
     }
 }

@@ -1,25 +1,22 @@
 # Testing strategy
 
 This document says which test tier covers which kind of behaviour, and when a
-mock is still the right tool. The decision behind it is
-[ADR 0006](adr/0006-real-kernel-test-tier.md). How to run each tier locally is
-in the [development guide](development-guide.md#test-tiers); the CI jobs are in
+mock is still the right tool. How to run each tier locally is in the
+[development guide](development-guide.md#test-tiers); the CI jobs are in
 [ci.md](ci.md).
 
-The evidence that led here (the bugs that passed every unit test and failed only
-in a VM, and the migration that followed) was gathered on the earlier
-live-overlay code. It is kept in
-[history/testing-strategy-live-overlay.md](history/testing-strategy-live-overlay.md).
+The tiers grew out of bugs that passed every unit test and failed only in a VM,
+found on the earlier live-overlay code; the next section names some of them.
 
 ## Why mocks are not enough
 
-[ADR 0002](adr/0002-trait-filesystem-testability.md) put filesystem access
-behind the `Filesystem` trait so orchestration can be tested without root. Each
-test double encodes a belief about the kernel or a tool, and nothing checks that
-belief unless a test also runs against the real thing. Past examples: overlayfs
-reporting its own anonymous device rather than the upper's, the kernel printing
-mount options octal-escaped, `redirect_dir=off` meaning different things on
-different kernel builds, and a closed stderr turning `eprintln!` into a panic.
+Filesystem access sits behind the `Filesystem` trait so orchestration can be
+tested without root. Each test double encodes a belief about the kernel or a
+tool, and nothing checks that belief unless a test also runs against the real
+thing. Past examples: overlayfs reporting its own anonymous device rather than
+the upper's, the kernel printing mount options octal-escaped, `redirect_dir=off`
+meaning different things on different kernel builds, and a closed stderr
+turning `eprintln!` into a panic.
 
 Ordered by how much NAILS depends on the behaviour and how wrong a mock can be,
 these need a real kernel or a booted system:
@@ -56,7 +53,8 @@ What runs in this tier:
 | --- | --- |
 | `nails-core/tests/whole_root_kernel.rs` | The session's own mechanics on real mounts: the root overlay and its upper, the read-only ESP, the fstab policy, the transition step against a live mount table, the way back, the cgroup kill, rollback of a failed entry, the chrooted NixOS activation and the kept store closure |
 | `nails-cli/tests/early_dispatch.rs` | `emergency` detaching a leftover next root before it reads the configuration |
-| `nails-core/tests/kernel_semantics.rs` | Mountinfo round trips of awkward layer paths; `copy_tree` leaving source atimes untouched on a `strictatime` filesystem |
+| `nails-cli/tests/maintenance_cli.rs` and the `kernel_tests` modules of `rehearse_cli.rs`, `cli_contract.rs`, `activate_gate.rs`, `nails-cli/src/cli/logging/tests.rs` and `nails-cli/src/cli/commands/init/tests.rs` | The real binary's write paths (state, lock, rehearsal state, log file, the init layout) on a tmpfs hidden root, through the real attach gate: the binary they spawn inherits the namespace, so no test hook stands in for a mounted volume. `activate_gate.rs` also mounts a second tmpfs over the root and checks that neither receives a file, and that `activate --json` writes only lines of its schema to stdout |
+| `nails-core/tests/kernel_semantics.rs` | Mountinfo round trips of awkward layer paths; `copy_tree` leaving source atimes untouched on a `strictatime` filesystem; a root's `/etc/fstab` read without touching its atime on a `relatime` filesystem; the mount queries answering for the mount a lookup reaches (a stacked one, none under a covering mount) |
 | `nails-core/tests/filesystem_contract.rs` | One file contract and one mount-query contract, run against `MockFilesystem` and `RealFilesystem` (tier d) |
 | `nails-core/tests/privileged_mounts.rs` | Overlay behaviour through `nix::mount`; all but the whiteout test run rootless |
 | `nails-cli/tests/broken_pipe.rs` | The stderr helpers surviving a reader that has gone |

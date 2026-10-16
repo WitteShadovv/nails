@@ -14,6 +14,8 @@ fn plan(root: &Path) -> Plan {
     Plan {
         version: PLAN_VERSION,
         hidden_root: root.to_path_buf(),
+        hidden_dev: None,
+        accepted_decoy_storage: None,
         upper: root.join("root/upper"),
         work: root.join("root/work"),
         owner: None,
@@ -32,6 +34,7 @@ fn plan(root: &Path) -> Plan {
             kind: PolicyMountKind::ReadOnlyBind,
         }],
         masks: vec!["dev-vda3.swap".into()],
+        boot_masks: Vec::new(),
         session_units: Vec::new(),
         backend: Vec::new(),
         tools: Tools::default(),
@@ -39,8 +42,10 @@ fn plan(root: &Path) -> Plan {
         entered_at: Some(1_700_000_000),
         run_noexec: false,
         carried: Vec::new(),
+        decoy_mounts: Vec::new(),
         read_only_disks: false,
         failed_at_entry: Vec::new(),
+        kernel_settings: Vec::new(),
     }
 }
 
@@ -81,6 +86,95 @@ fn the_hidden_session_reports_active_with_its_uptime_policy_and_system() {
         Some("/dev/mapper/data")
     );
     assert!(!report.opsec_reminders.is_empty(), "6 h and more remind");
+}
+
+fn covered_by(report: &StatusReport) -> Option<&str> {
+    report
+        .hidden_root_covered_by
+        .as_ref()
+        .map(|cover| cover.source.as_str())
+}
+
+#[test]
+fn a_disk_mounted_over_the_hidden_volume_is_named() {
+    let dir = tempfile::tempdir().unwrap();
+    let cmd = command(dir.path());
+    let mut recorded = plan(dir.path());
+    recorded.hidden_dev = Some("253:0".into());
+    let view = SessionView::Hidden(Box::new(recorded));
+    let root = dir.path().display();
+    let volume = format!(
+        "1 0 0:40 / / rw - overlay overlay rw,upperdir={root}/root/upper
+\
+         2 1 253:0 / {root} rw - ext4 /dev/mapper/data rw
+"
+    );
+    let report = cmd
+        .report(&view, &parse_mountinfo(&volume), Utc::now())
+        .unwrap();
+    assert_eq!(report.hidden_root_covered_by, None);
+
+    let covered = format!(
+        "{volume}3 2 8:33 / {root} rw - vfat /dev/sdc1 rw
+"
+    );
+    let report = cmd
+        .report(&view, &parse_mountinfo(&covered), Utc::now())
+        .unwrap();
+    assert_eq!(covered_by(&report), Some("/dev/sdc1"));
+    // A plan without the device still loads; the stack shows the cover.
+    let report = cmd
+        .report(
+            &SessionView::Hidden(Box::new(plan(dir.path()))),
+            &parse_mountinfo(&covered),
+            Utc::now(),
+        )
+        .unwrap();
+    assert_eq!(covered_by(&report), Some("/dev/sdc1"));
+}
+
+#[test]
+fn a_cover_is_found_through_a_symlinked_root_and_on_its_parent() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = dir.path().canonicalize().unwrap();
+    let volume_dir = base.join("mnt/data");
+    std::fs::create_dir_all(&volume_dir).unwrap();
+    let link = base.join("hidden");
+    std::os::unix::fs::symlink(&volume_dir, &link).unwrap();
+    let cmd = command(&link);
+    let mut recorded = plan(&link);
+    recorded.hidden_dev = Some("253:0".into());
+    let view = SessionView::Hidden(Box::new(recorded));
+    let (base, volume_dir) = (base.display(), volume_dir.display());
+    let volume = format!(
+        "1 0 0:40 / / rw - overlay overlay rw\n\
+         2 1 253:0 / {volume_dir} rw - ext4 /dev/mapper/data rw\n"
+    );
+    let report = cmd
+        .report(&view, &parse_mountinfo(&volume), Utc::now())
+        .unwrap();
+    assert!(
+        report.hidden_root_mounted,
+        "the link resolves to the volume"
+    );
+    assert_eq!(report.hidden_root_covered_by, None);
+
+    let covered = format!("{volume}3 2 8:33 / {volume_dir} rw - vfat /dev/sdc1 rw\n");
+    let report = cmd
+        .report(&view, &parse_mountinfo(&covered), Utc::now())
+        .unwrap();
+    assert_eq!(covered_by(&report), Some("/dev/sdc1"));
+
+    // A stick on a parent of the volume hides it as well.
+    let on_parent = format!("{volume}4 1 8:49 / {base}/mnt rw - vfat /dev/sdd1 rw\n");
+    let report = cmd
+        .report(&view, &parse_mountinfo(&on_parent), Utc::now())
+        .unwrap();
+    assert_eq!(covered_by(&report), Some("/dev/sdd1"));
+    assert_eq!(
+        report.hidden_root_covered_by.unwrap().mount_point,
+        Path::new(&format!("{base}/mnt"))
+    );
 }
 
 #[test]

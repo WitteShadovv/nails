@@ -64,9 +64,10 @@ pub fn execute(
     let (config, config_source) = super::load_config_for_teardown(config_override);
     tracing::info!("Recovery using the {}", config_source.describe());
     let state_path = config.state_file_path.clone();
+    let hidden_root = config.hidden_volume_root.clone();
     let mut manager =
         NailsManager::new(RealFilesystem, config, state_path.clone()).with_runtime_env(env.clone());
-    let _state_lock = super::acquire_state_lock_for_emergency(&state_path);
+    let _state_lock = super::acquire_state_lock_for_emergency(&hidden_root, &state_path);
 
     match manager.recover_session(&nails_core::session::RealEntryHost) {
         Ok(outcome) => {

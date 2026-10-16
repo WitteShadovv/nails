@@ -8,9 +8,16 @@
 //! inherit when it runs in the decoy home. It is distinct from the
 //! [`config::persona`](crate::config::persona) table, which decides *how* the
 //! hidden session relates to the decoy account; this module reports *what* that
-//! choice would carry over, and provides the data the inherited-autostart
+//! choice would carry over, judges which of it needs the operator's review
+//! ([`classify`], [`review`]), and provides the data the inherited-autostart
 //! pre-flight check, `nails check` and the activation-time masking all consume.
 
+mod autostart;
+pub mod classify;
 pub mod inventory;
+pub mod review;
 
-pub use inventory::{InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona};
+pub use inventory::{
+    InheritedSource, PersonaEntry, PersonaInventory, PersonaSource, collect_inherited_persona,
+};
+pub use review::{EntryStatus, MaskKind, MaskTarget};

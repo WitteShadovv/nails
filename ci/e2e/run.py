@@ -194,7 +194,9 @@ def eval_drvs(
 
 # Host memory one running test can take: a 2 GiB guest (4 GiB for the
 # graphical profile, which the reserve absorbs), QEMU and the driver, and the
-# raw disk images the forensic tests write into the build directory.
+# raw disk images the forensic tests write into the build directory. Measured
+# with virtiofs and the guest RAM in a shared memfd over a full run of the
+# suite, a test with a 2 GiB guest peaked at 2.2 GiB.
 GIB_PER_TEST = 3.5
 # Host memory kept free for the Nix daemon, the desktop and the page cache.
 RESERVED_GIB = 3.0

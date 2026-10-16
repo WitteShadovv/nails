@@ -1,6 +1,6 @@
 title: nails -h
 command: nails -h
-caption: Real output of `nails -h` from nails 0.2.0, built from this repository with `cargo build -p nails-cli`.
+caption: Real output of `nails -h`, built from this repository with `cargo build -p nails-cli`.
 ---
 Run a hidden session on a decoy Linux system
 

@@ -29,14 +29,19 @@ const RECENT_LOG_LIMIT: usize = 20;
 ///
 /// Keeps the *newest* [`RECENT_LOG_LIMIT`] matching entries, in chronological
 /// order, via a bounded queue so a large log never buffers in full. Returns the
-/// formatted lines with timestamps and levels painted in `style`. The file is
-/// only read, never written, so its size and mtime are untouched.
-fn read_recent_logs(
+/// formatted lines with timestamps (in `zone`, as the report's other times)
+/// and levels painted in `style`. The file is only read, never written, so its
+/// size and mtime are untouched.
+fn read_recent_logs<Tz: chrono::TimeZone>(
     log_path: &std::path::Path,
     activated_at: Option<chrono::DateTime<chrono::Utc>>,
     show_debug: bool,
     style: nails_core::output::Style,
-) -> Option<Vec<String>> {
+    zone: &Tz,
+) -> Option<Vec<String>>
+where
+    Tz::Offset: std::fmt::Display,
+{
     use nails_core::output::Tone;
     use std::collections::VecDeque;
     use std::fs::File;
@@ -90,7 +95,7 @@ fn read_recent_logs(
                     std::borrow::Cow::Borrowed(raw_message)
                 };
 
-                let time = log_time.format("%H:%M:%S").to_string();
+                let time = log_time.with_timezone(zone).format("%H:%M:%S").to_string();
                 let level_painted = match level {
                     "ERROR" => style.paint_bold(level, Tone::Red),
                     "WARN" => style.paint_bold(level, Tone::Yellow),

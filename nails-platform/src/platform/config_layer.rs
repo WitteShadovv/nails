@@ -4,17 +4,18 @@
 //! The declarative config layer: the NixOS-only part of the session.
 //!
 //! On NixOS the hidden session can run its own system toplevel, built from a
-//! hidden configuration (ADR 0008, section 3). [`ConfigLayer`] is the seam for
-//! what that needs before the entry: staging the hidden configuration in the
-//! root upper's `/etc/nixos`, and the pre-flight checks that inspect it. A host
-//! without a layer (FHS / Debian) never runs them; its hidden configuration is
-//! whatever the upper's `/etc` holds. The build and the activation of the hidden
+//! hidden configuration. [`ConfigLayer`] is the seam for what that needs before
+//! the entry: staging the hidden configuration in the root upper's
+//! `/etc/nixos`, and the pre-flight checks that inspect it. A host without a
+//! layer (FHS / Debian) never runs them; its hidden configuration is whatever
+//! the upper's `/etc` holds. The build and the activation of the hidden
 //! toplevel are in `nails_session::session::nixos`.
 
 use std::path::Path;
 
 use crate::Result;
 use crate::filesystem::Filesystem;
+use crate::hidden_root::Allow;
 use crate::nixos::{stage_hidden_config_symlink, stage_hidden_nixos_config};
 use crate::preflight::{NixOSConfigCheck, PreFlightCheck, SuspiciousNailsReferenceCheck};
 
@@ -28,7 +29,14 @@ pub trait ConfigLayer<F: Filesystem>: std::fmt::Debug + Send + Sync {
     fn preflight_checks(&self, hidden_volume_root: &Path) -> Vec<Box<dyn PreFlightCheck<F>>>;
 
     /// Stage the hidden configuration on the hidden volume.
-    fn stage(&self, fs: &F, hidden_volume_root: &Path, overlay_only: bool) -> Result<()>;
+    /// `allow` is what the operator accepted of the attach gate's refusals.
+    fn stage(
+        &self,
+        fs: &F,
+        hidden_volume_root: &Path,
+        overlay_only: bool,
+        allow: Allow,
+    ) -> Result<()>;
 
     /// Stage only the link from the hidden `/etc/nixos` to the hidden module.
     fn stage_symlink(&self, fs: &F, hidden_volume_root: &Path) -> Result<()>;
@@ -51,8 +59,14 @@ impl<F: Filesystem> ConfigLayer<F> for NixOsConfigLayer {
         ))]
     }
 
-    fn stage(&self, fs: &F, hidden_volume_root: &Path, overlay_only: bool) -> Result<()> {
-        stage_hidden_nixos_config(fs, hidden_volume_root, overlay_only)
+    fn stage(
+        &self,
+        fs: &F,
+        hidden_volume_root: &Path,
+        overlay_only: bool,
+        allow: Allow,
+    ) -> Result<()> {
+        stage_hidden_nixos_config(fs, hidden_volume_root, overlay_only, allow)
     }
 
     fn stage_symlink(&self, fs: &F, hidden_volume_root: &Path) -> Result<()> {

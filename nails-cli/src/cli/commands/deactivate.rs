@@ -7,7 +7,8 @@
 //! at `/run/nextroot`, the hidden backend marked for closing), records the
 //! state as inactive and enqueues the soft-reboot. The orderly shutdown stops
 //! every hidden program, the transition scrubs `/run`, and the decoy starts at
-//! its own login screen. `--poweroff` powers off instead.
+//! its own login screen (a display manager set to log an account in
+//! automatically logs it in again, as at boot). `--poweroff` powers off instead.
 
 use std::io::IsTerminal;
 use std::path::Path;
@@ -17,7 +18,7 @@ use nails_core::session::{LeaveTo, RealTargetHost};
 
 use crate::cli::args::DeactivateArgs;
 use crate::cli::output::deactivate::{deactivate_error_body, print_deactivate_json};
-use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::envelope::{ErrorBody, report_cancelled, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Execute the deactivate command.
@@ -70,17 +71,23 @@ pub fn execute(
                 ),
             );
         }
-        if !prompt_deactivate_confirmation(settings, args.poweroff) {
-            return report_error(
-                json,
-                "deactivate",
-                ExitStatus::Failed,
-                ErrorBody::new("cancelled", "deactivation cancelled; nothing changed"),
-            );
+        if let Some(status) = confirm_or_cancel(
+            settings,
+            args.poweroff,
+            &mut std::io::stderr(),
+            &mut std::io::stdin().lock(),
+        ) {
+            return status;
         }
     }
 
-    let _state_lock = match super::acquire_state_lock_or_report(&state_path, "deactivate", json) {
+    let _state_lock = match super::acquire_state_lock_or_report(
+        &manager.config().hidden_volume_root,
+        nails_core::hidden_root::Allow::Nothing,
+        &state_path,
+        "deactivate",
+        json,
+    ) {
         Ok(lock) => lock,
         Err(status) => return status,
     };
@@ -112,14 +119,15 @@ pub fn execute(
         ));
         if !args.poweroff {
             crate::cli::output::println_tolerating_broken_pipe(
-                "  The decoy starts at its own login screen in a few seconds.",
+                "  The decoy starts at its own login screen in a few seconds (a display manager \
+                 set to log an account in automatically logs it in again, as at boot).",
             );
         }
     }
     crate::cli::output::flush_stdio();
     match manager.leave_session(to, &host) {
         Ok(report) => {
-            tracing::info!(
+            tracing::debug!(
                 backend_closing = ?report.deferred,
                 unmounted = ?report.unmounted,
                 "the way back is enqueued"
@@ -135,20 +143,35 @@ pub fn execute(
     }
 }
 
-/// Prompt on the terminal before deactivating, returning whether the operator
-/// confirmed. The warning and question go to stderr so stdout stays clean.
-fn prompt_deactivate_confirmation(settings: &OutputSettings, poweroff: bool) -> bool {
-    confirm_deactivate(
-        settings,
-        poweroff,
-        &mut std::io::stderr(),
-        &mut std::io::stdin().lock(),
-    )
+/// The notice of an answer other than yes at the prompt.
+const CANCELLED: &str = "Deactivation cancelled; nothing was changed.";
+
+/// Ask before deactivating ([`confirm_deactivate`]), on stderr (`err`) so
+/// stdout stays clean. On an answer other than yes, report the cancel, which
+/// changed nothing, and return the status to exit with: the neutral notice
+/// `activate` gives on `err`, or under `--json` the error envelope with the
+/// code `cancelled` on stdout. `None` when the operator confirmed.
+fn confirm_or_cancel(
+    settings: &OutputSettings,
+    poweroff: bool,
+    err: &mut impl std::io::Write,
+    input: &mut impl std::io::BufRead,
+) -> Option<ExitStatus> {
+    if confirm_deactivate(settings, poweroff, err, input) {
+        return None;
+    }
+    Some(report_cancelled(
+        err,
+        settings.is_json(),
+        settings.stderr_style(),
+        "deactivate",
+        CANCELLED,
+    ))
 }
 
-/// [`prompt_deactivate_confirmation`] on the given streams: the warning goes to
-/// `out`, the answer is read from `input`. Only `y` or `yes` (any case)
-/// confirms; anything else, or a read error, declines.
+/// Prompt before deactivating, returning whether the operator confirmed: the
+/// warning goes to `out`, the answer is read from `input`. Only `y` or `yes`
+/// (any case) confirms; anything else, or a read error, declines.
 fn confirm_deactivate(
     settings: &OutputSettings,
     poweroff: bool,

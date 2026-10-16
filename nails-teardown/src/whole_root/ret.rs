@@ -1,29 +1,38 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Preparing the way back to the plain decoy root (ADR 0008, section 5).
+//! Preparing the way back to the plain decoy root.
 //!
 //! Shared by `deactivate` and `emergency`, both running in the hidden session:
 //!
 //! 1. mount the decoy root device at `/run/nextroot`. It is the same superblock
 //!    as the overlay's lower, so the mount writes nothing;
-//! 2. put the decoy filesystems the hidden session carried back in place
-//!    ([`crate::whole_root::carry`]), so a decoy store on its own filesystem
-//!    is there for the init check;
+//! 2. make the decoy's mounts again in the order the decoy mounted them, from
+//!    the decoy root and the filesystems the hidden session carried, each with
+//!    its per-mount options ([`crate::whole_root::decoy_mounts`]): the
+//!    filesystems the fstab policy placed, mounts stacked on them, binds such
+//!    as NixOS's read-only store, so a decoy store on its own filesystem is
+//!    there for the init check and the decoy starts with every mount it had.
+//!    A plan written without that record puts back the carried filesystems
+//!    alone ([`crate::whole_root::carry`]);
 //! 3. bind `/run` there (PID 1's init check on NixOS resolves
-//!    `/run/current-system` inside the new root) and make the tree private;
+//!    `/run/current-system` inside the new root) and make everything below
+//!    the decoy root private (its own mount stays shared until the switch, see
+//!    [`crate::whole_root::nextroot`]);
 //! 4. check the decoy init resolves in it;
 //! 5. mark the hidden backend's device-mapper stack for deferred removal, so its
 //!    key leaves the kernel the moment the switch releases the hidden volume;
 //! 6. arm the plan for the way back.
 //!
-//! The caller then enqueues the soft-reboot. The transition step
+//! [`mount_decoy_root`] takes the first four steps, [`complete_decoy_root`]
+//! the second to the fourth on a decoy root mounted already. The caller then
+//! enqueues the soft-reboot. The transition step
 //! ([`crate::whole_root::transition`]) does the rest.
 
 use crate::mountinfo::{MountEntry, parse_overlay_opts, read_mountinfo, top_mount_at};
 use crate::whole_root::plan::{Arm, Direction, Plan, RootSide};
 use crate::whole_root::tools;
-use crate::whole_root::{carry, nextroot};
+use crate::whole_root::{carry, decoy_mounts, nextroot};
 use std::path::{Path, PathBuf};
 
 /// Whether this process runs in the hidden root of `plan`: `/` is an overlay
@@ -51,6 +60,9 @@ pub fn init_before_repoint(side: &RootSide) -> PathBuf {
 pub enum ReturnError {
     /// The decoy root could not be mounted at `/run/nextroot`.
     Mount(String),
+    /// A mount of the decoy could not be made again below it, or `/run` not
+    /// bound into it.
+    DecoyMounts(String),
     /// The decoy root failed the init check.
     Precheck(String),
     /// The plan could not be armed.
@@ -61,6 +73,9 @@ impl std::fmt::Display for ReturnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ReturnError::Mount(e) => write!(f, "could not mount the decoy root: {e}"),
+            ReturnError::DecoyMounts(e) => {
+                write!(f, "could not make the decoy's mounts again: {e}")
+            }
             ReturnError::Precheck(e) => write!(f, "the decoy root is not bootable: {e}"),
             ReturnError::Arm(e) => write!(f, "could not arm the way back: {e}"),
         }
@@ -69,36 +84,78 @@ impl std::fmt::Display for ReturnError {
 
 impl std::error::Error for ReturnError {}
 
-/// Mount the decoy root at `nextroot` with `run` bound into it, and check it.
-/// On failure nothing is left mounted there.
-pub fn mount_decoy_root(plan: &Plan, nextroot: &Path, run: &Path) -> Result<(), ReturnError> {
+/// Mount the decoy root at `nextroot` with the decoy's mounts and `run` bound
+/// into it, and check it ([`complete_decoy_root`]). The plan's record of the
+/// decoy's mounts gets the ID each one has now, which the transition gives
+/// their `utab` lines; the caller writes the plan. On failure nothing is left
+/// mounted there.
+pub fn mount_decoy_root(plan: &mut Plan, nextroot: &Path, run: &Path) -> Result<(), ReturnError> {
     if read_mountinfo().is_ok_and(|e| nextroot::is_mount_point(&e, nextroot)) {
         nextroot::detach_tree(nextroot);
     }
+    let mounted = std::fs::create_dir_all(nextroot)
+        .map_err(|e| ReturnError::Mount(e.to_string()))
+        .and_then(|()| {
+            nextroot::mount_device(
+                &plan.decoy_root.source,
+                &plan.decoy_root.fstype,
+                plan.decoy_root.data.as_deref(),
+                nextroot,
+            )
+            .map_err(|e| ReturnError::Mount(format!("{}: {e}", plan.decoy_root.source.display())))
+        });
+    match mounted {
+        Ok(()) => complete_decoy_root(plan, nextroot, run),
+        Err(e) => {
+            give_up(plan, nextroot);
+            Err(e)
+        }
+    }
+}
+
+/// The rest of [`mount_decoy_root`], once the decoy root is mounted at
+/// `nextroot`: make the decoy's mounts again below it from the plan's record
+/// of them, or, for a plan written without that record, put the carried
+/// filesystems back ([`carry::restore`]); bind `run` there and make everything
+/// below the decoy root private; check the decoy init resolves in it. On
+/// failure nothing is left mounted at `nextroot`, the decoy root included,
+/// and no decoy mount keeps an ID the way back gave it.
+pub fn complete_decoy_root(
+    plan: &mut Plan,
+    nextroot: &Path,
+    run: &Path,
+) -> Result<(), ReturnError> {
     let result = (|| {
-        std::fs::create_dir_all(nextroot).map_err(|e| ReturnError::Mount(e.to_string()))?;
-        nextroot::mount_device(
-            &plan.decoy_root.source,
-            &plan.decoy_root.fstype,
-            plan.decoy_root.data.as_deref(),
-            nextroot,
-        )
-        .map_err(|e| ReturnError::Mount(format!("{}: {e}", plan.decoy_root.source.display())))?;
-        carry::restore(&plan.carried, nextroot).map_err(|e| ReturnError::Mount(e.to_string()))?;
+        if plan.decoy_mounts.is_empty() {
+            carry::restore(&plan.carried, nextroot)
+        } else {
+            decoy_mounts::restore(&mut plan.decoy_mounts, &plan.carried, nextroot)
+        }
+        .map_err(|e| ReturnError::DecoyMounts(e.to_string()))?;
         nextroot::bind(
             run,
             &nextroot.join(run.strip_prefix("/").unwrap_or(run)),
             false,
         )
-        .map_err(|e| ReturnError::Mount(format!("bind of {}: {e}", run.display())))?;
-        nextroot::make_rprivate(nextroot).map_err(|e| ReturnError::Mount(e.to_string()))?;
+        .map_err(|e| ReturnError::DecoyMounts(format!("bind of {}: {e}", run.display())))?;
+        nextroot::make_below_private(nextroot)
+            .map_err(|e| ReturnError::DecoyMounts(e.to_string()))?;
         nextroot::precheck(nextroot, &init_before_repoint(&plan.decoy))
             .map_err(|e| ReturnError::Precheck(e.to_string()))
     })();
     if result.is_err() {
-        nextroot::detach_tree(nextroot);
+        give_up(plan, nextroot);
     }
     result
+}
+
+/// Undo a way back that failed halfway: detach everything at `nextroot` and
+/// forget the IDs the way back gave the decoy's mounts.
+fn give_up(plan: &mut Plan, nextroot: &Path) {
+    nextroot::detach_tree(nextroot);
+    for mount in &mut plan.decoy_mounts {
+        mount.restored = None;
+    }
 }
 
 /// Mark the plan's device-mapper stack for deferred removal, top first.

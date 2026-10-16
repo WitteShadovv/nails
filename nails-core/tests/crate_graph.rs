@@ -1,12 +1,13 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The dependency graph between the workspace crates (ADR 0010).
+//! The dependency graph between the workspace crates.
 //!
 //! Cargo already refuses a cycle. This test pins the direction on top of
 //! that: each crate may depend only on the NAILS crates listed here, so a new
 //! edge (the platform reaching for the session, verification reaching for the
-//! orchestration) is a deliberate change to this table and to the ADR.
+//! orchestration) is a deliberate change to this table and to the crate
+//! graph in docs/architecture.md.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};

@@ -43,8 +43,16 @@ The claims below hold only when all of these are true:
   written to a decoy disk.
 - **Volatile journald.** The journal lives in RAM only, so what the decoy logs
   around each soft-reboot (the activation command, the decoy's shutdown before
-  the switch and its start after the way back; see
-  [Residual channels](#residual-channels)) never reaches disk.
+  the switch and its start after the way back) never reaches disk. The hidden
+  session writes the same runtime journal, and the way back deletes it with the
+  decoy's records from before the session, so the decoy journal starts again at
+  the return; see [Residual channels](#residual-channels).
+- **Storage of its own, prepared elsewhere.** The hidden volume is a device,
+  partition or encrypted volume the decoy does not use, created on another
+  computer or from a setup medium, never on the decoy itself. NAILS refuses a
+  root on the decoy's storage ([the attach gate](#the-attach-gate)) but cannot
+  see what creating a volume on the decoy left behind; see
+  [Where setup happens](operator-guide.md#where-setup-happens).
 - **Trusted root.** The NAILS binary, its configuration and the hidden flake on
   the hidden volume are intact. NAILS runs as root and performs no runtime
   self-integrity check.
@@ -91,8 +99,9 @@ forensic claims are made for. What NAILS offers there:
 - **No session residue on the decoy, except the residual channels.** After a
   clean teardown the overlays leave nothing of the hidden session on the decoy
   disk beyond the channels in [Residual channels](#residual-channels), each of
-  which an amnesic decoy bounds. `verify` and `nails rehearse` let the operator
-  check this on their own machine before relying on it.
+  which an assumption or a documented mitigation bounds. `verify` and
+  `nails rehearse` let the operator check this on their own machine before
+  relying on it.
 - **No enabler on the decoy.** The binary, configuration and hidden NixOS
   module live on the hidden volume, and nothing on the decoy knows about them
   (see the [Invariant](#invariant)).
@@ -176,16 +185,24 @@ upper changes.
   configuration changes it), and in `shared-home` the hidden session also
   inherits the decoy account's autostart entries, enabled user services and
   timers, lingering and display-manager autologin. `nails check` inventories
-  them, and `[persona] mask_inherited` writes masks for autostart entries and
-  user units into the upper at entry, so they never run in the hidden session.
-  Lingering and autologin are reported, not masked.
+  them and reports those that need review (anything the desktop or the
+  distribution does not ship, and known trace writers such as sync clients),
+  and `[persona] mask_inherited` writes masks for autostart entries and user
+  units into the upper at entry, so they never run in the hidden session.
+  Lingering and autologin are reported, not masked; autologin logs the account
+  in again at every switch, and can be turned off in the hidden session's own
+  configuration (see the
+  [operator guide](operator-guide.md#inherited-autostart-services-and-autologin)).
 - **Network identity.** The overlay does not change machine-id, hostname, MAC
   addresses or NetworkManager profiles (including VPN autoconnect). The kernel
-  keeps its interfaces and addresses across the soft-reboot; the network
-  daemons restart and reconnect. An optional hidden network-identity
+  keeps its interfaces and addresses across the soft-reboot, in both
+  directions: what the hidden session set up stays in the decoy until power-off
+  (see [residual channels](#residual-channels)); the network daemons restart and
+  reconnect. An optional hidden network-identity
   configuration (random MAC, distinct hostname; VPN autoconnect disabled per
   profile) can be applied in the hidden NixOS generation or as a NetworkManager
-  drop-in in the upper. It is opt-in.
+  drop-in in the upper. It is opt-in, and the way back does not undo it: end a
+  session that used it with `deactivate --poweroff`.
 - **Remote state, never rolled back.** Deactivation leaves the upper on the
   hidden volume and changes nothing else. Anything the hidden session sent through a
   shared account, token or sync client lives on the remote, and a decoy sync
@@ -223,6 +240,13 @@ How the code upholds this:
 - **Deactivation never installs.** It soft-reboots back into the plain decoy
   root, repointing `/run/current-system` to the decoy's toplevel; no firmware or
   bootloader is involved.
+- **No decoy entry opens the hidden volume.** A line in the decoy's
+  `/etc/crypttab` or `/etc/fstab` that opens or mounts the hidden volume (or a
+  device it is stored on), or carries `tcrypt-hidden` for a device on its drive
+  or one that cannot be found, is such an enabler: the `backend-entries`
+  pre-flight check refuses activation while one exists, and no flag overrides
+  it: `activate --no-preflight` still runs it on its own. A line that opens only
+  another volume on the same drive warns.
 
 This invariant is checked by the end-to-end tests `uefi-esp-nvram-invariant`
 and `soft-reboot-mechanics`: they hash the ESP file listing and capture the EFI
@@ -230,6 +254,72 @@ variable list (`efibootmgr -v` / efivarfs) before activation and after
 deactivation, and assert both are unchanged relative to a plain-reboot control
 (apart from `loader/random-seed`, which the decoy's own start refreshes, as any
 boot does).
+
+## The attach gate
+
+Every write NAILS makes goes to the hidden root, so every claim above assumes
+that the hidden root is storage of its own. One gate decides that before
+anything is written: `init`, `activate`, `check`, the log file, the state file
+and its lock, the staged NixOS configuration, the residue baseline and the
+rehearsal state all ask it first. It refuses:
+
+- a root that is not a mount point (a folder of `/`, `/home` or any other
+  filesystem): `init` refuses before it probes the folder, so its timestamps do
+  not change either;
+- a root that this computer's own storage holds: a btrfs subvolume or a bind
+  mount of a filesystem the decoy mounts, the filesystem the decoy's fstab
+  mounts there, a logical volume or other device stacked on the decoy's
+  storage or swap, or an unencrypted image file on a decoy filesystem;
+- a root with a second filesystem mounted over it (`root_covered`), and in the
+  hidden session a root whose filesystem is not the one the session started
+  from: the writes would reach the disk on top;
+- a root whose storage cannot be judged because `/etc/fstab` or `/etc/crypttab`
+  cannot be read (`storage_unjudged`; run the command with sudo), or the block
+  devices in `/sys/class/block` cannot be listed (`storage_unjudged`; run it as
+  root on the host, with `/sys` mounted), or because its filesystem shows no
+  disk it stores its data on: an overlay, a FUSE, network or ZFS filesystem, or
+  an image file on one that the decoy neither mounts at `/` or a system folder
+  such as `/home` nor lists in its fstab (`storage_unjudged`);
+- a root on an image file that no filesystem mounted here holds
+  (`storage_unjudged`). The filesystem that holds an image file is the one on
+  the device the loop driver recorded for the file, not the one its path leads
+  to now, so a filesystem mounted over the image's folder cannot make it look
+  separate. Reading that record needs root (`storage_unjudged`; run the
+  command with sudo).
+
+An encrypted container file on a decoy filesystem only warns: filesystem
+journals and copy-on-write snapshots of that filesystem can keep old copies of
+the parts of the container that changed. `--allow-decoy-storage` (on `init`,
+`activate` and `check`) turns the refusal of the decoy's storage into a
+warning; activation then repeats it in the logout confirmation, the session
+plan records it for `status`, and `rehearse plant` refuses, since a rehearsal
+on that storage cannot pass. The override never covers a folder, a covered
+root, storage that cannot be judged, or `backend-entries`. `--no-preflight`
+does not skip the gate.
+
+In the hidden session, `deactivate` refuses a covered root with `root_covered`:
+it would write its state onto the disk on top. `emergency` always runs, with or
+without the state lock; when the mounts the way back needs are covered too, it
+powers off instead of returning to the decoy. The session watcher writes no
+probe onto a covered root and raises no emergency for it; it raises one neutral
+desktop alert per covering mount ("Disk mounted over a folder in use", naming
+the disk and `sudo umount` on its mount point), and `status` names the disk,
+since every file saved under the root goes to that disk until it is unmounted.
+A disk mounted on a parent of the root (`/mnt` over a root at `/mnt/data`)
+hides the volume the same way and counts as a cover, not as a failed backend.
+
+The gate's limits: it judges the storage this computer's mount table, fstab,
+crypttab and sysfs describe. It cannot see a decoy filesystem mounted only by
+hand and never listed, storage another operating system on the same machine
+uses, or a remote block device's other users. It does not follow a ZFS dataset
+to the disks of its pool, so it refuses a hidden root on ZFS even on a pool of
+its own. Nor can it see the traces that creating the volume on this computer
+left behind (the setup tools' own files, shell history, a changed partition
+table): only preparing the volume elsewhere avoids them. A refusal names the
+storage and says nothing was written. The override is for storage the gate takes
+for the decoy's that the operator knows the decoy does not use (for example a
+disk its fstab lists but never mounts); everything written there lands on that
+storage.
 
 ## Residual channels
 
@@ -242,12 +332,15 @@ has the whole catalog.
 <!-- residue-catalog:begin residual -->
 | Channel | Why it survives the overlay | Bounded by | Detected by |
 |---|---|---|---|
-| [Journal window around each soft-reboot](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | The sudo command line, the hidden build's progress and the decoy's own shutdown and start are logged by the decoy journal, under one boot ID with a soft-reboot gap. | Run on a volatile journal, so the window stays in RAM; keep the binary at a neutral path. | `journal-scan` |
+| [Journal window around each soft-reboot](decoy-requirements.md#what-the-decoy-journal-keeps) | The decoy journal logs the sudo command line, the hidden build's progress and the decoy's own shutdown before the switch, and its start after the way back, under one boot ID. A persistent journal keeps them on the decoy disk, with a soft-reboot gap; a volatile journal holds them in RAM, where the way back deletes every record from before the return. | Run on a volatile journal, so the window never reaches the decoy disk; keep the binary at a neutral path. | `journal-scan` |
+| [Decoy journal reset by the way back](decoy-requirements.md#what-the-decoy-journal-keeps) | On a volatile decoy, anyone with a shell after the way back sees a journal that starts at the return, mid-uptime and without the kernel's boot records, while uptime and dmesg go back to the boot: the decoy's own records from before the session are gone with the hidden ones. | Power off after the session. | none: RAM only, gone at power-off |
 | [sudo log file](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | `Defaults logfile=` writes every sudo command line, including the activation command and binary path, to a file on the decoy disk. | Remove `Defaults logfile=` from sudoers and sudoers.d. | path probe (warn) |
 | [sudo I/O logging](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | `log_input`, `log_output` or the LOG_INPUT/LOG_OUTPUT tags record whole terminal sessions, keystrokes and output included, under iolog_dir on the decoy disk. | Remove every I/O logging option and tag from sudoers and sudoers.d. | path probe (warn) |
 | [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) | A disk the hidden session mounts itself is a real disk outside every overlay: a read-write mount takes the session's writes, and mounting it rw already writes its superblock. | The session watcher alerts on every read-write disk mount outside the hidden volume; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again. | none: verify cannot tell what a session wrote to another disk |
 | [Hidden kernel records imported by the decoy journal](#residual-channels) | Records logged after the hidden journald stopped (PID 1's stop lines, a late /dev/kmsg writer) would be imported by the decoy journal, on disk with a persistent journal. | The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last generic lines and the hidden filesystem's unmount line follow it. | `journal-scan` |
-| [Soft-reboot counter and boot ID](#residual-channels) | Anyone with a shell sees two soft-reboots per session; a persistent decoy journal shows a shutdown and start under one boot ID. | Power off after the session; keep the decoy journal volatile. | none: RAM only, gone at power-off |
+| [Network state the hidden session created or changed](operator-guide.md#how-it-works) | Links, addresses, routes and tunnels the session set up stay in the decoy after the way back, until power-off. The decoy's NetworkManager adopts a link the session created as connected externally and records the profile it generates for it, with the time, in /var/lib/NetworkManager/timestamps on the decoy disk; the hidden NetworkManager's per-link records below /run/NetworkManager lie deeper than the /run scrub looks. The random MAC address of the hidden network-identity snippet can stay on the decoy's own device, since a device keeps its current MAC address when its profile sets none, and on a decoy without /etc/hostname the hidden hostname stays. | Before deactivating, take down every connection and VPN tunnel you brought up and delete every link you created by hand (`ip link delete`), or end the session with `deactivate --poweroff`, which powers off before the decoy's NetworkManager starts. End a session that used the hidden network-identity snippet with `deactivate --poweroff` (or `emergency --poweroff`). | none: a link the decoy adopted looks like one the decoy made itself |
+| [Soft-reboot counter and boot ID](#residual-channels) | Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID. | Power off after the session; keep the decoy journal volatile. | none: RAM only, gone at power-off |
+| [The decoy's mounts made again by the way back](operator-guide.md#how-it-works) | Anyone with a shell sees with findmnt that the decoy's root and the mounts its initrd made (such as the store bind) were made again after the boot, where a plain soft-reboot keeps them. A mount made after the boot by hand or by a service comes back as well, where a plain soft-reboot unmounts it. A decoy mount the way back cannot make again (a filesystem that another mount covers at a place the session carries, NixOS's /etc overlay) is missing until it is mounted again. | The way back makes every decoy mount it can take from the decoy root or a filesystem the session carried again as the decoy had it when the entry began (its filesystem, the directory of it the mount shows, its place in a stack, its options), NixOS's read-only store bind included, and gives the decoy its utab lines back with them. Power off after the session. | none: RAM only, gone at power-off |
 | [EFI NVRAM, RTC and firmware pstore](#invariant) | These are not filesystem writes, so the overlay cannot redirect them; other software in the session can write them. | NAILS never writes NVRAM; avoid firmware tools inside the session. | none: EFI variables and firmware storage are not part of a disk image |
 | [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) | RAM holds hidden-session data until the machine is powered off; a warm reboot does not clear it. | Power off (`--poweroff`) before handing the machine over; boot the decoy with init_on_free=1. | `memory-swap` |
 | [timesyncd clock stamp](decoy-requirements.md#session-time-records) | systemd-timesyncd touches this file at every sync and at shutdown, so its mtime records when the machine last ran, which can fall after the decoy's last logged activity. | Session touches land in the upper; on a persistent decoy, use the decoy normally after a session so its own activity follows the stamp. | path probe (info) |
@@ -274,11 +367,13 @@ bypass the mount layer?", and that set is small and enumerable: the residual
 channels listed above, and the decoy filesystems the fstab policy has to
 handle. Residual risk is limited to those channels and
 to the shared state in the previous section, which the overlay does not claim to
-isolate.
+isolate. All of this assumes the upper is on storage of its own, which
+[the attach gate](#the-attach-gate) checks before the first write; an upper on
+the decoy's own storage would put every redirected write back on its disk.
 
 ## Known residual changes
 
-**`/var/lib/nixos` drift: settled by design, pending a VM run.**
+**`/var/lib/nixos` drift: settled by design and by a VM test.**
 
 On a NixOS decoy, `/var/lib/nixos` holds the declarative account bookkeeping
 (`declarative-users`, `declarative-groups`, `uid-map`, `gid-map`,
@@ -292,9 +387,9 @@ every later write go to the upper on the hidden volume. The VM test
 enters a hidden generation that declares a canary user and group
 (`hiddencanary`, uid/gid 64123), proves the canary is live in the hidden
 session, and asserts that after the way back the decoy's `/var/lib/nixos`,
-`/etc/passwd` and `/etc/group` are byte-identical to before. This section is
-closed once that test has run on a Nix host
-(`nix build .#legacyPackages.x86_64-linux.e2e.session-nixos-hidden-system`).
+`/etc/passwd` and `/etc/group` are byte-identical to before. The test passes
+(`nix build .#legacyPackages.x86_64-linux.e2e.session-nixos-hidden-system`), so
+no drift remains.
 
 ## Evaluation scope
 

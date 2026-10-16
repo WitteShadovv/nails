@@ -3,7 +3,7 @@
 
 //! # NAILS session library
 //!
-//! The parts of the whole-root soft-reboot session (ADR 0008) that need the
+//! The parts of the whole-root soft-reboot session that need the
 //! configuration: the entry, the fstab policy, the hidden NixOS build, the way
 //! back, the session's pre-flight checks and the probes `status` uses
 //! (`session`), the operator's persona in the hidden root (`persona`), and
@@ -13,7 +13,7 @@
 //! The mechanics that must run without any of this (the plan, the
 //! transition, the emergency hot path) are in `nails-teardown`. This crate
 //! builds on `nails-base`, `nails-platform` and `nails-teardown`; the
-//! dependency direction is recorded in ADR 0010.
+//! dependency direction is pinned by `nails-core/tests/crate_graph.rs`.
 
 // Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
 // may use it freely; production code opts in per site with a scoped allow.
@@ -27,10 +27,12 @@ nails_base::unit_test_mode!();
 #[cfg(test)]
 use nails_base::kernel_fixtures;
 use nails_base::{Filesystem, NailsError, Result};
-use nails_base::{artifacts, config, error, filesystem, preflight, process, reporter, target_user};
+use nails_base::{
+    artifacts, cancel, config, error, filesystem, preflight, process, reporter, target_user,
+};
 use nails_platform::nixos;
 
-// The whole-root session (ADR 0008): entry, way back, fstab policy, probes.
+// The whole-root session: entry, way back, fstab policy, probes.
 pub mod session;
 
 // Persona inventory: the decoy autostart/user-unit/linger/autologin state the
@@ -46,7 +48,9 @@ pub mod sleep_guard;
 // The in-session watcher over the hidden backend.
 pub mod watcher;
 
-pub use persona::{InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona};
+pub use persona::{
+    EntryStatus, InheritedSource, PersonaEntry, PersonaInventory, collect_inherited_persona,
+};
 
 #[cfg(test)]
 mod tests {

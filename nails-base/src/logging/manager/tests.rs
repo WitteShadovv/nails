@@ -5,6 +5,7 @@ use super::*;
 use crate::MockFilesystem;
 use crate::config::DEFAULT_HIDDEN_VOLUME_ROOT;
 use crate::filesystem::PathKind;
+use std::path::Path;
 
 // ========================================================================
 // LoggingManager struct tests
@@ -183,7 +184,6 @@ fn test_init_returns_none_when_root_shares_device_with_root_filesystem() {
     // The hidden root directory exists but sits on the same device as `/`, i.e.
     // nothing is mounted there. init() must degrade to stderr-only (Ok(None))
     // rather than writing logs onto the system disk.
-    use std::path::Path;
 
     let manager = LoggingManager::new(
         PathBuf::from("/mnt/data/logs"),
@@ -191,6 +191,7 @@ fn test_init_returns_none_when_root_shares_device_with_root_filesystem() {
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+    fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
     fs.mock_set_device_id(Path::new("/"), 1);
     fs.mock_set_device_id(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), 1);
 
@@ -209,6 +210,7 @@ fn test_init_fails_when_path_outside_hidden_volume() {
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+    fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
 
     let err = manager.init(&fs).unwrap_err();
     match &err {
@@ -227,6 +229,7 @@ fn test_init_creates_log_directory_when_missing() {
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+    fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
     fs.mock_set_path_exists("/mnt/data/logs", false);
     fs.mock_set_writable(DEFAULT_HIDDEN_VOLUME_ROOT, true);
 
@@ -243,6 +246,7 @@ fn test_init_succeeds_when_log_directory_exists() {
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+    fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
     fs.mock_set_path_exists("/mnt/data/logs", true);
 
     let result = manager.init(&fs);
@@ -257,6 +261,7 @@ fn test_init_returns_correct_log_file_path() {
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+    fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
     fs.mock_set_path_exists("/mnt/data/logs", true);
 
     let config = manager
@@ -277,6 +282,7 @@ fn test_init_with_traversal_path_fails() {
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+    fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
 
     let err = manager.init(&fs).unwrap_err();
     match &err {
@@ -299,6 +305,7 @@ fn test_init_fails_when_log_path_is_symlink() {
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+    fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
     fs.mock_set_path_exists("/mnt/data/logs", true);
     fs.mock_set_is_symlink("/mnt/data/logs", true);
 
@@ -323,6 +330,7 @@ fn test_init_succeeds_when_path_is_not_symlink() {
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(DEFAULT_HIDDEN_VOLUME_ROOT, true);
+    fs.mock_set_mounted(Path::new(DEFAULT_HIDDEN_VOLUME_ROOT), true);
     fs.mock_set_path_exists("/mnt/data/logs", true);
     fs.mock_set_is_symlink("/mnt/data/logs", false);
 
@@ -344,6 +352,7 @@ fn test_init_respects_configured_path_no_false_positive() {
     );
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists("/tmp", true);
+    fs.mock_set_mounted(Path::new("/tmp"), true);
     fs.mock_set_path_exists("/tmp/logs", true);
 
     let result = manager.init(&fs);
@@ -383,6 +392,7 @@ fn test_init_with_custom_hidden_volume_root() {
     let manager = LoggingManager::new(custom_root.join("logs"), custom_root.clone());
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists("/mnt/custom-secret", true);
+    fs.mock_set_mounted(Path::new("/mnt/custom-secret"), true);
     fs.mock_set_path_exists("/mnt/custom-secret/logs", true);
 
     let config = manager
@@ -402,6 +412,7 @@ fn test_init_with_realistic_custom_hidden_volume_root() {
     let manager = LoggingManager::new(custom_root.join("logs"), custom_root.clone());
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists("/mnt/backup-nails", true);
+    fs.mock_set_mounted(Path::new("/mnt/backup-nails"), true);
     fs.mock_set_path_exists("/mnt/backup-nails/logs", true);
 
     let result = manager.init(&fs);

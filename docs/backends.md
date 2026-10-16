@@ -18,16 +18,28 @@ filesystem label free of anything that hints at hidden storage: they surface in
 |---|---|---|
 | **Tested** | LUKS2 + ext4 on a whole block device | Every E2E run: `nix/e2e-tests/lib/hidden-volume.nix` formats a dedicated virtual disk with `cryptsetup luksFormat`, opens it and creates ext4 inside. |
 | **Tested** | VeraCrypt hidden volume, opened with `cryptsetup open --type tcrypt --tcrypt-hidden`, ext4 inside | The VeraCrypt VM test in `nix/e2e-tests/tests/backends/` creates an outer and a hidden VeraCrypt volume with the `veracrypt` console tool, opens the hidden one with `cryptsetup`, runs a session over it and images the decoy root. It runs in every E2E run that rebuilds the tests (each pull request that changes the code, each push to `main`) and nightly. The whole configuration on real hardware was evaluated by hand once. |
+| **Tested** | A directory on a separate local disk, bind-mounted at the hidden root | The `bind-mounted-root` VM test: an ext4 disk that the decoy does not mount or list in its fstab, with a directory of it bound at `/mnt/data`. A bind of a folder of a filesystem the decoy uses is refused (see below). |
+| **Refused** | A folder; a btrfs subvolume or a bind mount of a filesystem the decoy uses; the filesystem the decoy's fstab mounts; a logical volume or other device stacked on the decoy's storage or swap; an unencrypted image file on a decoy filesystem | Not storage of its own: everything written there lands on the decoy's disk. Refused by the attach gate before anything is written; the `preflight-decoy-filesystem` VM test covers the folder, subvolume, bind, image-file and fstab-filesystem cases. A folder is always refused; `--allow-decoy-storage` turns the other refusals into a warning, for storage you know the decoy does not use. |
 | **Expected to work** | Any local Linux filesystem that passes the preflight probes (ext4, xfs, btrfs, f2fs) on any kernel block device, including iSCSI and NBD devices | Untested. The preflight probes decide. Network traffic to a remote block device is outside the host-side threat model, and the connection must survive the soft-reboots, which stop every userspace daemon (an iSCSI or NBD client among them). |
-| **Unsupported** | NFS, CIFS/SMB, sshfs, 9p and most FUSE filesystems as the hidden root; FAT, exFAT, NTFS | Cannot host an overlayfs upper layer. Refused by the `upper-fs-capability` preflight check. |
+| **Unsupported** | NFS, CIFS/SMB, sshfs, 9p, overlays, FUSE filesystems and ZFS datasets as the hidden root; FAT, exFAT, NTFS | The attach gate refuses a filesystem that shows no disk it stores its data on (`storage_unjudged`), since where its writes land cannot be told. A ZFS dataset is one: its mount names only its pool, and the gate does not read which disks the pool is on. An image file on such a filesystem is refused the same way, unless the decoy mounts that filesystem at `/` or one of its system folders (`/home`, `/var` and the like) or lists it in its fstab; there an encrypted container only warns, as on any decoy filesystem. FAT, exFAT and NTFS cannot host an overlayfs upper layer and are refused by the `upper-fs-capability` preflight check. |
 | **Not evaluated** | Shufflecake; volumes mounted by the VeraCrypt application itself | No claims. `backend-detect` names a Shufflecake (`sflc_<dev>_<vol>`) volume in its summary, but no Shufflecake-specific hazards are checked. A cross-backend E2E matrix is not part of the suite yet. |
 
 ## Requirements for the hidden root
 
 Whatever the backend, the filesystem at the hidden root must:
 
-- **be mounted and writable** at `hidden_volume_root` (preflight check
-  `hidden-volume`);
+- **be storage of its own**, mounted and writable at `hidden_volume_root`
+  (preflight check `hidden-volume`, which asks the attach gate): a mount point,
+  with no second filesystem mounted over it, on no storage the decoy uses (see
+  [the attach gate](threat-model.md#the-attach-gate)). An encrypted container
+  file on a filesystem the decoy uses is accepted with a warning: that
+  filesystem's journal and copy-on-write snapshots (btrfs, snapper) can keep old
+  copies of the parts of the container that changed, so a whole device or a
+  partition the decoy does not use is better. Only root can read the loop
+  device's record of where the container file lives, so run `init` and
+  `check` on a root in a file container with sudo: unprivileged they refuse it
+  with `storage_unjudged` (and `status` and `verify` log to stderr only). `--allow-decoy-storage` accepts the
+  decoy's storage with a warning, never a folder;
 - **support symbolic links** (`symlink-support`);
 - **support `trusted.*` xattrs, report a file type (`d_type`) from readdir, and
   store overlayfs whiteouts** (`upper-fs-capability`). The check proves this
@@ -63,7 +75,7 @@ device, follows the device-mapper and loop layers in `/sys` and reports:
 | Discards are enabled on a tcrypt or plain dm-crypt mapping | `dm/uuid` starts with `CRYPT-TCRYPT-` or `CRYPT-PLAIN-` and `queue/discard_max_bytes` is non-zero | Close the mapping and open it again without `--allow-discards`. See [Discards](#discards-trim). |
 | The hidden root lives in a file container | A loop device in the stack has a `loop/backing_file` | Accept the [timestamp exposure](#timestamps) or move to a whole-device hidden volume. |
 | The container sits on a copy-on-write filesystem | The container file's filesystem is btrfs, zfs or bcachefs | Prefer a whole-device hidden volume; at least disable automatic snapshots of that filesystem. |
-| The loop device is backed by a file on a FUSE mount | The backing file's filesystem is `fuse.*` (for example the VeraCrypt application without kernel crypto) | Open the volume with cryptsetup so the kernel manages the mapping. |
+| The loop device is backed by a file on a FUSE mount | The backing file's filesystem is `fuse.*` (for example the VeraCrypt application without kernel crypto) | The attach gate already refuses such a root (`storage_unjudged`) before the check runs. Open the volume with cryptsetup so the kernel manages the mapping. |
 | The LUKS2 header stores the persistent `allow-discards` flag | `config.flags` in the LUKS2 JSON header, read from the device below the mapping | `cryptsetup refresh --persistent <name>` without `--allow-discards`, then check `cryptsetup luksDump` reports `(no flags)`. |
 | The LUKS2 header carries a `systemd-tpm2`, `systemd-fido2` or `systemd-pkcs11` token | `tokens.*.type` in the LUKS2 JSON header | The token names the unlock method in plain text, and a TPM2 token seals the key to this machine's TPM, binding the volume to the host. Remove it with `systemd-cryptenroll --wipe-slot` or `cryptsetup token remove` if the volume must not point at this machine. |
 
@@ -96,7 +108,10 @@ sudo cryptsetup open --type tcrypt --veracrypt --tcrypt-hidden \
 sudo mount /dev/mapper/data /mnt/data
 ```
 
-cryptsetup attaches the container to a free loop device itself.
+cryptsetup attaches the container to a free loop device itself. Run
+`nails init` and `nails check` on such a root with sudo: the attach gate reads
+the loop device's record of the container's filesystem, which only root can
+read.
 
 - **Discard policy:** never pass `--allow-discards`, neither for the hidden
   volume nor for the outer volume. See [Discards](#discards-trim).
@@ -182,7 +197,11 @@ Every backend leaves the same traces on the decoy side while you unlock it:
   volatile (journald `Storage=volatile`) or on impermanent storage.
 - **Persistent configuration.** Never list the hidden volume in
   `/etc/crypttab`, `/etc/fstab` or the decoy NixOS configuration
-  (`boot.initrd.luks.devices`, `fileSystems`).
+  (`boot.initrd.luks.devices`, `fileSystems`). The `backend-entries`
+  pre-flight check refuses activation while a crypttab or fstab line opens or
+  mounts the hidden volume, or a device it is stored on; a line that opens only
+  another volume on the same drive warns (see
+  [crypttab and fstab](decoy-requirements.md#crypttab-and-fstab)).
 
 `nails deactivate` and `nails emergency` close the hidden backend themselves:
 before the soft-reboot back they mark its device-mapper stack for deferred

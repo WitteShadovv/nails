@@ -10,11 +10,15 @@
 //! their sources is not always possible (a virtio 9p channel takes one mount
 //! at a time) and would lose what a tmpfs held. So the entry carries them:
 //!
-//! - at entry, each decoy filesystem the fstab policy placed in the hidden root
-//!   is bound, read-only and non-recursively, onto a directory on the hidden
-//!   volume inside `/run/nextroot`. Mounts below `/run/nextroot` become the new
-//!   tree, so the hidden session holds them;
-//! - on the way back, [`restore`] binds each one at its own mount point in the
+//! - at entry, each decoy filesystem the fstab policy placed in the hidden root,
+//!   and each RAM filesystem the decoy's initrd mounted, is bound, read-only and
+//!   non-recursively, onto a directory on the hidden volume inside
+//!   `/run/nextroot`. Mounts below `/run/nextroot` become the new tree, so the
+//!   hidden session holds them;
+//! - on the way back the decoy's mounts are made again from them and from the
+//!   decoy root, in the order the decoy mounted them and with their options
+//!   ([`crate::whole_root::decoy_mounts`]). For a plan without that record,
+//!   [`restore`] binds each carried filesystem at its own mount point in the
 //!   decoy root at `/run/nextroot`, parents first, and makes it writable again
 //!   when the decoy had it so.
 //!

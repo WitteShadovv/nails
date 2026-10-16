@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/activate.schema.json",
   "title": "NAILS activate --json",
-  "description": "A single line of the activate --json NDJSON stream. Each line is one document: zero or more progress events, then exactly one terminal line, which is either a result event (the entry was prepared, the session was already active, or preparing it failed) or a plain error envelope (a pre-dispatch failure such as a usage, config or state error). The result is printed before the soft-reboot, which ends the process.",
+  "description": "A single line of the activate --json NDJSON stream. Each line is one document: zero or more progress events, then exactly one terminal line, which is either a result event (the entry was prepared, the session was already active, the operator cancelled it, or preparing it failed) or a plain error envelope (a pre-dispatch failure such as a usage, config or state error). The result is printed before the soft-reboot, which ends the process.",
   "oneOf": [
     {
       "title": "progress event",
@@ -64,6 +64,7 @@
             "entering",
             "entering_with_warnings",
             "already_active",
+            "cancelled",
             "error"
           ]
         },
@@ -85,7 +86,7 @@
           }
         },
         "masked_units": {
-          "description": "Decoy units masked in the hidden root (swap, unmounted disks).",
+          "description": "The decoy units masked in the hidden root: swap, decoy filesystems it does not mount, and the boot-loader units.",
           "type": "array",
           "items": {
             "type": "string",

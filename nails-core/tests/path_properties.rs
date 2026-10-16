@@ -18,8 +18,8 @@
 //! Case counts are bounded so the suites run in the normal `cargo test` gate.
 
 use nails_core::config::ConfigBuilder;
+use nails_core::filesystem::mountinfo::root_is_hidden_overlay;
 use nails_core::filesystem::{escape_overlay_path, parse_mountinfo, parse_overlay_opts};
-use nails_core::session::probe::root_is_hidden_overlay;
 use nails_core::{NailsError, StateLock};
 use proptest::prelude::*;
 use std::path::{Path, PathBuf};

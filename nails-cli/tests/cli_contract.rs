@@ -24,6 +24,7 @@ use std::process::{Command, Output};
 
 use chrono::{DateTime, TimeZone, Utc};
 use insta_cmd::assert_cmd_snapshot;
+use nails_core::test_support::ScratchTmpfs;
 use nails_core::{StateFile, SystemState};
 use serde_json::Value;
 
@@ -84,6 +85,8 @@ fn fixed_instant() -> DateTime<Utc> {
 
 /// An isolated hidden root plus a strict `nails.toml` pointing at it.
 struct Harness {
+    // Declared first so a tmpfs hidden root is detached before the directories go.
+    _volume: Option<ScratchTmpfs>,
     _dir: tempfile::TempDir,
     config: PathBuf,
     hidden_root: PathBuf,
@@ -92,10 +95,27 @@ struct Harness {
 }
 
 impl Harness {
+    /// A hidden root that is a plain directory: the attach gate refuses it.
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let hidden_root = dir.path().join("hidden-volume");
         std::fs::create_dir_all(&hidden_root).unwrap();
+        Self::with_root(dir, hidden_root, None)
+    }
+
+    /// A hidden root that is a tmpfs of its own, which the attach gate accepts.
+    /// Build it only inside a `Rerun::in_user_mount_ns` body.
+    fn on_a_volume() -> Self {
+        let volume = ScratchTmpfs::new("");
+        let hidden_root = volume.path().to_path_buf();
+        Self::with_root(tempfile::tempdir().unwrap(), hidden_root, Some(volume))
+    }
+
+    fn with_root(
+        dir: tempfile::TempDir,
+        hidden_root: PathBuf,
+        volume: Option<ScratchTmpfs>,
+    ) -> Self {
         let state_path = hidden_root.join("state.json");
         let log_path = hidden_root.join("logs");
         let config = dir.path().join("nails.toml");
@@ -113,6 +133,7 @@ impl Harness {
         )
         .unwrap();
         Self {
+            _volume: volume,
             _dir: dir,
             config,
             hidden_root,
@@ -152,7 +173,11 @@ fn active_state() -> SystemState {
 
 /// Persist [`active_state`].
 fn write_active_harness() -> Harness {
-    let harness = Harness::new();
+    write_active(Harness::new())
+}
+
+/// [`Harness`] with an active state record written to it.
+fn write_active(harness: Harness) -> Harness {
     let file = StateFile {
         state: active_state(),
         ..StateFile::default()
@@ -504,9 +529,19 @@ fn status_reports_the_last_activation_duration() {
     assert_eq!(value["data"]["last_activation"]["duration_ms"], 92_000);
     assert!(value["data"].get("activation_in_flight").is_none());
 
-    let stdout = String::from_utf8(run(&harness.config, &[], &["status"]).stdout).unwrap();
+    // The human report shows the time in the local zone with its offset (TZ
+    // here, as POSIX rules so no zone database is needed); the JSON above
+    // keeps UTC.
+    let stdout =
+        String::from_utf8(run(&harness.config, &[("TZ", "UTC0")], &["status"]).stdout).unwrap();
     assert!(
-        stdout.contains("Last activation:    took 1m32s (finished 2023-11-14 22:13:20 UTC)"),
+        stdout.contains("Last activation:    took 1m32s (finished 2023-11-14 22:13:20 +00:00)"),
+        "{stdout}"
+    );
+    let stdout =
+        String::from_utf8(run(&harness.config, &[("TZ", "<+02>-2")], &["status"]).stdout).unwrap();
+    assert!(
+        stdout.contains("Last activation:    took 1m32s (finished 2023-11-15 00:13:20 +02:00)"),
         "{stdout}"
     );
 }
@@ -608,6 +643,14 @@ fn activate_schema_accepts_progress_result_and_error_lines() {
         "failed_checks": [{"name": "systemd-version", "reason": "systemd 252 is too old", "fix": "Use Debian 13"}]
     });
     assert_matches_schema(&schema, &refused);
+
+    let cancelled = serde_json::json!({
+        "schema_version": 1, "command": "activate", "type": "result",
+        "ok": false, "status": "cancelled", "duration": 0.0,
+        "filesystems": [], "masked_units": [],
+        "message": "Activation cancelled; nothing was changed."
+    });
+    assert_matches_schema(&schema, &cancelled);
 
     let error = serde_json::json!({
         "schema_version": 1, "command": "activate", "ok": false,
@@ -828,6 +871,28 @@ fn exit_code_4_preflight_refused_on_check() {
 }
 
 #[test]
+fn init_refuses_a_folder_with_not_separate_volume_and_writes_nothing() {
+    // A TempDir is a folder, never a mount point: the attach gate refuses it.
+    let dir = tempfile::tempdir().unwrap();
+    let output = nails()
+        .args(["--no-log-file", "init", "--no-hardware-config", "--json"])
+        .arg(dir.path())
+        .output()
+        .expect("run nails");
+    assert_eq!(output.status.code(), Some(4));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "not_separate_volume", "{value}");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .ends_with("Nothing was written."),
+        "{value}"
+    );
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}
+
+#[test]
 fn exit_code_5_needs_root_on_privileged_commands_run_unprivileged() {
     // The integration binary carries `test-hooks`, so the root gate is off by
     // default (the rest of the suite drives activate/deactivate/emergency
@@ -869,27 +934,6 @@ fn exit_code_5_needs_root_on_privileged_commands_run_unprivileged() {
             "{subcommand} must not create a log directory when refused",
         );
     }
-}
-
-#[test]
-fn reset_upper_follows_the_live_view_not_an_active_record() {
-    // reset-upper is refused only inside the hidden root. On the decoy an
-    // active record left behind does not block it.
-    let harness = write_active_harness();
-    // The temp hidden root shares `/`'s device; declare it attached so the state
-    // lock (which refuses an unmounted hidden root) lets the state check run.
-    let output = run(
-        &harness.config,
-        &[("NAILS_TEST_FORCE_ATTACHED", "1")],
-        &["reset-upper", CONTRACT_TARGET, "-y", "--json"],
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let value: Value = serde_json::from_str(stdout.trim().lines().next_back().unwrap_or(""))
-        .unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}): {stdout}"));
-    let code = output.status.code().unwrap_or(-1);
-    assert_eq!(code, 0, "{stdout}");
-    assert_eq!(value["command"], "reset-upper");
-    assert_eq!(value["ok"], true);
 }
 
 #[test]
@@ -948,5 +992,32 @@ fn collect_logs(dir: &Path, out: &mut Vec<PathBuf>) {
         } else if path.file_name().and_then(|n| n.to_str()) == Some("nails.log") {
             out.push(path);
         }
+    }
+}
+
+/// The cases that need the attach gate to accept the hidden root: each runs in
+/// an unprivileged user + mount namespace with a tmpfs as the hidden root, and
+/// the binary it spawns inherits that namespace.
+mod kernel_tests {
+    use super::*;
+    use nails_core::test_path;
+    use nails_core::test_support::Rerun;
+
+    #[test]
+    fn reset_upper_follows_the_live_view_not_an_active_record() {
+        let _ = Rerun::new(test_path!(
+            reset_upper_follows_the_live_view_not_an_active_record
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            // reset-upper is refused only inside the hidden root. On the decoy
+            // an active record left behind does not block it. The state lock
+            // refuses an unmounted hidden root, so the root is a tmpfs.
+            let harness = write_active(Harness::on_a_volume());
+            let (code, value) = run_json(&harness.config, &["reset-upper", CONTRACT_TARGET, "-y"]);
+            assert_eq!(code, 0, "{value:#}");
+            assert_eq!(value["command"], "reset-upper");
+            assert_eq!(value["ok"], true);
+        });
     }
 }

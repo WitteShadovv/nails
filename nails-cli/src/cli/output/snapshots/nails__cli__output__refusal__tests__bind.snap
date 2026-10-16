@@ -1,0 +1,9 @@
+---
+source: nails-cli/src/cli/output/refusal.rs
+expression: "human(&on(verdict), None)"
+---
+error: /mnt is not a volume of its own: it is a bind mount of a folder of /home. Nothing was written.
+  Setting up here would leave files on this computer's own disk, where an examination can find them.
+  Prepare the volume where nothing reaches this disk: on an external drive prepared on another computer (recommended), or from a setup medium (a live system started from a USB stick).
+  Then unlock and mount it here, and run the program from it.
+  Read "Where setup happens" in the operator guide on another device: opening it here leaves traces such as ~/.lesshst.

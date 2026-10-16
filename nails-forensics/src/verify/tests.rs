@@ -435,7 +435,7 @@ fn test_memory_status_with_swap_enabled() {
     // Check RAM warning
     let ram_finding = memory_findings
         .iter()
-        .find(|f| f.message.contains("RAM may retain"))
+        .find(|f| f.message.contains("RAM keeps"))
         .unwrap();
     assert_eq!(ram_finding.severity, Severity::Info);
 }
@@ -456,7 +456,14 @@ fn test_memory_status_with_swap_disabled() {
     assert_eq!(memory_findings.len(), 1); // only RAM warning
 
     let ram_finding = &memory_findings[0];
-    assert!(ram_finding.message.contains("RAM may retain"));
+    assert!(ram_finding.message.contains("RAM keeps"));
+    assert!(
+        ram_finding
+            .fix_guidance
+            .as_deref()
+            .is_some_and(|fix| fix.contains("--poweroff")),
+        "{ram_finding:?}"
+    );
     assert_eq!(ram_finding.severity, Severity::Info);
 }
 
@@ -1005,6 +1012,21 @@ fn test_verify_flags_every_registry_path_artifact() {
 }
 
 #[test]
+fn the_registry_names_the_module_link_init_stages() {
+    // The staged module source is the link `nails init` creates in the root
+    // overlay's upper, so a verify run with the hidden volume mounted finds it.
+    let root = std::path::Path::new("/mnt/hidden");
+    let staged =
+        nails_platform::nixos::config::hidden_etc_nixos(root).join("nails/configuration.nix");
+    assert_eq!(
+        crate::artifacts::artifact("nixos-module-source")
+            .unwrap()
+            .resolve_path(root),
+        Some(staged)
+    );
+}
+
+#[test]
 fn test_block_device_scan_is_silent_without_sysblock() {
     // When /sys/block is unavailable (offline scan, container, or a mock without
     // the fixture) the crypt/loop scan must stay quiet rather than erroring.
@@ -1188,6 +1210,7 @@ fn test_verify_flags_defaulted_root_when_attached_marked_volume() {
     let fs = MockFilesystem::new();
     fs.mock_set_path_exists(root.to_str().unwrap(), true);
     fs.mock_set_path_exists(marker.to_str().unwrap(), true);
+    fs.mock_set_mounted(&root, true);
     fs.mock_set_device_id(std::path::Path::new("/"), 1);
     fs.mock_set_device_id(&root, 42);
     let config = Config {
@@ -1436,7 +1459,7 @@ fn test_decoy_scoped_baseline_still_catches_real_decoy_leak_and_foreign_device()
 }
 
 // ========================================================================
-// Deep-scan journal leak search (T-094)
+// Deep-scan journal leak search
 // ========================================================================
 
 use super::journal::FakeJournalReader;
@@ -1605,27 +1628,34 @@ fn session_leftovers_are_critical_on_the_decoy() {
 #[test]
 fn a_runtime_mask_left_on_the_decoy_only_warns() {
     let (fs, verifier) = overlay_verifier("");
-    fs.mock_set_path_exists("/run/systemd/system", true);
-    fs.mock_set_path_type("/run/systemd/system", PathKind::Dir);
-    let mask = std::path::Path::new("/run/systemd/system/swap.target");
-    fs.mock_set_directory_contents(
-        std::path::Path::new("/run/systemd/system"),
-        vec![mask.to_path_buf()],
+    // A swap mask in the runtime unit directory, and a boot-loader mask in
+    // the control directory that outranks /etc, where the entry writes it.
+    for (dir, unit) in [
+        ("/run/systemd/system", "swap.target"),
+        (
+            "/run/systemd/system.control",
+            "systemd-boot-random-seed.service",
+        ),
+    ] {
+        fs.mock_set_path_exists(dir, true);
+        fs.mock_set_path_type(dir, PathKind::Dir);
+        let mask = std::path::Path::new(dir).join(unit);
+        fs.mock_set_directory_contents(std::path::Path::new(dir), vec![mask.clone()]);
+        crate::Filesystem::create_symlink(&fs, std::path::Path::new("/dev/null"), &mask).unwrap();
+        fs.mock_set_is_symlink(mask.to_str().unwrap(), true);
+    }
+    let result = verifier.run(false).unwrap();
+    let findings: Vec<_> = result
+        .findings
+        .iter()
+        .filter(|f| f.category == "session")
+        .collect();
+    assert_eq!(findings.len(), 2, "{findings:?}");
+    assert!(findings.iter().all(|f| f.severity == Severity::Warn));
+    assert!(
+        findings[1]
+            .message
+            .contains("systemd-boot-random-seed.service is masked at runtime"),
+        "{findings:?}"
     );
-    crate::Filesystem::create_symlink(&fs, std::path::Path::new("/dev/null"), mask).unwrap();
-    fs.mock_set_is_symlink(mask.to_str().unwrap(), true);
-    let findings = verifier.check_session_leftovers().unwrap();
-    assert_eq!(findings.len(), 1, "{findings:?}");
-    assert_eq!(findings[0].severity, Severity::Warn);
-}
-
-#[test]
-fn inside_the_hidden_root_the_runtime_files_are_expected() {
-    let (fs, verifier) = overlay_verifier(
-        "1 0 0:40 / / rw - overlay overlay rw,lowerdir=/x,upperdir=/mnt/hidden/root/upper,workdir=/mnt/hidden/root/work\n",
-    );
-    fs.mock_set_path_exists("/run/overlay-runtime/plan.json", true);
-    let findings = verifier.check_session_leftovers().unwrap();
-    assert_eq!(findings.len(), 1);
-    assert_eq!(findings[0].severity, Severity::Info);
 }

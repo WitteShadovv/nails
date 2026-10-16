@@ -63,6 +63,11 @@ Options:
       --json
           Print machine-readable JSON on stdout
 
+      --allow-decoy-storage
+          Use a hidden root that this computer's own storage seems to hold
+
+          By default activation refuses a root that this computer's own storage holds (a subvolume or a bind mount of one of its filesystems, a volume inside its storage, an image file on it): everything the session writes there lands on this computer's disk. Use this flag only for storage you know this computer does not use, such as a disk its fstab lists but never mounts. It turns those refusals into a warning, adds a line to the logout confirmation and records the choice for `status`. A folder that is no mount point, a root with a second filesystem mounted over it, storage that cannot be judged, and a decoy entry that opens the volume are still refused.
+
       --no-log-file
           Do not write the log file on the hidden volume (diagnostics still go to stderr)
 
@@ -73,9 +78,11 @@ WHAT HAPPENS:
   Activation builds one overlay over the whole decoy root at /run/nextroot,
   with every change stored on the hidden volume, and soft-reboots into it
   (systemd 254 or newer). Every program is closed and you are logged out; the
-  hidden session starts at its own login screen. Nothing of the hidden session
-  can reach the decoy disk: the ESP is read-only, other decoy filesystems are
-  overlaid, and decoy swap is never used.
+  hidden session starts at its own login screen (a display manager set to log
+  an account in automatically logs it in again, as at boot). Nothing the
+  hidden session writes through the decoy's filesystems reaches the decoy
+  disk: the ESP is read-only, other decoy filesystems are overlaid, and decoy
+  swap is never used. docs/threat-model.md lists the residual channels.
 
 EXAMPLES:
   nails activate                      Enter the hidden session

@@ -2,20 +2,33 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 //! What the hidden session leaves in `/run`, and the scrub that removes it on
-//! the way back (ADR 0008, section 5).
+//! the way back.
 //!
 //! A soft-reboot carries `/run` into the next userspace. On the way back the
 //! decoy would inherit everything the hidden session put there: logind state,
 //! `utmp`, the runtime journal, stray files, and libmount's `utab` lines. The
 //! scrub runs as the last userspace code before the switch, when every hidden
-//! unit has stopped, and deletes **only what the hidden session added**:
+//! unit has stopped, and deletes:
 //!
 //! - the per-session state of units that are all stopped by now (the runtime
 //!   journal, logind's sessions/users/seats/inhibitors, `utmp`) and the empty
-//!   mountpoint directories of `/run/user/<uid>`;
+//!   mountpoint directories of `/run/user/<uid>`. This state is deleted whole,
+//!   whoever wrote it. The decoy's journald and the hidden one write the same
+//!   files below `/run/log/journal/<machine-id>`, so on a volatile decoy the
+//!   decoy's own records from before the entry go too (the activation's sudo
+//!   line, the hidden build's progress, the decoy's shutdown). After the return
+//!   the decoy journal starts at the switch, and since the kmsg cursor (below)
+//!   lies past the kernel's boot records, it holds none of them either. A
+//!   persistent journal keeps the decoy's records in `/var/log/journal`, which
+//!   the scrub never touches;
 //! - every entry up to two levels below `/run` (three below `/run/systemd`,
-//!   where runtime unit files live) that is not in the snapshot taken in the
-//!   decoy just before entering. A mount among them is detached first.
+//!   where runtime unit files live) that is not in the snapshot. The entry
+//!   takes it in the decoy before it adds anything to `/run`, and the switch
+//!   into the hidden session narrows it to the entries the decoy's own
+//!   shutdown left ([`Snapshot::still_present`]): the PID file of a decoy
+//!   service, removed when the service stopped and written again by the
+//!   hidden session's copy of it, goes too. A mount among them is detached
+//!   first.
 //!
 //! It never touches a socket (PID 1 and the never-stopped socket units carry
 //! them as fds bound to these inodes), `/run/udev` (the device database the
@@ -24,10 +37,14 @@
 //! `/run/booted-system` or `/run/nextroot`. Deleting decoy state the next boot
 //! relies on is what broke the spike's second run, hence the allowlist.
 //!
-//! The scrub then restores `utab` to the decoy's copy, and the caller writes the
-//! kmsg cursor ([`next_kernel_seqnum`], [`write_kernel_seqnum`]) so the decoy
-//! journald skips every kernel record of the hidden session. Nothing here logs:
-//! a name written to `/dev/kmsg` would reach the decoy's ring buffer.
+//! The scrub keeps the decoy's libmount `utab`, which the transition rewrites
+//! itself ([`crate::whole_root::utab`]): at entry it keeps the lines of the
+//! mounts the switch carries, and on the way back it writes the decoy's lines
+//! under the new mount IDs of the mounts the way back restored. Last, the
+//! caller writes the kmsg cursor ([`next_kernel_seqnum`],
+//! [`write_kernel_seqnum`]) so the decoy journald skips every kernel record of
+//! the hidden session, and every earlier one with them. Nothing here logs: a
+//! name written to `/dev/kmsg` would reach the decoy's ring buffer.
 
 use std::collections::BTreeSet;
 use std::ffi::{OsStr, OsString};
@@ -46,7 +63,9 @@ const PRUNED: &[&str] = &[
 ];
 
 /// Directories below `/run` whose children are the state of units that have
-/// all stopped when the scrub runs.
+/// all stopped when the scrub runs. Every child goes, the decoy's included:
+/// `log/journal` holds the decoy's runtime journal as well as the hidden
+/// session's records, in the same files.
 const SESSION_STATE_DIRS: &[&str] = &[
     "log/journal",
     "systemd/sessions",
@@ -78,9 +97,38 @@ impl Snapshot {
         }
     }
 
+    /// Read a snapshot written with [`to_text`](Self::to_text); `None` when
+    /// the file cannot be read.
+    pub fn load(path: &Path) -> Option<Self> {
+        std::fs::read(path).ok().map(|text| Self::from_text(&text))
+    }
+
     /// Whether the snapshot holds `relative`.
     pub fn contains(&self, relative: &OsStr) -> bool {
         self.entries.contains(relative)
+    }
+
+    /// The entries that still exist below `run`. An entry whose lookup fails
+    /// for any reason other than its absence stays, and so does every entry
+    /// when `run` itself cannot be looked up: dropping an entry lets the scrub
+    /// delete it, so only a certain absence counts.
+    pub fn still_present(&self, run: &Path) -> Self {
+        if std::fs::symlink_metadata(run).is_err() {
+            return self.clone();
+        }
+        Self {
+            entries: self
+                .entries
+                .iter()
+                .filter(|entry| {
+                    !matches!(
+                        std::fs::symlink_metadata(run.join(entry)),
+                        Err(e) if e.kind() == io::ErrorKind::NotFound
+                    )
+                })
+                .cloned()
+                .collect(),
+        }
     }
 
     /// The number of entries.
@@ -181,7 +229,9 @@ pub struct ScrubReport {
     pub detached: Vec<PathBuf>,
 }
 
-/// Remove from `run` what the hidden session added, judged against `snapshot`.
+/// Remove from `run` the per-session state (the runtime journal among it,
+/// whoever wrote it) and what else the hidden session added, judged against
+/// `snapshot`.
 ///
 /// `extra` names entries (relative to `run`) to remove even when the snapshot
 /// holds them: the runtime directory of NAILS itself. `mount_points` is the
@@ -253,27 +303,6 @@ fn remove(run: &Path, relative: &Path, mount_points: &[PathBuf], report: &mut Sc
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => report.failed.push((relative.to_path_buf(), e.to_string())),
     }
-}
-
-/// libmount's userspace mount table below a `/run` root.
-pub const UTAB: &str = "mount/utab";
-
-/// Restore `run/mount/utab` to `saved`, the decoy's copy taken at entry. Every
-/// userspace start appends lines for its `x-*` mounts and mounts dropped by the
-/// switch are never removed, so the hidden session's lines would otherwise
-/// name hidden mount targets in the decoy's `/run`. A missing file stays
-/// missing.
-pub fn restore_utab(run: &Path, saved: &[u8]) -> io::Result<bool> {
-    let path = run.join(UTAB);
-    if std::fs::symlink_metadata(&path).is_err() {
-        return Ok(false);
-    }
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(&path)?;
-    file.write_all(saved)?;
-    Ok(true)
 }
 
 /// The sequence number of one `/dev/kmsg` record (`prio,seq,ts,flags;text`).
@@ -402,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn the_scrub_removes_only_what_the_hidden_session_added() {
+    fn the_scrub_removes_what_the_hidden_session_added() {
         let run = decoy_run();
         let r = run.path();
         let snap = Snapshot::take(r);
@@ -470,6 +499,48 @@ mod tests {
     }
 
     #[test]
+    fn the_runtime_journal_goes_whole_the_decoys_own_records_included() {
+        // On a volatile decoy the decoy's journald and the hidden one write the
+        // same files, so the decoy's records from before the entry are in them.
+        // Not even a snapshot entry keeps them.
+        let run = decoy_run();
+        let r = run.path();
+        let journal = r.join("log/journal/0123abcd");
+        fs::create_dir_all(&journal).unwrap();
+        fs::write(journal.join("system.journal"), "decoy, hidden").unwrap();
+        let mut snap = Snapshot::take(r);
+        snap.entries.insert(rel("log/journal/0123abcd"));
+
+        let report = scrub(r, &snap, &[], &[]);
+
+        assert!(report.failed.is_empty(), "{:?}", report.failed);
+        assert_eq!(report.removed, [PathBuf::from("log/journal/0123abcd")]);
+        assert!(r.join("log/journal").is_dir());
+    }
+
+    #[test]
+    fn a_snapshot_narrowed_to_what_is_still_there_drops_only_the_entries_that_are_gone() {
+        let run = decoy_run();
+        let r = run.path();
+        fs::create_dir_all(r.join("avahi-daemon")).unwrap();
+        fs::write(r.join("avahi-daemon/pid"), "100").unwrap();
+        let snap = Snapshot::take(r);
+        // The decoy's own shutdown: the service removed its PID file.
+        fs::remove_file(r.join("avahi-daemon/pid")).unwrap();
+        let narrowed = snap.still_present(r);
+        assert!(!narrowed.contains(&rel("avahi-daemon/pid")));
+        assert!(narrowed.contains(&rel("avahi-daemon")));
+        assert_eq!(narrowed.len(), snap.len() - 1);
+        // Without the /run it was taken of, nothing counts as gone.
+        assert_eq!(snap.still_present(&r.join("absent")), snap);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("snapshot");
+        fs::write(&path, narrowed.to_text()).unwrap();
+        assert_eq!(Snapshot::load(&path), Some(narrowed));
+        assert_eq!(Snapshot::load(&dir.path().join("absent")), None);
+    }
+
+    #[test]
     fn a_user_runtime_dir_the_hidden_session_added_is_removed() {
         let run = decoy_run();
         let snap = Snapshot::take(run.path());
@@ -478,20 +549,6 @@ mod tests {
         // Two levels deep and not in the snapshot: its tmpfs was not carried,
         // so what is left is the hidden session's.
         assert!(report.removed.contains(&PathBuf::from("user/1000")));
-    }
-
-    #[test]
-    fn utab_is_restored_and_a_missing_one_stays_missing() {
-        let run = decoy_run();
-        fs::write(run.path().join(UTAB), "ID=1 decoy\nID=99 hidden\n").unwrap();
-        assert!(restore_utab(run.path(), b"ID=1 decoy\n").unwrap());
-        assert_eq!(
-            fs::read_to_string(run.path().join(UTAB)).unwrap(),
-            "ID=1 decoy\n"
-        );
-        let empty = tempfile::tempdir().unwrap();
-        assert!(!restore_utab(empty.path(), b"x").unwrap());
-        assert!(!empty.path().join(UTAB).exists());
     }
 
     #[test]

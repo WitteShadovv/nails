@@ -123,6 +123,95 @@ fn copy_tree_leaves_source_atimes_untouched_on_a_strictatime_fs() {
     });
 }
 
+#[test]
+fn reading_the_fstab_in_a_root_leaves_its_atime_on_a_relatime_fs() {
+    let _ = Rerun::new(test_path!(
+        reading_the_fstab_in_a_root_leaves_its_atime_on_a_relatime_fs
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        // relatime, the kernel's default: a read updates an atime older than a
+        // day, which the control below proves for this filesystem.
+        let scratch = ScratchTmpfs::new("");
+        let etc = scratch.mkdir("etc");
+        let fstab = etc.join("fstab");
+        let control = etc.join("control");
+        std::fs::write(&fstab, "UUID=0a1b / ext4 defaults 0 1\n").unwrap();
+        std::fs::write(&control, "read me plainly").unwrap();
+        let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        for path in [&fstab, &control] {
+            std::fs::File::open(path)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_accessed(old))
+                .unwrap();
+        }
+        let atime = |p: &Path| std::fs::metadata(p).unwrap().accessed().unwrap();
+
+        std::fs::read(&control).unwrap();
+        assert_ne!(
+            atime(&control),
+            old,
+            "control: a plain read updates atime on this filesystem"
+        );
+
+        let text = nails_teardown::whole_root::nextroot::read_in_root(
+            scratch.path(),
+            Path::new("/etc/fstab"),
+        )
+        .expect("read the fstab in the root");
+        assert_eq!(text, b"UUID=0a1b / ext4 defaults 0 1\n");
+        assert_eq!(atime(&fstab), old, "the fstab's atime is untouched");
+    });
+}
+
+#[test]
+fn the_mount_queries_answer_for_the_mount_a_lookup_reaches() {
+    let _ = Rerun::new(test_path!(
+        the_mount_queries_answer_for_the_mount_a_lookup_reaches
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let scratch = ScratchTmpfs::new("");
+        let a = scratch.path().canonicalize().unwrap().join("a");
+        let x = a.join("x");
+        std::fs::create_dir_all(&x).unwrap();
+        let tmpfs = |source: &str, target: &Path, flags: nix::mount::MsFlags| {
+            nix::mount::mount(Some(source), target, Some("tmpfs"), flags, Some("size=1M"))
+                .expect("mount a tmpfs in the namespace");
+        };
+        let source = |path: &Path| {
+            RealFilesystem
+                .mount_source(path)
+                .unwrap()
+                .and_then(|source| source.device)
+        };
+        let fs = RealFilesystem;
+
+        // A tmpfs at a/x, then one at a: the first is covered.
+        tmpfs("first", &x, nix::mount::MsFlags::empty());
+        tmpfs("second", &a, nix::mount::MsFlags::empty());
+        assert!(
+            !fs.is_mounted(&x).unwrap(),
+            "the covered mount is not visible"
+        );
+        assert_eq!(fs.get_filesystem_type(&x).unwrap(), None);
+        assert!(
+            fs.mount_table()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.mount_point == x),
+            "though the kernel still lists it"
+        );
+        assert_eq!(source(&a).as_deref(), Some("second"));
+
+        // A read-only tmpfs stacked on a answers for a.
+        tmpfs("third", &a, nix::mount::MsFlags::MS_RDONLY);
+        assert_eq!(source(&a).as_deref(), Some("third"));
+        assert!(fs.is_mount_read_only(&a).unwrap());
+        assert!(fs.is_mounted(&a).unwrap());
+    });
+}
+
 fn set_dir_atime(dir: &Path, when: SystemTime) {
     std::fs::File::open(dir)
         .unwrap()

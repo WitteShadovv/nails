@@ -137,6 +137,47 @@ fn entering_repoints_current_system_masks_decoy_units_and_records_the_entry() {
 }
 
 #[test]
+fn entering_keeps_only_the_utab_lines_of_mounts_the_switch_carries() {
+    // The decoy's initrd wrote lines for the decoy's root and store, which the
+    // switch leaves behind; the kernel then hands their IDs to the next mounts
+    // made (here ID 62 to the hidden volume). Joined to that mount, the root's
+    // x-initrd.mount would hide it from the shutdown order. A line without an
+    // ID joins whatever is mounted at its target later with its source and
+    // root, as the next userspace mounts /run/wrappers.
+    let world = World::new();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    let utab = world.run().join("mount/utab");
+    fs::write(
+        &utab,
+        "ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
+         ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n\
+         ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=X-kept\n\
+         SRC=/dev/vda TARGET=/ OPTS=x-initrd.mount\n\
+         SRC=wrappers TARGET=/run/wrappers ROOT=/ OPTS=x-initrd.mount\n\
+         SRC=/dev/mapper/data TARGET=/mnt/data ROOT=/ OPTS=X-kept\n",
+    )
+    .unwrap();
+    let mut env = world.env(true, 1_010);
+    let next = world.nextroot();
+    env.mounts.extend(parse_mountinfo(&format!(
+        "62 1 8:0 / / rw - ext4 /dev/vda rw\n\
+         85 62 0:50 / /nix/store rw - overlay overlay rw\n\
+         70 62 0:51 / /run/wrappers rw - tmpfs wrappers rw\n\
+         63 40 254:0 / {}/mnt/data rw - ext4 /dev/mapper/data rw\n",
+        next.display()
+    )));
+
+    assert_eq!(run(&env), Outcome::Entered);
+    assert_eq!(
+        fs::read_to_string(&utab).unwrap(),
+        "ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=X-kept\n\
+         SRC=/dev/mapper/data TARGET=/mnt/data ROOT=/ OPTS=X-kept\n"
+    );
+}
+
+#[test]
 fn an_entry_whose_init_does_not_resolve_is_disarmed_instead_of_freezing_pid1() {
     let world = World::new();
     install_dropin(&world.run(), Path::new("/run/overlay-runtime/control")).unwrap();
@@ -198,7 +239,15 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     // In the decoy, just before entering: the snapshot and the utab copy.
     let snapshot = Snapshot::take(&r);
     fs::write(world.runtime().join(SNAPSHOT_NAME), snapshot.to_text()).unwrap();
-    fs::write(world.runtime().join(UTAB_NAME), "ID=1 decoy\n").unwrap();
+    // The decoy's copy: a line for the mount that is the next root now (ID 40
+    // in the world's mount table), and one for a decoy mount the entry's
+    // switch left behind, whose ID the kernel may have handed on since.
+    fs::write(
+        world.runtime().join(UTAB_NAME),
+        "ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=x-initrd.mount\n\
+         ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n",
+    )
+    .unwrap();
     // The hidden session.
     repoint_current_system(&r, Path::new("/nix/store/bbb-nixos-system")).unwrap();
     fs::write(r.join("hidden-probe"), "x").unwrap();
@@ -211,8 +260,9 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     world.write_plan(&plan);
 
     // A hidden unit not ordered before the shutdown is still stopping when
-    // the transition runs, and logs to the kernel once more on its way out:
-    // the cursor must be taken after it, so the decoy journald skips it.
+    // the transition runs, logs to the kernel once more on its way out and
+    // unmounts, so libmount writes its copy of utab: the cursor and the
+    // decoy's utab must come after it.
     let late = world.dir.path().join("late-stopped");
     let calls = world.dir.path().join("reset-failed-calls");
     plan.failed_at_entry = vec!["decoy-before.service".to_string()];
@@ -232,10 +282,12 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
              if [ ! -e {late} ]; then\n\
                echo '12 late.service stop running'\n\
                printf '6,502,3,-;late hidden record\\n' >> {kmsg}\n\
+               printf 'ID=77 /mnt/hidden-only\\n' > {utab}\n\
                : > {late}\n\
              fi\n",
             late = late.display(),
             kmsg = world.kmsg().display(),
+            utab = r.join("mount/utab").display(),
             calls = calls.display()
         ),
     )
@@ -271,7 +323,8 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     );
     assert_eq!(
         fs::read_to_string(r.join("mount/utab")).unwrap(),
-        "ID=1 decoy\n"
+        "ID=40 SRC=overlay TARGET=/ ROOT=/ OPTS=x-initrd.mount\n",
+        "the hidden session's line and the stale decoy line are gone"
     );
     assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
     let cursor = fs::read(r.join(run_scrub::KERNEL_SEQNUM)).unwrap();
@@ -282,6 +335,51 @@ fn leaving_scrubs_run_restores_the_decoy_and_writes_the_cursor_last() {
     assert_eq!(
         fs::read_to_string(&calls).unwrap(),
         "reset-failed overlay-runtime-monitor.service nscd.service\n"
+    );
+}
+
+#[test]
+fn leaving_gives_the_decoys_utab_lines_back_to_its_restored_mounts() {
+    // The decoy's initrd lines name its root and store by the IDs they had at
+    // entry. The way back mounts the decoy root and binds the store it carried
+    // again, under new IDs (the hidden volume has the root's old one now): the
+    // lines follow their mounts there, so the decoy keeps them as initrd
+    // mounts. The tmpfs the session did not carry gets no line.
+    let world = World::new();
+    fs::write(
+        world.runtime().join(UTAB_NAME),
+        "ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
+         ID=68 SRC=tmpfs TARGET=/sysroot/nix/.rw-store ROOT=/ OPTS=x-initrd.mount\n\
+         ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n",
+    )
+    .unwrap();
+    fs::write(
+        world.runtime().join(UTAB_MOUNTS_NAME),
+        "62 1 253:0 / / rw - ext4 /dev/vda rw\n\
+         68 62 0:31 / /nix/.rw-store rw - tmpfs tmpfs rw\n\
+         85 62 0:32 / /nix/store ro - overlay overlay rw\n",
+    )
+    .unwrap();
+    fs::write(world.run().join("mount/utab"), "ID=112 hidden\n").unwrap();
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let mut env = world.env(true, 1_000);
+    let next = world.nextroot();
+    env.mounts = parse_mountinfo(&format!(
+        "140 1 0:50 / / rw - overlay overlay rw\n\
+         62 140 254:0 / /mnt/data rw - ext4 /dev/mapper/data rw\n\
+         150 140 253:0 / {next} rw - ext4 /dev/vda rw\n\
+         152 150 0:32 / {next}/nix/store ro - overlay overlay rw\n",
+        next = next.display()
+    ));
+
+    assert!(matches!(run(&env), Outcome::Returned { .. }));
+    assert_eq!(
+        fs::read_to_string(world.run().join("mount/utab")).unwrap(),
+        "ID=150 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
+         ID=152 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n"
     );
 }
 
@@ -303,18 +401,19 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
     install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
     // blkdeactivate -u would unmount the hidden volume below /run/nextroot on
     // the way in, and a LUKS or LVM decoy root below it on the way back.
+    // Debian's and Ubuntu's copy of the unit has its stop as its only
+    // command: the guard gives it a start that does nothing, or systemd would
+    // refuse to load it.
     let guard = run
         .join(stop_guard_dir("blk-availability.service"))
         .join(STOP_GUARD_NAME);
     assert_eq!(
         fs::read_to_string(&guard).unwrap(),
-        "[Service]\nExecStop=\n"
+        "[Service]\nExecStop=\nExecStart=-/usr/bin/true\n"
     );
-    assert!(
-        STOP_GUARD_TEXT
-            .lines()
-            .all(|l| !l.to_lowercase().contains("nails"))
-    );
+    for text in [STOP_GUARD_TEXT, STOP_GUARD_WITH_START_TEXT] {
+        assert!(text.lines().all(|l| !l.to_lowercase().contains("nails")));
+    }
     assert!(!STOP_GUARD_NAME.contains("nails"));
     // Later than what `systemctl edit` and NixOS write, so neither undoes it.
     for other in ["override.conf", "overrides.conf", "99-local.conf"] {
@@ -347,7 +446,7 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
     }
     assert_eq!(runtime_guards().count(), 4);
 
-    remove_dropin(run);
+    remove_dropin(run, &Snapshot::default());
     for unit in ["dbus.service", "dbus.socket"] {
         assert!(!run.join(stop_guard_dir(unit)).exists(), "{unit}");
     }
@@ -360,6 +459,314 @@ fn the_stop_guards_clear_blkdeactivate_for_the_switches_and_go_with_the_dropin()
             .exists()
     );
     assert!(!run.join(DROPIN_DIR).exists());
+}
+
+#[test]
+fn the_dropins_are_readable_by_all_so_pid1_never_names_them_in_the_kernel_log() {
+    // PID 1 warns about a configuration file that is not readable by all, or
+    // that is executable or writable by all, and names it; at the start of
+    // the other root no journald runs yet, so the warning reaches dmesg.
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path();
+    let dropin = install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    let guards =
+        runtime_guards().map(|(unit, _)| run.join(stop_guard_dir(unit)).join(STOP_GUARD_NAME));
+    for file in guards.chain(std::iter::once(dropin)) {
+        let mode = fs::metadata(&file).unwrap().permissions().mode() & 0o7777;
+        assert_eq!(mode & 0o044, 0o044, "{}: {mode:o}", file.display());
+        assert_eq!(mode & 0o113, 0, "{}: {mode:o}", file.display());
+    }
+}
+
+#[test]
+fn a_dropin_directory_the_decoy_had_keeps_its_own_files_and_loses_the_guard() {
+    let world = World::new();
+    let r = world.run();
+    let decoy_dir = r.join(stop_guard_dir("blk-availability.service"));
+    fs::create_dir_all(&decoy_dir).unwrap();
+    fs::write(decoy_dir.join("10-local.conf"), "[Unit]\n").unwrap();
+    let empty_dir = r.join(stop_guard_dir("dbus.service"));
+    fs::create_dir_all(&empty_dir).unwrap();
+    // The entry: the snapshot first, then the drop-ins.
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&r).to_text(),
+    )
+    .unwrap();
+    install_dropin(&r, Path::new("/run/overlay-runtime/control")).unwrap();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let outcome = run(&world.env(true, 1_030));
+    assert!(
+        matches!(outcome, Outcome::Returned { failed: 0, .. }),
+        "{outcome:?}"
+    );
+
+    assert!(!decoy_dir.join(STOP_GUARD_NAME).exists(), "the guard goes");
+    assert_eq!(
+        fs::read_to_string(decoy_dir.join("10-local.conf")).unwrap(),
+        "[Unit]\n"
+    );
+    assert!(fs::read_dir(&empty_dir).unwrap().next().is_none());
+    for unit in ["dbus.socket", "network-addresses-.service"] {
+        assert!(!r.join(stop_guard_dir(unit)).exists(), "{unit}");
+    }
+    assert!(!r.join(DROPIN_DIR).exists());
+}
+
+#[test]
+fn a_rollback_removes_the_guards_and_only_the_directories_it_made() {
+    let dir = tempfile::tempdir().unwrap();
+    let run = dir.path();
+    let decoy_dir = run.join(stop_guard_dir("dbus.service"));
+    fs::create_dir_all(&decoy_dir).unwrap();
+    let kept = Snapshot::take(run);
+    install_dropin(run, Path::new("/run/overlay-runtime/control")).unwrap();
+    remove_dropin(run, &kept);
+    assert!(decoy_dir.is_dir());
+    assert!(!decoy_dir.join(STOP_GUARD_NAME).exists());
+    assert!(!run.join(stop_guard_dir("dbus.socket")).exists());
+    assert!(!run.join(DROPIN_DIR).exists());
+}
+
+#[test]
+fn a_decoy_service_s_pid_file_the_hidden_session_wrote_again_goes_on_the_way_back() {
+    // The decoy's avahi wrote its PID file and removed it when the switch
+    // stopped it; the hidden avahi wrote it again and was killed by an
+    // emergency, so nothing removed it. The decoy's avahi must not find it.
+    let world = World::new();
+    let r = world.run();
+    fs::create_dir_all(r.join("avahi-daemon")).unwrap();
+    fs::write(r.join("avahi-daemon/pid"), "100\n").unwrap();
+    // At activation, with the decoy's services still running.
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&r).to_text(),
+    )
+    .unwrap();
+    // The decoy's own shutdown, then the switch.
+    fs::remove_file(r.join("avahi-daemon/pid")).unwrap();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    // The hidden session, ended by a kill.
+    fs::write(r.join("avahi-daemon/pid"), "200\n").unwrap();
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let outcome = run(&world.env(true, 1_030));
+    assert!(
+        matches!(outcome, Outcome::Returned { failed: 0, .. }),
+        "{outcome:?}"
+    );
+
+    assert!(!r.join("avahi-daemon/pid").exists());
+    assert!(
+        r.join("avahi-daemon").is_dir(),
+        "kept through the decoy's shutdown"
+    );
+    assert_eq!(fs::read_to_string(r.join("decoy-state")).unwrap(), "keep");
+}
+
+#[test]
+fn the_decoy_s_name_server_records_are_put_back_on_the_way_back() {
+    let world = World::new();
+    let r = world.run();
+    let key = r.join("resolvconf/keys/NetworkManager");
+    fs::create_dir_all(key.parent().unwrap()).unwrap();
+    fs::write(&key, "nameserver 10.0.2.3\n").unwrap();
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&r).to_text(),
+    )
+    .unwrap();
+    let plan = armed(Direction::Enter);
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    // The hidden NetworkManager rewrites its record and leaves it at its stop.
+    fs::write(&key, "search hidden.example\nnameserver 10.213.77.53\n").unwrap();
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let outcome = run(&world.env(true, 1_030));
+    assert!(
+        matches!(outcome, Outcome::Returned { failed: 0, .. }),
+        "{outcome:?}"
+    );
+    assert_eq!(fs::read_to_string(&key).unwrap(), "nameserver 10.0.2.3\n");
+}
+
+#[test]
+fn the_boot_loader_masks_are_written_where_they_outrank_etc_and_go_with_the_session() {
+    let world = World::new();
+    let mut plan = armed(Direction::Enter);
+    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&world.run()).to_text(),
+    )
+    .unwrap();
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    let mask = world
+        .run()
+        .join(runtime_units::RUNTIME_CONTROL_DIR)
+        .join("systemd-boot-random-seed.service");
+    assert_eq!(fs::read_link(&mask).unwrap(), Path::new("/dev/null"));
+
+    let mut plan = world.plan();
+    plan.armed = Some(Arm {
+        direction: Direction::Leave,
+        at: 1_020,
+    });
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    assert!(matches!(
+        run(&world.env(true, 1_030)),
+        Outcome::Returned { .. }
+    ));
+    assert!(
+        fs::symlink_metadata(&mask).is_err(),
+        "the decoy runs the unit again"
+    );
+}
+
+/// A switch that fails after the entry transition leaves the decoy running
+/// with the session's masks in `/run`. Removing them on the decoy side (a
+/// rollback, `nails recover`, an emergency there) takes only what the entry
+/// wrote: a mask the decoy had before stays.
+#[test]
+fn the_masks_of_an_entry_whose_switch_failed_go_and_the_decoy_s_own_stay() {
+    let world = World::new();
+    let control = world.run().join(runtime_units::RUNTIME_CONTROL_DIR);
+    fs::create_dir_all(&control).unwrap();
+    symlink("/dev/null", control.join("grub-common.service")).unwrap();
+    let mut plan = armed(Direction::Enter);
+    plan.boot_masks = vec![
+        "systemd-boot-random-seed.service".to_string(),
+        "grub-common.service".to_string(),
+    ];
+    world.init_in_nextroot(&plan.hidden.init);
+    world.write_plan(&plan);
+    let kept = Snapshot::take(&world.run());
+    fs::write(world.runtime().join(SNAPSHOT_NAME), kept.to_text()).unwrap();
+    assert_eq!(run(&world.env(true, 1_010)), Outcome::Entered);
+    let swap = world.run().join("systemd/system/dev-vda3.swap");
+    let seed = control.join("systemd-boot-random-seed.service");
+    assert!(fs::symlink_metadata(&swap).is_ok() && fs::symlink_metadata(&seed).is_ok());
+
+    // The switch failed: the decoy userspace runs again over the same /run.
+    let plan = world.plan();
+    runtime_units::remove_masks(&world.run(), &plan.masks, &plan.boot_masks, &kept);
+    assert!(
+        fs::symlink_metadata(&swap).is_err(),
+        "the decoy swap is masked"
+    );
+    assert!(
+        fs::symlink_metadata(&seed).is_err(),
+        "the seed unit is masked"
+    );
+    assert_eq!(
+        fs::read_link(control.join("grub-common.service")).unwrap(),
+        Path::new("/dev/null"),
+        "the decoy's own mask stays"
+    );
+}
+
+/// A file that stands for the kernel's module loader path: the decoy's
+/// value recorded, then the session's written over it.
+fn repointed_modprobe(world: &World) -> Vec<kernel_helpers::KernelSetting> {
+    let modprobe = world.dir.path().join("modprobe");
+    fs::write(&modprobe, "/nix/store/decoy-kmod/bin/modprobe\n").unwrap();
+    let recorded = kernel_helpers::read(&[modprobe.to_str().unwrap()]);
+    fs::write(&modprobe, "/nix/store/hidden-kmod/bin/modprobe\n").unwrap();
+    recorded
+}
+
+fn modprobe_now(world: &World) -> String {
+    fs::read_to_string(world.dir.path().join("modprobe")).unwrap()
+}
+
+/// The entry's snapshot of `/run`, then the masks the entry transition
+/// writes: the decoy units in the runtime unit directory, the boot-loader
+/// units in the control directory.
+fn masked_after_snapshot(world: &World, plan: &Plan) -> Vec<PathBuf> {
+    fs::write(
+        world.runtime().join(SNAPSHOT_NAME),
+        Snapshot::take(&world.run()).to_text(),
+    )
+    .unwrap();
+    let mut masks = runtime_units::mask_units(&world.run(), &plan.masks).unwrap();
+    masks.extend(runtime_units::mask_units_best_effort(
+        &world.run(),
+        &plan.boot_masks,
+    ));
+    assert_eq!(masks.len(), plan.masks.len() + plan.boot_masks.len());
+    masks
+}
+
+/// A reboot met a next root the activation left unarmed, after an entry
+/// transition whose switch failed: the decoy gets back its kernel paths and
+/// loses the session's masks of both kinds.
+#[test]
+fn a_disarmed_next_root_gives_the_decoy_back_its_kernel_paths_and_units() {
+    let world = World::new();
+    let mut plan = armed(Direction::Enter);
+    plan.armed = None;
+    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+    plan.kernel_settings = repointed_modprobe(&world);
+    world.write_plan(&plan);
+    let masks = masked_after_snapshot(&world, &plan);
+
+    assert!(matches!(run(&world.env(true, 1_000)), Outcome::Disarmed(_)));
+
+    assert_eq!(modprobe_now(&world), "/nix/store/decoy-kmod/bin/modprobe");
+    for mask in masks {
+        assert!(fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
+    }
+}
+
+#[test]
+fn the_way_back_gives_the_decoy_back_its_kernel_paths_and_units() {
+    let world = World::new();
+    let mut plan = armed(Direction::Leave);
+    plan.entered_at = Some(900);
+    plan.boot_masks = vec!["systemd-boot-random-seed.service".to_string()];
+    plan.kernel_settings = repointed_modprobe(&world);
+    world.init_in_nextroot(&plan.decoy.init);
+    world.write_plan(&plan);
+    let masks = masked_after_snapshot(&world, &plan);
+
+    let outcome = run(&world.env(true, 1_000));
+    assert!(matches!(outcome, Outcome::Returned { .. }), "{outcome:?}");
+
+    assert_eq!(modprobe_now(&world), "/nix/store/decoy-kmod/bin/modprobe");
+    for mask in masks {
+        assert!(fs::symlink_metadata(&mask).is_err(), "{mask:?} stays");
+    }
 }
 
 #[test]

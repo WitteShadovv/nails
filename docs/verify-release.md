@@ -1,6 +1,6 @@
 # Verify a release
 
-Each release on the [Releases page](https://github.com/WitteShadovv/nails/releases) holds four
+Each release on the [Releases page](https://github.com/WitteShadovv/nails/releases) holds five
 files:
 
 | File | What it is |
@@ -9,6 +9,7 @@ files:
 | `nails-<version>-x86_64-unknown-linux-musl.tar.gz` | The same binary with `LICENSE` and `README.md` |
 | `checksums.txt` | SHA-256 of the binary and the archive |
 | `sbom.cdx.json` | CycloneDX SBOM of the binary: every crate it is built from, and musl |
+| `musl.openvex.json` | OpenVEX statements that the musl in the binary is patched against the CVEs it names |
 
 This page is the only place that describes how to check them. Other documents link here.
 
@@ -70,6 +71,12 @@ To check that the SBOM attestation covers the binary as well:
 
 ```bash
 gh attestation verify nails --repo WitteShadovv/nails --predicate-type https://cyclonedx.org/bom
+```
+
+The VEX document is attested the same way:
+
+```bash
+gh attestation verify nails --repo WitteShadovv/nails --predicate-type https://openvex.dev/ns/v0.2.0
 ```
 
 ## What the checks prove

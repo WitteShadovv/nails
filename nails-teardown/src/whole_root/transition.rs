@@ -1,8 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The last userspace step before PID 1 switches root (ADR 0008, sections 3
-//! and 5).
+//! The last userspace step before PID 1 switches root.
 //!
 //! Activation installs a runtime drop-in that makes this step the `ExecStart=`
 //! of `systemd-soft-reboot.service`. That service is ordered after
@@ -13,13 +12,20 @@
 //!
 //! - **Enter** (decoy to hidden): repoint `/run/current-system` to the hidden
 //!   NixOS toplevel (PID 1 re-executes `/run/current-system/systemd/...`), mask
-//!   the decoy units the hidden systemd must never start, install the hidden
-//!   session's runtime units (and, opted in, the udev rule that keeps unused
-//!   disks read-only, [`crate::whole_root::disk_guard`]), and record the entry.
+//!   the decoy units the hidden systemd must never start and, best effort, the
+//!   boot-loader units that would only fail on the read-only boot filesystems,
+//!   install the hidden session's runtime units (and, opted in, the udev rule
+//!   that keeps unused disks read-only, [`crate::whole_root::disk_guard`]),
+//!   narrow the `/run` snapshot to what the decoy's own shutdown left, drop the
+//!   `utab` lines of the mounts the switch leaves behind
+//!   ([`crate::whole_root::utab`]), copy the decoy's records
+//!   ([`crate::whole_root::run_records`]), and record the entry.
 //! - **Leave** (hidden to decoy): repoint `/run/current-system` back to the
 //!   decoy, make the disks the session set read-only writable again and remove
-//!   the rule, scrub `/run` ([`crate::whole_root::run_scrub`]), restore `utab`,
-//!   and write the kmsg cursor last.
+//!   the rule and the drop-ins, scrub `/run` ([`crate::whole_root::run_scrub`]),
+//!   put the decoy's records back and, once the hidden units have stopped,
+//!   give the decoy's `utab` lines back to the decoy mounts the way back
+//!   restored and write the kmsg cursor last.
 //!
 //! Before either it checks the next root's init the way PID 1 will; when the
 //! check fails it undoes the repoint and detaches `/run/nextroot`, so PID 1
@@ -34,14 +40,15 @@
 //! It never writes to a disk and never logs: its output goes nowhere, and a
 //! name sent to `/dev/kmsg` would reach the decoy's ring buffer.
 
-use crate::mountinfo::{MountEntry, read_mountinfo};
+use crate::mountinfo::{MountEntry, parse_mountinfo, read_mountinfo};
 use crate::whole_root::disk_guard;
 use crate::whole_root::nextroot::{self, NEXTROOT};
 use crate::whole_root::plan::{
-    self, BINARY_NAME, Direction, PLAN_NAME, Plan, RUNTIME_DIR, SNAPSHOT_NAME, UTAB_NAME, unix_now,
+    self, BINARY_NAME, Direction, PLAN_NAME, Plan, RECORDS_NAME, RUNTIME_DIR, SNAPSHOT_NAME,
+    UTAB_MOUNTS_NAME, UTAB_NAME, unix_now,
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
-use crate::whole_root::runtime_units;
+use crate::whole_root::{kernel_helpers, run_records, runtime_units, utab};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -66,10 +73,10 @@ pub fn dropin_text(binary: &Path) -> String {
 /// ending in `-.service` is a prefix: systemd reads `foo-.service.d/` for
 /// every `foo-*.service`.
 ///
-/// `blk-availability.service` (Debian and Ubuntu ship it, enabled, wherever
-/// `dmsetup` is installed) runs `blkdeactivate -u` when it stops. That
-/// unmounts every filesystem on a device-mapper device that is not mounted on
-/// one of its fixed system paths: on the way in the hidden volume below
+/// `blk-availability.service` (Debian's and Ubuntu's lvm2 package ships it,
+/// enabled) runs `blkdeactivate -u` when it stops. That unmounts every
+/// filesystem on a device-mapper device that is not mounted on one of its
+/// fixed system paths: on the way in the hidden volume below
 /// `/run/nextroot`, which leaves the hidden session without its volume at its
 /// path; on the way back the decoy root below `/run/nextroot` when the decoy
 /// root is on LUKS or LVM, which would leave PID 1 nothing to switch to. A
@@ -91,6 +98,23 @@ pub fn is_unit_prefix(unit: &str) -> bool {
 
 /// The drop-in text that clears a unit's stop commands.
 pub const STOP_GUARD_TEXT: &str = "[Service]\nExecStop=\n";
+
+/// [`STOP_GUARD_TEXT`] with a start command that does nothing, for
+/// `blk-availability.service`. Debian and Ubuntu ship that unit with its stop
+/// as its only command, and systemd refuses to load a service left with none
+/// ("Service has no ExecStart=, ExecStop=, or SuccessAction=. Refusing."). A
+/// one-shot service runs every start command, so lvm2's own unit, which
+/// starts `true` already, runs two; the `-` makes a missing binary harmless.
+pub const STOP_GUARD_WITH_START_TEXT: &str = "[Service]\nExecStop=\nExecStart=-/usr/bin/true\n";
+
+/// The stop guard's text for `unit`.
+fn stop_guard_text(unit: &str) -> &'static str {
+    if unit == "blk-availability.service" {
+        STOP_GUARD_WITH_START_TEXT
+    } else {
+        STOP_GUARD_TEXT
+    }
+}
 
 /// The stop guards' file name. systemd applies a unit's drop-ins in the order
 /// of their file names across every directory, and an `ExecStop=` in a later
@@ -126,7 +150,7 @@ pub const SHUTDOWN_BOUND_TEXT: &str = "[Unit]\nConflicts=shutdown.target\nBefore
 pub fn runtime_guards() -> impl Iterator<Item = (&'static str, &'static str)> {
     STOP_GUARDED_UNITS
         .into_iter()
-        .map(|unit| (unit, STOP_GUARD_TEXT))
+        .map(|unit| (unit, stop_guard_text(unit)))
         .chain(
             SHUTDOWN_BOUND_UNITS
                 .into_iter()
@@ -134,31 +158,46 @@ pub fn runtime_guards() -> impl Iterator<Item = (&'static str, &'static str)> {
         )
 }
 
-/// Install the drop-in, and the stop guards, under `run`. The caller reloads
-/// the service manager.
+/// Install the drop-in, and the stop guards, under `run`, readable by all
+/// ([`plan::SERVICE_CONFIG_MODE`]). The caller reloads the service manager.
 pub fn install_dropin(run: &Path, binary: &Path) -> io::Result<PathBuf> {
     for (unit, text) in runtime_guards() {
         let dir = run.join(stop_guard_dir(unit));
         std::fs::create_dir_all(&dir)?;
-        plan::write_private_atomic(&dir.join(STOP_GUARD_NAME), text.as_bytes())?;
+        plan::write_atomic_with_mode(
+            &dir.join(STOP_GUARD_NAME),
+            text.as_bytes(),
+            plan::SERVICE_CONFIG_MODE,
+        )?;
     }
     let dir = run.join(DROPIN_DIR);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(DROPIN_NAME);
-    plan::write_private_atomic(&path, dropin_text(binary).as_bytes())?;
+    plan::write_atomic_with_mode(
+        &path,
+        dropin_text(binary).as_bytes(),
+        plan::SERVICE_CONFIG_MODE,
+    )?;
     Ok(path)
 }
 
-/// Remove the drop-in and the stop guards (and their directories when empty)
-/// under `run`.
-pub fn remove_dropin(run: &Path) {
+/// Remove the drop-in and the stop guards under `run`, with each of their
+/// directories that is left empty, unless `kept` (the `/run` snapshot taken
+/// before the entry) lists it: a drop-in directory the decoy had already
+/// keeps whatever else it holds, and only the files NAILS wrote go. Returns
+/// whether a file went, which PID 1 keeps loaded until its next reload.
+pub fn remove_dropin(run: &Path, kept: &Snapshot) -> bool {
     let files = runtime_guards()
-        .map(|(unit, _)| (run.join(stop_guard_dir(unit)), STOP_GUARD_NAME))
-        .chain(std::iter::once((run.join(DROPIN_DIR), DROPIN_NAME)));
+        .map(|(unit, _)| (stop_guard_dir(unit), STOP_GUARD_NAME))
+        .chain(std::iter::once((PathBuf::from(DROPIN_DIR), DROPIN_NAME)));
+    let mut removed = false;
     for (dir, name) in files {
-        let _ = std::fs::remove_file(dir.join(name));
-        let _ = std::fs::remove_dir(dir);
+        removed |= std::fs::remove_file(run.join(&dir).join(name)).is_ok();
+        if !kept.contains(dir.as_os_str()) {
+            let _ = std::fs::remove_dir(run.join(&dir));
+        }
     }
+    removed
 }
 
 /// The jobs of the soft-reboot itself, which wait for the transition.
@@ -208,6 +247,11 @@ impl Env {
 
     fn mount_points(&self) -> Vec<PathBuf> {
         self.mounts.iter().map(|e| e.mount_point.clone()).collect()
+    }
+
+    /// The `/run` snapshot the entry saved, if any.
+    fn saved_snapshot(&self) -> Option<Snapshot> {
+        Snapshot::load(&self.runtime_dir.join(SNAPSHOT_NAME))
     }
 }
 
@@ -274,7 +318,10 @@ fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
         // A reboot that met the leftover tree: the volume was unmounted by
         // the shutdown, and a real reboot would have closed it too.
         let _ = crate::whole_root::ret::close_backend_deferred(plan);
-        remove_dropin(&env.run);
+        let kept = env.saved_snapshot().unwrap_or_default();
+        remove_dropin(&env.run, &kept);
+        runtime_units::remove_masks(&env.run, &plan.masks, &plan.boot_masks, &kept);
+        kernel_helpers::restore(&plan.kernel_settings);
         nextroot::remove_runtime_dir(&env.runtime_dir);
         if plan.run_noexec {
             let _ = nextroot::set_noexec(&env.run, true);
@@ -313,10 +360,18 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
         return disarm(env, plan, &format!("could not mask decoy units: {e}"));
     }
     // The session's own units (watcher, sleep guard) are best-effort, and so
-    // is the read-only rule for unused disks: the watcher sweeps them too.
+    // is the read-only rule for unused disks: the watcher sweeps them too. So
+    // are the boot-loader masks, which only keep units from failing.
     let _ = runtime_units::install_units(&env.run, &plan.session_units);
     if plan.read_only_disks {
         let _ = disk_guard::install_rule(&env.run, &env.runtime_dir.join(BINARY_NAME));
+    }
+    runtime_units::mask_units_best_effort(&env.run, &plan.boot_masks);
+    narrow_snapshot(env);
+    prune_utab(env);
+    // Without the copy, the way back clears the records instead.
+    if run_records::save(&env.run, &env.runtime_dir.join(RECORDS_NAME)).is_err() {
+        let _ = std::fs::remove_file(env.runtime_dir.join(RECORDS_NAME));
     }
     plan.armed = None;
     plan.entered_at = Some(env.now);
@@ -324,22 +379,59 @@ fn enter(env: &Env, plan: &mut Plan) -> Outcome {
     Outcome::Entered
 }
 
+/// Narrow the `/run` snapshot the entry took to the entries still there now
+/// that every decoy unit has stopped. What the decoy's own shutdown removed
+/// (the PID file of a service it stopped) is then no longer the decoy's, and
+/// the way back removes it when the hidden session wrote it again, as a
+/// session ended by an emergency's kill leaves it. A plain soft-reboot would
+/// not have carried it either. Best effort: on any error the entry's snapshot
+/// stays.
+fn narrow_snapshot(env: &Env) {
+    let path = env.runtime_dir.join(SNAPSHOT_NAME);
+    let Some(saved) = Snapshot::load(&path) else {
+        return;
+    };
+    let narrowed = saved.still_present(&env.run);
+    if narrowed != saved {
+        let _ = plan::write_private_atomic(&path, &narrowed.to_text());
+    }
+}
+
+/// Keep in `utab` only the lines that still name the same mount once PID 1
+/// has switched to the next root ([`utab::surviving_lines`]): the hidden
+/// session must not join the decoy's lines to the mounts that reuse the IDs
+/// of the decoy's root and its submounts. Best effort: on any error the file
+/// stays as it is.
+fn prune_utab(env: &Env) {
+    let _ = utab::update(&env.run, |text| {
+        utab::surviving_lines(text, &env.mounts, &env.nextroot)
+    });
+}
+
 fn leave(env: &Env, plan: &Plan) -> Outcome {
     // Read everything the scrub needs before it removes the runtime directory.
-    let snapshot = std::fs::read(env.runtime_dir.join(SNAPSHOT_NAME))
+    let snapshot = env.saved_snapshot();
+    let saved_utab = std::fs::read(env.runtime_dir.join(UTAB_NAME)).ok();
+    let utab_mounts = std::fs::read_to_string(env.runtime_dir.join(UTAB_MOUNTS_NAME))
         .ok()
-        .map(|text| Snapshot::from_text(&text));
-    let utab = std::fs::read(env.runtime_dir.join(UTAB_NAME)).ok();
+        .map(|text| parse_mountinfo(&text));
+    let records = std::fs::read(env.runtime_dir.join(RECORDS_NAME)).ok();
     if let Err(why) = repoint_and_check(env, &plan.decoy) {
         if let Some(system) = &plan.hidden.system {
             let _ = repoint_current_system(&env.run, system);
         }
         return disarm(env, plan, &why);
     }
+    // The hidden activation pointed the kernel's module loader and firmware
+    // path at the hidden store; nothing runs the decoy's activation again.
+    kernel_helpers::restore(&plan.kernel_settings);
     // The disks the session made read-only are the decoy's again, and its
     // udevd must never load the rule (the scrub leaves /run/udev alone).
     disk_guard::remove_rule(&env.run);
     disk_guard::release(&env.runtime_dir);
+    // By name: the scrub keeps a drop-in directory the decoy already had,
+    // and never looks inside it.
+    remove_dropin(&env.run, snapshot.as_ref().unwrap_or(&Snapshot::default()));
     let runtime_rel = env
         .runtime_dir
         .strip_prefix(&env.run)
@@ -360,23 +452,42 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
             &env.mount_points(),
         ),
     };
-    if let Some(utab) = utab {
-        let _ = run_scrub::restore_utab(&env.run, &utab);
-    }
+    run_records::restore(&env.run, records.as_deref());
     // A process exec'd from /run keeps running once it turns noexec again.
     if plan.run_noexec {
         let _ = nextroot::set_noexec(&env.run, true);
     }
-    // Last: anything logged after this is imported by the decoy journald.
     // A hidden unit that is not ordered before the shutdown can still be
-    // stopping now and write to the kernel log after a cursor taken at once
-    // (and PID 1 logs its end): wait, bounded, until only the soft-reboot's
-    // own jobs are left.
+    // stopping now: its unmount rewrites utab, it may write to the kernel log
+    // after a cursor taken at once, and PID 1 logs its end. Wait, bounded,
+    // until only the soft-reboot's own jobs are left.
     if let Some(systemctl) = &env.systemctl {
         reset_new_failures(systemctl, &plan.failed_at_entry);
         let _ =
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
+    // The decoy's copy, taken at entry, names mounts by their IDs at that time;
+    // the decoy root and its other mounts come back as new mounts, whose IDs
+    // the way back recorded, and the old IDs may name the session's mounts or
+    // none. The session's lines go.
+    if let Some(saved) = saved_utab {
+        let restored: Vec<(i32, i32)> = plan
+            .decoy_mounts
+            .iter()
+            .filter_map(|mount| Some((mount.id, mount.restored?)))
+            .collect();
+        let restored = (!plan.decoy_mounts.is_empty()).then_some(restored.as_slice());
+        let _ = utab::update(&env.run, |_| {
+            utab::restored_lines(
+                &saved,
+                utab_mounts.as_deref(),
+                restored,
+                &env.mounts,
+                &env.nextroot,
+            )
+        });
+    }
+    // Last: anything logged after this is imported by the decoy journald.
     if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {
         let _ = run_scrub::write_kernel_seqnum(&env.run, next);
     }

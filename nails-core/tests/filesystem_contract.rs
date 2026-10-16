@@ -15,11 +15,13 @@
 //! read/write, size, existence, type and permission queries, disk usage,
 //! directory creation, symlinks, rename, removal and secure deletion. The
 //! mount-query contract (mount point, filesystem type, read-only flag and
-//! source, the queries the session code reads) runs the real filesystem as
+//! source, the queries the session code reads, and the mount table they agree
+//! with) runs the real filesystem as
 //! root of an unprivileged user and mount namespace
 //! (`nails_core::test_support::Rerun`), so it needs no root either. The
 //! mock's own helpers are tested in `filesystem/mock/tests_*.rs`.
 
+use nails_core::filesystem::mountinfo::{mount_is_read_only, top_mount_at};
 use nails_core::filesystem::{Filesystem, MockFilesystem, MountSource, PathKind, RealFilesystem};
 use nails_core::test_path;
 use nails_core::test_support::{Rerun, ScratchTmpfs};
@@ -321,6 +323,19 @@ fn mount_query_contract<F: Filesystem>(fs: &F, root: &Path, mount_tmpfs: MountTm
             .expect("a mount point has a source");
         assert_eq!(source.device.as_deref(), Some(TMPFS_SOURCE), "{name}");
         assert_eq!(source.dm_name, None, "a tmpfs is no device-mapper device");
+    }
+
+    // The mount table says what the queries say.
+    let table = fs.mount_table().expect("the mount table");
+    assert!(
+        top_mount_at(&table, &plain).is_none(),
+        "a directory is no mount"
+    );
+    for (name, read_only) in [("writable", false), ("read-only", true)] {
+        let entry = top_mount_at(&table, &root.join(name)).expect("the mount is listed");
+        assert_eq!(entry.fstype, "tmpfs", "{name}");
+        assert_eq!(entry.source, Path::new(TMPFS_SOURCE), "{name}");
+        assert_eq!(mount_is_read_only(entry), read_only, "{name}");
     }
 }
 

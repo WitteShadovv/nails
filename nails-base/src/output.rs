@@ -297,6 +297,16 @@ pub fn info(msg: &str) {
     let _ = writeln!(stdout(), "{}", format_info(msg));
 }
 
+/// `count` followed by the noun in the number it needs: `1 warning`,
+/// `2 warnings`, `0 warnings`.
+pub fn count_noun(count: usize, singular: &str, plural: &str) -> String {
+    if count == 1 {
+        format!("{count} {singular}")
+    } else {
+        format!("{count} {plural}")
+    }
+}
+
 /// Serialises the tests that change the global render state.
 #[cfg(test)]
 static RENDER_STATE_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());

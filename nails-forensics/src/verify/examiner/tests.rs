@@ -143,6 +143,61 @@ fn every_seeded_setup_trace_is_reported_under_its_conclusion() {
 }
 
 #[test]
+fn a_crypttab_device_opened_as_truecrypt_warns_by_any_of_its_options() {
+    let root = clean_root();
+    // Devices, not files: only the options make these lines deniable. The
+    // one-field line is ignored, as systemd ignores it.
+    write(
+        root.path(),
+        "/etc/crypttab",
+        b"cryptroot UUID=0a1b none luks,discard\n\
+          vault /dev/sdb none tcrypthidden\n\
+          outer /dev/sdc - tcrypt-veracrypt\n\
+          system /dev/sdd none tcrypt-system\n\
+          keyed /dev/sde none tcrypt-keyfile=/etc/keys/vault.key\n\
+          scratch /dev/sdf /dev/urandom plain,size=512\n\
+          lonely\n",
+    );
+
+    let report = examine(root.path(), &ExaminerOptions::default());
+
+    let crypttab: Vec<(Severity, &str)> = report
+        .findings()
+        .filter(|f| f.location == "/etc/crypttab")
+        .map(|f| (f.severity, f.evidence.as_str()))
+        .collect();
+    assert_eq!(
+        crypttab,
+        vec![
+            (
+                Severity::Info,
+                "encrypted mapping cryptroot from UUID=0a1b (luks,discard)"
+            ),
+            (
+                Severity::Warn,
+                "encrypted mapping vault from /dev/sdb (tcrypthidden)"
+            ),
+            (
+                Severity::Warn,
+                "encrypted mapping outer from /dev/sdc (tcrypt-veracrypt)"
+            ),
+            (
+                Severity::Warn,
+                "encrypted mapping system from /dev/sdd (tcrypt-system)"
+            ),
+            (
+                Severity::Warn,
+                "encrypted mapping keyed from /dev/sde (tcrypt-keyfile=/etc/keys/vault.key)"
+            ),
+            (
+                Severity::Warn,
+                "encrypted mapping scratch from /dev/sdf (plain,size=512)"
+            ),
+        ]
+    );
+}
+
+#[test]
 fn vendor_firmware_blobs_are_no_candidates_and_the_report_says_so() {
     let root = clean_root();
     // Intel microcode files are vendor-encrypted: random-looking, sized in

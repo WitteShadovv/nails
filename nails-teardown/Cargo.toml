@@ -15,8 +15,8 @@ publish = false
 [lints]
 workspace = true
 
-# The dependency boundary of the emergency hot path (ADR 0007). This crate must
-# never depend on another NAILS crate (their config, state, manager, process
+# The dependency boundary of the emergency hot path. This crate must never
+# depend on another NAILS crate (their config, state, manager, process
 # runner) or on tracing: everything the panic path runs is in this crate and
 # these four dependencies. `cargo tree -p nails-teardown` is the whole review
 # surface, and this crate's `boundary` test fails if a dependency is added here.

@@ -1,0 +1,6 @@
+---
+source: nails-cli/src/cli/output/refusal.rs
+expression: "human(&refusal(kind), None)"
+---
+error: the filesystem at /mnt (of type vfat) is not the volume this session started from. Nothing was written.
+  Unmount what was mounted over it, then run the command again.

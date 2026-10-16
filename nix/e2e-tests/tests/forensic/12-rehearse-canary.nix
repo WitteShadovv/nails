@@ -8,8 +8,10 @@
 # channels have somewhere durable to leak to.
 #
 # Plant writes its files through the root overlay: they land in the upper on
-# the hidden volume. A scan in the hidden session itself is refused. The clean
-# scan on the decoy must find nothing on the raw decoy devices. Then the test
+# the hidden volume, and the state records the session's entry time. A scan in
+# the hidden session itself is refused. Back on the decoy, in the same boot
+# (the soft-reboots keep the boot ID), the scan runs without any override, and
+# the clean scan must find nothing on the raw decoy devices. Then the test
 # writes the token onto the decoy itself, once in ASCII and once in UTF-16LE,
 # and the same scan must find both by offset: proof that the clean result came
 # from a scan that can see the decoy, not from a scan that sees nothing. The
@@ -81,6 +83,9 @@ in
         assert token not in out + err, "plant printed the token"
         data = json.loads(out)["data"]
         assert data["phase"] == "planted", data
+        assert data["next_step"].startswith("Step 2 of 3"), data
+        state = json.loads(machine.succeed(f"cat {state_path}"))
+        assert isinstance(state.get("planted_entered_at"), int), state
         planted = {c["kind"] for c in data["channels"] if "skipped" not in c}
         for kind in ["overlay-file", "home-file", "recent-files", "system-log", "process-cmdline"]:
             assert kind in planted, (kind, data["channels"])
@@ -102,16 +107,14 @@ in
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         machine.fail(f"test -e /rehearse-{token}.txt")
         machine.fail(f"test -e /home/testuser/rehearse-{token}.txt")
+        # The same boot, but no hidden session: the planting session is over.
+        rc, out, err = rehearse("status")
+        assert rc == 0, (rc, out, err)
+        next_step = json.loads(out)["data"]["next_step"]
+        assert next_step.startswith("Step 3 of 3"), next_step
 
     def scan():
-        rc, out, err = rehearse("scan")
-        if rc == 6 and "same_boot" in out + err:
-            # The soft-reboots kept the boot ID. A scan that still keys on the
-            # boot ID alone refuses here although the session has ended; the
-            # deactivation above is what makes the scan meaningful.
-            machine.log("scan refused as the same boot after deactivation; rescanning with --allow-same-boot")
-            rc, out, err = rehearse("scan --allow-same-boot")
-        return rc, out, err
+        return rehearse("scan")
 
     with subtest("the raw decoy devices hold no trace of the canary"):
         rc, out, err = scan()

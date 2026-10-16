@@ -20,6 +20,7 @@ fn state(token: &str) -> RehearsalState {
         phase: Phase::Planted,
         planted_at: "2026-10-07T10:00:00Z".to_string(),
         planted_boot_id: Some("boot-a".to_string()),
+        planted_entered_at: None,
         planted_soft_reboots: Some(2),
         channels: Vec::new(),
         scans: Vec::new(),
@@ -46,15 +47,47 @@ fn the_state_is_refused_on_an_unmounted_hidden_root() {
     let root = Path::new("/mnt/data");
     fs.mock_set_path_exists("/mnt/data", true);
     fs.mock_set_path_exists("/mnt/data/state.json", true);
-    let slash = fs.device_id(Path::new("/")).unwrap();
-    fs.mock_set_device_id(root, slash);
 
     let err = save_state(&fs, root, &state(TOKEN)).unwrap_err();
-    assert!(err.to_string().contains("shares a device with /"), "{err}");
+    assert!(
+        err.to_string().contains("is not a volume of its own"),
+        "{err}"
+    );
     assert!(
         fs.get_written_content(&root.join(state_relative_path()))
             .is_none()
     );
+}
+
+#[test]
+fn reset_on_an_unattached_root_deletes_nothing() {
+    // The state and a planted copy exist on disk, but the gate sees the root
+    // as a folder on `/`: nothing may be removed from it.
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path();
+    std::fs::create_dir_all(root.join(REHEARSE_DIR)).unwrap();
+    std::fs::write(root.join(state_relative_path()), "{}").unwrap();
+    let copy = root.join(format!("home/{FILE_PREFIX}{TOKEN}.txt"));
+    std::fs::create_dir_all(copy.parent().unwrap()).unwrap();
+    std::fs::write(&copy, TOKEN).unwrap();
+    let mut st = state(TOKEN);
+    st.channels = vec![ChannelRecord {
+        kind: ChannelKind::OverlayFile,
+        location: "/home".to_string(),
+        upper_copy: Some(copy.clone()),
+        skipped: None,
+    }];
+
+    let fs = crate::MockFilesystem::new();
+    fs.mock_set_path_exists(root.to_str().unwrap(), true);
+    fs.mock_set_mount_table("1 0 8:1 / / rw - ext4 /dev/vda1 rw\n");
+    let error = reset(&fs, root, &st).unwrap_err();
+    assert!(
+        error.to_string().contains("is not a volume of its own"),
+        "{error}"
+    );
+    assert!(root.join(state_relative_path()).exists());
+    assert!(copy.exists());
 }
 
 #[test]
@@ -74,7 +107,7 @@ fn the_state_round_trips_on_a_mounted_hidden_volume() {
         let loaded = load_state(&fs, hidden.path()).unwrap().unwrap();
         assert_eq!(loaded, state(TOKEN));
 
-        let removed = reset(hidden.path(), &loaded).unwrap();
+        let removed = reset(&fs, hidden.path(), &loaded).unwrap();
         assert_eq!(removed, vec![hidden.path().join(state_relative_path())]);
         assert_eq!(load_state(&fs, hidden.path()).unwrap(), None);
     });
@@ -268,7 +301,7 @@ fn planting_writes_only_into_the_overlay_upper() {
         st.channels = records.clone();
         std::fs::create_dir_all(hidden_root.join(REHEARSE_DIR)).unwrap();
         std::fs::write(hidden_root.join(state_relative_path()), "{}").unwrap();
-        reset(&hidden_root, &st).unwrap();
+        reset(&crate::RealFilesystem, &hidden_root, &st).unwrap();
         assert!(!upper.join(&name).exists());
         let upper_xbel =
             std::fs::read_to_string(upper.join("alice/.local/share/recently-used.xbel")).unwrap();
@@ -280,12 +313,92 @@ fn plant_file_for_test(ctx: &PlantContext<'_>, dir: &Path) -> ChannelRecord {
     super::plant::tests_support::plant_file(ctx, dir)
 }
 
+/// In a hidden session entered at `entered_at` (when its plan says), in boot
+/// `boot_id`, where systemd reports `soft_reboots`.
+fn in_session(entered_at: Option<u64>, boot_id: &str, soft_reboots: Option<u64>) -> Here {
+    Here {
+        session: Some(LiveSession { entered_at }),
+        boot_id: Some(boot_id.to_string()),
+        soft_reboots,
+    }
+}
+
+/// Planted in boot-a, in the session entered at 1000; `soft_reboots` is what
+/// systemd reported then.
+fn planted_at_1000(soft_reboots: Option<u64>) -> RehearsalState {
+    RehearsalState {
+        planted_entered_at: Some(1_000),
+        planted_soft_reboots: soft_reboots,
+        ..state(TOKEN)
+    }
+}
+
 #[test]
-fn the_planting_session_is_the_same_boot_and_soft_reboot_count() {
+fn outside_a_hidden_session_the_planting_session_has_ended() {
+    // Back on the decoy after a plain deactivate: the same boot, and on
+    // systemd 255 no soft-reboot count at either end.
+    let decoy = Here {
+        session: None,
+        boot_id: Some("boot-a".to_string()),
+        soft_reboots: None,
+    };
+    assert!(!planted_at_1000(None).planted_in_this_session(&decoy));
+    let older = RehearsalState {
+        planted_soft_reboots: None,
+        ..state(TOKEN)
+    };
+    assert!(!older.planted_in_this_session(&decoy));
+    assert!(!older.planted_in_this_session(&Here::default()));
+}
+
+#[test]
+fn the_entry_time_tells_the_planting_session_from_a_later_one_without_a_count() {
+    // systemd 255 reports no soft-reboot count.
+    let state = planted_at_1000(None);
+    assert!(state.planted_in_this_session(&in_session(Some(1_000), "boot-a", None)));
+    assert!(!state.planted_in_this_session(&in_session(Some(2_000), "boot-a", None)));
+    // On 256 and newer the entry time decides first, also when a failed probe
+    // left the count out at one end.
+    let counted = planted_at_1000(Some(2));
+    assert!(!counted.planted_in_this_session(&in_session(Some(2_000), "boot-a", Some(2))));
+    assert!(counted.planted_in_this_session(&in_session(Some(1_000), "boot-a", None)));
+}
+
+#[test]
+fn without_an_entry_time_the_soft_reboot_count_decides_or_the_answer_is_yes() {
+    // A rehearsal planted before the entry time was recorded, or a session
+    // whose plan cannot be read.
     let state = state(TOKEN);
-    assert!(state.planted_in_this_session(Some("boot-a"), 2));
-    // A soft-reboot keeps the boot ID: the count tells the sessions apart.
-    assert!(!state.planted_in_this_session(Some("boot-a"), 3));
-    assert!(!state.planted_in_this_session(Some("boot-b"), 2));
-    assert!(!state.planted_in_this_session(None, 2));
+    assert!(state.planted_in_this_session(&in_session(None, "boot-a", Some(2))));
+    assert!(!state.planted_in_this_session(&in_session(None, "boot-a", Some(4))));
+    assert!(!state.planted_in_this_session(&in_session(Some(2_000), "boot-a", Some(4))));
+    // Nothing tells the sessions apart: assume the planting one.
+    assert!(state.planted_in_this_session(&in_session(None, "boot-a", None)));
+    assert!(planted_at_1000(None).planted_in_this_session(&in_session(None, "boot-a", Some(2))));
+}
+
+#[test]
+fn a_later_boot_is_never_the_planting_session() {
+    let state = planted_at_1000(Some(2));
+    assert!(!state.planted_in_this_session(&in_session(Some(1_000), "boot-b", Some(2))));
+    assert!(!state.planted_in_this_session(&in_session(None, "boot-b", None)));
+    // An unknown boot ID at either end leaves the decision to the session.
+    let no_boot = RehearsalState {
+        planted_boot_id: None,
+        ..planted_at_1000(None)
+    };
+    assert!(no_boot.planted_in_this_session(&in_session(Some(1_000), "boot-b", None)));
+    assert!(!no_boot.planted_in_this_session(&in_session(Some(2_000), "boot-a", None)));
+}
+
+#[test]
+fn a_state_without_the_entry_time_still_loads() {
+    let json = format!(
+        r#"{{"schema_version":1,"token":"{TOKEN}","phase":"planted",
+        "planted_at":"2026-10-07T10:00:00Z","planted_boot_id":"boot-a",
+        "planted_soft_reboots":0,"channels":[]}}"#
+    );
+    let state: RehearsalState = serde_json::from_str(&json).unwrap();
+    assert_eq!(state.planted_entered_at, None);
+    assert_eq!(state.planted_soft_reboots, Some(0));
 }

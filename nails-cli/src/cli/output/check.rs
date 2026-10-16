@@ -16,6 +16,9 @@ use nails_core::output::{Mark, Style};
 
 use super::envelope::Envelope;
 
+mod inherited;
+pub use inherited::{InheritedEntry, InheritedSummary};
+
 /// The command name used in the JSON envelope and in error reports.
 pub const COMMAND: &str = "check";
 
@@ -97,63 +100,19 @@ pub struct ConfigSummary {
 /// Which NixOS profile activation would build and switch to.
 #[derive(Debug, Serialize)]
 pub struct ProfileSummary {
-    /// `"overlay-only"`, `"flake"`, `"legacy"` or `"none"`.
+    /// `"overlay-only"`, `"flake"`, `"legacy"`, `"refused"` (the decoy's own
+    /// flake, which activation does not build) or `"none"`.
     pub mode: &'static str,
     /// A human description of the selected target, if any.
     pub detail: Option<String>,
 }
 
-/// One inherited decoy persona entry.
-#[derive(Debug, Serialize)]
-pub struct InheritedEntry {
-    /// The entry's name (autostart stem, unit name, or operator login).
-    pub name: String,
-    /// Where it comes from (`"user-autostart"`, `"global-unit"`, `"linger"`, …).
-    pub source: &'static str,
-    /// The name looks like a remote-linked client (name-only heuristic).
-    pub remote_linked: bool,
-    /// Whether this entry can be masked with `[persona] mask_inherited`.
-    pub maskable: bool,
-}
-
-/// The decoy persona state the hidden session would inherit.
-#[derive(Debug, Serialize)]
-pub struct InheritedSummary {
-    /// Whether the inventory could be collected (an operator was resolved).
-    pub inspected: bool,
-    /// Every inherited entry, grouped by source.
-    pub entries: Vec<InheritedEntry>,
-    /// The names tagged as remote-linked.
-    pub remote_linked: Vec<String>,
-}
-
-impl InheritedSummary {
-    /// The not-inspected summary used when no operator could be resolved.
-    pub fn not_inspected() -> Self {
-        Self {
-            inspected: false,
-            entries: Vec::new(),
-            remote_linked: Vec::new(),
-        }
-    }
-
-    /// Build the summary from a collected inventory.
-    pub fn from_inventory(inventory: &nails_core::PersonaInventory) -> Self {
-        let entries = inventory
-            .entries
-            .iter()
-            .map(|entry| InheritedEntry {
-                name: entry.name.clone(),
-                source: entry.source.as_str(),
-                remote_linked: entry.remote_linked,
-                maskable: entry.source.is_maskable(),
-            })
-            .collect();
-        Self {
-            inspected: true,
-            entries,
-            remote_linked: inventory.remote_linked_names(),
-        }
+impl ProfileSummary {
+    /// The line `check` prints for it.
+    pub fn line(&self) -> &str {
+        self.detail
+            .as_deref()
+            .unwrap_or("no hidden NixOS build target")
     }
 }
 
@@ -174,6 +133,11 @@ pub struct CheckReport {
     pub profile: ProfileSummary,
     /// The decoy persona state the hidden session would inherit.
     pub inherited: InheritedSummary,
+    /// Why the attach gate refused the hidden root, with its code
+    /// (`not_separate_volume`, `root_covered` or `storage_unjudged`); the
+    /// hidden-volume row reports the same failure.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<super::envelope::ErrorBody>,
 }
 
 impl CheckReport {
@@ -200,6 +164,7 @@ impl CheckReport {
             }
         }
         Self {
+            refusal: None,
             ready: summary.failed == 0,
             checks,
             summary,
@@ -218,243 +183,127 @@ pub fn print_check_json(report: &CheckReport) {
 
 /// Print the readiness report for people.
 pub fn print_check_human(report: &CheckReport, style: Style) {
-    if style.ascii {
-        println!("=======================================");
-        println!("  NAILS Readiness Check");
-        println!("=======================================");
-    } else {
-        println!("╭─────────────────────────────────────╮");
-        println!("│  NAILS Readiness Check              │");
-        println!("╰─────────────────────────────────────╯");
+    for line in human_lines(report, style) {
+        println!("{line}");
     }
-    println!();
+}
 
-    println!("Pre-flight checks:");
+/// The lines of the readiness report for people.
+fn human_lines(report: &CheckReport, style: Style) -> Vec<String> {
+    let mut out = Vec::new();
+    if style.ascii {
+        out.push("=======================================".to_string());
+        out.push("  NAILS Readiness Check".to_string());
+        out.push("=======================================".to_string());
+    } else {
+        out.push("╭─────────────────────────────────────╮".to_string());
+        out.push("│  NAILS Readiness Check              │".to_string());
+        out.push("╰─────────────────────────────────────╯".to_string());
+    }
+    out.push(String::new());
+
+    out.push("Pre-flight checks:".to_string());
     for row in &report.checks {
-        println!("  {} {}: {}", style.mark(row.mark()), row.name, row.message);
+        out.push(format!(
+            "  {} {}: {}",
+            style.mark(row.mark()),
+            row.name,
+            row.message
+        ));
         if let Some(remediation) = &row.remediation {
-            println!("      {}", style.marked(Mark::Arrow, remediation));
+            let mut lines = remediation.lines();
+            if let Some(first) = lines.next() {
+                out.push(format!("      {}", style.marked(Mark::Arrow, first)));
+            }
+            for line in lines {
+                out.push(format!("        {line}"));
+            }
         }
     }
-    println!();
+    out.push(String::new());
 
-    println!("Effective configuration:");
-    if let Some(path) = &report.config.config_file {
-        println!("  config file:        {path}");
-    } else {
-        println!("  config file:        (built-in defaults)");
-    }
-    println!("  hidden volume root: {}", report.config.hidden_volume_root);
-    println!("  state file:         {}", report.config.state_file);
-    println!("  log directory:      {}", report.config.log_path);
-    println!("  persona mode:       {}", report.config.persona_mode);
-    println!(
+    out.push("Effective configuration:".to_string());
+    out.push(match &report.config.config_file {
+        Some(path) => format!("  config file:        {path}"),
+        None => "  config file:        (built-in defaults)".to_string(),
+    });
+    out.push(format!(
+        "  hidden volume root: {}",
+        report.config.hidden_volume_root
+    ));
+    out.push(format!(
+        "  state file:         {}",
+        report.config.state_file
+    ));
+    out.push(format!("  log directory:      {}", report.config.log_path));
+    out.push(format!(
+        "  persona mode:       {}",
+        report.config.persona_mode
+    ));
+    out.push(format!(
         "  minimum free space: {} MB",
         report.config.minimum_space_mb
-    );
-    println!();
+    ));
+    out.push(String::new());
 
-    println!("Decoy filesystems in the hidden root:");
+    out.push("Decoy filesystems in the hidden root:".to_string());
     if report.filesystems.is_empty() {
-        println!("  {} only the root (overlaid)", style.mark(Mark::Bullet));
+        out.push(format!(
+            "  {} only the root (overlaid)",
+            style.mark(Mark::Bullet)
+        ));
     } else {
         for line in &report.filesystems {
-            println!("  {} {line}", style.mark(Mark::Bullet));
+            out.push(format!("  {} {line}", style.mark(Mark::Bullet)));
         }
     }
-    println!();
+    out.push(String::new());
 
-    println!("Session:");
-    println!(
+    out.push("Session:".to_string());
+    out.push(format!(
         "  {} activation soft-reboots into the hidden root: every program closes and you are logged out",
         style.mark(Mark::Info)
-    );
-    println!();
+    ));
+    out.push(String::new());
 
-    println!("NixOS profile:");
-    match &report.profile.detail {
-        Some(detail) => println!("  {} {detail}", style.mark(Mark::Info)),
-        None => println!("  {} no profile switch", style.mark(Mark::Info)),
+    out.push("NixOS profile:".to_string());
+    out.push(format!(
+        "  {} {}",
+        style.mark(Mark::Info),
+        report.profile.line()
+    ));
+    out.push(String::new());
+
+    out.push("Inherited decoy state:".to_string());
+    for line in inherited::inherited_lines(&report.inherited, report.config.persona_mode, style) {
+        out.push(format!("  {line}"));
     }
-    println!();
+    out.push(String::new());
 
-    println!("Inherited decoy state:");
-    if !report.inherited.inspected {
-        println!(
-            "  {} not inspected (could not resolve the target user)",
-            style.mark(Mark::Info)
-        );
-    } else if report.inherited.entries.is_empty() {
-        println!("  {} none inherited", style.mark(Mark::Pass));
-    } else {
-        for entry in &report.inherited.entries {
-            let tags = match (entry.remote_linked, entry.maskable) {
-                (true, true) => "  [remote-linked, maskable]",
-                (true, false) => "  [remote-linked]",
-                (false, true) => "  [maskable]",
-                (false, false) => "",
-            };
-            println!(
-                "  {} {} ({}){tags}",
-                style.mark(Mark::Bullet),
-                entry.name,
-                entry.source
-            );
-        }
-        if !report.inherited.remote_linked.is_empty() {
-            println!(
-                "  {} {} look like remote-linked client(s); mask with [persona] mask_inherited",
-                style.mark(Mark::Warn),
-                report.inherited.remote_linked.len()
-            );
-        }
-    }
-    println!();
+    out.push(summary_line(report, style));
+    out
+}
 
+/// The verdict that ends the report, with the tally (`1 warning`, `2 warnings`).
+fn summary_line(report: &CheckReport, style: Style) -> String {
     let (mark, verdict) = if report.ready {
-        (Mark::Pass, "Ready to activate".to_string())
+        (Mark::Pass, "Ready to activate")
     } else {
-        (
-            Mark::Fail,
-            "Not ready: resolve the failing checks above".to_string(),
-        )
+        (Mark::Fail, "Not ready: resolve the failing checks above")
     };
     let skipped_suffix = if report.summary.skipped > 0 {
         format!(", {} skipped", report.summary.skipped)
     } else {
         String::new()
     };
-    println!(
-        "{}  ({} passed, {} warnings, {} failed{})",
+    format!(
+        "{}  ({} passed, {}, {} failed{skipped_suffix})",
         style.marked(mark, verdict),
         report.summary.passed,
-        report.summary.warnings,
+        super::count_noun(report.summary.warnings, "warning", "warnings"),
         report.summary.failed,
-        skipped_suffix
-    );
+    )
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn rows() -> Vec<CheckRow> {
-        vec![
-            CheckRow::from_result("a".into(), &CheckResult::Pass("ok".into())),
-            CheckRow::from_result("b".into(), &CheckResult::Warn("careful".into())),
-        ]
-    }
-
-    fn report(rows: Vec<CheckRow>) -> CheckReport {
-        CheckReport::finalize(
-            rows,
-            ConfigSummary {
-                config_file: None,
-                hidden_volume_root: "/mnt/vault".into(),
-                state_file: "/mnt/vault/state.json".into(),
-                log_path: "/mnt/vault/logs".into(),
-                persona_mode: "shared-home",
-                minimum_space_mb: 100,
-            },
-            vec!["/home: overlaid".into()],
-            ProfileSummary {
-                mode: "none",
-                detail: None,
-            },
-            InheritedSummary {
-                inspected: true,
-                entries: vec![InheritedEntry {
-                    name: "dropbox".into(),
-                    source: "user-autostart",
-                    remote_linked: true,
-                    maskable: true,
-                }],
-                remote_linked: vec!["dropbox".into()],
-            },
-        )
-    }
-
-    #[test]
-    fn finalize_counts_outcomes_and_sets_ready() {
-        let report = report(rows());
-        assert!(report.ready);
-        assert_eq!(report.summary.passed, 1);
-        assert_eq!(report.summary.warnings, 1);
-        assert_eq!(report.summary.failed, 0);
-    }
-
-    #[test]
-    fn a_failing_check_marks_the_report_not_ready() {
-        let mut rows = rows();
-        rows.push(CheckRow::from_result(
-            "c".into(),
-            &CheckResult::fail("boom".to_string()),
-        ));
-        let report = report(rows);
-        assert!(!report.ready);
-        assert_eq!(report.summary.failed, 1);
-    }
-
-    #[test]
-    fn json_envelope_carries_checks_and_summary() {
-        let report = report(rows());
-        let line = Envelope::success(COMMAND, &report).to_line();
-        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(value["command"], "check");
-        assert_eq!(value["data"]["ready"], true);
-        assert_eq!(value["data"]["checks"][0]["name"], "a");
-        assert_eq!(value["data"]["checks"][0]["status"], "pass");
-        assert_eq!(value["data"]["summary"]["warnings"], 1);
-    }
-
-    #[test]
-    fn json_envelope_carries_inherited_inventory() {
-        let report = report(rows());
-        let line = Envelope::success(COMMAND, &report).to_line();
-        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(value["data"]["inherited"]["inspected"], true);
-        assert_eq!(value["data"]["inherited"]["entries"][0]["name"], "dropbox");
-        assert_eq!(
-            value["data"]["inherited"]["entries"][0]["source"],
-            "user-autostart"
-        );
-        assert_eq!(
-            value["data"]["inherited"]["entries"][0]["remote_linked"],
-            true
-        );
-        assert_eq!(value["data"]["inherited"]["remote_linked"][0], "dropbox");
-    }
-
-    #[test]
-    fn inherited_summary_from_inventory_maps_fields() {
-        use nails_core::{InheritedSource, PersonaEntry, PersonaInventory};
-        let inventory = PersonaInventory {
-            entries: vec![
-                PersonaEntry {
-                    name: "dropbox".into(),
-                    source: InheritedSource::UserAutostart,
-                    remote_linked: true,
-                },
-                PersonaEntry {
-                    name: "alice".into(),
-                    source: InheritedSource::Linger,
-                    remote_linked: false,
-                },
-            ],
-        };
-        let summary = InheritedSummary::from_inventory(&inventory);
-        assert!(summary.inspected);
-        assert_eq!(summary.entries.len(), 2);
-        assert!(summary.entries[0].maskable);
-        assert!(!summary.entries[1].maskable);
-        assert_eq!(summary.remote_linked, vec!["dropbox".to_string()]);
-    }
-
-    #[test]
-    fn not_inspected_summary_is_empty() {
-        let summary = InheritedSummary::not_inspected();
-        assert!(!summary.inspected);
-        assert!(summary.entries.is_empty());
-        assert!(summary.remote_linked.is_empty());
-    }
-}
+mod tests;

@@ -18,13 +18,14 @@ pub(crate) fn exit_process(code: u8) -> ! {
 ///
 /// The default hook prints `thread '…' panicked at <crate>/<file>:<line>` to
 /// stderr, and a panic payload can carry a hidden-root path. This hook sends
-/// the full payload and location only through `tracing` (whose active sink is
-/// the hidden-root file log for the commands that write one) and prints a
-/// single neutral line, with no path, crate name or payload, to stderr. It
-/// deliberately does not chain to the previous hook.
+/// the full payload and location only through `tracing` (whose only sink for
+/// this target is the hidden-root file log, for the commands that write one:
+/// the console layer leaves it out) and prints a single neutral line, with no
+/// path, crate name or payload, to stderr. It deliberately does not chain to
+/// the previous hook.
 pub fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
-        tracing::error!(target: "panic", detail = %info, "aborted by an internal error");
+        tracing::error!(target: crate::cli::logging::PANIC_TARGET, detail = %info, "aborted by an internal error");
         // Pipe-safe: the terminal may already be gone (an emergency kills it).
         crate::cli::output::eprintln_tolerating_broken_pipe(
             "A fatal internal error occurred; the operation was aborted.",

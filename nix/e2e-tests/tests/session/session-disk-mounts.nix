@@ -1,4 +1,4 @@
-# Disks mounted during the hidden session (T-143): the watcher alert, the
+# Disks mounted during the hidden session: the watcher alert, the
 # opt-in read-only guard, and the way back.
 #
 # The fstab policy covers every filesystem the decoy knows about at entry. A
@@ -7,9 +7,10 @@
 # a disk hot-plugged during the session stand in for a USB drive.
 #
 #   1. Without the opt-in: mounting the disk read-write in the hidden session
-#      raises the watcher's neutral desktop alert. The disk is left mounted and
-#      busy; `nails deactivate` still returns to the decoy, nothing holds the
-#      disk afterwards, and the decoy mounts it read-write as usual.
+#      raises the watcher's neutral desktop alert on the desktop of the
+#      operator logged in on the console. The disk is left mounted and busy;
+#      `nails deactivate` still returns to the decoy, nothing holds the disk
+#      afterwards, and the decoy mounts it read-write as usual.
 #   2. With `[session_mounts] read_only = true`: the disk is read-only at the
 #      block layer from the hidden boot on, a disk hot-plugged during the
 #      session is made read-only by the udev rule alone (the watcher, the
@@ -18,8 +19,8 @@
 #      the way back both disks are writable again, the second disk is byte for
 #      byte as before the session, and the decoy mounts it read-write.
 #
-# notify-send is shadowed by a logging stub on the system PATH so the alert is
-# observable headlessly (as in faults-backend-watch-alert); it logs under /run.
+# A notification server on testuser's session bus (lib/notification-server.nix)
+# records the alert, as in faults-backend-watch-alert.
 { self, ... }:
 let
   hiddenVolume = import ./../../lib/hidden-volume.nix;
@@ -34,40 +35,32 @@ in
   # Two sessions, four soft-reboots.
   globalTimeout = 1500;
 
-  nodes.machine =
-    { pkgs, ... }:
-    {
-      imports = [ ./../../lib/vm-config.nix ];
-      virtualisation.emptyDiskImages = [
-        {
-          size = 64;
-          driveConfig.deviceExtraOpts.serial = "extra";
-        }
-      ];
-      environment.systemPackages = [
-        self.packages.x86_64-linux.nails
-        (pkgs.writeShellScriptBin "notify-send" ''
-          log=/run/notify-stub/notify-send.log
-          mkdir -p "$(dirname "$log")"
-          {
-            printf '__CALL__\n'
-            for arg in "$@"; do
-              printf '%s\n' "$arg"
-            done
-          } >> "$log"
-          exit 0
-        '')
-      ];
-    };
+  nodes.machine = _: {
+    imports = [
+      ./../../lib/vm-config.nix
+      ./../../lib/notification-server.nix
+    ];
+    virtualisation.emptyDiskImages = [
+      {
+        size = 64;
+        driveConfig.deviceExtraOpts.serial = "extra";
+      }
+    ];
+    # The test VMs are q35 machines, whose root bus takes no hot-plugged
+    # device: the disk attached during the session goes into this port.
+    virtualisation.qemu.options = [ "-device pcie-root-port,id=hotplug-port,chassis=1" ];
+    environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+  };
 
   testScript = _: ''
+    from nails_e2e import desktop
+
     ${testHelpers.canonicalActivateFn}
     ${testHelpers.canonicalDeactivateFn}
 
     CONFIG = "/mnt/data/config/nails.toml"
     EXTRA = "/dev/disk/by-id/virtio-extra"
     HOTPLUG = "/dev/disk/by-id/virtio-hotplug"
-    STUB = "/run/notify-stub/notify-send.log"
     WATCH_UNIT = "overlay-runtime-monitor.service"
     RULE = "/run/udev/rules.d/60-overlay-runtime.rules"
     RECORD = "/run/overlay-runtime/read-only-devices"
@@ -92,17 +85,6 @@ in
         return machine.succeed(f"blockdev --getro {device}").strip() == "1"
 
 
-    def alerts():
-        rc, text = machine.execute(f"cat {STUB}")
-        if rc != 0:
-            return []
-        return [
-            [line for line in call.splitlines() if line]
-            for call in text.split("__CALL__\n")
-            if call.strip()
-        ]
-
-
     def decoy_root_device():
         return machine.succeed("findmnt -no SOURCE /").strip()
 
@@ -123,13 +105,14 @@ in
         machine.wait_for_unit(WATCH_UNIT)
         assert not is_read_only(EXTRA), "the disk must stay writable without the opt-in"
         machine.fail(f"test -e {RULE}")
+        uid = desktop.login_on_console(machine)
         machine.succeed(f"mkdir -p /mnt/extra && mount {EXTRA} /mnt/extra")
-        machine.wait_until_succeeds(f"grep -q 'Disk mounted with write access' {STUB}", timeout=30)
-        calls = [c for c in alerts() if "Disk mounted with write access" in c]
+        calls = desktop.wait_for(machine, uid, "Disk mounted with write access", timeout=30)
         assert len(calls) == 1, f"one alert per mount: {calls}"
-        assert any("/mnt/extra" in token for token in calls[0]), calls
-        assert "critical" in calls[0], calls
-        assert not any("nails" in token.lower() for token in calls[0]), calls
+        assert "/mnt/extra" in calls[0]["body"], calls
+        assert calls[0]["hints"]["urgency"] == 2, calls
+        assert calls[0]["uid"] == uid, calls
+        assert "nails" not in (calls[0]["summary"] + calls[0]["body"]).lower(), calls
         # Without the opt-in the write reaches the disk: that is what the alert
         # is about.
         machine.succeed("echo session-1 > /mnt/extra/hidden-1 && sync")
@@ -176,8 +159,12 @@ in
         image = machine.state_dir / "hotplug.img"
         with open(image, "wb") as handle:
             handle.truncate(32 * 1024 * 1024)
-        machine.send_monitor_command(f"drive_add 0 file={image},if=none,id=hot,format=raw")
-        machine.send_monitor_command("device_add virtio-blk-pci,drive=hot,id=hotdev,serial=hotplug")
+        machine.log(machine.send_monitor_command(f"drive_add 0 file={image},if=none,id=hot,format=raw"))
+        machine.log(
+            machine.send_monitor_command(
+                "device_add virtio-blk-pci,drive=hot,id=hotdev,serial=hotplug,bus=hotplug-port"
+            )
+        )
         machine.wait_until_succeeds(f"test -b {HOTPLUG}", timeout=60)
         machine.succeed("udevadm settle")
         machine.wait_until_succeeds(f"test \"$(blockdev --getro {HOTPLUG})\" = 1", timeout=10)

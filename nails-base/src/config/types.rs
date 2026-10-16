@@ -46,7 +46,7 @@ pub fn get_default_hidden_volume_root() -> String {
 /// use nails_base::CliOverrides;
 ///
 /// let overrides = CliOverrides {
-///     nixos_flake: Some("/etc/nixos#host".to_string()), // --nixos-flake
+///     nixos_flake: Some("/mnt/data/nixos#my-host".to_string()), // --nixos-flake
 /// };
 /// ```
 #[derive(Debug, Clone, Default)]
@@ -113,8 +113,9 @@ mod tests {
 /// session is active.
 ///
 /// Closing the lid or an idle auto-suspend leaves the whole hidden session
-/// resident in RAM behind the decoy lock screen: on resume the decoy login
-/// unlocks a session whose overlays, mapper and master key are all still live.
+/// resident in RAM behind the hidden session's own lock screen (the decoy is
+/// not running): whoever unlocks it on resume is in a session whose overlays,
+/// mapper and master key are all still live.
 /// Each mode trades that exposure against a practical cost, so the safe default
 /// only warns rather than silently changing the machine's power behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -127,12 +128,14 @@ pub enum SleepPolicyMode {
     #[default]
     Warn,
     /// Hold a sleep/idle *block* inhibitor for the life of the session so the
-    /// host cannot suspend or idle-sleep while the hidden environment is up. The
-    /// inhibitor is released at deactivation.
+    /// host cannot suspend or idle-sleep while the hidden environment is up,
+    /// and, when a closed lid would sleep, a `handle-lid-switch` block
+    /// inhibitor, because logind ignores sleep inhibitors for the lid by
+    /// default. The inhibitors are released at deactivation.
     Block,
     /// Hold a sleep *delay* inhibitor and, when the host is about to sleep, run
     /// the emergency (a power-off) inside logind's delay window before
-    /// releasing the inhibitor and letting the sleep proceed. Bounded by
+    /// releasing the inhibitor. Bounded by
     /// `InhibitDelayMaxSec` (logind default 5s), so it reuses the fast emergency
     /// path rather than a full deactivation.
     Teardown,
@@ -268,17 +271,22 @@ pub struct Config {
     /// What to do about system sleep (suspend/hibernate) while active.
     ///
     /// Suspending an active session leaves the hidden environment resident in RAM
-    /// behind the decoy lock screen. Warn-only by default; `block` holds a sleep
-    /// inhibitor for the session and `teardown` runs the bounded emergency
-    /// teardown when the host is about to sleep. See [`SleepPolicyConfig`].
+    /// behind the hidden session's lock screen. Warn-only by default; `block`
+    /// holds sleep, idle and lid-switch inhibitors for the session and
+    /// `teardown` powers off through the bounded emergency teardown when the
+    /// host is about to sleep. See [`SleepPolicyConfig`].
     #[serde(default)]
     pub sleep_policy: SleepPolicyConfig,
 
     /// NixOS flake reference (optional, auto-detected if not set)
     ///
-    /// When set, this value is passed directly to `nixos-rebuild --flake <value>`
-    /// instead of auto-detecting the flake path. Supports full flake references
-    /// with attribute selection (e.g., `/mnt/data/nixos#my-host`).
+    /// When set, the hidden system is built from this flake (`nix build` into
+    /// the hidden root's store) instead of the one auto-discovery picks: a
+    /// flake in `<hidden_volume_root>/nixos`, else the legacy hidden
+    /// configuration (the decoy's own `/etc/nixos` flake is refused, also
+    /// under `--no-preflight`). Supports full flake references with attribute
+    /// selection (e.g., `/mnt/data/nixos#my-host`). The flake must import the
+    /// hidden module, and is written and locked inside a hidden session.
     ///
     /// **Precedence**: CLI `--nixos-flake` flag > config `nixos_flake` > auto-discovery
     ///
@@ -297,8 +305,8 @@ pub struct Config {
     /// are mounted survive on the decoy disk across deactivation and reboot. Set
     /// this to `true` (or pass `--accept-persistent-decoy`) to accept that risk;
     /// the decoy-persistence check then warns instead of failing. Lower-severity
-    /// findings (root filesystem type, atime policy, crash-dump channels,
-    /// maintenance timers) are always warnings regardless of this setting.
+    /// findings (atime policy, crash-dump channels, sudo logging, maintenance
+    /// timers) are always warnings regardless of this setting.
     ///
     /// **Example**:
     /// ```toml

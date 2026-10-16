@@ -93,8 +93,8 @@ impl std::fmt::Debug for InheritedVars {
 pub struct RuntimeEnv {
     /// `HOME` — the invoking account's home directory.
     pub home: Option<PathBuf>,
-    /// `PATH` — the caller's executable search path (used to find `notify-send`
-    /// in the operator's own login session).
+    /// `PATH` — the caller's executable search path (searched for a
+    /// [`Program::CallerPath`](crate::process::Program::CallerPath) program).
     pub path: Option<OsString>,
     /// `SHELL` — the caller's login shell, used to detect the shell type.
     pub shell: Option<String>,
@@ -116,9 +116,9 @@ pub struct RuntimeEnv {
     /// `NAILS_TARGET_USER` — operator login name forwarded across the detach boundary.
     pub nails_target_user: Option<String>,
 
-    /// `DISPLAY` — X11 display, forwarded to `notify-send`.
+    /// `DISPLAY` — X11 display, forwarded to a desktop alert.
     pub display: Option<String>,
-    /// `WAYLAND_DISPLAY` — Wayland display, forwarded to `notify-send`.
+    /// `WAYLAND_DISPLAY` — Wayland display, forwarded to a desktop alert.
     pub wayland_display: Option<String>,
     /// `XDG_SESSION_ID` — the logind session id.
     pub xdg_session_id: Option<String>,

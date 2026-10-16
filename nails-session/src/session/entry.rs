@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Preparing the entry into the hidden root (ADR 0008, sections 2 and 3).
+//! Preparing the entry into the hidden root.
 //!
 //! [`prepare`] builds everything the soft-reboot needs and arms the plan; the
 //! caller then commits the state and enqueues `soft-reboot.target`:
@@ -25,13 +25,20 @@
 //!    garbage collection cannot break it ([`super::store`]), and activated
 //!    chrooted (see [`super::nixos`]), then the policy applied to the hidden
 //!    generation's own fstab for what the decoy's did not cover;
-//! 7. `/run` bound in and the tree made private; the init checked the way
-//!    PID 1 will, and the soft-reboot units the way back needs found in the
-//!    next root;
+//! 7. the decoy filesystems the way back needs carried onto the hidden volume,
+//!    and the decoy's mounts recorded for the way back to make again
+//!    ([`super::way_back`]); `/run` bound in and everything below the next
+//!    root made private (its own mount stays shared until the switch, so a
+//!    rollback reaches the copies other mount namespaces hold; see
+//!    [`nextroot`]); the init checked the way PID 1 will, and the soft-reboot
+//!    units the way back needs found in the next root;
 //! 8. the plan armed for the entry.
 //!
 //! Any failure undoes all of it ([`rollback`]): a populated `/run/nextroot`
-//! must never be left behind, or a later plain reboot would enter it.
+//! must never be left behind, or a later plain reboot would enter it. A
+//! SIGINT or SIGTERM (Ctrl+C) is a failure too: each step boundary and the
+//! store copy ask [`crate::cancel`], and the entry stops at the first one
+//! after the signal.
 
 use super::layout::{Layout, Paths};
 use super::nixos;
@@ -39,15 +46,15 @@ use super::policy::{self, Decision};
 use super::store;
 use crate::error::{NailsError, Result};
 use crate::nixos::NixOSBuilder;
-use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
+use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{
-    Arm, CarriedMount, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount,
-    PolicyMountKind, RootSide, SNAPSHOT_NAME, Tools, UTAB_NAME,
+    Arm, DecoyRoot, Direction, Owner, PLAN_VERSION, Plan, PolicyMount, PolicyMountKind, RootSide,
+    SNAPSHOT_NAME, Tools, UTAB_MOUNTS_NAME, UTAB_NAME,
 };
-use nails_teardown::whole_root::run_scrub::{Snapshot, UTAB};
-use nails_teardown::whole_root::runtime_units::RuntimeUnit;
-use nails_teardown::whole_root::{carry, ret, transition};
+use nails_teardown::whole_root::run_scrub::Snapshot;
+use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
+use nails_teardown::whole_root::{kernel_helpers, ret, transition, utab};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -87,6 +94,11 @@ pub trait EntryHost {
     /// the way back resets only the failures the session caused.
     fn failed_units(&self) -> Vec<String> {
         Vec::new()
+    }
+    /// The kernel's helper paths as the decoy has them now
+    /// ([`kernel_helpers::HELPER_PATHS`]), which every way back writes back.
+    fn kernel_settings(&self) -> Vec<kernel_helpers::KernelSetting> {
+        kernel_helpers::read(&kernel_helpers::HELPER_PATHS)
     }
 }
 
@@ -180,6 +192,9 @@ pub struct EntryInputs<'a> {
     /// Keep the disks the session does not use read-only for the session
     /// (`[session_mounts] read_only`).
     pub read_only_disks: bool,
+    /// Why the hidden root is not a volume of its own, when the operator
+    /// overrode that (recorded in the plan as `accepted_decoy_storage`).
+    pub accepted_decoy_storage: Option<String>,
 }
 
 /// The prepared entry.
@@ -267,13 +282,20 @@ fn fhs_init(root: &Path) -> PathBuf {
 }
 
 /// Undo a failed or abandoned entry: detach `/run/nextroot`, remove the
-/// drop-in and the runtime directory. Returns the mounts still left.
+/// drop-in, the masks the entry transition wrote (an entry whose switch
+/// failed) and the runtime directory, and give the kernel back the helper
+/// paths a hidden NixOS activation changed. Returns the mounts still left.
 pub fn rollback(paths: &Paths) -> Vec<PathBuf> {
-    let run_noexec = Plan::load(&paths.plan()).is_ok_and(|plan| plan.run_noexec);
+    let plan = Plan::load(&paths.plan()).ok();
+    let kept = Snapshot::load(&paths.runtime().join(SNAPSHOT_NAME)).unwrap_or_default();
     let remaining = nextroot::detach_tree(&paths.nextroot());
-    transition::remove_dropin(&paths.run);
+    transition::remove_dropin(&paths.run, &kept);
+    if let Some(plan) = &plan {
+        runtime_units::remove_masks(&paths.run, &plan.masks, &plan.boot_masks, &kept);
+        kernel_helpers::restore(&plan.kernel_settings);
+    }
     nextroot::remove_runtime_dir(&paths.runtime());
-    if run_noexec {
+    if plan.is_some_and(|plan| plan.run_noexec) {
         let _ = nextroot::set_noexec(&paths.run, true);
     }
     remaining
@@ -289,7 +311,15 @@ pub fn prepare(paths: &Paths, inputs: &EntryInputs<'_>, host: &dyn EntryHost) ->
             let _ = host.daemon_reload();
         }
     }
-    result
+    // A Ctrl+C reaches the hidden build's processes too: their failure is
+    // the cancel's doing.
+    result.map_err(|e| {
+        if crate::cancel::is_cancelled() {
+            NailsError::Cancelled
+        } else {
+            e
+        }
+    })
 }
 
 fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -> Result<()> {
@@ -297,8 +327,16 @@ fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -
     std::fs::create_dir_all(&runtime).map_err(|e| io(&runtime, e))?;
     std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o700))
         .map_err(|e| io(&runtime, e))?;
-    let utab = std::fs::read(paths.run.join(UTAB)).unwrap_or_default();
-    for (name, bytes) in [(SNAPSHOT_NAME, snapshot.to_text()), (UTAB_NAME, utab)] {
+    let saved_utab = std::fs::read(paths.run.join(utab::UTAB)).unwrap_or_default();
+    // Read after the copy, so every mount it names by ID is in it: the way
+    // back finds each one again where it was (`utab::restored_lines`).
+    let mountinfo = std::fs::read_to_string(SELF_MOUNTINFO).unwrap_or_default();
+    let named = utab::named_mounts(&saved_utab, &mountinfo).into_bytes();
+    for (name, bytes) in [
+        (SNAPSHOT_NAME, snapshot.to_text()),
+        (UTAB_NAME, saved_utab),
+        (UTAB_MOUNTS_NAME, named),
+    ] {
         nails_teardown::whole_root::plan::write_private_atomic(&runtime.join(name), &bytes)
             .map_err(|e| io(&runtime.join(name), e))?;
     }
@@ -334,6 +372,8 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
     Plan {
         version: PLAN_VERSION,
         hidden_root: inputs.hidden_root.to_path_buf(),
+        hidden_dev: None,
+        accepted_decoy_storage: inputs.accepted_decoy_storage.clone(),
         upper: layout.upper(),
         work: layout.work(),
         owner,
@@ -342,6 +382,7 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         decoy,
         policy_mounts: Vec::new(),
         masks: Vec::new(),
+        boot_masks: Vec::new(),
         session_units: inputs.session_units.clone(),
         backend: inputs.backend.clone(),
         tools: Tools {
@@ -354,9 +395,18 @@ fn skeleton(paths: &Paths, inputs: &EntryInputs<'_>, layout: &Layout) -> Plan {
         entered_at: None,
         run_noexec: false,
         carried: Vec::new(),
+        decoy_mounts: Vec::new(),
         read_only_disks: inputs.read_only_disks,
         failed_at_entry: Vec::new(),
+        kernel_settings: Vec::new(),
     }
+}
+
+/// The device (`major:minor`) of the mount a lookup of `hidden_root` reaches,
+/// which the attach gate holds the session's hidden root to.
+fn hidden_dev(mounts: &[MountEntry], hidden_root: &Path) -> Option<String> {
+    let root = std::fs::canonicalize(hidden_root).unwrap_or_else(|_| hidden_root.to_path_buf());
+    top_mount_at(mounts, &root).map(|mount| mount.dev.clone())
 }
 
 fn build(
@@ -377,7 +427,13 @@ fn build(
     write_runtime(paths, inputs, &snapshot)?;
     let layout = Layout::new(inputs.hidden_root);
     let mut plan = skeleton(paths, inputs, &layout);
+    plan.hidden_dev = hidden_dev(&mounts, inputs.hidden_root);
     plan.failed_at_entry = host.failed_units();
+    // Recorded at every entry, before anything runs: a NixOS activation points
+    // the kernel's module loader and firmware path at its own store, the
+    // hidden build's as well as a `nixos-rebuild test` in a session entered
+    // without one, and every way back writes the decoy's values back.
+    plan.kernel_settings = host.kernel_settings();
     // Recorded before it is cleared, so a rollback always knows to set it again.
     plan.run_noexec = nextroot::is_mount_point(&mounts, &paths.run)
         && nextroot::is_noexec(&paths.run).unwrap_or(false);
@@ -387,6 +443,7 @@ fn build(
         nextroot::set_noexec(&paths.run, false).map_err(|e| io(&paths.run, e))?;
     }
     install_transition(paths, host, dropin)?;
+    crate::cancel::checkpoint()?;
 
     let decoy_mounts = relative_mounts(&mounts, &paths.root);
     if inputs.persona.mode == crate::config::PersonaMode::FreshHome {
@@ -406,19 +463,26 @@ fn build(
     // The decoy's own fstab first, read the way the decoy resolves it: its
     // filesystems (a separate /nix, the VM store) must be in place inside the
     // next root before anything reads the next root's store.
-    let decoy_fstab =
-        nextroot::read_in_root(&paths.root, Path::new("/etc/fstab")).unwrap_or_default();
+    let decoy_fstab = super::fstab::read_in_root(&paths.root)
+        .map_err(|e| io(&paths.root.join("etc/fstab"), e))?;
     let mut decisions = decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root)?;
+    let decoy_fstab = super::fstab::parse_fstab(&String::from_utf8_lossy(&decoy_fstab));
+    // Every entry the hidden systemd may read: the decoy's, and those of the
+    // hidden generation once it is built.
+    let mut fstab = decoy_fstab.clone();
     plan.policy_mounts = apply_mounts(paths, &layout, &decisions, inputs.hidden_root, &[])?;
+    crate::cancel::checkpoint()?;
 
     let mut warnings = Vec::new();
     if let Some(builder) = inputs.builder {
         ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
         let system = host.build_hidden_system(builder, &nextroot, &layout.cache())?;
+        crate::cancel::checkpoint()?;
         // Before anything runs from it: the decoy may garbage-collect its
-        // store before the next session (T-137).
+        // store before the next session, so the closure is kept on the
+        // hidden volume.
         let kept = host.keep_hidden_closure(&nextroot, &system, &layout.store_kept())?;
-        tracing::info!(
+        tracing::debug!(
             paths = kept.paths,
             copied = kept.copied,
             files = kept.files,
@@ -426,7 +490,11 @@ fn build(
             seconds = kept.elapsed.as_secs_f64(),
             "hidden system kept on the hidden volume"
         );
+        // The last stop before the activation, which runs to its end once it
+        // has begun.
+        crate::cancel::checkpoint()?;
         host.activate_hidden_system(&nextroot, &system)?;
+        crate::cancel::checkpoint()?;
         if let Some(decoy) = &plan.decoy.system
             && nixos::kernel_of(&nextroot, &system) != nixos::kernel_of(&nextroot, decoy)
         {
@@ -442,9 +510,12 @@ fn build(
         };
         // The hidden generation brings its own /etc/fstab: decide its entries
         // too, and put in place what the decoy's fstab did not already cover.
-        let hidden_fstab =
-            nextroot::read_in_root(&nextroot, Path::new("/etc/fstab")).unwrap_or_default();
+        let hidden_fstab = super::fstab::read_in_root(&nextroot)
+            .map_err(|e| io(&nextroot.join("etc/fstab"), e))?;
         let hidden = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root)?;
+        fstab.extend(super::fstab::parse_fstab(&String::from_utf8_lossy(
+            &hidden_fstab,
+        )));
         let done: Vec<PathBuf> = plan
             .policy_mounts
             .iter()
@@ -460,17 +531,25 @@ fn build(
     } else if !inputs.nixos {
         plan.hidden.init = fhs_init(&nextroot);
     }
-    plan.masks = policy::masked_units(&decisions);
-    plan.masks.dedup();
+    plan.masks = policy::masks(&fstab, &decisions);
+    plan.boot_masks = super::systemd::units_in_root(&nextroot, policy::BOOT_WRITER_UNITS)
+        .into_iter()
+        .filter(|unit| !plan.masks.contains(unit))
+        .collect();
     if let Some(operator) = &inputs.operator {
-        let home = paths.in_nextroot(operator.passwd_home());
-        super::persona::write_masks(&home, &inputs.persona, operator);
+        super::persona::write_masks(&nextroot, &inputs.persona, operator);
     }
 
-    plan.carried = carry_decoy_mounts(paths, &layout, &plan.policy_mounts, &decoy_mounts)?;
+    warnings.extend(super::way_back::keep(
+        paths,
+        &layout,
+        &mut plan,
+        &decoy_fstab,
+        &decoy_mounts,
+    )?);
     nextroot::bind(&paths.run, &paths.in_nextroot(Path::new("/run")), false)
         .map_err(|e| io(&nextroot, e))?;
-    nextroot::make_rprivate(&nextroot).map_err(|e| io(&nextroot, e))?;
+    nextroot::make_below_private(&nextroot).map_err(|e| io(&nextroot, e))?;
     nextroot::precheck(&nextroot, &ret::init_before_repoint(&plan.hidden))
         .map_err(|e| NailsError::InvalidState(e.to_string()))?;
     let missing = super::systemd::missing_soft_reboot_units(&nextroot);
@@ -483,6 +562,7 @@ fn build(
         )));
     }
 
+    crate::cancel::checkpoint()?;
     plan.armed = Some(Arm::now(Direction::Enter));
     plan.write_atomic(&paths.plan())
         .map_err(|e| io(&paths.plan(), e))?;
@@ -491,33 +571,6 @@ fn build(
         decisions,
         warnings,
     })
-}
-
-/// Carry every decoy filesystem the fstab policy placed into the hidden
-/// session, so the way back can put it in place again (see
-/// [`nails_teardown::whole_root::carry`]).
-fn carry_decoy_mounts(
-    paths: &Paths,
-    layout: &Layout,
-    policy_mounts: &[PolicyMount],
-    decoy_mounts: &[MountEntry],
-) -> Result<Vec<CarriedMount>> {
-    let mut carried = Vec::new();
-    for mount in policy_mounts {
-        if mount.kind == PolicyMountKind::HiddenVolume {
-            continue;
-        }
-        let at = layout.carried(&mount.target);
-        let in_nextroot = paths.in_nextroot(&at);
-        carry::carry(&paths.decoy(&mount.target), &at, &in_nextroot)
-            .map_err(|e| io(&in_nextroot, e))?;
-        carried.push(CarriedMount {
-            read_only: top_mount_at(decoy_mounts, &mount.target).is_some_and(MountEntry::read_only),
-            target: mount.target.clone(),
-            at,
-        });
-    }
-    Ok(carried)
 }
 
 /// Refuse a hidden NixOS build when the hidden volume holding `upper` has less
@@ -642,6 +695,31 @@ fn decide_fstab(fstab: &[u8], mounts: &[MountEntry], hidden_root: &Path) -> Resu
     Ok(decisions)
 }
 
+/// The mount point `target` (absolute, as the hidden root sees it) inside the
+/// next root, created where missing: resolved as the hidden root will resolve
+/// it, so an absolute symlink on the way (a decoy whose `/mnt` links
+/// elsewhere) stays inside the next root, and returned as a path without
+/// symlinks for the mount calls. A plain path would follow such a link on the
+/// running system and mount, or create a directory, on the decoy.
+pub(super) fn target_in_nextroot(paths: &Paths, target: &Path) -> Result<PathBuf> {
+    let nextroot = paths.nextroot();
+    let shown = paths.in_nextroot(target);
+    let real = nextroot::create_dir_all_in_root(&nextroot, target, &mut |_, _| Ok(()))
+        .and_then(|fd| nextroot::real_path(&fd))
+        .map_err(|e| io(&shown, e))?;
+    let root = nextroot::open_dir_in_root(&nextroot, Path::new("/"))
+        .and_then(|fd| nextroot::real_path(&fd))
+        .map_err(|e| io(&nextroot, e))?;
+    if !real.starts_with(&root) {
+        return Err(NailsError::InvalidState(format!(
+            "{} resolves to {}, outside the next root",
+            shown.display(),
+            real.display()
+        )));
+    }
+    Ok(real)
+}
+
 /// Put the mounts `decisions` call for in place inside the next root, parents
 /// first, skipping the targets in `done`. The hidden volume is bound unless it
 /// is in `done` already.
@@ -680,8 +758,7 @@ fn apply_mounts(
         } else {
             paths.decoy(&mount.target)
         };
-        let target = paths.in_nextroot(&mount.target);
-        std::fs::create_dir_all(&target).map_err(|e| io(&target, e))?;
+        let target = target_in_nextroot(paths, &mount.target)?;
         let done = match mount.kind {
             PolicyMountKind::ReadOnlyBind => nextroot::bind_read_only(&source, &target),
             PolicyMountKind::HiddenVolume => nextroot::bind(&source, &target, false),
@@ -695,6 +772,7 @@ fn apply_mounts(
                     &work,
                     &target,
                 )
+                .and_then(|()| nextroot::make_private(&target))
             }
         };
         done.map_err(|e| io(&target, e))?;

@@ -131,7 +131,8 @@ pub(super) fn is_writable(path: &Path) -> Result<bool> {
 }
 
 /// Read a file as UTF-8 without updating its access time, so NAILS's own reads
-/// of decoy files leave no session-time atime behind.
+/// of decoy files leave no session-time atime on them (the symlinks a lookup
+/// follows on the way are not covered; see the `noatime` module).
 pub(super) fn read_file_content(path: &Path) -> Result<String> {
     super::noatime::read_to_string_noatime(path).map_err(|e| {
         NailsError::io(

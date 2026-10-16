@@ -38,12 +38,13 @@ pub fn println_tolerating_broken_pipe(line: &str) {
 /// Print `line` and a trailing newline on stderr, tolerating a broken pipe. The
 /// pipe-safe replacement for `eprintln!`.
 ///
-/// An emergency teardown restarts journald as it scrubs the runtime journal,
-/// which severs the `journal+console` stream the unit's stderr is wired to; a
-/// later `eprintln!` then fails with `BrokenPipe` and panics. A teardown must
-/// never abort on its own diagnostic output, so the broken pipe is swallowed
-/// here and every other I/O error is ignored too (there is nowhere left to
-/// report it).
+/// An emergency kills every hidden program, the terminal or pipe that reads a
+/// command's stderr among them, and the shutdown it enqueues stops journald,
+/// which reads the stderr of a unit such as the panic switch. A later
+/// `eprintln!` then fails (with `BrokenPipe` on a pipe or socket) and panics.
+/// A teardown must never abort on its own diagnostic output, so the broken
+/// pipe is swallowed here and every other I/O error is ignored too (there is
+/// nowhere left to report it).
 pub fn eprintln_tolerating_broken_pipe(line: &str) {
     let mut stderr = io::stderr().lock();
     let _ = write_line_tolerating_broken_pipe(&mut stderr, line);
@@ -64,12 +65,15 @@ pub fn flush_stdio() {
     let _ = io::stderr().lock().flush();
 }
 
+pub use nails_core::output::count_noun;
+
 pub mod activate;
 pub mod check;
 pub mod deactivate;
 pub mod dto;
 pub mod envelope;
 pub mod exit;
+pub mod refusal;
 pub mod rehearse;
 pub mod settings;
 pub mod status;
@@ -115,6 +119,17 @@ mod tests {
         let mut writer = FailingWriter(io::ErrorKind::Other);
         let err = write_line_tolerating_broken_pipe(&mut writer, "done").unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::Other);
+    }
+
+    #[test]
+    fn count_noun_uses_the_singular_for_one_only() {
+        assert_eq!(count_noun(0, "warning", "warnings"), "0 warnings");
+        assert_eq!(count_noun(1, "warning", "warnings"), "1 warning");
+        assert_eq!(count_noun(2, "warning", "warnings"), "2 warnings");
+        assert_eq!(
+            count_noun(1, "potential issue", "potential issues"),
+            "1 potential issue"
+        );
     }
 
     #[test]

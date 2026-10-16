@@ -14,8 +14,10 @@
 #
 # The backing file's tmpfs is mounted below /run, which a soft-reboot does not
 # carry (only /run itself moves): after the switch the file is reachable only
-# through the open loop device, and once the session ends and the mapping
-# closes, it is gone.
+# through its loop device. The loop device is attached without autoclear, so
+# it outlives the mapping the way back closes: the hidden root can be opened
+# again on the decoy (reopenHiddenRoot), as a rehearsal needs. /run/blk.dev
+# names it; the file is gone with the next boot.
 #
 # Every name is neutral ("data", "blk"): the loop device, the device-mapper name,
 # the ext4 label and the mount points must never hint at hidden storage, because
@@ -41,20 +43,21 @@
         mount -t tmpfs -o size=1200m,mode=0700 tmpfs "$store"
       fi
       truncate -s 1G "$backing"
+      loop=$(losetup --show -f "$backing")
+      printf '%s\n' "$loop" > /run/blk.dev
 
       if command -v cryptsetup >/dev/null 2>&1; then
         echo 'cryptsetup present: backing the hidden root with LUKS'
         # PBKDF2 with --iter-time 1 keeps formatting fast and avoids Argon2's
         # memory cost in a small VM; acceptable for a test passphrase.
         echo -n 'test-passphrase' | cryptsetup luksFormat -q --type luks2 \
-          --pbkdf pbkdf2 --iter-time 1 "$backing" -
-        echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - "$backing" data
+          --pbkdf pbkdf2 --iter-time 1 "$loop" -
+        echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - "$loop" data
         mkfs.ext4 -q -L data /dev/mapper/data
         mkdir -p "$mountpoint"
         mount /dev/mapper/data "$mountpoint"
       else
         echo 'cryptsetup absent: backing the hidden root with plain ext4 on loop'
-        loop=$(losetup --show -f "$backing")
         mkfs.ext4 -q -L data "$loop"
         mkdir -p "$mountpoint"
         mount "$loop" "$mountpoint"
@@ -67,6 +70,29 @@
     mkdir -p "$mountpoint"/root/work "$mountpoint"/config
 
     echo 'Hidden root ready at '"$mountpoint"
+  '';
+
+  # Open and mount the hidden root of the last setupHiddenRoot again, on the
+  # decoy after a session: its loop device is still attached (see above).
+  reopenHiddenRoot = ''
+    set -eu
+    loop=$(cat /run/blk.dev)
+    mkdir -p /mnt/data
+    if command -v cryptsetup >/dev/null 2>&1; then
+      echo -n 'test-passphrase' | cryptsetup luksOpen --key-file - "$loop" data
+      mount /dev/mapper/data /mnt/data
+    else
+      mount "$loop" /mnt/data
+    fi
+  '';
+
+  # Unmount the hidden root and close its mapping, leaving the loop device.
+  closeHiddenRoot = ''
+    set -eu
+    umount /mnt/data
+    if [ -e /dev/mapper/data ]; then
+      cryptsetup close data
+    fi
   '';
 
   # Make the decoy amnesic so the decoy-persistence preflight passes: journald

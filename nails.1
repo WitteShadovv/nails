@@ -19,7 +19,8 @@ The workflow has four steps:
   1. Open and mount the hidden backend (e.g. unlock the LUKS/VeraCrypt volume).
   2. `init <root>` once, to lay out the hidden volume.
   3. `activate` to soft\-reboot into the hidden session. You are logged out;
-     the hidden session starts at its own login screen.
+     the hidden session starts at its own login screen (a display manager set
+     to log an account in automatically logs it in again, as at boot).
   4. `deactivate` to soft\-reboot back to the plain decoy, or `emergency` to
      kill the hidden session at once and return (or power off). If an
      activation was interrupted, `recover` removes what it left behind.
@@ -108,7 +109,7 @@ EXAMPLES:
   # Run by full path from the mounted backend, never from a decoy copy.
   sudo /mnt/data/nails init /mnt/data   Lay out the hidden volume (once)
   sudo /mnt/data/nails activate         Soft\-reboot into the hidden session
-  /mnt/data/nails status \-\-json         Machine\-readable state and uptime
+  sudo /mnt/data/nails status \-\-json    Machine\-readable state and uptime
   sudo /mnt/data/nails deactivate       Soft\-reboot back to the decoy
   sudo /mnt/data/nails emergency        Kill the hidden session and return now
   source <(/mnt/data/nails completions bash)   Load completions in the session
@@ -128,4 +129,4 @@ EXIT STATUS:
   11   verify found critical artifacts, or rehearse scan found its canary
   130  cancelled by a signal (SIGINT/SIGTERM)
 .SH VERSION
-v0.2.0
+v0.3.0\-rc.1

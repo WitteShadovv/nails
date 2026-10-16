@@ -12,6 +12,46 @@ use crate::preflight::PreFlightRegistry;
 use crate::{Config, Filesystem, NailsError, Result, StateFile, SystemState};
 use std::path::PathBuf;
 
+/// What the caller asks of a pre-flight run: the choices that shape the
+/// registry, as `nails check` and activation take them from their flags.
+///
+/// Both pass one value of this type to [`NailsManager::preflight_registry`],
+/// so the same choices always give the same checks, and an input added later
+/// is a field here rather than another positional argument.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreflightOptions {
+    /// Skip the config-layer and build-target checks (overlay-only activation).
+    pub overlay_only: bool,
+    /// Assemble a registry that only inspects the system: no check creates a
+    /// directory or changes permissions. On by default, and both `nails check`
+    /// and activation keep it on: a refused activation leaves nothing on the
+    /// hidden volume, and the entry creates the layout itself once every check
+    /// passed. Activation's [`NailsManager::run_preflight_checks`] turns it on
+    /// whatever it is given.
+    pub read_only: bool,
+    /// Accept a persistent decoy posture (the `--accept-persistent-decoy` flag):
+    /// the decoy-persistence check then warns instead of failing. The effective
+    /// value is this flag OR the `accept_persistent_decoy` config key.
+    pub accept_persistent_decoy: bool,
+    /// Accept a hidden root on storage the attach gate takes for the decoy's
+    /// (the `--allow-decoy-storage` flag): the hidden-volume check warns
+    /// instead of failing. It never covers a folder, a covered root, storage
+    /// that cannot be judged, or `backend-entries`.
+    pub allow_decoy_storage: bool,
+}
+
+impl Default for PreflightOptions {
+    /// No flag given: the full registry, read-only.
+    fn default() -> Self {
+        Self {
+            overlay_only: false,
+            read_only: true,
+            accept_persistent_decoy: false,
+            allow_decoy_storage: false,
+        }
+    }
+}
+
 /// The runtime facts the shared pre-flight registry is assembled from.
 ///
 /// Both activation (through [`NailsManager::preflight_registry`]) and the
@@ -20,13 +60,8 @@ use std::path::PathBuf;
 /// these inputs and the configuration.
 #[derive(Debug, Clone)]
 pub struct RegistryInputs {
-    /// Skip the config-layer and build-target checks (overlay-only activation).
-    pub overlay_only: bool,
-    /// Assemble a registry that only inspects the system: no check creates a
-    /// directory or changes permissions. Both `nails check` and activation set
-    /// it: a refused activation leaves nothing on the hidden volume, and the
-    /// entry creates the layout itself once every check passed.
-    pub read_only: bool,
+    /// The caller's choices.
+    pub options: PreflightOptions,
     /// The current system state, validated by [`StateCheck`](crate::StateCheck).
     pub current_state: SystemState,
     /// The flake build target was already validated out of band (the read-only
@@ -47,10 +82,6 @@ pub struct RegistryInputs {
     /// `None` (the default used by unit tests that build inputs directly) makes
     /// that check report a skipped Pass instead of inspecting anything.
     pub operator: Option<crate::TargetUser>,
-    /// Accept a persistent decoy posture (the `--accept-persistent-decoy` flag):
-    /// the decoy-persistence check then warns instead of failing. The effective
-    /// value is this flag OR the `accept_persistent_decoy` config key.
-    pub accept_persistent_decoy: bool,
     /// The caller's `PATH` from the startup snapshot, whose directories the
     /// binary-location check probes for decoy symlinks. `None` (the default
     /// used by unit tests that build inputs directly) probes nothing.
@@ -84,11 +115,11 @@ pub fn build_registry<F: Filesystem>(
     config_layer: Option<&dyn crate::platform::ConfigLayer<F>>,
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
-        BackendDetectCheck, BinaryLocationCheck, DecoyPersistenceCheck, HiddenVolumeCheck,
-        HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck, MemoryWipeCheck,
-        MountNamespaceCheck, NixOSBuildTargetCheck, ResidueCatalogCheck, SleepPolicyCheck,
-        SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck,
-        UpperFsCapabilityCheck,
+        BackendDetectCheck, BackendEntriesCheck, BinaryLocationCheck, DecoyPersistenceCheck,
+        HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck,
+        MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, ResidueCatalogCheck,
+        SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
+        SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
@@ -100,7 +131,20 @@ pub fn build_registry<F: Filesystem>(
     let hidden_root = config.hidden_volume_root.clone();
     let paths = crate::session::Paths::system();
 
-    registry.add_check(Box::new(HiddenVolumeCheck::new(hidden_root.clone())));
+    registry.add_check(Box::new(
+        HiddenVolumeCheck::new(hidden_root.clone()).allowing(
+            if inputs.options.allow_decoy_storage {
+                crate::hidden_root::Allow::DecoyStorage
+            } else {
+                crate::hidden_root::Allow::Nothing
+            },
+        ),
+    ));
+
+    // No decoy fstab or crypttab entry opens or mounts the hidden volume: such
+    // an entry is an enabler stored on the decoy. --allow-decoy-storage never
+    // covers it.
+    registry.add_check(Box::new(BackendEntriesCheck::new(hidden_root.clone())));
 
     // Neither already in the hidden root nor with the leftovers of an
     // interrupted entry (a populated /run/nextroot must never be entered by a
@@ -153,17 +197,16 @@ pub fn build_registry<F: Filesystem>(
             layout.work(),
         )],
     );
-    registry.add_check(Box::new(if inputs.read_only {
+    registry.add_check(Box::new(if inputs.options.read_only {
         storage_check.read_only()
     } else {
         storage_check
     }));
 
-    // The config layer's base-config reference gate (on NixOS: a base
-    // `/etc/nixos` that still references the hidden environment). Activation
-    // also runs it as an early gate before any staging, so a dirty base aborts
-    // before side effects; keeping it in the shared registry means `nails check`
-    // reports it too.
+    // The config layer's base-config reference gate (on NixOS: a decoy
+    // `/etc/nixos` that names the hidden environment). It runs in every mode,
+    // overlay-only included, and refuses before the next root is prepared;
+    // the shared registry means `nails check` reports it too.
     if let Some(layer) = config_layer {
         registry.add_check(layer.base_reference_check(&config.hidden_volume_root));
     }
@@ -173,7 +216,7 @@ pub fn build_registry<F: Filesystem>(
     // FHS / Debian host (no config layer) or in overlay-only mode they are
     // skipped entirely, so a non-NixOS host never fails pre-flight with
     // NixOS-only remediation text.
-    if let Some(layer) = config_layer.filter(|_| !inputs.overlay_only) {
+    if let Some(layer) = config_layer.filter(|_| !inputs.options.overlay_only) {
         for check in layer.preflight_checks(&config.hidden_volume_root) {
             registry.add_check(check);
         }
@@ -205,10 +248,11 @@ pub fn build_registry<F: Filesystem>(
     // active rsyslog/syslog-ng/auditd, where hidden-session records logged before
     // the overlays are mounted would survive on the decoy disk) unless the
     // operator accepts the risk with --accept-persistent-decoy or the config key.
-    // Lower-severity findings (root fs type, atime, crash-dump channels,
+    // Lower-severity findings (atime, crash-dump channels, sudo logging,
     // maintenance timers) are always warnings. The check performs no writes, and
     // its maintenance-timer sub-check applies only on a NixOS host.
-    let accept_persistent_decoy = inputs.accept_persistent_decoy || config.accept_persistent_decoy;
+    let accept_persistent_decoy =
+        inputs.options.accept_persistent_decoy || config.accept_persistent_decoy;
     registry.add_check(Box::new(DecoyPersistenceCheck::new(
         accept_persistent_decoy,
         config_layer.is_some(),
@@ -231,16 +275,16 @@ pub fn build_registry<F: Filesystem>(
             .with_caller_path(inputs.caller_path.as_deref()),
     ));
 
-    // Warns (never fails) about the decoy autostart entries, enabled user
-    // services, lingering and autologin the hidden session would inherit. When no
-    // operator could be resolved the check degrades to a skipped Pass. Fresh-home
-    // mode reports only system-level inherited state.
-    let fresh_home = config.persona.mode == crate::config::PersonaMode::FreshHome;
+    // Warns (never fails) about the inherited decoy autostart entries, enabled
+    // user services, lingering and autologin that need review: not the desktop's
+    // or distribution's own components, and not what [persona] mask_inherited
+    // masks. When no operator could be resolved the check degrades to a skipped
+    // Pass. Fresh-home mode reports only system-level inherited state.
     registry.add_check(Box::new(match inputs.operator.as_ref() {
         Some(operator) => InheritedAutostartCheck::new(
             operator.home().to_path_buf(),
             operator.name.clone(),
-            fresh_home,
+            config.persona.clone(),
         ),
         None => InheritedAutostartCheck::disabled(),
     }));
@@ -263,20 +307,14 @@ pub fn build_registry<F: Filesystem>(
 impl<F: Filesystem> NailsManager<F> {
     /// Build the pre-flight registry for this manager's current inputs.
     ///
-    /// Assembles the [`RegistryInputs`] from the manager's configuration, builder
-    /// and current state, then delegates to [`build_registry`]. Activation runs
-    /// the result through [`run_preflight_checks`](Self::run_preflight_checks);
-    /// the `nails check` command builds the same registry and runs it read-only.
-    /// Routing both through this one function is what keeps their check lists
-    /// identical. Activation passes `read_only = false` so the storage check still
-    /// stages the hidden layout; `nails check` passes `true` to keep the command
-    /// from touching the system.
-    pub fn preflight_registry(
-        &self,
-        overlay_only: bool,
-        read_only: bool,
-        accept_persistent_decoy: bool,
-    ) -> Result<PreFlightRegistry<F>> {
+    /// Assembles the [`RegistryInputs`] from `options` and the manager's
+    /// configuration, builder and current state, then delegates to
+    /// [`build_registry`]. Activation runs the result through
+    /// [`run_preflight_checks`](Self::run_preflight_checks); the `nails check`
+    /// command builds the same registry and runs it itself. Routing both through
+    /// this one function, with the options their flags give, is what keeps
+    /// their check lists identical.
+    pub fn preflight_registry(&self, options: &PreflightOptions) -> Result<PreFlightRegistry<F>> {
         // The build-target check only reads the flake layout; nothing validates
         // a flake out of band any more.
         let flake_target_already_validated = false;
@@ -286,18 +324,16 @@ impl<F: Filesystem> NailsManager<F> {
             .and_then(|builder| builder.flake_dir().map(|path| path.to_path_buf()));
 
         let inputs = RegistryInputs {
-            overlay_only,
-            read_only,
+            options: options.clone(),
             current_state: self.current_state()?,
             flake_target_already_validated,
             selected_flake_dir,
             // The same platform-driven discovery activation used to pick the
             // builder, so the build-target check reports that very target.
-            discovered_target: self.discover_host_target(overlay_only)?,
+            discovered_target: self.discover_host_target(options.overlay_only)?,
             // Resolve the operator best-effort so the inherited-autostart check
             // can inspect the decoy state; an unresolved operator simply skips it.
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
-            accept_persistent_decoy,
             caller_path: self.runtime_env().path.clone(),
         };
 
@@ -308,57 +344,120 @@ impl<F: Filesystem> NailsManager<F> {
         build_registry(&self.filesystem, &self.config, &inputs, layer.as_deref())
     }
 
-    /// Run every pre-flight check of the activation registry, logging each
+    /// Run every pre-flight check of the registry `options` give, logging each
     /// result, and refuse with [`NailsError::PreFlightCheckFailed`] when any
     /// fails. Creates an empty state file when all pass.
-    pub fn run_preflight_checks(
-        &self,
-        overlay_only: bool,
-        accept_persistent_decoy: bool,
-    ) -> Result<()> {
-        // The storage check only reports here (`read_only = true`): a refused
-        // activation must leave nothing on the hidden volume, and the entry
-        // creates the root overlay's directories itself once every check passed.
-        let registry = self.preflight_registry(overlay_only, true, accept_persistent_decoy)?;
+    ///
+    /// Activation passes [`EnterOptions::preflight`](super::EnterOptions::preflight).
+    /// The registry is read-only whatever `options.read_only` says: a refused
+    /// activation must leave nothing on the hidden volume, and the entry
+    /// creates the root overlay's directories itself once every check passed.
+    pub fn run_preflight_checks(&self, options: &PreflightOptions) -> Result<()> {
+        let registry = self.preflight_registry(&PreflightOptions {
+            read_only: true,
+            ..options.clone()
+        })?;
 
         // Run all checks (always get full results for display)
         let (results, all_passed) = registry.run_all_detailed(&self.filesystem);
 
-        // Report each check and collect failures. Progress is emitted as tracing
-        // events only; the subscriber the CLI installs honours `--quiet`/`--json`
-        // and chooses the stream, so the core never prints check results ad hoc
-        // (and never reports the same check twice).
+        // Report each check and collect failures, as tracing events only: the
+        // core never prints check results itself. A warning is the one result
+        // the operator sees on the console, as `<check>: <message>` like a row
+        // of `nails check`. Passes and skips are routine, and a failure comes
+        // back in the error, which the caller prints as one formatted list, so
+        // those go to the log at debug level and no check is reported twice.
         let mut failed_checks: crate::error::PreFlightFailures = Vec::new();
 
         for (name, result) in &results {
             match result {
                 crate::preflight::CheckResult::Pass(msg) => {
-                    tracing::info!(check = %name, result = "pass", msg = %msg, "Preflight check passed");
+                    tracing::debug!(check = %name, result = "pass", msg = %msg, "Preflight check passed");
                 }
                 crate::preflight::CheckResult::Warn(msg) => {
-                    tracing::warn!(check = %name, result = "warn", msg = %msg, "Preflight check warning");
+                    tracing::warn!("{name}: {msg}");
                 }
                 crate::preflight::CheckResult::Fail {
                     message,
                     remediation,
                 } => {
-                    tracing::error!(check = %name, result = "fail", msg = %message, "Preflight check failed");
+                    tracing::debug!(check = %name, result = "fail", msg = %message, "Preflight check failed");
                     failed_checks.push((name.clone(), message.clone(), remediation.clone()));
                 }
                 crate::preflight::CheckResult::Skipped(reason) => {
                     // Not a failure: a prerequisite (the hidden volume) was absent,
                     // so this check never ran and contributes no remediation.
-                    tracing::info!(check = %name, result = "skipped", msg = %reason, "Preflight check skipped");
+                    tracing::debug!(check = %name, result = "skipped", msg = %reason, "Preflight check skipped");
                 }
             }
         }
 
         if all_passed {
             self.ensure_state_file_exists()?;
-            tracing::info!("All pre-flight checks passed");
+            tracing::debug!("All pre-flight checks passed");
             Ok(())
         } else {
             Err(crate::NailsError::PreFlightCheckFailed(failed_checks))
+        }
+    }
+
+    /// Refuse the decoy's own `/etc/nixos` flake as the build target, as the
+    /// `nixos-build-target` check does, also under `--no-preflight`: a hidden
+    /// system built from it would lack the hidden module, and an entry
+    /// without a build would quietly run the decoy's own system.
+    pub fn refuse_decoy_flake(&self, overlay_only: bool) -> Result<()> {
+        use crate::preflight::CheckResult;
+        let Ok(crate::platform::HostTarget::DecoyFlake {
+            dir,
+            hidden_volume_root,
+        }) = self.discover_host_target(overlay_only)
+        else {
+            return Ok(());
+        };
+        use crate::preflight::checks::nixos_build_target::decoy_flake_refusal;
+        let hidden = crate::platform::hidden_flake(&self.filesystem, &hidden_volume_root);
+        match decoy_flake_refusal(&dir, &hidden_volume_root, hidden) {
+            CheckResult::Fail {
+                message,
+                remediation,
+            } => Err(NailsError::PreFlightCheckFailed(vec![(
+                "nixos-build-target".to_string(),
+                message,
+                remediation,
+            )])),
+            _ => Ok(()),
+        }
+    }
+
+    /// Run `backend-entries` alone, as activation does under `--no-preflight`:
+    /// a decoy fstab or crypttab entry that opens the hidden volume refuses
+    /// activation whatever the flags say. A result is reported as the
+    /// pre-flight run reports one: a warning once, as a tracing event that the
+    /// CLI's subscriber shows, without changing the activation's exit status,
+    /// and a failure in the returned error alone.
+    pub fn run_backend_entries_check(&self) -> Result<()> {
+        use crate::preflight::{CheckResult, PreFlightCheck};
+        let check = crate::preflight::checks::BackendEntriesCheck::new(
+            self.config.hidden_volume_root.clone(),
+        );
+        let name = PreFlightCheck::<F>::name(&check).to_string();
+        match check.run(&self.filesystem)? {
+            CheckResult::Fail {
+                message,
+                remediation,
+            } => {
+                tracing::debug!(check = %name, result = "fail", msg = %message, "Preflight check failed");
+                Err(NailsError::PreFlightCheckFailed(vec![(
+                    name,
+                    message,
+                    remediation,
+                )]))
+            }
+            CheckResult::Warn(message) => {
+                tracing::warn!("{name}: {message}");
+                Ok(())
+            }
+            CheckResult::Pass(_) | CheckResult::Skipped(_) => Ok(()),
         }
     }
 

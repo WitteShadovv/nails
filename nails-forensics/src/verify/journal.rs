@@ -4,10 +4,13 @@
 //! Reading the systemd journal for a deep-scan leak search.
 //!
 //! The deep verify pass greps the live journal for the tokens a hidden session
-//! would leave there if the journald relinquish/flush hooks failed: the tool
+//! would leave in the decoy journal if a barrier failed (the root overlay, the
+//! scrub of the runtime journal on the way back, the kmsg cursor): the tool
 //! name, the hidden volume mount path and the encrypted-backend command names.
-//! A persistent decoy journal that still holds any of these is a leak onto the
-//! decoy disk, so `verify --deep` reports each hit.
+//! `verify --deep` reports the hits of each token, telling sudo's records of
+//! the operator's own commands from other entries and an entry kept in RAM
+//! from one a persistent journal keeps on disk (see the verifier's journal
+//! search).
 //!
 //! The journal is read through the [`JournalReader`] trait so the search logic is
 //! tested against a deterministic fake, never the host journal: the real reader

@@ -95,8 +95,9 @@ pub fn execute(
                 }
             };
 
+            let sudo = super::sudo_line_for(&e, "status");
             if json {
-                print_status_json_unknown(error_msg);
+                print_status_json_unknown(error_msg, sudo);
             } else {
                 output::print_status_header(style);
                 println!("State:              UNKNOWN");
@@ -104,7 +105,10 @@ pub fn execute(
                 println!();
                 println!("Error: {}", error_msg);
                 println!();
-                println!("Run status with sufficient privileges or fix state file access");
+                match sudo {
+                    Some(line) => println!("Run it as root: {line}"),
+                    None => println!("Fix access to the state file, then run status again"),
+                }
             }
             let _ = std::io::stdout().flush();
             return status_exit_code(Posture::Unknown);

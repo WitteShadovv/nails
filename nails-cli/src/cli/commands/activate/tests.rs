@@ -237,3 +237,168 @@ fn execute_colour_settings_paint_dry_run_marks() {
         "stdout={stdout}"
     );
 }
+
+/// The progress line names the hidden NixOS build only when there is one (not
+/// on Debian or Ubuntu, not with `--overlay-only`) and the pre-flight checks
+/// only when they run.
+#[test]
+fn the_progress_line_names_only_the_steps_the_entry_runs() {
+    assert_eq!(
+        super::preparing_line(true, true),
+        "Preparing the hidden session (pre-flight, next root, hidden NixOS system)..."
+    );
+    assert_eq!(
+        super::preparing_line(true, false),
+        "Preparing the hidden session (pre-flight, next root)..."
+    );
+    assert_eq!(
+        super::preparing_line(false, false),
+        "Preparing the hidden session (next root)..."
+    );
+    assert_eq!(
+        super::preparing_line(false, true),
+        "Preparing the hidden session (next root, hidden NixOS system)..."
+    );
+}
+
+/// The notes every baseline carries are not findings: a clean decoy is "no
+/// known residue" without a count, and the other states count only their
+/// warnings and critical findings, in the right number.
+#[test]
+fn the_residue_baseline_counts_only_warnings_and_critical_findings() {
+    use nails_core::{Finding, ScanDepth, Severity, VerifyResult, VerifyStatus};
+    let note = |text: &str| Finding::new(Severity::Info, "memory", text);
+    let warn = |text: &str| Finding::new(Severity::Warn, "file", text);
+    let critical = |text: &str| Finding::new(Severity::Critical, "mount", text);
+    let notes = vec![
+        note("RAM keeps the session's data until power-off"),
+        note("Decoy-scoped baseline"),
+        note("noted: timesync-clock"),
+    ];
+    let result = |status, mut findings: Vec<Finding>| {
+        findings.extend(notes.clone());
+        VerifyResult::new(status, findings, ScanDepth::Standard)
+    };
+
+    let clean = result(VerifyStatus::Secure, Vec::new());
+    assert_eq!(super::baseline_summary(&clean), "no known residue");
+
+    let one = result(VerifyStatus::Warning, vec![warn("a")]);
+    assert_eq!(super::baseline_summary(&one), "1 warning");
+    let two = result(VerifyStatus::Warning, vec![warn("a"), warn("b")]);
+    assert_eq!(super::baseline_summary(&two), "2 warnings");
+
+    let only_critical = result(VerifyStatus::Critical, vec![critical("c")]);
+    assert_eq!(
+        super::baseline_summary(&only_critical),
+        "1 critical finding"
+    );
+    let mixed = result(
+        VerifyStatus::Critical,
+        vec![critical("c"), critical("d"), warn("a")],
+    );
+    assert_eq!(
+        super::baseline_summary(&mixed),
+        "2 critical findings, 1 warning"
+    );
+}
+
+/// Without a config file activation says so before it asks, because every
+/// opt-in protection then keeps its default; with one it says nothing.
+#[test]
+fn a_missing_config_file_is_announced_and_a_present_one_is_not() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("nails.toml");
+    let defaults = nails_core::LoadedConfig::defaults(&missing);
+    assert_eq!(
+        super::defaults_notice(&defaults),
+        Some(format!(
+            "No config file at {}: activation uses the built-in defaults.",
+            missing.display()
+        ))
+    );
+
+    std::fs::write(&missing, "show_opsec_reminders = false\n").unwrap();
+    let found = nails_core::LoadedConfig::load(&missing).unwrap();
+    assert_eq!(super::defaults_notice(&found), None);
+}
+
+/// `activate --dry-run` runs `check` with the options activation itself runs
+/// the pre-flight checks with, for every combination of the shared flags.
+#[test]
+fn a_dry_run_checks_with_the_options_activation_uses() {
+    for bits in 0..8u8 {
+        let args = ActivateArgs {
+            overlay_only: bits & 1 != 0,
+            accept_persistent_decoy: bits & 2 != 0,
+            allow_decoy_storage: bits & 4 != 0,
+            dry_run: true,
+            ..ActivateArgs::default()
+        };
+        assert_eq!(
+            crate::cli::commands::check::preflight_options(&super::dry_run_check_args(&args)),
+            super::enter_options(&args).preflight(),
+            "{args:?}"
+        );
+    }
+}
+
+/// The prompt's answer, from a pipe standing in for the terminal.
+fn answer_to(input: &[u8], cancelled: bool) -> super::Answer {
+    use std::io::Write;
+    use std::os::fd::AsFd;
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    writer.write_all(input).unwrap();
+    drop(writer);
+    let poll_end = reader.try_clone().unwrap();
+    super::read_answer(
+        poll_end.as_fd(),
+        &mut std::io::BufReader::new(reader),
+        || cancelled,
+    )
+}
+
+/// `n` ends the activation with exit 1, Ctrl+C at the prompt with 130, the
+/// code of every other signal cancel; only `y` goes on.
+#[test]
+fn the_answer_decides_how_the_activation_ends() {
+    use crate::cli::output::ExitStatus;
+    assert_eq!(super::stop_status(super::Answer::Yes), None);
+    assert_eq!(
+        super::stop_status(super::Answer::No).map(ExitStatus::code),
+        Some(1)
+    );
+    assert_eq!(
+        super::stop_status(super::Answer::Cancelled).map(ExitStatus::code),
+        Some(130)
+    );
+}
+
+#[test]
+fn the_prompt_takes_yes_and_nothing_else() {
+    assert_eq!(answer_to(b"y\n", false), super::Answer::Yes);
+    assert_eq!(answer_to(b" YES \n", false), super::Answer::Yes);
+    assert_eq!(answer_to(b"n\n", false), super::Answer::No);
+    assert_eq!(answer_to(b"", false), super::Answer::No, "end of input");
+}
+
+/// Ctrl+C at the prompt ends it at once, with nothing typed: the read is
+/// never left waiting for Enter.
+#[test]
+fn a_cancel_at_the_prompt_ends_it_without_waiting_for_enter() {
+    use std::os::fd::AsFd;
+    let (reader, _writer) = std::io::pipe().unwrap();
+    let poll_end = reader.try_clone().unwrap();
+    let asked = std::cell::Cell::new(0);
+    let answer = super::read_answer(
+        poll_end.as_fd(),
+        &mut std::io::BufReader::new(reader),
+        || {
+            asked.set(asked.get() + 1);
+            asked.get() > 2
+        },
+    );
+    assert_eq!(answer, super::Answer::Cancelled);
+    assert!(asked.get() > 2, "the flag was read while the prompt waited");
+    assert_eq!(answer_to(b"y\n", true), super::Answer::Cancelled);
+}

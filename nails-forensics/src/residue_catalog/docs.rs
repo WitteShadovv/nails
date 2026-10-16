@@ -132,6 +132,11 @@ fn probe_cell(probe: &Probe, blocks: bool) -> String {
 fn e2e_cell(e2e: &E2e) -> String {
     match e2e {
         E2e::Test(name) => format!("`{name}`"),
+        E2e::Tests(names) => names
+            .iter()
+            .map(|name| format!("`{name}`"))
+            .collect::<Vec<_>>()
+            .join(", "),
         E2e::None(reason) => format!("none: {reason}"),
     }
 }

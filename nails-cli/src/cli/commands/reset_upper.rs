@@ -9,7 +9,7 @@ use std::path::Path;
 use nails_core::output::Mark;
 
 use crate::cli::args::ResetUpperArgs;
-use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
+use crate::cli::output::envelope::{Envelope, ErrorBody, report_cancelled, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// The `data` payload for `reset-upper --json`.
@@ -64,11 +64,16 @@ pub fn execute(
 
     // Hold the exclusive state lock while we plan and delete, so a concurrent
     // activation cannot mount the target out from under the reset.
-    let _state_lock =
-        match super::acquire_state_lock_or_report(&lock_state_path, "reset-upper", json) {
-            Ok(lock) => lock,
-            Err(status) => return status,
-        };
+    let _state_lock = match super::acquire_state_lock_or_report(
+        &manager.config().hidden_volume_root,
+        nails_core::hidden_root::Allow::Nothing,
+        &lock_state_path,
+        "reset-upper",
+        json,
+    ) {
+        Ok(lock) => lock,
+        Err(status) => return status,
+    };
 
     let plan = match manager.plan_reset_upper(&target) {
         Ok(plan) => plan,
@@ -113,13 +118,13 @@ pub fn execute(
     // directories and confirms on a terminal, refusing off one.
     if !args.yes {
         if std::io::stdin().is_terminal() {
-            if !prompt_reset_confirmation(settings, &plan) {
-                return report_error(
-                    json,
-                    "reset-upper",
-                    ExitStatus::Failed,
-                    ErrorBody::new("cancelled", "reset-upper cancelled; nothing was removed"),
-                );
+            if let Some(status) = confirm_or_cancel(
+                settings,
+                &plan,
+                &mut std::io::stderr(),
+                &mut std::io::stdin().lock(),
+            ) {
+                return status;
             }
         } else {
             return report_error(
@@ -179,21 +184,36 @@ pub fn execute(
     ExitStatus::Ok
 }
 
-/// Prompt on the terminal before deleting, returning whether the operator
-/// confirmed. The warning and the list of directories go to stderr so stdout
-/// stays clean for `--json`.
-fn prompt_reset_confirmation(settings: &OutputSettings, plan: &nails_core::ResetUpperPlan) -> bool {
-    confirm_reset(
-        settings,
-        plan,
-        &mut std::io::stderr(),
-        &mut std::io::stdin().lock(),
-    )
+/// The notice of an answer other than yes at the prompt.
+const CANCELLED: &str = "Reset cancelled; nothing was removed.";
+
+/// Ask before deleting ([`confirm_reset`]), on stderr (`err`) so stdout stays
+/// clean for `--json`. On an answer other than yes, report the cancel, which
+/// removed nothing, and return the status to exit with: the neutral notice
+/// `activate` gives on `err`, or under `--json` the error envelope with the
+/// code `cancelled` on stdout. `None` when the operator confirmed.
+fn confirm_or_cancel(
+    settings: &OutputSettings,
+    plan: &nails_core::ResetUpperPlan,
+    err: &mut impl std::io::Write,
+    input: &mut impl std::io::BufRead,
+) -> Option<ExitStatus> {
+    if confirm_reset(settings, plan, err, input) {
+        return None;
+    }
+    Some(report_cancelled(
+        err,
+        settings.is_json(),
+        settings.stderr_style(),
+        "reset-upper",
+        CANCELLED,
+    ))
 }
 
-/// [`prompt_reset_confirmation`] on the given streams: the warning goes to
-/// `out`, the answer is read from `input`. Only `y` or `yes` (any case)
-/// confirms; anything else, or a read error, declines.
+/// Prompt before deleting, returning whether the operator confirmed: the
+/// warning and the list of directories go to `out`, the answer is read from
+/// `input`. Only `y` or `yes` (any case) confirms; anything else, or a read
+/// error, declines.
 fn confirm_reset(
     settings: &OutputSettings,
     plan: &nails_core::ResetUpperPlan,
@@ -232,69 +252,5 @@ fn confirm_reset(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::PathBuf;
-
-    fn plan(target: &str, removals: &[&str]) -> nails_core::ResetUpperPlan {
-        nails_core::ResetUpperPlan {
-            target: PathBuf::from(target),
-            removals: removals.iter().map(PathBuf::from).collect(),
-            resets_nix_store: target == "/nix",
-        }
-    }
-
-    /// Run the confirmation with `answer` typed, returning the verdict and the
-    /// text shown.
-    fn confirm(plan: &nails_core::ResetUpperPlan, answer: &[u8]) -> (bool, String) {
-        let mut out = Vec::new();
-        let verdict = confirm_reset(
-            &OutputSettings::default(),
-            plan,
-            &mut out,
-            &mut std::io::Cursor::new(answer),
-        );
-        (verdict, String::from_utf8(out).unwrap())
-    }
-
-    #[test]
-    fn the_prompt_lists_every_removal_before_asking() {
-        let plan = plan(
-            "/srv/data",
-            &[
-                "/mnt/data/root/upper/srv/data",
-                "/mnt/data/root/mounts/srv-data",
-            ],
-        );
-        let (_, shown) = confirm(&plan, b"n\n");
-        assert_eq!(
-            shown,
-            "\u{26a0} This permanently deletes the hidden upper for /srv/data.\n\
-             \x20   remove /mnt/data/root/upper/srv/data\n\
-             \x20   remove /mnt/data/root/mounts/srv-data\n\
-             \x20   Continue? [y/N]: "
-        );
-    }
-
-    #[test]
-    fn resetting_nix_warns_about_the_store_and_database() {
-        let (_, shown) = confirm(&plan("/nix", &["/mnt/data/root/upper/nix"]), b"\n");
-        assert!(
-            shown.contains("WARNING: resetting /nix drops the hidden Nix database"),
-            "{shown}"
-        );
-    }
-
-    #[test]
-    fn only_yes_in_any_case_confirms_the_reset() {
-        let plan = plan("/srv/data", &["/mnt/data/root/upper/srv/data"]);
-        for answer in ["y\n", "YES\n", "  Yes  \n"] {
-            assert!(confirm(&plan, answer.as_bytes()).0, "{answer:?}");
-        }
-        for answer in ["\n", "n\n", "yep\n", ""] {
-            assert!(!confirm(&plan, answer.as_bytes()).0, "{answer:?}");
-        }
-        // Input that is not UTF-8 is a read error, and declines.
-        assert!(!confirm(&plan, b"\xff\n").0);
-    }
-}
+#[path = "reset_upper_tests.rs"]
+mod tests;

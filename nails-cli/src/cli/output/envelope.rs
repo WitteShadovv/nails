@@ -131,70 +131,46 @@ pub fn report_error(
     status
 }
 
+/// Report an answer of `n` at a confirmation prompt, which changed nothing:
+/// for a human the neutral notice `activate` gives, on `err` (stderr, whose
+/// `style` it takes), in JSON the error envelope with the code `cancelled` on
+/// stdout. The command exits 1.
+pub fn report_cancelled<W: std::io::Write>(
+    err: &mut W,
+    json: bool,
+    style: nails_core::output::Style,
+    command: &'static str,
+    message: &str,
+) -> ExitStatus {
+    if json {
+        error_envelope(command, ErrorBody::new("cancelled", message)).print();
+    } else {
+        write_cancelled(err, style, message);
+    }
+    ExitStatus::Failed
+}
+
+/// Write the notice of a cancel to `writer`, tolerating a broken pipe.
+pub(crate) fn write_cancelled<W: std::io::Write>(
+    writer: &mut W,
+    style: nails_core::output::Style,
+    message: &str,
+) {
+    let notice = style.marked(nails_core::output::Mark::Neutral, message);
+    let _ = super::write_line_tolerating_broken_pipe(writer, &notice);
+}
+
 /// Write the human form of `error` to `writer`, tolerating a broken pipe: the
 /// failure being reported must never turn into a panic because the reader of
-/// stderr is gone (an emergency severs its own journal stream).
-fn write_human_error<W: std::io::Write>(writer: &mut W, error: &ErrorBody) {
+/// stderr is gone (an emergency severs its own journal stream). Every line of
+/// the hint is indented under the message.
+pub(crate) fn write_human_error<W: std::io::Write>(writer: &mut W, error: &ErrorBody) {
     let _ = super::write_line_tolerating_broken_pipe(writer, &format!("error: {}", error.message));
-    if let Some(hint) = &error.hint {
-        let _ = super::write_line_tolerating_broken_pipe(writer, &format!("  {hint}"));
+    for line in error.hint.iter().flat_map(|hint| hint.lines()) {
+        let _ = super::write_line_tolerating_broken_pipe(writer, &format!("  {line}"));
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn success_envelope_has_schema_version_command_and_ok() {
-        let env = Envelope::success("status", serde_json::json!({"state": "ok"}));
-        let value: serde_json::Value = serde_json::from_str(&env.to_line()).unwrap();
-        assert_eq!(value["schema_version"], 1);
-        assert_eq!(value["command"], "status");
-        assert_eq!(value["ok"], true);
-        assert_eq!(value["data"]["state"], "ok");
-        assert!(value.get("error").is_none());
-    }
-
-    #[test]
-    fn error_envelope_carries_code_message_hint() {
-        let env = error_envelope(
-            "activate",
-            ErrorBody::new("preflight", "checks failed").with_hint("mount the volume"),
-        );
-        let value: serde_json::Value = serde_json::from_str(&env.to_line()).unwrap();
-        assert_eq!(value["ok"], false);
-        assert_eq!(value["error"]["code"], "preflight");
-        assert_eq!(value["error"]["message"], "checks failed");
-        assert_eq!(value["error"]["hint"], "mount the volume");
-        assert!(value.get("data").is_none());
-    }
-
-    #[test]
-    fn human_error_survives_a_closed_stderr_pipe() {
-        // A real pipe whose reader is gone: the write fails with EPIPE, which must
-        // be swallowed rather than panic as eprintln! would.
-        let (reader, mut writer) = std::io::pipe().unwrap();
-        drop(reader);
-        write_human_error(
-            &mut writer,
-            &ErrorBody::new("teardown_incomplete", "busy").with_hint("reboot"),
-        );
-
-        let (mut reader, mut writer) = std::io::pipe().unwrap();
-        write_human_error(&mut writer, &ErrorBody::new("x", "boom").with_hint("retry"));
-        drop(writer);
-        let mut text = String::new();
-        std::io::Read::read_to_string(&mut reader, &mut text).unwrap();
-        assert_eq!(text, "error: boom\n  retry\n");
-    }
-
-    #[test]
-    fn a_newline_in_a_message_stays_one_parseable_line() {
-        let env = error_envelope("deactivate", ErrorBody::new("mount_busy", "busy\nretry"));
-        let line = env.to_line();
-        assert_eq!(line.lines().count(), 1, "one physical line: {line}");
-        let value: serde_json::Value = serde_json::from_str(&line).unwrap();
-        assert_eq!(value["error"]["message"], "busy\nretry");
-    }
-}
+#[path = "envelope_tests.rs"]
+mod tests;

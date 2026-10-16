@@ -128,12 +128,14 @@
         )
   '';
 
+  # `sudo=True` runs nails through sudo, as an operator does, so sudo logs the
+  # command to the journal.
   runVerifyFn = ''
-    def run_verify(args="", config_path=None):
+    def run_verify(args="", config_path=None, sudo=False):
         import json
         import shlex
 
-        command = "nails"
+        command = "sudo nails" if sudo else "nails"
         if config_path is not None:
             command += " --config " + shlex.quote(config_path)
         command += " verify --json"
@@ -165,9 +167,10 @@
   # The standard way out of a hidden session in a test: `nails deactivate -y`
   # soft-reboots back to the decoy; follow the switch, reconnect, and check
   # that the plain decoy root is back and the hidden backend closed itself.
-  # Returns the in-guest timings of the switch.
+  # `sudo=True` runs nails through sudo, as an operator does. Returns the
+  # in-guest timings of the switch.
   canonicalDeactivateFn = ''
-    def canonical_deactivate(config_path, label="deactivate"):
+    def canonical_deactivate(config_path, label="deactivate", sudo=False):
         import shlex
 
         # Aliased, so the test's own `session` import is never shadowed.
@@ -175,7 +178,10 @@
 
         timings = _session.follow_soft_reboot(
             machine,
-            "nails --config " + shlex.quote(config_path) + " deactivate -y",
+            ("sudo " if sudo else "")
+            + "nails --config "
+            + shlex.quote(config_path)
+            + " deactivate -y",
             label,
         )
         _session.assert_decoy_root(machine)
@@ -188,11 +194,17 @@
   # ran it is gone after the switch) and, line by line, to the console, so a
   # long step (a hidden build, the first copy of the hidden system) shows its
   # progress in the test log. `env` is a prefix of variable assignments (for
-  # example the sudo variables that name the operator). `deadline_s` bounds the
-  # wait for the hidden root's backdoor. Returns the in-guest timings.
+  # example the sudo variables that name the operator), and `sudo=True` runs
+  # nails through sudo, as an operator does. `deadline_s` bounds the wait for
+  # the hidden root's backdoor. Returns the in-guest timings.
   canonicalActivateFn = ''
     def canonical_activate(
-        config_path, extra_args="", label="activate", env="", deadline_s=600.0
+        config_path,
+        extra_args="",
+        label="activate",
+        env="",
+        deadline_s=600.0,
+        sudo=False,
     ):
         import shlex
 
@@ -204,6 +216,7 @@
             machine,
             "set -o pipefail; "
             + env
+            + (" sudo" if sudo else "")
             + " nails --config "
             + shlex.quote(config_path)
             + " activate -y "

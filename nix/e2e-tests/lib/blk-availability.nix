@@ -1,6 +1,7 @@
-# The blk-availability.service Debian and Ubuntu enable wherever dmsetup is
-# installed (lvm2's unit, with store paths for /usr/bin/true and
-# /usr/sbin/blkdeactivate). Its stop runs `blkdeactivate -u`, which unmounts
+# The blk-availability.service that Debian's and Ubuntu's lvm2 package enables
+# (here upstream lvm2's unit, with store paths for /usr/bin/true and
+# /usr/sbin/blkdeactivate; Debian's has no start command, which NAILS's guard
+# adds). Its stop runs `blkdeactivate -u`, which unmounts
 # every filesystem on a device-mapper device that is not mounted on one of a
 # few system paths (/, /usr, /var, ...) and then deactivates the device. Every
 # soft-reboot stops it, so on such a decoy it would unmount what the switch

@@ -6,11 +6,11 @@
 //! Kept in a sibling file so `preflight_runner.rs` stays within the production
 //! line budget; compiled only under `#[cfg(test)]`.
 
-use super::{RegistryInputs, build_registry};
+use super::{PreflightOptions, RegistryInputs, build_registry};
 use crate::manager::NailsManager;
 use crate::platform::NixOsConfigLayer;
 use crate::preflight::CheckResult;
-use crate::{Config, MockFilesystem, NailsError, SystemState};
+use crate::{Config, Filesystem, MockFilesystem, NailsError, SystemState};
 
 fn check_names(results: &[(String, CheckResult)]) -> Vec<String> {
     results.iter().map(|(name, _)| name.clone()).collect()
@@ -25,14 +25,12 @@ fn build_registry_includes_the_shared_checks() {
     let fs = MockFilesystem::new();
     let config = explicit_config();
     let inputs = RegistryInputs {
-        overlay_only: false,
-        read_only: true,
+        options: PreflightOptions::default(),
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
-        accept_persistent_decoy: false,
         caller_path: None,
     };
 
@@ -62,14 +60,15 @@ fn overlay_only_registry_drops_the_nixos_checks() {
     let fs = MockFilesystem::new();
     let config = explicit_config();
     let inputs = RegistryInputs {
-        overlay_only: true,
-        read_only: true,
+        options: PreflightOptions {
+            overlay_only: true,
+            ..PreflightOptions::default()
+        },
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
-        accept_persistent_decoy: false,
         caller_path: None,
     };
 
@@ -89,14 +88,12 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
     let fs = MockFilesystem::new();
     let config = explicit_config();
     let inputs = RegistryInputs {
-        overlay_only: false,
-        read_only: true,
+        options: PreflightOptions::default(),
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
-        accept_persistent_decoy: false,
         caller_path: None,
     };
 
@@ -123,20 +120,85 @@ fn activation_and_check_build_identical_check_lists() {
     };
     let manager = NailsManager::new(MockFilesystem::new(), config, state_path);
 
-    // Activation (read_only = false) and check (read_only = true) route through
-    // the same `preflight_registry`, so for the same inputs the sequence of
-    // check names is identical — only individual checks' write behaviour differs.
-    let activation = manager
-        .preflight_registry(false, false, false)
-        .expect("activation registry");
+    // A registry that may stage storage and a read-only one route through the
+    // same `preflight_registry`, so for the same inputs the sequence of check
+    // names is identical — only individual checks' write behaviour differs.
+    let staging = manager
+        .preflight_registry(&PreflightOptions {
+            read_only: false,
+            ..PreflightOptions::default()
+        })
+        .expect("staging registry");
     let check = manager
-        .preflight_registry(false, true, false)
+        .preflight_registry(&PreflightOptions::default())
         .expect("check registry");
 
-    let activation_names = check_names(&activation.run_all_detailed(&MockFilesystem::new()).0);
+    let staging_names = check_names(&staging.run_all_detailed(&MockFilesystem::new()).0);
     let doctor_names = check_names(&check.run_all_detailed(&MockFilesystem::new()).0);
 
-    assert_eq!(activation_names, doctor_names);
+    assert_eq!(staging_names, doctor_names);
+}
+
+/// `nails check` builds its options from its flags and activation takes them
+/// from `EnterOptions::preflight`: the same flags give the same options and so
+/// the same checks.
+#[test]
+fn check_and_activation_build_the_same_checks_from_the_same_flags() {
+    let manager = manager_with(MockFilesystem::new());
+    let names = |options: &PreflightOptions| {
+        manager
+            .preflight_registry(options)
+            .expect("registry builds")
+            .names()
+    };
+    for bits in 0..8u8 {
+        let (overlay_only, accept_persistent_decoy, allow_decoy_storage) =
+            (bits & 1 != 0, bits & 2 != 0, bits & 4 != 0);
+        let check = PreflightOptions {
+            overlay_only,
+            accept_persistent_decoy,
+            allow_decoy_storage,
+            ..PreflightOptions::default()
+        };
+        let activation = crate::manager::EnterOptions {
+            overlay_only,
+            accept_persistent_decoy,
+            allow_decoy_storage,
+            ..crate::manager::EnterOptions::default()
+        }
+        .preflight();
+        assert_eq!(activation, check);
+        assert!(activation.read_only, "activation never stages storage");
+        assert_eq!(names(&activation), names(&check));
+    }
+}
+
+/// Activation's pre-flight never stages storage, even with options that ask
+/// for a registry that may: a refused activation leaves nothing on the hidden
+/// volume.
+#[test]
+fn run_preflight_checks_creates_nothing_whatever_the_options_say() {
+    let hidden_root = std::path::Path::new("/mnt/hidden");
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden", true);
+    fs.mock_set_mounted(hidden_root, true);
+    fs.mock_set_writable("/mnt/hidden", true);
+    let manager = manager_with(fs);
+
+    let _ = manager.run_preflight_checks(&PreflightOptions {
+        read_only: false,
+        ..PreflightOptions::default()
+    });
+
+    for dir in ["root", "root/upper", "root/work"] {
+        assert!(
+            !manager
+                .filesystem()
+                .path_exists(&hidden_root.join(dir))
+                .unwrap(),
+            "pre-flight created {dir}"
+        );
+    }
 }
 
 #[test]
@@ -150,14 +212,12 @@ fn read_only_registry_creates_nothing() {
         ..explicit_config()
     };
     let inputs = RegistryInputs {
-        overlay_only: false,
-        read_only: true,
+        options: PreflightOptions::default(),
         current_state: SystemState::Inactive,
         flake_target_already_validated: false,
         selected_flake_dir: None,
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
-        accept_persistent_decoy: false,
         caller_path: None,
     };
 
@@ -208,7 +268,10 @@ fn failing_check_is_reported_through_tracing() {
     let manager = NailsManager::new(fs, config, state_path);
 
     let err = manager
-        .run_preflight_checks(true, false)
+        .run_preflight_checks(&PreflightOptions {
+            overlay_only: true,
+            ..PreflightOptions::default()
+        })
         .expect_err("an unmounted hidden volume must fail preflight");
     match err {
         NailsError::PreFlightCheckFailed(failures) => {
@@ -220,16 +283,55 @@ fn failing_check_is_reported_through_tracing() {
         other => panic!("expected PreFlightCheckFailed, got {other:?}"),
     }
 
-    // The failure is reported on the one progress channel (tracing); the old
-    // unconditional `output::check_result` print is gone, so this is the only
-    // report of the check. `logs_contain` is injected by `traced_test`.
+    // The failure reaches the log as a debug event; the console shows it once,
+    // from the returned error, which the caller prints as a formatted list.
+    // `logs_contain` is injected by `traced_test`.
     assert!(logs_contain("Preflight check failed"));
+    assert!(
+        !logs_contain("ERROR"),
+        "a failed check is not logged as an error"
+    );
+}
+
+/// The routine pre-flight events stay at debug level: at the default
+/// verbosity the console shows only what needs the operator.
+#[test]
+#[tracing_test::traced_test]
+fn passing_checks_log_at_debug_only() {
+    let temp_dir = tempfile::tempdir().expect("temp dir");
+    let hidden_root = temp_dir.path();
+    let state_path = hidden_root.join("state.json");
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists(hidden_root.to_str().unwrap(), true);
+    fs.mock_set_mounted(hidden_root, false);
+    let config = Config {
+        hidden_volume_root: hidden_root.to_path_buf(),
+        state_file_path: state_path.clone(),
+        ..Config::test_default()
+    };
+    let manager = NailsManager::new(fs, config, state_path);
+    let _ = manager.run_preflight_checks(&PreflightOptions {
+        overlay_only: true,
+        ..PreflightOptions::default()
+    });
+
+    assert!(logs_contain("Preflight check passed"), "no check passed");
+    logs_assert(|lines: &[&str]| {
+        match lines.iter().find(|line| {
+            (line.contains("Preflight check passed")
+                || line.contains("All pre-flight checks passed"))
+                && !line.contains("DEBUG")
+        }) {
+            Some(line) => Err(format!("a routine event above debug: {line}")),
+            None => Ok(()),
+        }
+    });
 }
 
 /// The build-target check's verdict for a manager's registry.
 fn build_target_result(manager: &NailsManager<MockFilesystem>) -> Option<CheckResult> {
     let registry = manager
-        .preflight_registry(false, true, false)
+        .preflight_registry(&PreflightOptions::default())
         .expect("registry builds");
     registry
         .run_all_detailed(manager.filesystem())
@@ -274,6 +376,97 @@ fn lone_system_profile_agrees_across_activation_check_and_preflight() {
     assert!(result.message().contains("/etc/nixos/configuration.nix"));
 }
 
+/// A decoy whose `/etc/nixos` holds its own flake, with no hidden flake: the
+/// detected NixOS host discovers the refused decoy flake (activation wires no
+/// builder for it, so nothing is built), and the build-target check fails
+/// with the instructions, although a legacy configuration sits beside it.
+#[test]
+fn a_decoy_flake_is_refused_across_discovery_and_preflight() {
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+    fs.mock_set_path_exists("/etc/nixos/configuration.nix", true);
+    fs.mock_set_path_exists("/nix/var/nix/profiles/system", true);
+    let mut manager = manager_with(fs);
+    manager.set_host_profile(crate::platform::FakePlatform::nixos().host_profile());
+
+    assert_eq!(
+        manager.discover_host_target(false).unwrap(),
+        crate::platform::HostTarget::DecoyFlake {
+            dir: std::path::PathBuf::from("/etc/nixos"),
+            hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+        }
+    );
+    let result = build_target_result(&manager).expect("the check runs on NixOS");
+    assert!(result.is_fail(), "{result:?}");
+    assert!(
+        result
+            .remediation()
+            .is_some_and(|fix| fix.starts_with("Write a self-contained flake in /mnt/hidden/nixos")),
+        "{result:?}"
+    );
+}
+
+/// Naming the decoy's own flake is no way around the refusal: in each
+/// spelling of /etc/nixos it fails the build-target check, and activation
+/// refuses it under `--no-preflight` too. With a hidden flake beside it, the
+/// refusal says the decoy's flake was named and how to take the hidden one.
+#[test]
+fn the_decoy_flake_named_explicitly_is_refused_in_every_spelling() {
+    for (spelling, hidden_flake) in [
+        ("/etc/nixos#host", false),
+        ("path:/etc/nixos#host", false),
+        ("/etc/nixos/#host", true),
+        ("git+file:///etc/nixos?ref=main#host", true),
+        ("/etc/nixos?dir=.#host", false),
+        ("/etc/nixos/?ref=main#host", true),
+        ("path:/etc?dir=nixos#host", false),
+        ("git+file:///etc?dir=nixos#host", true),
+    ] {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists("/etc/nixos/flake.nix", true);
+        fs.mock_set_path_exists("/mnt/hidden/nixos/flake.nix", hidden_flake);
+        let config = Config {
+            hidden_volume_root: std::path::PathBuf::from("/mnt/hidden"),
+            nixos_flake: Some(spelling.to_string()),
+            ..explicit_config()
+        };
+        let mut manager = NailsManager::new(
+            fs,
+            config,
+            std::path::PathBuf::from("/mnt/hidden/state.json"),
+        );
+        manager.set_host_profile(crate::platform::FakePlatform::nixos().host_profile());
+
+        let result = build_target_result(&manager).expect("the check runs on NixOS");
+        assert!(result.is_fail(), "{spelling}: {result:?}");
+        let fix = result.remediation().unwrap_or_default();
+        if hidden_flake {
+            assert!(
+                result
+                    .message()
+                    .contains("--nixos-flake or nixos_flake names it"),
+                "{spelling}: {result:?}"
+            );
+            assert!(
+                fix.starts_with("Name the hidden flake in /mnt/hidden/nixos instead"),
+                "{spelling}: {fix}"
+            );
+        } else {
+            assert!(
+                result.message().contains("/mnt/hidden/nixos holds none"),
+                "{spelling}: {result:?}"
+            );
+        }
+        // Without the pre-flight, activation refuses it the same way.
+        let Err(NailsError::PreFlightCheckFailed(failed)) = manager.refuse_decoy_flake(false)
+        else {
+            panic!("{spelling}: not refused without the pre-flight");
+        };
+        assert_eq!(failed[0].0, "nixos-build-target");
+        assert_eq!(failed[0].1, result.message(), "{spelling}");
+    }
+}
+
 /// With a fake platform the pre-flight reports exactly the pinned target, with
 /// no NixOS discovery fixtures on the mock host.
 #[test]
@@ -312,4 +505,160 @@ fn host_without_config_layer_agrees_there_is_no_target() {
         crate::platform::HostTarget::None
     );
     assert!(build_target_result(&manager).is_none());
+}
+
+/// Every refusal of the attach gate fails the hidden-volume check, skips the
+/// checks that inspect the volume, and leaves no write probe behind.
+#[test]
+fn every_gate_refusal_fails_the_hidden_volume_check_and_skips_its_dependents() {
+    use crate::filesystem::MockOp;
+    let config = explicit_config();
+    let root = config.hidden_volume_root.display().to_string();
+    let decoy = "1 0 8:1 / / rw - ext4 /dev/vda1 rw\n";
+    let scenes = [
+        ("folder", decoy.to_string(), false),
+        (
+            "covered",
+            format!(
+                "{decoy}30 1 253:0 / {root} rw - ext4 /dev/mapper/data rw\n\
+                 31 30 8:17 / {root} rw - ext4 /dev/sdb1 rw\n"
+            ),
+            false,
+        ),
+        (
+            "bind of a decoy folder",
+            format!("{decoy}30 1 8:1 /srv/x {root} rw - ext4 /dev/vda1 rw\n"),
+            false,
+        ),
+        (
+            "unjudged",
+            format!("{decoy}30 1 8:17 / {root} rw - ext4 /dev/sdb1 rw\n"),
+            true,
+        ),
+    ];
+    let inputs = RegistryInputs {
+        options: PreflightOptions::default(),
+        current_state: SystemState::Inactive,
+        flake_target_already_validated: false,
+        selected_flake_dir: None,
+        discovered_target: crate::platform::HostTarget::None,
+        operator: None,
+        caller_path: None,
+    };
+    for (scene, table, unreadable_crypttab) in scenes {
+        let fs = MockFilesystem::new();
+        fs.mock_set_path_exists(&root, true);
+        fs.mock_set_writable(&root, true);
+        fs.mock_set_mount_table(&table);
+        if unreadable_crypttab {
+            fs.mock_set_path_exists("/etc/crypttab", true);
+        }
+        let registry = build_registry(&fs, &config, &inputs, None).expect("registry builds");
+        let (results, passed) = registry.run_all_detailed(&fs);
+        assert!(!passed, "{scene}");
+        let result = |name: &str| {
+            results
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, r)| r.clone())
+                .unwrap_or_else(|| panic!("{scene}: no {name}"))
+        };
+        assert!(result("hidden-volume").is_fail(), "{scene}");
+        for dependent in [
+            "symlink-support",
+            "upper-fs-capability",
+            "storage-readiness",
+            "space",
+        ] {
+            assert!(result(dependent).is_skipped(), "{scene}: {dependent}");
+        }
+        let probes: Vec<MockOp> = fs
+            .mock_ops()
+            .into_iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    MockOp::WritableProbe { .. } | MockOp::SymlinkProbe { .. }
+                )
+            })
+            .collect();
+        assert!(probes.is_empty(), "{scene}: {probes:?}");
+    }
+}
+
+#[test]
+fn backend_entries_runs_right_after_the_hidden_volume_check() {
+    let manager = manager_with(MockFilesystem::new());
+    let names = manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds")
+        .names();
+    assert_eq!(&names[..2], &["hidden-volume", "backend-entries"]);
+}
+
+#[test]
+fn the_entries_check_alone_refuses_a_decoy_entry_for_the_volume() {
+    // What activation runs under --no-preflight: the hidden volume is the
+    // whole of sdb, and the decoy's crypttab opens it.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden", true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+         5 1 8:16 / /mnt/hidden rw - ext4 /dev/sdb rw\n",
+    );
+    let manager = manager_with(fs);
+    manager.run_backend_entries_check().unwrap();
+
+    manager
+        .filesystem()
+        .mock_add_file("/etc/crypttab", "data /dev/sdb none luks,noauto\n");
+    match manager.run_backend_entries_check() {
+        Err(NailsError::PreFlightCheckFailed(failures)) => {
+            assert_eq!(failures.len(), 1, "{failures:?}");
+            assert_eq!(failures[0].0, "backend-entries");
+            assert!(failures[0].1.contains("data /dev/sdb"), "{failures:?}");
+        }
+        other => panic!("expected the check to refuse, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_entries_check_alone_only_logs_its_warning() {
+    // The volume is the whole of sdb, and the decoy opens a container on sdb1
+    // of the same drive: a warning, reported as the pre-flight run reports
+    // one, which does not refuse activation.
+    let fs = MockFilesystem::new();
+    fs.mock_set_path_exists("/mnt/hidden", true);
+    fs.mock_set_mount_table(
+        "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n\
+         5 1 8:16 / /mnt/hidden rw - ext4 /dev/sdb rw\n",
+    );
+    let mut class = Vec::new();
+    for (dir, name, dev) in [
+        ("/sys/devices/usb/sdb", "sdb", "8:16"),
+        ("/sys/devices/usb/sdb/sdb1", "sdb1", "8:17"),
+    ] {
+        fs.mock_set_file_content(&format!("{dir}/dev"), &format!("{dev}\n"));
+        fs.mock_set_file_content(&format!("{dir}/uevent"), &format!("DEVNAME={name}\n"));
+        let link = format!("/sys/class/block/{name}");
+        fs.create_symlink(std::path::Path::new(dir), std::path::Path::new(&link))
+            .unwrap();
+        class.push(std::path::PathBuf::from(link));
+    }
+    fs.mock_set_file_content("/sys/devices/usb/sdb/sdb1/partition", "1\n");
+    fs.mock_set_directory_contents(std::path::Path::new("/sys/class/block"), class);
+    fs.mock_add_file("/etc/crypttab", "outer /dev/sdb1 none tcrypt,noauto\n");
+    let manager = manager_with(fs);
+    let check =
+        crate::preflight::checks::BackendEntriesCheck::new(std::path::PathBuf::from("/mnt/hidden"));
+    match crate::preflight::PreFlightCheck::run(&check, manager.filesystem()).unwrap() {
+        CheckResult::Warn(message) => assert!(
+            message.contains("the decoy is configured to open storage on this drive"),
+            "{message}"
+        ),
+        other => panic!("expected a warning, got {other:?}"),
+    }
+    manager
+        .run_backend_entries_check()
+        .expect("a warning does not refuse");
 }

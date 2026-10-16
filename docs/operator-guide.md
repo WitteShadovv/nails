@@ -20,8 +20,8 @@ Every instruction in this guide belongs to exactly one of three places. Keeping
 them straight is the difference between a clean session and a decoy that records
 what you did.
 
-1. **A separate machine** — building, verifying and copying the release onto the
-   hidden volume. The decoy never sees this work.
+1. **A separate machine** — creating the hidden volume, building, verifying and
+   copying the release onto it. The decoy never sees this work.
 2. **Inside the hidden session** — everything after activation's soft-reboot and
    before the way back. The whole root is an overlay whose upper is on the hidden
    volume, so every write lands there, not on the decoy.
@@ -54,6 +54,55 @@ invoke it by its absolute path.
 
 ---
 
+## Where setup happens
+
+Everything NAILS writes goes to the hidden root, so the hidden root must be
+storage of its own: a whole device, a partition or an encrypted volume that the
+decoy does not use. A folder, a btrfs subvolume or a bind mount of a filesystem
+the decoy uses, a logical volume or other device stacked on the decoy's own
+storage or swap, or an image file on a decoy filesystem is not: everything
+written there lands on the decoy's disk, where an examination can find it.
+
+Prepare the volume where nothing reaches the decoy's disk:
+
+- **on an external drive prepared on another computer** (recommended): create
+  and format the volume there, then attach the drive to this computer, unlock
+  and mount it, and run `nails` from it;
+- **or from a setup medium**: a live system started from a USB stick on this
+  computer, which writes nothing to its internal disk.
+
+`init`, `activate`, `check` and the other commands that write ask the attach
+gate first and refuse anything else before they write or probe a single file.
+The refusal reads `<root> is not a volume of its own: <reason>. Nothing was
+written.` (code `not_separate_volume`, exit 4), names the storage, and says so
+too when the running `nails` binary is itself on this computer's disk. A root
+with a second filesystem mounted over it is refused with `root_covered`, and
+one whose storage cannot be judged with `storage_unjudged`: on an unprivileged
+run on a distribution whose `/etc/crypttab` only root can read, or on a root in
+a file container (only root can read the loop device's record of where the file
+lives), run the command with sudo; a filesystem that shows no disk it stores its data on (an overlay,
+FUSE, a network filesystem) is never accepted. A decoy `/etc/crypttab` or
+`/etc/fstab` line that opens or mounts the hidden volume fails the
+`backend-entries` check, which `--no-preflight` does not skip: remove it long
+before the next use and open the volume by hand each time. If the boot mounts
+the volume through such a line, the gate refuses it as the decoy's own
+filesystem and says to remove the line.
+
+An encrypted container file on a decoy filesystem only warns: the filesystem's
+journal and copy-on-write snapshots (btrfs, snapper) can keep old copies of the
+parts of the container that changed. `--allow-decoy-storage` (on `init`,
+`activate` and `check`) turns the refusal of the decoy's own storage into a
+warning; use it only for storage the gate takes for the decoy's that you know
+the decoy does not use (for example a disk its fstab lists but never mounts),
+since everything written there lands on it. It never covers a folder, a
+covered root, storage that cannot be judged or a decoy entry for the volume.
+See [the attach gate](threat-model.md#the-attach-gate).
+
+Read this guide on another device, not on the decoy: opening it there leaves
+viewer traces such as `~/.lesshst`. The guide ships in the release bundle.
+
+---
+
 ## What NAILS does
 
 NAILS runs the hidden session in one OverlayFS over the whole decoy root. The
@@ -69,15 +118,20 @@ The overlay separates *files*, not the machine: the hidden session runs on the
 decoy's kernel and shares its network identity (see
 [What the hidden environment shares with the decoy](threat-model.md#what-the-hidden-environment-shares-with-the-decoy)).
 Both transitions log you out: every program closes, and the hidden session and,
-afterwards, the decoy start at their own login screens.
+afterwards, the decoy start at their own login screens. NAILS logs nobody in,
+but a display manager set to log an account in automatically logs it in again
+after each switch, as at boot (see
+[Inherited autostart, services and autologin](#inherited-autostart-services-and-autologin)).
 
 Two safeguards bracket the session:
 
 - **Pre-activation residue baseline.** Before it builds anything, `nails
   activate` runs the read-only decoy residue scan and writes the result to
-  `<hidden-root>/reports/`, then prints a one-line summary. The scan only reads
-  the decoy; the report lives on the hidden volume. It is a baseline, so if a
-  later examination finds a trace you can tell whether it predated the session.
+  `<hidden-root>/reports/`, then prints a one-line summary: `no known residue`,
+  or the number of warnings and critical findings (the notes stay in the
+  report). The scan only reads the decoy; the report lives on the hidden
+  volume. It is a baseline, so if a later examination finds a trace you can tell
+  whether it predated the session.
 - **No shell history reaches the decoy.** Right before it starts the
   soft-reboot, activation SIGKILLs the decoy's interactive shells: stopping a
   login session sends its shells SIGHUP, on which bash writes its history, so
@@ -94,8 +148,13 @@ covered in [decoy-requirements.md](decoy-requirements.md).
 
 ## How it works
 
-The design record is [ADR 0008](adr/0008-whole-root-soft-reboot.md); this is
-the operator's view of it.
+This is the operator's view of the design. Why it takes the whole root, in
+short: an earlier design overlaid the running decoy directory by directory and
+had to find, restart or kill every process that could still write to it, and a
+writer it missed wrote to the decoy without any sign. Here every process of the
+hidden session starts inside the overlay, so there is nothing left to find. The
+[architecture overview](architecture.md#why-one-overlay-over-the-whole-root)
+gives the full reasoning and the price.
 
 **Hidden-root layout.** The hidden volume holds:
 
@@ -103,6 +162,7 @@ the operator's view of it.
 |---|---|
 | `<hidden-root>/nails` | the binary |
 | `<hidden-root>/config/` | `nails.toml` and, on NixOS, the hidden module `config/nixos/configuration.nix` |
+| `<hidden-root>/nixos/` | on NixOS, optionally a hidden flake, built instead of the legacy configuration; it must import the hidden module |
 | `<hidden-root>/root/upper`, `root/work` | the hidden root's upper and its overlayfs work directory |
 | `<hidden-root>/root/mounts/<path>/upper` | the upper of each other decoy filesystem that is overlaid (a separate `/home`), named by its systemd path escape |
 | `<hidden-root>/root/cache` | the Nix evaluation cache used while the hidden system is built |
@@ -117,12 +177,16 @@ Keep all of it `root`-owned on the hidden volume.
    installed), `decoy-root` (the decoy root can be mounted again by device for
    the way back), `session-state` (no session and no leftovers of an
    interrupted one), `fstab-policy`, `hidden-volume`, `upper-fs-capability`,
-   `backend-detect`, `storage-readiness`, `swap`, `memory-wipe`,
-   `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
+   `backend-entries`, `suspicious-nails-reference` (NixOS: nothing in the
+   decoy's `/etc/nixos` names the hidden volume's device, mount point or the
+   storage it is on, opens its mapping, or names NAILS; [the decoy
+   requirements](decoy-requirements.md#nixos) list each form), `backend-detect`, `storage-readiness`, `swap`,
+   `memory-wipe`, `sleep-policy`, `decoy-persistence`, `inherited-autostart`,
    `incremental-history-flush` and `space`. `nails check` runs the same checks
    and changes nothing.
 2. It snapshots `/run` and writes the session plan to `/run/overlay-runtime`,
-   together with a RAM copy of the binary and the configuration.
+   together with a RAM copy of the binary and the configuration, and a copy of
+   libmount's `utab` with the mount table lines of the mounts it names.
 3. It mounts the root overlay at `/run/nextroot`: the decoy root, read-only, as
    the lower; `<hidden-root>/root/upper` as the upper.
 4. On NixOS with a hidden configuration it builds and activates the hidden
@@ -131,6 +195,10 @@ Keep all of it `root`-owned on the hidden volume.
    mount from the decoy's fstab:
    - the ESP and `/boot` filesystems are bound read-only, so nothing in the
      hidden session rewrites `loader/random-seed`, `grubenv` or a boot entry;
+     the units that write there at every start
+     (`systemd-boot-random-seed.service`, and `grub-common.service` and
+     `grub-initrd-fallback.service` on Debian and Ubuntu) are masked in the
+     hidden session, so they do not fail there, and run as usual on the decoy;
    - a filesystem mounted read-only in the decoy is bound read-only;
    - every other mounted local filesystem (a separate `/home`, `/var` or
      `/nix`) gets an overlay of its own, with its upper under
@@ -150,19 +218,72 @@ Keep all of it `root`-owned on the hidden volume.
 7. It installs the transition step (a runtime drop-in for
    `systemd-soft-reboot.service`), prints its result, kills the decoy's
    interactive shells and soft-reboots. A second runtime drop-in clears the
-   stop command of `blk-availability.service`, which Debian and Ubuntu enable
-   wherever `dmsetup` is installed: its `blkdeactivate -u` would unmount the
-   hidden volume below `/run/nextroot` during the switch, or a LUKS or LVM
-   decoy root on the way back. The way back removes both.
+   stop command of `blk-availability.service`, which Debian's and Ubuntu's
+   lvm2 package enables: its `blkdeactivate -u` would unmount the hidden volume
+   below `/run/nextroot` during the switch, or a LUKS or LVM decoy root on the
+   way back. Debian's copy of that unit has no other command, so the drop-in
+   also gives it a start command that does nothing; without one, systemd would
+   refuse to load the unit. The way back removes both drop-ins, and leaves any
+   other drop-in the decoy had for these units in place. Ctrl+C (or a
+   SIGTERM) up to this point cancels the activation: it stops at the next step
+   and removes everything it built, and the command exits with status 130. A
+   step that runs a program to its end, such as the hidden system's
+   activation, finishes first.
 
-**The hidden NixOS system.** With a hidden configuration — a flake given with
-`--nixos-flake` or `nixos_flake`, or otherwise the legacy configuration, which
-is the decoy's `/etc/nixos` plus the hidden hardware configuration `init` placed
-in `<hidden-root>/root/upper/etc/nixos/` (it imports
-`<hidden-root>/config/nixos/configuration.nix`) — activation builds the hidden
-toplevel into the next root's store (`nix build --store /run/nextroot`). The
-build reads the decoy store through the lower and writes every new path, the
-Nix database included, into the upper; nothing reaches the decoy `/nix`.
+**The hidden NixOS system.** Activation builds the hidden toplevel into the
+next root's store (`nix build --store /run/nextroot`) from the first of:
+
+1. a flake given with `--nixos-flake` or `nixos_flake`, unless it is the
+   decoy's own `/etc/nixos`, which is refused when it is named as a local
+   path or a `path:`, `git+file:` or `file:` reference, also with a query
+   (`?ref=main`), a `dir` parameter (`path:/etc?dir=nixos`) or through a link
+   to the directory. Other spellings, such as a registry alias, `hg+file:` or
+   a percent-encoded path, are not recognised, so the refusal does not catch
+   them;
+2. a flake in `<hidden-root>/nixos`, built for this machine's hostname; a link
+   there to `/etc/nixos` is the decoy's own flake and refused the same way;
+3. the legacy configuration: the decoy's `/etc/nixos` plus the hidden hardware
+   configuration `init` placed in `<hidden-root>/root/upper/etc/nixos/`, which
+   imports the hidden module `<hidden-root>/config/nixos/configuration.nix`.
+
+Only the legacy configuration imports the hidden module by itself. A flake must
+import it, or the hidden system lacks its settings (`system.autoUpgrade` forced
+off, no shell history file) and whatever you added there, such as the [panic
+switch](#panic-switch); the build runs with `--impure`, so a flake can import
+it by its absolute path. A decoy whose `/etc/nixos` holds its own flake is
+refused unless one of the first two applies, `--no-preflight` included: a build
+of the decoy's flake reads only the decoy's files, so neither the hidden module
+nor the hidden hardware configuration (the decoy's without its swap) would be
+part of the hidden system. Give such a decoy a self-contained hidden flake:
+
+1. Enter a hidden session with the decoy's own system:
+   `sudo /mnt/data/nails activate --overlay-only`.
+2. There, `/etc/nixos` shows the decoy's `configuration.nix` beside the hidden
+   hardware configuration (`hardware-configuration.base.nix` is the decoy's
+   without its swap). Copy what the hidden system needs into
+   `<hidden-root>/nixos` and write a `flake.nix` there that builds this
+   machine's hostname from those copies and imports the hidden module
+   `<hidden-root>/config/nixos/configuration.nix` by its absolute path.
+3. Lock it there with `nix flake lock`. Activation never updates `flake.lock`,
+   so it must exist.
+4. Build it there before you rely on it:
+   `sudo nixos-rebuild build --flake <hidden-root>/nixos#<host> --impure`.
+   `<host>` is the decoy's hostname, the configuration activation builds (in
+   a session that uses the network-identity module, `hostname` prints the
+   hidden name instead), and `--impure` lets the flake import the hidden
+   module by its absolute path. `test` in place of `build` also applies it to
+   the running session.
+5. Deactivate. The next activation builds the hidden flake.
+
+Never write or lock the flake on the decoy: the editor's state, root's
+`~/.cache/nix` and the nixpkgs the lock fetches would land on the decoy disk.
+Keep it self-contained, too. A flake that imports `/etc/nixos/configuration.nix`
+by its absolute path reads the decoy's own files at every activation, which
+updates their access times on a `relatime` decoy, and its
+`./hardware-configuration.nix` is then the decoy's, swap included. `nails check`
+names the choice under "NixOS profile". The build reads the decoy store through
+the lower and writes every new path, the Nix database included, into the upper;
+nothing reaches the decoy `/nix`.
 
 Before it activates the toplevel, activation **copies the hidden system's
 whole closure onto the hidden volume**: every store path the hidden toplevel
@@ -188,9 +309,14 @@ garbage may need build inputs that are gone; without a binary cache that build
 fails, and the entry is refused and rolled back.
 
 It then runs the toplevel's activation chrooted into the next root with a private
-`/run`, and the transition step repoints `/run/current-system` only after every
+`/run`, in a process group of its own that a Ctrl+C on the terminal does not
+reach, and the transition step repoints `/run/current-system` only after every
 decoy unit has stopped, so PID 1 executes the hidden systemd against the hidden
-`/etc`. No bootloader is installed and no system profile changes. The hidden
+`/etc`. The activation points the running kernel's module loader, hotplug
+helper and firmware path at the hidden system's store, and so does a
+`nixos-rebuild test` in a session entered without a build; every entry records
+the decoy's values first, and every way back to the decoy (the return, an
+emergency, an entry rolled back or recovered) writes them back. No bootloader is installed and no system profile changes. The hidden
 toplevel must run on the decoy's kernel: the kernel modules come from
 `/run/booted-system`. `--overlay-only` skips the build and enters with the
 decoy's own system plus the hidden `/etc` and home.
@@ -201,29 +327,110 @@ hidden session like any system configuration.
 
 **The way back.** `nails deactivate`, in the hidden session, mounts the decoy
 root at `/run/nextroot` (the same filesystem the overlay reads as its lower, so
-mounting it writes nothing), marks the hidden backend's device-mapper stack for
-deferred removal, records the state as inactive and soft-reboots. The orderly
-shutdown stops every hidden program. The last step before the switch:
+mounting it writes nothing) and makes the decoy's other mounts again below it,
+as the decoy had them when the entry began: every one it can take from the
+decoy root or a filesystem the session carried (the filesystems its fstab
+names, the RAM filesystems its initrd mounted, binds such as the read-only
+bind NixOS puts over a `/nix/store` on the root filesystem, and mounts stacked
+at one place), each with its own options, in the order the decoy mounted them.
+A mount the entry recorded but the way back cannot make again from what it
+holds (the hidden session unmounted a carried filesystem, or mounted something
+on one) stops the way back instead of being left out or replaced: `deactivate`
+then refuses, and `emergency` powers off. It then marks the hidden backend's
+device-mapper stack for deferred removal, records the state as inactive and
+soft-reboots. The orderly shutdown stops every hidden program. The last step
+before the switch:
 
-- scrubs `/run` of what the hidden session added. It deletes from an allowlist
-  (the hidden runtime journal, logind's session state, runtime units, `utmp`,
-  and entries that were not there when the session was entered) and never
-  touches sockets, `/run/udev`, credentials or the current/booted system links,
-  which the decoy's next userspace is built to inherit;
-- restores libmount's `utab` to the copy taken at entry;
+- scrubs the top of `/run`: it judges the entries two levels deep (three
+  below `/run/systemd`), so a daemon's state deeper down stays, such as
+  NetworkManager's per-link records. It deletes from an allowlist (the
+  runtime journal, logind's session state, runtime units, `utmp`, and entries
+  that the decoy did not leave when it stopped for the entry, such as the PID
+  file of a decoy service that the hidden session's copy wrote again and an
+  emergency's kill left) and never touches sockets, `/run/udev`, credentials
+  or the current/booted system links, which the decoy's next userspace is
+  built to inherit. The decoy's journald and the hidden session's write the
+  same runtime journal, so on a volatile decoy the decoy's own records from
+  before the session go too (see "What a soft-reboot leaves" below);
+- puts back the name-server records below `/run/resolvconf` (openresolv, and
+  Debian's resolvconf) as the decoy left them: NetworkManager leaves its record
+  in place when it stops, and on NixOS the decoy's start would otherwise write
+  the hidden session's name servers and search domains into `/etc/resolv.conf`
+  on the decoy disk;
+- gives the kernel back the decoy's module loader, hotplug helper and firmware
+  path, which a hidden NixOS activation pointed at its own store;
+- rewrites libmount's `utab` to the lines the decoy had at entry, each under
+  the kernel mount ID of the mount the way back made in its mount's place,
+  also where mounts are stacked at one place: the decoy's mounts come back as
+  new mounts, and libmount joins a line to the mount with its ID, so it never
+  joins one to another mount that got the old ID. None of the hidden session's
+  lines stay, and a line of the decoy's that names no mount the way back
+  restores is not given back;
 - writes journald's kernel-message cursor, so the decoy journal imports no
   kernel record of the hidden session.
 
 PID 1 then switches back into the plain decoy root, and the decoy starts at its
-own login screen. The hidden volume is unmounted and its mapping closed by the
-switch itself, once the overlay that held it is released.
+own login screen (a display manager set to log an account in automatically
+logs it in again, as at boot). The hidden volume is unmounted and its mapping
+closed by the switch itself, once the overlay that held it is released.
 
-**What a soft-reboot leaves.** Nothing of the hidden session's files, but some
-kernel state, all of it in RAM and gone at power-off:
+**What a soft-reboot leaves.** On the decoy disk, none of the hidden session's
+files but one record, NetworkManager's (below); in RAM until power-off, some
+kernel state, the per-link records the network daemons keep deeper in `/run`
+and, on a volatile decoy, a journal that starts late:
 
 - the kernel ring buffer (`dmesg`), with the hidden session's kernel messages;
-- `SoftRebootsCount`, two per session, readable with `systemctl show`;
-- the same boot ID and continuous uptime across both transitions.
+- `SoftRebootsCount`, two per session, readable with `systemctl show` on
+  systemd 256 and newer;
+- the same boot ID and continuous uptime across both transitions;
+- the network state the hidden session set up: the way back does not undo it.
+  Links, addresses, routes and VPN tunnels stay up in the decoy until
+  power-off, and so do the hidden NetworkManager's per-link records below
+  `/run/NetworkManager`. The decoy's NetworkManager adopts a link the session
+  created as connected externally and records the profile it generates for
+  it, with the time, in `/var/lib/NetworkManager/timestamps` on the decoy
+  disk, as soon as the decoy starts, so a power-off after the return comes too
+  late for that record. The random MAC address of the hidden network-identity
+  snippet can stay on the decoy's own network device (a device keeps its
+  current MAC address when its NetworkManager profile sets none), and on a
+  decoy without `/etc/hostname` the hidden hostname stays. Before you
+  deactivate, take down every connection and VPN tunnel you brought up and
+  delete every link you created by hand (`ip link delete`; `ip link set down`
+  keeps it), or end the session with `deactivate --poweroff`, which powers off
+  before the decoy's NetworkManager starts. End a session that used the
+  network-identity snippet with `deactivate --poweroff` (or
+  `emergency --poweroff`).
+- on a volatile decoy, a journal that starts at the return. The way back
+  deletes the runtime journal the decoy shared with the hidden session, so the
+  decoy's own records from before the session (the activation's sudo line, the
+  hidden build's progress, its shutdown) are gone with the hidden ones, and the
+  kernel's boot messages are not read in again. `uptime` and `dmesg` still go
+  back to the boot.
+- the decoy's root and the mounts its initrd made (NixOS's store bind) as new
+  mounts, where a plain soft-reboot keeps them; it unmounts the decoy's other
+  mounts and mounts again what its fstab and units name, under new mount IDs
+  as well. The way back makes every decoy mount it can take from the decoy
+  root or a filesystem the session carried again as the decoy had it when the
+  entry began (its filesystem, the directory of it the mount shows, its place
+  in a stack, its options), NixOS's read-only store included, and PID 1 brings
+  the API filesystems below `/dev`, `/proc` and `/sys` along itself. Each has a
+  new mount ID (`findmnt -o ID`) and, once the decoy's PID 1 has marked the
+  tree shared again, a peer group of its own: two mounts that propagated to
+  each other (a bind made after the boot and its source) no longer do. Such a
+  mount comes back also when it was made after the boot, by hand or by a
+  service, where a plain soft-reboot unmounts it; a service that makes one at
+  its start without looking whether it is there leaves it twice.
+  `/run/credentials` is a mount of its own, and the mounts the boot made below
+  `/run` (NixOS's `/run/keys`) are gone, as after a plain soft-reboot. A mount
+  the way back does not make again is gone until it is mounted again, as
+  after a plain soft-reboot: a mount of a filesystem the session does not
+  carry (one the decoy's units mount outside its fstab, such as Debian's
+  `/tmp` or a snap, an overlay or FUSE mount, a disk mounted by hand) and a
+  filesystem on an automount point. The decoy's start mounts again what its
+  fstab and units name and sets up its automounts again. `activate` warns
+  about the others: one at a place the session carries (a filesystem another
+  mount covers there, say), and one that a plain soft-reboot keeps (`/usr`,
+  `/etc`, one marked `x-initrd.mount`), such as NixOS's `/etc` overlay.
 
 On a persistent decoy journal (which the decoy requirements forbid), the decoy's
 own shutdown and start lines appear under one boot ID, together with the kernel's
@@ -275,7 +482,7 @@ run in the hidden session and end it with a soft-reboot back to the decoy;
 | Hidden programs | stopped in order by the shutdown | killed at once (`cgroup.kill` on every cgroup but PID 1's and its own) | — |
 | Hidden backend | marked for deferred removal; closed by the switch | marked for deferred removal; closed by the switch | — |
 | `/run` scrub, `utab` restore, kmsg cursor | Yes | Yes | — |
-| Ends at | the decoy's login screen (`--poweroff`: off) | the decoy's login screen (`--poweroff`: off; `--reboot`: a full reboot) | the decoy, unchanged |
+| Ends at | the decoy's login screen, or its desktop with autologin (`--poweroff`: off) | the decoy's login screen, or its desktop with autologin (`--poweroff`: off; `--reboot`: a full reboot) | the decoy, unchanged |
 | Detaches a leftover `/run/nextroot` and removes `/run/overlay-runtime` and the drop-in | — | on the decoy: Yes | Yes |
 | Reads the configuration first | Yes (falls back to defaults) | No: it runs before argument parsing, the configuration and logging | Yes |
 
@@ -316,9 +523,11 @@ In the hidden session, emergency:
 The orderly shutdown then has nothing left to wait for, the `/run` scrub still
 runs as the last step, and the machine returns to the plain decoy, which shows
 its normal display-manager greeter (or a getty). **Log in normally, with the
-decoy password; nothing logs in automatically.** The screen goes to a text
-console for a few seconds in between: to an observer this is a logout, not a
-crash.
+decoy password.** NAILS logs nobody in; a display manager set to log an account
+in automatically logs it in again, as at boot, and the decoy's desktop then
+opens without a password. The screen goes to a text console for a few seconds in
+between: to an observer this looks like a logout, not a crash, or, with
+autologin, like a restart of the desktop.
 
 - With `--poweroff` the machine powers off instead. RAM decays: the strongest
   answer to a seizure. Leave it off for a few minutes.
@@ -374,9 +583,10 @@ security.polkit.extraConfig = ''
 ```
 
 Bind a key to `systemctl start panic.service`. Drop `--poweroff` to return to
-the decoy's login screen instead. Keep `<hidden-root>/nails` root-owned and not
-writable by any other account, or a root-run `ExecStart` is the same escalation
-the passwordless-sudo warning is about.
+the decoy instead (its login screen, or its desktop with autologin). Keep
+`<hidden-root>/nails` root-owned and not writable by any other account, or a
+root-run `ExecStart` is the same escalation the passwordless-sudo warning is
+about.
 
 ---
 
@@ -455,12 +665,18 @@ For the journal and kernel-message residue, the fix is to keep the journal off
 persistent disk rather than to scrub it afterwards: configure journald with
 `Storage=volatile` (or put the journal on impermanent storage) so these lines
 never land on the decoy. See the "Common host traces" guidance in
-[backends.md](backends.md). NAILS never touches pre-activation journal entries.
+[backends.md](backends.md). NAILS never touches a journal on the decoy disk; a
+volatile journal loses these lines at the way back, together with the hidden
+session's records (see "What a soft-reboot leaves" under
+[How it works](#how-it-works)).
 
 ### Pre-activation checklist
 
 ```
-[ ] Hidden volume mounted and writable at its own mount point (e.g. under /mnt)
+[ ] Hidden volume mounted and writable at its own mount point (e.g. under /mnt),
+    on storage of its own (see "Where setup happens"), with nothing mounted
+    over it
+[ ] No line in the decoy's /etc/crypttab or /etc/fstab opens or mounts it
 [ ] Neither the outer nor the hidden volume opened with --allow-discards
 [ ] Hidden backend is a local Linux filesystem that can host an overlayfs upper
     (ext4/xfs/btrfs/f2fs; NOT NFS/SMB/9p/FUSE or FAT/exFAT/NTFS)
@@ -486,9 +702,9 @@ never land on the decoy. See the "Common host traces" guidance in
 
 ## Inside the hidden session
 
-Everything in this section runs after activation's soft-reboot, logged in at the
-hidden session's own login screen. The hidden volume is at the same path as on
-the decoy.
+Everything in this section runs after activation's soft-reboot, logged in to the
+hidden session (at its own login screen, or by the display manager's autologin).
+The hidden volume is at the same path as on the decoy.
 
 ### Verifying the decoy
 
@@ -500,9 +716,28 @@ could not run, `3` the configuration could not be loaded.
 
 ```bash
 sudo /mnt/data/nails verify            # standard
-sudo /mnt/data/nails verify --deep     # homes, histories, temp dirs
+sudo /mnt/data/nails verify --deep     # homes, histories, temp dirs, journal
 sudo /mnt/data/nails verify --json     # machine-readable
 ```
+
+Inside the session the live root is the session's overlay, and what belongs to
+the session is not reported as residue. One note (`[INFO]`) says that its
+runtime files in `/run`, the mounted hidden volume and its active state are
+expected, and a NAILS path that the hidden layer holds, such as the link
+`nails init` stages at `/etc/nixos/nails/configuration.nix` on NixOS, is a note
+as well. The hidden layer hides whatever the decoy holds beneath such a path,
+so check the decoy itself offline (below). The header counts warnings and
+critical findings, not notes.
+
+With `--deep`, verify also searches the systemd journal for the tool name, the
+configuration file name, `cryptsetup` and the hidden volume path. sudo logs
+every command run with it, so its records of your own commands (the unlock,
+the mount, this verify run) match; verify names them as sudo's records. While
+the journal is in RAM they are notes, as is every entry of the session's own
+journal inside the session, because the way back or a power-off removes them.
+When the journal keeps files on disk, every entry is a warning. On the decoy
+any other entry is a warning too: only you can tell whether it is the decoy's
+own record or one a hidden session left.
 
 To inspect the decoy itself for leftovers, mount its image or partition
 read-only and scan it offline (again from the hidden side):
@@ -538,9 +773,10 @@ says how to avoid each one.
 `verify` reports only what the verify engine actually checks: known artifact
 paths, running NAILS processes by binary identity, open crypt mappers and loop
 devices, swap/memory warnings, platform package drift, and — with `--deep` —
-shell history files, temp and log directories, and `recently-used.xbel`/VeraCrypt
-config naming the hidden root. A clean result is evidence against *known*
-artifacts, not proof the decoy is untouched.
+shell history files, temp and log directories, `recently-used.xbel`/VeraCrypt
+config naming the hidden root, and journal entries naming the tool or the
+hidden volume. A clean result is evidence against *known* artifacts, not proof
+the decoy is untouched.
 
 ### Rehearsing before you rely on it
 
@@ -549,11 +785,11 @@ The forensic E2E tests prove the leak claims on CI's virtual machines.
 desktop, before you rely on them:
 
 ```bash
-sudo /mnt/data/nails rehearse plant         # 1. inside an active hidden session
-sudo /mnt/data/nails deactivate --poweroff  # 2. end the session and power off
-# boot the decoy, unlock and mount the hidden volume again, then:
-sudo /mnt/data/nails rehearse scan          # 3. from the decoy, or a later session
-sudo /mnt/data/nails rehearse reset         # remove the rehearsal when done
+sudo /mnt/data/nails rehearse plant   # 1. inside an active hidden session
+sudo /mnt/data/nails deactivate       # 2. end the session as usual
+# on the decoy, unlock and mount the hidden volume again, then:
+sudo /mnt/data/nails rehearse scan    # 3. from the decoy, or a later session
+sudo /mnt/data/nails rehearse reset   # remove the rehearsal when done
 ```
 
 `plant` puts a random token where a session most often leaks: a file named after
@@ -565,15 +801,18 @@ written to the decoy. The token stays on the hidden volume
 
 `scan` reads every mounted decoy block device (and active swap) raw and
 read-only, without mounting anything, and searches allocated and unallocated
-space for the token in ASCII and UTF-16LE. It refuses to run in the session the
-canary was planted in. A soft-reboot keeps the boot ID, so the session is told
-apart by the boot ID together with systemd's soft-reboot count: after
-`nails deactivate` the scan runs on the decoy. On a systemd that does not
-report the count, power off between `plant` and `scan` (`--allow-same-boot`
-overrides the check, but a scan in the planting session proves little).
-Exit `0` means the token was not found, `11` that it was (with the device and
-byte offset of each hit), `9` that a device could not be scanned completely.
-`nails rehearse` alone shows where you are and the next step.
+space for the token in ASCII and UTF-16LE. It refuses to run inside the session
+the canary was planted in, which `plant` records by the session's entry time:
+on the decoy after `nails deactivate`, after a power-off or in a later session
+the scan runs, on every systemd version (`--allow-same-boot` overrides the
+check, but a scan in the planting session proves little). To rehearse the
+power-off exit instead, end the session with `nails deactivate --poweroff` and
+boot the decoy again before the scan. Exit `0` means the token was not found,
+`11` that it was (with the device and byte offset of each hit), `9` that a
+device could not be scanned completely. A channel the canary could not be
+planted in (a notification with no desktop session to show it, say) is listed
+with the result as not tested. `nails rehearse` alone shows where you are and
+the next step.
 
 A clean scan covers only what a host can read. It cannot see SSD cells the
 drive has remapped or keeps in reserve, blocks discarded with TRIM, disks that
@@ -608,13 +847,30 @@ hardening you configure yourself.
 
 ### Changing the hidden configuration
 
-On NixOS, `/etc/nixos` inside the hidden session is the hidden configuration
-(the decoy's files plus the hidden hardware configuration in the upper), and
-`sudo nixos-rebuild test` applies a change to the running hidden session. Do not
-use `switch` or `boot`: they try to install a bootloader into the read-only ESP
-and fail. The change persists in the upper; the next activation builds the
-hidden configuration again from `<hidden-root>/config/nixos/` or your flake, so
-keep that source in step with what you test.
+On NixOS, `nixos-rebuild test` applies a change to the running hidden session.
+Give it the target activation builds:
+
+- the legacy configuration, when there is no hidden flake and `nixos_flake` is
+  unset: `sudo nixos-rebuild test`. Inside the hidden session `/etc/nixos` is
+  the hidden configuration (the decoy's files plus the hidden hardware
+  configuration in the upper);
+- a hidden flake: `sudo nixos-rebuild test --flake <hidden-root>/nixos#<host>
+  --impure`, with `<host>` the decoy's hostname, the configuration activation
+  builds (in a session that uses the network-identity module, `hostname`
+  prints the hidden name instead), and `--impure` because the flake imports
+  the hidden module by its absolute path. For a flake named with
+  `nixos_flake`, pass that reference instead.
+
+On a decoy whose `/etc/nixos` holds a flake, a plain `nixos-rebuild test`
+builds that flake, the decoy's own, which activation refuses to build: it
+fails, or it puts the decoy's own system into the session, without the hidden
+module (no panic switch, `system.autoUpgrade` no longer forced off). Always
+name the hidden flake there.
+
+Do not use `switch` or `boot`: they try to install a bootloader into the
+read-only ESP and fail. The next activation builds the hidden configuration
+again from `<hidden-root>/config/nixos/` or your flake, so keep that source in
+step with what you test.
 
 On Debian and Ubuntu, change the hidden system like any other: `apt`, edits in
 `/etc`, `systemctl enable`. Every change lands in the upper and is the hidden
@@ -667,7 +923,17 @@ writes its superblock).
 
 - The session watcher raises a desktop alert ("Disk mounted with write access")
   for every read-write mount of a disk outside the hidden volume
-  (`session_mounts.alert`, on by default).
+  (`session_mounts.alert`, on by default). Its alerts appear on the desktop of
+  the account logged in on the machine's own screen; while nobody is logged in
+  there, none can be shown.
+- A disk mounted over the hidden root itself (with `/mnt` as the root, an
+  ordinary `mount /dev/sdc1 /mnt`) takes every file saved under `/mnt` from
+  then on. The watcher raises "Disk mounted over a folder in use", naming the
+  disk, and `nails status` shows it under the hidden volume; `sudo umount
+  /mnt` takes it off. A disk mounted on a parent of the root (`/mnt` over a
+  root at `/mnt/data`) hides it the same way and is reported the same way,
+  naming its own mount point. NAILS writes nothing there meanwhile, and the
+  cover triggers no emergency.
 - With `session_mounts.read_only = true`, every disk the session does not use is
   read-only for the session, from the hidden boot on and for every disk attached
   later: mounts come up read-only (`mount` warns "write-protected, mounted
@@ -688,7 +954,8 @@ against automounts and mistakes. See
 [ ] Do not mount decoy partitions or external disks read-write: the fstab
     policy covers only what the hidden systemd mounts (session_mounts.read_only
     enforces this; the watcher alerts otherwise)
-[ ] On NixOS, apply changes with `nixos-rebuild test`, never `switch` or `boot`
+[ ] On NixOS, apply changes with `nixos-rebuild test` (with a hidden flake:
+    `--flake <hidden-root>/nixos#<host> --impure`), never `switch` or `boot`
 [ ] Keep the emergency command ready: sudo /mnt/data/nails emergency
 [ ] Know your physical emergency procedure
 ```
@@ -731,9 +998,22 @@ ls /run/overlay-runtime           # no such file or directory
 ```
 
 Then close the backend as usual (`umount <hidden-root>`, `cryptsetup close
-<mapper>`). Powering off instead does the same: everything above lives in `/run`
-and is gone at power-off. **Do not edit or delete `state.json` by hand** —
-`recover` resets it once the hidden volume is back.
+<mapper>`). If `cryptsetup close` reports the device busy, a service that
+started during the activation holds a copy of the next root's mounts in a
+mount namespace of its own: `grep -l /run/nextroot /proc/*/mountinfo` names
+its processes; restart that service, or power off. Powering off instead does
+the same: everything above lives in `/run` and is gone at power-off.
+
+If the activation built a hidden NixOS system, or its switch failed, power
+off instead. `nails recover` also writes back the kernel's module loader,
+hotplug helper and firmware path, which the hidden system's activation
+pointed at its store (the decoy then loads no module and no firmware), and
+removes the session's masks in `/run/systemd/system` and
+`/run/systemd/system.control`, which keep the decoy's swap and boot-loader
+units masked. By hand, only a power-off does.
+
+**Do not edit or delete `state.json` by hand** — `recover` resets it once the
+hidden volume is back.
 
 A plain `reboot` with a leftover populated `/run/nextroot` would be turned into a
 soft-reboot into that tree by systemd 255 and newer. The transition step refuses
@@ -759,10 +1039,10 @@ default); `emergency` does not wait for it.
 **Suspend / resume.** Suspend keeps the whole hidden session — the overlay, the
 open mapper and the master key — resident behind the hidden lock screen, and the
 decoy is not running at all. Do not suspend during a session. Set the decoy's
-logind lid switch to `ignore` or `lock`
+logind lid switch to `lock`
 ([decoy-requirements.md](decoy-requirements.md)), and set `sleep_policy.mode` in
-`nails.toml`: `block` holds a sleep inhibitor for the session, `teardown` powers
-off when the host is about to sleep.
+`nails.toml`: `block` keeps the host awake for the session, a closed lid
+included, `teardown` powers off when the host is about to sleep.
 
 **Power loss / crash / hang.** On the next boot the decoy comes up normally:
 nothing of the session is installed on the decoy, and `/run` is gone. If
@@ -836,20 +1116,47 @@ session as an informed choice.
 #### Inherited autostart, services and autologin
 
 The hidden session inherits what the decoy starts automatically: enabled system
-services, `~/.config/autostart` and `/etc/xdg/autostart` entries, enabled user
-services and timers, lingering, and display-manager autologin. Sync, cloud and
-messaging clients therefore run under the decoy identity and can contact remote
-servers and your other devices. `nails check`, and the `inherited-autostart`
-warning in activation's pre-flight output, list this inherited state and flag names that look like remote-linked clients (a
-name-only heuristic).
+services, autostart entries (`~/.config/autostart`, `/etc/xdg/autostart` and, on
+NixOS, the autostart directories of the Nix profiles), enabled user services and
+timers, lingering, and display-manager autologin. Sync, cloud and messaging
+clients therefore run under the decoy identity and can contact remote servers
+and your other devices. `nails check`, and the `inherited-autostart` warning in
+activation's pre-flight output, report what needs review: what you or
+third-party software added, lingering, autologin, and the clients on a short
+list of known trace writers, tagged remote-linked (a name-only heuristic). The
+desktop's and the distribution's own components are counted but not reported;
+see [Inherited decoy state](configuration.md#inherited-decoy-state). In
+`shared-home`, `nails check` also says on a line of its own that the hidden
+session starts in the decoy home.
 
 Disable what you do not want **inside the hidden session**: mask the unit
 (`systemctl --user mask syncthing.service`), remove or override the autostart
 entry, or, on NixOS, leave it out of the hidden configuration. The change lands
 in the upper, so it takes effect for the hidden session only and the decoy is
-unchanged. **Lingering and autologin are decoy settings** — disable those on the
-decoy itself. Disabling changes what *runs*; it does not roll back remote or
-account state.
+unchanged. **Lingering is a decoy setting** — disable it on the decoy itself.
+Disabling changes what *runs*; it does not roll back remote or account state.
+
+**Autologin repeats at every switch.** Each soft-reboot starts a fresh display
+manager, and one set to log an account in automatically logs it in again, as
+at boot: after `activate` the hidden desktop opens without a password, and after
+`deactivate` or `emergency` the decoy's does. NAILS logs nobody in and leaves
+the setting alone; `nails check` lists an autologin it finds in the decoy's
+GDM, LightDM or SDDM configuration, and keeps listing it while the decoy has it,
+even once the hidden session turns it off. To keep autologin on the decoy but
+have the hidden session start at its login screen, turn it off in the hidden
+session only:
+
+- NixOS, with any display manager: add
+  `services.displayManager.autoLogin.enable = lib.mkForce false;` to the hidden
+  configuration (`config/nixos/configuration.nix` on the hidden volume, or the
+  hidden flake). The next activation builds it in.
+- Debian and Ubuntu: inside a hidden session, edit the display manager's file.
+  For GDM set `AutomaticLoginEnable=false` in the `[daemon]` section of
+  `/etc/gdm3/daemon.conf` (Debian) or `/etc/gdm3/custom.conf` (Ubuntu); for
+  LightDM empty `autologin-user=` in its `[Seat:*]` section (`[SeatDefaults]`
+  in older files); for SDDM empty `User=` under `[Autologin]`; each in the
+  file that sets it. The edit lands in the upper, so it applies from the next
+  activation and the decoy keeps its own setting.
 
 #### Remote state and sync clients
 
@@ -882,7 +1189,11 @@ NixOS generation, or the upper's `/etc`); NAILS ships optional snippets
 (`nix/modules/hidden-network-identity.nix`,
 `nix/modules/network-identity/00-hidden-identity.conf`). NetworkManager has no
 global VPN-autoconnect switch, so disable it per profile with `nmcli connection
-modify <vpn> connection.autoconnect no`.
+modify <vpn> connection.autoconnect no`. The way back does not undo what the
+snippet changed on the running system: the random MAC address can stay on the
+decoy's device, and so can the hostname on a decoy without `/etc/hostname`.
+End a session that used it with `deactivate --poweroff` (or
+`emergency --poweroff`).
 
 ### SSD wear-levelling
 
@@ -950,9 +1261,14 @@ real hardware:
 - decoy roots unlocked with a TPM-sealed key (the mapping survives the
   soft-reboot, but anything in the hidden session that measures into PCRs changes
   them for the rest of the uptime);
+- decoy roots on storage the initrd assembled beyond LUKS and LVM (mdraid,
+  multipath, an iSCSI root): a soft-reboot never assembles that storage again,
+  so no service stopped at either transition may tear it down;
 - GRUB's `grubenv` (keep `/boot` read-only, as the fstab policy does);
 - user services that do not stop promptly, delaying an orderly transition up to
   `DefaultTimeoutStopSec`.
+
+Secure Boot does not affect a soft-reboot, which loads no new kernel.
 
 Rehearse on your own machine before relying on it.
 
@@ -964,8 +1280,8 @@ Rehearse on your own machine before relying on it.
 - [decoy-requirements.md](decoy-requirements.md) — amnesic decoy setup and
   decoy-side history hardening
 - [backends.md](backends.md) — storage backend matrix and deniability notes
-- [ADR 0008](adr/0008-whole-root-soft-reboot.md) — the whole-root soft-reboot
-  design and its evidence
+- [architecture.md](architecture.md) — how the session is built, and why it
+  takes the whole root with a soft-reboot
 - [bash-history-forensics.md](bash-history-forensics.md) — history-protection
   mechanics
 - [SECURITY.md](../SECURITY.md) — vulnerability reporting policy

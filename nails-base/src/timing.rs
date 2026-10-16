@@ -110,10 +110,37 @@ pub fn format_elapsed(elapsed: Duration) -> String {
     }
 }
 
+/// Formats how long an activation took, as `activate` and `status` both show
+/// it: tenths of a second under a minute (`11.0s`), whole seconds from a
+/// minute on (`1m32s`, as [`format_elapsed`]), each rounded to the nearest.
+pub fn format_duration(duration: Duration) -> String {
+    let millis = duration.as_millis();
+    let tenths = (millis + 50) / 100;
+    if tenths < 600 {
+        format!("{}.{}s", tenths / 10, tenths % 10)
+    } else {
+        let seconds = u64::try_from((millis + 500) / 1000).unwrap_or(u64::MAX);
+        format_elapsed(Duration::from_secs(seconds))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::thread;
+
+    #[test]
+    fn format_duration_shows_tenths_under_a_minute_and_whole_seconds_above() {
+        let ms = Duration::from_millis;
+        assert_eq!(format_duration(ms(0)), "0.0s");
+        assert_eq!(format_duration(ms(2_331)), "2.3s");
+        assert_eq!(format_duration(ms(10_960)), "11.0s");
+        assert_eq!(format_duration(ms(59_940)), "59.9s");
+        assert_eq!(format_duration(ms(59_960)), "1m00s");
+        assert_eq!(format_duration(ms(92_000)), "1m32s");
+        assert_eq!(format_duration(ms(92_600)), "1m33s");
+        assert_eq!(format_duration(ms(3_723_000)), "1h02m03s");
+    }
 
     #[test]
     fn test_stopwatch_start() {

@@ -50,6 +50,13 @@ pub struct StatusData<'a> {
     hidden_root: String,
     /// Whether the hidden volume is mounted at its own path.
     hidden_root_mounted: bool,
+    /// Why the hidden root is not a volume of its own, when the session's
+    /// activation accepted that with `--allow-decoy-storage`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    accepted_decoy_storage: Option<&'a str>,
+    /// The source of a filesystem mounted over the hidden volume.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hidden_root_covered_by: Option<&'a str>,
     /// The decoy filesystems placed in the hidden root.
     policy_mounts: &'a [PolicyMountView],
     /// The decoy units masked in the hidden root.
@@ -90,6 +97,11 @@ fn data(report: &StatusReport) -> StatusData<'_> {
         decoy_system: report.decoy_system.as_deref(),
         hidden_root: report.hidden_root.display().to_string(),
         hidden_root_mounted: report.hidden_root_mounted,
+        accepted_decoy_storage: report.accepted_decoy_storage.as_deref(),
+        hidden_root_covered_by: report
+            .hidden_root_covered_by
+            .as_ref()
+            .map(|cover| cover.source.as_str()),
         policy_mounts: &report.policy_mounts,
         masked_units: &report.masked_units,
         nextroot_mounted: report.nextroot_mounted,
@@ -138,14 +150,19 @@ struct UnknownData {
 }
 
 /// Print an unknown status (the report could not be built) as a failure
-/// envelope.
-pub fn print_status_json_unknown(error: String) {
+/// envelope. `sudo` is the line that runs status as root, when the state file
+/// was unreadable for lack of permission.
+pub fn print_status_json_unknown(error: String, sudo: Option<String>) {
+    let mut body = crate::cli::output::envelope::ErrorBody::new("unknown_state", error);
+    if let Some(line) = sudo {
+        body = body.with_hint(format!("run it as root: {line}"));
+    }
     Envelope::failure_with_data(
         "status",
-        crate::cli::output::envelope::ErrorBody::new("unknown_state", error),
+        body,
         UnknownData {
             posture: "unknown",
-            remediation: "Run status with sufficient privileges or fix the state file access",
+            remediation: "Run status as root, or fix access to the state file",
         },
     )
     .print();

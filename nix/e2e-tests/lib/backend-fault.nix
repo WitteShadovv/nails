@@ -13,13 +13,14 @@
   # is the documented fallback. `trigger=None` waits for a teardown something
   # else starts (the backend watcher's auto-emergency); `console_index` then
   # names where in the console log to start looking, so a switch that began
-  # before the call is not missed.
+  # before the call is not missed. A wait that runs out reports what PID 1
+  # waits on and the SysRq dumps (nails_e2e.stall).
   emergencyOutcomeFn = ''
     def emergency_outcome(trigger, label, deadline_s=600, console_index=None):
         import signal
         import time
 
-        from nails_e2e import session
+        from nails_e2e import session, stall
 
         if console_index is None:
             console_index = len(machine.full_console_log)
@@ -46,8 +47,9 @@
                 return "off"
             if time.monotonic() > deadline:
                 machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
+                why = stall.report(machine, label)
                 raise AssertionError(
-                    f"{label}: neither back on the decoy nor off after {deadline_s} s"
+                    f"{label}: neither back on the decoy nor off after {deadline_s} s ({why})"
                 )
             time.sleep(
                 0.5

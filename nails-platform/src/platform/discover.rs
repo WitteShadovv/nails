@@ -25,8 +25,20 @@ pub enum HostTarget {
     OverlayOnly,
     /// An explicit flake reference from `--flake` or config `nixos_flake`.
     ExplicitFlake(String),
-    /// A flake directory holding `flake.nix` (hidden volume, or `/etc/nixos`).
+    /// A flake directory holding `flake.nix`: the hidden flake in
+    /// `<hidden_volume_root>/nixos`.
     Flake(PathBuf),
+    /// The decoy's own flake (`/etc/nixos/flake.nix`), found with no hidden
+    /// flake: activation refuses it. A build of it reads only the decoy's
+    /// files, so neither the hidden module nor the hidden hardware
+    /// configuration would be part of the hidden system.
+    DecoyFlake {
+        /// The decoy's flake directory.
+        dir: PathBuf,
+        /// The hidden volume root: where a hidden flake goes (`nixos/`) and
+        /// where the hidden module lives (`config/nixos/configuration.nix`).
+        hidden_volume_root: PathBuf,
+    },
     /// A legacy `configuration.nix` build (also the choice when only the system
     /// profile is present, matching activation).
     Legacy(PathBuf),
@@ -39,7 +51,11 @@ pub enum HostTarget {
 ///
 /// In order: `overlay_only` short-circuits to [`HostTarget::OverlayOnly`]; an
 /// explicit flake reference (the operator's own choice) is honoured on every
-/// host; otherwise the backend's auto-discovery answers. Tests pass a
+/// host, unless it names the decoy's own `/etc/nixos` flake in a local
+/// spelling discovery resolves (a path, `path:`, `git+file:` or `file:`, with
+/// a query, a `dir` parameter or through a link), which is the refused
+/// [`HostTarget::DecoyFlake`]; otherwise the backend's auto-discovery
+/// answers. Tests pass a
 /// [`FakePlatform`](super::FakePlatform) here to pin the discovered target
 /// without staging any host files.
 pub fn discover_with_platform<F: Filesystem>(
@@ -53,6 +69,12 @@ pub fn discover_with_platform<F: Filesystem>(
         return Ok(HostTarget::OverlayOnly);
     }
     if let Some(flake_ref) = explicit_flake {
+        if let Some(dir) = super::nixos::explicit_decoy_flake(fs, flake_ref) {
+            return Ok(HostTarget::DecoyFlake {
+                dir,
+                hidden_volume_root: hidden_volume_root.to_path_buf(),
+            });
+        }
         return Ok(HostTarget::ExplicitFlake(flake_ref.to_string()));
     }
     platform.discover_build_target(fs, hidden_volume_root)

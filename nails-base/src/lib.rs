@@ -11,7 +11,7 @@
 //! It knows nothing about a platform backend, the whole-root session or
 //! verification; those live in `nails-platform`, `nails-session` and
 //! `nails-forensics`, and `nails-core` ties them together. The dependency
-//! direction is recorded in ADR 0010.
+//! direction is pinned by `nails-core/tests/crate_graph.rs`.
 
 // Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
 // may use it freely; production code opts in per site with a scoped allow.
@@ -69,6 +69,16 @@ pub mod target_user;
 
 // Attach gate: write nothing unless the hidden root is positively mounted.
 pub mod hidden_root;
+
+// Words that give hidden storage away in a mount path, mapper name or label.
+pub mod naming;
+
+// The parsers of `/etc/fstab` and `/etc/crypttab`.
+pub mod crypttab;
+pub mod fstab;
+
+// The stack of block devices under a filesystem, read from sysfs.
+pub mod blockdev;
 
 // Test-runtime guards for host interaction. Public for the other NAILS crates
 // only; not part of any interface.

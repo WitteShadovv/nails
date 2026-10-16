@@ -1,0 +1,6 @@
+---
+source: nails-cli/src/cli/output/refusal.rs
+expression: "human(&refusal(kind), None)"
+---
+error: two filesystems are mounted at /mnt: one of type ext4, then one of type vfat over it. Nothing was written.
+  Unmount the one that is not the volume, then run the command again.

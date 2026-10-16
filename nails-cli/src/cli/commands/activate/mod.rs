@@ -8,14 +8,18 @@
 //! root's store), the overlay at `/run/nextroot` and the armed plan. It prints
 //! its result and then enqueues the soft-reboot, which stops every program of
 //! the decoy and starts the hidden userspace inside the overlay: the operator
-//! is logged out and logs in again at the hidden session's login screen. As its
-//! last step it SIGKILLs the decoy's interactive shells, so none of them writes
-//! the activation command to its history file on the decoy disk.
+//! is logged out and logs in again at the hidden session's login screen (a
+//! display manager set to log an account in automatically logs it in again, as
+//! at boot; NAILS logs nobody in). As its last step it SIGKILLs the decoy's
+//! interactive shells, so none of them writes the activation command to its
+//! history file on the decoy disk.
 
 use crate::cli::args::ActivateArgs;
 use crate::cli::output::envelope::{ErrorBody, report_error};
+use crate::cli::output::refusal::report_refusal;
 use crate::cli::output::{self, ActivateResult, ExitStatus, OutputSettings};
 
+use nails_core::hidden_root::{Assessment, Refusal};
 use nails_core::manager::{EnterOptions, EnterOutcome};
 use nails_core::session::{RealEntryHost, RealTargetHost};
 use nails_core::{CliOverrides, NailsError, Verbosity};
@@ -35,7 +39,7 @@ fn write_activation_residue_baseline(
     json: bool,
     settings: &OutputSettings,
 ) {
-    use nails_core::{RealFilesystem, StateFileStatus, Verifier, VerifyStatus};
+    use nails_core::{RealFilesystem, StateFileStatus, Verifier};
 
     let config = manager.config().clone();
     let hidden_root = config.hidden_volume_root.clone();
@@ -71,11 +75,6 @@ fn write_activation_residue_baseline(
         &timestamp,
     ) {
         Ok(summary) => {
-            let status = match summary.status {
-                VerifyStatus::Secure => "clean",
-                VerifyStatus::Warning => "warnings",
-                VerifyStatus::Critical => "critical findings",
-            };
             if json {
                 tracing::debug!(
                     path = %summary.path.display(),
@@ -83,9 +82,8 @@ fn write_activation_residue_baseline(
                 );
             } else if settings.verbosity >= Verbosity::Normal {
                 println!(
-                    "Pre-activation decoy residue baseline: {status} ({} finding{}) -> {}",
-                    summary.finding_count,
-                    if summary.finding_count == 1 { "" } else { "s" },
+                    "Pre-activation decoy residue baseline: {} -> {}",
+                    baseline_summary(&result),
                     summary.path.display()
                 );
             }
@@ -99,14 +97,97 @@ fn write_activation_residue_baseline(
     }
 }
 
+/// The progress line before the entry, naming only the steps it runs, in
+/// their order: the pre-flight checks (not under `--no-preflight`), the next
+/// root, and the hidden NixOS system built into it (NixOS with a build target
+/// only, never with `--overlay-only` or on Debian and Ubuntu).
+fn preparing_line(preflight: bool, builds_system: bool) -> String {
+    let mut steps = Vec::new();
+    if preflight {
+        steps.push("pre-flight");
+    }
+    steps.push("next root");
+    if builds_system {
+        steps.push("hidden NixOS system");
+    }
+    format!("Preparing the hidden session ({})...", steps.join(", "))
+}
+
+/// What the residue baseline line says about the decoy: no count when it shows
+/// no known residue, otherwise the warnings and critical findings. The
+/// informational notes every scan adds (the RAM caveat, the scope of the
+/// baseline, catalogue notes such as `timesync-clock`) are not findings and
+/// stay in the report.
+fn baseline_summary(result: &nails_core::VerifyResult) -> String {
+    use crate::cli::output::count_noun;
+    use nails_core::{Severity, VerifyStatus};
+
+    let of = |severity: Severity| {
+        result
+            .findings
+            .iter()
+            .filter(|finding| finding.severity == severity)
+            .count()
+    };
+    let warnings = of(Severity::Warn);
+    match result.status {
+        VerifyStatus::Secure => "no known residue".to_string(),
+        VerifyStatus::Warning => count_noun(warnings, "warning", "warnings"),
+        VerifyStatus::Critical => {
+            let critical = of(Severity::Critical);
+            let mut text = count_noun(critical, "critical finding", "critical findings");
+            if warnings > 0 {
+                text.push_str(&format!(
+                    ", {}",
+                    count_noun(warnings, "warning", "warnings")
+                ));
+            }
+            text
+        }
+    }
+}
+
+/// The line activation prints before it asks for confirmation when no
+/// configuration file was found: every opt-in protection then keeps its
+/// built-in default, which the operator should know before the switch.
+fn defaults_notice(loaded: &nails_core::LoadedConfig) -> Option<String> {
+    (!loaded.file_found).then(|| {
+        format!(
+            "No config file at {}: activation uses the built-in defaults.",
+            loaded.path.display()
+        )
+    })
+}
+
+/// The `check` arguments `activate --dry-run` runs with.
+fn dry_run_check_args(args: &ActivateArgs) -> crate::cli::args::CheckArgs {
+    crate::cli::args::CheckArgs {
+        overlay_only: args.overlay_only,
+        nixos_flake: args.nixos_flake.clone(),
+        accept_persistent_decoy: args.accept_persistent_decoy,
+        allow_decoy_storage: args.allow_decoy_storage,
+    }
+}
+
+/// What the activation asks of the session entry.
+fn enter_options(args: &ActivateArgs) -> EnterOptions {
+    EnterOptions {
+        skip_preflight: args.no_preflight,
+        overlay_only: args.overlay_only,
+        accept_persistent_decoy: args.accept_persistent_decoy,
+        binary: std::env::current_exe().unwrap_or_default(),
+        allow_decoy_storage: args.allow_decoy_storage,
+    }
+}
+
 /// Execute the activate command.
 ///
 /// # Returns
 ///
 /// [`ExitStatus::Ok`] once the soft-reboot is enqueued (or the session was
 /// already active), [`ExitStatus::SuccessWithWarnings`] when it is enqueued
-/// with warnings, [`ExitStatus::PreflightRefused`] when a pre-flight check
-/// refuses, [`ExitStatus::Unsupported`] on an unsupported host,
+/// with warnings, [`ExitStatus::PreflightRefused`] when the attach gate or a
+/// pre-flight check refuses, [`ExitStatus::Unsupported`] on an unsupported host,
 /// [`ExitStatus::Usage`] without confirmation off a terminal,
 /// [`ExitStatus::InvalidState`] when the state file cannot be trusted,
 /// [`ExitStatus::Config`] for a bad configuration and [`ExitStatus::Failed`]
@@ -119,18 +200,14 @@ pub fn execute(
 ) -> ExitStatus {
     let json = settings.is_json();
     if args.dry_run {
-        let check_args = crate::cli::args::CheckArgs {
-            overlay_only: args.overlay_only,
-            nixos_flake: args.nixos_flake.clone(),
-            accept_persistent_decoy: args.accept_persistent_decoy,
-        };
-        return super::check::execute(settings, env, &check_args, config_override);
+        return super::check::execute(settings, env, &dry_run_check_args(args), config_override);
     }
 
     let mut loaded = match super::load_config_or_report(config_override, "activate", json) {
         Ok(loaded) => loaded,
         Err(status) => return status,
     };
+    let defaults_notice = defaults_notice(&loaded);
     loaded.apply_cli_overrides(&CliOverrides {
         nixos_flake: args.nixos_flake.clone(),
     });
@@ -158,19 +235,25 @@ pub fn execute(
         return ExitStatus::Ok;
     }
 
-    match nails_core::HiddenRoot::verify_attached(
+    // The attach gate decides before anything is written: the state lock, the
+    // residue baseline and the staged configuration all land on the root.
+    // --no-preflight does not skip it.
+    let options = enter_options(args);
+    let accepted = match nails_core::HiddenRoot::assess_allowing(
         manager.filesystem(),
         &manager.config().hidden_volume_root,
-        false,
+        options.allow(),
     ) {
-        Ok(nails_core::AttachState::Attached) => {}
-        Ok(nails_core::AttachState::Unattached(reason)) => {
-            return report_error(
-                json,
-                "activate",
-                ExitStatus::PreflightRefused,
-                ErrorBody::new("preflight", format!("hidden-root: {reason}")),
-            );
+        Ok(Assessment::Attached) => None,
+        Ok(Assessment::Warned(refusal)) => {
+            crate::cli::output::eprintln_tolerating_broken_pipe(&format!(
+                "warning: {}",
+                refusal.warning()
+            ));
+            refusal.overridden().then_some(refusal)
+        }
+        Ok(Assessment::Refused(refusal)) => {
+            return report_refusal(json, "activate", &refusal);
         }
         Err(e) => {
             return report_error(
@@ -180,9 +263,15 @@ pub fn execute(
                 ErrorBody::new("preflight", e.to_string()),
             );
         }
-    }
+    };
 
-    let _state_lock = match super::acquire_state_lock_or_report(&state_path, "activate", json) {
+    let _state_lock = match super::acquire_state_lock_or_report(
+        &manager.config().hidden_volume_root,
+        options.allow(),
+        &state_path,
+        "activate",
+        json,
+    ) {
         Ok(lock) => lock,
         Err(status) => return status,
     };
@@ -201,40 +290,45 @@ pub fn execute(
         );
     }
 
-    if !args.yes && !confirm_logout(settings) {
-        return report_error(
-            json,
-            "activate",
-            ExitStatus::Failed,
-            ErrorBody::new("cancelled", "activation cancelled; nothing changed"),
-        );
+    // Shown under -q too: every opt-in protection keeps its default without
+    // the file, which a scripted `-y -q` activation must not hide.
+    if let Some(notice) = defaults_notice {
+        crate::cli::output::eprintln_tolerating_broken_pipe(&notice);
     }
-
+    if !args.yes
+        && let Some(status) = stop_status(confirm_logout(settings, accepted.as_ref()))
+    {
+        return report_cancelled(settings, status);
+    }
+    // Ctrl+C sets a flag that every step from here on reads (see
+    // nails_core::cancel). At the prompt it ends the activation at once;
+    // during the residue baseline, before the entry begins.
+    if nails_core::cancel::is_cancelled() {
+        return report_cancelled(settings, ExitStatus::Cancelled);
+    }
     write_activation_residue_baseline(&manager, json, settings);
+    if nails_core::cancel::is_cancelled() {
+        return report_cancelled(settings, ExitStatus::Cancelled);
+    }
 
     if json {
         output::print_activate_progress("preparing");
     } else if settings.verbosity >= Verbosity::Normal {
-        crate::cli::output::eprintln_tolerating_broken_pipe(
-            "Preparing the hidden session (pre-flight, hidden system, next root)...",
-        );
+        crate::cli::output::eprintln_tolerating_broken_pipe(&preparing_line(
+            !options.skip_preflight,
+            manager.builds_hidden_system(&options),
+        ));
     }
-    let options = EnterOptions {
-        skip_preflight: args.no_preflight,
-        overlay_only: args.overlay_only,
-        accept_persistent_decoy: args.accept_persistent_decoy,
-        binary: std::env::current_exe().unwrap_or_default(),
-    };
     let start = Instant::now();
     let result = manager.enter_session(&options, &RealEntryHost);
     let duration = start.elapsed().as_secs_f64();
 
-    let entry = match result {
+    let (entry, elapsed) = match result {
         Ok(EnterOutcome::AlreadyActive) => {
             print_result(settings, &ActivateResult::AlreadyActive, duration);
             return ExitStatus::Ok;
         }
-        Ok(EnterOutcome::Prepared(entry)) => entry,
+        Ok(EnterOutcome::Prepared { entry, elapsed }) => (entry, elapsed),
         Err(error) => {
             print_result(settings, &ActivateResult::Failed(&error), duration);
             return match error {
@@ -245,7 +339,12 @@ pub fn execute(
             };
         }
     };
-    print_result(settings, &ActivateResult::Entering(&entry), duration);
+    // The time the state file records, which `status` shows as well.
+    print_result(
+        settings,
+        &ActivateResult::Entering(&entry),
+        elapsed.as_secs_f64(),
+    );
     crate::cli::output::flush_stdio();
 
     // The decoy's shells write their history when they exit, bash on the
@@ -273,6 +372,28 @@ pub fn execute(
     }
 }
 
+/// How the answer at the prompt ends the activation, if it does: a `n` (or
+/// the end of the input) with exit 1, a Ctrl+C with exit 130 as a signal's
+/// cancel anywhere else. Both read alike ([`report_cancelled`]).
+fn stop_status(answer: Answer) -> Option<ExitStatus> {
+    match answer {
+        Answer::Yes => None,
+        Answer::No => Some(ExitStatus::Failed),
+        Answer::Cancelled => Some(ExitStatus::Cancelled),
+    }
+}
+
+/// Report an activation cancelled before it changed anything, ending with
+/// `status`.
+fn report_cancelled(settings: &OutputSettings, status: ExitStatus) -> ExitStatus {
+    print_result(
+        settings,
+        &ActivateResult::Failed(&NailsError::Cancelled),
+        0.0,
+    );
+    status
+}
+
 fn print_result(settings: &OutputSettings, result: &ActivateResult<'_>, duration: f64) {
     if settings.is_json() {
         output::print_activate_json_result(result, duration);
@@ -281,10 +402,62 @@ fn print_result(settings: &OutputSettings, result: &ActivateResult<'_>, duration
     }
 }
 
-/// Ask on the terminal before logging the operator out.
-fn confirm_logout(settings: &OutputSettings) -> bool {
+/// What the operator answered at the confirmation prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// `y` or `yes`.
+    Yes,
+    /// Anything else, or the end of the input.
+    No,
+    /// Ctrl+C (or a SIGTERM) while the prompt waited.
+    Cancelled,
+}
+
+/// How often the prompt looks at the cancel flag while it waits.
+const PROMPT_POLL: u16 = 100;
+
+/// Wait for a line on `input` (read through `reader`) and judge it, giving up
+/// as soon as `cancelled` says so. The signal handler restarts an interrupted
+/// read, so a plain read would go on until Enter and Ctrl+C would only echo
+/// `^C`; polling with a timeout looks at the cancel flag in between.
+fn read_answer(
+    input: std::os::fd::BorrowedFd<'_>,
+    reader: &mut impl std::io::BufRead,
+    cancelled: impl Fn() -> bool,
+) -> Answer {
+    use nix::poll::{PollFd, PollFlags, poll};
+    loop {
+        if cancelled() {
+            return Answer::Cancelled;
+        }
+        let mut fds = [PollFd::new(input, PollFlags::POLLIN)];
+        match poll(&mut fds, PROMPT_POLL) {
+            Ok(0) | Err(nix::errno::Errno::EINTR) => {}
+            Ok(_) => break,
+            Err(_) => return Answer::No,
+        }
+    }
+    let mut line = String::new();
+    if reader.read_line(&mut line).is_err() {
+        return if cancelled() {
+            Answer::Cancelled
+        } else {
+            Answer::No
+        };
+    }
+    if matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Answer::Yes
+    } else {
+        Answer::No
+    }
+}
+
+/// Ask on the terminal before logging the operator out. `accepted` is the
+/// refusal the operator overrode with `--allow-decoy-storage`, repeated here.
+fn confirm_logout(settings: &OutputSettings, accepted: Option<&Refusal>) -> Answer {
     use nails_core::output::Mark;
-    use std::io::{BufRead, Write};
+    use std::io::Write;
+    use std::os::fd::AsFd;
     let style = settings.stderr_style();
     let mut stderr = std::io::stderr();
     let _ = writeln!(
@@ -299,13 +472,22 @@ fn confirm_logout(settings: &OutputSettings) -> bool {
         stderr,
         "    Every program closes and you are logged out; unsaved work is lost."
     );
+    if let Some(refusal) = accepted {
+        let _ = writeln!(stderr, "    {}.", refusal.warning());
+    }
     let _ = write!(stderr, "    Continue? [y/N]: ");
     let _ = stderr.flush();
-    let mut input = String::new();
-    if std::io::stdin().lock().read_line(&mut input).is_err() {
-        return false;
+    let stdin = std::io::stdin();
+    let answer = read_answer(
+        stdin.as_fd(),
+        &mut stdin.lock(),
+        nails_core::cancel::is_cancelled,
+    );
+    if answer == Answer::Cancelled {
+        // End the prompt's line before the result.
+        let _ = writeln!(stderr);
     }
-    matches!(input.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+    answer
 }
 
 #[cfg(test)]

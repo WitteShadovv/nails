@@ -11,7 +11,8 @@ name: Release
 #                  byte
 #   e2e            the whole E2E suite (e2e.yml) on the tagged commit
 #   sbom           CycloneDX SBOM of the binary for the musl target, musl
-#                  included
+#                  included, and an OpenVEX document that marks the CVEs
+#                  nixpkgs patches musl against as fixed
 #   attest         build provenance for the archive and the binary, and the
 #                  SBOM as an attestation of its own
 #   draft-release  a draft whose notes are the CHANGELOG.md section
@@ -37,10 +38,10 @@ on:
         type: string
       e2e-runner:
         description: >-
-          runs-on for the E2E shards, as JSON: "ubuntu-24.04" or a label list
+          runs-on for the E2E shards, as JSON: "ubuntu-26.04" or a label list
           such as ["self-hosted","nails-e2e"]
         type: string
-        default: '"ubuntu-24.04"'
+        default: '"ubuntu-26.04"'
       e2e-max-shards:
         description: >-
           Upper bound on parallel E2E shards; use 1 for a single-use
@@ -63,7 +64,7 @@ defaults:
 jobs:
   version:
     name: Check tag and version
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -92,7 +93,7 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
       - name: Checkout the tagged commit
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -116,16 +117,17 @@ jobs:
   build:
     name: Build
     needs: version
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 60
     permissions:
       contents: read
     outputs:
       musl-version: ${{ steps.musl.outputs.version }}
+      musl-cves: ${{ steps.musl.outputs.cves }}
 
     steps:
       - name: Checkout the tagged commit
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -151,13 +153,22 @@ jobs:
           test "$(result/nails --version)" = "nails $VERSION"
           (cd result && sha256sum --check --strict checksums.txt)
 
-      # musl is linked statically, so the SBOM names it; this is the musl of
-      # the nixpkgs revision that flake.lock pins.
-      - name: Read the musl version
+      # musl is linked statically, so the SBOM names it. The build links the
+      # musl of the nixpkgs revision that flake.lock pins, not the copy that
+      # ships with the Rust toolchain, and fails if the link took libc.a from
+      # anywhere else (flake.nix); .#nails.libc is that musl. nixpkgs names a
+      # security patch after the CVE it fixes, so the CVE IDs in the patch
+      # names are the fixes the SBOM records on top of the release version.
+      - name: Read the musl version and its security patches
         id: musl
         run: |
-          version=$(nix eval --raw --inputs-from . nixpkgs#pkgsCross.musl64.musl.version)
+          version=$(nix eval --raw .#nails.libc.version --option accept-flake-config false)
+          patches=$(nix eval --raw .#nails.libc.patches --option accept-flake-config false \
+            --apply 'ps: builtins.concatStringsSep "\n" (map (p: baseNameOf (toString p)) ps)')
+          cves=$(grep -oE 'CVE-[0-9]{4}-[0-9]{4,}' <<< "$patches" | sort -u | paste -sd ' ' -) || true
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "cves=$cves" >> "$GITHUB_OUTPUT"
+          echo "musl $version, patched for: ${cves:-nothing}"
 
       - name: Collect the release bundle
         run: mkdir dist && cp result/* dist/
@@ -191,7 +202,7 @@ jobs:
     uses: ./.github/workflows/e2e.yml
     with:
       mode: all
-      runner: ${{ inputs.e2e-runner || '"ubuntu-24.04"' }}
+      runner: ${{ inputs.e2e-runner || '"ubuntu-26.04"' }}
       max-shards: ${{ inputs.e2e-max-shards || 10 }}
     secrets:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -199,14 +210,14 @@ jobs:
   sbom:
     name: SBOM
     needs: [version, build]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     permissions:
       contents: read
 
     steps:
       - name: Checkout the tagged commit
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
@@ -217,9 +228,9 @@ jobs:
       # Prebuilt binaries, checked against the digests that install-action
       # pins, instead of tools compiled or downloaded unchecked here.
       - name: Install cargo-cyclonedx and cyclonedx-cli
-        uses: taiki-e/install-action@cf525cb33f51aca27cd6fa02034117ab963ff9f1
+        uses: taiki-e/install-action@f7e5d7c961414b23f5b25b2da9294395d08513ad
         with:
-          tool: cargo-cyclonedx@0.5.9,cyclonedx@0.30.0
+          tool: cargo-cyclonedx@0.5.9,cyclonedx@0.33.1
 
       # Only the nails binary, resolved for the release target without
       # build-time dependencies; the commit time keeps the file reproducible.
@@ -227,25 +238,35 @@ jobs:
         env:
           VERSION: ${{ needs.version.outputs.version }}
           MUSL_VERSION: ${{ needs.build.outputs.musl-version }}
+          MUSL_CVES: ${{ needs.build.outputs.musl-cves }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
+          mkdir "$RUNNER_TEMP/release-sbom"
           cargo metadata --locked --format-version 1 > /dev/null
           SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) cargo cyclonedx \
             --manifest-path nails-cli/Cargo.toml --format json --spec-version 1.5 \
             --target x86_64-unknown-linux-musl --describe binaries --no-build-deps
+          cve_args=()
+          for cve in $MUSL_CVES; do cve_args+=(--musl-cve "$cve"); done
           python3 -m ci.release sbom-libc --sbom nails-cli/nails_bin.cdx.json \
-            --version "$VERSION" --musl-version "$MUSL_VERSION" \
-            --output "$RUNNER_TEMP/sbom.cdx.json"
+            --version "$VERSION" --musl-version "$MUSL_VERSION" "${cve_args[@]}" \
+            --output "$RUNNER_TEMP/release-sbom/sbom.cdx.json"
+          # Scanners ignore the SBOM's record of the patches; this document
+          # tells them (grype --vex) that the patched CVEs are fixed.
+          python3 -m ci.release musl-vex --musl-version "$MUSL_VERSION" "${cve_args[@]}" \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --epoch "$(git log -1 --format=%ct)" \
+            --output "$RUNNER_TEMP/release-sbom/musl.openvex.json"
 
       - name: Validate the SBOM
         run: |
-          cyclonedx validate --input-file "$RUNNER_TEMP/sbom.cdx.json" \
+          cyclonedx validate --input-file "$RUNNER_TEMP/release-sbom/sbom.cdx.json" \
             --input-format json --input-version v1_5 --fail-on-errors
 
-      - name: Upload the SBOM
+      - name: Upload the SBOM and the VEX document
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-sbom
-          path: ${{ runner.temp }}/sbom.cdx.json
+          path: ${{ runner.temp }}/release-sbom/
           if-no-files-found: error
           retention-days: 14
 
@@ -254,7 +275,7 @@ jobs:
   attest:
     name: Attest
     needs: [version, build, rebuild, e2e, sbom]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       id-token: write # sign through Sigstore with this job's OIDC identity
@@ -267,7 +288,7 @@ jobs:
           name: release-bundle
           path: dist
 
-      - name: Download the SBOM
+      - name: Download the SBOM and the VEX document
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: release-sbom
@@ -276,20 +297,27 @@ jobs:
       # SLSA build provenance for each file that checksums.txt lists: the
       # archive and the binary.
       - name: Attest build provenance
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: dist/checksums.txt
 
       - name: Attest the SBOM
-        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-checksums: dist/checksums.txt
           sbom-path: sbom/sbom.cdx.json
 
+      - name: Attest the VEX document
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-checksums: dist/checksums.txt
+          predicate-type: https://openvex.dev/ns/v0.2.0
+          predicate-path: sbom/musl.openvex.json
+
   draft-release:
     name: Draft release
     needs: [version, attest]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
       contents: write # create the draft release and upload its assets
@@ -301,7 +329,7 @@ jobs:
           name: release-bundle
           path: dist
 
-      - name: Download the SBOM
+      - name: Download the SBOM and the VEX document
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: release-sbom
@@ -338,7 +366,7 @@ jobs:
     name: Report status
     needs: [version, build, rebuild, e2e, sbom, attest, draft-release]
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
       contents: read
@@ -346,7 +374,7 @@ jobs:
 
     steps:
       - name: Checkout the report action
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           sparse-checkout: .github/actions/report-status

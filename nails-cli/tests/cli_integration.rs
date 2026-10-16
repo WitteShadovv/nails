@@ -33,7 +33,7 @@ fn test_version_from_cargo_toml() {
     cmd.arg("--version")
         .assert()
         .success()
-        .stdout(predicates::str::contains("nails 0.2.0"));
+        .stdout(predicates::str::contains("nails 0.3.0-rc.1"));
 }
 
 /// Test that --help flag works
@@ -688,11 +688,10 @@ fn test_activate_off_tty_without_yes_refuses_before_real_ops() {
 fn test_activate_overlay_only_refuses_unmounted_hidden_root_without_writing() {
     use std::io::Write;
 
-    // An overlay-only / `--session keep` activation skips the pre-detach preflight
-    // and the core preflight runs only after the state lock and residue baseline
-    // are written. The hidden root here is a bare directory that shares `/`'s
-    // device (nothing mounted), so activation must refuse before writing anything:
-    // no `.lock`, no `reports/` tree may land on what is really the decoy disk.
+    // The attach gate runs before the state lock, the residue baseline and the
+    // pre-flight checks. The hidden root here is a bare directory (nothing
+    // mounted), so activation must refuse before writing anything: no `.lock`,
+    // no `reports/` tree may land on what is really the decoy disk.
     let temp_dir = tempfile::tempdir().unwrap();
     let hidden_root = temp_dir.path().join("hidden-volume");
     std::fs::create_dir_all(&hidden_root).unwrap();
@@ -713,11 +712,10 @@ fn test_activate_overlay_only_refuses_unmounted_hidden_root_without_writing() {
             "--overlay-only",
             "-y",
         ])
-        .env("NAILS_UNSAFE_REAL_OPS", "1")
         .assert()
         .failure()
         .code(4)
-        .stderr(predicates::str::contains("hidden-root"));
+        .stderr(predicates::str::contains("is not a volume of its own"));
 
     // Nothing was written onto the unmounted hidden root.
     let entries: Vec<_> = std::fs::read_dir(&hidden_root)
@@ -1229,13 +1227,42 @@ fn test_explicit_config_unreadable_fails() {
 
     let config_file = tempfile::NamedTempFile::new().unwrap();
     std::fs::set_permissions(config_file.path(), std::fs::Permissions::from_mode(0o000)).unwrap();
+    let binary = std::path::PathBuf::from(assert_cmd::cargo::cargo_bin!("nails"))
+        .canonicalize()
+        .unwrap();
+    // The full sudo line, binary path included (sudo's secure_path never holds
+    // the hidden volume), with the configuration and the flags given.
+    let config = config_file.path().display().to_string();
+    let sudo = format!(
+        "run it as root: sudo {} --config {config} status",
+        binary.display()
+    );
 
     let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"));
     cmd.args(["--config", config_file.path().to_str().unwrap(), "status"])
         .assert()
         .failure()
         .code(3)
-        .stderr(predicates::str::contains("cannot read config"));
+        .stderr(predicates::str::contains("cannot read config"))
+        .stderr(predicates::str::contains(format!("\n  {sudo}\n")));
+
+    let output = std::process::Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+        .args([
+            "--config",
+            config_file.path().to_str().unwrap(),
+            "status",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "config");
+    assert_eq!(
+        value["error"]["hint"],
+        format!("{sudo} --json").as_str(),
+        "{value}"
+    );
 
     // Restore permissions so temp file cleanup works
     std::fs::set_permissions(config_file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
