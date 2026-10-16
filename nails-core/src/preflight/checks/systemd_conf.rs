@@ -25,6 +25,8 @@
 //! # Syntax
 //!
 //! Parsing follows systemd's `conf-parser`:
+//! - a line ends at a newline, a carriage return or a NUL, as `read_line()`
+//!   reads it (a CR LF pair ends one line);
 //! - leading and trailing whitespace is stripped; empty lines and lines whose
 //!   first non-blank character is `#` or `;` are comments (also in the middle
 //!   of a continuation);
@@ -158,7 +160,7 @@ pub fn parse_section(
     let mut in_section = false;
     let mut continuation: Option<String> = None;
 
-    for (index, raw) in text.lines().enumerate() {
+    for (index, raw) in read_lines(text).into_iter().enumerate() {
         let raw = if index == 0 {
             raw.strip_prefix('\u{feff}').unwrap_or(raw)
         } else {
@@ -194,6 +196,38 @@ pub fn parse_section(
 
 fn is_ws(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r')
+}
+
+/// The lines of `text` as systemd's `read_line()` reads a configuration file:
+/// a line ends at a newline, a carriage return or a NUL, and a run of these
+/// ends one line as long as no kind repeats in it, so `\r\n` and `\n\r` end
+/// one line and `\n\n` two. A NUL ends its line at once.
+fn read_lines(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        let start = at;
+        while at < bytes.len() && !matches!(bytes[at], b'\n' | b'\r' | 0) {
+            at += 1;
+        }
+        let end = at;
+        let mut seen = 0u8;
+        while let Some(kind) = bytes.get(at).and_then(|byte| match byte {
+            b'\n' => Some(1u8),
+            b'\r' => Some(2),
+            0 => Some(4),
+            _ => None,
+        }) {
+            if seen & 4 != 0 || seen & kind != 0 {
+                break;
+            }
+            seen |= kind;
+            at += 1;
+        }
+        lines.push(&text[start..end]);
+    }
+    lines
 }
 
 /// Whether `line` ends in a backslash that is not itself escaped.
@@ -274,6 +308,35 @@ mod tests {
 
     fn pair(key: &str, value: &str) -> (String, String) {
         (key.to_string(), value.to_string())
+    }
+
+    /// systemd ends a line at a carriage return or a NUL too. Found by the
+    /// `systemd_conf` fuzz target: the CR after `[` stayed inside the line,
+    /// which then read as the header of another section, so the assignments
+    /// after it counted, where systemd stops at the malformed header `[`.
+    #[test]
+    fn a_carriage_return_or_a_nul_ends_a_line() {
+        assert_eq!(parse("[\rJournal]\nStorage=persistent\n"), (vec![], false));
+        assert_eq!(
+            parse("[Journal]\rStorage=volatile\r"),
+            (vec![pair("Storage", "volatile")], true)
+        );
+        assert_eq!(
+            parse("[Journal]\r\n\rStorage=none\n\rStorage=auto"),
+            (vec![pair("Storage", "none"), pair("Storage", "auto")], true)
+        );
+        assert_eq!(
+            parse("[Journal]\0Storage=volatile\0\0Storage=none"),
+            (
+                vec![pair("Storage", "volatile"), pair("Storage", "none")],
+                true
+            )
+        );
+        // A continued line goes on past a lone CR as past a newline.
+        assert_eq!(
+            parse("[Journal]\rStorage=vola\\\rtile"),
+            (vec![pair("Storage", "vola tile")], true)
+        );
     }
 
     #[test]
