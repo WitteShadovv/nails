@@ -31,15 +31,18 @@
 //! carries: by its ID, a mount at or below the next root with the line's source
 //! and root; without an ID, the mount at the line's target in the next root,
 //! with its source and root. The way back ([`restored_lines`]) gives the
-//! decoy's own lines back to the decoy: its root and the filesystems the
-//! session carried come back as new mounts with new IDs, so a line takes the ID
-//! of the mount now where its mount was when the copy was taken
-//! ([`named_mounts`]), with the same source and root. Without that, the decoy's
+//! decoy's own lines back to the decoy: its root and its other mounts come back
+//! as new mounts with new IDs ([`crate::whole_root::decoy_mounts`]), so a line
+//! takes the ID of the mount the way back made in place of the one it named
+//! when the copy was taken ([`named_mounts`]), with the same source and root,
+//! also where mounts are stacked at one place. Without that, the decoy's
 //! initrd mounts would lose `x-initrd.mount` after a session, and its next
 //! shutdown would unmount them as units, which neither a fresh boot nor a plain
-//! soft-reboot does. A line of the decoy's that names no mount the way back
-//! restores is not given back: one already stale when the copy was taken, one
-//! whose mount the session did not carry, one libmount skips.
+//! soft-reboot does. A line without an ID joins the newest mount at its target
+//! with its source and root, as before the session. A line of the decoy's that
+//! names no mount the way back restores is not given back: one already stale
+//! when the copy was taken, one whose mount does not come back, one libmount
+//! skips.
 //!
 //! The transition writes `utab` the way libmount does ([`update`]): under
 //! libmount's lock, through a new file renamed over the old one.
@@ -171,15 +174,20 @@ pub fn named_mounts(utab: &[u8], mountinfo: &str) -> String {
 
 /// The lines of the decoy's `utab` copy to put back on the way back, once PID
 /// 1 switches to the decoy root at `nextroot`. `named` holds the mount table
-/// lines [`named_mounts`] recorded with the copy. A line that names an ID takes
-/// the ID of the mount now at its mount's place below `nextroot`, with that
-/// mount's source and root; it is dropped when there is no such mount, or when
-/// it did not fit the mount its ID named when the copy was taken. Without
-/// `named`, and for a line without an ID, the rule of [`surviving_lines`]
-/// decides. Everything but the ID is copied byte for byte.
+/// lines [`named_mounts`] recorded with the copy, and `restored` the ID each
+/// decoy mount the way back made again had at entry with the ID it has now
+/// ([`crate::whole_root::decoy_mounts`]). A line that names an ID takes the ID
+/// its mount has now, below `nextroot` at its mount's place with that mount's
+/// source and root; it is dropped when its mount did not come back, or when it
+/// did not fit the mount its ID named when the copy was taken. A plan written
+/// before the way back recorded the new IDs has no `restored`: the line then
+/// takes the ID of the newest mount at that place. Without `named`, and for a
+/// line without an ID, the rule of [`surviving_lines`] decides. Everything but
+/// the ID is copied byte for byte.
 pub fn restored_lines(
     saved: &[u8],
     named: Option<&[MountEntry]>,
+    restored: Option<&[(i32, i32)]>,
     mounts: &[MountEntry],
     nextroot: &Path,
 ) -> Vec<u8> {
@@ -193,10 +201,15 @@ pub fn restored_lines(
             .iter()
             .find(|m| m.mount_id == line.id && line.fits(m))?;
         let at = below(nextroot, &then.mount_point);
-        let now = mounts
-            .iter()
-            .rev()
-            .find(|m| m.mount_point == at && m.source == then.source && m.root == then.root)?;
+        let in_place =
+            |m: &&MountEntry| m.mount_point == at && m.source == then.source && m.root == then.root;
+        let now = match restored {
+            Some(restored) => {
+                let (_, id) = restored.iter().find(|(old, _)| *old == line.id)?;
+                mounts.iter().find(|m| m.mount_id == *id).filter(in_place)?
+            }
+            None => mounts.iter().rev().find(in_place)?,
+        };
         let mut rekeyed = bytes[..line.id_at.start].to_vec();
         rekeyed.extend_from_slice(now.mount_id.to_string().as_bytes());
         rekeyed.extend_from_slice(&bytes[line.id_at.end..]);

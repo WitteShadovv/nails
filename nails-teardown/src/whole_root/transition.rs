@@ -467,11 +467,24 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
     // The decoy's copy, taken at entry, names mounts by their IDs at that time;
-    // the decoy root and its filesystems come back as new mounts, and the old
-    // IDs may name the session's mounts or none. The session's lines go.
+    // the decoy root and its other mounts come back as new mounts, whose IDs
+    // the way back recorded, and the old IDs may name the session's mounts or
+    // none. The session's lines go.
     if let Some(saved) = saved_utab {
+        let restored: Vec<(i32, i32)> = plan
+            .decoy_mounts
+            .iter()
+            .filter_map(|mount| Some((mount.id, mount.restored?)))
+            .collect();
+        let restored = (!plan.decoy_mounts.is_empty()).then_some(restored.as_slice());
         let _ = utab::update(&env.run, |_| {
-            utab::restored_lines(&saved, utab_mounts.as_deref(), &env.mounts, &env.nextroot)
+            utab::restored_lines(
+                &saved,
+                utab_mounts.as_deref(),
+                restored,
+                &env.mounts,
+                &env.nextroot,
+            )
         });
     }
     // Last: anything logged after this is imported by the decoy journald.

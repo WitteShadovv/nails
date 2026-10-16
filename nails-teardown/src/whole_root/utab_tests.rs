@@ -195,6 +195,7 @@ fn restored(saved: &str, named: Option<&str>) -> String {
     let lines = restored_lines(
         saved.as_bytes(),
         named.as_deref(),
+        None,
         &way_back_table(),
         Path::new(NEXTROOT),
     );
@@ -272,6 +273,7 @@ fn a_restored_line_takes_the_newest_mount_at_its_place() {
     let lines = restored_lines(
         b"ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n",
         Some(&named),
+        None,
         &table,
         Path::new(NEXTROOT),
     );
@@ -279,6 +281,66 @@ fn a_restored_line_takes_the_newest_mount_at_its_place() {
         lines,
         b"ID=160 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n"
     );
+}
+
+/// The decoy's store as the test VMs mount it, at entry: the initrd's overlay
+/// (85) with NixOS's read-only bind of it stacked on top (41), and a store bind
+/// of the root filesystem elsewhere (44).
+const STACKED_AT_ENTRY: &str = "\
+62 1 253:0 / / rw - ext4 /dev/vda rw
+85 62 0:32 / /nix/store rw - overlay overlay rw
+41 85 0:32 / /nix/store ro,nosuid,nodev - overlay overlay rw
+44 62 253:0 /srv/store /srv/store ro,nosuid,nodev - ext4 /dev/vda rw
+";
+
+/// The way back made both layers again, the bottom first, and the store bind.
+fn stacked_way_back() -> Vec<MountEntry> {
+    parse_mountinfo(
+        "140 1 0:50 / / rw - overlay overlay rw\n\
+         150 140 253:0 / /run/nextroot rw - ext4 /dev/vda rw\n\
+         152 150 0:32 / /run/nextroot/nix/store rw - overlay overlay rw\n\
+         153 152 0:32 / /run/nextroot/nix/store ro - overlay overlay rw\n\
+         154 150 253:0 /srv/store /run/nextroot/srv/store ro - ext4 /dev/vda rw\n",
+    )
+}
+
+fn rekeyed(saved: &str, restored: &[(i32, i32)]) -> String {
+    let named = parse_mountinfo(STACKED_AT_ENTRY);
+    let lines = restored_lines(
+        saved.as_bytes(),
+        Some(&named),
+        Some(restored),
+        &stacked_way_back(),
+        Path::new(NEXTROOT),
+    );
+    String::from_utf8(lines).unwrap()
+}
+
+#[test]
+fn a_line_takes_the_id_of_the_mount_made_in_its_mount_s_place() {
+    // The two layers of the store share their place, source and root: only
+    // the way back's record tells which new mount took the bottom's place.
+    let saved = "ID=62 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
+                 ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n\
+                 SRC=overlay TARGET=/nix/store ROOT=/ OPTS=x-initrd.mount\n\
+                 ID=44 SRC=/dev/vda TARGET=/srv/store ROOT=/srv/store OPTS=X-bind\n";
+    assert_eq!(
+        rekeyed(saved, &[(62, 150), (85, 152), (41, 153), (44, 154)]),
+        "ID=150 SRC=/dev/vda TARGET=/sysroot ROOT=/ OPTS=x-initrd.mount\n\
+         ID=152 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n\
+         SRC=overlay TARGET=/nix/store ROOT=/ OPTS=x-initrd.mount\n\
+         ID=154 SRC=/dev/vda TARGET=/srv/store ROOT=/srv/store OPTS=X-bind\n"
+    );
+}
+
+#[test]
+fn a_line_whose_mount_did_not_come_back_is_dropped() {
+    // The record has no new ID for 85, or one that is not at its place with
+    // its source and root: the line would join another mount.
+    let saved = "ID=85 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n";
+    assert_eq!(rekeyed(saved, &[(62, 150)]), "");
+    assert_eq!(rekeyed(saved, &[(85, 154)]), "");
+    assert_eq!(rekeyed(saved, &[(85, 999)]), "");
 }
 
 /// A `/run` with libmount's `utab`.
