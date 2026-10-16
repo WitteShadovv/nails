@@ -293,9 +293,13 @@ fn tag_value(line: &[u8], tag: &str, value: &str) -> Option<Range<usize>> {
 }
 
 /// The commands of a `cryptsetup` family that name a mapping in their
-/// arguments: they open, close or ask about one.
+/// arguments: they open, close or ask about one. Each open and close has the
+/// aliases cryptsetup accepts for it (`create` is the obsolete plain open,
+/// which takes the name first); `attach` and `detach` are
+/// `systemd-cryptsetup`'s.
 const MAPPING_VERBS: &[&[u8]] = &[
     b"open",
+    b"create",
     b"luksopen",
     b"tcryptopen",
     b"plainopen",
@@ -303,8 +307,13 @@ const MAPPING_VERBS: &[&[u8]] = &[
     b"bitlkopen",
     b"fvault2open",
     b"close",
-    b"luksclose",
     b"remove",
+    b"luksclose",
+    b"tcryptclose",
+    b"plainclose",
+    b"loopaesclose",
+    b"bitlkclose",
+    b"fvault2close",
     b"status",
     b"resize",
     b"refresh",
@@ -337,7 +346,9 @@ impl Shell {
     /// `systemd-cryptsetup` command whose verb names a mapping. A command
     /// ends at `;`, `|`, `&` or `#`, or at the end of a line that does not
     /// end in `\`. Without such a verb, the command names nothing: a package
-    /// list or prose that mentions `cryptsetup` passes.
+    /// list passes, and so does prose that mentions `cryptsetup` without one
+    /// of these verbs after it. Prose that has one reads as the command
+    /// (`# use cryptsetup open for the data volume`).
     pub(super) fn line(&mut self, line: &[u8]) -> Vec<Range<usize>> {
         let mut spans = Vec::new();
         let mut command = std::mem::take(&mut self.carried);

@@ -453,6 +453,32 @@ fn commented_out_blocks_as_tools_write_them_are_refused() {
     }
 }
 
+/// cryptsetup's other names for an open and a close: `create`, the obsolete
+/// plain open that takes the name first, and the `…Close` forms. Each is
+/// refused as `open` and `close` are, in a script and in a comment.
+#[test]
+fn the_aliases_of_cryptsetup_s_open_and_close_are_refused() {
+    let cases = [
+        (
+            "{ systemd.services.v.script = \"cryptsetup create data $DEV\"; }",
+            1,
+        ),
+        (
+            "{ systemd.services.v.script = \"cryptsetup plainClose data\"; }",
+            1,
+        ),
+        ("{ }\n# cryptsetup tcryptClose data\n", 2),
+    ];
+    for (content, line) in cases {
+        let scan = scan_configuration(content);
+        assert_eq!(
+            only_reference(&scan),
+            (line, "data", ReferenceKind::MapperName),
+            "{content}"
+        );
+    }
+}
+
 /// A mount point or a mapping with a `-` in it: systemd escapes the `-` in
 /// the names of its units, and a double-quoted Nix string must double the
 /// backslash. Both spellings are refused.
