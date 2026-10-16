@@ -29,11 +29,11 @@ runs:
       shell: bash
       env:
         CACHE: ${{ inputs.cache }}
-        # The project's public Cachix cache and its signing key. Fill in both
-        # once the cache exists; while both are empty, jobs run without it.
-        # The key is pinned here so that no substitute is trusted on first use.
-        CACHIX_NAME: ''
-        CACHIX_PUBLIC_KEY: ''
+        # The project's public Cachix cache and its signing key. The key is
+        # pinned here so that no substitute is trusted on first use; with both
+        # empty, jobs run without the cache.
+        CACHIX_NAME: 'nails'
+        CACHIX_PUBLIC_KEY: 'nails.cachix.org-1:mwwzisjOEHu0Q2kAbSdYSttl4IcJ9JpTgQERGH+Wh04=' # pragma: allowlist secret
         HAS_TOKEN: ${{ inputs.cachix-auth-token != '' }}
         EVENT_NAME: ${{ github.event_name }}
         GIT_REF: ${{ github.ref }}

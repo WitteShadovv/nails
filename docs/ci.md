@@ -155,7 +155,7 @@ Cargo.lock's transitive dependencies, which no Dependabot update touches, are re
 
 Every workflow that needs Nix uses the composite action `.github/actions/setup-nix`. The installer (`cachix/install-nix-action`) is pinned there once, Dependabot keeps that pin current, and every job gets the same `nix.conf`: KVM, `system-features = nixos-test benchmark big-parallel kvm`, `always-allow-substitutes = true` and `accept-flake-config = false`.
 
-The action also connects the project's public Cachix cache.
+The action also connects the project's public Cachix cache, [`nails`](https://nails.cachix.org).
 
 ### Cache trust rules
 
@@ -175,7 +175,7 @@ Workflows load the action from the checked-out tree, so a run needs a revision t
 
 ### Setting up the cache
 
-Until the cache name and key are filled in, the action logs `no project cache is configured` and jobs use cache.nixos.org only. To set the cache up:
+The cache is set up. With an empty `CACHIX_NAME` and `CACHIX_PUBLIC_KEY`, the action logs `no project cache is configured` and jobs use cache.nixos.org only. To set up a cache again, for example for a fork:
 
 1. Create a public cache on cachix.org.
 2. In `.github/actions/setup-nix/action.yml`, set `CACHIX_NAME` to the cache's name and `CACHIX_PUBLIC_KEY` to its public signing key (`<name>.cachix.org-1:...`). Append `# pragma: allowlist secret` to the key line so the secret scanner accepts it.
