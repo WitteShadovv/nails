@@ -541,12 +541,12 @@ your setup before running the new binary.
   gone. The only mode is the whole-root session entered and left with a
   soft-reboot, which needs systemd 254 or newer. Besides NixOS, Debian 13 and
   Ubuntu 24.04 or newer are now supported as decoys. The hidden root's layers
-  live under `<hidden-root>/root/` (`upper`, `work`, `mounts`, `cache`); the
-  uppers of the old mode
-  (`<hidden-root>/<name>` and `<hidden-root>/.work`) are not read. Move what you
-  need from them into the hidden session, then delete them. On NixOS the hidden
-  hardware configuration moves to `<hidden-root>/root/upper/etc/nixos/`; run
-  `nails init` again to place it.
+  live under `<hidden-root>/root/` (among them `upper`, `work` and `mounts`);
+  the uppers of the old mode (`<hidden-root>/<name>` and
+  `<hidden-root>/.work`) are not read. Move what you need from them into the
+  hidden session, then delete them. On NixOS the hidden hardware configuration
+  moves to `<hidden-root>/root/upper/etc/nixos/`; run `nails init` again to
+  place it.
 - **NixOS flake decoys.** A decoy whose `/etc/nixos` is a flake needs a hidden
   flake: activation refuses to build the decoy's own flake, `--no-preflight`
   included, also when `nixos_flake` or `--nixos-flake` names it
@@ -562,27 +562,50 @@ your setup before running the new binary.
   `<host>` being the decoy's hostname; `nixos_flake` names such a flake
   elsewhere (see [How it works](docs/operator-guide.md#how-it-works) in the
   operator guide).
-- **Configuration format.** Configuration is strict TOML. Convert any earlier
-  YAML configuration to `config/nails.toml` next to the binary on the hidden
-  volume (see [docs/configuration.md](docs/configuration.md)). Unknown keys,
-  wrong types and syntax errors are rejected with a one-line message. The keys of
-  the per-directory overlay mode and the `[emergency]` table are removed and now
-  rejected as unknown keys; the changelog's "Removed" section lists every one.
+- **A volume of its own.** The hidden root must be a volume of its own. NAILS
+  now refuses a root that 0.2 accepted: a folder (no mount point), a btrfs
+  subvolume or bind of a folder of a filesystem the decoy uses, a logical volume
+  in the decoy's volume group, an image file on a decoy filesystem, and an
+  overlay, FUSE, network or ZFS filesystem. Move the hidden volume to a device
+  of its own (see
+  [Where setup happens](docs/operator-guide.md#where-setup-happens) in the
+  operator guide). An unprivileged `check` or `status` on a distribution whose
+  `/etc/crypttab` only root can read gets `storage_unjudged` and logs to stderr
+  only; run it with `sudo`.
+- **Configuration format.** Configuration is strict TOML, in
+  `config/nails.toml` next to the binary on the hidden volume. The new binary
+  never reads the YAML file of 0.2 and does not warn about it: an unconverted
+  setup runs with the defaults. Convert each key by hand (see
+  [docs/configuration.md](docs/configuration.md)); the hidden volume's key is
+  now `hidden_volume_root`, which you can leave unset to derive it from the
+  binary's location. Unknown keys, wrong types and syntax errors are rejected
+  with a one-line message, and so are the keys 0.3 dropped, those of the
+  per-directory overlay mode among them; the changelog's "Removed" section
+  lists every one.
+  `nails init` writes a documented template, and
+  `nails config show --example` prints every key.
 - **Invocation.** Always run the binary by its full path on the hidden volume.
   No copy, symlink or `PATH` entry on the decoy is supported.
 - **Flags and commands.** The output flags are global and accepted in any
   position, and the old per-command output flags are replaced by `--color`,
-  `--ascii`, `--quiet`, `--verbose` and `--no-log-file`. The flags and commands
-  of the live-overlay mode (the session, process and backend-lock options of
-  `activate`, `deactivate` and `emergency`, and two maintenance commands) are
-  removed; the changelog's "Removed" section names each of them.
+  `--ascii`, `--quiet`, `--verbose` and `--no-log-file`. `activate --flake` is
+  now `--nixos-flake`, and `status -v` is now `status --details`. The flags of
+  the live-overlay mode (the history, session, pivot and prompt options of
+  `activate` and `deactivate`, and the countdown switch of `emergency`) and its
+  notification command are removed; the changelog's "Removed" section names
+  each of them.
+- **Confirmation.** `activate` and `deactivate` now ask for confirmation, and
+  without a terminal they refuse with exit 2 (`needs_confirmation`); 0.2
+  skipped the prompt unless `--interactive` was given. Add `-y` to every
+  script, keybinding or unit that runs them; `emergency` never prompts.
 - **Exit codes and JSON.** The process returns the documented exit codes, and
   `--json` emits the versioned envelope (`schema_version = 1`).
 - **State schema.** `state.json` carries a `version` field. The states are
   `Inactive`, `Active` and `Degraded`; `nails status` reads the live session from
   the mount table and the session plan in `/run`, because a soft-reboot keeps the
-  boot ID. A state file written by an incompatible version is treated as a safe
-  default (inactive) rather than trusted.
+  boot ID. The new binary cannot verify a state file that 0.2 wrote: `status`
+  reports the state as unknown and `activate` refuses (exit 6) until you delete
+  the file, from a clean inactive system; do not hand-edit it.
 
 The release changelog mirrors these notes under its "Upgrade notes" heading; keep
 [CHANGELOG.md](CHANGELOG.md) and this section in step when cutting a release.
