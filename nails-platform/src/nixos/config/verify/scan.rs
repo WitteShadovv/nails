@@ -16,10 +16,16 @@
 //! open around it, so it never changes how the code after it is read.
 //! Consecutive comment lines share the copy, so a commented-out block that
 //! spans lines is followed. A bracket a comment line opened is closed again at
-//! the next comment line indented no deeper, unless that line starts by
-//! closing it, and a string in a comment ends with its line: prose such as
-//! `# keep [ for later` or `# a 5" disk` does not hide a block commented out
-//! below it. Parentheses are not followed.
+//! the next comment line indented no deeper, and a string in a comment ends
+//! with its line: prose such as `# keep [ for later` or `# a 5" disk` does not
+//! hide a block commented out below it. A comment line that starts by closing
+//! a bracket closes that one itself, and two exceptions keep a block that a
+//! tool commented out whole: a comment line with no text (`#` alone, as
+//! editors comment out a blank line) closes nothing, and a block a
+//! definition's value opened (`x = {`, `x = [`) stays open over the lines
+//! indented exactly as deep as the line that opened it, as in a block whose
+//! lines keep no indentation of their own. A block whose lines are indented
+//! less than its first is not followed. Parentheses are not followed.
 
 use std::ops::Range;
 
@@ -76,6 +82,18 @@ enum Frame {
     },
 }
 
+impl Frame {
+    /// A block a definition's value opened (`x = {`, `x = [`, or a set in
+    /// such a list), as opposed to a bracket in prose.
+    fn is_value(&self) -> bool {
+        match self {
+            Frame::Attrs(attrs) => !attrs.path.is_empty(),
+            Frame::List { path, .. } => !path.is_empty(),
+            Frame::Interpolation | Frame::Str { .. } => false,
+        }
+    }
+}
+
 /// The open frames, the file's top level first, each with the indentation of
 /// the line that opened it.
 #[derive(Debug, Clone)]
@@ -122,7 +140,7 @@ impl Scanner {
                 trailing: false,
             });
             comment.trailing = false;
-            if !matches!(line.get(indent), Some(b'}' | b']')) {
+            if line.get(indent).is_some_and(|b| !matches!(b, b'}' | b']')) {
                 comment.recover(indent);
             }
         }
@@ -211,10 +229,17 @@ impl Scanner {
 }
 
 impl Comment {
-    /// Close what earlier comment lines opened at `indent` or deeper, and
-    /// end a definition such a line left without its `;`.
+    /// Close what earlier comment lines opened at `indent` or deeper, except
+    /// a block a definition's value opened at `indent` itself, and end a
+    /// definition such a line left without its `;`.
     fn recover(&mut self, indent: usize) {
-        while self.stack.0.len() > self.base && self.stack.0.last().is_some_and(|f| f.1 >= indent) {
+        while self.stack.0.len() > self.base
+            && self
+                .stack
+                .0
+                .last()
+                .is_some_and(|(frame, at)| *at > indent || (*at == indent && !frame.is_value()))
+        {
             self.stack.0.pop();
         }
         if let Some(attrs) = self.stack.attrs_mut()
@@ -566,12 +591,12 @@ fn component(line: &[u8], start: usize) -> Option<(Component, usize)> {
     Some(((line[range.clone()].to_vec(), range), start + len))
 }
 
-/// Where the text of a comment line starts, past blanks and comment markers:
-/// its column is the line's indentation.
+/// Where the text of a comment line starts, past blanks, comment markers and
+/// the carriage return of a CRLF line: its column is the line's indentation.
 fn comment_text(line: &[u8], from: usize) -> usize {
     from + line[from..]
         .iter()
-        .take_while(|&&b| matches!(b, b' ' | b'\t' | b'#' | b'*' | b'/'))
+        .take_while(|&&b| matches!(b, b' ' | b'\t' | b'\r' | b'#' | b'*' | b'/'))
         .count()
 }
 

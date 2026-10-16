@@ -421,6 +421,38 @@ fn every_leak_form_of_the_mapper_name_is_refused() {
     }
 }
 
+/// A block commented out line by line over a blank comment line, as an
+/// editor's `gc` (`#`) and `sed 's/^/# /'` (`# `) write it, or without
+/// indentation of its own: each is refused as the indented block is.
+#[test]
+fn commented_out_blocks_as_tools_write_them_are_refused() {
+    let cases = [
+        (
+            "{\n  # boot.initrd.luks.devices = {\n  #\n  #   data = {\n  #     device = \
+             \"/dev/disk/by-uuid/1234\";\n  #   };\n  # };\n}\n",
+            4,
+        ),
+        (
+            "{\n#   boot.initrd.luks.devices = {\n# \n#     data.device = \
+             \"/dev/disk/by-uuid/1234\";\n#   };\n}\n",
+            4,
+        ),
+        (
+            "{ }\n# boot.initrd.luks = {\n# devices.data.device = \"/dev/disk/by-uuid/1234\";\n# \
+             };\n",
+            3,
+        ),
+    ];
+    for (content, line) in cases {
+        let scan = scan_configuration(content);
+        assert_eq!(
+            only_reference(&scan),
+            (line, "data", ReferenceKind::MapperName),
+            "{content}"
+        );
+    }
+}
+
 /// A mount point or a mapping with a `-` in it: systemd escapes the `-` in
 /// the names of its units, and a double-quoted Nix string must double the
 /// backslash. Both spellings are refused.

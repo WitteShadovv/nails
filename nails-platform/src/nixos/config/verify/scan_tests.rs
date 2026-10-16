@@ -88,6 +88,35 @@ fn a_commented_out_block_is_followed_and_leaves_the_code_alone() {
                 \"/dev/sdb2\";\n  #   };\n  # };\n  services.x = {\n    vault = 1;\n  };\n}\n";
     assert_eq!(names(text), [mapping(3, "data")]);
 
+    // A blank line commented out as an editor's `gc` writes it (`#`) and as
+    // `sed 's/^/# /'` does (`# `) closes nothing.
+    let text = "{\n  # boot.initrd.luks.devices = {\n  #\n  #   data = {\n  #     device = \
+                \"/dev/disk/by-uuid/1234\";\n  #   };\n  # };\n}\n";
+    assert_eq!(names(text), [mapping(4, "data")]);
+    let text = "{\n#   boot.initrd.luks.devices = {\n# \n#     data.device = \
+                \"/dev/disk/by-uuid/1234\";\n#   };\n}\n";
+    assert_eq!(names(text), [mapping(4, "data")]);
+    let text = "{\r\n  # boot.initrd.luks.devices = {\r\n  #\r\n  #   data.device = \
+                \"/dev/sdb2\";\r\n  # };\r\n}\r\n";
+    assert_eq!(names(text), [mapping(4, "data")]);
+
+    // A block whose lines keep no indentation of their own, as code that was
+    // never formatted is commented out, in either form of `luks.devices`.
+    let text = "{ }\n# boot.initrd.luks = {\n# devices.data.device = \"/dev/sdb2\";\n# };\n";
+    assert_eq!(names(text), [mapping(3, "data")]);
+    let text = "{ }\n# boot.initrd.luks = {\n# devices = {\n# data.device = \"/dev/sdb2\";\n# \
+                };\n# };\n";
+    assert_eq!(names(text), [mapping(4, "data")]);
+    let text = "{ }\n# boot.initrd.luks.devices = [\n# { name = \"data\"; device = \
+                \"/dev/sdb2\"; }\n# ];\n";
+    assert_eq!(names(text), [mapping(3, "data")]);
+
+    // A bracket in prose still closes at the next line as deep, a blank
+    // comment line between them or not.
+    let text = "{ }\n# keep [ for later\n#\n# boot.initrd.luks.devices.data.device = \
+                \"/dev/sdb2\";\n";
+    assert_eq!(names(text), [mapping(4, "data")]);
+
     // A comment after code on its line ends with the line.
     let text = "{\n  x = 1; # luks.devices = [\n  boot.initrd.luks.devices.data.device = \
                 \"/dev/sdb2\";\n}\n";
