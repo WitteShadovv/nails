@@ -11,7 +11,7 @@ Work runs in four tiers. Each is a superset of the one above it in coverage and 
 | 1. pre-commit | On `git commit`, changed files only | under 10 s | Formatting, Rust file sizes, file and secret checks (`.pre-commit-config.yaml`). |
 | 2. pre-push / `just check` | On `git push`, and on demand | about 90 s | `just fmt-check lint line-count test`: the whole offline Rust gate without coverage or Nix. |
 | 3. PR gate | Every pull request to `main`, and every push to `main` | about 10 min p95 | `ci.yml` (summarised by `gate`), the affected `e2e.yml` run (`e2e-result`) and `pr-title.yml`. These three are the required checks. |
-| 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks, the reproducibility check and the OpenSSF Scorecard analysis. A release runs on its tag. |
+| 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks, the reproducibility check, batch fuzzing and the OpenSSF Scorecard analysis. A release runs on its tag. |
 
 Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per-PR budget cannot afford (every VM test, the whole dependency graph, timing and determinism) and reports failures into tracking issues instead of a pull request check (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
 
@@ -24,6 +24,7 @@ Tier 3 is everything a contributor must pass to merge. Tier 4 catches what a per
 | `.github/workflows/e2e.yml` | PRs to `main`, push to `main`, nightly, dispatch, `workflow_call` | `e2e-result` | 3 (affected) and 4 (nightly full) | `runner` input, default `ubuntu-26.04` | `just e2e` |
 | `.github/workflows/distro-e2e.yml` | Nightly, `distro-e2e` PR label, dispatch, `workflow_call` | — (informational) | 4 | `runner` input, default `ubuntu-26.04` (KVM) | `nix build .#legacyPackages.x86_64-linux.e2e-distro.<scenario>` |
 | `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-26.04` | `just deny-full`, `just stress`, `cargo bench`, `just mutants` |
+| `.github/workflows/fuzz.yml` | PRs to `main` that change fuzzed code, daily and weekly schedules, dispatch with a `task` input | — (informational) | 3 (pull requests) and 4 (schedules) | `ubuntu-26.04` | `just fuzz-run <target>` |
 | `.github/workflows/reproducibility.yml` | `workflow_call` from `release.yml`, weekly from `scheduled.yml` | — | 4 | `ubuntu-26.04` | `nix build .#nails-release` |
 | `.github/workflows/scorecard.yml` | Push to `main`, weekly, branch protection rule change, dispatch | — (informational) | 4 | `ubuntu-26.04` | — |
 | `.github/workflows/release.yml` | Push of `v*` tags, dispatch from a tag | — | release | `ubuntu-26.04` (E2E on the `e2e-runner` input) | `python3 -m ci.release check` |
@@ -84,7 +85,7 @@ The policy is compiled in, so `cargo build`, clippy and every editor enforce it 
 
 ### Tracking issues for unattended runs
 
-Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, `scorecard.yml` on `main`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
+Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, `fuzz.yml` on its schedules, `scorecard.yml` on `main`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
 
 - A failed or cancelled job opens the issue (label `ci-red`, title `CI red: <workflow>`; `CI red: main` for `ci.yml`), or comments on it with the run link and the red jobs when it is already open.
 - A run in which every reported job passed closes the issue. A run that skipped some jobs without a failure (for example a manual dispatch of a single `scheduled.yml` task) leaves it as it is.
@@ -146,9 +147,28 @@ Merge queues are not available for a repository owned by a personal account, so 
 - Push to `main` runs the whole suite (`all`), substituting unchanged tests from the cache, and the **nightly** run executes every driver from scratch.
 - A failed `main` or nightly run opens a `ci-red` tracking issue. **Red-main rule:** revert or quarantine the cause within 24 hours; a failure that is an advisory rather than a regression gets an `advisory` issue triaged within 7 days.
 
+## Fuzzing
+
+`fuzz.yml` runs the cargo-fuzz targets in `fuzz/` with [ClusterFuzzLite](https://google.github.io/clusterfuzzlite/): `.clusterfuzzlite/` builds them in OSS-Fuzz's Rust builder image with libFuzzer and the address sanitizer. [testing-strategy.md](testing-strategy.md#fuzzing) lists the targets and what each checks, and how to run one locally.
+
+| Job | Runs on | What it does |
+|---|---|---|
+| `fuzz` | Pull requests to `main` that change a crate, `fuzz/`, `.clusterfuzzlite/`, `Cargo.toml`, `rust-toolchain.toml` or the workflow | Builds the targets and fuzzes every one for 300 seconds in all, on every core of the runner (`code-change` mode), from the stored corpus. A crash fails the job; its input is the run's `crashes-<target>` artifact. |
+| `Batch fuzzing` | Daily, and by dispatch | An hour over every target (`batch` mode) from the stored corpus, which it stores again with what it found. |
+| `Corpus pruning` | Weekly after the batch run, and by dispatch | Minimises the stored corpus (`prune` mode). |
+| `Report status` | Scheduled and dispatched runs | Keeps the `CI red: Fuzz` issue in step (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)). The daily runs only open or comment on it; the weekly run, which runs both jobs, also closes it. |
+
+- **Not a gate.** `fuzz` is informational, not a required check. ClusterFuzzLite would report only crashes that a build of `main` does not have, but that needs a build of every push to `main` uploaded as an artifact, which this workflow leaves out; a crash `main` already has fails a pull request too. The batch run finds those first.
+- **Every target.** In `code-change` mode ClusterFuzzLite skips the targets a change cannot reach, but only with a coverage report, which a coverage job would store; this workflow has none, so a pull request fuzzes every target.
+- **The corpus.** ClusterFuzzLite keeps each target's corpus as an Actions artifact, `cifuzz-corpus-<target>`. The batch and prune jobs upload it, and every job downloads the newest one through the API with the job's token (`actions: read`); a pull request only reads it. No storage repository, token or secret is involved. Artifacts expire after the repository's retention period (90 days by default), which the daily batch run never reaches; without a stored corpus a run starts from the seed corpora in `fuzz/seeds/`.
+- **Results.** `fuzz` and `Batch fuzzing` upload the SARIF of their run to code scanning (category `clusterfuzzlite`, `security-events: write`), where a crash is an alert at the line that crashed, and keep each crash's input as a `crashes-<target>` artifact. A fork's pull request cannot upload the SARIF, as its token is read-only; its job still fails on a crash.
+- **The build.** `.clusterfuzzlite/Dockerfile` starts from `base-builder-rust`, pinned by digest, whose nightly Rust is older than the workspace's Rust version, so it adds the toolchain `rust-toolchain.toml` pins. `build.sh` builds every target with that stable compiler under `RUSTC_BOOTSTRAP=1`, which lets it accept the sanitizer flag, as in `just shuffle`. The targets are release builds with debug assertions and overflow checks, so an arithmetic overflow is a crash. Each one goes to `$OUT` with its seed corpus, its dictionary (`fuzz/dicts/`) and its libFuzzer options (`fuzz/options/`).
+- **Pins.** The actions are pinned to the commit of ClusterFuzzLite's `v1` tag, its only release. They run ClusterFuzzLite's own Docker images by their `v1` tag, which the pin does not fix: Google rebuilds those from OSS-Fuzz.
+- **Settings.** None. Code scanning takes the SARIF of a public repository without setup, and each job asks for the permissions it needs.
+
 ## Pinned-input and dependency automation
 
-Dependabot (`.github/dependabot.yml`) keeps the Cargo workspace, the GitHub Actions in the workflows, the Nix inputs in `flake.lock`, the pre-commit hook revisions and `rust-toolchain.toml` current: monthly, after a 7-day cooldown, grouped into one pull request per ecosystem with the security updates kept separate, titled `build(deps):` / `ci(deps):` so the commit-msg hook and `pr-title.yml` accept them. `rust-toolchain.toml` and the `rust-overlay` input share one pull request (a multi-ecosystem group), because the flake builds the pinned toolchain from `rust-overlay`: a new channel only evaluates with an overlay that knows it.
+Dependabot (`.github/dependabot.yml`) keeps the Cargo workspace, the GitHub Actions in the workflows, the Nix inputs in `flake.lock`, the pre-commit hook revisions, `rust-toolchain.toml`, the fuzz crate's `fuzz/Cargo.lock` and the digest of the fuzzing build image in `.clusterfuzzlite/Dockerfile` current: monthly, after a 7-day cooldown, grouped into one pull request per ecosystem with the security updates kept separate, titled `build(deps):` / `ci(deps):` so the commit-msg hook and `pr-title.yml` accept them. `rust-toolchain.toml` and the `rust-overlay` input share one pull request (a multi-ecosystem group), because the flake builds the pinned toolchain from `rust-overlay`: a new channel only evaluates with an overlay that knows it.
 
 Cargo.lock's transitive dependencies, which no Dependabot update touches, are refreshed by the `lockfile` task of `scheduled.yml` on the first of the month: `cargo update` moves every dependency to its newest allowed version. A pull request opened under the default `GITHUB_TOKEN` does not start CI, so the task opens it under the `DEPENDENCY_UPDATE_TOKEN` secret (scoped to the `dependency-updates` environment) when it is set and prints the diff otherwise.
 

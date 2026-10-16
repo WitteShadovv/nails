@@ -1,0 +1,6 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# ClusterFuzzLite project: the cargo-fuzz targets in fuzz/, built by
+# build.sh in the image Dockerfile describes. See docs/ci.md#fuzzing.
+language: rust

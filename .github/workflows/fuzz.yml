@@ -1,0 +1,179 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the parsers that read text and data NAILS does
+# not control, with ClusterFuzzLite: .clusterfuzzlite/ builds the cargo-fuzz
+# targets in fuzz/ with libFuzzer and the address sanitizer, and the actions
+# run them. One workflow serves three lanes:
+#
+#   pull request to main  fuzz: five minutes over every target, from the
+#                         stored corpus; a crash fails the job and is
+#                         reported to code scanning
+#   daily schedule        batch: an hour over every target, from the stored
+#                         corpus and back into it
+#   weekly schedule       batch, then prune: the stored corpus minimised
+#
+# The corpus is kept in GitHub Actions artifacts (cifuzz-corpus-<target>):
+# batch and prune runs upload it, and every run downloads the newest with the
+# job's token. No other repository and no secret is involved, and a pull
+# request only reads it. docs/ci.md#fuzzing describes the lanes, and
+# docs/testing-strategy.md#fuzzing how to run a target locally.
+
+on:
+  pull_request:
+    branches: [main]
+    # Everything a fuzz target is built from.
+    paths:
+      - "nails-*/**"
+      - "fuzz/**"
+      - ".clusterfuzzlite/**"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    # Mondays to Saturdays at 04:23 UTC: batch fuzzing
+    - cron: "23 4 * * 1-6"
+    # Sundays at 04:23 UTC: batch fuzzing, then corpus pruning. The prune
+    # job repeats this expression.
+    - cron: "23 4 * * 0"
+  workflow_dispatch:
+    inputs:
+      task:
+        description: What to run; 'all' is batch fuzzing, then pruning
+        type: choice
+        default: all
+        options: [all, batch, prune]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.event.pull_request.number || github.ref }}
+  # A new push supersedes a pull request's run. A scheduled run waits for the
+  # one in progress, which may still be uploading the corpus.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fuzz:
+    name: fuzz
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      actions: read # find and download the stored corpus
+      security-events: write # upload the results to code scanning
+
+    steps:
+      - name: Build the fuzz targets
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          sanitizer: address
+          github-token: ${{ github.token }}
+
+      - name: Fuzz the change
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ github.token }}
+          mode: code-change
+          sanitizer: address
+          fuzz-seconds: 300
+          parallel-fuzzing: true
+          output-sarif: true
+
+      # The read-only token of a fork's pull request cannot upload.
+      - name: Upload the results to code scanning
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: cifuzz-sarif/results.sarif
+          checkout_path: cifuzz-sarif
+          category: clusterfuzzlite
+
+  batch:
+    name: Batch fuzzing
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.task != 'prune')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 100
+    permissions:
+      contents: read
+      actions: read # find and download the stored corpus
+      security-events: write # upload the results to code scanning
+
+    steps:
+      - name: Build the fuzz targets
+        id: build
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          sanitizer: address
+
+      - name: Fuzz every target
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ github.token }}
+          mode: batch
+          sanitizer: address
+          fuzz-seconds: 3600
+          parallel-fuzzing: true
+          output-sarif: true
+
+      - name: Upload the results to code scanning
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: cifuzz-sarif/results.sarif
+          checkout_path: cifuzz-sarif
+          category: clusterfuzzlite
+
+  # After the batch run, so it also minimises what that run added.
+  prune:
+    name: Corpus pruning
+    needs: batch
+    if: ${{ !cancelled() && (github.event.schedule == '23 4 * * 0' || (github.event_name == 'workflow_dispatch' && inputs.task != 'batch')) }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read # find and download the stored corpus
+
+    steps:
+      - name: Build the fuzz targets
+        uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          language: rust
+          sanitizer: address
+
+      - name: Prune the corpus
+        uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
+        with:
+          github-token: ${{ github.token }}
+          mode: prune
+          sanitizer: address
+          fuzz-seconds: 600
+
+  # Scheduled and dispatched runs are unattended: a red one opens or comments
+  # on the 'CI red: Fuzz' issue. Only a run of both jobs (the weekly one)
+  # closes it; a daily batch run that passes leaves it as it is.
+  report-status:
+    name: Report status
+    needs: [batch, prune]
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
