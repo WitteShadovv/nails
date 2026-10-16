@@ -159,7 +159,10 @@ owes one.
 The parsers that read what NAILS does not control are also fuzzed, with
 [cargo-fuzz](https://rust-fuzz.github.io/book/) and libFuzzer, in the crate
 `fuzz/`. It is a workspace of its own, so `just check`, cargo-deny and the
-release build never see it. Each target in `fuzz/fuzz_targets/` drives product
+release build never see it. Its `fuzz/Cargo.lock` takes the versions of the
+crates it shares with NAILS from `Cargo.lock`: `just fuzz-lock` rewrites it
+from there, and CI fails on one that no longer matches the manifests, as after
+a version bump. Each target in `fuzz/fuzz_targets/` drives product
 code without touching the host (a filesystem is a `MockFilesystem`, a disk an
 in-memory file) and checks more than that nothing panics or hangs:
 

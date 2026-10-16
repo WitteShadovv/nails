@@ -48,6 +48,9 @@ fuzz cases="100000":
 fuzz-run target seconds="60":
     #!/usr/bin/env bash
     set -euo pipefail
+    # cargo fuzz has no --locked: refuse a stale fuzz/Cargo.lock instead of
+    # letting the build rewrite it (`just fuzz-lock` does that on purpose).
+    cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
     mkdir -p fuzz/corpus/{{ target }}
     args=(-max_total_time={{ seconds }} -timeout=25)
     if [ -f fuzz/dicts/{{ target }}.dict ]; then
@@ -59,6 +62,15 @@ fuzz-run target seconds="60":
     fi
     RUSTC_BOOTSTRAP=1 cargo fuzz run --release --debug-assertions {{ target }} \
         fuzz/corpus/{{ target }} fuzz/seeds/{{ target }} -- "${args[@]}"
+
+# Rewrite fuzz/Cargo.lock from Cargo.lock. The fuzz crate is a workspace of its
+# own with its own lock, but the crates it shares with NAILS should be the
+# versions that ship: cargo keeps those, adds what only the fuzz crate uses and
+# drops the rest. A version bump leaves fuzz/Cargo.lock stale, so RELEASING.md
+# runs this with every bump; CI fails on a stale one.
+fuzz-lock:
+    cp Cargo.lock fuzz/Cargo.lock
+    cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 
 # Run the documentation tests, which nextest does not execute.
 doctest:

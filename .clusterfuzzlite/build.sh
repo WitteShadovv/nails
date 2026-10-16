@@ -18,6 +18,10 @@ RUSTUP_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
 export RUSTUP_TOOLCHAIN
 export RUSTC_BOOTSTRAP=1
 
+# cargo fuzz has no --locked. A fuzz/Cargo.lock that does not match the
+# manifests fails the build here instead of being resolved again on the fly.
+cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
+
 # Release builds with debug assertions and overflow checks: an arithmetic
 # overflow on some input is a bug the fuzzers report.
 cargo fuzz build --release --debug-assertions
