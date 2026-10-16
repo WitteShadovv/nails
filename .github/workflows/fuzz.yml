@@ -5,10 +5,12 @@ name: Fuzz
 # targets in fuzz/ with libFuzzer and the address sanitizer, and
 # ClusterFuzzLite's images run them. One workflow serves two lanes:
 #
-#   pull request to main  fuzz: five minutes over every target; a crash
-#                         fails the job and is reported to code scanning
-#   daily schedule        batch: an hour over every target; a crash fails
-#                         the run, which the 'CI red: Fuzz' issue tracks
+#   pull request to main  fuzz: five minutes over every target; a crash or
+#                         a hang fails the job and is reported to code
+#                         scanning
+#   daily schedule        batch: an hour over every target; a crash or a
+#                         hang fails the run, which the 'CI red: Fuzz' issue
+#                         tracks
 #
 # Every run starts from the seed corpora in fuzz/seeds/ and keeps nothing for
 # the next one. ClusterFuzzLite's own store would keep the corpus, a coverage
@@ -88,6 +90,9 @@ jobs:
           NO_CLUSTERFUZZ_DEPLOYMENT: "true"
           MODE: code-change
           FUZZ_SECONDS: "300"
+          # An input that runs past libFuzzer's 25-second timeout is a
+          # finding like a crash; ClusterFuzzLite drops it otherwise.
+          REPORT_TIMEOUTS: "true"
           PARALLEL_FUZZING: "true"
           OUTPUT_SARIF: "true"
 
@@ -140,6 +145,7 @@ jobs:
           NO_CLUSTERFUZZ_DEPLOYMENT: "true"
           MODE: batch
           FUZZ_SECONDS: "3600"
+          REPORT_TIMEOUTS: "true"
           PARALLEL_FUZZING: "true"
           OUTPUT_SARIF: "true"
 

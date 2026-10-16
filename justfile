@@ -43,12 +43,13 @@ fuzz cases="100000":
 # CI builds it: release, with debug assertions, overflow checks and the address
 # sanitizer. The pinned stable compiler accepts cargo-fuzz's sanitizer flag under
 # RUSTC_BOOTSTRAP, as in `shuffle`. It starts from the target's seeds and
-# dictionary; new inputs collect in fuzz/corpus/, a crash in fuzz/artifacts/.
+# dictionary; new inputs collect in fuzz/corpus/, a crash in fuzz/artifacts/. An
+# input that runs longer than 25 seconds is a hang, as in CI.
 fuzz-run target seconds="60":
     #!/usr/bin/env bash
     set -euo pipefail
     mkdir -p fuzz/corpus/{{ target }}
-    args=(-max_total_time={{ seconds }})
+    args=(-max_total_time={{ seconds }} -timeout=25)
     if [ -f fuzz/dicts/{{ target }}.dict ]; then
         args+=(-dict=fuzz/dicts/{{ target }}.dict)
     fi

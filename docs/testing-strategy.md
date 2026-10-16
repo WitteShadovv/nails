@@ -192,7 +192,8 @@ just fuzz-run utab 3600        # for an hour
 The recipe builds the target as CI does (a release build with debug assertions,
 overflow checks and the address sanitizer) with the pinned toolchain, starts
 from the seeds and the dictionary, and keeps what it finds in
-`fuzz/corpus/<target>/`. A crash stops it and leaves the input in
+`fuzz/corpus/<target>/`. A crash, or an input that runs longer than 25 seconds
+(a hang, here and in CI), stops it and leaves the input in
 `fuzz/artifacts/<target>/`; replay it with
 `RUSTC_BOOTSTRAP=1 cargo fuzz run --release --debug-assertions <target> <input>`.
 For the exact build CI runs, use OSS-Fuzz's helper on a checkout named `nails`:
