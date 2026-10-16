@@ -162,17 +162,31 @@ fn every_row_names_a_vm_test_that_exists_or_says_why_not() {
         "the test-name scan found nothing"
     );
     for row in catalog() {
-        match row.e2e {
-            E2e::Test(name) => assert!(
-                names.contains(name),
+        let named: &[&str] = match &row.e2e {
+            E2e::Test(name) => std::slice::from_ref(name),
+            E2e::Tests(several) => {
+                assert!(
+                    several.len() > 1,
+                    "{}: name one VM test as E2e::Test",
+                    row.id
+                );
+                several
+            }
+            E2e::None(reason) => {
+                assert!(
+                    !reason.trim().is_empty(),
+                    "{} has no VM test and no reason",
+                    row.id
+                );
+                &[]
+            }
+        };
+        for name in named {
+            assert!(
+                names.contains(*name),
                 "{} names VM test {name}, which does not exist under nix/e2e-tests/tests",
                 row.id
-            ),
-            E2e::None(reason) => assert!(
-                !reason.trim().is_empty(),
-                "{} has no VM test and no reason",
-                row.id
-            ),
+            );
         }
     }
 }

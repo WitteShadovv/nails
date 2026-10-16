@@ -123,6 +123,8 @@ impl Probe {
 pub enum E2e {
     /// The `name` of a NixOS VM test under `nix/e2e-tests/tests`.
     Test(&'static str),
+    /// Several VM tests by `name`, each asserting a part of the mitigation.
+    Tests(&'static [&'static str]),
     /// No VM test can assert it; the reason says why.
     None(&'static str),
 }

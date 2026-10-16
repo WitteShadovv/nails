@@ -296,7 +296,11 @@ pub const CATALOG: &[ResidueClass] = &[
         verify: Probe::Check("session-leftovers"),
         mitigation: "The transition step deletes the runtime journal and logind's session state whole, and whatever else the hidden session added two levels below /run (three below /run/systemd), judged against what the decoy left when it stopped for the entry; it puts the decoy's name-server records below /run/resolvconf back, gives the decoy's utab lines back to the mounts it restores, under their new mount IDs, and never touches sockets or /run/udev.",
         doc_anchor: "threat-model.md#residual-channels",
-        e2e: E2e::Test("soft-reboot-mechanics"),
+        e2e: E2e::Tests(&[
+            "session-lifecycle",
+            "session-emergency",
+            "session-dns-records",
+        ]),
         residual: false,
         conclusion: None,
     },
