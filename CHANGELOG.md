@@ -129,10 +129,18 @@ config and CLI surfaces; there are no compatibility shims.
   writes the file as libmount does (a new file renamed over the old one, under libmount's lock): the
   kernel hands the IDs of the mounts a switch leaves behind to later mounts, and a stale line would
   lend its options to one of those or to a new mount at its path; an `x-initrd.mount` lent that way
-  could hang the next soft-reboot or power-off. After a session the decoy's root and the filesystems
-  the session carried have their `utab` lines back, so those that the decoy's initrd marked
-  `x-initrd.mount` are left to the final unmount at its next shutdown, as after a boot; a decoy line
-  that names no mount the way back restores is not given back. Every way back to the
+  could hang the next soft-reboot or power-off. After a session the decoy has its mounts back as it
+  had them when the entry began: before the decoy's userspace starts, the way back makes again every
+  mount it can take from the decoy root or a filesystem the session carried, in the decoy's order
+  and with each mount's own options (NixOS's read-only bind over a store on the root filesystem, a
+  mount stacked under a carried one, a RAM filesystem the initrd mounted), each with its `utab` line
+  under its new mount ID, so those that the decoy's initrd marked `x-initrd.mount` are left to the
+  final unmount at its next shutdown, as after a boot; a decoy line that names no mount the way back
+  makes again is not given back. `activate` warns about a decoy mount the way back cannot make again
+  where the session carries its filesystem, and about one that a plain soft-reboot keeps (NixOS's
+  `/etc` overlay). Where the session itself puts a decoy filesystem behind an automount in place
+  (`x-systemd.automount`, often the ESP), it masks that automount, and the way back leaves the
+  automount to the decoy's start. Every way back to the
   decoy (the return, an emergency, an entry rolled back or recovered, a leftover next root disarmed
   at a reboot) also writes back the kernel's module loader, hotplug and firmware paths, which every
   entry records before anything runs and which a NixOS activation in the session points at the
@@ -436,16 +444,6 @@ config and CLI surfaces; there are no compatibility shims.
   brought up and delete the links you created before deactivating, or end with
   `deactivate --poweroff`; end a session that used the network-identity snippet with
   `deactivate --poweroff` (or `emergency --poweroff`).
-
-### Known issues
-
-- On a NixOS decoy whose `/nix/store` is not a filesystem of its own in its fstab, as on a usual
-  install, the read-only bind that the boot puts over the store does not come back after a
-  session: the store stays writable until the next boot.
-- A decoy mount stacked under one that the session carried does not come back after a session
-  either: the way back mounts the decoy root again and binds back only the top mount of each
-  filesystem the session carried, one at each mount point. Where either matters, end the session
-  with `deactivate --poweroff`; the next boot makes both mounts again.
 
 ## [0.2.0] - 2026-05-08
 
