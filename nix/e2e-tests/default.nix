@@ -265,6 +265,7 @@ let
         "preflight-checks" # preflight-nixos-build-target and three more
         "session-interrupted-entry"
         "session-fstab-policy"
+        "session-decoy-mount-table" # deactivate's way back with a store on the root disk
       ]
     )
   );
