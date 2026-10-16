@@ -122,11 +122,9 @@ jobs:
     timeout-minutes: 100
     permissions:
       contents: read
-      security-events: write # upload the results to code scanning
 
     steps:
       - name: Build the fuzz targets
-        id: build
         uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-build-fuzzers:v1@sha256:9e71cd3238c6fd807012039c4cfb32a9657bc58641e4f15b88cb76599c6e8d30
         env:
           CFL_PLATFORM: github
@@ -135,6 +133,10 @@ jobs:
           LOW_DISK_SPACE: "True"
           NO_CLUSTERFUZZ_DEPLOYMENT: "true"
 
+      # No SARIF: in batch mode ClusterFuzzLite fuzzes on after a crash and
+      # writes the SARIF of the last target only, which leaves out a crash in
+      # any other one and would close the alerts of an earlier run. The red
+      # job, its fuzz-crashes artifact and the tracking issue report it.
       - name: Fuzz every target
         uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-run-fuzzers:v1@sha256:8a49dc0608aeb210c44e276614702de4cd876928b7ee782f10be0f23580931f6
         env:
@@ -147,7 +149,6 @@ jobs:
           FUZZ_SECONDS: "3600"
           REPORT_TIMEOUTS: "true"
           PARALLEL_FUZZING: "true"
-          OUTPUT_SARIF: "true"
 
       - name: Upload the crashing inputs
         if: failure()
@@ -157,14 +158,6 @@ jobs:
           path: out/artifacts/
           if-no-files-found: ignore
           retention-days: 30
-
-      - name: Upload the results to code scanning
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
-        with:
-          sarif_file: cifuzz-sarif/results.sarif
-          checkout_path: cifuzz-sarif
-          category: clusterfuzzlite
 
   # Scheduled and dispatched runs are unattended: a red one opens or comments
   # on the 'CI red: Fuzz' issue. A green run proves little, as every run
