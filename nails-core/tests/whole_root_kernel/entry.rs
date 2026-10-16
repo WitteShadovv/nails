@@ -13,8 +13,8 @@ use nails_core::{NailsError, nixos::NixOSBuilder};
 use nails_teardown::mountinfo::{MountEntry, parse_mountinfo, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::kernel_helpers::{self, KernelSetting};
 use nails_teardown::whole_root::plan::{
-    CarriedMount, DecoyRoot, Direction, Plan, PolicyMountKind, SNAPSHOT_NAME, UTAB_MOUNTS_NAME,
-    unix_now,
+    CarriedMount, DecoyRoot, Direction, MountSource, Plan, PolicyMountKind, SNAPSHOT_NAME,
+    UTAB_MOUNTS_NAME, unix_now,
 };
 use nails_teardown::whole_root::transition::{self, DROPIN_DIR, DROPIN_NAME, Env, Outcome};
 use nails_teardown::whole_root::{carry, nextroot, runtime_units};
@@ -298,6 +298,196 @@ fn the_decoy_filesystems_are_carried_through_the_session_and_put_back_on_the_way
 }
 
 #[test]
+fn the_entry_records_every_decoy_mount_the_way_back_makes_again() {
+    // NixOS's read-only bind over a store on the root filesystem, a
+    // read-only bind of /home stacked on the decoy's own /home, and a tmpfs
+    // the initrd mounted, like the test VMs' /nix/.rw-store under their
+    // store's overlay: the hidden systemd mounts its own, so the session
+    // carries the decoy's.
+    let _ = Rerun::new(test_path!(
+        the_entry_records_every_decoy_mount_the_way_back_makes_again
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let decoy = world.decoy.path();
+        let store = world.decoy.mkdir("nix/store");
+        bind(&store, &store);
+        remount(
+            &store,
+            nix::mount::MsFlags::MS_RDONLY | nix::mount::MsFlags::MS_NOSUID,
+        );
+        let home = decoy.join("home");
+        bind(&home, &home);
+        remount(&home, nix::mount::MsFlags::MS_RDONLY);
+        let rw_store = ScratchTmpfs::new("");
+        bind(rw_store.path(), &world.decoy.mkdir("nix/.rw-store"));
+        let fstab = decoy.join("etc/fstab");
+        let text = std::fs::read_to_string(&fstab).unwrap();
+        std::fs::write(
+            &fstab,
+            text + "tmpfs /nix/.rw-store tmpfs mode=0755,x-initrd.mount 0 0\n",
+        )
+        .unwrap();
+        let paths = world.paths();
+
+        let entry =
+            entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+
+        let recorded: Vec<(&Path, &str)> = entry
+            .plan
+            .decoy_mounts
+            .iter()
+            .map(|m| (m.target.as_path(), m.options.as_str()))
+            .collect();
+        assert_eq!(
+            recorded,
+            [
+                (Path::new("/"), "rw,relatime"),
+                (Path::new("/boot"), "rw,relatime"),
+                (Path::new("/home"), "rw,relatime"),
+                (Path::new("/nix/store"), "ro,nosuid,relatime"),
+                (Path::new("/home"), "ro,relatime"),
+                (Path::new("/nix/.rw-store"), "rw,relatime"),
+            ]
+        );
+        let store_bind = &entry.plan.decoy_mounts[3];
+        assert_eq!(store_bind.source, MountSource::Root);
+        assert_eq!(store_bind.path, Path::new("nix/store"));
+        let carried: Vec<&Path> = entry
+            .plan
+            .carried
+            .iter()
+            .map(|c| c.target.as_path())
+            .collect();
+        assert!(
+            carried.contains(&Path::new("/nix/.rw-store")),
+            "{carried:?}"
+        );
+        assert!(
+            entry
+                .plan
+                .carried
+                .iter()
+                .all(|c| c.dev.is_some() && c.root.is_some())
+        );
+        assert!(entry.warnings.is_empty(), "{:?}", entry.warnings);
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
+fn a_decoy_mount_lost_under_a_carried_filesystem_is_reported() {
+    // A tmpfs mounted by hand over the decoy's /home covers it: the session
+    // carries what the decoy shows at /home, and nothing it holds reaches the
+    // filesystem below.
+    let _ = Rerun::new(test_path!(
+        a_decoy_mount_lost_under_a_carried_filesystem_is_reported
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let cover = ScratchTmpfs::new("");
+        bind(cover.path(), &world.decoy.path().join("home"));
+        let paths = world.paths();
+
+        let entry =
+            entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+
+        assert_eq!(entry.warnings.len(), 1, "{:?}", entry.warnings);
+        assert!(entry.warnings[0].contains("/home"), "{}", entry.warnings[0]);
+        let homes = entry
+            .plan
+            .decoy_mounts
+            .iter()
+            .filter(|m| m.target == Path::new("/home"))
+            .count();
+        assert_eq!(homes, 1, "the carried cover alone");
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
+fn a_lost_decoy_mount_that_systemd_keeps_at_a_soft_reboot_is_reported() {
+    // An initrd's tmpfs that the decoy's fstab does not list, marked
+    // x-initrd.mount in utab: a plain soft-reboot keeps it, the way back has
+    // nothing to make it from. A tmpfs mounted by hand is gone after a plain
+    // soft-reboot as well, and goes to the debug log alone.
+    let _ = Rerun::new(test_path!(
+        a_lost_decoy_mount_that_systemd_keeps_at_a_soft_reboot_is_reported
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let initrd = ScratchTmpfs::new("");
+        let by_hand = ScratchTmpfs::new("");
+        let keys = world.decoy.mkdir("srv/keys");
+        bind(initrd.path(), &keys);
+        bind(by_hand.path(), &world.decoy.mkdir("srv/other"));
+        let mount = top_mount_at(&read_mountinfo().unwrap(), &keys)
+            .unwrap()
+            .clone();
+        std::fs::write(
+            world.run.path().join("mount/utab"),
+            utab_line(&mount, "/sysroot/srv/keys", "x-initrd.mount"),
+        )
+        .unwrap();
+        let paths = world.paths();
+
+        let entry =
+            entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+
+        assert_eq!(entry.warnings.len(), 1, "{:?}", entry.warnings);
+        let warning = &entry.warnings[0];
+        assert!(warning.contains("mount /srv/keys (tmpfs"), "{warning}");
+        assert!(
+            warning.contains("a plain soft-reboot keeps it"),
+            "{warning}"
+        );
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
+fn the_automount_of_a_filesystem_the_entry_binds_read_only_is_masked() {
+    // The ESP behind an automount: the session binds it read-only at /boot,
+    // where the hidden systemd's automount would fail and take
+    // local-fs.target down with it.
+    let _ = Rerun::new(test_path!(
+        the_automount_of_a_filesystem_the_entry_binds_read_only_is_masked
+    ))
+    .in_user_mount_ns()
+    .run(|| {
+        let world = World::new();
+        let fstab = world.decoy.path().join("etc/fstab");
+        let text = std::fs::read_to_string(&fstab).unwrap().replace(
+            "/boot vfat umask=0077",
+            "/boot vfat umask=0077,x-systemd.automount",
+        );
+        std::fs::write(&fstab, text).unwrap();
+        let paths = world.paths();
+
+        let entry =
+            entry::prepare(&paths, &world.inputs(), &FakeHost::default()).expect("the entry");
+
+        assert!(
+            entry.plan.masks.contains(&"boot.automount".to_string()),
+            "{:?}",
+            entry.plan.masks
+        );
+        assert!(!entry.plan.masks.contains(&"boot.mount".to_string()));
+        assert!(
+            entry
+                .plan
+                .policy_mounts
+                .iter()
+                .any(|m| m.target == Path::new("/boot") && m.kind == PolicyMountKind::ReadOnlyBind)
+        );
+        entry::rollback(&paths);
+    });
+}
+
+#[test]
 fn the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan() {
     let _ = Rerun::new(test_path!(
         the_entry_builds_the_next_root_by_the_fstab_policy_and_arms_the_plan
@@ -545,6 +735,18 @@ fn bind(source: &Path, target: &Path) {
         target,
         None::<&str>,
         nix::mount::MsFlags::MS_BIND,
+        None::<&str>,
+    )
+    .unwrap();
+}
+
+/// Give the bind at `target` the per-mount `flags`, as `mount -o remount,bind`.
+fn remount(target: &Path, flags: nix::mount::MsFlags) {
+    nix::mount::mount(
+        None::<&str>,
+        target,
+        None::<&str>,
+        nix::mount::MsFlags::MS_REMOUNT | nix::mount::MsFlags::MS_BIND | flags,
         None::<&str>,
     )
     .unwrap();
