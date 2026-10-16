@@ -21,12 +21,14 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
    `cargo metadata --locked` shows the same failure locally.
 2. **Refresh the screenshots.** The README shows real output, rendered from the captures in
    `docs/assets/screenshots/`, and nothing checks that a capture still matches what NAILS
-   prints. On the branch, with the version set, run `nix build -L .#e2e.session-lifecycle` and
-   copy the `check`, `activate` and `status --json` output of that one run, unedited, below the
-   `---` line of `check.txt`, `activate.txt` and `status-json.txt`. Replace the output in
-   `help.txt` with what `nails -h` prints from a build of the branch. Update the dates in the
-   captions, run `scripts/render-terminal-svg.py --all docs/assets/screenshots`, and commit the
-   captures with their SVGs. [docs/assets/README.md](docs/assets/README.md) has the details.
+   prints. On the branch, with the version set, run
+   `nix build -L .#e2e.session-readme-captures` (a decoy set up as the docs recommend; the test
+   fails when `check` or `activate` prints a warning) and copy the `check`, `activate` and
+   `status --json` output of that one run, unedited, below the `---` line of `check.txt`,
+   `activate.txt` and `status-json.txt`. Replace the output in `help.txt` with what `nails -h`
+   prints from a build of the branch. Update the dates in the captions, run
+   `scripts/render-terminal-svg.py --all docs/assets/screenshots`, and commit the captures with
+   their SVGs. [docs/assets/README.md](docs/assets/README.md) has the details.
 3. **Write the changelog.** In `CHANGELOG.md`, rename `## [Unreleased]` to
    `## [X.Y.Z] - YYYY-MM-DD` and open a new, empty `## [Unreleased]` above it. That section
    becomes the release notes word for word, so write it for users.
