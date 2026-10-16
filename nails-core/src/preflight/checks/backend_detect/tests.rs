@@ -173,7 +173,7 @@ fn classify_dm_uuid_recognises_cryptsetup_types() {
     );
     // The inner layer of a cipher chain and the integrity and verity mappings
     // keep their own type names.
-    for (uuid, kind) in [
+    for (fixture, kind) in [
         ("CRYPT-SUBDEV-vault_1", "SUBDEV"),
         ("CRYPT-INTEGRITY-data", "INTEGRITY"),
         (
@@ -182,9 +182,9 @@ fn classify_dm_uuid_recognises_cryptsetup_types() {
         ),
     ] {
         assert_eq!(
-            classify_dm_uuid(uuid),
+            classify_dm_uuid(fixture),
             Some(CryptType::Other(kind.into())),
-            "{uuid}"
+            "{fixture}"
         );
     }
 }
