@@ -30,6 +30,9 @@
 //! - leading and trailing whitespace is stripped; empty lines and lines whose
 //!   first non-blank character is `#` or `;` are comments (also in the middle
 //!   of a continuation);
+//! - a byte order mark is dropped once, from the first line that starts with
+//!   one, after that line was told from a comment (so a mark before a `#`
+//!   leaves no comment);
 //! - a line ending in an unescaped backslash continues on the next line, with
 //!   the backslash replaced by a space;
 //! - `[Section]` headers select the section; assignments outside any section
@@ -160,17 +163,20 @@ pub fn parse_section(
 ) -> Result<(), MalformedSectionHeader> {
     let mut in_section = false;
     let mut continuation: Option<String> = None;
+    let mut bom_seen = false;
 
-    for (index, raw) in read_lines(text).into_iter().enumerate() {
-        let raw = if index == 0 {
-            raw.strip_prefix('\u{feff}').unwrap_or(raw)
-        } else {
-            raw
-        };
+    for raw in read_lines(text) {
         let stripped = raw.trim_start_matches(is_ws);
         if stripped.starts_with(['#', ';']) {
             continue;
         }
+        let raw = match raw.strip_prefix('\u{feff}') {
+            Some(rest) if !bom_seen => {
+                bom_seen = true;
+                rest
+            }
+            _ => raw,
+        };
 
         let mut line = match continuation.take() {
             Some(mut joined) => {
@@ -246,8 +252,10 @@ fn parse_line(
     in_section: &mut bool,
     out: &mut Vec<Assignment>,
 ) -> Result<(), MalformedSectionHeader> {
+    // Comments went before the line was joined; a `#` here followed a byte
+    // order mark and starts a key, as in systemd.
     let line = line.trim_matches(is_ws);
-    if line.is_empty() || line.starts_with(['#', ';']) {
+    if line.is_empty() {
         return Ok(());
     }
     if let Some(header) = line.strip_prefix('[') {
@@ -316,6 +324,32 @@ mod tests {
 
     fn pair(key: &str, value: &str) -> (String, String) {
         (key.to_string(), value.to_string())
+    }
+
+    /// systemd drops a byte order mark from the first line that starts with
+    /// one, which need not be the first line, and tells a comment before it
+    /// does. Found by the `systemd_conf` fuzz target with a mark at the start
+    /// of a later line, which NAILS kept.
+    #[test]
+    fn a_byte_order_mark_goes_where_systemd_drops_it() {
+        // On a later line the mark goes, so the header counts.
+        assert_eq!(
+            parse("# a comment\n\u{feff}[Journal]\nStorage=volatile\n"),
+            (vec![pair("Storage", "volatile")], true)
+        );
+        // Only the first mark goes.
+        assert_eq!(
+            parse("\u{feff}[Journal]\n\u{feff}Storage=none\nStorage=volatile\n"),
+            (
+                vec![pair("\u{feff}Storage", "none"), pair("Storage", "volatile")],
+                true
+            )
+        );
+        // A mark before `#` leaves no comment but a key systemd does not know.
+        assert_eq!(
+            parse("[Journal]\n\u{feff}#Storage=none\n"),
+            (vec![pair("#Storage", "none")], true)
+        );
     }
 
     /// systemd refuses a section name with a control character, a quote or a
