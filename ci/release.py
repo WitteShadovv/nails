@@ -17,7 +17,10 @@ sbom-libc
     The musl component carries a CPE, so scanners match it against
     vulnerability data. Each ``--musl-cve`` names a vulnerability that the
     linked musl is patched against on top of its release; the SBOM records it
-    as a backported fix in the component's pedigree.
+    as a backported fix in the component's pedigree. Also gives the SBOM the
+    serial number that actions/attest requires and cargo-cyclonedx leaves out
+    under SOURCE_DATE_EPOCH: a UUIDv5 of the file's download URL on the
+    release, the same on every run for the tag.
 musl-vex
     Writes an OpenVEX document that marks each ``--musl-cve`` as fixed in the
     linked musl. Scanners ignore the SBOM's pedigree, so without this
@@ -37,6 +40,7 @@ import json
 import re
 import sys
 import tomllib
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -59,6 +63,7 @@ _MUSL_VERSION = re.compile(r"\d+\.\d+\.\d+")
 _CVE = re.compile(r"CVE-\d{4}-\d{4,}")
 
 TARGET_TRIPLE = "x86_64-unknown-linux-musl"
+SBOM_ASSET = "sbom.cdx.json"
 VEX_ASSET = "musl.openvex.json"
 _OPENVEX_CONTEXT = "https://openvex.dev/ns/v0.2.0"
 BINARY = "nails"
@@ -319,6 +324,40 @@ def add_musl(
     dependencies.append({"ref": ref, "dependsOn": []})
 
 
+def asset_url(repo: str, tag: str, asset: str) -> str:
+    """Where ``asset`` of the release ``tag`` is downloaded once published."""
+    return f"https://github.com/{repo}/releases/download/{tag}/{asset}"
+
+
+def sbom_serial_number(repo: str, tag: str) -> str:
+    """The serial number of the release's SBOM, as a ``urn:uuid:`` URN.
+
+    cargo-cyclonedx leaves out its random serial number under
+    SOURCE_DATE_EPOCH to keep the file reproducible, and actions/attest
+    refuses a CycloneDX SBOM without one. A UUIDv5 of the file's download URL
+    is the same on every run for the tag and differs from release to release.
+    """
+    name = asset_url(repo, tag, SBOM_ASSET)
+    return f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, name)}"
+
+
+def with_serial_number(sbom: dict[str, Any], serial: str) -> dict[str, Any]:
+    """Return ``sbom`` with ``serial`` as its serial number.
+
+    The field goes after ``version``, where cargo-cyclonedx writes it. A
+    serial number already there is replaced, so the result does not depend on
+    whether the generator wrote a random one.
+    """
+    completed: dict[str, Any] = {}
+    for key, value in sbom.items():
+        if key != "serialNumber":
+            completed[key] = value
+        if key == "version":
+            completed["serialNumber"] = serial
+    completed.setdefault("serialNumber", serial)
+    return completed
+
+
 def musl_vex(
     musl_version: str, cves: Sequence[str], repo: str, tag: str, epoch: int
 ) -> dict[str, Any]:
@@ -332,7 +371,7 @@ def musl_vex(
     purl = musl_purl(musl_version)
     return {
         "@context": _OPENVEX_CONTEXT,
-        "@id": f"https://github.com/{repo}/releases/download/{tag}/{VEX_ASSET}",
+        "@id": asset_url(repo, tag, VEX_ASSET),
         "author": f"https://github.com/{repo}",
         "timestamp": datetime.fromtimestamp(epoch, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "version": 1,
@@ -368,14 +407,23 @@ def _check(args: argparse.Namespace) -> int:
 
 
 def _sbom_libc(args: argparse.Namespace) -> int:
+    if args.tag != f"v{args.version}":
+        raise ReleaseError(
+            f"tag {args.tag!r} is not v{args.version}, the tag of nails {args.version}"
+        )
     try:
         sbom = json.loads(args.sbom.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
         raise OSError(f"cannot read {args.sbom}: {err}") from err
     add_musl(sbom, args.version, args.musl_version, args.musl_cve)
+    serial = sbom_serial_number(args.repo, args.tag)
+    sbom = with_serial_number(sbom, serial)
     args.output.write_text(json.dumps(sbom, indent=2) + "\n", encoding="utf-8")
     fixes = f" with fixes for {', '.join(args.musl_cve)}" if args.musl_cve else ""
-    print(f"{args.output}: added musl {args.musl_version}{fixes}", file=sys.stderr)
+    print(
+        f"{args.output}: added musl {args.musl_version}{fixes}; serial number {serial}",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -405,7 +453,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     check.set_defaults(run=_check)
 
-    libc = sub.add_parser("sbom-libc", help="add musl to the SBOM")
+    libc = sub.add_parser(
+        "sbom-libc", help="add musl and the serial number to the SBOM"
+    )
     libc.add_argument("--sbom", type=Path, required=True, help="cargo-cyclonedx output")
     libc.add_argument("--version", required=True, help="the nails version")
     libc.add_argument("--musl-version", required=True, help="the linked musl")
@@ -415,6 +465,8 @@ def main(argv: list[str] | None = None) -> int:
         default=[],
         help="a CVE the linked musl is patched against; repeatable",
     )
+    libc.add_argument("--repo", required=True, help="OWNER/NAME on GitHub")
+    libc.add_argument("--tag", required=True, help="the release tag, v<version>")
     libc.add_argument("--output", type=Path, required=True, help="completed SBOM")
     libc.set_defaults(run=_sbom_libc)
 

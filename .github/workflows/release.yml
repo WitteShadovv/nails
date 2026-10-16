@@ -234,6 +234,8 @@ jobs:
 
       # Only the nails binary, resolved for the release target without
       # build-time dependencies; the commit time keeps the file reproducible.
+      # With it, cargo-cyclonedx leaves out its random serial number, which
+      # actions/attest requires; sbom-libc sets one derived from the release.
       - name: Generate the SBOM
         env:
           VERSION: ${{ needs.version.outputs.version }}
@@ -250,6 +252,7 @@ jobs:
           for cve in $MUSL_CVES; do cve_args+=(--musl-cve "$cve"); done
           python3 -m ci.release sbom-libc --sbom nails-cli/nails_bin.cdx.json \
             --version "$VERSION" --musl-version "$MUSL_VERSION" "${cve_args[@]}" \
+            --repo "$GITHUB_REPOSITORY" --tag "$TAG" \
             --output "$RUNNER_TEMP/release-sbom/sbom.cdx.json"
           # Scanners ignore the SBOM's record of the patches; this document
           # tells them (grype --vex) that the patched CVEs are fixed.
