@@ -183,76 +183,105 @@ pub fn print_check_json(report: &CheckReport) {
 
 /// Print the readiness report for people.
 pub fn print_check_human(report: &CheckReport, style: Style) {
-    if style.ascii {
-        println!("=======================================");
-        println!("  NAILS Readiness Check");
-        println!("=======================================");
-    } else {
-        println!("╭─────────────────────────────────────╮");
-        println!("│  NAILS Readiness Check              │");
-        println!("╰─────────────────────────────────────╯");
+    for line in human_lines(report, style) {
+        println!("{line}");
     }
-    println!();
+}
 
-    println!("Pre-flight checks:");
+/// The lines of the readiness report for people.
+fn human_lines(report: &CheckReport, style: Style) -> Vec<String> {
+    let mut out = Vec::new();
+    if style.ascii {
+        out.push("=======================================".to_string());
+        out.push("  NAILS Readiness Check".to_string());
+        out.push("=======================================".to_string());
+    } else {
+        out.push("╭─────────────────────────────────────╮".to_string());
+        out.push("│  NAILS Readiness Check              │".to_string());
+        out.push("╰─────────────────────────────────────╯".to_string());
+    }
+    out.push(String::new());
+
+    out.push("Pre-flight checks:".to_string());
     for row in &report.checks {
-        println!("  {} {}: {}", style.mark(row.mark()), row.name, row.message);
+        out.push(format!(
+            "  {} {}: {}",
+            style.mark(row.mark()),
+            row.name,
+            row.message
+        ));
         if let Some(remediation) = &row.remediation {
             let mut lines = remediation.lines();
             if let Some(first) = lines.next() {
-                println!("      {}", style.marked(Mark::Arrow, first));
+                out.push(format!("      {}", style.marked(Mark::Arrow, first)));
             }
             for line in lines {
-                println!("        {line}");
+                out.push(format!("        {line}"));
             }
         }
     }
-    println!();
+    out.push(String::new());
 
-    println!("Effective configuration:");
-    if let Some(path) = &report.config.config_file {
-        println!("  config file:        {path}");
-    } else {
-        println!("  config file:        (built-in defaults)");
-    }
-    println!("  hidden volume root: {}", report.config.hidden_volume_root);
-    println!("  state file:         {}", report.config.state_file);
-    println!("  log directory:      {}", report.config.log_path);
-    println!("  persona mode:       {}", report.config.persona_mode);
-    println!(
+    out.push("Effective configuration:".to_string());
+    out.push(match &report.config.config_file {
+        Some(path) => format!("  config file:        {path}"),
+        None => "  config file:        (built-in defaults)".to_string(),
+    });
+    out.push(format!(
+        "  hidden volume root: {}",
+        report.config.hidden_volume_root
+    ));
+    out.push(format!(
+        "  state file:         {}",
+        report.config.state_file
+    ));
+    out.push(format!("  log directory:      {}", report.config.log_path));
+    out.push(format!(
+        "  persona mode:       {}",
+        report.config.persona_mode
+    ));
+    out.push(format!(
         "  minimum free space: {} MB",
         report.config.minimum_space_mb
-    );
-    println!();
+    ));
+    out.push(String::new());
 
-    println!("Decoy filesystems in the hidden root:");
+    out.push("Decoy filesystems in the hidden root:".to_string());
     if report.filesystems.is_empty() {
-        println!("  {} only the root (overlaid)", style.mark(Mark::Bullet));
+        out.push(format!(
+            "  {} only the root (overlaid)",
+            style.mark(Mark::Bullet)
+        ));
     } else {
         for line in &report.filesystems {
-            println!("  {} {line}", style.mark(Mark::Bullet));
+            out.push(format!("  {} {line}", style.mark(Mark::Bullet)));
         }
     }
-    println!();
+    out.push(String::new());
 
-    println!("Session:");
-    println!(
+    out.push("Session:".to_string());
+    out.push(format!(
         "  {} activation soft-reboots into the hidden root: every program closes and you are logged out",
         style.mark(Mark::Info)
-    );
-    println!();
+    ));
+    out.push(String::new());
 
-    println!("NixOS profile:");
-    println!("  {} {}", style.mark(Mark::Info), report.profile.line());
-    println!();
+    out.push("NixOS profile:".to_string());
+    out.push(format!(
+        "  {} {}",
+        style.mark(Mark::Info),
+        report.profile.line()
+    ));
+    out.push(String::new());
 
-    println!("Inherited decoy state:");
+    out.push("Inherited decoy state:".to_string());
     for line in inherited::inherited_lines(&report.inherited, report.config.persona_mode, style) {
-        println!("  {line}");
+        out.push(format!("  {line}"));
     }
-    println!();
+    out.push(String::new());
 
-    println!("{}", summary_line(report, style));
+    out.push(summary_line(report, style));
+    out
 }
 
 /// The verdict that ends the report, with the tally (`1 warning`, `2 warnings`).

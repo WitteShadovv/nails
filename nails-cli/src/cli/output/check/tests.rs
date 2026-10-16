@@ -135,3 +135,36 @@ fn not_inspected_summary_is_empty() {
     assert!(summary.entries.is_empty());
     assert!(summary.remote_linked.is_empty());
 }
+
+/// Under "NixOS profile" the report prints the summary's line: the build
+/// target, or that there is none, never 0.2's "no profile switch".
+#[test]
+fn the_profile_section_prints_the_build_target_line() {
+    let style = Style {
+        ascii: true,
+        ..Style::default()
+    };
+    let overlay_only = "overlay-only: no hidden NixOS system is built; the session runs the \
+                        decoy's own system";
+    for (detail, expected) in [
+        (None, "  [INFO] no hidden NixOS build target".to_string()),
+        (
+            Some(overlay_only.to_string()),
+            format!("  [INFO] {overlay_only}"),
+        ),
+    ] {
+        let mut report = report(rows());
+        report.profile.detail = detail;
+        let lines = human_lines(&report, style);
+        let at = lines
+            .iter()
+            .position(|line| line == "NixOS profile:")
+            .expect("the NixOS profile section");
+        assert_eq!(lines[at + 1], expected);
+        assert_eq!(lines[at + 2], "");
+        assert!(
+            lines.iter().all(|line| !line.contains("profile switch")),
+            "{lines:#?}"
+        );
+    }
+}
