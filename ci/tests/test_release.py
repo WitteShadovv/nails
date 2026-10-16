@@ -12,6 +12,7 @@ import unittest
 import uuid
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from ci import release
 from ci.release import ReleaseError
@@ -564,6 +565,118 @@ class SerialNumberTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("tag 'v0.3.1' is not v0.3.0, the tag of nails 0.3.0", err)
         self.assertFalse(output.exists())
+
+
+class AttestCheckTest(unittest.TestCase):
+    def completed(self) -> dict[str, Any]:
+        serial = release.sbom_serial_number("o/n", "v0.3.0")
+        return release.with_serial_number(sbom(), serial)
+
+    def test_completed_sbom_passes(self) -> None:
+        release.check_attestable(self.completed(), 1000)
+
+    def test_sbom_without_a_serial_number_fails(self) -> None:
+        # What cargo-cyclonedx writes under SOURCE_DATE_EPOCH.
+        with self.assertRaisesRegex(
+            ReleaseError, "has no serialNumber: actions/attest accepts CycloneDX only"
+        ):
+            release.check_attestable(sbom(), 1000)
+
+    def test_each_field_needs_a_non_empty_string(self) -> None:
+        for field in ("bomFormat", "serialNumber", "specVersion"):
+            for value in (None, "", 1.5, ["CycloneDX"]):
+                with self.subTest(field=field, value=value):
+                    bom = self.completed()
+                    bom[field] = value
+                    with self.assertRaisesRegex(ReleaseError, f"has no {field}:"):
+                        release.check_attestable(bom, 1000)
+            with self.subTest(field=field, value="absent"):
+                bom = self.completed()
+                del bom[field]
+                with self.assertRaisesRegex(ReleaseError, f"has no {field}:"):
+                    release.check_attestable(bom, 1000)
+
+    def test_every_missing_field_is_named(self) -> None:
+        with self.assertRaisesRegex(
+            ReleaseError, "has no bomFormat and no serialNumber and no specVersion:"
+        ):
+            release.check_attestable({"metadata": {}}, 20)
+
+    def test_document_that_is_not_an_object_fails(self) -> None:
+        documents: list[Any] = [[], "CycloneDX", None]
+        for document in documents:
+            with self.subTest(document=document):
+                with self.assertRaisesRegex(ReleaseError, "not a JSON object"):
+                    release.check_attestable(document, 20)
+
+    def test_file_over_16_mib_fails(self) -> None:
+        limit = 16 * 1024 * 1024
+        release.check_attestable(self.completed(), limit)
+        with self.assertRaisesRegex(
+            ReleaseError, f"has {limit + 1} bytes; actions/attest takes at most {limit}"
+        ):
+            release.check_attestable(self.completed(), limit + 1)
+
+    def run_check(self, path: Path) -> tuple[int, str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            code = release.main(["sbom-check", "--sbom", str(path)])
+        return code, err.getvalue()
+
+    def write(self, text: str) -> Path:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        path = root / "sbom.cdx.json"
+        path.write_text(text)
+        return path
+
+    def test_command_accepts_what_sbom_libc_writes(self) -> None:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        source, output = root / "in.cdx.json", root / "sbom.cdx.json"
+        source.write_text(json.dumps(sbom()))
+        argv = [
+            "sbom-libc",
+            "--sbom",
+            str(source),
+            "--version",
+            "0.3.0",
+            "--musl-version",
+            "1.2.6",
+            "--repo",
+            "o/n",
+            "--tag",
+            "v0.3.0",
+            "--output",
+            str(output),
+        ]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(release.main(argv), 0)
+        code, err = self.run_check(output)
+        self.assertEqual(code, 0)
+        self.assertIn(
+            "actions/attest accepts it as CycloneDX 1.5, serial number "
+            "urn:uuid:178eae2d-133d-5030-9a6b-daecb92bcdeb",
+            err,
+        )
+
+    def test_command_fails_on_cargo_cyclonedx_output(self) -> None:
+        code, err = self.run_check(self.write(json.dumps(sbom())))
+        self.assertEqual(code, 1)
+        self.assertIn("error: the SBOM has no serialNumber", err)
+
+    def test_command_checks_the_size_of_the_file(self) -> None:
+        path = self.write(json.dumps(self.completed()))
+        with mock.patch.object(release, "ATTEST_MAX_SBOM_BYTES", 10):
+            code, err = self.run_check(path)
+        self.assertEqual(code, 1)
+        self.assertIn("actions/attest takes at most 10", err)
+
+    def test_command_rejects_a_missing_or_unparsable_file(self) -> None:
+        unparsable = self.write("{")
+        for path in (unparsable, unparsable.with_name("absent.json")):
+            with self.subTest(path=path.name):
+                code, err = self.run_check(path)
+                self.assertEqual(code, 2)
+                self.assertIn("cannot read", err)
 
 
 class MuslVexTest(unittest.TestCase):

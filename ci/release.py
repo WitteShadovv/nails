@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a release tag against its tree, write its notes, complete its SBOM.
 
-release.yml runs this from a checkout of the tag. Three subcommands:
+release.yml runs this from a checkout of the tag. Four subcommands:
 
 check
     Fails unless the tag is ``v`` plus the workspace version, that version is
@@ -21,13 +21,18 @@ sbom-libc
     serial number that actions/attest requires and cargo-cyclonedx leaves out
     under SOURCE_DATE_EPOCH: a UUIDv5 of the file's download URL on the
     release, the same on every run for the tag.
+sbom-check
+    Fails unless actions/attest accepts the SBOM as CycloneDX: a JSON object
+    of at most 16 MiB with a non-empty ``bomFormat``, ``serialNumber`` and
+    ``specVersion``. The attest job would otherwise fail only after the E2E
+    suite, with the build provenance already signed.
 musl-vex
     Writes an OpenVEX document that marks each ``--musl-cve`` as fixed in the
     linked musl. Scanners ignore the SBOM's pedigree, so without this
     document they report the patched CVEs as open (``grype --vex`` reads it).
 
-Every check runs before the first build, so a mistake costs one short job
-instead of a release run.
+``check`` runs before the first build and ``sbom-check`` before the E2E
+suite, so a mistake costs one short job instead of a release run.
 
 Exit status: 0 on success, 1 when a check fails, 2 when an input is missing
 or unreadable.
@@ -68,6 +73,10 @@ VEX_ASSET = "musl.openvex.json"
 _OPENVEX_CONTEXT = "https://openvex.dev/ns/v0.2.0"
 BINARY = "nails"
 _TRIPLE_PROPERTY = "cdx:rustc:sbom:target:triple"
+# What actions/attest (v4.2.2, src/sbom.ts) requires of an SBOM: at most
+# 16 MiB, and for CycloneDX these three fields, each with a value.
+ATTEST_MAX_SBOM_BYTES = 16 * 1024 * 1024
+ATTEST_CYCLONEDX_FIELDS = ("bomFormat", "serialNumber", "specVersion")
 
 
 class ReleaseError(Exception):
@@ -358,6 +367,33 @@ def with_serial_number(sbom: dict[str, Any], serial: str) -> dict[str, Any]:
     return completed
 
 
+def check_attestable(sbom: Any, size: int) -> None:
+    """Fail unless actions/attest accepts ``sbom`` as a CycloneDX SBOM.
+
+    ``size`` is the file's size in bytes. The action refuses a file over
+    16 MiB, and takes a JSON document for CycloneDX only when ``bomFormat``,
+    ``serialNumber`` and ``specVersion`` all have a value, here a non-empty
+    string as the CycloneDX schema has them.
+    """
+    if size > ATTEST_MAX_SBOM_BYTES:
+        raise ReleaseError(
+            f"the SBOM has {size} bytes; actions/attest takes at most "
+            f"{ATTEST_MAX_SBOM_BYTES}"
+        )
+    if not isinstance(sbom, dict):
+        raise ReleaseError("the SBOM is not a JSON object")
+    missing = [
+        field
+        for field in ATTEST_CYCLONEDX_FIELDS
+        if not isinstance(sbom.get(field), str) or not sbom[field]
+    ]
+    if missing:
+        raise ReleaseError(
+            f"the SBOM has no {' and no '.join(missing)}: actions/attest accepts "
+            "CycloneDX only with a bomFormat, a serialNumber and a specVersion"
+        )
+
+
 def musl_vex(
     musl_version: str, cves: Sequence[str], repo: str, tag: str, epoch: int
 ) -> dict[str, Any]:
@@ -427,6 +463,21 @@ def _sbom_libc(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sbom_check(args: argparse.Namespace) -> int:
+    try:
+        size = args.sbom.stat().st_size
+        sbom = json.loads(args.sbom.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as err:
+        raise OSError(f"cannot read {args.sbom}: {err}") from err
+    check_attestable(sbom, size)
+    print(
+        f"{args.sbom}: actions/attest accepts it as CycloneDX "
+        f"{sbom['specVersion']}, serial number {sbom['serialNumber']}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def _musl_vex(args: argparse.Namespace) -> int:
     vex = musl_vex(args.musl_version, args.musl_cve, args.repo, args.tag, args.epoch)
     args.output.write_text(json.dumps(vex, indent=2) + "\n", encoding="utf-8")
@@ -469,6 +520,12 @@ def main(argv: list[str] | None = None) -> int:
     libc.add_argument("--tag", required=True, help="the release tag, v<version>")
     libc.add_argument("--output", type=Path, required=True, help="completed SBOM")
     libc.set_defaults(run=_sbom_libc)
+
+    attest = sub.add_parser(
+        "sbom-check", help="check that actions/attest accepts the SBOM"
+    )
+    attest.add_argument("--sbom", type=Path, required=True, help="the completed SBOM")
+    attest.set_defaults(run=_sbom_check)
 
     vex = sub.add_parser("musl-vex", help="mark musl's patched CVEs as fixed")
     vex.add_argument("--musl-version", required=True, help="the linked musl")

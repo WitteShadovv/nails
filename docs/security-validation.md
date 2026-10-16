@@ -28,7 +28,7 @@ The release workflow adds:
 - the canonical Nix build of `.#nails-release`, compiled from source with `--locked`
 - an independent rebuild on a fresh runner, compared byte for byte via `reproducibility.yml`
 - the whole E2E suite on the tagged commit
-- the release SBOM, musl included, and an OpenVEX document for musl's patched CVEs
+- the release SBOM, musl included, checked for what `actions/attest` requires before the E2E suite starts, and an OpenVEX document for musl's patched CVEs
 - GitHub artifact attestations for the archive, the binary, the SBOM and the VEX document, created only after every gate passed
 
 [ci.md](ci.md#release-workflow) describes the jobs.
