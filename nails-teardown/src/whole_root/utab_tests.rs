@@ -44,8 +44,38 @@ fn a_line_is_read_the_way_libmount_reads_it() {
     // writes UNIQID without a space after it) or is no number at all.
     assert!(Line::parse(b"ID=40 UNIQID=7SRC=overlay TARGET=/ ROOT=/").is_none());
     assert!(Line::parse(b"ID=x SRC=overlay TARGET=/ ROOT=/").is_none());
-    assert!(Line::parse(b"ID=").is_none());
-    assert_eq!(Line::parse(b"").unwrap().target, None);
+    assert!(Line::parse(b"ID= SRC=overlay TARGET=/ ROOT=/").is_none());
+    assert!(Line::parse(b"ID=99999999999999999999 TARGET=/").is_none());
+    // An empty number at the end of the line is no number: libmount reads the
+    // line without an ID and joins it by its path.
+    for bare in [
+        &b"TARGET=/x ID="[..],
+        b"TARGET=/x UNIQID=",
+        b"TARGET=/x ID=\r",
+    ] {
+        let line = Line::parse(bare).unwrap();
+        assert_eq!(
+            (line.id, line.target.as_deref()),
+            (0, Some(Path::new("/x")))
+        );
+    }
+    // Blanks before the first field and a carriage return at the end do not
+    // count; blank lines and comments are skipped.
+    let line = Line::parse(b" \tID=7 TARGET=/x\r").unwrap();
+    assert_eq!((line.id, line.id_at), (7, 5..6));
+    for skipped in [&b""[..], b"  \t", b"# ID=7 TARGET=/x", b" #ID=7"] {
+        assert!(Line::parse(skipped).is_none());
+    }
+}
+
+#[test]
+fn a_line_with_an_empty_id_is_matched_by_its_path() {
+    let line = "SRC=overlay TARGET=/ ROOT=/ OPTS=X-kept ID=\n";
+    assert_eq!(kept(line), line);
+    assert_eq!(
+        kept("SRC=wrappers TARGET=/run/wrappers ROOT=/ OPTS=X ID=\n"),
+        ""
+    );
 }
 
 #[test]
@@ -250,3 +280,4 @@ fn a_restored_line_takes_the_newest_mount_at_its_place() {
         b"ID=160 SRC=overlay TARGET=/sysroot/nix/store ROOT=/ OPTS=x-initrd.mount\n"
     );
 }
+

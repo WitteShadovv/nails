@@ -37,7 +37,9 @@
 //! ([`named_mounts`]), with the same source and root. Without that, the decoy's
 //! initrd mounts would lose `x-initrd.mount` after a session, and its next
 //! shutdown would unmount them as units, which neither a fresh boot nor a plain
-//! soft-reboot does.
+//! soft-reboot does. A line of the decoy's that names no mount the way back
+//! restores is not given back: one already stale when the copy was taken, one
+//! whose mount the session did not carry, one libmount skips.
 
 use crate::mountinfo::{MountEntry, unescape_octal};
 use std::borrow::Cow;
@@ -142,11 +144,14 @@ const STRING_KEYS: [&[u8]; 6] = [
     b"ATTRS=",
 ];
 
-/// One `utab` line as libmount 2.42 reads it (`mnt_parse_utab_line`): a field
-/// starts after a run of spaces with its `KEY=`, only the first of each key
-/// counts, a value runs to the next space or tab and is octal-escaped, and a
-/// number that does not end at a space, a tab or the end of the line makes
-/// libmount skip the whole line.
+/// One `utab` line as libmount 2.42 reads it (`mnt_parse_utab_line`): without
+/// its newline and a carriage return before it, from its first character that
+/// is not a blank; a field starts after a run of spaces with its `KEY=`, only
+/// the first of each key counts, a value runs to the next space or tab and is
+/// octal-escaped, and a number that does not end at a space, a tab or the end
+/// of the line makes libmount skip the whole line. libmount joins a line to a
+/// mount only when it has a source, a target, a root and options or
+/// attributes, and joins each mount to one line at most.
 #[derive(Debug, Default)]
 struct Line {
     /// The mount ID, 0 for none (a negative one is matched by path too).
@@ -159,12 +164,17 @@ struct Line {
 }
 
 impl Line {
-    /// The line's fields, or `None` for a line libmount skips.
+    /// The line's fields, or `None` for a line libmount skips: a blank line, a
+    /// comment, one with a number it cannot read.
     fn parse(bytes: &[u8]) -> Option<Self> {
+        let bytes = bytes.strip_suffix(b"\r").unwrap_or(bytes);
+        let mut at = bytes
+            .iter()
+            .position(|&b| b != b' ' && b != b'\t')
+            .filter(|&first| bytes[first] != b'#')?;
         let mut line = Self::default();
         let mut uniq_id = 0;
         let mut set = [false; STRING_KEYS.len()];
-        let mut at = 0;
         loop {
             while bytes.get(at) == Some(&b' ') {
                 at += 1;
@@ -174,11 +184,17 @@ impl Line {
                 return Some(line);
             }
             if uniq_id == 0 && rest.starts_with(b"UNIQID=") {
-                (uniq_id, at) = number(bytes, at + 7)?;
+                let (_, magnitude, end) = number(bytes, at + 7)?;
+                (uniq_id, at) = (magnitude, end);
             } else if line.id == 0 && rest.starts_with(b"ID=") {
-                let (id, end) = number(bytes, at + 3)?;
-                line.id = i32::try_from(id).ok()?;
-                line.id_at = at + 3..end;
+                let (negative, magnitude, end) = number(bytes, at + 3)?;
+                // libmount gives up on a value beyond `long` and cuts one
+                // beyond `int` short. Neither is a mount's ID: the line goes.
+                let magnitude = i64::try_from(magnitude).ok()?;
+                line.id = i32::try_from(if negative { -magnitude } else { magnitude }).ok()?;
+                if line.id != 0 {
+                    line.id_at = at + 3..end;
+                }
                 at = end;
             } else if let Some(key) =
                 (0..STRING_KEYS.len()).find(|&k| !set[k] && rest.starts_with(STRING_KEYS[k]))
@@ -232,24 +248,31 @@ impl Line {
     }
 }
 
-/// A number at `start` the way `strtol` reads one (blanks, a sign, digits),
-/// and where it ends; `None` where libmount gives up on the line: no digits,
-/// an overflow, or anything but a space, a tab or the end of the line after it.
-fn number(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
+/// A number at `start` the way `strtol` and `strtoumax` read one (blanks, a
+/// sign, digits): whether it is negative, its magnitude and where it ends. An
+/// empty value at the end of the line is no number, read as 0, and libmount
+/// reads on. `None` where libmount gives up on the line: no digits, more than
+/// 64 bits, or anything but a space, a tab or the end of the line after it.
+fn number(bytes: &[u8], start: usize) -> Option<(bool, u64, usize)> {
+    if start >= bytes.len() {
+        return Some((false, 0, start));
+    }
     let mut at = start;
-    while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+    while bytes
+        .get(at)
+        .is_some_and(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0b' | b'\x0c' | b'\r'))
+    {
         at += 1;
     }
     let negative = bytes.get(at) == Some(&b'-');
     if matches!(bytes.get(at), Some(b'-' | b'+')) {
         at += 1;
     }
-    let digits = bytes
-        .get(at..)?
+    let digits = bytes[at..]
         .iter()
         .take_while(|b| b.is_ascii_digit())
         .count();
-    let magnitude: i64 = std::str::from_utf8(&bytes[at..at + digits])
+    let magnitude = std::str::from_utf8(&bytes[at..at + digits])
         .ok()?
         .parse()
         .ok()?;
@@ -257,7 +280,7 @@ fn number(bytes: &[u8], start: usize) -> Option<(i64, usize)> {
     if !matches!(bytes.get(end), None | Some(b' ' | b'\t')) {
         return None;
     }
-    Some((if negative { -magnitude } else { magnitude }, end))
+    Some((negative, magnitude, end))
 }
 
 #[cfg(test)]
