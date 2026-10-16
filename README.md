@@ -309,9 +309,10 @@ Type the decoy-side commands in a shell with history off (`set +o history`).
 <details>
 <summary><b>What <code>nails check</code> prints</b></summary>
 
-<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check: every pre-flight check with PASS or WARN, the effective configuration, the decision for each decoy filesystem, and a final Ready to activate line" width="820">
+<img src="docs/assets/screenshots/check.svg" alt="Terminal output of nails check: every pre-flight check with PASS, the effective configuration, the decision for each decoy filesystem, nothing to review in the inherited decoy state, and a final Ready to activate line with 0 warnings" width="820">
 
-Captured from the `session-lifecycle` NixOS VM test; see
+Captured from the `session-readme-captures` NixOS VM test, on a decoy set up as
+[docs/decoy-requirements.md](docs/decoy-requirements.md) recommends; see
 [docs/assets/README.md](docs/assets/README.md) for how each screenshot is made.
 
 </details>
@@ -340,7 +341,7 @@ flowchart LR
 
 Both transitions log you out. Save your work first.
 
-<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line with no known residue, three pre-flight warnings, Hidden session prepared in 0.4s, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
+<img src="docs/assets/screenshots/activate.svg" alt="Terminal output of nails activate: the residue baseline line with no known residue, Hidden session prepared in 0.4s with no pre-flight warning, the decoy filesystems that are overlaid, and the soft-reboot notice" width="820">
 
 <details>
 <summary><b>What <code>nails status --json</code> reports in the hidden session</b></summary>

@@ -8,7 +8,7 @@
 <circle cx="50" cy="15.5" r="5" fill="#4b5561"/>
 <text x="407.5" y="20.0" text-anchor="middle" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#8a96a3">nails status --json (NixOS VM, hidden session)</text>
 <text font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'DejaVu Sans Mono', monospace" font-size="13" fill="#d5dde6" xml:space="preserve">
-<tspan x="16" y="57"><tspan fill="#9fb7d6">$ </tspan><tspan fill="#d5dde6" font-weight="bold">nails --config /mnt/data/config/nails.toml status --json</tspan></tspan>
+<tspan x="16" y="57"><tspan fill="#9fb7d6">$ </tspan><tspan fill="#d5dde6" font-weight="bold">sudo /mnt/data/nails status --json</tspan></tspan>
 <tspan x="16" y="75">{</tspan>
 <tspan x="16" y="93"> "posture": "active",</tspan>
 <tspan x="16" y="111"> "session": "hidden",</tspan>
@@ -16,11 +16,11 @@
 <tspan x="16" y="147">  "kind": "active"</tspan>
 <tspan x="16" y="165"> },</tspan>
 <tspan x="16" y="183"> "state_source": "loaded",</tspan>
-<tspan x="16" y="201"> "entered_at": "2026-10-16T03:50:42+00:00",</tspan>
-<tspan x="16" y="219"> "uptime_seconds": 3,</tspan>
+<tspan x="16" y="201"> "entered_at": "2026-10-16T07:09:09+00:00",</tspan>
+<tspan x="16" y="219"> "uptime_seconds": 2,</tspan>
 <tspan x="16" y="237"> "uptime_formatted": "0 minutes",</tspan>
-<tspan x="16" y="255"> "hidden_system": "/nix/store/dy2xc6n3hqrnnvs0za8s26238npf1sf7-nixos-system-machine-test",</tspan>
-<tspan x="16" y="273"> "decoy_system": "/nix/store/dy2xc6n3hqrnnvs0za8s26238npf1sf7-nixos-system-machine-test",</tspan>
+<tspan x="16" y="255"> "hidden_system": "/nix/store/cr7m2rdcarz5yy5cxmxrjqca1mk4whd9-nixos-system-machine-test",</tspan>
+<tspan x="16" y="273"> "decoy_system": "/nix/store/cr7m2rdcarz5yy5cxmxrjqca1mk4whd9-nixos-system-machine-test",</tspan>
 <tspan x="16" y="291"> "hidden_root": "/mnt/data",</tspan>
 <tspan x="16" y="309"> "hidden_root_mounted": true,</tspan>
 <tspan x="16" y="327"> "policy_mounts": [</tspan>
@@ -52,12 +52,12 @@
 <tspan x="16" y="795"> "decoy_persistent": false,</tspan>
 <tspan x="16" y="813"> "persona_mode": "shared-home",</tspan>
 <tspan x="16" y="831"> "last_activation": {</tspan>
-<tspan x="16" y="849">  "duration_ms": 422,</tspan>
-<tspan x="16" y="867">  "finished_at": "2026-10-16T03:50:42.526340777Z"</tspan>
+<tspan x="16" y="849">  "duration_ms": 397,</tspan>
+<tspan x="16" y="867">  "finished_at": "2026-10-16T07:09:08.764947918Z"</tspan>
 <tspan x="16" y="885"> },</tspan>
 <tspan x="16" y="903"> "opsec_reminders": []</tspan>
 <tspan x="16" y="921">}</tspan>
 </text>
-<text x="2" y="962" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real data captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-16,</text>
-<text x="2" y="979" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">right after the first activation: the `data` object of the JSON envelope, pretty-printed by the test.</text>
+<text x="2" y="962" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">Real data captured from the session-readme-captures NixOS VM test (nix build .#e2e.session-readme-captures),</text>
+<text x="2" y="979" font-family="system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif" font-size="12" fill="#7b8794">2026-10-16, right after the activation: the `data` object of the JSON envelope, pretty-printed by the test.</text>
 </svg>

@@ -24,9 +24,9 @@ else.
 | Screenshot | Source |
 |---|---|
 | `help.svg` | `nails -h` from a local build |
-| `check.svg` | `nails check` in the `session-lifecycle` NixOS VM test |
-| `activate.svg` | `nails activate` in the `session-lifecycle` NixOS VM test, standard output and standard error together |
-| `status-json.svg` | `nails status --json` in the hidden session, `session-lifecycle` NixOS VM test |
+| `check.svg` | `nails check` in the `session-readme-captures` NixOS VM test |
+| `activate.svg` | `nails activate` in the `session-readme-captures` NixOS VM test, standard output and standard error together |
+| `status-json.svg` | `nails status --json` in the hidden session, `session-readme-captures` NixOS VM test |
 
 To refresh one, replace the output below the `---` line of its capture with a
 new real capture, update the header, then render:
@@ -40,9 +40,14 @@ The `--check` run compares each SVG with its capture only; it cannot tell
 that a capture no longer matches what NAILS prints. Refresh all four for every
 release, as [RELEASING.md](../../RELEASING.md) says.
 
-The VM captures come from one run of the test, taken from its build log: run
-`nix build -L .#e2e.session-lifecycle` and copy the command's output from the
-log (the test prints the `check` output, the activation log and the status
+The VM captures come from one run of the `session-readme-captures` test,
+taken from its build log. The test sets the VM up as
+[decoy-requirements.md](../decoy-requirements.md) recommends for a clean decoy
+and runs the binary from the hidden volume through `sudo`, as the README's quick
+start does, so a capture shows no warning that only a test VM causes; the test
+fails when `check` or `activate` prints a warning. Run
+`nix build -L .#e2e.session-readme-captures` and copy the command's output from
+the log (the test prints the `check` output, the activation log and the status
 JSON). The test driver puts `machine: ` in front of the first line of the
 `check` output and of the status JSON; that prefix belongs to the log, not to
 the output. A test that is already built prints no log: `nix log` on the same

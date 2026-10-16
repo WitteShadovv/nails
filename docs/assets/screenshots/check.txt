@@ -1,6 +1,6 @@
 title: nails check (NixOS VM, decoy side)
-command: nails --config /mnt/data/config/nails.toml check --overlay-only
-caption: Real output captured from the session-lifecycle NixOS VM test (nix build .#e2e.session-lifecycle), 2026-10-16. The test runs nails from the Nix store with an explicit --config, as root without sudo and with nobody logged in: that is why binary-location warns and the inherited decoy state is not inspected. An operator runs sudo /mnt/data/nails check.
+command: sudo /mnt/data/nails check --overlay-only
+caption: Real output captured from the session-readme-captures NixOS VM test (nix build .#e2e.session-readme-captures), 2026-10-16, on a test VM set up as docs/decoy-requirements.md recommends, with nails run from the hidden volume through sudo. --overlay-only skips the hidden NixOS build; /nix/.ro-store, /tmp/shared and /tmp/xchg are the test VM's own mounts.
 ---
 =======================================
   NAILS Readiness Check
@@ -23,13 +23,13 @@ Pre-flight checks:
   [PASS] suspicious-nails-reference: The 2 .nix files under /etc/nixos name nothing of the hidden environment
   [PASS] swap: no swap can leak memory to persistent storage (RAM-only zram is permitted)
   [PASS] memory-wipe: Kernel command line does not set init_on_free=1: unless the kernel enables it by default, pages freed by the hidden session keep their contents in RAM until reused. Recommended: add init_on_free=1 to the decoy kernel command line
-  [WARN] sleep-policy: the host would suspend an active session: closing the lid suspends the host (HandleLidSwitch=suspend). A suspend leaves the hidden session resident in RAM behind the hidden session's own lock screen. Set the logind lid switch to lock (see docs/decoy-requirements.md), or set sleep_policy.mode = "block" or "teardown" in nails.toml.
-  [WARN] decoy-persistence: decoy posture warnings: systemd-coredump keeps core dumps in /var/lib/systemd/coredump on the decoy disk (Storage unset, so external); set systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; } in the decoy configuration. See docs/decoy-requirements.md.
+  [PASS] sleep-policy: host will not suspend an active session (HandleLidSwitch=lock, IdleAction=ignore)
+  [PASS] decoy-persistence: decoy keeps no durable trace of the hidden session
   [PASS] residue-catalog: no warned residue channel is live (4 catalog probes); noted: timer-stamps (/var/lib/systemd/timers): Session stamps land in the upper; expect catch-up runs at the next decoy boot. (see docs/decoy-requirements.md#session-time-records)
-  [PASS] space: 1.8 GB available (18.4x minimum required)
-  [WARN] binary-location: the running binary /nix/store/c502lz4w8dgk6frd4clzjsilqgxiq67g-nails-x86_64-unknown-linux-musl-0.3.0-rc.1/bin/nails is not under the hidden volume root /mnt/data; a copy on the decoy disk is a forensic artifact; /run/current-system/sw/bin/nails is a decoy PATH symlink pointing at the hidden binary
-  [PASS] inherited-autostart: Target user could not be resolved; inherited decoy state was not inspected
-  [PASS] incremental-history-flush: Target user could not be resolved; shell history-flush settings were not inspected
+  [PASS] space: 1.8 GB available (3.7x minimum required)
+  [PASS] binary-location: Running binary lives under the hidden volume root (/mnt/data)
+  [PASS] inherited-autostart: No inherited decoy item needs review (4 desktop and distribution components not counted)
+  [PASS] incremental-history-flush: The operator's shell does not flush command history incrementally
   [PASS] state: System is inactive - ready for activation
 
 Effective configuration:
@@ -38,7 +38,7 @@ Effective configuration:
   state file:         /mnt/data/state.json
   log directory:      /mnt/data/logs
   persona mode:       shared-home
-  minimum free space: 100 MB
+  minimum free space: 500 MB
 
 Decoy filesystems in the hidden root:
   - /nix/.ro-store: overlaid
@@ -54,6 +54,7 @@ NixOS profile:
 
 Inherited decoy state:
   [INFO] shared-home: the hidden session starts in the decoy home, so the decoy's accounts, keys, browser profiles and shell history are live in it (persona.mode = "fresh-home" starts it in an empty home)
-  [INFO] not inspected (could not resolve the target user)
+  [PASS] nothing to review
+  [INFO] 4 components of the desktop or distribution not listed (--json lists every entry)
 
-[PASS] Ready to activate  (21 passed, 3 warnings, 0 failed)
+[PASS] Ready to activate  (24 passed, 0 warnings, 0 failed)
