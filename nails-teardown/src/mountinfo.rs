@@ -313,11 +313,18 @@ pub fn top_mount_at<'a>(entries: &'a [MountEntry], target: &Path) -> Option<&'a 
                 .iter()
                 .any(|below| below.mount_id == e.parent_id && below.mount_point == root)
     })?;
+    // A table names each mount once, so no stack is taller than the table.
+    // A table that names one ID twice (a mount freed and its ID given to a
+    // new one while the table was being read) can hold a cycle, which this
+    // bound leaves after one round instead of following for ever.
     let climb = |mut at: &'a MountEntry, point: &Path| {
-        while let Some(above) = entries.iter().find(|e| {
-            e.mount_point == point && e.parent_id == at.mount_id && e.mount_id != at.mount_id
-        }) {
-            at = above;
+        for _ in 0..entries.len() {
+            match entries.iter().find(|e| {
+                e.mount_point == point && e.parent_id == at.mount_id && e.mount_id != at.mount_id
+            }) {
+                Some(above) => at = above,
+                None => break,
+            }
         }
         at
     };
@@ -380,6 +387,24 @@ mod tests {
             top_mount_at(&table, Path::new("/")).map(|e| e.mount_id),
             Some(1)
         );
+    }
+
+    /// A table that names one mount ID twice made the climb go round a cycle
+    /// for ever: here the second mount 2 sits on mount 4, which sits on the
+    /// first. Found by the `mountinfo` fuzz target as a timeout.
+    #[test]
+    fn a_lookup_ends_on_a_table_that_names_an_id_twice() {
+        let table = parse_mountinfo(
+            "\
+1 0 8:1 / / rw - ext4 /dev/sda1 rw
+2 1 0:30 / /tmp rw - tmpfs tmpfs rw
+4 2 0:50 / /tmp rw - overlay overlay rw,lowerdir=/tmp,upperdir=/h/u,workdir=/h/w
+2 4 0:51 / /tmp rw - overlay overlay rw,lowerdir=/x,upperdir=/h/x,workdir=/h/y
+",
+        );
+        let found = top_mount_at(&table, Path::new("/tmp")).expect("a mount at /tmp");
+        assert_eq!(found.mount_point, Path::new("/tmp"));
+        assert_eq!(top_mount_at(&table, Path::new("/tmp/x")), None);
     }
 
     #[test]
