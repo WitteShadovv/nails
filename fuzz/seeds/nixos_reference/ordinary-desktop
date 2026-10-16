@@ -1,0 +1,42 @@
+{ config, pkgs, ... }:
+
+let
+  user = "alice";
+in
+{
+  imports = [ ./hardware-configuration.nix ];
+
+  boot.loader.systemd-boot.enable = true;
+  boot.loader.efi.canTouchEfiVariables = true;
+  boot.loader.timeout = 3;
+  boot.loader.grub.timeoutStyle = "hidden";
+
+  networking.hostName = "workstation";
+  networking.networkmanager.enable = true;
+  time.timeZone = "Europe/Berlin";
+
+  services.xserver.enable = true;
+  services.displayManager.gdm.enable = true;
+  services.desktopManager.gnome.enable = true;
+  services.postgresql.dataDir = "/var/lib/postgresql/data";
+  services.restic.backups.home = {
+    paths = [ "/home/${user}" ];
+    repository = "sftp:backup@nas:/srv/restic";
+    timerConfig.OnCalendar = "daily";
+  };
+
+  users.users.${user} = {
+    isNormalUser = true;
+    description = "Back up user data";
+    extraGroups = [ "wheel" "networkmanager" ];
+    packages = with pkgs; [ firefox evolution-data-server ];
+  };
+
+  programs.bash.promptInit = ''PS1="\[\e[1;32m\]\u@\h\[\e[0m\] "'';
+
+  # The decoy keeps its own encrypted root (luks.devices.cryptroot).
+  /* boot.initrd.luks.devices = {
+       cryptroot.device = "/dev/sda2";
+     }; */
+  system.stateVersion = "26.05";
+}

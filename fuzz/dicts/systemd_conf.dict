@@ -1,0 +1,30 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: the sections and keys NAILS reads, and the line
+# syntax of systemd's configuration files.
+"[Login]"
+"[Journal]"
+"[Coredump]"
+"[Sleep]"
+"HandleLidSwitch="
+"HandleLidSwitchExternalPower="
+"HandleLidSwitchDocked="
+"IdleAction="
+"IdleActionSec="
+"Storage="
+"ProcessSizeMax="
+"AllowSuspend="
+"suspend"
+"hibernate"
+"ignore"
+"volatile"
+"persistent"
+"auto"
+"\\"
+"#"
+";"
+"\x0d"
+"\x0d\x0a"
+"\xef\xbb\xbf"
+"\x00"

@@ -9,6 +9,7 @@
 [![NixOS VM tests](https://github.com/WitteShadovv/nails/actions/workflows/e2e.yml/badge.svg?branch=main)](https://github.com/WitteShadovv/nails/actions/workflows/e2e.yml)
 [![Debian and Ubuntu VM tests](https://github.com/WitteShadovv/nails/actions/workflows/distro-e2e.yml/badge.svg?branch=main)](https://github.com/WitteShadovv/nails/actions/workflows/distro-e2e.yml)
 [![Release](https://img.shields.io/github/v/release/WitteShadovv/nails?include_prereleases&display_name=tag)](https://github.com/WitteShadovv/nails/releases)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/WitteShadovv/nails/badge)](https://scorecard.dev/viewer/?uri=github.com/WitteShadovv/nails)
 <br>
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![MSRV 1.93](https://img.shields.io/badge/MSRV-1.93-orange.svg)](rust-toolchain.toml)

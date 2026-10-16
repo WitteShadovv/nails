@@ -68,6 +68,34 @@ fn a_line_is_read_the_way_libmount_reads_it() {
     }
 }
 
+/// libmount reads no empty value: unmangle() returns no string for one,
+/// which mnt_parse_utab_line takes for a failed allocation, and the line is
+/// skipped. Found by the `utab` fuzz target, which compares the reading with
+/// libmount's: such a line kept its ID and so named a mount.
+#[test]
+fn a_line_with_an_empty_value_is_skipped() {
+    for line in [
+        &b"ID=62 SRC=/dev/vda TARGET="[..],
+        b"ID=40 SRC= TARGET=/ ROOT=/ OPTS=x-initrd.mount",
+        b"ID=40 SRC=overlay TARGET=/ ROOT=\tOPTS=x-initrd.mount",
+        b"TARGET=/x OPTS= ATTRS=y",
+        b"TARGET=/x BINDSRC= ",
+    ] {
+        assert!(Line::parse(line).is_none(), "{line:?}");
+    }
+    // An empty value of a field libmount does not know is skipped with it.
+    let line = Line::parse(b"FOO= ID=40 TARGET=/x").unwrap();
+    assert_eq!(
+        (line.id, line.target.as_deref()),
+        (40, Some(Path::new("/x")))
+    );
+    // Even next to a mount with an empty source, the line names no mount.
+    let mounts = parse_mountinfo("40 1 0:40 / /run/nextroot rw - tmpfs  rw\n");
+    let line = b"ID=40 SRC= TARGET=/ ROOT=/ OPTS=x-initrd.mount\n";
+    assert!(surviving_lines(line, &mounts, Path::new(NEXTROOT)).is_empty());
+    assert!(initrd_mounts(line, &mounts).is_empty());
+}
+
 #[test]
 fn a_line_with_an_empty_id_is_matched_by_its_path() {
     let line = "SRC=overlay TARGET=/ ROOT=/ OPTS=X-kept ID=\n";

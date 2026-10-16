@@ -8,12 +8,13 @@ repos:
     rev: v6.0.0
     hooks:
       # Kernel fixtures are verbatim /proc captures (the kernel writes trailing
-      # tabs and spaces) and the screenshots are generated CLI output, checked
-      # against a fresh generation: neither may be normalised.
+      # tabs and spaces), the screenshots are generated CLI output, checked
+      # against a fresh generation, and fuzz seeds are inputs byte for byte:
+      # none may be normalised.
       - id: trailing-whitespace
-        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/)
+        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/|fuzz/seeds/)
       - id: end-of-file-fixer
-        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/)
+        exclude: ^(nails-base/tests/fixtures/kernel/|docs/assets/screenshots/|fuzz/seeds/)
       - id: check-yaml
       - id: check-json
       - id: check-toml
@@ -23,12 +24,13 @@ repos:
       - id: check-merge-conflict
       - id: check-symlinks
 
-  # Secret detection
+  # Secret detection. Fuzz seeds are raw inputs, random tokens among them,
+  # where no allowlist pragma can go.
   - repo: https://github.com/Yelp/detect-secrets
     rev: v1.5.0
     hooks:
       - id: detect-secrets
-        exclude: .*\.lock$
+        exclude: (.*\.lock|^fuzz/seeds/.*)$
         additional_dependencies: ["pyyaml", "gibberish-detector"]
 
   # Local hooks for Nix, shell and project-specific checks
@@ -122,11 +124,12 @@ repos:
             done
           - --
 
-      # Rust formatting is checked (never rewritten) on every commit; the
-      # heavier lint and test gate runs on push through `just check` below.
+      # Rust formatting, of the workspace and the fuzz crate, is checked
+      # (never rewritten) on every commit; the heavier lint and test gate runs
+      # on push through `just check` below.
       - id: cargo-fmt-check
         name: cargo fmt --check
-        entry: cargo fmt --all -- --check
+        entry: just fmt-check
         language: system
         types: [rust]
         pass_filenames: false

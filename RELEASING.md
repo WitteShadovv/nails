@@ -16,9 +16,10 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
 ## Checklist
 
 1. **Set the version.** On a branch, set `version` under `[workspace.package]` in `Cargo.toml`
-   to the release version, run `cargo update --workspace`, and commit `Cargo.toml` together with
-   `Cargo.lock`. The release build runs cargo with `--locked` and fails on a stale `Cargo.lock`;
-   `cargo metadata --locked` shows the same failure locally.
+   to the release version, run `cargo update --workspace` and `just fuzz-lock`, and commit
+   `Cargo.toml` together with `Cargo.lock` and `fuzz/Cargo.lock`. The release build runs cargo with
+   `--locked` and fails on a stale `Cargo.lock`, and the `lint` job of `ci.yml` on a stale lock of
+   either; `cargo metadata --locked` shows the same failure locally.
 2. **Refresh the screenshots.** The README shows real output, rendered from the captures in
    `docs/assets/screenshots/`, and nothing checks that a capture still matches what NAILS
    prints. On the branch, with the version set, run
@@ -60,7 +61,8 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
 9. **Publish** the draft. Once published, a release, its assets and its tag never change. For a
    candidate, keep "Set as a pre-release"; the workflow ticks it for `-rc.N` versions.
 10. **Open the next cycle.** Bump `main` to the next `-dev` version (for example `0.3.1-dev` or
-    `0.4.0-dev`) with `Cargo.lock`, in a pull request of its own.
+    `0.4.0-dev`) with `Cargo.lock` and `fuzz/Cargo.lock` (`just fuzz-lock`), in a pull request of
+    its own.
 
 ## When something fails
 

@@ -33,6 +33,9 @@ FILTERS: dict[str, re.Pattern[str]] = {
         r"|Cargo\.(toml|lock)$|rust-toolchain\.toml$|(clippy|rustfmt)\.toml$"
         r"|justfile$|scripts/check-[^/]+\.sh$)"
     ),
+    # The fuzz crate, a workspace of its own: the lint job checks its lock and
+    # its formatting.
+    "fuzz": re.compile(r"^fuzz/"),
     # The dependency graph and its policy; the advisory check gates on these.
     "deps": re.compile(r"^(Cargo\.lock|deny\.toml|(.+/)?Cargo\.toml)$"),
     # The flake and what it evaluates besides the Rust sources.

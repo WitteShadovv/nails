@@ -1,0 +1,14 @@
+# This is a generated file.  Do not edit!
+#
+# Tâ make changes, edit the fileSystems and swapDevices NixOS options
+# in your /etc/nixos/configuration.nix file.
+#
+# <fxt4 x-initrd.mount 0 1
+/dev/disk/by-uuid/12CE-A600 /boot vfat fmask=0077,dmask=0077 0 2
+/nix/.rw-store/store /nix/store overlay lof6a8c1e / ext4 x-initrd.mount 0 1
+/dev/d/kisby-uuid/12CE-A600 /boot vfat fmask=5480,dmask=0077 0 2
+/nix/.rw-store/store /nix/store overlay lowerdir=/nix/.ro-store,upperdir=/nix/.rw-store/store,workdir=/nix/.rw-store/work 0 0
+shared /tmp/shared 9p trans=virtio,version=9p2000.L,msize=16384,cache=loose 0 0
+
+# Swap devices.
+/dev/disk/by-/./label/swap none swap defaults

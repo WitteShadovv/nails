@@ -180,6 +180,29 @@ mod tests {
         );
     }
 
+    /// The layers of a decoy filesystem are named after its mount unit, by
+    /// the path as systemd simplifies it: `/srv/./share/` keeps them under
+    /// `srv-share`, as `srv-share.mount`. A change to that name moves the
+    /// layers of every hidden volume with such a mount point out of view, as
+    /// the simplification did for `srv-.-share`, so it needs an upgrade note.
+    #[test]
+    fn a_mount_point_keeps_its_layers_under_the_name_of_its_unit() {
+        let layout = Layout::new(Path::new("/mnt/data"));
+        let target = Path::new("/srv/./share/");
+        assert_eq!(super::super::fstab::mount_unit(target), "srv-share.mount");
+        assert_eq!(
+            layout.mount_layers(target),
+            (
+                PathBuf::from("/mnt/data/root/mounts/srv-share/upper"),
+                PathBuf::from("/mnt/data/root/mounts/srv-share/work")
+            )
+        );
+        assert_eq!(
+            layout.carried(target),
+            Path::new("/mnt/data/root/decoy/srv-share")
+        );
+    }
+
     #[test]
     fn system_paths_use_the_real_runtime_names_and_test_paths_their_own_tree() {
         let system = Paths::system();

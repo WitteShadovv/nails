@@ -1,0 +1,32 @@
+{ config, lib, pkgs, ... }:
+{
+  boot.initrd.luks.devices.data = {
+    device = "/dev/disk/by-uuid/7d2c9e14-e8a1-4b3c-9f6b-0e1a2d3c4b5a";
+    allowDiscards = true;
+  };
+  boot.initrd.luks = {
+    devices."data".keyFile = "/root/key";
+    devices = lib.mkMerge [ { inherit (cfg) data; } ];
+  };
+  fileSystems."/mnt/data" = {
+    device = "/dev/mapper/data";
+    fsType = "ext4";
+    options = [ "noauto" "x-systemd.automount" ];
+  };
+  fileSystems."/mnt/vault".label = "My Vault";
+  swapDevices = [ { label = "secrets"; } ];
+  systemd.services.unlock = {
+    script = ''
+      cryptsetup open --type luks2 \
+        /dev/sdb2 data
+      mount /dev/disk/by-label/My\x20Vault /mnt/data
+    '';
+    wantedBy = [ "mnt-data.mount" "dev-mapper-data.device" ];
+  };
+  environment.etc."crypttab".text = ''
+    data UUID=7d2c9e14-e8a1-4b3c-9f6b-0e1a2d3c4b5a none luks
+    vault /var/lib/vault.img none luks
+  '';
+  # cryptsetup luksClose data
+  environment.systemPackages = with pkgs; [ cryptsetup nails ];
+}

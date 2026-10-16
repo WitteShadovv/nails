@@ -1,0 +1,5 @@
+4850 4380 0:142 / /fixture rw,relatime - tmpfs scene rw,mode=755,uid=1000,gid=100
+4851 4850 0:143 / /fixture/mnt/hidden\040root rw,relatime - tmpfs /dev/mapper/vault rw,mode=700,uid=1000,gid=100
+4854 4850 0:144 / /fixture/home rw,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/fixture/home,upperdir=/fixture/mnt/hidden\040root/overlays/home/upper,workdir=/fixture/mnt/hidden\040root/overlays/home/work,redirect_dir=nofollow,uuid=null
+4857 4850 0:154 / /fixture/nix/store rw,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/fixture/nix/store,upperdir=/fixture/mnt/hidden\040root/overlays/store/upper,workdir=/fixture/mnt/hidden\040root/overlays/store/work,redirect_dir=nofollow,uuid=null
+4860 4850 0:157 / /fixture/nix rw,nosuid,nodev,relatime - overlay overlay rw,lowerdir=/fixture/nix,upperdir=/fixture/mnt/hidden\040root/overlays/nix/upper,workdir=/fixture/mnt/hidden\040root/overlays/nix/work,redirect_dir=nofollow,uuid=null

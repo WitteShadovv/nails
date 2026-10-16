@@ -1,0 +1,13 @@
+﻿[Login]
+HandleLidSwitch=\
+  suspend
+; a comment
+  # an indented comment \
+IdleAction = poweroff  
+[Journal]
+Storage="volatile"
+Storage=volatile # trailing
+=no key
+no equals sign
+[Coredump
+Storage=external

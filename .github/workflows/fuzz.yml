@@ -1,0 +1,187 @@
+name: Fuzz
+
+# Coverage-guided fuzzing of the parsers that read text and data NAILS does
+# not control, with ClusterFuzzLite: .clusterfuzzlite/ builds the cargo-fuzz
+# targets in fuzz/ with libFuzzer and the address sanitizer, and
+# ClusterFuzzLite's images run them. One workflow serves two lanes:
+#
+#   pull request to main  fuzz: five minutes over every target; a crash or
+#                         a hang fails the job and is reported to code
+#                         scanning
+#   daily schedule        batch: an hour over every target; a crash or a
+#                         hang fails the run, which the 'CI red: Fuzz' issue
+#                         tracks
+#
+# Every run starts from the seed corpora in fuzz/seeds/ and keeps nothing for
+# the next one. ClusterFuzzLite's own store would keep the corpus, a coverage
+# report and a build as Actions artifacts, but it picks them by name from the
+# artifacts of every run in the repository, a fork's pull request included,
+# and unpacks them as root beside the Docker socket. NO_CLUSTERFUZZ_DEPLOYMENT
+# turns that store off, and no step needs the job's token any more.
+# docs/ci.md#fuzzing describes the lanes, and docs/testing-strategy.md#fuzzing
+# how to run a target locally.
+#
+# The steps run the images of ClusterFuzzLite's build_fuzzers and run_fuzzers
+# actions (its v1 tag) pinned by digest, with the environment those actions
+# set from their inputs. Dependabot does not read docker:// references, so the
+# digests are bumped by hand (docs/ci.md#fuzzing).
+
+on:
+  pull_request:
+    branches: [main]
+    # Everything a fuzz target is built from.
+    paths:
+      - "nails-*/**"
+      - "fuzz/**"
+      - ".clusterfuzzlite/**"
+      - ".dockerignore"
+      - "Cargo.toml"
+      - "rust-toolchain.toml"
+      - ".github/workflows/fuzz.yml"
+  schedule:
+    # Mondays to Saturdays at 04:23 UTC: batch fuzzing
+    - cron: "23 4 * * 1-6"
+    # Sundays at 04:23 UTC: the same, but a green run also closes the
+    # tracking issue. report-status repeats this expression.
+    - cron: "23 4 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-${{ github.event.pull_request.number || github.ref }}
+  # A new push supersedes a pull request's run; a scheduled or dispatched run
+  # waits for the one in progress.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  fuzz:
+    name: fuzz
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      security-events: write # upload the results to code scanning
+
+    steps:
+      # No token: ClusterFuzzLite clones the public repository without one,
+      # so none lands in the source that the build runs.
+      - name: Build the fuzz targets
+        id: build
+        uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-build-fuzzers:v1@sha256:9e71cd3238c6fd807012039c4cfb32a9657bc58641e4f15b88cb76599c6e8d30
+        env:
+          CFL_PLATFORM: github
+          LANGUAGE: rust
+          SANITIZER: address
+          LOW_DISK_SPACE: "True"
+          NO_CLUSTERFUZZ_DEPLOYMENT: "true"
+          # Telling which targets a change can reach takes a stored coverage
+          # report; fuzz them all instead of looking for one.
+          KEEP_UNAFFECTED_FUZZ_TARGETS: "true"
+
+      - name: Fuzz the change
+        uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-run-fuzzers:v1@sha256:8a49dc0608aeb210c44e276614702de4cd876928b7ee782f10be0f23580931f6
+        env:
+          CFL_PLATFORM: github
+          LANGUAGE: rust
+          SANITIZER: address
+          LOW_DISK_SPACE: "True"
+          NO_CLUSTERFUZZ_DEPLOYMENT: "true"
+          MODE: code-change
+          FUZZ_SECONDS: "300"
+          # An input that runs past libFuzzer's 25-second timeout is a
+          # finding like a crash; ClusterFuzzLite drops it otherwise.
+          REPORT_TIMEOUTS: "true"
+          PARALLEL_FUZZING: "true"
+          OUTPUT_SARIF: "true"
+
+      # Each crashing input, with its stack trace in a .summary file beside it.
+      - name: Upload the crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crashes
+          path: out/artifacts/
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # The read-only token of a fork's pull request cannot upload.
+      - name: Upload the results to code scanning
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && github.event.pull_request.head.repo.full_name == github.repository }}
+        uses: github/codeql-action/upload-sarif@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          sarif_file: cifuzz-sarif/results.sarif
+          checkout_path: cifuzz-sarif
+          category: clusterfuzzlite
+
+  batch:
+    name: Batch fuzzing
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 100
+    permissions:
+      contents: read
+
+    steps:
+      - name: Build the fuzz targets
+        uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-build-fuzzers:v1@sha256:9e71cd3238c6fd807012039c4cfb32a9657bc58641e4f15b88cb76599c6e8d30
+        env:
+          CFL_PLATFORM: github
+          LANGUAGE: rust
+          SANITIZER: address
+          LOW_DISK_SPACE: "True"
+          NO_CLUSTERFUZZ_DEPLOYMENT: "true"
+
+      # No SARIF: in batch mode ClusterFuzzLite fuzzes on after a crash and
+      # writes the SARIF of the last target only, which leaves out a crash in
+      # any other one and would close the alerts of an earlier run. The red
+      # job, its fuzz-crashes artifact and the tracking issue report it.
+      - name: Fuzz every target
+        uses: docker://gcr.io/oss-fuzz-base/clusterfuzzlite-run-fuzzers:v1@sha256:8a49dc0608aeb210c44e276614702de4cd876928b7ee782f10be0f23580931f6
+        env:
+          CFL_PLATFORM: github
+          LANGUAGE: rust
+          SANITIZER: address
+          LOW_DISK_SPACE: "True"
+          NO_CLUSTERFUZZ_DEPLOYMENT: "true"
+          MODE: batch
+          FUZZ_SECONDS: "3600"
+          REPORT_TIMEOUTS: "true"
+          PARALLEL_FUZZING: "true"
+
+      - name: Upload the crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fuzz-crashes
+          path: out/artifacts/
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Scheduled and dispatched runs are unattended: a red one opens or comments
+  # on the 'CI red: Fuzz' issue. A green run proves little, as every run
+  # fuzzes afresh from the seeds, so only the Sunday run and a dispatched one
+  # close the issue; a green run on another day reports nothing.
+  report-status:
+    name: Report status
+    needs: batch
+    if: ${{ !cancelled() && github.event_name != 'pull_request' && (needs.batch.result != 'success' || github.event_name == 'workflow_dispatch' || github.event.schedule == '23 4 * * 0') }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}

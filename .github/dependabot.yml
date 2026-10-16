@@ -1,7 +1,9 @@
 # Dependency automation for the NAILS workspace.
 #
-# Dependabot keeps five sources of pinned versions current:
+# Dependabot keeps seven sources of pinned versions current:
 #   - the Cargo workspace (Cargo.toml / Cargo.lock)
+#   - the fuzz crate (fuzz/Cargo.toml / fuzz/Cargo.lock)
+#   - the ClusterFuzzLite build image (.clusterfuzzlite/Dockerfile)
 #   - the GitHub Actions in the workflows and composite actions
 #   - flake.lock (the Nix inputs)
 #   - .pre-commit-config.yaml (the hook revisions)
@@ -82,6 +84,50 @@ updates:
         update-types: ["version-update:semver-major"]
       - dependency-name: "chrono"
         update-types: ["version-update:semver-major"]
+
+  # The fuzz crate, a workspace of its own with its own Cargo.lock: libFuzzer's
+  # bindings and the dependencies of the NAILS crates it fuzzes.
+  - package-ecosystem: "cargo"
+    directory: "/fuzz"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "build"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "rust"
+    groups:
+      fuzz:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      fuzz-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+
+  # OSS-Fuzz's Rust builder image, pinned by digest in the ClusterFuzzLite
+  # build of the fuzz targets.
+  - package-ecosystem: "docker"
+    directory: "/.clusterfuzzlite"
+    schedule:
+      interval: "monthly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    labels:
+      - "dependencies"
+      - "ci"
+    groups:
+      clusterfuzzlite:
+        patterns:
+          - "*"
 
   # GitHub Actions pinned in the workflows and in the composite actions.
   - package-ecosystem: "github-actions"

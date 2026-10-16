@@ -1,0 +1,15 @@
+140 1 0:50 / / rw,relatime shared:1 - overlay overlay rw,lowerdir=/run/nextroot,upperdir=/mnt/data/root/upper,workdir=/mnt/data/root/work,redirect_dir=nofollow,uuid=null
+62 140 254:0 / /mnt/data rw,relatime shared:2 - ext4 /dev/mapper/data rw
+22 140 0:21 / /proc rw,nosuid,nodev,noexec,relatime shared:12 - proc proc rw
+23 140 0:22 / /sys rw,nosuid,nodev,noexec,relatime shared:2 - sysfs sysfs rw
+24 140 0:5 / /dev rw,nosuid shared:8 - devtmpfs devtmpfs rw,size=201380k,nr_inodes=501935,mode=755
+25 24 0:23 / /dev/pts rw,nosuid,noexec,relatime shared:9 - devpts devpts rw,gid=3,mode=620,ptmxmode=666
+26 24 0:24 / /dev/shm rw,nosuid,nodev shared:10 - tmpfs tmpfs rw
+27 140 0:25 / /run rw,nosuid,nodev shared:11 - tmpfs tmpfs rw,size=1006876k,mode=755
+28 23 0:26 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime shared:4 - cgroup2 cgroup2 rw,nsdelegate,memory_recursiveprot
+29 140 0:30 / /nix/.ro-store ro,relatime shared:13 - 9p nix-store rw,cache=loose,access=client,msize=16384,trans=virtio
+30 140 0:31 / /nix/.rw-store rw,relatime shared:14 - tmpfs tmpfs rw,mode=755
+31 140 0:32 / /nix/store ro,relatime shared:15 - overlay overlay rw,lowerdir=/nix/.ro-store,upperdir=/nix/.rw-store/store,workdir=/nix/.rw-store/work,uuid=on
+32 140 0:33 / /tmp/shared rw,relatime shared:16 - 9p shared rw,trans=virtio
+33 27 0:34 / /run/wrappers rw,nodev,relatime shared:17 - tmpfs tmpfs rw,mode=755
+34 27 0:35 / /run/user/1000 rw,nosuid,nodev,relatime shared:18 - tmpfs tmpfs rw,size=402752k,nr_inodes=100688,mode=700,uid=1000,gid=100

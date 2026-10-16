@@ -1,0 +1,7 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer options ClusterFuzzLite reads for this target: a disk input needs
+# room for a GPT behind 4096-byte sectors and for its probes.
+[libfuzzer]
+max_len = 65536

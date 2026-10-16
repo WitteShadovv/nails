@@ -1,0 +1,5 @@
+# /etc/fstab: static file system information.
+/dev/disk/by-id/dm-uuid-LVM-q8vZ3r2Yd0kXcN6tB1aL9mF4hS7jP5wE / ext4 defaults 0 1
+/dev/disk/by-uuid/9e3f1a2b-4c5d-4e6f-8a9b-0c1d2e3f4a5b /boot ext4 defaults 0 1
+/dev/disk/by-uuid/1A2B-3C4D /boot/efi vfat defaults 0 1
+/swap.img	none	swap	sw	0	0

@@ -27,6 +27,24 @@ fn units_are_named_the_way_systemd_names_them() {
     );
     assert_eq!(swap_unit("/swapfile").as_deref(), Some("swapfile.swap"));
     assert_eq!(swap_unit("none"), None);
+    // Simplified first, as systemd simplifies a path.
+    assert_eq!(mount_unit(Path::new("/mnt/./data/.")), "mnt-data.mount");
+    assert_eq!(
+        swap_unit("/dev/disk/by-/./label/swap").as_deref(),
+        Some("dev-disk-by\\x2d-label-swap.swap")
+    );
+}
+
+/// A swap on a label with a space is the unit systemd-fstab-generator makes
+/// for the link udev makes, `swap\x20space`, whose backslash the unit name
+/// escapes again. Found by the `fstab_crypttab` fuzz target, when the unit
+/// masked was `dev-disk-by\x2dlabel-swap\x20space.swap`.
+#[test]
+fn a_swap_on_a_label_is_the_unit_of_its_link() {
+    assert_eq!(
+        swap_unit("LABEL=swap space").as_deref(),
+        Some("dev-disk-by\\x2dlabel-swap\\x5cx20space.swap")
+    );
 }
 
 /// A missing fstab has no entries; one that cannot be read is an error.

@@ -153,3 +153,61 @@ owes one.
   job runs the whiteout test as root.
 - **VM:** the suites in `nix/e2e-tests`, as its README describes. When a captured
   format changes, refresh the fixture as the fixture README says.
+
+## Fuzzing
+
+The parsers that read what NAILS does not control are also fuzzed, with
+[cargo-fuzz](https://rust-fuzz.github.io/book/) and libFuzzer, in the crate
+`fuzz/`. It is a workspace of its own, so `just check` checks only its
+formatting, and clippy, cargo-deny and the release build never see it; like the
+workspace, it denies unsafe code. Its `fuzz/Cargo.lock` takes the versions of
+the crates it shares with NAILS from `Cargo.lock`: `just fuzz-lock` rewrites it
+from there, and CI fails on one that no longer matches the manifests, as after a
+version bump. Each target in `fuzz/fuzz_targets/` drives product code without
+touching the host (a filesystem is a `MockFilesystem`, a disk an in-memory file)
+and checks more than that nothing panics or hangs:
+
+| Target | Input | Checks |
+| --- | --- | --- |
+| `mountinfo` | a mount table and its overlay options | entries printed back as the kernel prints them parse the same; overlay layers survive NAILS's escaping and the kernel's; a lookup answers with a mount at the path asked for |
+| `utab` | libmount's `utab` and two mount tables | each line reads as libmount 2.42 reads it; across a switch and on the way back only whole input lines survive, changed at most in their ID |
+| `fstab_crypttab` | a decoy's fstab, crypttab and mount table | every swap and mount the session masks is masked under the unit name systemd generates; a crypttab device is the node systemd opens |
+| `nixos_reference` | `configuration.nix` and udev's record of the hidden volume's partition | every reference lies in the file; ASCII case changes nothing; the scan reads forward only |
+| `systemd_conf` | logind, journald, coredump and sleep configuration with drop-ins | the assignments are the ones the daemon applies, in order |
+| `os_release` | `/etc/os-release` | written back with os-release(5) quoting, it reads the same |
+| `disk_layout` | the start of a raw disk | partitions and free ranges lie on the disk, in order, apart |
+| `raw_token_scan` | a canary token and a sparse disk image | the windowed scan finds what a scan of the whole image in one buffer finds |
+
+What systemd and libmount do, where a target compares NAILS with them, is
+modelled in `fuzz/src/`, each model written from the C function it follows.
+Each target starts from its seed corpus in `fuzz/seeds/<target>/`, inputs
+taken from the fixtures and tests, with a dictionary in `fuzz/dicts/`. The
+proptests in `nails-core/src/fuzz/` (`just fuzz`) cover some of the same
+parsers with generated inputs on every `cargo test`; the fuzz targets search
+with coverage feedback, for much longer, in CI ([ci.md](ci.md#fuzzing)).
+
+To run a target in the development shell, which provides cargo-fuzz:
+
+```bash
+just fuzz-run mountinfo        # for a minute
+just fuzz-run utab 3600        # for an hour
+```
+
+The recipe builds the target as CI does (a release build with debug assertions,
+overflow checks and the address sanitizer) with the pinned toolchain, starts
+from the seeds and the dictionary, and keeps what it finds in
+`fuzz/corpus/<target>/`. A crash, or an input that runs longer than 25 seconds
+(a hang, here and in CI), stops it and leaves the input in
+`fuzz/artifacts/<target>/`; replay it with
+`RUSTC_BOOTSTRAP=1 cargo fuzz run --release --debug-assertions <target> <input>`.
+For the exact build CI runs, use OSS-Fuzz's helper on a checkout named `nails`:
+`python3 infra/helper.py build_image --external --no-pull <checkout>`, then
+`build_fuzzers --external --sanitizer address <checkout>` and
+`run_fuzzer --external <checkout> <target>`. `.dockerignore` sends Docker only
+the files the build reads, so a development checkout with its `target/`
+directories works as well as a fresh clone.
+
+A crash is a bug in NAILS until shown otherwise: fix it with a regression unit
+test next to the code, and add the input to the target's seeds, so every later
+run starts from it. A target that checks something NAILS does not promise is
+corrected instead.

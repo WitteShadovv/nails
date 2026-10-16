@@ -20,6 +20,10 @@ The scheduled workflow never gates a merge. It runs:
 - the `deny.toml` ignore expiry check
 - two from-source builds of `.#nails-release` on fresh runners, compared byte for byte (`reproducibility.yml`)
 
+### Weekly and on every push to main (`.github/workflows/scorecard.yml`)
+
+OpenSSF Scorecard grades the repository's supply-chain practices and never gates a merge; the README badge and code scanning show the results ([ci.md](ci.md#openssf-scorecard)).
+
 ### In release automation (`.github/workflows/release.yml`)
 
 The release workflow adds:

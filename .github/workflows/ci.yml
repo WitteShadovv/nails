@@ -41,6 +41,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      fuzz: ${{ steps.filter.outputs.fuzz }}
       deps: ${{ steps.filter.outputs.deps }}
       nix: ${{ steps.filter.outputs.nix }}
       workflows: ${{ steps.filter.outputs.workflows }}
@@ -62,7 +63,7 @@ jobs:
   lint:
     name: lint
     needs: changes
-    if: needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.rust == 'true' || needs.changes.outputs.fuzz == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 10
 
@@ -94,6 +95,12 @@ jobs:
       # matching Cargo.lock update fails here, before anything is built.
       - name: Check that Cargo.lock is current
         run: cargo metadata --locked --format-version 1 > /dev/null
+
+      # The fuzz crate is a workspace of its own, whose lock a version bump
+      # or a new dependency of a crate makes stale too; `just fuzz-lock`
+      # rewrites it from Cargo.lock.
+      - name: Check that fuzz/Cargo.lock is current
+        run: cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 
       - name: Check formatting
         run: just fmt-check

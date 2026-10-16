@@ -15,12 +15,20 @@ from ci import changes
 
 NOTHING = {
     "rust": False,
+    "fuzz": False,
     "deps": False,
     "nix": False,
     "workflows": False,
     "docs": False,
 }
-EVERYTHING = {"rust": True, "deps": True, "nix": True, "workflows": True, "docs": True}
+EVERYTHING = {
+    "rust": True,
+    "fuzz": True,
+    "deps": True,
+    "nix": True,
+    "workflows": True,
+    "docs": True,
+}
 
 
 def only(*names: str) -> dict[str, bool]:
@@ -53,6 +61,18 @@ class SelectTest(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 self.assertTrue(changes.select([path])["rust"])
+
+    def test_fuzz_crate_runs_its_own_filter(self) -> None:
+        for path in (
+            "fuzz/fuzz_targets/utab.rs",
+            "fuzz/src/libmount.rs",
+            "fuzz/Cargo.lock",
+            "fuzz/seeds/utab/odd-lines",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(changes.select([path]), only("fuzz"))
+        self.assertEqual(changes.select(["fuzz/Cargo.toml"]), only("fuzz", "deps"))
+        self.assertEqual(changes.select(["docs/fuzz/notes.md"]), only("docs"))
 
     def test_source_file_is_not_a_dependency_change(self) -> None:
         self.assertEqual(changes.select(["nails-core/src/state.rs"]), only("rust"))
@@ -186,14 +206,28 @@ class MainTest(unittest.TestCase):
     def test_without_base_every_filter_is_true(self) -> None:
         self.assertEqual(
             self.run_main(),
-            ["rust=true", "deps=true", "nix=true", "workflows=true", "docs=true"],
+            [
+                "rust=true",
+                "fuzz=true",
+                "deps=true",
+                "nix=true",
+                "workflows=true",
+                "docs=true",
+            ],
         )
 
     def test_unknown_base_runs_everything(self) -> None:
         with mock.patch.object(changes, "changed_paths", return_value=None):
             self.assertEqual(
                 self.run_main("--base", "HEAD^1"),
-                ["rust=true", "deps=true", "nix=true", "workflows=true", "docs=true"],
+                [
+                    "rust=true",
+                    "fuzz=true",
+                    "deps=true",
+                    "nix=true",
+                    "workflows=true",
+                    "docs=true",
+                ],
             )
 
     def test_prints_github_output_lines(self) -> None:
@@ -202,6 +236,7 @@ class MainTest(unittest.TestCase):
                 self.run_main("--base", "HEAD^1"),
                 [
                     "rust=false",
+                    "fuzz=false",
                     "deps=true",
                     "nix=false",
                     "workflows=false",

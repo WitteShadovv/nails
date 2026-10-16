@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# libFuzzer dictionary: os-release keys, identifiers and shell quoting.
+"ID="
+"ID_LIKE="
+"VERSION_ID="
+"NAME="
+"nixos"
+"debian"
+"ubuntu"
+"fedora"
+"\""
+"'"
+"\\\""
+"\\$"
+"\\`"
+"\\\\"
+"#"

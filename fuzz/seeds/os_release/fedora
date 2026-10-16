@@ -1,0 +1,6 @@
+NAME="Fedora Linux"
+VERSION="43 (Workstation Edition)"
+ID=fedora
+VERSION_ID=43
+PLATFORM_ID="platform:f43"
+VARIANT_ID=workstation

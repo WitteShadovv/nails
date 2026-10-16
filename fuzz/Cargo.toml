@@ -1,0 +1,101 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Coverage-guided fuzz targets (cargo-fuzz, libFuzzer) for the parsers that
+# read text and data NAILS does not control: the kernel's and libmount's mount
+# tables, a decoy's fstab, crypttab, os-release, systemd configuration and
+# NixOS configuration, udev's records, and raw disks. docs/testing-strategy.md
+# says how to run a target; .clusterfuzzlite/ builds them for CI.
+#
+# This crate is its own workspace, outside the NAILS one: `just check` checks
+# its formatting only, and clippy, cargo-deny and the release build never see it
+# or its dependencies.
+
+[package]
+name = "nails-fuzz"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+# The anonymous in-memory file the raw-disk targets read from.
+rustix = { version = "1", features = ["fs"] }
+nails-base = { path = "../nails-base", features = ["test-support"] }
+nails-core = { path = "../nails-core" }
+nails-forensics = { path = "../nails-forensics" }
+nails-platform = { path = "../nails-platform" }
+nails-session = { path = "../nails-session" }
+nails-teardown = { path = "../nails-teardown" }
+
+# The lint policy of the workspace (Cargo.toml's [workspace.lints]), which a
+# workspace of its own does not inherit: no unsafe code.
+[lints.rust]
+unsafe_code = "deny"
+
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "mountinfo"
+path = "fuzz_targets/mountinfo.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "utab"
+path = "fuzz_targets/utab.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fstab_crypttab"
+path = "fuzz_targets/fstab_crypttab.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "nixos_reference"
+path = "fuzz_targets/nixos_reference.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "systemd_conf"
+path = "fuzz_targets/systemd_conf.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "os_release"
+path = "fuzz_targets/os_release.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "disk_layout"
+path = "fuzz_targets/disk_layout.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "raw_token_scan"
+path = "fuzz_targets/raw_token_scan.rs"
+test = false
+doc = false
+bench = false
+
+# Line numbers in a crash's stack trace.
+[profile.release]
+debug = 1

@@ -155,14 +155,17 @@ pub fn parse_fstab(text: &str) -> Vec<FstabEntry> {
         .collect()
 }
 
-/// The `/dev` path a spec names: `/dev/...` as is, `UUID=x` as
-/// `/dev/disk/by-uuid/x`, and likewise for `LABEL`, `PARTUUID`, `PARTLABEL`.
+/// The `/dev` path a spec names, as systemd's `fstab_node_to_udev_node()`
+/// reads it: `/dev/...` as is, and `UUID=`, `LABEL=`, `PARTUUID=` and
+/// `PARTLABEL=` as the link udev makes for the value under `/dev/disk/by-*`.
+/// The value loses one pair of quotes around it and is encoded as udev
+/// encodes the name of a link: `LABEL=My Data` is
+/// `/dev/disk/by-label/My\x20Data`.
 pub fn spec_device(spec: &str) -> Option<PathBuf> {
     if spec.starts_with("/dev/") {
         return Some(PathBuf::from(spec));
     }
     let (key, value) = spec.split_once('=')?;
-    let value = value.trim_matches('"');
     let dir = match key {
         "UUID" => "by-uuid",
         "LABEL" => "by-label",
@@ -170,19 +173,68 @@ pub fn spec_device(spec: &str) -> Option<PathBuf> {
         "PARTLABEL" => "by-partlabel",
         _ => return None,
     };
-    Some(Path::new("/dev/disk").join(dir).join(value))
+    Some(
+        Path::new("/dev/disk")
+            .join(dir)
+            .join(encode_devnode_name(unquote(value))),
+    )
+}
+
+/// `value` without one pair of matching quotes, `"` or `'`, around it.
+fn unquote(value: &str) -> &str {
+    let bytes = value.as_bytes();
+    match bytes {
+        [quote @ (b'"' | b'\''), .., last] if last == quote => &value[1..value.len() - 1],
+        _ => value,
+    }
+}
+
+/// `value` as udev writes it in the name of a link (`encode_devnode_name()`
+/// in systemd): ASCII letters and digits, `#+-.:=@_` and valid multi-byte
+/// characters stay, and every other byte, the backslash included, becomes
+/// `\xNN`. A `/` in a label therefore stays inside the link's name.
+fn encode_devnode_name(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        let code = u32::from(c);
+        // systemd's unichar_is_valid() refuses the noncharacters.
+        let kept = if c.is_ascii() {
+            c.is_ascii_alphanumeric() || "#+-.:=@_".contains(c)
+        } else {
+            !(0xfdd0..=0xfdef).contains(&code) && code & 0xfffe != 0xfffe
+        };
+        if kept {
+            out.push(c);
+        } else {
+            let mut buf = [0u8; 4];
+            for byte in c.encode_utf8(&mut buf).bytes() {
+                out.push_str(&format!("\\x{byte:02x}"));
+            }
+        }
+    }
+    out
 }
 
 /// systemd's path escaping (`systemd-escape --path`): the name a unit for
-/// `path` carries (`/mnt/my-disk` is `mnt-my\x2ddisk`). A single file name
+/// `path` carries (`/mnt/my-disk` is `mnt-my\x2ddisk`). The path is first
+/// simplified as systemd's `path_simplify()` does: repeated slashes and `.`
+/// components go, and so does `..` at the start of an absolute path, which
+/// cannot climb above `/` (`/mnt/./data/` is `mnt-data`). A single file name
 /// escapes as an instance name does (`vg-root` is `vg\x2droot`).
 pub fn escape_path(path: &Path) -> String {
     let text = path.to_string_lossy();
-    let trimmed: Vec<&str> = text.split('/').filter(|s| !s.is_empty()).collect();
-    if trimmed.is_empty() {
+    let absolute = text.starts_with('/');
+    let mut kept: Vec<&str> = Vec::new();
+    for component in text.split('/').filter(|c| !c.is_empty() && *c != ".") {
+        if absolute && kept.is_empty() && component == ".." {
+            continue;
+        }
+        kept.push(component);
+    }
+    if kept.is_empty() {
         return "-".to_string();
     }
-    let joined = trimmed.join("/");
+    let joined = kept.join("/");
     let mut out = String::new();
     for (i, byte) in joined.bytes().enumerate() {
         match byte {
@@ -254,5 +306,49 @@ mod tests {
         assert_eq!(spec_device("/dev/vdb"), Some(PathBuf::from("/dev/vdb")));
         assert_eq!(spec_device("tmpfs"), None);
         assert_eq!(spec_device("ID=1"), None);
+    }
+
+    /// A path is simplified as systemd simplifies it before it is escaped.
+    /// Found by the `fstab_crypttab` fuzz target: the swap on
+    /// `/dev/disk/by-/./label/swap` kept its `.` in the unit the session
+    /// masked, so the unit systemd generates stayed free.
+    #[test]
+    fn a_path_is_simplified_as_systemd_simplifies_it() {
+        for (path, name) in [
+            ("/mnt/./data/.", "mnt-data"),
+            ("/./x", "x"),
+            ("//mnt//data//", "mnt-data"),
+            ("/../../mnt/data", "mnt-data"),
+            ("/.", "-"),
+            ("/./.hidden", "\\x2ehidden"),
+            ("./vg-root", "vg\\x2droot"),
+        ] {
+            assert_eq!(escape_path(Path::new(path)), name, "{path}");
+        }
+    }
+
+    /// A tag names the link udev makes for it, in udev's encoding. Found by
+    /// the `fstab_crypttab` fuzz target: `LABEL=swap space` named
+    /// `/dev/disk/by-label/swap space`, which no link is, so the session
+    /// masked a swap unit systemd never generates and left the real one free.
+    #[test]
+    fn a_tag_names_the_link_udev_makes() {
+        for (spec, device) in [
+            ("LABEL=My Data", "/dev/disk/by-label/My\\x20Data"),
+            ("LABEL=\"My Data\"", "/dev/disk/by-label/My\\x20Data"),
+            (
+                "PARTLABEL='EFI system'",
+                "/dev/disk/by-partlabel/EFI\\x20system",
+            ),
+            ("LABEL=\"\"half\"", "/dev/disk/by-label/\\x22half"),
+            ("LABEL=a/b", "/dev/disk/by-label/a\\x2fb"),
+            // Not the absolute path /etc, which Path::join made of it.
+            ("LABEL=/etc", "/dev/disk/by-label/\\x2fetc"),
+            ("LABEL=back\\slash", "/dev/disk/by-label/back\\x5cslash"),
+            ("LABEL=Données#2", "/dev/disk/by-label/Données#2"),
+            ("UUID=0a1b-2c3d", "/dev/disk/by-uuid/0a1b-2c3d"),
+        ] {
+            assert_eq!(spec_device(spec), Some(PathBuf::from(device)), "{spec}");
+        }
     }
 }

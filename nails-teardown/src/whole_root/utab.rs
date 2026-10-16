@@ -263,10 +263,10 @@ const STRING_KEYS: [&[u8]; 6] = [
 /// its newline and a carriage return before it, from its first character that
 /// is not a blank; a field starts after a run of spaces with its `KEY=`, only
 /// the first of each key counts, a value runs to the next space or tab and is
-/// octal-escaped, and a number that does not end at a space, a tab or the end
-/// of the line makes libmount skip the whole line. libmount joins a line to a
-/// mount only when it has a source, a target, a root and options or
-/// attributes, and joins each mount to one line at most.
+/// octal-escaped, and an empty value or a number that does not end at a space,
+/// a tab or the end of the line makes libmount skip the whole line. libmount
+/// joins a line to a mount only when it has a source, a target, a root and
+/// options or attributes, and joins each mount to one line at most.
 #[derive(Debug, Default)]
 struct Line {
     /// The mount ID, 0 for none (a negative one is matched by path too).
@@ -325,6 +325,11 @@ impl Line {
                         .iter()
                         .position(|&b| b == b' ' || b == b'\t')
                         .unwrap_or(value.len());
+                // libmount's unmangle() returns no string for an empty value,
+                // which it takes for a failed allocation: the line goes.
+                if end == start {
+                    return None;
+                }
                 set[key] = true;
                 let value = String::from_utf8_lossy(&bytes[start..end]);
                 let path = || Some(PathBuf::from(unescape_octal(&value)));

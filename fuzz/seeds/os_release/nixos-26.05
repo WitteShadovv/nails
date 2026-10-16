@@ -1,0 +1,14 @@
+ANSI_COLOR="0;38;2;126;186;228"
+BUG_REPORT_URL="https://github.com/NixOS/nixpkgs/issues"
+BUILD_ID="26.05.20260601.0a1b2c3"
+CPE_NAME="cpe:/o:nixos:nixos:26.05"
+DEFAULT_HOSTNAME=nixos
+ID=nixos
+ID_LIKE=""
+IMAGE_ID=""
+LOGO="nix-snowflake"
+NAME=NixOS
+PRETTY_NAME="NixOS 26.05 (Yarara)"
+VERSION="26.05 (Yarara)"
+VERSION_CODENAME=yarara
+VERSION_ID="26.05"

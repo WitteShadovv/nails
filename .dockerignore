@@ -1,0 +1,22 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The build context of .clusterfuzzlite/Dockerfile, the one image built from
+# this tree: only what the fuzz build reads. No .git, whose config can hold the
+# token of a clone, no target directory, and nothing else a development
+# checkout keeps. It sits at the root, not beside the Dockerfile, because only
+# BuildKit reads a Dockerfile-specific ignore file: a docker CLI without
+# buildx, such as that of Ubuntu's docker.io package, which OSS-Fuzz's helper
+# may run, still uses the legacy builder.
+*
+!.cargo/
+!.clusterfuzzlite/
+!Cargo.lock
+!Cargo.toml
+!rust-toolchain.toml
+!nails-*/
+!fuzz/
+**/target/
+fuzz/artifacts/
+fuzz/corpus/
+fuzz/coverage/

@@ -1,0 +1,25 @@
+#  This file is part of the decoy's own configuration.
+#
+# Entries in this file show the compile time defaults.
+
+[Login]
+#NAutoVTs=6
+#KillUserProcesses=no
+HandleLidSwitch=suspend
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+IdleAction=ignore
+IdleActionSec=30min
+
+[Journal]
+Storage=volatile
+#Compress=yes
+SystemMaxUse=50M
+
+[Coredump]
+Storage=none
+ProcessSizeMax=0
+
+[Sleep]
+AllowSuspend=no
+AllowHibernation=no

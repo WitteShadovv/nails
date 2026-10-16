@@ -25,9 +25,14 @@
 //! # Syntax
 //!
 //! Parsing follows systemd's `conf-parser`:
+//! - a line ends at a newline, a carriage return or a NUL, as `read_line()`
+//!   reads it (a CR LF pair ends one line);
 //! - leading and trailing whitespace is stripped; empty lines and lines whose
 //!   first non-blank character is `#` or `;` are comments (also in the middle
 //!   of a continuation);
+//! - a byte order mark is dropped once, from the first line that starts with
+//!   one, after that line was told from a comment (so a mark before a `#`
+//!   leaves no comment);
 //! - a line ending in an unescaped backslash continues on the next line, with
 //!   the backslash replaced by a space;
 //! - `[Section]` headers select the section; assignments outside any section
@@ -36,7 +41,8 @@
 //! - an assignment splits at the first `=`, key and value are stripped. Values
 //!   are not unquoted and there are no trailing comments: `Storage="volatile"`
 //!   and `Storage=volatile # x` are both invalid values to journald;
-//! - a malformed section header (a `[` line not ending in `]`) makes systemd
+//! - a malformed section header (a `[` line not ending in `]`, or a section
+//!   name with a control character, a quote or a backslash) makes systemd
 //!   stop reading that file and skip all the remaining ones; the assignments
 //!   already read stay in effect.
 //!
@@ -157,17 +163,20 @@ pub fn parse_section(
 ) -> Result<(), MalformedSectionHeader> {
     let mut in_section = false;
     let mut continuation: Option<String> = None;
+    let mut bom_seen = false;
 
-    for (index, raw) in text.lines().enumerate() {
-        let raw = if index == 0 {
-            raw.strip_prefix('\u{feff}').unwrap_or(raw)
-        } else {
-            raw
-        };
+    for raw in read_lines(text) {
         let stripped = raw.trim_start_matches(is_ws);
         if stripped.starts_with(['#', ';']) {
             continue;
         }
+        let raw = match raw.strip_prefix('\u{feff}') {
+            Some(rest) if !bom_seen => {
+                bom_seen = true;
+                rest
+            }
+            _ => raw,
+        };
 
         let mut line = match continuation.take() {
             Some(mut joined) => {
@@ -196,6 +205,38 @@ fn is_ws(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r')
 }
 
+/// The lines of `text` as systemd's `read_line()` reads a configuration file:
+/// a line ends at a newline, a carriage return or a NUL, and a run of these
+/// ends one line as long as no kind repeats in it, so `\r\n` and `\n\r` end
+/// one line and `\n\n` two. A NUL ends its line at once.
+fn read_lines(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut at = 0;
+    while at < bytes.len() {
+        let start = at;
+        while at < bytes.len() && !matches!(bytes[at], b'\n' | b'\r' | 0) {
+            at += 1;
+        }
+        let end = at;
+        let mut seen = 0u8;
+        while let Some(kind) = bytes.get(at).and_then(|byte| match byte {
+            b'\n' => Some(1u8),
+            b'\r' => Some(2),
+            0 => Some(4),
+            _ => None,
+        }) {
+            if seen & 4 != 0 || seen & kind != 0 {
+                break;
+            }
+            seen |= kind;
+            at += 1;
+        }
+        lines.push(&text[start..end]);
+    }
+    lines
+}
+
 /// Whether `line` ends in a backslash that is not itself escaped.
 fn ends_with_unescaped_backslash(line: &str) -> bool {
     let mut escaped = false;
@@ -211,12 +252,21 @@ fn parse_line(
     in_section: &mut bool,
     out: &mut Vec<Assignment>,
 ) -> Result<(), MalformedSectionHeader> {
+    // Comments went before the line was joined; a `#` here followed a byte
+    // order mark and starts a key, as in systemd.
     let line = line.trim_matches(is_ws);
-    if line.is_empty() || line.starts_with(['#', ';']) {
+    if line.is_empty() {
         return Ok(());
     }
     if let Some(header) = line.strip_prefix('[') {
         let name = header.strip_suffix(']').ok_or(MalformedSectionHeader)?;
+        // systemd's string_is_safe() refuses these in a section name.
+        if name
+            .chars()
+            .any(|c| c.is_ascii_control() || matches!(c, '"' | '\'' | '\\'))
+        {
+            return Err(MalformedSectionHeader);
+        }
         *in_section = name == section;
         return Ok(());
     }
@@ -274,6 +324,83 @@ mod tests {
 
     fn pair(key: &str, value: &str) -> (String, String) {
         (key.to_string(), value.to_string())
+    }
+
+    /// systemd drops a byte order mark from the first line that starts with
+    /// one, which need not be the first line, and tells a comment before it
+    /// does. Found by the `systemd_conf` fuzz target with a mark at the start
+    /// of a later line, which NAILS kept.
+    #[test]
+    fn a_byte_order_mark_goes_where_systemd_drops_it() {
+        // On a later line the mark goes, so the header counts.
+        assert_eq!(
+            parse("# a comment\n\u{feff}[Journal]\nStorage=volatile\n"),
+            (vec![pair("Storage", "volatile")], true)
+        );
+        // Only the first mark goes.
+        assert_eq!(
+            parse("\u{feff}[Journal]\n\u{feff}Storage=none\nStorage=volatile\n"),
+            (
+                vec![pair("\u{feff}Storage", "none"), pair("Storage", "volatile")],
+                true
+            )
+        );
+        // A mark before `#` leaves no comment but a key systemd does not know.
+        assert_eq!(
+            parse("[Journal]\n\u{feff}#Storage=none\n"),
+            (vec![pair("#Storage", "none")], true)
+        );
+    }
+
+    /// systemd refuses a section name with a control character, a quote or a
+    /// backslash, and stops reading there as at a header without its `]`.
+    /// Found by the `systemd_conf` fuzz target with a DEL in the name, after
+    /// which NAILS read on into the drop-ins.
+    #[test]
+    fn a_section_name_systemd_refuses_stops_the_reading() {
+        for header in [
+            "[Log\u{7f}in]",
+            "[Lo\tgin]",
+            "[\"Journal\"]",
+            "['Journal']",
+            "[Jour\\nal]",
+        ] {
+            let text = format!("[Journal]\nStorage=volatile\n{header}\n[Journal]\nStorage=none\n");
+            assert_eq!(
+                parse(&text),
+                (vec![pair("Storage", "volatile")], false),
+                "{header}"
+            );
+        }
+    }
+
+    /// systemd ends a line at a carriage return or a NUL too. Found by the
+    /// `systemd_conf` fuzz target: the CR after `[` stayed inside the line,
+    /// which then read as the header of another section, so the assignments
+    /// after it counted, where systemd stops at the malformed header `[`.
+    #[test]
+    fn a_carriage_return_or_a_nul_ends_a_line() {
+        assert_eq!(parse("[\rJournal]\nStorage=persistent\n"), (vec![], false));
+        assert_eq!(
+            parse("[Journal]\rStorage=volatile\r"),
+            (vec![pair("Storage", "volatile")], true)
+        );
+        assert_eq!(
+            parse("[Journal]\r\n\rStorage=none\n\rStorage=auto"),
+            (vec![pair("Storage", "none"), pair("Storage", "auto")], true)
+        );
+        assert_eq!(
+            parse("[Journal]\0Storage=volatile\0\0Storage=none"),
+            (
+                vec![pair("Storage", "volatile"), pair("Storage", "none")],
+                true
+            )
+        );
+        // A continued line goes on past a lone CR as past a newline.
+        assert_eq!(
+            parse("[Journal]\rStorage=vola\\\rtile"),
+            (vec![pair("Storage", "vola tile")], true)
+        );
     }
 
     #[test]
