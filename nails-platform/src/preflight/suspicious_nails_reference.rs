@@ -10,8 +10,9 @@ use std::path::PathBuf;
 
 /// Refuses activation while the decoy's own `/etc/nixos` names the hidden
 /// environment: the hidden volume's device or mount point (or the units
-/// systemd names after them), the storage it is on by any name the system
-/// gives it, its mapping where a line opens it, or NAILS.
+/// systemd names after them), the storage it is on by its device paths, every
+/// link udev made for it, its uuids and its labels, its mapping where a line
+/// opens it, or NAILS ([`verify_base_config_clean`] lists the forms).
 #[derive(Debug, Clone, Default)]
 pub struct SuspiciousNailsReferenceCheck {
     hidden_volume_root: PathBuf,

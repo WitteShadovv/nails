@@ -9,10 +9,10 @@
 //! decoy, so an examination reads it. [`verify_base_config_clean`] reports
 //! each line that names the hidden volume (its device, its mount point, the
 //! units systemd names after them, its mapping where a line opens it, or the
-//! storage it lives on, by any name the system gives it) or NAILS, with the
-//! file, the line, the matched text and why it counts. Only `.nix` files are
-//! read: other files in `/etc/nixos` and the history of a git repository
-//! there are not.
+//! storage it lives on, by its device paths, every link udev made for it, its
+//! uuids and its labels) or NAILS, with the file, the line, the matched text
+//! and why it counts. Only `.nix` files are read: other files in `/etc/nixos`
+//! and the history of a git repository there are not.
 
 mod nix_text;
 mod scan;
@@ -156,8 +156,9 @@ struct Marker {
 /// - the device `/proc/self/mountinfo` reports for `hidden_volume_root`
 ///   (`/dev/mapper/<name>`), the device of every device-mapper layer below it
 ///   (the LUKS mapping under a logical volume), `/dev/disk/by-id/dm-name-<name>`
-///   and any `/dev/disk/by-id/dm-uuid-…-<name>`, each as a whole path, and
-///   the units systemd names after them (`dev-mapper-data.device`);
+///   and cryptsetup's `/dev/disk/by-id/dm-uuid-CRYPT-<TYPE>-[<uuid>-]<name>`,
+///   each as a whole path, and the units systemd names after them
+///   (`dev-mapper-data.device`);
 /// - what the volume is stored on, read from the system below its mount as
 ///   long as nothing else is built on it ([`storage`]): the partition or
 ///   disk, the image file behind a loop device, every link udev made for
@@ -169,12 +170,15 @@ struct Marker {
 ///   `/mnt/data/nixos` count, `/mnt/data2` does not), and its `.mount` and
 ///   `.automount` units (`mnt-data.mount`);
 /// - the device-mapper names where they name the mapping: a `luks.devices` or
-///   `clevis.devices` entry however its blocks nest (`luks.devices.data`,
+///   `clevis.devices` entry in nested blocks too (`luks.devices.data`,
 ///   `luks.devices."data"`, `luks = { devices.data = … }`, `inherit data;` in
 ///   a `luks.devices` block, inside `with`, `let … in`, `lib.mkForce` or
-///   `lib.mkMerge`), the `name` of such an entry or of one in the old list
-///   form, `encrypted.label`, an argument of a `cryptsetup` command that
-///   opens, closes or asks about a mapping (continued lines included) or the
+///   `lib.mkMerge`), also in a block commented out line by line whose lines
+///   are indented at least as deep as its first, the `name` of such an entry
+///   or of one in the old list form, `encrypted.label`, a word after
+///   `cryptsetup` or `systemd-cryptsetup` and a verb that opens, closes or
+///   asks about a mapping (`open`, `create`, `close`, `status`, …) up to the
+///   end of the command, continued lines, comments and prose included, the
 ///   instance of `systemd-cryptsetup@data.service`, or the first field of a
 ///   crypttab line at the start of a line or a string (`data UUID=… none
 ///   luks`, `data /var/lib/vault.img none luks`);
@@ -183,14 +187,22 @@ struct Marker {
 /// A unit name with a character systemd escapes (`mnt-my\x2ddata.mount`)
 /// counts in both spellings: with one backslash, as a comment or an indented
 /// `''…''` string holds it, and with two, as a double-quoted string writes it.
-/// Matching ignores ASCII case. Ordinary configuration never counts: the
-/// mapping name as an ordinary word (`description = "Back up user data"` with
-/// the mapping `data`, `cryptsetup` beside it in a package list or in prose)
-/// or a directory (`/var/lib/postgresql/data`), the decoy's own mapping whose
-/// name ends like the hidden one (`user-data`), the word `hidden` (GRUB's
-/// `timeoutStyle = "hidden"`), or an option such as `services.plausible`. A
-/// mapping defined through a `let` binding or `lib.listToAttrs` is not
-/// followed; its device still counts by any name of the storage.
+/// Matching ignores ASCII case. Ordinary configuration passes: the mapping
+/// name as an ordinary word (`description = "Back up user data"` with the
+/// mapping `data`, `cryptsetup` beside it in a package list, or in prose that
+/// puts none of those verbs between `cryptsetup` and the name, such as
+/// `# cryptsetup keeps the data safe`) or a directory
+/// (`/var/lib/postgresql/data`), the decoy's own mapping whose name ends like
+/// the hidden one (`user-data`), the word `hidden` (GRUB's
+/// `timeoutStyle = "hidden"`), or an option such as `services.plausible`.
+///
+/// The scan reads text and evaluates no Nix. A mapping defined through a
+/// `let` binding, `lib.listToAttrs` or an interpolated name
+/// (`luks.devices.${"data"}`) is not followed; its device still counts when
+/// it is written as above. Names of the storage that are not matched: the
+/// kernel's name without `/dev/` (`KERNEL=="sdb2"` in a udev rule),
+/// `/dev/dm-<n>`, `/dev/block/<major>:<minor>`, and a path written with a
+/// doubled slash (`/dev/mapper//data`).
 ///
 /// This is a best-effort trace scan, not a proof: a clean result means none of
 /// the known markers were found, which is weaker than the base being

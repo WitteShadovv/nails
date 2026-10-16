@@ -169,31 +169,41 @@ logind.
     `/dev/disk/by-id/dm-name-data`, the `/dev/disk/by-id/dm-uuid-CRYPT-…-data`
     link of a mapping called `data`), or the unit systemd names after it
     (`dev-mapper-data.device`);
-  - what it is stored on, by any name the system gives it, unless the decoy's
-    own volumes sit on it too. NAILS reads the layers below the mount from
-    the kernel and their names from udev: the partition or disk as a whole
-    path (`/dev/sdb2`), the mapping below a logical volume, the image file
-    behind a loop device; every link udev made for one of these layers or
-    for the hidden volume's own device, among them each `/dev/disk/by-id`,
-    `by-path`, `by-partlabel`, `by-partuuid`, `by-diskseq`, `by-uuid` and
-    `by-label` name and the LVM path `/dev/<vg>/<lv>`; their uuids (the
-    partition's, the LUKS header's and the filesystem's own, as in
-    `UUID=<uuid>` or a `luks-<uuid>` name); and their labels written as a tag
-    (`LABEL=`, `PARTLABEL=`) or as the `label` of a `fileSystems` or
-    `swapDevices` entry;
+  - what it is stored on, unless the decoy's own volumes sit on it too: its
+    device paths, every link udev made for it, its uuids and its labels.
+    NAILS reads the layers below the mount from the kernel and their names
+    from udev: the partition or disk as a whole path (`/dev/sdb2`), the
+    mapping below a logical volume, the image file behind a loop device;
+    every link udev made for one of these layers or for the hidden volume's
+    own device, among them each `/dev/disk/by-id`, `by-path`, `by-partlabel`,
+    `by-partuuid`, `by-diskseq`, `by-uuid` and `by-label` name and the LVM
+    path `/dev/<vg>/<lv>`; their uuids (the partition's, the LUKS header's
+    and the filesystem's own, as in `UUID=<uuid>` or a `luks-<uuid>` name);
+    and their labels written as a tag (`LABEL=`, `PARTLABEL=`) or as the
+    `label` of a `fileSystems` or `swapDevices` entry;
   - its mapping name where a line opens the volume: a
-    `boot.initrd.luks.devices` or `boot.initrd.clevis.devices` entry however
-    it is written (`luks.devices.data`, `luks.devices."data"`, `data = { … }`
-    inside `luks.devices = { … }` or a `lib.mkForce`, `lib.mkMerge`, `with`
-    or `let … in` value of it, `devices.data` inside `luks = { … }`, the same
-    in fully nested blocks, or `inherit data;`), the `name` of such an entry
-    or of one in the old list form (`luks.devices = [ { name = "data"; … } ]`),
-    `fileSystems.<path>.encrypted.label`, an argument of a `cryptsetup`
-    command that opens, closes or asks about a mapping
-    (`cryptsetup open /dev/sdb2 data`, also continued on the next line with
-    `\`) or `systemd-cryptsetup@data.service`, or a crypttab line, at the
-    start of a line or of a string, that starts with the name
-    (`data UUID=… none luks`, `data /var/lib/vault.img none luks`);
+    `boot.initrd.luks.devices` or `boot.initrd.clevis.devices` entry
+    (`luks.devices.data`, `luks.devices."data"`, `data = { … }` inside
+    `luks.devices = { … }` or a `lib.mkForce`, `lib.mkMerge`, `with` or
+    `let … in` value of it, `devices.data` inside `luks = { … }`, the same in
+    fully nested blocks, or `inherit data;`), also in a block commented out
+    line by line whose lines are indented at least as deep as its first; the
+    `name` of such an entry or of one in the old list form
+    (`luks.devices = [ { name = "data"; … } ]`);
+    `fileSystems.<path>.encrypted.label`; `systemd-cryptsetup@data.service`;
+    a crypttab line, at the start of a line or of a string, that starts with
+    the name (`data UUID=… none luks`, `data /var/lib/vault.img none luks`);
+    or a word after `cryptsetup` (or `systemd-cryptsetup`) and one of the
+    verbs that open, close or ask about a mapping: `open`, `create`, `close`,
+    `remove`, `status`, `resize`, `refresh`, `luksSuspend`, `luksResume`, the
+    `luks`, `plain`, `tcrypt`, `loopaes`, `bitlk` and `fvault2` forms of
+    `Open` and `Close` (`luksOpen`, `plainClose`, …), and
+    `systemd-cryptsetup`'s `attach` and `detach`. Every word after such a
+    verb that is not part of a path counts, up to the end of the command: a
+    `;`, `|`, `&` or `#`, or the end of a line that is not continued with
+    `\`. A comment or prose counts the same as a script:
+    `cryptsetup open /dev/sdb2 data` and
+    `# use cryptsetup open for the data volume` are both refused;
   - text NAILS writes during a session, or the word `nails`.
 
   A unit name with a character systemd escapes counts in both spellings: with
@@ -201,16 +211,25 @@ logind.
   (`mnt-my\x2ddata.mount` for `/mnt/my-data`), and with two, as a
   double-quoted string must write it (`"mnt-my\\x2ddata.mount"`).
 
-  Nothing else counts. The mapping name as an ordinary word passes
+  Ordinary configuration passes. The mapping name as an ordinary word passes
   (`description = "Back up user data"`, `cryptsetup` next to it in a package
-  list or in prose, or the comment `nixos-generate-config` writes above
-  `system.stateVersion`), and so do a directory such as
-  `/var/lib/postgresql/data`, the decoy's own mapping whose name merely ends
-  like the hidden one (`user-data` beside `data`), the word `hidden` and
-  options such as `services.plausible`. A mapping defined through a `let`
-  binding or `lib.listToAttrs` is not followed; its device still counts by
-  any of the names above. Run `nixos-generate-config` only while the hidden
-  volume is closed: it writes an entry for every mounted filesystem.
+  list, or in prose that puts none of those verbs between `cryptsetup` and
+  the name, such as `# cryptsetup keeps the data safe`, or the comment
+  `nixos-generate-config` writes above `system.stateVersion`), and so do a
+  directory such as `/var/lib/postgresql/data`, the decoy's own mapping whose
+  name merely ends like the hidden one (`user-data` beside `data`), the word
+  `hidden` and options such as `services.plausible`.
+
+  The check reads text; it does not evaluate Nix. It does not follow a
+  mapping defined through a `let` binding, `lib.listToAttrs` or an
+  interpolated name (`luks.devices.${"data"}`), and it does not know these
+  names of the storage: the kernel's name without `/dev/` (`KERNEL=="sdb2"`
+  in a udev rule), `/dev/dm-<n>`, `/dev/block/<major>:<minor>`, and a path
+  written with a doubled slash (`/dev/mapper//data`, `/mnt//data`). Keep
+  such lines out of `/etc/nixos` yourself; an entry defined in one of these
+  ways still counts by its device when that is written in one of the forms
+  above. Run `nixos-generate-config` only while the hidden volume is closed:
+  it writes an entry for every mounted filesystem.
 
   The check reads `.nix` files only. Keep the other files in `/etc/nixos`
   (notes, scripts, a README) free of these names too, and, where
