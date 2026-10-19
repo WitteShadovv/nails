@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
 
@@ -103,6 +104,46 @@ class DurationParserTest(unittest.TestCase):
             run.durations_from_internal_json(lines, DRV_TO_TEST, iter([0.0]).__next__),
             {},
         )
+
+
+class LiveTimingTest(unittest.TestCase):
+    """A build is timed while nix runs, as its start and stop lines arrive."""
+
+    def test_each_build_takes_the_time_between_its_lines(self) -> None:
+        lines = [
+            '@nix {"action":"start","type":105,"id":1,"fields":["/nix/store/a.drv"]}\n',
+            '@nix {"action":"start","type":105,"id":2,"fields":["/nix/store/b.drv"]}\n',
+            '@nix {"action":"stop","id":1}\n',
+            '@nix {"action":"msg","level":0,"msg":"error: a warning of b"}\n',
+            '@nix {"action":"stop","id":2}\n',
+        ]
+        arrived = 0
+
+        def stream() -> Iterator[str]:
+            nonlocal arrived
+            for line in lines:
+                arrived += 1
+                yield line
+
+        process = mock.MagicMock()
+        process.__enter__.return_value = process
+        process.stderr = stream()
+        process.wait.return_value = 0
+        with (
+            mock.patch.object(run.subprocess, "Popen", return_value=process),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            # Ten seconds pass between two lines. Lines read to the end before
+            # any was parsed would all carry the time of the last one.
+            status, outcomes = run._build_once(
+                ["a", "b"], DRV_TO_TEST, None, lambda: arrived * 10.0
+            )
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            outcomes,
+            {"a": run.TestOutcome("pass", 20), "b": run.TestOutcome("pass", 30)},
+        )
+        self.assertEqual(stderr.getvalue(), "error: a warning of b\n")
 
 
 class WriteDurationsTest(unittest.TestCase):

@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,6 +103,11 @@ def durations_from_internal_json(
     build activity was served from the store and is a zero-second ``pass``.
     Nix also stops the activity of a failed build, so the caller corrects the
     result from the store afterwards (see ``missing_outputs``).
+
+    The lines carry no time of their own: ``clock`` is read as each start and
+    stop line is parsed. Pass the live stream of a running ``nix build``,
+    never lines collected after it exited, in which every build would take
+    the same instant and last zero seconds.
     """
     started: dict[int, tuple[str, float]] = {}
     outcomes: dict[str, TestOutcome] = {}
@@ -298,7 +303,6 @@ def _build_once(
         command += ["--max-jobs", str(jobs)]
     command += ["--no-link", *(f"{drv}^*" for drv in wanted)]
 
-    lines: list[str] = []
     with subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
@@ -306,14 +310,23 @@ def _build_once(
         text=True,
     ) as process:
         assert process.stderr is not None
-        for raw in process.stderr:
-            line = raw.rstrip("\n")
-            lines.append(line)
-            message = _progress_line(line)
-            if message is not None:
-                print(message, file=sys.stderr)
+        # Parsed while nix runs, so each build is timed as its start and stop
+        # lines arrive.
+        outcomes = durations_from_internal_json(
+            _relay_messages(process.stderr), wanted, clock
+        )
         status = process.wait()
-    return status, durations_from_internal_json(lines, wanted, clock)
+    return status, outcomes
+
+
+def _relay_messages(stream: Iterable[str]) -> Iterator[str]:
+    """Yield the lines of a nix log stream, printing its errors and warnings."""
+    for raw in stream:
+        line = raw.rstrip("\n")
+        message = _progress_line(line)
+        if message is not None:
+            print(message, file=sys.stderr)
+        yield line
 
 
 def _write_nix_log(drv: str, path: Path) -> None:
