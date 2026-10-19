@@ -7,11 +7,11 @@ which starts the backdoor again. The driver's ``wait_for_console_text`` reads
 one queued console line per second and a soft-reboot prints a few hundred, so
 these helpers poll the driver's full console log instead (appended directly by
 its reader thread), fail at once if the new userspace lands in emergency mode or
-PID 1 freezes or if the trigger failed without enqueueing the switch, and
-reconnect when the new backdoor announces itself. This is the mechanism the
-soft-reboot spike (now ``soft-reboot-mechanics``) proved. A switch or a
-power-off that never ends is reported with what PID 1 waits on and the SysRq
-dumps (:mod:`nails_e2e.stall`).
+PID 1 freezes, if the trigger failed without enqueueing the switch or if QEMU
+exits, and reconnect when the new backdoor announces itself. This is the
+mechanism the soft-reboot spike (now ``soft-reboot-mechanics``) proved. A
+switch or a power-off that never ends is reported with what PID 1 waits on and
+the SysRq dumps (:mod:`nails_e2e.stall`).
 """
 
 from __future__ import annotations
@@ -187,7 +187,8 @@ def follow_soft_reboot(
     output redirect it themselves to a place that survives (the hidden volume)
     or copy it to :data:`SERIAL_CONSOLE`. When the trigger returns, its exit
     status lands on the serial console, and a failure while nothing is
-    stopping fails the wait at once (:func:`trigger_failure`). ``start``, when
+    stopping fails the wait at once (:func:`trigger_failure`), as does a
+    machine that powers off or reboots instead, which ends QEMU. ``start``, when
     given, starts the soft-reboot instead (for example typed keystrokes on a
     tty) and ``trigger`` is only logged; a typed command reports its own
     failure the same way.
@@ -243,6 +244,18 @@ def follow_soft_reboot(
             )
         if any(BACKDOOR_MARKER in line for line in lines):
             break
+        # A power-off, a full reboot or a kernel panic instead of the switch
+        # ends QEMU (the suite starts every machine with the driver's
+        # -no-reboot): no backdoor will come, and the stall report needs a
+        # running machine.
+        exited = machine.process.poll() if machine.process is not None else None
+        if exited is not None:
+            machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
+            machine.wait_for_shutdown()
+            raise AssertionError(
+                f"{label}: QEMU exited (status {exited}) before the new userspace "
+                "came up"
+            )
         if time.monotonic() > deadline:
             machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
             why = stall.report(machine, label)

@@ -84,10 +84,12 @@ backdoor again. `follow_soft_reboot(machine, trigger, label, deadline_s=600.0,
 start=None)` runs `trigger` in the background and polls the driver's full
 console log (not `wait_for_console_text`, which reads one queued line per
 second while a soft-reboot prints hundreds). It fails at once if the new
-userspace lands in emergency mode or PID 1 freezes, reconnects to the new
-backdoor, and returns PID 1's own timings of the switch, logged as `TIMING:`
-lines. A trigger's output is lost with the old userspace unless the trigger
-redirects it to the hidden volume or copies it to `session.SERIAL_CONSOLE`.
+userspace lands in emergency mode or PID 1 freezes, or if QEMU exits (a
+power-off, a full reboot or a kernel panic instead of the switch). Otherwise it
+reconnects to the new backdoor and returns PID 1's own timings of the switch,
+logged as `TIMING:` lines. A trigger's output is lost with the old userspace
+unless the trigger redirects it to the hidden volume or copies it to
+`session.SERIAL_CONSOLE`.
 
 When the trigger returns, a `nails-trigger-exit=` line on the serial console
 reports its exit status and, if that is not 0, the system's state from
@@ -190,7 +192,7 @@ The interactive driver opens a Python prompt instead of running the test: `start
 ## Timeouts and shard weights
 
 - Every test runs with a driver `globalTimeout` of 900 s (`defaultGlobalTimeout` in `default.nix`). A test that needs longer sets a top-level `globalTimeout` next to its `name`, with a comment giving its measured runtime (see `tests/performance/07-performance.nix`). `meta.timeout` is derived as `globalTimeout + 60` and must not be set by a test. The effective value of each test is published as `timeouts` in the E2E metadata.
-- `session.follow_soft_reboot` (and so `canonical_activate` and `canonical_deactivate`) waits at most `deadline_s` seconds (600 by default) for the new userspace's backdoor, and fails within seconds, printing the console's timeouts and failed dependencies, when the new userspace reaches emergency mode or PID 1 freezes, or when the trigger fails without enqueueing the switch. A soft-reboot takes about 10 to 15 s in the VM, so a test with several round trips sets its own `globalTimeout` (see `tests/session/session-lifecycle.nix`). `session.wait_for_power_off` bounds a power-off the same way.
+- `session.follow_soft_reboot` (and so `canonical_activate` and `canonical_deactivate`) waits at most `deadline_s` seconds (600 by default) for the new userspace's backdoor, and fails within seconds, printing the console's timeouts and failed dependencies, when the new userspace reaches emergency mode or PID 1 freezes, or when the trigger fails without enqueueing the switch, and at once when QEMU exits. A soft-reboot takes about 10 to 15 s in the VM, so a test with several round trips sets its own `globalTimeout` (see `tests/session/session-lifecycle.nix`). `session.wait_for_power_off` bounds a power-off the same way.
 - `shard-durations.json` holds one weight in seconds per leaf test, and every weight must satisfy `5 <= weight <= timeout / 2`. A weight at or above the test's timeout is a recorded hang: the planner refuses to use it. The remaining rules are enforced by `nix eval --json .#legacyPackages.x86_64-linux.e2e-metadata | python3 -m ci.e2e check --metadata -` and by the unit tests in `ci/tests/` (`python3 -m unittest discover -s ci/tests -t .`), which CI runs on every PR.
 - Each E2E shard uploads its per-test durations as the `e2e-durations-shard-N` artifact and adds a drift report to its step summary: tests more than 25% off their weight after allowing for the runner's overall speed. The report never fails the job. A test that boots in `--execute` mode is timed from its driver's start to its end; one built in a `nix build` from the start of its build to its end, as nix reports them while it runs, so tests built side by side on one runner take longer than alone. A test served from the Nix store or a binary cache did not boot and records 0 s.
 

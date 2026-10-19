@@ -179,6 +179,38 @@ class FollowSoftRebootTest(unittest.TestCase):
         self.assertIn("stuck", str(raised.exception))
         self.assertEqual(machine.connects, 0)
 
+    def test_a_machine_that_stops_ends_the_wait_at_once(self) -> None:
+        # An emergency that falls back to a power-off, or a kernel panic: QEMU
+        # exits, and no backdoor will ever come.
+        class Exited:
+            def poll(self) -> int:
+                return 0
+
+        machine = FakeMachine(["reboot: Power down"])
+        machine.process = Exited()
+        with (
+            mock.patch.object(session, "time", NoPolling),
+            self.assertRaises(AssertionError) as raised,
+        ):
+            session.follow_soft_reboot(machine, "true", "emergency", deadline_s=600.0)
+        self.assertEqual(
+            str(raised.exception),
+            "emergency: QEMU exited (status 0) before the new userspace came up",
+        )
+        self.assertIn("reboot: Power down", machine.logged[-1])
+        self.assertFalse(machine.connected)
+        self.assertEqual(machine.connects, 0)
+
+    def test_a_running_machine_is_followed_into_its_switch(self) -> None:
+        class Running:
+            def poll(self) -> None:
+                return None
+
+        machine = FakeMachine(["Soft-rebooting.", "backdoor: connecting to host..."])
+        machine.process = Running()
+        session.follow_soft_reboot(machine, "true", "enter", deadline_s=5)
+        self.assertEqual(machine.connects, 1)
+
 
 class PowerOffTest(unittest.TestCase):
     def test_a_power_off_that_never_ends_says_what_pid1_waits_on(self) -> None:
