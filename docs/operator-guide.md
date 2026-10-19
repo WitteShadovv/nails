@@ -69,7 +69,9 @@ Prepare the volume where nothing reaches the decoy's disk:
   and format the volume there, then attach the drive to this computer, unlock
   and mount it, and run `nails` from it;
 - **or from a setup medium**: a live system started from a USB stick on this
-  computer, which writes nothing to its internal disk.
+  computer, which writes nothing to its internal disk. Tails is one;
+  [First install from Tails](install-from-tails.md) shows the first
+  installation from it.
 
 `init`, `activate`, `check` and the other commands that write ask the attach
 gate first and refuse anything else before they write or probe a single file.
