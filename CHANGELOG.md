@@ -71,6 +71,16 @@ of this changelog for that version becomes the release notes word for word, and
   connection; `docs/verify-release.md` shows how. The release workflow runs the same check before
   it drafts the release.
 
+### Known issues
+
+- On Ubuntu 26.04, services that AppArmor confines and that report to systemd, such as chrony
+  (time sync) and CUPS (printing), fail after the switch into the hidden session: AppArmor blocks
+  their messages to systemd and to the journal, whose sockets were set up before the switch. In
+  the hidden session the clock is not synchronized and printing times out, and after the way back
+  the decoy lists chrony as failed until its next full reboot, which hints that a soft-reboot
+  happened. Reboot fully after a session to clear it. NAILS does not cause this: a plain
+  `systemctl soft-reboot` into another root, without NAILS, breaks chrony the same way.
+
 ## [0.3.0-rc.2] - 2026-10-16
 
 NAILS 0.3.0 replaces the per-directory live overlays of 0.2 with one design: the hidden session is
