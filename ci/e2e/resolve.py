@@ -20,6 +20,8 @@ from .metadata import Metadata
 # The group that every pull request and every `--affected` run includes.
 AFFECTED_BASE_GROUP = "ci"
 E2E_ATTR = "legacyPackages.x86_64-linux.e2e"
+# The binary nearly every test boots: when it changes, so do they.
+NAILS_ATTR = "packages.x86_64-linux.nails"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -95,6 +97,17 @@ def drv_paths(flake_ref: str, tests: Sequence[str], workers: int) -> dict[str, s
     return {test: str(drv) for test, drv in paths.items()}
 
 
+def nails_drv_path(flake_ref: str) -> str:
+    """Evaluate the drvPath of the nails binary at ``flake_ref``."""
+    completed = subprocess.run(
+        ["nix", "eval", "--raw", f"{flake_ref}#{NAILS_ATTR}.drvPath"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
 def _last_line(exc: subprocess.CalledProcessError) -> str:
     detail = (exc.stderr or "").strip().splitlines()
     return detail[-1] if detail else f"exit {exc.returncode}"
@@ -140,8 +153,13 @@ def changed_leaf_tests(
 ) -> list[str]:
     """Return the leaf tests whose derivation differs from ``base_rev``.
 
-    Both revisions are evaluated at once, each in parallel batches over half
-    of ``workers`` processes (by default as many as the host allows, see
+    Nearly every test boots the nails binary, so when the derivation of nails
+    differs from the base, every test counts as changed without evaluating a
+    single one: the tests are the slow part, a NixOS system each. A test that
+    does not boot nails is then selected all the same, and a build serves its
+    unchanged result from the binary cache. Otherwise both revisions are
+    evaluated at once, each in parallel batches over half of ``workers``
+    processes (by default as many as the host allows, see
     :func:`ci.e2e.evaluate.auto_workers`).
 
     A test that does not exist at the base revision is new, so it counts as
@@ -153,6 +171,16 @@ def changed_leaf_tests(
     if workers is None:
         workers = evaluate.auto_workers()
     base_ref = base_flake_ref(base_rev)
+    current_nails, base_nails = _here_and_at_base(nails_drv_path, base_ref)
+    if isinstance(base_nails, subprocess.CalledProcessError):
+        return _every_test(metadata, base_rev, base_nails)
+    if current_nails != base_nails:
+        print(
+            f"note: nails changed since {base_rev}, so every test counts as "
+            "changed; no test was evaluated",
+            file=sys.stderr,
+        )
+        return list(metadata.leaf_tests)
     tests = metadata.leaf_tests
     current, base = _here_and_at_base(drv_paths, base_ref, tests, max(1, workers // 2))
     if isinstance(base, subprocess.CalledProcessError):

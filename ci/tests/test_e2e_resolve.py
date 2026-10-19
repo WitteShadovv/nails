@@ -113,15 +113,25 @@ class ResolveAffectedTest(unittest.TestCase):
             self.assertEqual(resolve.resolve_affected(METADATA, "HEAD~1"), ["a"])
 
 
-# What drv_paths gives per flake reference: the drvPaths, or an error to raise.
+# What nails_drv_path and drv_paths give per flake reference: a result, or an
+# error to raise.
+Nails = dict[str, str | Exception]
 Sides = dict[str, dict[str, str] | Exception]
 
 
 class ChangedLeafTestsTest(unittest.TestCase):
     BASE_REF = "git+file:///repo?rev=abc"
 
-    def changed(self, sides: Sides) -> tuple[list[str], mock.MagicMock, str]:
-        """changed_leaf_tests with the tests evaluated per side."""
+    def changed(
+        self, nails: Nails, sides: Sides
+    ) -> tuple[list[str], mock.MagicMock, str]:
+        """changed_leaf_tests with nails and the tests evaluated per side."""
+
+        def nails_drv(ref: str) -> str:
+            result = nails[ref]
+            if isinstance(result, Exception):
+                raise result
+            return result
 
         def evaluate(ref: str, tests: list[str], workers: int) -> dict[str, str]:
             self.assertGreaterEqual(workers, 1)
@@ -132,6 +142,7 @@ class ChangedLeafTestsTest(unittest.TestCase):
 
         with (
             mock.patch.object(resolve, "base_flake_ref", return_value=self.BASE_REF),
+            mock.patch.object(resolve, "nails_drv_path", side_effect=nails_drv),
             mock.patch.object(resolve, "drv_paths", side_effect=evaluate) as drv_paths,
             contextlib.redirect_stderr(io.StringIO()) as err,
         ):
@@ -140,6 +151,7 @@ class ChangedLeafTestsTest(unittest.TestCase):
 
     def test_compares_one_evaluation_per_side(self) -> None:
         changed, drv_paths, _err = self.changed(
+            nails={".": "/nix/store/n.drv", self.BASE_REF: "/nix/store/n.drv"},
             sides={
                 ".": {
                     "a": "/nix/store/a1.drv",
@@ -155,21 +167,47 @@ class ChangedLeafTestsTest(unittest.TestCase):
         # The two sides share the processes.
         self.assertEqual(sum(call.args[2] for call in drv_paths.call_args_list), 4)
 
-    def test_a_base_that_does_not_evaluate_changes_everything(self) -> None:
-        boom = subprocess.CalledProcessError(1, ["nix"], stderr="error: boom\n")
-        changed, _drv_paths, err = self.changed(
-            sides={".": {"a": "/nix/store/a.drv"}, self.BASE_REF: boom}
+    def test_a_changed_nails_changes_every_test_without_evaluating_them(self) -> None:
+        changed, drv_paths, err = self.changed(
+            nails={".": "/nix/store/n1.drv", self.BASE_REF: "/nix/store/n0.drv"},
+            sides={},
         )
         self.assertEqual(changed, ["a", "b", "c"])
-        self.assertIn("main does not evaluate", err)
-        self.assertIn("error: boom", err)
+        drv_paths.assert_not_called()
+        self.assertIn("note: nails changed since main", err)
+
+    def test_a_base_that_does_not_evaluate_changes_everything(self) -> None:
+        boom = subprocess.CalledProcessError(1, ["nix"], stderr="error: boom\n")
+        cases: list[tuple[Nails, Sides]] = [
+            ({".": "/nix/store/n.drv", self.BASE_REF: boom}, {}),
+            (
+                {".": "/nix/store/n.drv", self.BASE_REF: "/nix/store/n.drv"},
+                {".": {"a": "/nix/store/a.drv"}, self.BASE_REF: boom},
+            ),
+        ]
+        for nails, sides in cases:
+            with self.subTest(nails_fails=isinstance(nails[self.BASE_REF], Exception)):
+                changed, _drv_paths, err = self.changed(nails=nails, sides=sides)
+                self.assertEqual(changed, ["a", "b", "c"])
+                self.assertIn("main does not evaluate", err)
+                self.assertIn("error: boom", err)
 
     def test_this_revision_must_evaluate(self) -> None:
         boom = subprocess.CalledProcessError(1, ["nix"], stderr="x\nerror: broken\n")
-        with self.assertRaisesRegex(
-            resolve.ResolveError, "^this revision does not evaluate: error: broken$"
-        ):
-            self.changed(sides={".": boom, self.BASE_REF: {}})
+        cases: list[tuple[Nails, Sides]] = [
+            ({".": boom, self.BASE_REF: "/nix/store/n.drv"}, {}),
+            (
+                {".": "/nix/store/n.drv", self.BASE_REF: "/nix/store/n.drv"},
+                {".": boom, self.BASE_REF: {}},
+            ),
+        ]
+        for nails, sides in cases:
+            with self.subTest(nails_fails=isinstance(nails["."], Exception)):
+                with self.assertRaisesRegex(
+                    resolve.ResolveError,
+                    "^this revision does not evaluate: error: broken$",
+                ):
+                    self.changed(nails=nails, sides=sides)
 
 
 class FlakeRefTest(unittest.TestCase):
@@ -214,6 +252,23 @@ class FlakeRefTest(unittest.TestCase):
     def test_drv_paths_refuses_names_that_are_not_plain(self) -> None:
         with self.assertRaisesRegex(evaluate.EvalError, "odd test name"):
             resolve.drv_paths(".", ["a''; x"], 1)
+
+    def test_nails_is_evaluated_at_the_revision(self) -> None:
+        completed = subprocess.CompletedProcess([], 0, stdout="/nix/store/n.drv")
+        with mock.patch.object(
+            resolve.subprocess, "run", return_value=completed
+        ) as nix:
+            drv = resolve.nails_drv_path("git+file:///r?rev=1")
+        self.assertEqual(drv, "/nix/store/n.drv")
+        self.assertEqual(
+            nix.call_args.args[0],
+            [
+                "nix",
+                "eval",
+                "--raw",
+                "git+file:///r?rev=1#packages.x86_64-linux.nails.drvPath",
+            ],
+        )
 
 
 class ResolveCommandTest(unittest.TestCase):

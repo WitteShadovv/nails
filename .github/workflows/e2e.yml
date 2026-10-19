@@ -179,6 +179,9 @@ jobs:
         if: steps.select.outputs.mode != 'skip'
         run: nix build -L --no-link .#nails
 
+      # --affected evaluates every test of both revisions in parallel
+      # batches, unless nails changed: nearly every test boots it, so every
+      # test is selected then.
       - name: Plan shards
         id: matrix
         if: steps.select.outputs.mode != 'skip'
