@@ -2,9 +2,10 @@
 
 A release is one annotated `v*` tag on `main`. Pushing it starts `.github/workflows/release.yml`,
 which checks the tag, builds the bundle from source, rebuilds it on a fresh runner, generates the
-SBOM, runs the whole E2E suite, attests the files and drafts the GitHub release. Publishing the
-draft is the only manual step after the tag. [docs/ci.md](docs/ci.md#release-workflow) describes
-the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on the result.
+SBOM, runs the whole E2E suite, attests the files, checks the attestations as users will and
+drafts the GitHub release. Publishing the draft is the only manual step after the tag.
+[docs/ci.md](docs/ci.md#release-workflow) describes the jobs;
+[docs/verify-release.md](docs/verify-release.md) is what users run on the result.
 
 ## Versions
 
@@ -61,10 +62,12 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
    changelog section is wrong, and the `sbom` job within minutes, before the E2E suite starts,
    when `actions/attest` would refuse the SBOM; the whole run takes about as long as the E2E
    suite. A failed run opens or comments on the `CI red: Release` issue.
-8. **Review the draft** on the Releases page: the notes, and the five assets (the archive,
-   `nails`, `checksums.txt`, `sbom.cdx.json`, `musl.openvex.json`). Drafts are visible to maintainers only. Download
-   `nails` and `checksums.txt` from the draft and follow
-   [docs/verify-release.md](docs/verify-release.md).
+8. **Review the draft** on the Releases page: the notes, and the eight assets (the archive,
+   `nails`, `checksums.txt`, `sbom.cdx.json`, `musl.openvex.json` and the Sigstore bundles
+   `provenance.sigstore.json`, `sbom.sigstore.json`, `vex.sigstore.json`). Drafts are visible to
+   maintainers only, and the download URLs work only once a release is published, so download
+   `nails`, `checksums.txt` and `provenance.sigstore.json` from the draft and follow
+   [docs/verify-release.md](docs/verify-release.md) from step 2.
 9. **Publish** the draft. Once published, a release, its assets and its tag never change. For a
    candidate, keep "Set as a pre-release"; the workflow ticks it for `-rc.N` versions.
 10. **Open the next cycle.** Bump `main` to the next `-dev` version (for example `0.3.1-dev` or
