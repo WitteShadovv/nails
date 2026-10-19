@@ -26,8 +26,11 @@ from pathlib import Path
 from typing import Any, TextIO
 
 # No VM test boots and passes faster than this; shorter timings are cached
-# results or bogus entries.
-MIN_WEIGHT = 30
+# results (a test served from the Nix store records 0 s) or bogus entries.
+# A boot alone takes about 8 s, and the fastest tests took 11 to 20 s on a
+# hosted runner in October 2026: a higher floor discarded their samples and
+# kept their old weights.
+MIN_WEIGHT = 5
 # A test's timeout must be at least this multiple of its weight, so slower
 # runners still finish well inside the deadline.
 TIMEOUT_HEADROOM = 2
