@@ -44,8 +44,9 @@ on:
         options: [affected, ci, all, execute]
       report-status:
         description: >-
-          Report the outcome in the CI red issue of main or next, as their
-          unattended runs do; the nightly run of next sets it
+          Report the outcome of a run of the whole suite (mode all or execute)
+          in the CI red issue of main or next, as their unattended runs do;
+          the nightly run of next sets it
         type: boolean
         default: false
       runner:
@@ -511,11 +512,13 @@ jobs:
   # red one opens or comments on the 'CI red: E2E' issue, 'CI red: E2E
   # (next)' for next, and a later green run on that branch closes it. The
   # nightly run of next is a dispatch from next-nightly.yml with report-status
-  # set; any run dispatched on main or next with it reports the same way.
+  # set; any run of the whole suite (mode all or execute) dispatched on main
+  # or next with it reports the same way. A run of fewer tests never reports,
+  # so it cannot close an issue about a test it left out.
   report-status:
     name: Report status
     needs: [plan, shard]
-    if: ${{ !cancelled() && (github.event_name == 'schedule' || ((github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.report-status)) && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next'))) }}
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || ((github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.report-status && (inputs.mode == 'all' || inputs.mode == 'execute'))) && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next'))) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
