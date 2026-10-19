@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import resource
 import shutil
 import subprocess
 import tempfile
@@ -475,6 +476,17 @@ class ExecuteEnvironmentTest(unittest.TestCase):
         with self.assertRaisesRegex(run.RunError, "^/nonexistent is not a directory"):
             run.check_scratch_base(Path("/nonexistent"))
 
+    def test_the_hard_limit_of_a_job_is_too_low_for_virtiofsd(self) -> None:
+        warning = run.open_file_warning(65_536)
+        assert warning is not None
+        self.assertIn("hard open-file limit is 65536", warning)
+        self.assertIn("prlimit", warning)
+
+    def test_the_hard_limit_of_systemd_and_above_are_enough(self) -> None:
+        for hard_limit in (524_288, 1_048_576, resource.RLIM_INFINITY):
+            with self.subTest(hard_limit=hard_limit):
+                self.assertIsNone(run.open_file_warning(hard_limit))
+
 
 class SuiteSocketsTest(unittest.TestCase):
     """The suite's VMs make no socket longer than the scratch base check allows."""
@@ -638,6 +650,19 @@ class RunDriversTest(unittest.TestCase):
         # The scratch directory is gone, and the VM state in it with it.
         self.assertEqual(list(self.runner_temp.iterdir()), [])
         self.assertEqual(list(inherited.iterdir()), [])
+
+    def test_a_low_open_file_limit_warns_and_the_drivers_still_run(self) -> None:
+        with mock.patch.object(run.resource, "getrlimit", return_value=(1024, 65_536)):
+            status, outcomes, _logs = self.execute(["steady"], retries=0)
+        self.assertEqual(status, 0)
+        self.assertEqual(outcomes["steady"].result, "pass")
+        self.assertIn("warning: the hard open-file limit is 65536", self.stderr)
+
+    def test_a_sufficient_open_file_limit_warns_of_nothing(self) -> None:
+        with mock.patch.object(run.resource, "getrlimit", return_value=(1024, 524_288)):
+            status, _outcomes, _logs = self.execute(["steady"], retries=0)
+        self.assertEqual(status, 0)
+        self.assertNotIn("warning:", self.stderr)
 
     def test_an_unusable_base_stops_the_run_before_any_build(self) -> None:
         too_long = "/" + "x" * (run.SOCKET_PATH_MAX - run.SOCKET_TAIL_BYTES)

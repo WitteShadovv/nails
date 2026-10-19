@@ -236,6 +236,15 @@ jobs:
 
       # Failed tests run once more; a pass on that retry is reported as FLAKY
       # in the summary and as a warning, never silently turned green.
+      #
+      # In execute mode the drivers run in this shell, outside the Nix
+      # sandbox, and inherit its limits. virtiofsd asks for 1,000,000 open
+      # files, and the job's hard limit of 65,536 runs out in the tests that
+      # copy a whole NixOS closure through the host store, so the shell first
+      # takes the limit nix-daemon gives a build. ci.e2e runs as a child of
+      # this shell to inherit it; a later step would start from the job's
+      # limit again. The block after it records the free space where the VM
+      # disks could go, the memory and the limits.
       - name: Run tests
         env:
           MODE: ${{ needs.plan.outputs.mode }}
@@ -244,6 +253,16 @@ jobs:
           COUNT: ${{ matrix.count }}
         run: |
           set -euo pipefail
+          if [ "$MODE" = execute ]; then
+            if ! sudo -n prlimit --pid $$ --nofile=1048576:1048576; then
+              echo "::warning title=Open-file limit::Could not raise the hard open-file limit ($(ulimit -Hn)); virtiofsd may run out of descriptors."
+            fi
+            echo "::group::Disk space, memory and open-file limits"
+            df -h / "$RUNNER_TEMP" "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" /mnt || true
+            free -m || true
+            echo "Open files: soft $(ulimit -Sn), hard $(ulimit -Hn)"
+            echo "::endgroup::"
+          fi
           read -ra tests <<< "$TESTS"
           if [ "${#tests[@]}" -eq 0 ]; then
             echo "No tests selected for this shard."
@@ -319,8 +338,18 @@ jobs:
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
 
+      # The same open-file limit and record as an execute shard's (see the
+      # shard's Run tests step).
       - name: Run the performance tests
         run: |
+          if ! sudo -n prlimit --pid $$ --nofile=1048576:1048576; then
+            echo "::warning title=Open-file limit::Could not raise the hard open-file limit ($(ulimit -Hn)); virtiofsd may run out of descriptors."
+          fi
+          echo "::group::Disk space, memory and open-file limits"
+          df -h / "$RUNNER_TEMP" "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" /mnt || true
+          free -m || true
+          echo "Open files: soft $(ulimit -Sn), hard $(ulimit -Hn)"
+          echo "::endgroup::"
           python3 -m ci.e2e run performance --execute \
             --durations-out "$RUNNER_TEMP/e2e-durations/performance.jsonl" \
             --log-dir "$RUNNER_TEMP/e2e-logs" \

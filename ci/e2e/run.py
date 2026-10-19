@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import resource
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,12 @@ SOCKET_TAIL_BYTES = (
     + NODE_NAME_RESERVE
     + len("/tmp.XXXXXXXXXX/nix-store")
 )
+# virtiofsd asks for 1,000,000 open files and settles for the hard limit it
+# inherits. Unprivileged, it holds a descriptor for every file the guest has
+# looked up, about 150,000 in a test that copies a whole NixOS closure through
+# the host store: the 65,536 of a GitHub job run out, and systemd's default
+# hard limit, 524,288, leaves room.
+MIN_HARD_OPEN_FILES = 524_288
 
 
 class RunError(Exception):
@@ -436,6 +443,19 @@ def check_scratch_base(base: Path) -> None:
         )
 
 
+def open_file_warning(hard_limit: int) -> str | None:
+    """Explain why a hard open-file limit is too low for virtiofsd, or None."""
+    if hard_limit == resource.RLIM_INFINITY or hard_limit >= MIN_HARD_OPEN_FILES:
+        return None
+    return (
+        f"the hard open-file limit is {hard_limit}, below {MIN_HARD_OPEN_FILES}. "
+        "virtiofsd inherits it and can run out of descriptors in the tests that "
+        "copy a whole NixOS closure through the host store; raise it in the "
+        "calling shell first, for example with "
+        "'sudo prlimit --pid $$ --nofile=1048576:1048576'"
+    )
+
+
 def _execute_driver(
     driver: Path,
     timeout: int,
@@ -492,12 +512,16 @@ def run_drivers(
     Logs of failed tests stay in ``log_dir`` (passing logs are removed); the
     retry and flaky rules match ``run_build``. Returns 0 when every test
     passed and 1 otherwise. Before any driver is built, a scratch base that
-    is too long for the drivers' sockets, or not a directory, raises RunError.
+    is too long for the drivers' sockets, or not a directory, raises RunError,
+    and a hard open-file limit too low for virtiofsd prints a warning.
     """
     if not tests:
         return 0
     base = scratch_base()
     check_scratch_base(base)
+    warning = open_file_warning(resource.getrlimit(resource.RLIMIT_NOFILE)[1])
+    if warning is not None:
+        print(f"warning: {warning}", file=sys.stderr)
     keep_logs = log_dir is not None
     logs = log_dir if log_dir is not None else Path(tempfile.mkdtemp(prefix="e2e-"))
     drivers = {test: _build_driver(f"{attr_prefix}.{test}") for test in tests}
