@@ -355,6 +355,19 @@ def last_boot_is_backdated(records: Sequence[Mapping[str, object]]) -> bool:
     return bool(earlier) and tv_sec(records[last]) < max(earlier)
 
 
+def last_boot_record(
+    records: Sequence[Mapping[str, object]],
+) -> dict[str, object] | None:
+    """The last classic-wtmp boot record (``BOOT_TIME``) in file order, or ``None``.
+
+    The way back's boot record is the newest boot the decoy carries, so a test
+    reads this one to check its stamped time (seconds and microseconds) and its
+    identity against a power-cycle reference's own boot record.
+    """
+    boots = [r for r in records if r.get("type") == "BOOT_TIME"]
+    return dict(boots[-1]) if boots else None
+
+
 # --- one capture of every record on one platform ----------------------------
 
 

@@ -308,6 +308,22 @@ class BackdatedBootTest(unittest.TestCase):
         self.assertEqual(rec.boot_record_times(rec.parse_utmp(blob)), [1000, 1000])
         self.assertEqual(rec.boot_record_times([]), [])
 
+    def test_last_boot_record_returns_the_newest_boot(self) -> None:
+        blob = (
+            _utmp_record(2, user="reboot", line="~", host="6.x", tv_sec=1000)
+            + _utmp_record(1, user="shutdown", tv_sec=2000)
+            + _utmp_record(2, user="reboot", line="~", host="6.x", tv_sec=3000)
+        )
+        last = rec.last_boot_record(rec.parse_utmp(blob))
+        assert last is not None
+        self.assertEqual(last["tv_sec"], 3000)
+        self.assertEqual(last["user"], "reboot")
+        self.assertEqual(last["host"], "6.x")
+        self.assertIsNone(rec.last_boot_record([]))
+        self.assertIsNone(
+            rec.last_boot_record(rec.parse_utmp(_utmp_record(7, user="root")))
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

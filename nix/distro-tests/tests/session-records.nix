@@ -191,7 +191,7 @@ distroVm.buildVmTest {
         with subtest("install the distribution's record package"):
             print(vm.succeed(install_script))
 
-    capture("fresh-boot")  # the power-cycle reference
+    fresh = capture("fresh-boot")  # the power-cycle reference
 
     with subtest("a plain soft-reboot still carries the trace (positive control)"):
         follow("systemctl soft-reboot", "control-soft-reboot")
@@ -240,6 +240,17 @@ distroVm.buildVmTest {
                 "the way back wrote no ordinary reboot boot row to wtmpdb; the "
                 f"writer may not have run. Added rows: {added}"
             )
+            # The bus drop-in must let the boot writer fall back cleanly, not
+            # fail: a failed unit is itself an oddity an examiner can read.
+            _, state = vm.execute(
+                "systemctl is-failed wtmpdb-update-boot.service 2>&1 || true",
+                check_return=False,
+            )
+            print(f"=== wtmpdb-update-boot.service after the way back: {state.strip()} ===")
+            assert state.strip() != "failed", (
+                "the wtmpdb boot writer's service failed after the way back; the "
+                f"bus drop-in must let it fall back cleanly. State: {state.strip()}"
+            )
         else:
             after_boots = records.boot_record_times(after.wtmp)
             assert after_boots, f"no classic-wtmp boot record after the session: {after.wtmp}"
@@ -255,5 +266,26 @@ distroVm.buildVmTest {
                 f"the reconcile step did not correct it (boots: {after_boots}, "
                 f"cold: {control_boots[0]})"
             )
+            # The corrected record must read as a genuine boot: a live
+            # microsecond reading (a cleared 000000 is what no real boot carries
+            # and would single this record out in utmpdump), and the same
+            # identity (reboot, the kernel release) as the power-cycle reference's
+            # own boot record.
+            after_boot = records.last_boot_record(after.wtmp)
+            assert after_boot is not None
+            assert after_boot["tv_usec"] != 0, (
+                "the way-back boot record carries a cleared microsecond field; a "
+                f"genuine boot never does. Record: {after_boot}"
+            )
+            fresh_boot = records.last_boot_record(fresh.wtmp)
+            if fresh_boot is not None:
+                assert (after_boot["user"], after_boot["host"]) == (
+                    fresh_boot["user"],
+                    fresh_boot["host"],
+                ), (
+                    "the way-back boot record does not match the power-cycle "
+                    f"reference's boot record (after: {after_boot}, "
+                    f"reference: {fresh_boot})"
+                )
   '';
 }
