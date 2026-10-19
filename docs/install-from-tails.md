@@ -14,7 +14,7 @@ hidden session instead (see [Updating NAILS](operator-guide.md#updating-nails)).
   them: make a VeraCrypt volume with VeraCrypt on another computer. Its filesystem must be ext4,
   xfs, btrfs or f2fs (see [Requirements for the hidden root](backends.md#requirements-for-the-hidden-root)).
 - **PBKDF2, not Argon2id.** When you make the outer and the hidden volume in VeraCrypt, keep its
-  default hash or choose any entry other than Argon2. Tails unlocks VeraCrypt volumes with the
+  default KDF or choose any entry other than Argon2. Tails unlocks VeraCrypt volumes with the
   cryptsetup of Debian 13 (2.7.5), which cannot open a volume made with Argon2id, and neither can
   any decoy NAILS supports. Tails would refuse your correct password with the same error as a
   wrong one. [VeraCrypt volumes made with Argon2id](backends.md#veracrypt-volumes-made-with-argon2id)
