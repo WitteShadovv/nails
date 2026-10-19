@@ -89,9 +89,13 @@ permissions:
   contents: read
 
 concurrency:
-  group: e2e-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  group: e2e-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}${{ inputs.report-status && '-report' || '' }}
   # A new push supersedes a pull request's run; runs on main and next always
-  # finish, because each one fills the cache for the run after it.
+  # finish, because each one fills the cache for the run after it. A
+  # dispatched run that reports, such as the nightly run of next, waits in a
+  # group of its own, as the scheduled run of main does: GitHub keeps one
+  # waiting run per group, so another dispatched run on the same branch
+  # would replace it before it started.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
