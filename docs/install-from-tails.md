@@ -28,8 +28,9 @@ hidden session instead (see [Updating NAILS](operator-guide.md#updating-nails)).
 
 Start Tails, on another computer if the hidden volume is on an external drive: then the first
 installation does not touch the decoy computer at all. On the Welcome Screen, add an administration
-password (Add Additional Setting, then Administration Password). Copying NAILS onto the hidden
-volume needs `sudo`, and Tails cannot set the password once it has started. Then connect to Tor.
+password: click the + button under Additional Settings and choose Administration Password. Copying
+NAILS onto the hidden volume needs `sudo`, and Tails cannot set the password once it has started.
+Then connect to Tor.
 
 ## 2. Unlock the hidden volume
 
@@ -56,12 +57,11 @@ Open a terminal (Apps ▸ System Tools ▸ Console), change to that folder and f
 [Verify a release](verify-release.md):
 
 - **The checksum check** works in Tails as written.
-- **The provenance check** needs a tool that Tails does not include, and the Debian 13 packages
-  Tails could install for the session are too old: `gh` 2.46.0 has no `gh attestation`, which came
-  in 2.49.0, and `cosign` 2.5.0 predates the fix for CVE-2026-39395 in 2.6.3. Run that check for
-  the same release on another computer you trust before your first activation, or at the latest
-  inside your first hidden session. Until then only the checksum has been checked, and it does not
-  say who built the file.
+- **The provenance check** needs `gh attestation`, which came in `gh` 2.49.0. Tails does not
+  include `gh`, and Debian 13, whose packages Tails can install for the session, has 2.46.0. Run
+  that check for the same release on another computer you trust before you run `nails` for the
+  first time, since `nails init` already runs it as root on the decoy. Until then only the
+  checksum has been checked, and it does not say who built the file.
 
 ## 5. Copy NAILS onto the hidden volume
 
