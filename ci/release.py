@@ -85,10 +85,12 @@ _OPENVEX_CONTEXT = "https://openvex.dev/ns/v0.2.0"
 BINARY = "nails"
 _TRIPLE_PROPERTY = "cdx:rustc:sbom:target:triple"
 # What actions/attest requires of an SBOM (src/sbom.ts): at most 16 MiB, and
-# for CycloneDX these three fields, each with a value. The rules were read at
-# this release and commit of the action, which the workflows pin. When a pin
-# moves, as a Dependabot update moves it, ci/tests/test_release.py fails until
-# the new release has been read for changed rules and these two follow it.
+# for CycloneDX these three fields, each with a value. Of a predicate file such
+# as the VEX document (src/predicate.ts) it requires JSON of at most 16 MiB,
+# which musl-vex always writes. The rules were read at this release and commit
+# of the action, which the workflows pin. When a pin moves, as a Dependabot
+# update moves it, ci/tests/test_release.py fails until the new release has
+# been read for changed rules and these two follow it.
 ATTEST_VERSION = "v4.2.2"
 ATTEST_COMMIT = "1e69f48acb82d1966a394da916b4c1698aa569d6"
 ATTEST_MAX_SBOM_BYTES = 16 * 1024 * 1024

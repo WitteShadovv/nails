@@ -786,9 +786,10 @@ class AttestPinTest(unittest.TestCase):
                         f"{path.name}:{line} uses actions/attest@{ref} "
                         f"# {comment}, but sbom-check copies the SBOM rules of "
                         f"{release.ATTEST_VERSION} ({release.ATTEST_COMMIT}). "
-                        "Read src/sbom.ts at the new pin, bring check_attestable "
-                        "in line with it, then set ATTEST_VERSION and "
-                        "ATTEST_COMMIT in ci/release.py to the pin.",
+                        "Read src/sbom.ts and src/predicate.ts at the new pin, "
+                        "bring check_attestable and musl_vex in line with them, "
+                        "then set ATTEST_VERSION and ATTEST_COMMIT in "
+                        "ci/release.py to the pin.",
                     )
         self.assertGreater(found, 0, "no workflow uses actions/attest")
 
