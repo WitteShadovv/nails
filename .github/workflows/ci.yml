@@ -4,14 +4,16 @@ name: CI
 # path filter in `changes`, and `gate` is the one status to require: it fails
 # when a job failed or was cancelled and passes when the filter skipped one.
 # Pushes to main run every job and report a red run through report-status.
+# Pull requests into and pushes to `next`, the integration branch, run the
+# same way.
 # The commands live in the justfile, so `just ci-rust` reproduces the Rust
 # jobs locally; the E2E suite has its own workflow and required check.
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, next]
   push:
-    branches: [main]
+    branches: [main, next]
   workflow_dispatch:
 
 permissions:
@@ -19,7 +21,8 @@ permissions:
 
 concurrency:
   group: ci-${{ github.event.pull_request.number || github.ref }}
-  # A new push supersedes a pull request's run; runs on main always finish.
+  # A new push supersedes a pull request's run; runs on main and next always
+  # finish.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # rust-cache hashes every CARGO* and RUST* variable into its key, so the
@@ -78,7 +81,8 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install
 
-      # One cache for the whole workflow, saved only by the rust job on main.
+      # One cache for the whole workflow, saved only by the rust job on main and
+      # next.
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
@@ -138,7 +142,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: ci
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next' }}
 
       - name: Install test tools
         uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
@@ -440,12 +444,13 @@ jobs:
             exit 1
           fi
 
-  # A push to main runs unattended: a red run opens or comments on the
-  # 'CI red: main' issue, and the next run where every job passes closes it.
+  # A push to main or next runs unattended: a red run opens or comments on the
+  # 'CI red: main' or 'CI red: next' issue, and a later run on that branch
+  # where every job passes closes it.
   report-status:
     name: report-status
     needs: gate
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: ${{ !cancelled() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next') }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
@@ -463,4 +468,4 @@ jobs:
         uses: ./.github/actions/report-status
         with:
           needs: ${{ needs.gate.outputs.needs }}
-          title: "CI red: main"
+          title: "CI red: ${{ github.ref_name }}"

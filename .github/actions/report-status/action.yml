@@ -1,6 +1,7 @@
-# The last job of every run nobody watches (pushes to main, schedules,
-# releases) calls this action, so a red run reaches someone: it opens or
-# comments on one tracking issue, and the next fully green run closes it.
+# The last job of every run nobody watches (pushes to main and next,
+# schedules, releases) calls this action, so a red run reaches someone: it
+# opens or comments on one tracking issue, and the next fully green run
+# closes it.
 # report_status.py holds the rules. The calling job needs `issues: write`
 # and a checkout of this directory.
 name: Report status

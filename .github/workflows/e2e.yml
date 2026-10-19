@@ -4,8 +4,8 @@ name: E2E
 # serves every lane; only the selection and the runner differ:
 #
 #   pull request to main  affected: the ci group plus every test whose
-#                         derivation changed ('full-e2e' label: all)
-#   push to main          all; tests unchanged since a passed run are
+#   or next               derivation changed ('full-e2e' label: all)
+#   push to main or next  all; tests unchanged since a passed run are
 #                         substituted from the binary cache
 #   nightly schedule      execute: every test driver runs, cache or not,
 #                         durations are refreshed, the performance tests run
@@ -24,13 +24,13 @@ name: E2E
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, next]
     # 'labeled' lets the full-e2e label take effect without a new push. Any
     # other label runs the same selection again, which is correct, merely
     # redundant.
     types: [opened, synchronize, reopened, ready_for_review, labeled]
   push:
-    branches: [main]
+    branches: [main, next]
   schedule:
     # Nightly at 02:17 UTC
     - cron: "17 2 * * *"
@@ -82,8 +82,8 @@ permissions:
 
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
-  # A new push supersedes a pull request's run; runs on main always finish,
-  # because each one fills the cache for the next.
+  # A new push supersedes a pull request's run; runs on main and next always
+  # finish, because each one fills the cache for the run after it.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 defaults:
@@ -500,12 +500,13 @@ jobs:
           fi
           echo "Every E2E shard passed."
 
-  # Pushes to main and nightly runs are unattended: a red one opens or
-  # comments on the 'CI red: E2E' issue, and the next green run closes it.
+  # Pushes to main and next and nightly runs are unattended: a red one opens
+  # or comments on the 'CI red: E2E' issue, 'CI red: E2E (next)' for next,
+  # and a later green run on that branch closes it.
   report-status:
     name: Report status
     needs: [plan, shard]
-    if: ${{ !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'push' && github.ref == 'refs/heads/main')) }}
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next'))) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
@@ -523,4 +524,4 @@ jobs:
         uses: ./.github/actions/report-status
         with:
           needs: ${{ toJSON(needs) }}
-          title: "CI red: E2E"
+          title: "${{ github.ref == 'refs/heads/next' && 'CI red: E2E (next)' || 'CI red: E2E' }}"

@@ -5,10 +5,10 @@ name: Distro E2E
 # a non-NixOS host, which the NixOS-only e2e.yml suite cannot see.
 #
 # This tier is informational: it gates no merge (keep it off branch protection).
-# It runs on a nightly schedule, when a pull request gets the 'distro-e2e'
-# label, and on manual dispatch or a reusable call. The runner is an input,
-# because each VM needs KVM; a hosted ubuntu-26.04 runner exposes /dev/kvm, and
-# a self-hosted KVM runner is selected by passing its label list.
+# It runs on a nightly schedule, when a pull request to main or next gets the
+# 'distro-e2e' label, and on manual dispatch or a reusable call. The runner is
+# an input, because each VM needs KVM; a hosted ubuntu-26.04 runner exposes
+# /dev/kvm, and a self-hosted KVM runner is selected by passing its label list.
 #
 # One smoke scenario per distribution runs by default; the whole matrix is kept
 # at or below eight parallel jobs (distributions times their shards), planned by
@@ -20,7 +20,7 @@ on:
     # Nightly at 03:41 UTC, after the NixOS suite's 02:17 run.
     - cron: "41 3 * * *"
   pull_request:
-    branches: [main]
+    branches: [main, next]
     # The suite runs only when the 'distro-e2e' label is added; the job
     # conditions below enforce that.
     types: [labeled]
@@ -61,15 +61,15 @@ permissions:
   contents: read
 
 concurrency:
-  # Every label added to a pull request to main starts a run, but only a run
-  # for an added 'distro-e2e' label tests anything (the Plan condition; the
-  # suffix below is its exact complement). Every other pull request run gets
-  # its run ID in the group, so it can neither cancel the suite nor be
-  # cancelled. Adding 'distro-e2e' again cancels the pull request's run in
-  # progress. A scheduled or dispatched run waits for an earlier run of the
-  # same event and ref instead; GitHub keeps one waiting run per group, so a
-  # newer run replaces one that has not started. A call counts as its
-  # caller's event.
+  # Every label added to a pull request to main or next starts a run, but
+  # only a run for an added 'distro-e2e' label tests anything (the Plan
+  # condition; the suffix below is its exact complement). Every other pull
+  # request run gets its run ID in the group, so it can neither cancel the
+  # suite nor be cancelled. Adding 'distro-e2e' again cancels the pull
+  # request's run in progress. A scheduled or dispatched run waits for an
+  # earlier run of the same event and ref instead; GitHub keeps one waiting
+  # run per group, so a newer run replaces one that has not started. A call
+  # counts as its caller's event.
   group: distro-e2e-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && !(github.event.action == 'labeled' && github.event.label.name == 'distro-e2e') && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

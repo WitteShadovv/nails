@@ -1,8 +1,8 @@
 """Keep one tracking issue in step with a workflow's unattended runs.
 
 action.yml runs this as the last job of the runs nobody watches: pushes to
-main, schedules and releases. It reads the calling job's `needs` context
-(NEEDS, as JSON) and decides:
+main and next, schedules and releases. It reads the calling job's `needs`
+context (NEEDS, as JSON) and decides:
 
 red
     A needed job failed or was cancelled. The open issue with LABEL and TITLE
