@@ -12,9 +12,9 @@ name: E2E
 #                         without blocking and red runs open an issue; for
 #                         next, next-nightly.yml dispatches such a run
 #   dispatch or call      any mode on any runner (`runner` is runs-on JSON);
-#                         release.yml calls it with mode all for a tag.
-#                         `tests` limits the run to the named tests and
-#                         groups, in mode all or execute
+#                         release.yml calls it with mode all and cache false
+#                         for a tag. `tests` limits the run to the named
+#                         tests and groups, in mode all or execute
 #
 # With `cache` false (dispatch or call only), the run neither reads nor writes
 # the project's binary cache: no pass is substituted, so every selected test

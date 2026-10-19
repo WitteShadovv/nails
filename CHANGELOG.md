@@ -16,6 +16,8 @@ of this changelog for that version becomes the release notes word for word, and
 ### Changed
 
 - The release binary is built with Rust 1.99.1; 0.3.0-rc.2 was built with 1.93.0.
+- A release run boots every NixOS VM test on the tagged commit. Until now it took a test whose
+  derivation had passed in an earlier run from the project's binary cache, without booting it.
 
 ### Fixed
 

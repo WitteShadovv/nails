@@ -40,7 +40,14 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
    both runs are green: a test that fails there costs a fix on `main`, one that fails in the
    release run costs the version, because a pushed tag is never re-created (see
    [When something fails](#when-something-fails)). If the path filter skipped the E2E run, the
-   last E2E run on `main` must be green.
+   last E2E run on `main` must be green. The push run takes a test that passed before from the
+   binary cache, but the release run boots every test. So a run that boots every test must also
+   have passed on the commit: the nightly run, or a dispatch that runs the suite as the release
+   will:
+
+   ```bash
+   gh workflow run e2e.yml --ref main -f mode=all -f cache=false
+   ```
 6. **Tag** the merge commit with an annotated tag and push only that tag:
 
    ```bash

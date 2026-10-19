@@ -14,7 +14,8 @@ name: Release
 #                  nixpkgs patches musl against as fixed; an SBOM that
 #                  actions/attest would refuse fails here, in minutes
 #   e2e            the whole E2E suite (e2e.yml) on the tagged commit, once
-#                  the SBOM passed
+#                  the SBOM passed; without the project cache, so every test
+#                  boots instead of reusing a pass from an earlier run
 #   attest         build provenance for the archive and the binary, and the
 #                  SBOM as an attestation of its own
 #   draft-release  a draft whose notes are the CHANGELOG.md section
@@ -273,6 +274,11 @@ jobs:
   # GitHub refuses a call that grants less than any job of the called workflow
   # declares. e2e.yml's report-status job declares issues: write, but it runs
   # only for main and the nightly schedule, never for a release.
+  #
+  # With the project cache, a test whose derivation passed before would be
+  # substituted instead of booting, so the release would rest on earlier
+  # runs. Without it every test boots on the tagged commit. The run reads
+  # nothing from the cache and writes nothing to it, so it gets no token.
   e2e:
     name: E2E
     needs: [version, sbom]
@@ -282,10 +288,9 @@ jobs:
     uses: ./.github/workflows/e2e.yml
     with:
       mode: all
+      cache: false
       runner: ${{ inputs.e2e-runner || '"ubuntu-26.04"' }}
       max-shards: ${{ inputs.e2e-max-shards || 10 }}
-    secrets:
-      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
 
   # Only a bundle that passed every gate is attested: an attestation is a
   # public statement, and it outlives a deleted draft.
