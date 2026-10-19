@@ -29,6 +29,11 @@ let
 
   tests = lib.mapAttrs' (name: entry: lib.nameValuePair (scenarioName name) (makeSmoke entry)) images;
 
+  # The login- and boot-record regression scenarios, keyed "<distro>-records".
+  # They run on the host (nix-vm-test `driver`), not in CI, so they stay out of
+  # the metadata and the smoke planner never sees them.
+  records = import ./records.nix { inherit self pkgs nix-vm-test; };
+
   distros = builtins.attrNames images;
 
   metadata = {
@@ -38,6 +43,7 @@ let
   };
 in
 tests
+// records
 // {
   _metadata = metadata;
 }

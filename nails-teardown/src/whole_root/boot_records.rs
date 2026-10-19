@@ -277,7 +277,6 @@ fn unit_text(binary: &Path, restore_noexec: bool) -> String {
     format!(
         "[Unit]\n\
          Description=Overlay runtime boot bookkeeping\n\
-         DefaultDependencies=no\n\
          After=systemd-update-utmp.service {WTMPDB_UNIT} local-fs.target\n\
          Before={FIXUP_WANTED_BY}\n\
          \n\
