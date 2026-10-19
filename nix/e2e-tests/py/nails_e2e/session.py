@@ -16,6 +16,7 @@ dumps (:mod:`nails_e2e.stall`).
 
 from __future__ import annotations
 
+import re
 import shlex
 import signal
 import time
@@ -39,6 +40,23 @@ BACKDOOR_MARKER = "connecting to host"
 #: Written to the serial console when the trigger returns, with its exit
 #: status and, when that is not 0, the service manager's state.
 TRIGGER_EXIT_MARKER = "nails-trigger-exit="
+
+#: The states ``systemctl is-system-running`` reports.
+SYSTEM_STATES = frozenset(
+    {
+        "initializing",
+        "starting",
+        "running",
+        "degraded",
+        "maintenance",
+        "stopping",
+        "offline",
+        "unknown",
+    }
+)
+
+#: The report after the marker: the status, then a space and the state.
+_REPORT = re.compile(r"(\d+)(?: ([a-z]+))?")
 
 #: The serial console, the one console the test driver records (the backdoor
 #: writes its stderr there). The VM tests boot x86_64 guests only, whose first
@@ -119,11 +137,26 @@ def trigger_failure(lines: list[str]) -> str | None:
     with the switch already enqueued is no failure: an activation with
     warnings exits 9, an emergency that left mounts behind 7, and the
     switch's own stop may end a trigger before it returns.
+
+    Only a whole report counts. The kernel writes its own lines to the serial
+    port between the pieces of a line that a process sends there, so a report
+    can arrive cut in two, its status or its state broken off by a kernel
+    line: such a line, like the report's own command line, decides nothing.
     """
     for line in lines:
         _, marker, report = line.partition(TRIGGER_EXIT_MARKER)
-        status, _, state = report.strip().partition(" ")
-        if marker and status and status != "0" and state != "stopping":
+        if not marker:
+            continue
+        report = report.rstrip()
+        whole = _REPORT.match(report)
+        if whole is None:
+            continue
+        status, state = whole.group(1), whole.group(2)
+        if state is None and whole.end() != len(report):
+            continue  # cut off after the status
+        if state is not None and state not in SYSTEM_STATES:
+            continue  # the state cut short
+        if status != "0" and state != "stopping":
             seen = state or "in an unknown state"
             return f"exit status {status} while the system was {seen}"
     return None

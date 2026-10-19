@@ -18,6 +18,10 @@ from unittest import mock
 
 from nails_e2e import session
 
+#: A line the kernel printed on the console of a passing switch: PID 1 logs
+#: through the kernel once the journal stops.
+KERNEL_LINE = "[   13.394631] systemd[1]: Stopping Journal Service..."
+
 
 class FakeMachine:
     """A node whose console prints ``lines`` once the trigger has run."""
@@ -217,6 +221,45 @@ class TriggerFailureTest(unittest.TestCase):
         # behind 7, both with the switch already under way.
         self.assertIsNone(session.trigger_failure(["nails-trigger-exit=9 stopping"]))
         self.assertIsNone(session.trigger_failure(["nails-trigger-exit=7 stopping"]))
+
+    def test_a_report_cut_by_a_kernel_message_decides_nothing(self) -> None:
+        # The kernel writes its lines to the serial port between the pieces
+        # of a line that a process sends there, as the console of a passing
+        # switch shows.
+        for cut in (
+            [f"nails-trigger-exit={KERNEL_LINE}", "0"],
+            [f"nails-trigger-exit=9 stopp{KERNEL_LINE}", "ing"],
+            [f"nails-trigger-exit=1{KERNEL_LINE}", "43 stopping"],
+            [f"nails-trigger-exit=4 {KERNEL_LINE}", "stopping"],
+        ):
+            with self.subTest(cut=cut):
+                self.assertIsNone(session.trigger_failure(cut))
+
+    def test_a_whole_state_before_a_kernel_message_still_counts(self) -> None:
+        self.assertEqual(
+            session.trigger_failure([f"nails-trigger-exit=4 running{KERNEL_LINE}"]),
+            "exit status 4 while the system was running",
+        )
+
+    def test_the_command_line_of_the_report_is_no_failure(self) -> None:
+        self.assertIsNone(
+            session.trigger_failure(
+                ['echo "nails-trigger-exit=$status $state" > /dev/ttyS0) &']
+            )
+        )
+
+    def test_a_cut_report_does_not_end_a_passing_switch(self) -> None:
+        machine = FakeMachine(
+            [
+                f"nails-trigger-exit={KERNEL_LINE}",
+                "0",
+                "backdoor: connecting to host...",
+            ]
+        )
+        session.follow_soft_reboot(
+            machine, "nails deactivate -y", "leave", deadline_s=5
+        )
+        self.assertEqual(machine.connects, 1)
 
 
 class TriggerReportTest(unittest.TestCase):

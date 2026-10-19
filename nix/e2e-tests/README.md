@@ -94,11 +94,14 @@ reports its exit status and, if that is not 0, the system's state from
 `systemctl is-system-running`. A non-zero status while the system is not
 `stopping` means that no switch will come (an activation refused or rolled
 back), and the wait fails at once. With the switch already enqueued it is no
-failure: an activation with warnings exits 9. A command typed on a tty
-(`start=`) can report the same line itself, as the emergency test's commands
-do. Write such lines to the serial console, never to `/dev/console`: that is
-the last `console=` on the kernel command line, `tty0` in the NixOS test VMs,
-and the driver records only the serial port.
+failure: an activation with warnings exits 9. Only a whole report counts: the
+kernel writes its own lines to the serial port between the pieces of a line
+that a process sends there, so a report can arrive cut in two, and the wait
+ignores a cut one. A command typed on a tty (`start=`) can report the same line
+itself, as the emergency test's commands do. Write such lines to the serial
+console, never to `/dev/console`: that is the last `console=` on the kernel
+command line, `tty0` in the NixOS test VMs, and the driver records only the
+serial port.
 
 ### `lib/backend-fault.nix`
 
