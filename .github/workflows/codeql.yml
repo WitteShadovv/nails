@@ -11,10 +11,13 @@ name: CodeQL
 # and procedural macros. Test code stays in the scan, and an alert never fails
 # a run.
 #
+# The ruleset of main requires CodeQL results before a pull request merges,
+# so pull requests into main are never filtered by path.
+#
 # This file replaces CodeQL's default setup, which ran from the repository
 # settings without a file to review. Both cannot run together: while the
 # default setup is on, code scanning refuses the results of this workflow,
-# so it is turned off under Settings, Code security.
+# so the default setup stays off (docs/ci.md, Maintainer settings checklist).
 
 on:
   pull_request:

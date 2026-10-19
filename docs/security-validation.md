@@ -27,7 +27,7 @@ OpenSSF Scorecard grades the repository's supply-chain practices and never gates
 
 ### On pull requests, on pushes to main and next, and weekly (`.github/workflows/codeql.yml`)
 
-CodeQL analyses the Rust workspace and the Python with the `security-extended` queries, and the workflows with its default suite. Its alerts go to code scanning, whose check on a pull request fails on a new alert with a severity of error, critical or high ([ci.md](ci.md#codeql)).
+CodeQL analyses the Rust workspace and the Python with the `security-extended` queries, and the workflows with its default suite. Its alerts go to code scanning. A pull request into `main` merges only with its results, and not with a new alert of severity error or a new security alert of severity high or critical ([ci.md](ci.md#codeql)).
 
 ### In release automation (`.github/workflows/release.yml`)
 
