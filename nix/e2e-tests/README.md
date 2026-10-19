@@ -68,7 +68,7 @@ or `nodes` keeps `{ self, ... }:` or `{ self, pkgs, ... }:`.
 - `runDetachedCommandFn` → `run_detached_command(unit_name, command)`
 - `readStatusJsonFn` → `read_status_json(config_path=None)` (requires exit 0) and `read_status_json_with_rc(config_path=None)` → `(rc, data)` for fail-closed postures (exit 6 unknown, 7 degraded/inconsistent)
 - `runVerifyFn` → `run_verify(args="", config_path=None)`
-- `canonicalActivateFn` → `canonical_activate(config_path, extra_args="", label="activate")`: soft-reboots into the hidden root, follows the switch and asserts the hidden root; activate's output is in `/mnt/data/<label>.log`
+- `canonicalActivateFn` → `canonical_activate(config_path, extra_args="", label="activate")`: soft-reboots into the hidden root, follows the switch and asserts the hidden root; activate's output is in `/mnt/data/<label>.log` and, line by line, on the serial console the driver records
 - `canonicalDeactivateFn` → `canonical_deactivate(config_path, label="deactivate")`: soft-reboots back, asserts the plain decoy and waits for the hidden mapping to close
 
 The soft-reboot helpers themselves (`follow_soft_reboot`, `assert_hidden_root`,

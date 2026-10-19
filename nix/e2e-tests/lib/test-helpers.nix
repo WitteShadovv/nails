@@ -191,12 +191,14 @@
 
   # Enter the hidden session from a test: `nails activate -y` soft-reboots into
   # the hidden root. Its output goes to the hidden volume (the decoy shell that
-  # ran it is gone after the switch) and, line by line, to the console, so a
-  # long step (a hidden build, the first copy of the hidden system) shows its
-  # progress in the test log. `env` is a prefix of variable assignments (for
-  # example the sudo variables that name the operator), and `sudo=True` runs
-  # nails through sudo, as an operator does. `deadline_s` bounds the wait for
-  # the hidden root's backdoor. Returns the in-guest timings.
+  # ran it is gone after the switch) and, line by line, to the serial console
+  # the driver records, so a long step (a hidden build, the first copy of the
+  # hidden system) shows its progress in the test log, and a failed activation
+  # shows its own error there before the test fails. `env` is a prefix of
+  # variable assignments (for example the sudo variables that name the
+  # operator), and `sudo=True` runs nails through sudo, as an operator does.
+  # `deadline_s` bounds the wait for the hidden root's backdoor. Returns the
+  # in-guest timings.
   canonicalActivateFn = ''
     def canonical_activate(
         config_path,
@@ -223,7 +225,8 @@
             + extra_args
             + " 2>&1 | tee "
             + log
-            + " > /dev/console",
+            + " > "
+            + _session.SERIAL_CONSOLE,
             label,
             deadline_s=deadline_s,
         )
