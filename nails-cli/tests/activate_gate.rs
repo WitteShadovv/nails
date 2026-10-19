@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The attach gate in front of `activate` and `check`, driven through the real
-//! binary.
+//! The attach gate in front of `activate` and `check`, and the platform row
+//! beside it, driven through the real binary.
 //!
 //! A refused root must receive nothing: no `.lock`, no `logs/`, no `reports/`,
 //! no staged `config/`. The plain cases use a temporary directory as the root,
@@ -329,6 +329,99 @@ mod kernel_tests {
             assert!(entries(volume.path()).is_empty(), "the cover was written");
             nix::mount::umount(volume.path()).expect("unmount the cover");
             assert!(entries(volume.path()).is_empty(), "the root was written");
+        });
+    }
+
+    /// The platform row through the real binary, with the host's os-release
+    /// replaced by a bind mount: a tested Ubuntu release passes it by name; an
+    /// untested one warns in `check`, in `init` and during activation, which
+    /// goes on until the other pre-flight checks refuse; and a host activation
+    /// refuses fails the row, as activation then refuses it with exit 8.
+    #[test]
+    fn the_platform_row_names_the_host_and_warns_on_an_untested_release() {
+        let _ = Rerun::new(test_path!(
+            the_platform_row_names_the_host_and_warns_on_an_untested_release
+        ))
+        .in_user_mount_ns()
+        .run(|| {
+            // Detection refuses every Debian-family host on a split /usr.
+            if ["/bin", "/sbin", "/lib"]
+                .iter()
+                .any(|dir| std::fs::symlink_metadata(dir).is_ok_and(|meta| meta.is_dir()))
+            {
+                nails_core::test_support::skip_host(
+                    "/bin, /sbin or /lib is a directory on this host, which refuses any \
+                     Debian-family os-release",
+                );
+            }
+            let dir = tempfile::tempdir().unwrap();
+            let os_release = dir.path().join("os-release");
+            std::fs::write(&os_release, "").unwrap();
+            nix::mount::mount(
+                Some(os_release.as_path()),
+                "/etc/os-release",
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND,
+                None::<&str>,
+            )
+            .expect("bind a stand-in over /etc/os-release");
+            // Written in place, so the bind mount shows each new content.
+            let host = |content: &str| std::fs::write(&os_release, content).unwrap();
+            let volume = ScratchTmpfs::new("");
+            let config = config_for(dir.path(), volume.path());
+            let platform_row = || {
+                let output = nails(&config, &["check", "--overlay-only", "--json"]);
+                last_json(&output)["data"]["checks"]
+                    .as_array()
+                    .and_then(|rows| rows.iter().find(|row| row["name"] == "platform"))
+                    .cloned()
+                    .unwrap_or_else(|| panic!("no platform row: {output:?}"))
+            };
+
+            for release in ["24.04", "26.04"] {
+                host(&format!(
+                    "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"{release}\"\n"
+                ));
+                let row = platform_row();
+                assert_eq!(row["status"], "pass", "{row}");
+                assert_eq!(row["message"], format!("Ubuntu {release}"), "{row}");
+            }
+
+            host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\n");
+            let warning = "Ubuntu 26.10 is not a release NAILS has been tested on \
+                           (tested: Ubuntu 24.04 and 26.04).";
+            let row = platform_row();
+            assert_eq!(row["status"], "warn", "{row}");
+            assert!(
+                row["message"].as_str().unwrap_or("").starts_with(warning),
+                "{row}"
+            );
+            let target = ScratchTmpfs::new("");
+            let init = Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+                .args(["--no-log-file", "init"])
+                .arg(target.path())
+                .output()
+                .expect("run nails init");
+            assert_eq!(init.status.code(), Some(0), "{init:?}");
+            let stderr = String::from_utf8_lossy(&init.stderr);
+            assert!(stderr.contains(&format!("warning: {warning}")), "{stderr}");
+            let output = nails(&config, &["activate", "-y", "--overlay-only"]);
+            assert_eq!(output.status.code(), Some(4), "{output:?}");
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(stderr.contains(&format!("platform: {warning}")), "{stderr}");
+
+            host("ID=fedora\nVERSION_ID=44\n");
+            let row = platform_row();
+            assert_eq!(row["status"], "fail", "{row}");
+            assert!(
+                row["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("host 'fedora' is not a supported platform"),
+                "{row}"
+            );
+            let output = nails(&config, &["activate", "-y", "--overlay-only"]);
+            assert_eq!(output.status.code(), Some(8), "{output:?}");
         });
     }
 }

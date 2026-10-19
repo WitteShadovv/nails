@@ -286,7 +286,7 @@ mod tests {
     }
 
     #[test]
-    fn debian_at_and_above_minimum_is_supported() {
+    fn debian_13_is_supported_and_12_refused() {
         assert!(matches!(
             classify_family(Some("debian"), &[], Some("12")),
             FamilySupport::Refused(_)

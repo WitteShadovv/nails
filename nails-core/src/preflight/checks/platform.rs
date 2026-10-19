@@ -112,6 +112,13 @@ mod tests {
     }
 
     #[test]
+    fn the_row_is_named_platform() {
+        let check = PlatformCheck::new(FakePlatform::nixos().host_profile());
+        assert_eq!(PreFlightCheck::<MockFilesystem>::name(&check), "platform");
+        assert!(PreFlightCheck::<MockFilesystem>::description(&check).contains("tested"));
+    }
+
+    #[test]
     fn a_refused_profile_without_a_reason_still_fails() {
         let mut profile = FakePlatform::fhs().host_profile();
         profile.kind = PlatformKind::Unsupported;
