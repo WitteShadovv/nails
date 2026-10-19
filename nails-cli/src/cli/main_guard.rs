@@ -33,7 +33,8 @@ pub fn requires_root(command: &Commands) -> bool {
         | Commands::Emergency(_)
         | Commands::Recover(_)
         | Commands::Transition
-        | Commands::GuardDevice { .. } => true,
+        | Commands::GuardDevice { .. }
+        | Commands::ReconcileRecords => true,
         // Planting writes into the overlays, a live scan reads raw block devices
         // and reset deletes from the hidden volume. An offline scan of image
         // files and the status view are not gated here: they still read the
@@ -67,6 +68,7 @@ fn subcommand_name(command: &Commands) -> &'static str {
         Commands::SleepGuard => "sleep-guard",
         Commands::Transition => "transition",
         Commands::GuardDevice { .. } => "guard-device",
+        Commands::ReconcileRecords => "reconcile-records",
     }
 }
 

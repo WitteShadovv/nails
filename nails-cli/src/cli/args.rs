@@ -203,6 +203,9 @@ pub enum Commands {
         /// The device node.
         device: std::path::PathBuf,
     },
+    /// Reconcile the decoy's login and boot records after the way back (run by systemd, not by hand)
+    #[command(name = "reconcile-records", hide = true)]
+    ReconcileRecords,
 }
 
 /// `nails activate` arguments
@@ -686,7 +689,13 @@ mod tests {
     #[test]
     fn internal_subcommands_are_hidden_from_help() {
         let command = Cli::command();
-        for name in ["watch", "sleep-guard", "transition", "guard-device"] {
+        for name in [
+            "watch",
+            "sleep-guard",
+            "transition",
+            "guard-device",
+            "reconcile-records",
+        ] {
             let sub = command
                 .get_subcommands()
                 .find(|cmd| cmd.get_name() == name)

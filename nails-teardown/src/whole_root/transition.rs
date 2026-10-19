@@ -48,7 +48,7 @@ use crate::whole_root::plan::{
     UTAB_MOUNTS_NAME, UTAB_NAME, unix_now,
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
-use crate::whole_root::{kernel_helpers, run_records, runtime_units, utab};
+use crate::whole_root::{boot_records, kernel_helpers, run_records, runtime_units, utab};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -416,6 +416,16 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         .ok()
         .map(|text| parse_mountinfo(&text));
     let records = std::fs::read(env.runtime_dir.join(RECORDS_NAME)).ok();
+    // On an FHS decoy, keep the binary copy before the scrub removes the runtime
+    // directory: the boot-record reconcile step runs it on the decoy's first
+    // start. NixOS (a decoy system toplevel) leaves records that already read as
+    // a power cycle, so it needs none.
+    let fixup_binary = plan
+        .decoy
+        .system
+        .is_none()
+        .then(|| std::fs::read(env.runtime_dir.join(BINARY_NAME)).ok())
+        .flatten();
     if let Err(why) = repoint_and_check(env, &plan.decoy) {
         if let Some(system) = &plan.hidden.system {
             let _ = repoint_current_system(&env.run, system);
@@ -453,8 +463,16 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         ),
     };
     run_records::restore(&env.run, records.as_deref());
-    // A process exec'd from /run keeps running once it turns noexec again.
-    if plan.run_noexec {
+    // A process exec'd from /run keeps running once it turns noexec again. On an
+    // FHS decoy whose login or boot records a soft-reboot would give away, the
+    // reconcile one-shot runs the binary copy from /run on the decoy's first
+    // start and turns noexec back on itself, so /run stays executable until then.
+    // Everything else sets noexec here, and so does a failed install.
+    let fixup_installed = fixup_binary
+        .as_deref()
+        .filter(|_| boot_records::decoy_keeps_records(&env.nextroot))
+        .is_some_and(|binary| boot_records::install(&env.run, binary, plan.run_noexec).is_ok());
+    if plan.run_noexec && !fixup_installed {
         let _ = nextroot::set_noexec(&env.run, true);
     }
     // A hidden unit that is not ordered before the shutdown can still be
