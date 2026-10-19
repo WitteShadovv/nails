@@ -11,9 +11,9 @@ Work runs in four tiers. Each is a superset of the one above it in coverage and 
 | 1. pre-commit | On `git commit`, changed files only | under 10 s | Formatting, Rust file sizes, file and secret checks (`.pre-commit-config.yaml`). |
 | 2. pre-push / `just check` | On `git push`, and on demand | about 90 s | `just fmt-check lint line-count test`: the whole offline Rust gate without coverage or Nix. |
 | 3. PR gate | Every pull request to `main` or `next`, and every push to either | about 10 min p95 | `ci.yml` (summarised by `gate`), the affected `e2e.yml` run (`e2e-result`) and `pr-title.yml`. These three are the required checks. |
-| 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks, the reproducibility check, batch fuzzing and the OpenSSF Scorecard analysis. A release runs on its tag. |
+| 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks, the reproducibility check, batch fuzzing, the weekly CodeQL analysis and the OpenSSF Scorecard analysis. A release runs on its tag. |
 
-Tier 3 is everything a contributor must pass to merge. The informational `fuzz` job of `fuzz.yml` also runs on pull requests that change fuzzed code, outside the tier-3 budget: it pulls two images and builds every target with the address sanitizer before its five minutes of fuzzing. Tier 4 catches what a per-PR budget cannot afford (every VM test, the whole dependency graph, timing and determinism) and reports failures into tracking issues instead of a pull request check (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
+Tier 3 is everything a contributor must pass to merge. The informational `fuzz` job of `fuzz.yml` also runs on pull requests that change fuzzed code, outside the tier-3 budget: it pulls two images and builds every target with the address sanitizer before its five minutes of fuzzing. The informational CodeQL analysis of `codeql.yml` runs on every pull request into `main` or `next`, also outside the budget (see [CodeQL](#codeql)). Tier 4 catches what a per-PR budget cannot afford (every VM test, the whole dependency graph, timing and determinism) and reports failures into tracking issues instead of a pull request check (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
 
 ## Workflow inventory
 
@@ -29,6 +29,7 @@ Tier 3 is everything a contributor must pass to merge. The informational `fuzz` 
 | `.github/workflows/reproducibility.yml` | `workflow_call` from `release.yml`, weekly from `scheduled.yml` | — | 4 | `ubuntu-26.04` | `nix build .#nails-release` |
 | `.github/workflows/sbom.yml` | `workflow_call` from `release.yml` and `ci.yml` | — (`gate` in `ci.yml`) | 3 (when what the SBOM is made from changes) and release | `ubuntu-26.04` | `cargo cyclonedx` ([security-validation.md](security-validation.md#generate-locally)) |
 | `.github/workflows/scorecard.yml` | Push to `main`, weekly, branch protection rule change, dispatch | — (informational) | 4 | `ubuntu-26.04` | — |
+| `.github/workflows/codeql.yml` | PRs to `main` and `next`, push to `main` and `next`, weekly, dispatch | — (informational) | 3 (pull requests, outside its budget) and 4 (weekly) | `ubuntu-26.04` | — |
 | `.github/workflows/release.yml` | Push of `v*` tags, dispatch from a tag | — | release | `ubuntu-26.04` (E2E on the `e2e-runner` input) | `python3 -m ci.release check` |
 
 The composite actions `.github/actions/setup-nix` and `.github/actions/report-status` are shared by these workflows and are not workflows themselves.
@@ -88,7 +89,7 @@ The policy is compiled in, so `cargo build`, clippy and every editor enforce it 
 
 ### Tracking issues for unattended runs
 
-Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, `fuzz.yml` on its schedules, `scorecard.yml` on `main`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
+Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, `fuzz.yml` on its schedules, `scorecard.yml` and `codeql.yml` on `main`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
 
 - A failed or cancelled job opens the issue (label `ci-red`, title `CI red: <workflow>`; `CI red: main` for `ci.yml`), or comments on it with the run link and the red jobs when it is already open. The runs of `next` keep issues of their own, and so does `next-nightly.yml`, which starts them (see [The integration branch `next`](#the-integration-branch-next)).
 - A run in which every reported job passed closes the issue. A run that skipped some jobs without a failure (for example a manual dispatch of a single `scheduled.yml` task) leaves it as it is.
@@ -203,6 +204,24 @@ Cargo.lock's transitive dependencies, which no Dependabot update touches, are re
 - **Publishing rules.** Before it stores a result, the Scorecard API reads the workflow file at the analysed commit and rejects the result unless the file keeps to the [workflow restrictions](https://github.com/ossf/scorecard-action#workflow-restrictions): no top-level `env`, `defaults` or write permission, and `id-token: write` only in the Scorecard job; in that job no `env`, `defaults`, container or services, an Ubuntu hosted runner, and only steps that use `actions/checkout`, `actions/upload-artifact`, `github/codeql-action/upload-sarif`, `ossf/scorecard-action` or `step-security/harden-runner`, where a pinned SHA must be a commit of the action's own repository. This is why `scorecard.yml` has no top-level `defaults: run: shell: bash`, unlike the workflows with `run:` steps, and its Scorecard job must not gain a `run:` step. A result the API rejects does not fail the run: the action logs a warning annotation, `Unable to POST scorecard results to webapp`, with the API's reason, and the badge keeps the last accepted score. After a change to `scorecard.yml`, check the next run's annotations and the badge.
 - **Unattended runs.** Every run on `main` ends in a `report-status` job, which keeps the `CI red: Scorecard` issue in step with the latest run (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)): a failed analysis, signature or upload opens it; a rejected result does not. A dispatch from another branch fails by design and reports nothing. Of the publishing rules, only one applies to this job: it must never get `id-token: write`.
 
+## CodeQL
+
+`codeql.yml` runs [CodeQL](https://codeql.github.com) code scanning, which looks for vulnerable patterns in the source, such as untrusted data that reaches a file path or a log. It replaces CodeQL's default setup, whose configuration lived in the repository settings, so the analysis is reviewed and versioned like every other workflow.
+
+| Language | What it reads | Queries |
+|---|---|---|
+| `rust` | The workspace crates, through cargo and the toolchain that `rust-toolchain.toml` pins | `security-extended` |
+| `python` | The Python of `ci/`, `scripts/`, the composite actions and the E2E helpers under `nix/` | `security-extended` |
+| `actions` | The workflows and composite actions under `.github/` | the default suite |
+
+- **Triggers.** Pull requests into `main` and `next`, pushes to both, weekly on Wednesdays, and manual dispatch. A newer push to a pull request cancels its older run.
+- **Jobs.** One `Analyze (<language>)` job per language, with `build-mode: none`: nothing is compiled, and no job needs Nix or the project cache. The Rust job first installs the toolchain that `rust-toolchain.toml` pins: the extractor asks rustup for the project's toolchain and reads the standard library from its `rust-src`, and without it, macros such as `format!` and `assert_eq!` stay unexpanded and the queries miss what flows through them. Each job uploads its results under a fixed category, `/language:<language>`, the category the default setup used, so the analysis of one language never closes the alerts of another. Test code is analysed as well; a test that writes a secret to a log is a finding like any other.
+- **Results.** Alerts appear under the Security and quality tab, then Code scanning; only people with write access see them. A finding never fails an `Analyze` job, but a failed extraction, analysis or upload does. On a pull request, code scanning adds a check of its own, which fails when the change brings a new alert with a severity of error, critical or high, unless the repository settings name other levels.
+- **Permissions.** No secret is needed. Each `Analyze` job gets `security-events: write` to upload its results, and `report-status` alone gets `issues: write`.
+- **Unattended runs.** Every run on `main` ends in a `report-status` job, which keeps the `CI red: CodeQL` issue in step with the latest run (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
+- **Pins.** `init` and `analyze` use the commit of `github/codeql-action` that `fuzz.yml` and `scorecard.yml` use for `upload-sarif`, and Dependabot moves all of them together. The CodeQL version comes with the action: v4.38.3 runs CodeQL 2.27.2.
+- **Default setup.** While CodeQL's default setup is on, code scanning refuses the results of this workflow and its `Analyze` jobs fail, so the default setup must stay off (see [Maintainer settings checklist](#maintainer-settings-checklist)).
+
 ## Nix setup and binary cache
 
 Every workflow that needs Nix uses the composite action `.github/actions/setup-nix`. The installer (`cachix/install-nix-action`) is pinned there once, Dependabot keeps that pin current, and every job gets the same `nix.conf`: KVM, `system-features = nixos-test benchmark big-parallel kvm`, `always-allow-substitutes = true` and `accept-flake-config = false`.
@@ -306,6 +325,7 @@ GitHub settings that the workflows assume but cannot set themselves:
 - **Tag ruleset.** Protect `v*` tags to annotated tags only, and enable immutable releases.
 - **Environments.** `dependency-updates` holds `DEPENDENCY_UPDATE_TOKEN` and needs no required reviewers. The `hetzner-pr` and `hetzner` environments are no longer used: delete them, with the `hetzner` environment's secrets `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID` and `RUNNER_REGISTRATION`.
 - **Secrets.** `CACHIX_AUTH_TOKEN` as an Actions secret (see [Setting up the cache](#setting-up-the-cache)); never add it as a Dependabot secret.
+- **CodeQL.** Code scanning refuses the results of `codeql.yml` while CodeQL's default setup is on. Turn the default setup off: Settings, Advanced Security, the menu of the "CodeQL analysis" row, **Switch to advanced**, then **Disable CodeQL** in the pop-up. Commit nothing from the workflow editor that opens next; the workflow is already in the repository.
 - **Schedules.** GitHub disables a workflow's schedule after 60 days without repository activity; a quiet period needs a manual dispatch of `scheduled.yml` (or any push) to re-arm it.
 
 ## Secrets and permissions
@@ -316,6 +336,7 @@ GitHub settings that the workflows assume but cannot set themselves:
 - `next-nightly.yml` needs no secret: its `dispatch` job starts the runs of `next` with the job's own token, which gets `actions: write` for that.
 - Release attestations are signed with the `attest` job's OIDC identity (`id-token: write`); no long-lived signing secret exists.
 - `scorecard.yml` needs no secret either: its Scorecard job signs the result it publishes with its OIDC identity (`id-token: write`) and uploads the SARIF to code scanning with `security-events: write` (see [OpenSSF Scorecard](#openssf-scorecard)).
+- `codeql.yml` needs no secret: each `Analyze` job uploads its results to code scanning with `security-events: write` (see [CodeQL](#codeql)).
 
 ## Operational caveats
 

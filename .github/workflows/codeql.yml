@@ -1,0 +1,107 @@
+name: CodeQL
+
+# CodeQL code scanning of the Rust workspace, of the Python in the repository
+# (the ci/ tooling, the scripts and the E2E helpers) and of the workflows and
+# composite actions. Each language is a job of its own and uploads its
+# results to code scanning under a fixed category, /language:<language>, so
+# one language's analysis never closes the alerts of another. Rust and Python
+# run the security-extended queries, the actions analysis its default suite.
+# Nothing is built: every language is extracted with build-mode none. Test
+# code stays in the scan, and an alert never fails a run.
+#
+# This file replaces CodeQL's default setup, which ran from the repository
+# settings without a file to review. Both cannot run together: while the
+# default setup is on, code scanning refuses the results of this workflow,
+# so it is turned off under Settings, Code security.
+
+on:
+  pull_request:
+    branches: [main, next]
+  push:
+    branches: [main, next]
+  schedule:
+    # Wednesdays at 05:11 UTC, so new queries reach main without a push
+    - cron: "11 5 * * 3"
+  workflow_dispatch:
+
+permissions: {}
+
+# A new push supersedes a pull request's run; other runs always finish.
+concurrency:
+  group: codeql-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write # upload the results to code scanning
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # No queries input: the default suite.
+          - language: actions
+          - language: python
+            queries: security-extended
+          - language: rust
+            queries: security-extended
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The Rust extractor asks rustup for the project's toolchain and reads
+      # the standard library from its rust-src. Without it, macros such as
+      # format! and assert_eq! stay unexpanded, and the queries miss what
+      # flows through them. No arguments: rustup installs the channel that
+      # rust-toolchain.toml pins, rust-src included.
+      - name: Install Rust toolchain
+        if: matrix.language == 'rust'
+        run: rustup toolchain install
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          queries: ${{ matrix.queries }}
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+        with:
+          category: /language:${{ matrix.language }}
+
+  # Runs on main are unattended: a red one opens or comments on the
+  # 'CI red: CodeQL' issue, and the next green run closes it. An alert does
+  # not make a run red; a failed extraction, analysis or upload does.
+  report-status:
+    name: Report status
+    needs: [analyze]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}

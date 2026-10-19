@@ -1,6 +1,6 @@
 # Security validation
 
-This guide documents the security validation mechanisms that are actually in use in this public repository: SBOM generation, dependency policy checks, deterministic release verification and GitHub artifact attestations.
+This guide documents the security validation mechanisms that are actually in use in this public repository: SBOM generation, dependency policy checks, static analysis with CodeQL, deterministic release verification and GitHub artifact attestations.
 
 ## Validation surfaces
 
@@ -24,6 +24,10 @@ The scheduled workflow never gates a merge. It runs:
 ### Weekly and on every push to main (`.github/workflows/scorecard.yml`)
 
 OpenSSF Scorecard grades the repository's supply-chain practices and never gates a merge; the README badge and code scanning show the results ([ci.md](ci.md#openssf-scorecard)).
+
+### On pull requests, on pushes to main and next, and weekly (`.github/workflows/codeql.yml`)
+
+CodeQL analyses the Rust workspace and the Python with the `security-extended` queries, and the workflows with its default suite. Its alerts go to code scanning, whose check on a pull request fails on a new alert with a severity of error, critical or high ([ci.md](ci.md#codeql)).
 
 ### In release automation (`.github/workflows/release.yml`)
 
