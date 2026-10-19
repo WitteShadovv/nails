@@ -36,9 +36,7 @@ let
   hiddenRoot = import ../lib/hidden-root.nix;
 
   # The record readers, shared verbatim with the fast-lane unit tests.
-  recordsModule = pkgs.writeTextDir "records.py" (
-    builtins.readFile ../../e2e-tests/lib/records.py
-  );
+  recordsModule = pkgs.writeTextDir "records.py" (builtins.readFile ../../e2e-tests/lib/records.py);
 
   inherit (self.packages.x86_64-linux) nails;
 
@@ -56,7 +54,7 @@ in
 cfg:
 let
   install = cfg.install or "";
-  assertKind = cfg.assertKind;
+  inherit (cfg) assertKind;
 in
 distroVm.buildVmTest {
   inherit (cfg) entry;

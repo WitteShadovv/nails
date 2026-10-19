@@ -92,7 +92,7 @@ _TRIPLE_PROPERTY = "cdx:rustc:sbom:target:triple"
 # update moves it, ci/tests/test_release.py fails until the new release has
 # been read for changed rules and these two follow it.
 ATTEST_VERSION = "v4.2.2"
-ATTEST_COMMIT = "1e69f48acb82d1966a394da916b4c1698aa569d6"
+ATTEST_COMMIT = "1e69f48acb82d1966a394da916b4c1698aa569d6"  # pragma: allowlist secret
 ATTEST_MAX_SBOM_BYTES = 16 * 1024 * 1024
 ATTEST_CYCLONEDX_FIELDS = ("bomFormat", "serialNumber", "specVersion")
 

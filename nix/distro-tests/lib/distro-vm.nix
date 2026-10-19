@@ -62,9 +62,11 @@ in
     assert lib.assertMsg (
       vmLib ? ${entry.distro} && vmLib.${entry.distro} ? ${entry.image}
     ) "nix-vm-test has no ${entry.distro} image ${entry.image} (see nix/distro-tests/images.nix)";
-    assert lib.assertMsg (
-      builtins.elem target [ "sandboxed" "driver" "driverInteractive" ]
-    ) "distro-vm target must be sandboxed, driver or driverInteractive, not ${target}";
+    assert lib.assertMsg (builtins.elem target [
+      "sandboxed"
+      "driver"
+      "driverInteractive"
+    ]) "distro-vm target must be sandboxed, driver or driverInteractive, not ${target}";
     # nix-vm-test returns { driver, driverInteractive, sandboxed }.
     (vmLib.${entry.distro}.${entry.image} (
       {
