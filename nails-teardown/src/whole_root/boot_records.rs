@@ -40,7 +40,7 @@
 //! decoy no worse than before the fix existed.
 
 use crate::whole_root::nextroot;
-use crate::whole_root::plan::{self, SERVICE_CONFIG_MODE, unix_now};
+use crate::whole_root::plan::{self, SERVICE_CONFIG_MODE};
 use std::io::{self, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
@@ -163,28 +163,41 @@ fn backdated_boot_fix(data: &[u8], now: i32) -> Option<(usize, i32)> {
     })
 }
 
-/// Correct a backdated boot record in the classic wtmp at `path` to `now`, in
-/// place (the file keeps its inode, owner and mode). Returns whether a record
-/// was changed. An absent or too-small file, or one with nothing to fix, is no
-/// change.
-fn reconcile_wtmp(path: &Path, now: i32) -> io::Result<bool> {
+/// The current time as classic wtmp stores it: whole seconds and the sub-second
+/// part in microseconds, each a 32-bit field. Sampled once so the pair is
+/// coherent. On the unreachable error path the seconds clamp to `i32::MAX`.
+fn now_timeval() -> (i32, i32) {
+    let since = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default();
+    let sec = i32::try_from(since.as_secs()).unwrap_or(i32::MAX);
+    (sec, since.subsec_micros() as i32)
+}
+
+/// Correct a backdated boot record in the classic wtmp at `path` to the time
+/// `now_sec`/`now_usec` the decoy came back, in place (the file keeps its inode,
+/// owner and mode). Returns whether a record was changed. An absent or too-small
+/// file, or one with nothing to fix, is no change.
+fn reconcile_wtmp(path: &Path, now_sec: i32, now_usec: i32) -> io::Result<bool> {
     let data = match std::fs::read(path) {
         Ok(data) => data,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e),
     };
-    let Some((offset, corrected)) = backdated_boot_fix(&data, now) else {
+    let Some((offset, corrected)) = backdated_boot_fix(&data, now_sec) else {
         return Ok(false);
     };
     let mut file = std::fs::OpenOptions::new().write(true).open(path)?;
     file.seek(SeekFrom::Start(offset as u64))?;
     file.write_all(&corrected.to_le_bytes())?;
-    // tv_usec of the corrected record: a fresh boot's is unrelated to the old
-    // one, so it is cleared.
+    // tv_usec of the corrected record: an ordinary boot's start time carries a
+    // live microsecond reading, so stamp the real sub-second part of the time
+    // the decoy came back. A cleared field (a round `000000`) is what no genuine
+    // boot record holds and would single this record out in `utmpdump`.
     file.seek(SeekFrom::Start(
         (offset + (UT_TV_USEC_OFFSET - UT_TV_SEC_OFFSET)) as u64,
     ))?;
-    file.write_all(&0i32.to_le_bytes())?;
+    file.write_all(&now_usec.to_le_bytes())?;
     Ok(true)
 }
 
@@ -299,9 +312,10 @@ fn unit_text(binary: &Path, restore_noexec: bool) -> String {
 /// `restore_noexec` makes `/run` `noexec` again, last of all. Best effort: each
 /// part is attempted and a failure of one does not stop the others.
 pub fn run(run: &Path, root: &Path, restore_noexec: bool) {
-    // 1. Neutralise a backdated classic-wtmp boot record.
-    let now = i32::try_from(unix_now()).unwrap_or(i32::MAX);
-    let _ = reconcile_wtmp(&root.join(WTMP_PATH), now);
+    // 1. Neutralise a backdated classic-wtmp boot record, stamping it with a
+    //    live time (seconds and real microseconds), as a fresh boot carries.
+    let (now_sec, now_usec) = now_timeval();
+    let _ = reconcile_wtmp(&root.join(WTMP_PATH), now_sec, now_usec);
 
     // 2. Remove the wtmpdb boot-writer drop-in and its directory if left empty.
     let dropin_dir = run.join(WTMPDB_DROPIN_DIR);

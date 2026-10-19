@@ -102,12 +102,16 @@ fn reconcile_wtmp_rewrites_in_place_and_keeps_the_inode() {
     .unwrap();
     let inode = std::fs::metadata(&path).unwrap().ino();
 
-    assert!(reconcile_wtmp(&path, WAY_BACK).unwrap());
+    assert!(reconcile_wtmp(&path, WAY_BACK, 654_321).unwrap());
 
     let after = std::fs::read(&path).unwrap();
     let last = &after[2 * UTMP_RECORD_SIZE..];
     assert_eq!(read_i32_le(last, UT_TV_SEC_OFFSET), WAY_BACK);
-    assert_eq!(read_i32_le(last, UT_TV_USEC_OFFSET), 0, "tv_usec cleared");
+    assert_eq!(
+        read_i32_le(last, UT_TV_USEC_OFFSET),
+        654_321,
+        "tv_usec stamped with the live microseconds, not a round zero"
+    );
     assert_eq!(
         after.len(),
         3 * UTMP_RECORD_SIZE,
@@ -115,13 +119,25 @@ fn reconcile_wtmp_rewrites_in_place_and_keeps_the_inode() {
     );
     assert_eq!(std::fs::metadata(&path).unwrap().ino(), inode, "same file");
     // Idempotent: a second run finds nothing to change.
-    assert!(!reconcile_wtmp(&path, WAY_BACK + 100).unwrap());
+    assert!(!reconcile_wtmp(&path, WAY_BACK + 100, 1).unwrap());
 }
 
 #[test]
 fn reconcile_wtmp_on_an_absent_file_is_no_change() {
     let dir = tempfile::tempdir().unwrap();
-    assert!(!reconcile_wtmp(&dir.path().join("absent"), WAY_BACK).unwrap());
+    assert!(!reconcile_wtmp(&dir.path().join("absent"), WAY_BACK, 0).unwrap());
+}
+
+#[test]
+fn now_timeval_is_a_valid_wtmp_time() {
+    // The microseconds must be a real sub-second reading in range, never a value
+    // that would overflow the 32-bit field or read as a cleared record.
+    let (sec, usec) = now_timeval();
+    assert!(sec > 0, "seconds past the epoch: {sec}");
+    assert!(
+        (0..1_000_000).contains(&usec),
+        "microseconds in range: {usec}"
+    );
 }
 
 #[test]
