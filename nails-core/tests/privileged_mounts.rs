@@ -90,9 +90,10 @@ impl Mounts {
 
     /// A plain unmount, or with `detach` a lazy one (`MNT_DETACH`): the two
     /// kinds NAILS makes. Neither adds `MNT_FORCE`, which only calls a
-    /// filesystem's `umount_begin` (overlayfs and tmpfs have none) and, before
-    /// Linux 6.15, needs `CAP_SYS_ADMIN` in the initial user namespace, which
-    /// the root of this test's namespace lacks.
+    /// filesystem's `umount_begin` (overlayfs and tmpfs have none) and, on a
+    /// kernel without Linux 6.15's change to its permission check (older
+    /// stable kernels may carry it), needs `CAP_SYS_ADMIN` in the initial user
+    /// namespace, which the root of this test's namespace lacks.
     fn unmount(&self, target: &Path, detach: bool) -> nix::Result<()> {
         let flags = if detach {
             MntFlags::MNT_DETACH
