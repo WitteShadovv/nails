@@ -214,11 +214,13 @@ in
         login_tty1()
         # A comment carrying the token rides along in the same command line,
         # so the token is in bash's history exactly when the command is.
-        # A failed activation reports its status on the console, so the wait
-        # stops at once instead of running out its deadline.
+        # A failed activation reports its status and the system's state on
+        # the serial console, so the wait stops at once instead of running out
+        # its deadline.
         command = (
-            f"sudo nails --config {CONFIG} activate -y --overlay-only "
-            f"|| echo nails-trigger-exit=$? | sudo tee /dev/console # {activation_token}\n"
+            f"sudo nails --config {CONFIG} activate -y --overlay-only || echo "
+            f"{session.TRIGGER_EXIT_MARKER}$? $(sudo systemctl is-system-running) "
+            f"| sudo tee {session.SERIAL_CONSOLE} # {activation_token}\n"
         )
         session.follow_soft_reboot(
             machine,
@@ -249,8 +251,9 @@ in
         machine.send_chars(f"echo {hidden_token}\n")
         machine.wait_until_tty_matches("1", hidden_token, timeout=30)
         command = (
-            f"sudo nails --config {CONFIG} emergency "
-            "|| echo nails-trigger-exit=$? | sudo tee /dev/console\n"
+            f"sudo nails --config {CONFIG} emergency || echo "
+            f"{session.TRIGGER_EXIT_MARKER}$? $(sudo systemctl is-system-running) "
+            f"| sudo tee {session.SERIAL_CONSOLE}\n"
         )
         timings = session.follow_soft_reboot(
             machine,
