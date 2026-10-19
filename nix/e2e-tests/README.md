@@ -180,13 +180,13 @@ The interactive driver opens a Python prompt instead of running the test: `start
 - `shard-durations.json` holds one weight in seconds per leaf test, and every weight must satisfy `5 <= weight <= timeout / 2`. A weight at or above the test's timeout is a recorded hang: the planner refuses to use it. The remaining rules are enforced by `nix eval --json .#legacyPackages.x86_64-linux.e2e-metadata | python3 -m ci.e2e check --metadata -` and by the unit tests in `ci/tests/` (`python3 -m unittest discover -s ci/tests -t .`), which CI runs on every PR.
 - Each E2E shard uploads its per-test durations as the `e2e-durations-shard-N` artifact and adds a drift report to its step summary: tests more than 25% off their weight after allowing for the runner's overall speed. The report never fails the job. A test that boots in `--execute` mode is timed from its driver's start to its end; one built in a `nix build` from the start of its build to its end, as nix reports them while it runs, so tests built side by side on one runner take longer than alone. A test served from the Nix store or a binary cache did not boot and records 0 s.
 
-The nightly E2E run regenerates the weights from its own durations and uploads the result as the `shard-durations` artifact. To regenerate them by hand, download the `e2e-durations-*` artifacts of one or more runs (for example with `gh run download RUN_ID -p 'e2e-durations-*'`), then run:
+The nightly E2E run regenerates the weights from its own durations and uploads the result as the `shard-durations` artifact. To regenerate them by hand, download the `e2e-durations-*` artifacts of one or more `execute` runs, the nightly or a dispatched one (for example with `gh run download RUN_ID -p 'e2e-durations-*'`), then run:
 
 ```sh
 python3 -m ci.e2e regen-weights e2e-durations-*/*.jsonl
 ```
 
-`regen` takes the median of each test's passing runs of at least 5 s (a shorter pass was served from the Nix store without booting a VM), clamps it to half the test's timeout and reports every clamp, keeps the weights of tests without samples, and drops tests that no longer exist. Raise a test's `globalTimeout` instead of accepting a clamp.
+`regen` takes the median of each test's passing runs of at least 5 s (a shorter pass was served from the Nix store without booting a VM), clamps it to half the test's timeout and reports every clamp, keeps the weights of tests without samples, and drops tests that no longer exist. Raise a test's `globalTimeout` instead of accepting a clamp. Leave out the durations of other runs: they build their tests side by side, so a test's time there can be longer than its own, and `regen` cannot tell the two kinds apart.
 
 ### Per-test fixed cost
 
