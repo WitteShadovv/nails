@@ -194,6 +194,11 @@ unit names and the journal, and NAILS warns when one contains a telling word.
 <details>
 <summary><b>Upgrading the binary</b></summary>
 
+New releases appear in the
+[releases feed](https://github.com/WitteShadovv/nails/releases.atom), which any
+feed reader can follow without a GitHub account. Follow it inside a hidden
+session or on another device, never on the decoy.
+
 Replace the binary only while no session is active, as the
 [operator guide](docs/operator-guide.md#updating-nails) says. Fetch or build the
 new one inside a hidden session, so the downloads and build caches (`~/.cargo`,

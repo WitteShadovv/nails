@@ -122,9 +122,11 @@ Examples of potentially high-priority reports include:
 
 When we publish a security fix, we communicate it through the repository's public release channels, which can include:
 
-- GitHub Security Advisories
-- GitHub Releases
+- [GitHub Security Advisories](https://github.com/WitteShadovv/nails/security/advisories), which you can read without a GitHub account but which have no feed
+- [GitHub Releases](https://github.com/WitteShadovv/nails/releases), also as a feed that needs no account: <https://github.com/WitteShadovv/nails/releases.atom>
 - `CHANGELOG.md`
+
+A fix reaches you as a new release, so the releases feed is enough to hear of it. The [operator guide](docs/operator-guide.md#updating-nails) says where to follow the feed without leaving a trace on the decoy.
 
 Publication format and timing depend on severity, remediation, and disclosure coordination. During the current alpha phase, some fixes may appear first in GitHub release notes before a formal advisory is published.
 
@@ -215,4 +217,4 @@ For non-sensitive questions about hardening, threat model, or secure use:
 
 This policy is maintained with the repository. Material updates will be reflected in this file.
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-19

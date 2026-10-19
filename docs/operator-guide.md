@@ -610,6 +610,16 @@ backups.
 
 ### Updating NAILS
 
+New releases appear in the releases feed,
+<https://github.com/WitteShadovv/nails/releases.atom>, which any feed reader can
+follow without a GitHub account. Follow it inside a hidden session or on
+another device, never on the decoy, where the reader's subscription would name
+the tool. The feed shows a version as soon as its tag is pushed, before its
+release is published, and keeps tags that never got a release (`v0.3.0-rc.1`):
+a version is out once the
+[Releases page](https://github.com/WitteShadovv/nails/releases) lists it with
+its files. Versions ending in `-rc.N` are release candidates.
+
 Update by replacing the binary (and, when they change, the flake and config) on
 the hidden volume with a freshly built, verified release — never by downloading
 onto the decoy:
