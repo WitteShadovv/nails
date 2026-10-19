@@ -88,9 +88,14 @@ impl Mounts {
         )
     }
 
-    fn unmount(&self, target: &Path, force: bool) -> nix::Result<()> {
-        let flags = if force {
-            MntFlags::MNT_FORCE | MntFlags::MNT_DETACH
+    /// A plain unmount, or with `detach` a lazy one (`MNT_DETACH`): the two
+    /// kinds NAILS makes. Neither adds `MNT_FORCE`, which only calls a
+    /// filesystem's `umount_begin` (overlayfs and tmpfs have none) and, before
+    /// Linux 6.15, needs `CAP_SYS_ADMIN` in the initial user namespace, which
+    /// the root of this test's namespace lacks.
+    fn unmount(&self, target: &Path, detach: bool) -> nix::Result<()> {
+        let flags = if detach {
+            MntFlags::MNT_DETACH
         } else {
             MntFlags::empty()
         };
@@ -460,13 +465,13 @@ fn mountinfo_decodes_overlay_target_with_space_tab_and_backslash() {
 }
 
 // ===========================================================================
-// Emergency force-unmount with a busy fd (MNT_DETACH path)
+// A busy overlay is detached lazily (MNT_DETACH)
 // ===========================================================================
 
 #[test]
-fn force_unmount_detaches_overlay_with_an_open_fd() {
+fn lazy_unmount_detaches_overlay_with_an_open_fd() {
     rootless(
-        test_path!(force_unmount_detaches_overlay_with_an_open_fd),
+        test_path!(lazy_unmount_detaches_overlay_with_an_open_fd),
         || {
             let fs = Mounts;
             let root = TmpfsRoot::new();
@@ -493,8 +498,9 @@ fn force_unmount_detaches_overlay_with_an_open_fd() {
                 other => panic!("expected EBUSY with an open fd, got {other:?}"),
             }
 
-            // The force path (MNT_FORCE | MNT_DETACH) lazily detaches despite the fd.
-            fs.unmount(&target, true).expect("force unmount");
+            // A lazy unmount, the session's fallback for a busy mount, detaches
+            // it despite the fd.
+            fs.unmount(&target, true).expect("lazy unmount");
             assert!(
                 !fs.is_overlay_mounted(&target),
                 "overlay detached from the namespace after MNT_DETACH"
