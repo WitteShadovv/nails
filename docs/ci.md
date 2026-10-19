@@ -10,7 +10,7 @@ Work runs in four tiers. Each is a superset of the one above it in coverage and 
 |---|---|---|---|
 | 1. pre-commit | On `git commit`, changed files only | under 10 s | Formatting, Rust file sizes, file and secret checks (`.pre-commit-config.yaml`). |
 | 2. pre-push / `just check` | On `git push`, and on demand | about 90 s | `just fmt-check lint line-count test`: the whole offline Rust gate without coverage or Nix. |
-| 3. PR gate | Every pull request to `main`, and every push to `main` | about 10 min p95 | `ci.yml` (summarised by `gate`), the affected `e2e.yml` run (`e2e-result`) and `pr-title.yml`. These three are the required checks. |
+| 3. PR gate | Every pull request to `main` or `next`, and every push to either | about 10 min p95 | `ci.yml` (summarised by `gate`), the affected `e2e.yml` run (`e2e-result`) and `pr-title.yml`. These three are the required checks. |
 | 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks, the reproducibility check, batch fuzzing and the OpenSSF Scorecard analysis. A release runs on its tag. |
 
 Tier 3 is everything a contributor must pass to merge. The informational `fuzz` job of `fuzz.yml` also runs on pull requests that change fuzzed code, outside the tier-3 budget: it pulls two images and builds every target with the address sanitizer before its five minutes of fuzzing. Tier 4 catches what a per-PR budget cannot afford (every VM test, the whole dependency graph, timing and determinism) and reports failures into tracking issues instead of a pull request check (see [Tracking issues for unattended runs](#tracking-issues-for-unattended-runs)).
@@ -88,7 +88,7 @@ The policy is compiled in, so `cargo build`, clippy and every editor enforce it 
 
 Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, `fuzz.yml` on its schedules, `scorecard.yml` on `main`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
 
-- A failed or cancelled job opens the issue (label `ci-red`, title `CI red: <workflow>`; `CI red: main` for `ci.yml`), or comments on it with the run link and the red jobs when it is already open. The runs of `next` keep issues of their own (see [The integration branch `next`](#the-integration-branch-next)).
+- A failed or cancelled job opens the issue (label `ci-red`, title `CI red: <workflow>`; `CI red: main` for `ci.yml`), or comments on it with the run link and the red jobs when it is already open. The runs of `next` keep issues of their own, and so does `next-nightly.yml`, which starts them (see [The integration branch `next`](#the-integration-branch-next)).
 - A run in which every reported job passed closes the issue. A run that skipped some jobs without a failure (for example a manual dispatch of a single `scheduled.yml` task) leaves it as it is.
 - The full-graph advisory scan and the `deny.toml` ignore expiry check report under their own `advisory` label (`Dependency advisories`), so they never touch the `ci-red` issue or any pull request check. The benchmarks job reports with the infrastructure tasks; only a broken build or a missing result turns it red, never a slowdown.
 
