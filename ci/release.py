@@ -33,8 +33,8 @@ sbom-libc
 sbom-check
     Fails unless actions/attest accepts the SBOM as CycloneDX: a JSON object
     of at most 16 MiB with a non-empty ``bomFormat``, ``serialNumber`` and
-    ``specVersion``. The attest job would otherwise fail only after the E2E
-    suite.
+    ``specVersion``, the rules of the release that ``ATTEST_VERSION`` names.
+    The attest job would otherwise fail only after the E2E suite.
 musl-vex
     Writes an OpenVEX document that marks each ``--musl-cve`` as fixed in the
     linked musl. Scanners ignore the SBOM's pedigree, so without this
@@ -84,8 +84,13 @@ VEX_ASSET = "musl.openvex.json"
 _OPENVEX_CONTEXT = "https://openvex.dev/ns/v0.2.0"
 BINARY = "nails"
 _TRIPLE_PROPERTY = "cdx:rustc:sbom:target:triple"
-# What actions/attest (v4.2.2, src/sbom.ts) requires of an SBOM: at most
-# 16 MiB, and for CycloneDX these three fields, each with a value.
+# What actions/attest requires of an SBOM (src/sbom.ts): at most 16 MiB, and
+# for CycloneDX these three fields, each with a value. The rules were read at
+# this release and commit of the action, which the workflows pin. When a pin
+# moves, as a Dependabot update moves it, ci/tests/test_release.py fails until
+# the new release has been read for changed rules and these two follow it.
+ATTEST_VERSION = "v4.2.2"
+ATTEST_COMMIT = "1e69f48acb82d1966a394da916b4c1698aa569d6"
 ATTEST_MAX_SBOM_BYTES = 16 * 1024 * 1024
 ATTEST_CYCLONEDX_FIELDS = ("bomFormat", "serialNumber", "specVersion")
 

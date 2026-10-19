@@ -239,7 +239,9 @@ jobs:
       # The two documents come first. actions/attest reads a document before
       # it signs anything and fails on one it refuses, so a refused SBOM or
       # VEX document leaves no build provenance behind for a release that is
-      # never drafted.
+      # never drafted. sbom-check copies the SBOM rules of this release of
+      # the action; a test fails when these pins leave ATTEST_VERSION and
+      # ATTEST_COMMIT in ci/release.py.
       - name: Attest the SBOM
         id: sbom
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2

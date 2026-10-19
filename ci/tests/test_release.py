@@ -73,6 +73,23 @@ CYCLONEDX_SERIAL = re.compile(
     r"urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
 
+WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+# A step's use of actions/attest: the ref and the comment after it, which for
+# a pinned commit names its release ("# v4.2.2"), as Dependabot keeps it.
+ATTEST_USES = re.compile(
+    r"""^\s*(?:-\s+)?uses:\s*["']?actions/attest@(?P<ref>[^\s"'#]+)["']?"""
+    r"(?:\s+#\s*(?P<comment>.*\S))?\s*$"
+)
+
+
+def attest_pins(text: str) -> list[tuple[int, str, str | None]]:
+    """The line number, ref and comment of each use of actions/attest."""
+    return [
+        (number, match["ref"], match["comment"])
+        for number, line in enumerate(text.splitlines(), start=1)
+        if (match := ATTEST_USES.match(line))
+    ]
+
 
 def sbom(version: str = "0.3.0", triple: str = release.TARGET_TRIPLE) -> dict[str, Any]:
     """Return the skeleton of a cargo-cyclonedx SBOM of the nails binary."""
@@ -747,6 +764,51 @@ class AttestCheckTest(unittest.TestCase):
                 code, err = self.run_check(path)
                 self.assertEqual(code, 2)
                 self.assertIn("cannot read", err)
+
+
+class AttestPinTest(unittest.TestCase):
+    """sbom-check copies the rules of the actions/attest that the workflows use.
+
+    A Dependabot update moves the pins and their version comments; this test
+    then fails until someone has read the new release's rules.
+    """
+
+    def test_every_pin_is_the_release_whose_rules_sbom_check_copies(self) -> None:
+        pinned = (release.ATTEST_COMMIT, release.ATTEST_VERSION)
+        found = 0
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            for line, ref, comment in attest_pins(path.read_text(encoding="utf-8")):
+                found += 1
+                with self.subTest(workflow=path.name, line=line):
+                    self.assertEqual(
+                        (ref, comment),
+                        pinned,
+                        f"{path.name}:{line} uses actions/attest@{ref} "
+                        f"# {comment}, but sbom-check copies the SBOM rules of "
+                        f"{release.ATTEST_VERSION} ({release.ATTEST_COMMIT}). "
+                        "Read src/sbom.ts at the new pin, bring check_attestable "
+                        "in line with it, then set ATTEST_VERSION and "
+                        "ATTEST_COMMIT in ci/release.py to the pin.",
+                    )
+        self.assertGreater(found, 0, "no workflow uses actions/attest")
+
+    def test_pins_are_read_with_their_version_comment(self) -> None:
+        commit = "1" * 40
+        text = (
+            "jobs:\n"
+            "  attest:\n"
+            "    steps:\n"
+            "      - name: Attest\n"
+            f"        uses: actions/attest@{commit} # v9.1.0\n"
+            "      - uses: actions/attest@v4\n"
+            f'      - uses: "actions/attest@{commit}"\n'
+            f"      - uses: actions/attest-build-provenance@{commit} # v3.0.0\n"
+            f"        # uses: actions/attest@{commit} # v1.0.0\n"
+        )
+        self.assertEqual(
+            attest_pins(text),
+            [(5, commit, "v9.1.0"), (6, "v4", None), (7, commit, None)],
+        )
 
 
 class MuslVexTest(unittest.TestCase):
