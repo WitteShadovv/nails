@@ -252,7 +252,7 @@ A release is one annotated `v*` tag on `main`; [RELEASING.md](../RELEASING.md) i
 
 ## Verifying a release
 
-[verify-release.md](verify-release.md) is the single description of how users check a release: `sha256sum --check --ignore-missing checksums.txt`, `gh attestation verify`, and where to do it. [release-artifact-reproducibility.md](release-artifact-reproducibility.md) explains how to rebuild the bundle and compare it with a release.
+[verify-release.md](verify-release.md) is the single description of how users check a release: `sha256sum --check --ignore-missing checksums.txt`, `cosign verify-blob-attestation` with the bundles (no GitHub account needed), `gh attestation verify` as the alternative, and where to do it. [release-artifact-reproducibility.md](release-artifact-reproducibility.md) explains how to rebuild the bundle and compare it with a release.
 
 ## Where every old job went
 

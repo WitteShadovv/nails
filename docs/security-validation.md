@@ -33,7 +33,7 @@ The release workflow adds:
 - an independent rebuild on a fresh runner, compared byte for byte via `reproducibility.yml`
 - the whole E2E suite on the tagged commit, without the project's binary cache, so every test boots there instead of counting a pass from an earlier run
 - the release SBOM, musl included, checked for what `actions/attest` requires before the E2E suite starts, and an OpenVEX document for musl's patched CVEs
-- GitHub artifact attestations for the archive, the binary, the SBOM and the VEX document, created only after every gate passed
+- GitHub artifact attestations for the archive, the binary, the SBOM and the VEX document, created only after every gate passed, attached to the release as Sigstore bundles and checked with cosign before the release is drafted
 
 [ci.md](ci.md#release-workflow) describes the jobs.
 
@@ -131,7 +131,7 @@ For PRs and pushes, the `nix-build` job of `ci.yml` validates the same release d
 
 ## Provenance and verification
 
-The release workflow creates GitHub artifact attestations: Sigstore-signed SLSA build provenance for the archive and the binary, an SBOM attestation that binds `sbom.cdx.json` to them, and an OpenVEX attestation for `musl.openvex.json`. They meet SLSA v1.0 Build Level 2, signed provenance from a hosted build platform; the build does not run in an isolated reusable workflow, so the project does not claim Build Level 3.
+The release workflow creates GitHub artifact attestations: Sigstore-signed SLSA build provenance for the archive and the binary, an SBOM attestation that binds `sbom.cdx.json` to them, and an OpenVEX attestation for `musl.openvex.json`. They meet SLSA v1.0 Build Level 2, signed provenance from a hosted build platform; the build does not run in an isolated reusable workflow, so the project does not claim Build Level 3. Each release carries them as Sigstore bundles (`provenance.sigstore.json`, `sbom.sigstore.json`, `vex.sigstore.json`), so cosign can check a download without a GitHub account.
 
 [verify-release.md](verify-release.md) is the one description of how to check a release: the checksum, the attestation, and where to do it without leaving a trace on the decoy system.
 
@@ -160,7 +160,7 @@ measures only code that ships.
 
 ## Caveats
 
-- GitHub artifact attestations depend on GitHub platform support; verifying them needs the GitHub CLI and a GitHub login.
+- GitHub artifact attestations depend on GitHub platform support to be signed. Checking one needs cosign (or the GitHub CLI) and a network connection, not a GitHub account.
 - Workflow artifacts are temporary; published release assets are the public release channel.
 - Provenance proves build origin and integrity, not that the software is free of design or implementation flaws.
 
