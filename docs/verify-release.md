@@ -31,7 +31,8 @@ files the tools below keep in the home directory: cosign's copy of Sigstore's pu
 `~/.sigstore`, and the GitHub CLI's copy in `~/.cache/gh` and its login token in `~/.config/gh`.
 
 - **First installation:** boot a live environment that keeps nothing, open and mount the hidden
-  volume there, and download into it.
+  volume there, and download into it. [First install from Tails](install-from-tails.md) goes
+  through it with Tails.
 - **Updates:** download from inside an active hidden session, into the hidden volume.
 
 The examples assume the hidden volume is mounted at `/mnt/data` and the release is

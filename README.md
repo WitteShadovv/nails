@@ -170,8 +170,9 @@ NAILS is installed by copying a verified static binary onto the mounted hidden
 volume, and in no other way. No package, registry or decoy-side install is
 supported; [docs/distribution.md](docs/distribution.md) explains why.
 
-1. Outside the decoy system (a live environment that keeps nothing, or a
-   separate machine), download the latest bundle from
+1. Outside the decoy system (a live environment that keeps nothing, such as
+   [Tails](docs/install-from-tails.md), or a separate machine), download the
+   latest bundle from
    [GitHub Releases](https://github.com/WitteShadovv/nails/releases) and verify
    it as [docs/verify-release.md](docs/verify-release.md) describes (checksum
    and build provenance). For more assurance, rebuild it:

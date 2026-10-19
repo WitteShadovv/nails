@@ -182,7 +182,8 @@ A Debian or Ubuntu release does not normally get a newer cryptsetup version
 once it is out, so on Debian 13 and the Ubuntu LTS releases the limit is likely
 to last for years after a cryptsetup release adds the support.
 `cryptsetup --version` prints the version a decoy has. Tails 7 is based on
-Debian 13 and has its cryptsetup 2.7.5.
+Debian 13 and has its cryptsetup 2.7.5, so a
+[first install from Tails](install-from-tails.md) needs PBKDF2 as well.
 
 Opening such a volume fails without naming the cause:
 `cryptsetup open --type tcrypt` prints
