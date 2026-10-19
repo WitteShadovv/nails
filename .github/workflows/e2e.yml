@@ -16,6 +16,10 @@ name: E2E
 #                         `tests` limits the run to the named tests and
 #                         groups, in mode all or execute
 #
+# With `cache` false (dispatch or call only), the run neither reads nor writes
+# the project's binary cache: no pass is substituted, so every selected test
+# boots, and every shard compiles nails itself.
+#
 # Only the nightly (or a dispatched 'execute') run times anything: every other
 # lane leaves the performance group out, unless `tests` names it.
 #
@@ -67,6 +71,12 @@ on:
           commas; mode all or execute); empty runs the whole mode
         type: string
         default: ''
+      cache:
+        description: >-
+          Use the project's binary cache; untick to boot every selected test,
+          as a release run does
+        type: boolean
+        default: true
   workflow_call:
     inputs:
       mode:
@@ -81,6 +91,9 @@ on:
       tests:
         type: string
         default: ''
+      cache:
+        type: boolean
+        default: true
     secrets:
       CACHIX_AUTH_TOKEN:
         required: false
@@ -111,6 +124,7 @@ jobs:
       mode: ${{ steps.select.outputs.mode }}
       runner: ${{ steps.select.outputs.runner }}
       tests: ${{ steps.select.outputs.tests }}
+      cache: ${{ steps.select.outputs.cache }}
       matrix: ${{ steps.matrix.outputs.matrix }}
 
     steps:
@@ -126,7 +140,9 @@ jobs:
       # cannot alter a test, so the run is skipped and e2e-result passes.
       # It filters this workflow's own pull request and push runs only: a
       # dispatch or a call (which sets MODE_INPUT) asked for its tests.
-      - name: Select mode, runner, tests and base revision
+      # CACHE_INPUT is empty for the events that have no inputs, which use
+      # the cache.
+      - name: Select mode, runner, tests, cache and base revision
         id: select
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -134,6 +150,7 @@ jobs:
           RUNNER_INPUT: ${{ inputs.runner }}
           MAX_SHARDS_INPUT: ${{ inputs.max-shards }}
           TESTS_INPUT: ${{ inputs.tests }}
+          CACHE_INPUT: ${{ inputs.cache }}
           FULL_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'full-e2e') }}
           PUSH_BEFORE: ${{ github.event.before }}
         run: |
@@ -199,29 +216,37 @@ jobs:
             echo "::error::tests names the tests to run; use it with mode all or execute, not $mode"
             exit 1
           fi
+          cache=${CACHE_INPUT:-true}
+          case "$cache" in
+            true | false) ;;
+            *) echo "::error::cache must be true or false, got '$cache'"; exit 1 ;;
+          esac
 
           {
             echo "mode=$mode"
             echo "runner=$runner"
             echo "tests=$tests"
+            echo "cache=$cache"
             echo "base=$base"
             echo "max-shards=$max_shards"
           } >> "$GITHUB_OUTPUT"
-          echo "Mode: $mode, runner: $runner, tests: ${tests:-none named}, base: ${base:-none}, max shards: $max_shards"
+          echo "Mode: $mode, runner: $runner, tests: ${tests:-none named}, cache: $cache, base: ${base:-none}, max shards: $max_shards"
 
       - name: Set up Nix
         if: steps.select.outputs.mode != 'skip'
         uses: ./.github/actions/setup-nix
         with:
+          cache: ${{ steps.select.outputs.cache }}
           # Fork pull requests and Dependabot receive no secrets, and the
           # action pushes only for trusted events, so the token needs no
           # environment.
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
 
       # Built once here, so the shards substitute it from the cache instead
-      # of each compiling it (when a cache is configured).
+      # of each compiling it (when a cache is configured). Without the cache
+      # every shard compiles it anyway.
       - name: Build nails
-        if: steps.select.outputs.mode != 'skip'
+        if: steps.select.outputs.mode != 'skip' && steps.select.outputs.cache == 'true'
         run: nix build -L --no-link .#nails
 
       # --affected evaluates every test of both revisions in parallel
@@ -233,6 +258,7 @@ jobs:
         env:
           MODE: ${{ steps.select.outputs.mode }}
           TESTS: ${{ steps.select.outputs.tests }}
+          CACHE: ${{ steps.select.outputs.cache }}
           BASE: ${{ steps.select.outputs.base }}
           MAX_SHARDS: ${{ steps.select.outputs.max-shards }}
         run: |
@@ -259,8 +285,12 @@ jobs:
             exit 1
           fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          heading="$MODE"
+          if [ "$CACHE" = false ]; then
+            heading="$MODE, without the project cache: every test boots"
+          fi
           {
-            echo "## E2E plan ($MODE)"
+            echo "## E2E plan ($heading)"
             echo
             echo "| Shard | Tests | Timeout (min) |"
             echo "|---|---|---:|"
@@ -290,6 +320,7 @@ jobs:
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
         with:
+          cache: ${{ needs.plan.outputs.cache }}
           # Pushes passed tests (trusted events only), so later runs
           # substitute them instead of booting them again.
           cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }} # zizmor: ignore[secrets-outside-env]
@@ -398,6 +429,8 @@ jobs:
 
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
+        with:
+          cache: ${{ needs.plan.outputs.cache }}
 
       # The same open-file limit and record as an execute shard's (see the
       # shard's Run tests step).
@@ -452,6 +485,8 @@ jobs:
 
       - name: Set up Nix
         uses: ./.github/actions/setup-nix
+        with:
+          cache: ${{ needs.plan.outputs.cache }}
 
       - name: Regenerate the weights
         run: |
