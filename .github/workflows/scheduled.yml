@@ -353,12 +353,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # Mutation testing of the core teardown, overlay and state-machine modules:
+  # Mutation testing of the state machine (nails-base/src/state/):
   # cargo-mutants changes each mutable spot and re-runs the tests, so a mutation
   # the suite still passes marks a gap no coverage percentage would reveal.
   # Heavy, so it runs weekly rather than on the gate, and the full report is
   # uploaded as an artifact for triage; a surviving mutant is to be read, not a
-  # reason to fail the job.
+  # reason to fail the job. cargo-mutants also flags surviving mutants as
+  # warning annotations on the run.
   mutants:
     name: Mutation testing
     needs: tasks
@@ -381,8 +382,10 @@ jobs:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
-      # `just mutants` scopes the run to state/, overlay/ and cleanup/.
-      - name: Mutate the core modules
+      # `just mutants` scopes the run to the state machine and fails only when
+      # cargo-mutants itself does, for example when the tests already fail
+      # without a mutation.
+      - name: Mutate the state machine
         run: just mutants
 
       - name: Upload the mutants report

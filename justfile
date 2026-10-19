@@ -267,9 +267,23 @@ stress iterations="10":
 # --- Mutation testing ---
 
 # Mutate the state machine module and check the tests catch each mutation.
-# Heavy, so it runs weekly in scheduled.yml rather than on the gate; a
-# surviving mutant means a test gap, never a build failure.
+# Heavy, so it runs weekly in scheduled.yml rather than on the gate. The report
+# goes to target/mutants/mutants.out. A mutant the tests miss (exit code 2) or
+# one that makes them time out (3) is a finding to triage there, not a failed
+# run, so the recipe succeeds. Any other failure of cargo-mutants, such as
+# tests that already fail without a mutation, still fails it.
 mutants:
-    cargo mutants --package nails-base --all-features \
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # cargo-mutants creates the --output directory but not its parents, and a
+    # fresh checkout has no target/ yet.
+    mkdir -p target/mutants
+    status=0
+    cargo mutants --package nails-base --all-features --cargo-arg=--locked \
         -f 'nails-base/src/state/**/*.rs' \
-        --output target/mutants
+        --output target/mutants || status=$?
+    case "$status" in
+        0) ;;
+        2 | 3) echo "Some mutants survived or timed out; see target/mutants/mutants.out." ;;
+        *) exit "$status" ;;
+    esac
