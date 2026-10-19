@@ -370,8 +370,9 @@ jobs:
   # docs/verify-release.md checks a release with cosign and no GitHub
   # account. The same commands run here, on the files the draft will hold,
   # so a release whose bundles do not verify that way is never drafted. A
-  # cosign that printed "Verified OK" for anything would pass them too, so a
-  # copy of the binary with one byte more must fail.
+  # cosign that printed "Verified OK" for anything, or ignored the identity,
+  # would pass them too, so a copy of the binary with one byte more and the
+  # identity of another tag must fail.
   verify-attestations:
     name: Verify the attestations
     needs: [version, attest]
@@ -393,6 +394,12 @@ jobs:
           name: release-attestations
           path: dist
 
+      - name: Download the SBOM and the VEX document
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          name: release-sbom
+          path: documents
+
       # The oldest cosign release that docs/verify-release.md accepts, as a
       # binary checked against the digest that install-action pins.
       - name: Install cosign
@@ -400,6 +407,10 @@ jobs:
         with:
           tool: cosign@3.1.3
 
+      # The attestations name the files that checksums.txt lists, so a file
+      # of the release bundle that it leaves out would go out unattested.
+      # The SBOM and the VEX document also go out as files of their own,
+      # which must be the documents that the checked bundles carry.
       - name: Verify every attestation as docs/verify-release.md does
         working-directory: dist
         env:
@@ -417,19 +428,52 @@ jobs:
               --check-claims=true \
               "$3"
           }
+          sha256sum --check --strict checksums.txt
           mapfile -t files < <(awk '{ print $2 }' checksums.txt)
+          declare -A listed=()
+          for file in "${files[@]}"; do
+            listed[$file]=1
+          done
+          for file in *; do
+            case "$file" in
+              checksums.txt | *.sigstore.json) ;;
+              *)
+                if [ -z "${listed[$file]:-}" ]; then
+                  echo "::error::$file is not in checksums.txt, so no attestation names it"
+                  exit 1
+                fi
+                ;;
+            esac
+          done
           for file in "${files[@]}"; do
             echo "$file:"
             verify provenance.sigstore.json slsaprovenance1 "$file"
             verify sbom.sigstore.json cyclonedx "$file"
             verify vex.sigstore.json https://openvex.dev/ns/v0.2.0 "$file"
           done
-          echo "A copy of nails with one byte more, which must fail:"
+          attested_document() {
+            jq -r .dsseEnvelope.payload "$1" | base64 -d |
+              jq -e --slurpfile document "$2" '.predicate == $document[0]' > /dev/null
+          }
+          for pair in 'sbom.sigstore.json sbom.cdx.json' 'vex.sigstore.json musl.openvex.json'; do
+            read -r bundle document <<< "$pair"
+            if ! attested_document "$bundle" "../documents/$document"; then
+              echo "::error::$document is not the document that $bundle attests"
+              exit 1
+            fi
+            echo "$document is the document that $bundle attests"
+          done
+          echo "Checks that must fail: a copy of nails with one byte more, and another tag."
           changed="$RUNNER_TEMP/nails-changed"
           cp nails "$changed"
           printf '\n' >> "$changed"
           if verify provenance.sigstore.json slsaprovenance1 "$changed"; then
             echo "::error::cosign accepted a copy of the binary with one byte more"
+            exit 1
+          fi
+          identity="https://github.com/$REPO/.github/workflows/release.yml@refs/tags/$TAG-other"
+          if verify provenance.sigstore.json slsaprovenance1 nails; then
+            echo "::error::cosign accepted the attestation for the identity of another tag"
             exit 1
           fi
 
