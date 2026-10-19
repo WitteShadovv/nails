@@ -171,10 +171,14 @@ jobs:
 
           # Named tests replace the selection of the mode, which then only
           # says how they run: built (all) or each driver run (execute).
-          read -ra named <<< "${TESTS_INPUT//,/ }"
+          # Commas, spaces, tabs and line breaks separate the names: read
+          # takes one line, so a line break left as it is would drop every
+          # name after it. A name starts with a letter or digit, so that none
+          # passes as an option of ci.e2e plan.
+          read -ra named <<< "${TESTS_INPUT//[$',\n\r\t']/ }"
           for name in "${named[@]}"; do
-            if ! [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]]; then
-              echo "::error::tests takes test and group names: letters, digits, - and _"
+            if ! [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*$ ]]; then
+              echo "::error::tests takes test and group names: letters, digits, - and _, starting with a letter or digit"
               exit 1
             fi
           done
