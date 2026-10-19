@@ -17,6 +17,7 @@ files:
 The three `.sigstore.json` files are Sigstore bundles. Each holds one attestation, the signature
 over it, the certificate of the release run that signed it and the proof that the signature is in
 Sigstore's public transparency log. With them, checking a release needs no GitHub account.
+Releases 0.2.0 and older have no bundles, so step 3 does not apply to them.
 
 This page is the only place that describes how to check them. Other documents link here.
 
@@ -73,13 +74,15 @@ bundles. Use cosign 3.1.3 or later, or 2.6.5 or later on the older 2.x line. Ear
 print `Verified OK` for an attestation that the command below must refuse
 ([GHSA-w6c6-c85g-mmv6](https://github.com/sigstore/cosign/security/advisories/GHSA-w6c6-c85g-mmv6),
 [GHSA-fx35-mq7g-6g98](https://github.com/sigstore/cosign/security/advisories/GHSA-fx35-mq7g-6g98)).
-`cosign version` prints the release you have. Debian 13 packages cosign 2.5.0, which is too old.
+`cosign version` prints the release you have. Distribution packages lag behind: Debian 13 has
+cosign 2.5.0, Ubuntu 26.04 2.6.2 and Ubuntu 26.10 3.1.1, all too old, while NixOS 26.05 has 3.1.3.
 [Sigstore's installation guide](https://docs.sigstore.dev/cosign/system_config/installation/)
 lists the other ways to get it, among them the static `cosign-linux-amd64` binary from cosign's
 [releases](https://github.com/sigstore/cosign/releases), and how to check that binary.
 
 cosign fetches Sigstore's current public keys from `tuf-repo-cdn.sigstore.dev` each time it runs,
-so it needs a network connection. It asks GitHub for nothing.
+so it needs a network connection. It asks GitHub for nothing. To check without a connection, give
+it the keys as a file instead (see [Without a network connection](#without-a-network-connection)).
 
 ### Check the binary
 
@@ -135,6 +138,34 @@ cosign verify-blob-attestation \
 
 The VEX document needs the full type: cosign's short name `openvex` stands for
 `https://openvex.dev/ns`, without the version the attestation names.
+
+These checks cover the SBOM and the VEX document inside the bundles. `sbom.cdx.json` and
+`musl.openvex.json` are the same documents as plain files, which the release workflow compared
+with the bundles before it drafted the release. To use the checked copy itself, take it out of
+its bundle (with `jq`):
+
+```bash
+jq -r .dsseEnvelope.payload sbom.sigstore.json | base64 -d | jq .predicate > sbom.checked.cdx.json
+jq -r .dsseEnvelope.payload vex.sigstore.json | base64 -d | jq .predicate > musl.checked.openvex.json
+```
+
+### Without a network connection
+
+cosign can also check the bundles on a computer without a network connection, if it gets
+Sigstore's public keys as a file. Fetch them once where you have a connection, into the directory
+of the downloads:
+
+```bash
+TUF_ROOT="$PWD/sigstore" cosign initialize
+cp sigstore/tuf-repo-cdn.sigstore.dev/targets/trusted_root.json .
+```
+
+`cosign initialize` downloads the keys and checks their signatures against the root of trust that
+is built into cosign; `TUF_ROOT` keeps them out of `~/.sigstore`. Take `trusted_root.json` along
+with the release files, and add `--trusted-root trusted_root.json` to each
+`cosign verify-blob-attestation` command above. cosign then needs no connection and writes nothing
+to the home directory. Sigstore adds new keys from time to time, so fetch a fresh copy before you
+check a newer release.
 
 ### With the GitHub CLI instead
 

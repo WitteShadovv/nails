@@ -56,8 +56,9 @@ of this changelog for that version becomes the release notes word for word, and
   inactive, or the hidden files in it stay out of view.
 - A release can be verified without a GitHub account. It carries its three attestations as
   Sigstore bundles (`provenance.sigstore.json`, `sbom.sigstore.json`, `vex.sigstore.json`), which
-  cosign 3.1.3 or later checks against the downloaded files; `docs/verify-release.md` shows how.
-  The release workflow runs the same check before it drafts the release.
+  cosign 3.1.3 or later checks against the downloaded files, also on a computer without a network
+  connection; `docs/verify-release.md` shows how. The release workflow runs the same check before
+  it drafts the release.
 
 ## [0.3.0-rc.2] - 2026-10-16
 

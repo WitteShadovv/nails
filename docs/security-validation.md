@@ -160,7 +160,7 @@ measures only code that ships.
 
 ## Caveats
 
-- GitHub artifact attestations depend on GitHub platform support to be signed. Checking one needs cosign (or the GitHub CLI) and a network connection, not a GitHub account.
+- GitHub artifact attestations depend on GitHub platform support to be signed. Checking one needs cosign (or the GitHub CLI), not a GitHub account, and a network connection unless cosign gets a saved copy of Sigstore's public keys.
 - Workflow artifacts are temporary; published release assets are the public release channel.
 - Provenance proves build origin and integrity, not that the software is free of design or implementation flaws.
 
