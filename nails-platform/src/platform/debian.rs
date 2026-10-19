@@ -48,8 +48,14 @@ impl DistroVersion {
 }
 
 impl std::fmt::Display for DistroVersion {
+    /// The release as the Debian family writes it: the major alone when there is
+    /// no minor (`13`), otherwise with a two-digit minor (`24.04`).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}", self.major, self.minor)
+        if self.minor == 0 {
+            write!(f, "{}", self.major)
+        } else {
+            write!(f, "{}.{:02}", self.major, self.minor)
+        }
     }
 }
 
@@ -211,6 +217,13 @@ mod tests {
     }
 
     #[test]
+    fn version_is_written_as_the_distribution_writes_it() {
+        assert_eq!(DistroVersion::new(13, 0).to_string(), "13");
+        assert_eq!(DistroVersion::new(24, 4).to_string(), "24.04");
+        assert_eq!(DistroVersion::new(26, 10).to_string(), "26.10");
+    }
+
+    #[test]
     fn debian_at_and_above_minimum_is_supported() {
         assert!(matches!(
             classify_family(Some("debian"), &[], Some("12")),
@@ -241,6 +254,7 @@ mod tests {
             FamilySupport::Refused(reason) => {
                 assert!(reason.contains("11"));
                 assert!(reason.contains("minimum"));
+                assert!(reason.contains("(Debian 13)"), "{reason}");
             }
             other => panic!("expected refusal, got {other:?}"),
         }
@@ -249,7 +263,12 @@ mod tests {
     #[test]
     fn ubuntu_below_minimum_is_refused() {
         let outcome = classify_family(Some("ubuntu"), &["debian".to_string()], Some("22.04"));
-        assert!(matches!(outcome, FamilySupport::Refused(_)));
+        match outcome {
+            FamilySupport::Refused(reason) => {
+                assert!(reason.contains("(Ubuntu 24.04)"), "{reason}")
+            }
+            other => panic!("expected refusal, got {other:?}"),
+        }
     }
 
     #[test]

@@ -42,6 +42,9 @@ of this changelog for that version becomes the release notes word for word, and
 - `nails verify --disk` no longer wraps round the block numbers of a GPT whose byte offsets do not
   fit in 64 bits, which let a corrupt or crafted table place a partition, the free space or the
   partition entries anywhere on the disk.
+- The refusal of a Debian or Ubuntu host below the minimum release, or whose release cannot be
+  read, names the minimum as the distribution writes it, `Debian 13` and `Ubuntu 24.04`, instead of
+  `Debian 13.0` and `Ubuntu 24.4`.
 
 ### Security
 
