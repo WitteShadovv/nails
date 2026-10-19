@@ -6,8 +6,10 @@ name: CodeQL
 # results to code scanning under a fixed category, /language:<language>, so
 # one language's analysis never closes the alerts of another. Rust and Python
 # run the security-extended queries, the actions analysis its default suite.
-# Nothing is built: every language is extracted with build-mode none. Test
-# code stays in the scan, and an alert never fails a run.
+# Every language is extracted with build-mode none, so no build command runs;
+# the Rust extractor still has cargo check the workspace for its build scripts
+# and procedural macros. Test code stays in the scan, and an alert never fails
+# a run.
 #
 # This file replaces CodeQL's default setup, which ran from the repository
 # settings without a file to review. Both cannot run together: while the
@@ -60,15 +62,11 @@ jobs:
         with:
           persist-credentials: false
 
-      # The Rust extractor asks rustup for the project's toolchain and reads
-      # the standard library from its rust-src. Without it, macros such as
-      # format! and assert_eq! stay unexpanded, and the queries miss what
-      # flows through them. No arguments: rustup installs the channel that
-      # rust-toolchain.toml pins, rust-src included.
-      - name: Install Rust toolchain
-        if: matrix.language == 'rust'
-        run: rustup toolchain install
-
+      # No toolchain step for Rust. The extractor runs on a Rust release that
+      # the CodeQL version fixes, not on the one rust-toolchain.toml pins, and
+      # the runner's rustup installs that release and its rust-src on demand.
+      # Without rustup, macros such as format! and assert_eq! would stay
+      # unexpanded, and the queries would miss what flows through them.
       - name: Initialize CodeQL
         uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
         with:
