@@ -240,6 +240,12 @@ jobs:
             targets+=(--exclude performance)
           fi
           matrix=$(python3 -m ci.e2e plan "${targets[@]}" --max-shards "$MAX_SHARDS" --format github-matrix)
+          # Only the affected selection can rightly be empty. Any other mode
+          # without a test would pass, a release included, having run nothing.
+          if [ "$MODE" != affected ] && ! jq -e '[.include[].tests[]] | length > 0' <<< "$matrix" > /dev/null; then
+            echo "::error::Mode $MODE selected no test"
+            exit 1
+          fi
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           {
             echo "## E2E plan ($MODE)"
