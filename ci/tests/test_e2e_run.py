@@ -6,6 +6,8 @@ import contextlib
 import io
 import json
 import os
+import re
+import resource
 import shutil
 import subprocess
 import tempfile
@@ -17,6 +19,53 @@ from ci.e2e import run
 from ci.e2e.metadata import Metadata
 
 DRV_TO_TEST = {"/nix/store/a.drv": "a", "/nix/store/b.drv": "b"}
+REPO_ROOT = Path(__file__).resolve().parents[2]
+E2E_ROOT = REPO_ROOT / "nix" / "e2e-tests"
+# A Nix identifier, such as a node name.
+NIX_NAME = r"[A-Za-z_][A-Za-z0-9_'-]*"
+
+
+def e2e_sources() -> list[Path]:
+    """The Nix files the E2E suite's VMs are made of.
+
+    The tests, the batched scenarios, the helper library and default.nix, which
+    gives a test without nodes of its own the node ``machine``.
+    """
+    files = [E2E_ROOT / "default.nix"]
+    for part in ("tests", "scenarios", "lib"):
+        files += sorted((E2E_ROOT / part).rglob("*.nix"))
+    return files
+
+
+def scan_node_names() -> dict[str, Path]:
+    """Every VM node name in the E2E suite, with the first file that names it.
+
+    A node is named as ``nodes.<name>`` or as a key of a ``nodes = {`` block,
+    one per line two spaces deeper than the block (nixfmt layout). Any other
+    ``nodes =``, or any other entry at that depth, fails the scan rather than
+    hide a node from it.
+    """
+    names: dict[str, Path] = {}
+    for path in e2e_sources():
+        text = path.read_text(encoding="utf-8")
+        shown = path.relative_to(REPO_ROOT)
+        for match in re.finditer(rf"\bnodes\.({NIX_NAME})", text):
+            names.setdefault(match[1], path)
+        for block in re.finditer(r"^( *)nodes =(.*)$", text, re.M):
+            indent = block[1]
+            if block[2] != " {":
+                raise AssertionError(f"{shown}: unrecognised {block[0].strip()!r}")
+            body = text[block.end() :].split(f"\n{indent}}};", 1)[0]
+            for line in body.splitlines():
+                if len(line) - len(line.lstrip()) != len(indent) + 2:
+                    continue
+                entry = line.strip()
+                key = re.match(rf"({NIX_NAME}) =", entry)
+                if key is not None:
+                    names.setdefault(key[1], path)
+                elif not entry.startswith(("#", "}", "]", ")", "''")):
+                    raise AssertionError(f"{shown}: unrecognised node {entry!r}")
+    return names
 
 
 class DurationParserTest(unittest.TestCase):
@@ -396,15 +445,99 @@ class ReportTest(unittest.TestCase):
         )
 
 
+class ExecuteEnvironmentTest(unittest.TestCase):
+    """Where the drivers' scratch directories go and what the host must allow."""
+
+    def test_runner_temp_holds_the_scratch_directories(self) -> None:
+        environ = {"RUNNER_TEMP": "/home/runner/work/_temp", "TMPDIR": "/tmp"}
+        self.assertEqual(run.scratch_base(environ), Path("/home/runner/work/_temp"))
+
+    def test_without_runner_temp_the_temporary_directory_holds_them(self) -> None:
+        self.assertEqual(run.scratch_base({}), Path(tempfile.gettempdir()))
+
+    def test_a_hosted_runner_leaves_room_for_the_longest_socket(self) -> None:
+        base = "/home/runner/work/_temp"
+        # virtiofsd's store socket for the longest node name in the suite.
+        socket = f"{base}/e2e-abcdefgh/vm-state-notify_send/tmp.abcdefghij/nix-store"
+        self.assertLessEqual(len(socket) - len(base), run.SOCKET_TAIL_BYTES)
+        self.assertLessEqual(len(base) + run.SOCKET_TAIL_BYTES, run.SOCKET_PATH_MAX)
+
+    def test_a_base_one_byte_longer_than_the_room_left_is_refused(self) -> None:
+        room = run.SOCKET_PATH_MAX - run.SOCKET_TAIL_BYTES
+        # The length comes first: a base of `room` bytes passes it, and this
+        # one is refused only because it does not exist.
+        with self.assertRaisesRegex(run.RunError, "is not a directory"):
+            run.check_scratch_base(Path("/" + "x" * (room - 1)))
+        with self.assertRaisesRegex(run.RunError, f"has at most {room} bytes"):
+            run.check_scratch_base(Path("/" + "x" * room))
+
+    def test_the_base_must_be_a_directory(self) -> None:
+        run.check_scratch_base(Path("/"))
+        with self.assertRaisesRegex(run.RunError, "^/nonexistent is not a directory"):
+            run.check_scratch_base(Path("/nonexistent"))
+
+    def test_the_hard_limit_of_a_job_is_too_low_for_virtiofsd(self) -> None:
+        warning = run.open_file_warning(65_536)
+        assert warning is not None
+        self.assertIn("hard open-file limit is 65536", warning)
+        self.assertIn("prlimit", warning)
+
+    def test_the_hard_limit_of_systemd_and_above_are_enough(self) -> None:
+        for hard_limit in (524_288, 1_048_576, resource.RLIM_INFINITY):
+            with self.subTest(hard_limit=hard_limit):
+                self.assertIsNone(run.open_file_warning(hard_limit))
+
+
+class SuiteSocketsTest(unittest.TestCase):
+    """The suite's VMs make no socket longer than the scratch base check allows."""
+
+    def test_no_node_name_is_longer_than_the_reserve(self) -> None:
+        names = scan_node_names()
+        # A scan that found nothing would let any name through.
+        self.assertIn("machine", names)
+        for name, path in sorted(names.items()):
+            with self.subTest(node=name, file=str(path.relative_to(REPO_ROOT))):
+                self.assertLessEqual(
+                    len(name.encode()),
+                    run.NODE_NAME_RESERVE,
+                    "raise NODE_NAME_RESERVE in ci/e2e/run.py, which leaves "
+                    "fewer bytes for RUNNER_TEMP, or shorten the node name",
+                )
+
+    def test_no_test_adds_a_socket_the_budget_leaves_out(self) -> None:
+        # swtpm's socket lies at vm-state-<node>/<node>-swtpm/socket.ctrl, longer
+        # than virtiofsd's for a node name over 6 bytes, and a share of a
+        # test's own names a virtiofsd socket that may be longer than
+        # nix-store's.
+        found = [
+            f"{path.relative_to(REPO_ROOT)}:{number}: {line.strip()}"
+            for path in e2e_sources()
+            for number, line in enumerate(
+                path.read_text(encoding="utf-8").splitlines(), start=1
+            )
+            if re.search(r"\b(?:tpm|sharedDirectories)\b", line)
+        ]
+        self.assertEqual(found, [], "count their sockets in SOCKET_TAIL_BYTES first")
+
+
 @unittest.skipUnless(shutil.which("bash"), "the fake drivers need bash")
 class RunDriversTest(unittest.TestCase):
-    """run_drivers against stand-in drivers: one passes, one is flaky."""
+    """run_drivers against stand-in drivers that pass, flake, fail or probe."""
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.tmp = Path(temporary.name)
+        # Stands in for the runner's RUNNER_TEMP, which holds the scratch dirs.
+        self.runner_temp = self.tmp / "runner-temp"
+        self.runner_temp.mkdir()
+        self.stderr = ""
         self.drivers: dict[str, Path] = {}
+        # Leaves VM state behind where a real driver keeps it.
+        vm_state = (
+            'mkdir "$XDG_RUNTIME_DIR/vm-state-machine"\n'
+            'echo image > "$XDG_RUNTIME_DIR/vm-state-machine/store.img"\n'
+        )
         for name, script in {
             "steady": "echo booted; exit 0\n",
             # Fails on the first run and passes on the second.
@@ -412,7 +545,14 @@ class RunDriversTest(unittest.TestCase):
                 f'if [ -e "{self.tmp}/wobbly.seen" ]; then exit 0; fi\n'
                 f'touch "{self.tmp}/wobbly.seen"; echo broken; exit 1\n'
             ),
-            "broken": 'echo "scratch=$TMPDIR"; exit 3\n',
+            "broken": f'echo "scratch=$TMPDIR"\n{vm_state}exit 3\n',
+            # Hangs until it is killed.
+            "hung": f"{vm_state}echo started\nexec sleep 5\n",
+            # Records its directories.
+            "probe": (
+                'printf "%s\\n" "$TMPDIR" "$XDG_RUNTIME_DIR" '
+                f'> "{self.tmp}/probe.seen"\n{vm_state}'
+            ),
         }.items():
             driver = self.tmp / name / "bin" / "nixos-test-driver"
             driver.parent.mkdir(parents=True)
@@ -423,7 +563,11 @@ class RunDriversTest(unittest.TestCase):
             self.drivers[name] = self.tmp / name
 
     def execute(
-        self, tests: list[str], retries: int
+        self,
+        tests: list[str],
+        retries: int,
+        environ: dict[str, str] | None = None,
+        timeout: int = 900,
     ) -> tuple[int, dict[str, run.TestOutcome], Path]:
         reported: dict[str, run.TestOutcome] = {}
         logs = self.tmp / "logs"
@@ -437,15 +581,22 @@ class RunDriversTest(unittest.TestCase):
                 "_build_driver",
                 side_effect=lambda attr: self.drivers[attr.rsplit(".", 1)[-1]],
             ),
-            contextlib.redirect_stderr(io.StringIO()),
+            mock.patch.dict(
+                os.environ, {"RUNNER_TEMP": str(self.runner_temp), **(environ or {})}
+            ),
+            # The stand-in drivers open no sockets, so the length of the
+            # temporary directory these tests run in does not matter.
+            mock.patch.object(run, "check_scratch_base"),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
         ):
             status = run.run_drivers(
                 tests,
-                {name: 900 for name in tests},
+                {name: timeout for name in tests},
                 retries=retries,
                 log_dir=logs,
                 report=report,
             )
+        self.stderr = stderr.getvalue()
         return status, reported, logs
 
     def test_a_driver_passing_on_retry_is_flaky(self) -> None:
@@ -465,6 +616,68 @@ class RunDriversTest(unittest.TestCase):
         # Every driver runs with a scratch TMPDIR of its own.
         self.assertIn("scratch=", log)
         self.assertNotIn(f"scratch={tempfile.gettempdir()}\n", log)
+        # A failed test's VM state goes with its scratch directory, so it
+        # cannot fill the disk under the next test.
+        self.assertEqual(list(self.runner_temp.iterdir()), [])
+
+    def test_a_driver_that_times_out_fails_and_leaves_no_vm_state(self) -> None:
+        with mock.patch.object(run, "DRIVER_GRACE_SECONDS", 0):
+            status, outcomes, logs = self.execute(["hung"], retries=0, timeout=1)
+        self.assertEqual(status, 1)
+        self.assertEqual(outcomes["hung"].result, "fail")
+        # It was killed after it had written its VM state, and that is gone.
+        self.assertIn("started", (logs / "hung.log").read_text(encoding="utf-8"))
+        self.assertEqual(list(self.runner_temp.iterdir()), [])
+
+    def test_a_driver_keeps_its_vm_state_in_a_short_scratch_dir_on_disk(
+        self,
+    ) -> None:
+        # The runtime directory of the job: a tmpfs in RAM on a hosted runner.
+        inherited = self.tmp / "run-user"
+        inherited.mkdir()
+        status, _outcomes, _logs = self.execute(
+            ["probe"], retries=0, environ={"XDG_RUNTIME_DIR": str(inherited)}
+        )
+        self.assertEqual(status, 0, self.stderr)
+        seen = (self.tmp / "probe.seen").read_text(encoding="utf-8")
+        tmpdir, runtime_dir = seen.splitlines()
+        # The driver prefers XDG_RUNTIME_DIR for its VM state; both name the
+        # test's own scratch directory under RUNNER_TEMP.
+        self.assertEqual(runtime_dir, tmpdir)
+        scratch = Path(tmpdir)
+        self.assertEqual(scratch.parent, self.runner_temp)
+        self.assertRegex(scratch.name, r"^e2e-\w{8}$")
+        # The scratch directory is gone, and the VM state in it with it.
+        self.assertEqual(list(self.runner_temp.iterdir()), [])
+        self.assertEqual(list(inherited.iterdir()), [])
+
+    def test_a_low_open_file_limit_warns_and_the_drivers_still_run(self) -> None:
+        with mock.patch.object(run.resource, "getrlimit", return_value=(1024, 65_536)):
+            status, outcomes, _logs = self.execute(["steady"], retries=0)
+        self.assertEqual(status, 0)
+        self.assertEqual(outcomes["steady"].result, "pass")
+        self.assertIn("warning: the hard open-file limit is 65536", self.stderr)
+
+    def test_a_sufficient_open_file_limit_warns_of_nothing(self) -> None:
+        with mock.patch.object(run.resource, "getrlimit", return_value=(1024, 524_288)):
+            status, _outcomes, _logs = self.execute(["steady"], retries=0)
+        self.assertEqual(status, 0)
+        self.assertNotIn("warning:", self.stderr)
+
+    def test_an_unusable_base_stops_the_run_before_any_build(self) -> None:
+        too_long = "/" + "x" * (run.SOCKET_PATH_MAX - run.SOCKET_TAIL_BYTES)
+        for base, problem in (
+            (too_long, r"is too long .*\(config\.sh --work\)"),
+            ("/nonexistent", "is not a directory"),
+        ):
+            with (
+                self.subTest(base=base),
+                mock.patch.object(run, "_build_driver") as build,
+                mock.patch.dict(os.environ, {"RUNNER_TEMP": base}),
+            ):
+                with self.assertRaisesRegex(run.RunError, problem):
+                    run.run_drivers(["steady"], {"steady": 900})
+                build.assert_not_called()
 
 
 class RunCommandTest(unittest.TestCase):
@@ -495,6 +708,27 @@ class RunCommandTest(unittest.TestCase):
         build_mock.assert_called_once()
         # Round-robin without weights puts the even indices on shard 1.
         self.assertEqual(captured["tests"], ["a", "c"])
+
+    def test_execute_reports_a_base_too_long_for_the_sockets(self) -> None:
+        from ci.e2e import __main__ as cli
+
+        metadata = Metadata(
+            available_targets=["a"],
+            leaf_tests=["a"],
+            groups={"ci": ["a"]},
+            timeouts={"a": 900},
+        )
+        too_long = "/" + "x" * 100
+        with (
+            mock.patch.object(cli, "load_metadata", return_value=metadata),
+            mock.patch.object(cli.run, "_build_driver") as build,
+            mock.patch.dict(os.environ, {"RUNNER_TEMP": too_long}),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            code = cli.main(["run", "a", "--execute"])
+        self.assertEqual(code, cli.EXIT_BAD_INPUT)
+        self.assertIn(f"error: {too_long} is too long", stderr.getvalue())
+        build.assert_not_called()
 
 
 if __name__ == "__main__":
