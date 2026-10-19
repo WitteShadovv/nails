@@ -243,6 +243,13 @@ logind.
 - **Ubuntu 24.04 or 26.04** (systemd 255+). A later release runs with a
   warning that NAILS has not been tested on it. `overlayroot` is not supported:
   an overlay root cannot be mounted again for the way back.
+- **Ubuntu 26.04: reboot fully after a session.** In the hidden session chrony
+  (time sync) and CUPS (printing) fail: AppArmor blocks their messages to
+  systemd and to the journal, whose sockets were set up before the switch, so
+  the clock is not synchronized and printing times out. After the way back the
+  decoy lists chrony as failed until its next full reboot, which hints that a
+  soft-reboot happened. A plain `systemctl soft-reboot` into another root,
+  without NAILS, breaks chrony the same way.
 - **Volatile journald**: set `Storage=volatile` under `[Journal]` in
   `/etc/systemd/journald.conf`, or in a drop-in such as
   `/etc/systemd/journald.conf.d/50-volatile.conf`. NAILS resolves the main

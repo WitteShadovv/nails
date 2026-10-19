@@ -127,7 +127,7 @@ soft-reboot.
 |---|---|---|
 | NixOS | Full | A hidden NixOS configuration (flake or `configuration.nix`) is built into the hidden root's store and entered in the same soft-reboot. It must run on the decoy's kernel. Pinned nixpkgs without `soft-reboot.target`/`systemd-soft-reboot.service` need a small module, which `nails check` prints. |
 | Debian 13 (trixie) | Root overlay | The same whole-root session; the hidden configuration is whatever the upper's `/etc` holds. Requires the merged-`/usr` layout. |
-| Ubuntu 24.04 and 26.04 | Root overlay | As Debian. |
+| Ubuntu 24.04 and 26.04 | Root overlay | As Debian. On 26.04, chrony and CUPS fail in the hidden session and the decoy shows chrony failed until a full reboot; see [the Ubuntu notes](docs/decoy-requirements.md#ubuntu). |
 | Other releases: Debian after 13, Ubuntu after 24.04 | Untested | Accepted on the same terms, with a warning in `init`, `check` and `activate` that NAILS has not been tested on the release, such as Ubuntu 25.04 or 26.10. |
 | Debian-family derivatives | Provisional | A host whose `ID_LIKE` names `debian` or `ubuntu` is accepted on the same terms when its systemd is new enough; its base release is not version-gated. |
 | Debian 12, Ubuntu 22.04 | Refused | systemd is too old for a soft-reboot (252 and 249). |
@@ -543,8 +543,9 @@ your setup before running the new binary.
 
 - **Session mode.** The per-directory overlays (`/etc`, `/home`, `/var`, ...) are
   gone. The only mode is the whole-root session entered and left with a
-  soft-reboot, which needs systemd 254 or newer. Besides NixOS, Debian 13 and
-  Ubuntu 24.04 or newer are now supported as decoys. The hidden root's layers
+  soft-reboot, which needs systemd 254 or newer. Besides NixOS, Debian 13,
+  Ubuntu 24.04 and Ubuntu 26.04 are now supported as decoys, and a later Debian
+  or Ubuntu release runs with a warning. The hidden root's layers
   live under `<hidden-root>/root/` (among them `upper`, `work` and `mounts`);
   the uppers of the old mode (`<hidden-root>/<name>` and
   `<hidden-root>/.work`) are not read. Move what you need from them into the
