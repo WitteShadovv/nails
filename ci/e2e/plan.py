@@ -41,9 +41,11 @@ DRIFT_THRESHOLD = 0.25
 # normalise by, and raw durations are compared instead.
 MIN_TESTS_FOR_SPEED_FACTOR = 5
 # Weighted test seconds one CI shard should hold when the shard count is
-# derived. Setting up a runner (Nix, the VM closure) costs a few minutes on
-# top, so a shard of this size finishes in about 20 minutes.
-SHARD_SECONDS = 900
+# derived: about the weight of the longest test, which no split can shorten.
+# The whole suite then spreads over the ten shards a run may use, and a small
+# selection over a few. Setting up a runner (Nix, the evaluation, the VM
+# closures) comes on top.
+SHARD_SECONDS = 300
 # A shard's job timeout is this multiple of its weighted load plus the setup
 # allowance, so one retried test or a slower runner still fits, while a hung
 # shard is stopped long before GitHub's six-hour limit.
