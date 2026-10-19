@@ -262,8 +262,9 @@ fn plan<F: Filesystem>(fs: &F, args: &InitArgs) -> std::result::Result<InitPlan,
     // Resolving the bootstrap source consults the platform seam on the auto path
     // and refuses an unsupported host before any write, so the layout is only ever
     // written on a host NAILS can operate on, and the NixOS-only subdirectories are
-    // skipped on a host without a config layer.
-    let bootstrap = resolve_bootstrap(fs, args)?;
+    // skipped on a host without a config layer. A release NAILS has not been
+    // tested on adds its warning.
+    let bootstrap = resolve_bootstrap(fs, args, &mut warnings)?;
     let nixos_layout = matches!(bootstrap, HardwareBootstrap::From(_));
 
     failures.extend(obstructions(fs, base, nixos_layout)?);
@@ -345,10 +346,13 @@ struct InitPlan {
 /// host with a declarative config layer (NixOS) is bootstrapped with the hidden
 /// NixOS layout; every other supported host (FHS / Debian) is overlay-only and
 /// the layout is skipped, so init writes no NixOS paths there. An unsupported
-/// host (ostree / image-based, or non-systemd) is refused before any write.
+/// host (ostree / image-based, or non-systemd) is refused before any write, and
+/// a release NAILS has not been tested on is admitted with its warning added to
+/// `warnings`.
 fn resolve_bootstrap<F: Filesystem>(
     fs: &F,
     args: &InitArgs,
+    warnings: &mut Vec<String>,
 ) -> std::result::Result<HardwareBootstrap, InitFailure> {
     if args.no_hardware_config {
         return Ok(HardwareBootstrap::Skip(
@@ -364,6 +368,7 @@ fn resolve_bootstrap<F: Filesystem>(
     profile
         .require_supported()
         .map_err(|error| InitFailure::Preconditions(vec![error.to_string()]))?;
+    warnings.extend(profile.support_warning.clone());
 
     if profile.has_config_layer() {
         Ok(HardwareBootstrap::From(PathBuf::from(

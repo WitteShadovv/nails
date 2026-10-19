@@ -23,6 +23,7 @@ fn preflight_check_names() -> BTreeSet<&'static str> {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        host_profile: None,
     };
     let registry = build_registry(
         &fs,

@@ -49,7 +49,10 @@ enum UsrMerge {
 ///   [`HostProfile::require_supported`] or the [`UnsupportedPlatform`] backend.
 /// - A host whose `ID` is `nixos`, or that has a live `/run/current-system`,
 ///   resolves to [`PlatformKind::NixOs`].
-/// - Any other systemd host resolves to [`PlatformKind::Fhs`].
+/// - Any other systemd host resolves to [`PlatformKind::Fhs`] when the
+///   Debian-family table admits it, and to [`PlatformKind::Unsupported`]
+///   otherwise. A release the table admits but does not list as tested carries
+///   its warning in [`HostProfile::support_warning`].
 ///
 /// [`UnsupportedPlatform`]: super::UnsupportedPlatform
 pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
@@ -66,7 +69,7 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
     let is_systemd = pid1_comm.as_deref() == Some("systemd");
     let usr_merge = probe_usr_merge(fs);
 
-    let (kind, unsupported_reason) = classify(
+    let verdict = classify(
         is_ostree,
         is_systemd,
         pid1_comm.as_deref(),
@@ -76,14 +79,15 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
     );
 
     Ok(HostProfile {
-        kind,
+        kind: verdict.kind,
         id: fields.id,
         id_like: fields.id_like,
         version_id: fields.version_id,
         is_systemd,
         is_ostree,
         has_current_system,
-        unsupported_reason,
+        unsupported_reason: verdict.unsupported_reason,
+        support_warning: verdict.support_warning,
     })
 }
 
@@ -180,12 +184,43 @@ fn probe_usr_merge<F: Filesystem>(fs: &F) -> UsrMerge {
     UsrMerge::Merged
 }
 
+/// What [`classify`] decides about a host.
+#[derive(Debug)]
+struct Verdict {
+    kind: PlatformKind,
+    /// Why the host is refused, when [`kind`](Self::kind) is
+    /// [`PlatformKind::Unsupported`].
+    unsupported_reason: Option<String>,
+    /// The warning an admitted host carries: a release NAILS has not been
+    /// tested on.
+    support_warning: Option<String>,
+}
+
+impl Verdict {
+    fn admitted(kind: PlatformKind, support_warning: Option<String>) -> Self {
+        Self {
+            kind,
+            unsupported_reason: None,
+            support_warning,
+        }
+    }
+
+    fn refused(reason: String) -> Self {
+        Self {
+            kind: PlatformKind::Unsupported,
+            unsupported_reason: Some(reason),
+            support_warning: None,
+        }
+    }
+}
+
 /// Resolve the host facts to a [`PlatformKind`] and, when unsupported, a reason.
 ///
 /// Refusals come first: an ostree / image-based host and a non-systemd PID 1 are
 /// both declined, because NAILS cannot safely lay a hidden overlay over an
 /// immutable image or drive teardown without systemd. A systemd host is then
-/// resolved to NixOS, a supported Debian-family release, or a documented refusal
+/// resolved to NixOS, a supported Debian-family release (with a warning when
+/// NAILS has not been tested on that release), or a documented refusal
 /// (unsupported distribution, release below the minimum, or a non-merged layout).
 fn classify(
     is_ostree: bool,
@@ -194,16 +229,13 @@ fn classify(
     fields: &OsReleaseFields,
     has_current_system: bool,
     usr_merge: UsrMerge,
-) -> (PlatformKind, Option<String>) {
+) -> Verdict {
     if is_ostree {
-        return (
-            PlatformKind::Unsupported,
-            Some(
-                "this host is ostree / image-based (found /run/ostree-booted); \
-                 NAILS cannot overlay an immutable system. Use a conventional \
-                 mutable installation."
-                    .to_string(),
-            ),
+        return Verdict::refused(
+            "this host is ostree / image-based (found /run/ostree-booted); \
+             NAILS cannot overlay an immutable system. Use a conventional \
+             mutable installation."
+                .to_string(),
         );
     }
 
@@ -212,34 +244,28 @@ fn classify(
             .filter(|comm| !comm.is_empty())
             .map(|comm| format!("found '{comm}'"))
             .unwrap_or_else(|| "PID 1's command name could not be read".to_string());
-        return (
-            PlatformKind::Unsupported,
-            Some(format!(
-                "PID 1 is not systemd ({found}); NAILS requires a systemd host."
-            )),
-        );
+        return Verdict::refused(format!(
+            "PID 1 is not systemd ({found}); NAILS requires a systemd host."
+        ));
     }
 
     if fields.id.as_deref() == Some("nixos") || has_current_system {
-        return (PlatformKind::NixOs, None);
+        return Verdict::admitted(PlatformKind::NixOs, None);
     }
 
-    match debian::classify_family(
+    let support_warning = match debian::classify_family(
         fields.id.as_deref(),
         &fields.id_like,
         fields.version_id.as_deref(),
     ) {
-        FamilySupport::Supported => {
-            if usr_merge == UsrMerge::NotMerged {
-                return (
-                    PlatformKind::Unsupported,
-                    Some(debian::USR_MERGE_REFUSAL.to_string()),
-                );
-            }
-            (PlatformKind::Fhs, None)
-        }
-        FamilySupport::Refused(reason) => (PlatformKind::Unsupported, Some(reason)),
+        FamilySupport::Supported => None,
+        FamilySupport::UntestedRelease(warning) => Some(warning),
+        FamilySupport::Refused(reason) => return Verdict::refused(reason),
+    };
+    if usr_merge == UsrMerge::NotMerged {
+        return Verdict::refused(debian::USR_MERGE_REFUSAL.to_string());
     }
+    Verdict::admitted(PlatformKind::Fhs, support_warning)
 }
 
 #[cfg(test)]
@@ -264,6 +290,10 @@ mod tests {
     const ARCH: &str = "ID=arch\nBUILD_ID=rolling\n";
     const DEBIAN11: &str = "ID=debian\nVERSION_ID=\"11\"\n";
     const UBUNTU22: &str = "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"22.04\"\n";
+    const UBUNTU2604: &str =
+        "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.04\"\nPRETTY_NAME=\"Ubuntu 26.04 LTS\"\n";
+    const UBUNTU2610: &str =
+        "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\nPRETTY_NAME=\"Ubuntu 26.10\"\n";
 
     #[test]
     fn nixos_by_id() {
@@ -271,6 +301,7 @@ mod tests {
         assert_eq!(profile.kind, PlatformKind::NixOs);
         assert_eq!(profile.id.as_deref(), Some("nixos"));
         assert!(profile.is_systemd);
+        assert_eq!(profile.support_warning, None);
         profile.require_supported().unwrap();
     }
 
@@ -308,6 +339,59 @@ mod tests {
         assert_eq!(profile.id.as_deref(), Some("ubuntu"));
         assert_eq!(profile.version_id.as_deref(), Some("24.04"));
         assert!(profile.is_debian_like());
+        assert_eq!(profile.support_warning, None);
+    }
+
+    #[test]
+    fn ubuntu_2604_is_a_tested_release() {
+        let profile = detect(&host(UBUNTU2604, "systemd")).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Fhs);
+        assert_eq!(profile.support_warning, None);
+        profile.require_supported().unwrap();
+    }
+
+    #[test]
+    fn ubuntu_2610_runs_with_a_warning_that_it_is_untested() {
+        let profile = detect(&host(UBUNTU2610, "systemd")).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Fhs);
+        assert_eq!(profile.unsupported_reason, None);
+        profile.require_supported().unwrap();
+        let warning = profile
+            .support_warning
+            .expect("26.10 is not a tested release");
+        assert!(
+            warning.starts_with("Ubuntu 26.10 is not a release NAILS has been tested on"),
+            "{warning}"
+        );
+    }
+
+    #[test]
+    fn a_host_is_named_as_its_distribution_names_it() {
+        let name = |os_release: &str| detect(&host(os_release, "systemd")).unwrap().name();
+        assert_eq!(name(NIXOS), "NixOS 24.11");
+        assert_eq!(name(UBUNTU), "Ubuntu 24.04");
+        assert_eq!(name(DEBIAN13), "Debian 13");
+        assert_eq!(
+            name("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\nVERSION_ID=\"22\"\n"),
+            "linuxmint 22"
+        );
+        assert_eq!(name("VERSION_ID=\"1\"\n"), "this host");
+
+        // A live generation without os-release is NixOS all the same.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PID1_COMM, "systemd");
+        fs.mock_set_path_type(CURRENT_SYSTEM, crate::filesystem::PathKind::Symlink);
+        assert_eq!(detect(&fs).unwrap().name(), "NixOS");
+    }
+
+    #[test]
+    fn a_split_usr_refuses_an_untested_release_without_its_warning() {
+        let fs = host(UBUNTU2610, "systemd");
+        fs.mock_set_path_type("/bin", crate::filesystem::PathKind::Dir);
+        let profile = detect(&fs).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
+        assert!(profile.unsupported_reason.unwrap().contains("usr-merged"));
+        assert_eq!(profile.support_warning, None);
     }
 
     #[test]

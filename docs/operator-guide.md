@@ -172,11 +172,13 @@ Keep all of it `root`-owned on the hidden volume.
 
 **Activation, step by step.** `nails activate` runs on the decoy:
 
-1. It runs the pre-flight checks, among them `systemd-version` (254 or newer),
-   `soft-reboot-units` (the units that implement `systemctl soft-reboot` are
-   installed), `decoy-root` (the decoy root can be mounted again by device for
-   the way back), `session-state` (no session and no leftovers of an
-   interrupted one), `fstab-policy`, `hidden-volume`, `upper-fs-capability`,
+1. It runs the pre-flight checks, among them `platform` (the host is one NAILS
+   supports; a Debian or Ubuntu release it has not been tested on warns),
+   `systemd-version` (254 or newer), `soft-reboot-units` (the units that
+   implement `systemctl soft-reboot` are installed), `decoy-root` (the decoy
+   root can be mounted again by device for the way back), `session-state` (no
+   session and no leftovers of an interrupted one), `fstab-policy`,
+   `hidden-volume`, `upper-fs-capability`,
    `backend-entries`, `suspicious-nails-reference` (NixOS: nothing in the
    decoy's `/etc/nixos` names the hidden volume's device, mount point or the
    storage it is on, opens its mapping, or names NAILS; [the decoy

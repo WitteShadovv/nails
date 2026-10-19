@@ -86,6 +86,7 @@ impl FakePlatform {
             is_ostree: false,
             has_current_system: self.kind == PlatformKind::NixOs,
             unsupported_reason,
+            support_warning: None,
         }
     }
 }

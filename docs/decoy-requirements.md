@@ -14,10 +14,12 @@ The decoy also has to be one the session can enter and leave:
 
 - **systemd 254 or newer** with `soft-reboot.target` and
   `systemd-soft-reboot.service` installed (`systemd-version`,
-  `soft-reboot-units`). Debian 13, Ubuntu 24.04 and current NixOS qualify;
-  Debian 12 and Ubuntu 22.04 are refused. A NixOS decoy on a nixpkgs that does
-  not install the two units needs the module `nails check` prints (and so does a
-  hidden NixOS configuration, or the session could not leave).
+  `soft-reboot-units`). Debian 13, Ubuntu 24.04, Ubuntu 26.04 and current
+  NixOS qualify; Debian 12 and Ubuntu 22.04 are refused. A later Debian or
+  Ubuntu release runs with a warning that NAILS has not been tested on it
+  (`platform`). A NixOS decoy on a nixpkgs that does not install the two units
+  needs the module `nails check` prints (and so does a hidden NixOS
+  configuration, or the session could not leave).
 - **A decoy root on a block device** (`decoy-root`): ext4, xfs, btrfs (including
   a subvolume) or f2fs. The way back mounts it again by device, so a tmpfs root
   (impermanence), an overlay root (overlayroot, bilibop-lockfs) and ZFS are
@@ -238,8 +240,9 @@ logind.
 
 ### Ubuntu
 
-- **Ubuntu 24.04 or newer** (systemd 255+). `overlayroot` is not supported: an
-  overlay root cannot be mounted again for the way back.
+- **Ubuntu 24.04 or 26.04** (systemd 255+). A later release runs with a
+  warning that NAILS has not been tested on it. `overlayroot` is not supported:
+  an overlay root cannot be mounted again for the way back.
 - **Volatile journald**: set `Storage=volatile` under `[Journal]` in
   `/etc/systemd/journald.conf`, or in a drop-in such as
   `/etc/systemd/journald.conf.d/50-volatile.conf`. NAILS resolves the main
@@ -253,8 +256,9 @@ logind.
 
 ### Debian
 
-- **Debian 13 or newer** (systemd 257+). `bilibop-lockfs` and other RAM-overlay
-  roots are not supported: the way back mounts the decoy root by device.
+- **Debian 13** (systemd 257+). A later release runs with a warning that NAILS
+  has not been tested on it. `bilibop-lockfs` and other RAM-overlay roots are
+  not supported: the way back mounts the decoy root by device.
 - **Volatile journald**: `Storage=volatile` in `journald.conf` or a
   `journald.conf.d/*.conf` drop-in.
 - Remove or disable `rsyslog`/`syslog-ng` and `auditd`.

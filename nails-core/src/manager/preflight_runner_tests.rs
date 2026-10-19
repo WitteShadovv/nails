@@ -32,6 +32,7 @@ fn build_registry_includes_the_shared_checks() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        host_profile: None,
     };
 
     let registry =
@@ -70,6 +71,7 @@ fn overlay_only_registry_drops_the_nixos_checks() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        host_profile: None,
     };
 
     let registry =
@@ -95,6 +97,7 @@ fn fhs_host_registry_drops_the_nixos_checks_without_overlay_only() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        host_profile: None,
     };
 
     let registry = build_registry(&fs, &config, &inputs, None).expect("registry builds");
@@ -219,6 +222,7 @@ fn read_only_registry_creates_nothing() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        host_profile: None,
     };
 
     let registry =
@@ -544,6 +548,7 @@ fn every_gate_refusal_fails_the_hidden_volume_check_and_skips_its_dependents() {
         discovered_target: crate::platform::HostTarget::None,
         operator: None,
         caller_path: None,
+        host_profile: None,
     };
     for (scene, table, unreadable_crypttab) in scenes {
         let fs = MockFilesystem::new();
@@ -661,4 +666,83 @@ fn the_entries_check_alone_only_logs_its_warning() {
     manager
         .run_backend_entries_check()
         .expect("a warning does not refuse");
+}
+
+/// A manager over a mock host whose os-release is `os_release`, with the host
+/// detected as `check` and activation detect it.
+fn manager_on_host(os_release: &str) -> NailsManager<MockFilesystem> {
+    let fs = MockFilesystem::new();
+    fs.mock_set_file_content("/etc/os-release", os_release);
+    fs.mock_set_file_content("/proc/1/comm", "systemd\n");
+    let mut manager = manager_with(fs);
+    manager
+        .initialize_platform()
+        .expect("detection reads through the mock");
+    manager
+}
+
+/// The platform row's verdict in a manager's registry.
+fn platform_result(manager: &NailsManager<MockFilesystem>) -> Option<CheckResult> {
+    let registry = manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds");
+    registry
+        .run_all_detailed(manager.filesystem())
+        .0
+        .into_iter()
+        .find(|(name, _)| name == "platform")
+        .map(|(_, result)| result)
+}
+
+/// A release NAILS has not been tested on warns in `check` and at activation
+/// alike: the platform row, right before the systemd checks, warns, and
+/// activation logs the warning as the console shows one, `<check>: <message>`.
+#[test]
+#[tracing_test::traced_test]
+fn an_untested_release_warns_in_check_and_at_activation() {
+    let manager = manager_on_host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\n");
+    let names = manager
+        .preflight_registry(&PreflightOptions::default())
+        .expect("registry builds")
+        .names();
+    let at = names
+        .iter()
+        .position(|name| *name == "platform")
+        .expect("a platform row");
+    assert_eq!(names[at + 1], "systemd-version", "{names:?}");
+
+    let result = platform_result(&manager).expect("a platform row");
+    assert!(result.is_warn(), "{result:?}");
+
+    let _ = manager.run_preflight_checks(&PreflightOptions::default());
+    assert!(logs_contain(
+        "platform: Ubuntu 26.10 is not a release NAILS has been tested on"
+    ));
+}
+
+/// A tested release passes with its name; a host activation refuses fails the
+/// row with activation's reason, so `check` no longer reports it ready.
+#[test]
+fn the_platform_row_names_a_tested_host_and_fails_a_refused_one() {
+    let manager = manager_on_host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.04\"\n");
+    let result = platform_result(&manager).expect("a platform row");
+    assert!(result.is_pass(), "{result:?}");
+    assert_eq!(result.message(), "Ubuntu 26.04");
+
+    let manager = manager_on_host("ID=arch\nBUILD_ID=rolling\n");
+    let result = platform_result(&manager).expect("a platform row");
+    assert!(result.is_fail(), "{result:?}");
+    let refusal = manager
+        .host_profile()
+        .and_then(|profile| profile.unsupported_reason.clone())
+        .expect("arch is refused");
+    assert_eq!(result.message(), refusal);
+}
+
+/// Without a detected host there is no platform row: activation then refuses
+/// no host either.
+#[test]
+fn no_platform_row_without_a_detected_host() {
+    let manager = manager_with(MockFilesystem::new());
+    assert!(platform_result(&manager).is_none());
 }

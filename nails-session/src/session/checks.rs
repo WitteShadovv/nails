@@ -39,7 +39,7 @@ pub fn judge_version(version: Option<u32>) -> CheckResult {
                  soft-reboot`, which needs systemd {MIN_SYSTEMD} or newer"
             ),
             "Debian 12 (bookworm, systemd 252) and Ubuntu 22.04 (jammy, systemd 249) are not \
-             supported. Use Debian 13 (trixie), Ubuntu 24.04 or newer, or a current NixOS."
+             supported. Use Debian 13 (trixie), Ubuntu 24.04 or 26.04, or a current NixOS."
                 .to_string(),
         ),
         None => CheckResult::fail_with(

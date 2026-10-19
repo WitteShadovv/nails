@@ -37,6 +37,7 @@ fuzz_target!(|data: &[u8]| {
     );
     assert_eq!(again.kind, first.kind);
     assert_eq!(again.unsupported_reason, first.unsupported_reason);
+    assert_eq!(again.support_warning, first.support_warning);
 });
 
 /// What detection makes of a systemd host with `os_release`.

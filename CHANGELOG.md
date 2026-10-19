@@ -18,6 +18,11 @@ of this changelog for that version becomes the release notes word for word, and
 - The release binary is built with Rust 1.99.1; 0.3.0-rc.2 was built with 1.93.0.
 - A release run boots every NixOS VM test on the tagged commit. Until now it took a test whose
   derivation had passed in an earlier run from the project's binary cache, without booting it.
+- NAILS is tested on Debian 13, Ubuntu 24.04 and Ubuntu 26.04. A later release, such as Ubuntu
+  26.10 (released on 2026-10-15), still runs, but `init`, `check` and `activate` now warn that
+  NAILS has not been tested on it; 0.3.0-rc.2 accepted every release from Debian 13 and Ubuntu
+  24.04 on without a word. `check` names the detected host in a new `platform` row, which carries
+  that warning.
 
 ### Fixed
 
@@ -45,6 +50,9 @@ of this changelog for that version becomes the release notes word for word, and
 - The refusal of a Debian or Ubuntu host below the minimum release, or whose release cannot be
   read, names the minimum as the distribution writes it, `Debian 13` and `Ubuntu 24.04`, instead of
   `Debian 13.0` and `Ubuntu 24.4`.
+- `nails check` could report a host ready that `activate` then refused with exit 8, such as Fedora,
+  Arch or a Debian host without the merged `/usr`. Its new `platform` row fails there, with the
+  reason `activate` gives.
 
 ### Security
 
