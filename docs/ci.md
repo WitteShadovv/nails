@@ -296,7 +296,7 @@ A commit runs only the fast, offline pre-commit hooks (formatting, Rust file siz
 GitHub settings that the workflows assume but cannot set themselves:
 
 - **Required checks.** The `main` branch ruleset requires `gate` (from `ci.yml`), `e2e-result` (from `e2e.yml`) and `pr-title` (from `pr-title.yml`). Make `e2e-result` required only after it has been green for about two weeks.
-- **`next`.** While the integration branch exists, a ruleset of its own targets `next`: it requires the same checks as the ruleset for `main` and blocks deletion, and only maintainers may force-push, to rebase `next` onto `main`.
+- **`next`.** While the integration branch exists, a ruleset of its own targets `next`. It requires the same checks as the ruleset for `main`, each from GitHub Actions, blocks deletion and force pushes, and has no bypass list, so a commit becomes the tip of `next` only once its checks have passed in a pull request. To rebase `next` onto `main`, a maintainer turns the ruleset off for that one push.
 - **Tag ruleset.** Protect `v*` tags to annotated tags only, and enable immutable releases.
 - **Environments.** `dependency-updates` holds `DEPENDENCY_UPDATE_TOKEN` and needs no required reviewers. The `hetzner-pr` and `hetzner` environments are no longer used: delete them, with the `hetzner` environment's secrets `HCLOUD_TOKEN`, `HCLOUD_SSH_KEY_ID` and `RUNNER_REGISTRATION`.
 - **Secrets.** `CACHIX_AUTH_TOKEN` as an Actions secret (see [Setting up the cache](#setting-up-the-cache)); never add it as a Dependabot secret.
