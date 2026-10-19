@@ -455,6 +455,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         resolve.ResolveError,
         MetadataError,
         distro.DistroError,
+        run.RunError,
     ) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return EXIT_BAD_INPUT

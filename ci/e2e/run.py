@@ -39,6 +39,27 @@ DRIVER_GRACE_SECONDS = 120
 # Lines of a failed driver's log repeated on stderr, so the cause shows in the
 # job log without downloading the artifact.
 LOG_TAIL_LINES = 60
+# A directly executed driver's scratch directory is this prefix plus the eight
+# random characters of mkdtemp, in RUNNER_TEMP or else the temporary directory.
+SCRATCH_PREFIX = "e2e-"
+# A Unix socket path holds at most this many bytes (sun_path, without its
+# terminating NUL).
+SOCKET_PATH_MAX = 107
+# The longest socket below the scratch directory is virtiofsd's, which nixpkgs'
+# qemu-vm.nix puts at vm-state-<node>/tmp.XXXXXXXXXX/<share>, nix-store being
+# the longest share name. The reserve fits the suite's longest node name,
+# notify_send. ci/tests/test_e2e_run.py fails on a longer one, and on a test's
+# own share or TPM, whose sockets this budget does not count.
+NODE_NAME_RESERVE = 11
+SOCKET_TAIL_BYTES = (
+    len(f"/{SCRATCH_PREFIX}XXXXXXXX/vm-state-")
+    + NODE_NAME_RESERVE
+    + len("/tmp.XXXXXXXXXX/nix-store")
+)
+
+
+class RunError(Exception):
+    """This host cannot run the drivers as asked."""
 
 
 @dataclass
@@ -387,21 +408,54 @@ def _build_driver(attr: str) -> Path:
     return Path(completed.stdout.split()[-1])
 
 
+def scratch_base(environ: Mapping[str, str] = os.environ) -> Path:
+    """The directory that holds the scratch directory of every driver.
+
+    In a GitHub job that is RUNNER_TEMP, which a hosted runner keeps on its
+    root disk; elsewhere the temporary directory (TMPDIR, or /tmp without one).
+    """
+    return Path(os.path.abspath(environ.get("RUNNER_TEMP") or tempfile.gettempdir()))
+
+
+def check_scratch_base(base: Path) -> None:
+    """Refuse a base too long for the drivers' sockets, or not a directory."""
+    longest = len(os.fsencode(base)) + SOCKET_TAIL_BYTES
+    if longest > SOCKET_PATH_MAX:
+        raise RunError(
+            f"{base} is too long for the drivers' scratch directories: the "
+            f"longest Unix socket below it would take {longest} bytes, and a "
+            f"socket path holds at most {SOCKET_PATH_MAX}. In a GitHub job "
+            "RUNNER_TEMP follows the runner's work folder (config.sh --work); "
+            "for a local run, set RUNNER_TEMP or TMPDIR to a directory whose "
+            f"path has at most {SOCKET_PATH_MAX - SOCKET_TAIL_BYTES} bytes."
+        )
+    if not base.is_dir():
+        raise RunError(
+            f"{base} is not a directory, so it cannot hold the drivers' scratch "
+            "directories. Create it, or point RUNNER_TEMP at one that exists."
+        )
+
+
 def _execute_driver(
-    test: str,
     driver: Path,
     timeout: int,
     log_path: Path,
     clock: Callable[[], float],
+    base: Path,
 ) -> TestOutcome:
     """Run one driver in a scratch directory of its own and time it.
 
-    Each driver gets its own working and temporary directory, because the
-    driver keeps VM state and the VLAN sockets there.
+    The driver keeps every machine's state (its disks, the Nix store image and
+    the sockets of QEMU and virtiofsd) and the VLAN sockets in XDG_RUNTIME_DIR,
+    falling back to TMPDIR, which is the build directory inside a Nix build.
+    On a hosted runner XDG_RUNTIME_DIR is a small tmpfs in RAM, so both name
+    the scratch directory on disk, and removing it after the test removes the
+    VM state too. Its name is short, so that the sockets below it stay within
+    SOCKET_PATH_MAX.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
-    scratch = Path(tempfile.mkdtemp(prefix=f"e2e-{test}-"))
-    env = {**os.environ, "TMPDIR": str(scratch)}
+    scratch = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=base))
+    env = {**os.environ, "TMPDIR": str(scratch), "XDG_RUNTIME_DIR": str(scratch)}
     start = clock()
     try:
         with log_path.open("w", encoding="utf-8") as log:
@@ -437,10 +491,13 @@ def run_drivers(
 
     Logs of failed tests stay in ``log_dir`` (passing logs are removed); the
     retry and flaky rules match ``run_build``. Returns 0 when every test
-    passed and 1 otherwise.
+    passed and 1 otherwise. Before any driver is built, a scratch base that
+    is too long for the drivers' sockets, or not a directory, raises RunError.
     """
     if not tests:
         return 0
+    base = scratch_base()
+    check_scratch_base(base)
     keep_logs = log_dir is not None
     logs = log_dir if log_dir is not None else Path(tempfile.mkdtemp(prefix="e2e-"))
     drivers = {test: _build_driver(f"{attr_prefix}.{test}") for test in tests}
@@ -462,7 +519,7 @@ def run_drivers(
             print(f"running {test}", file=sys.stderr)
             log_path = logs / f"{test}.log"
             outcome = _execute_driver(
-                test, drivers[test], timeouts.get(test, 900), log_path, clock
+                drivers[test], timeouts.get(test, 900), log_path, clock, base
             )
             if outcome.result == "pass":
                 outcome.flaky = attempt > 0
