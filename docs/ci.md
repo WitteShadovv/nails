@@ -196,7 +196,7 @@ The action also connects the project's public Cachix cache, [`nails`](https://na
 ### Cache trust rules
 
 - **Reads.** The cache is added as an extra substituter next to cache.nixos.org. Its signing key is pinned in `action.yml`, so no substitute is trusted on first use. Every job reads it unless it sets `cache: 'false'`, including fork pull requests.
-- **Pushes.** A job pushes only when it runs for a trusted event and receives `CACHIX_AUTH_TOKEN`. The trusted events are pushes to `main`, scheduled runs, manual dispatches and pull requests from a branch of this repository. Fork pull requests and every other event stay read-only. The decision lives in `.github/actions/setup-nix/cache_plan.py` and is tested in `scripts/tests/test_setup_nix_cache_plan.py`.
+- **Pushes.** A job pushes only when it runs for a trusted event and receives `CACHIX_AUTH_TOKEN`. The trusted events are pushes to `main` and `next`, scheduled runs, manual dispatches and pull requests from a branch of this repository. Fork pull requests and every other event stay read-only. The decision lives in `.github/actions/setup-nix/cache_plan.py` and is tested in `scripts/tests/test_setup_nix_cache_plan.py`.
 - **What is pushed.** The cachix daemon uploads each path as soon as Nix builds it, so a cancelled run keeps its finished work. A push filter limits uploads to three name prefixes:
   - `nails-*`: the binary that every VM test embeds;
   - `rust-default-*`: the Rust toolchain, whose closure holds its components;

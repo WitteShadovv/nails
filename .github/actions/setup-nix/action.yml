@@ -17,8 +17,9 @@ inputs:
   cachix-auth-token:
     description: >-
       Token that may push to the project cache. It is used only for pushes to
-      main, schedules, manual dispatches and pull requests from a branch of
-      this repository. Never pass it to a job that runs a fork's code.
+      main and next, schedules, manual dispatches and pull requests from a
+      branch of this repository. Never pass it to a job that runs a fork's
+      code.
     required: false
     default: ''
 runs:
