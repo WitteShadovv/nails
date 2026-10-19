@@ -34,7 +34,7 @@ sbom-check
     Fails unless actions/attest accepts the SBOM as CycloneDX: a JSON object
     of at most 16 MiB with a non-empty ``bomFormat``, ``serialNumber`` and
     ``specVersion``. The attest job would otherwise fail only after the E2E
-    suite, with the build provenance already signed.
+    suite.
 musl-vex
     Writes an OpenVEX document that marks each ``--musl-cve`` as fixed in the
     linked musl. Scanners ignore the SBOM's pedigree, so without this
