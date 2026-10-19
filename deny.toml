@@ -49,7 +49,21 @@ yanked = "deny"
 #       # expires: 2027-01-31
 #       { id = "RUSTSEC-0000-0000", reason = "dev-only, never shipped" },
 #   ]
-ignore = []
+
+# zvariant, zbus_names and zvariant_derive are unmaintained with no fixed
+# versions published; they are pulled in transitively by zbus. Re-evaluate
+# by the expiry below.
+ignore = [
+    # zvariant is unmaintained; no fixed version is published.
+    # expires: 2027-01-31
+    { id = "RUSTSEC-2026-0370", reason = "zvariant unmaintained, no fixed version published" },
+    # zbus_names is unmaintained; no fixed version is published.
+    # expires: 2027-01-31
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names unmaintained, no fixed version published" },
+    # zvariant_derive is unmaintained; no fixed version is published.
+    # expires: 2027-01-31
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive unmaintained, no fixed version published" },
+]
 
 # =============================================================================
 # LICENSES
