@@ -184,7 +184,7 @@ fn gate_version(entry: &SupportedDistro, version_id: Option<&str>) -> FamilySupp
             "{} {raw} is not a release NAILS has been tested on (tested: {} {}). NAILS runs \
              on it, but a change in this release can break the session or leave a trace \
              NAILS does not know about. Use a tested release, or run `nails rehearse` on this \
-             machine before you rely on it.",
+             computer before you rely on it.",
             entry.label,
             entry.label,
             releases(entry.validated),
