@@ -179,101 +179,17 @@ jobs:
 
   # The SBOM is written and checked before the E2E suite starts: an SBOM
   # that actions/attest would refuse stops the run within minutes, before the
-  # suite and before anything is attested. It needs no build.
+  # suite and before anything is attested. It needs no build. ci.yml runs the
+  # same workflow on main and on pull requests that change what the SBOM is
+  # made from, so such a problem shows before a tag.
   sbom:
     name: SBOM
     needs: version
-    runs-on: ubuntu-26.04
-    timeout-minutes: 15
     permissions:
       contents: read
-
-    steps:
-      - name: Checkout the tagged commit
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-
-      # Only to read the musl of the pinned nixpkgs; nothing is built here.
-      - name: Set up Nix
-        uses: ./.github/actions/setup-nix
-        with:
-          cache: 'false'
-
-      # musl is linked statically, so the SBOM names it. The build links the
-      # musl of the nixpkgs revision that flake.lock pins, not the copy that
-      # ships with the Rust toolchain, and fails if the link took libc.a from
-      # anywhere else (flake.nix); .#nails.libc is that musl. nixpkgs names a
-      # security patch after the CVE it fixes, so the CVE IDs in the patch
-      # names are the fixes the SBOM records on top of the release version.
-      - name: Read the musl version and its security patches
-        id: musl
-        run: |
-          version=$(nix eval --raw .#nails.libc.version --option accept-flake-config false)
-          patches=$(nix eval --raw .#nails.libc.patches --option accept-flake-config false \
-            --apply 'ps: builtins.concatStringsSep "\n" (map (p: baseNameOf (toString p)) ps)')
-          cves=$(grep -oE 'CVE-[0-9]{4}-[0-9]{4,}' <<< "$patches" | sort -u | paste -sd ' ' -) || true
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "cves=$cves" >> "$GITHUB_OUTPUT"
-          echo "musl $version, patched for: ${cves:-nothing}"
-
-      # No arguments: rustup installs the channel from rust-toolchain.toml.
-      - name: Install Rust toolchain
-        run: rustup toolchain install
-
-      # Prebuilt binaries, checked against the digests that install-action
-      # pins, instead of tools compiled or downloaded unchecked here.
-      - name: Install cargo-cyclonedx and cyclonedx-cli
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
-        with:
-          tool: cargo-cyclonedx@0.5.9,cyclonedx@0.33.1
-
-      # Only the nails binary, resolved for the release target without
-      # build-time dependencies; the commit time keeps the file reproducible.
-      # With it, cargo-cyclonedx leaves out its random serial number, which
-      # actions/attest requires; sbom-libc sets one derived from the release.
-      - name: Generate the SBOM
-        env:
-          VERSION: ${{ needs.version.outputs.version }}
-          MUSL_VERSION: ${{ steps.musl.outputs.version }}
-          MUSL_CVES: ${{ steps.musl.outputs.cves }}
-          TAG: ${{ needs.version.outputs.tag }}
-        run: |
-          mkdir "$RUNNER_TEMP/release-sbom"
-          cargo metadata --locked --format-version 1 > /dev/null
-          SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) cargo cyclonedx \
-            --manifest-path nails-cli/Cargo.toml --format json --spec-version 1.5 \
-            --target x86_64-unknown-linux-musl --describe binaries --no-build-deps
-          cve_args=()
-          for cve in $MUSL_CVES; do cve_args+=(--musl-cve "$cve"); done
-          python3 -m ci.release sbom-libc --sbom nails-cli/nails_bin.cdx.json \
-            --version "$VERSION" --musl-version "$MUSL_VERSION" "${cve_args[@]}" \
-            --repo "$GITHUB_REPOSITORY" --tag "$TAG" \
-            --output "$RUNNER_TEMP/release-sbom/sbom.cdx.json"
-          # Scanners ignore the SBOM's record of the patches; this document
-          # tells them (grype --vex) that the patched CVEs are fixed.
-          python3 -m ci.release musl-vex --musl-version "$MUSL_VERSION" "${cve_args[@]}" \
-            --repo "$GITHUB_REPOSITORY" --tag "$TAG" --epoch "$(git log -1 --format=%ct)" \
-            --output "$RUNNER_TEMP/release-sbom/musl.openvex.json"
-
-      # actions/attest takes the SBOM for CycloneDX only with a bomFormat, a
-      # serialNumber and a specVersion; without one, the attest job fails
-      # after it has signed the build provenance.
-      - name: Check that actions/attest accepts the SBOM
-        run: python3 -m ci.release sbom-check --sbom "$RUNNER_TEMP/release-sbom/sbom.cdx.json"
-
-      - name: Validate the SBOM
-        run: |
-          cyclonedx validate --input-file "$RUNNER_TEMP/release-sbom/sbom.cdx.json" \
-            --input-format json --input-version v1_5 --fail-on-errors
-
-      - name: Upload the SBOM and the VEX document
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
-        with:
-          name: release-sbom
-          path: ${{ runner.temp }}/release-sbom/
-          if-no-files-found: error
-          retention-days: 14
+    uses: ./.github/workflows/sbom.yml
+    with:
+      tag: ${{ needs.version.outputs.tag }}
 
   # GitHub refuses a call that grants less than any job of the called workflow
   # declares. e2e.yml's report-status job declares issues: write, but it runs

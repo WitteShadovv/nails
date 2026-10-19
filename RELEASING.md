@@ -35,7 +35,8 @@ drafts the GitHub release. Publishing the draft is the only manual step after th
    `## [X.Y.Z] - YYYY-MM-DD` and open a new, empty `## [Unreleased]` above it. That section
    becomes the release notes word for word, so write it for users.
 4. **Merge** the pull request into `main` once `gate` and `e2e-result` are green.
-5. **Wait for the runs on `main`.** The push of the merge commit starts `ci.yml` and `e2e.yml`.
+5. **Wait for the runs on `main`.** The push of the merge commit starts `ci.yml`, whose `sbom`
+   job writes and checks the SBOM as the release run will, and `e2e.yml`.
    On `main`, `e2e.yml` runs the whole suite (mode `all`) on the runners the release run uses,
    while the pull request's `e2e-result` may have covered only the affected tests. Tag only once
    both runs are green: a test that fails there costs a fix on `main`, one that fails in the

@@ -49,6 +49,7 @@ jobs:
       nix: ${{ steps.filter.outputs.nix }}
       workflows: ${{ steps.filter.outputs.workflows }}
       docs: ${{ steps.filter.outputs.docs }}
+      sbom: ${{ steps.filter.outputs.sbom }}
 
     steps:
       - name: Checkout code
@@ -421,10 +422,20 @@ jobs:
       - name: Check the documentation
         run: nix shell --inputs-from . nixpkgs#lychee --command ./scripts/docs-check.sh
 
+  # The release SBOM and VEX document, written and checked by the workflow
+  # release.yml calls, but never attested. An SBOM that actions/attest would
+  # refuse fails here, on main or on the pull request, instead of in a
+  # release run, where the tag cannot be fixed any more.
+  sbom:
+    name: sbom
+    needs: changes
+    if: needs.changes.outputs.sbom == 'true'
+    uses: ./.github/workflows/sbom.yml
+
   # The one required status. A job the path filter skipped counts as passed.
   gate:
     name: gate
-    needs: [changes, lint, rust, shuffle, deps, privileged-mounts, nix-build, lint-misc, docs-check]
+    needs: [changes, lint, rust, shuffle, deps, privileged-mounts, nix-build, lint-misc, docs-check, sbom]
     if: always()
     runs-on: ubuntu-26.04
     timeout-minutes: 5

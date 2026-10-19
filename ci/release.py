@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Check a release tag against its tree, write its notes, complete its SBOM.
 
-release.yml runs this from a checkout of the tag. Four subcommands:
+release.yml runs ``check`` from a checkout of the tag. sbom.yml, which
+release.yml and ci.yml call, runs the SBOM subcommands from a checkout of the
+commit it writes the SBOM of. Five subcommands:
 
 check
     Fails unless the tag is ``v`` plus the workspace version, that version is
@@ -10,6 +12,13 @@ check
     (that section and a pointer to docs/verify-release.md) to ``--notes`` and
     prints ``version=`` and ``prerelease=`` lines, the format of
     ``$GITHUB_OUTPUT``.
+sbom-release
+    Prints the ``version=`` and ``tag=`` lines of the release an SBOM of the
+    tree is written for: the workspace version and ``v`` plus it. A release
+    passes its tag, which must be that one and, as for ``check``, not a
+    ``-dev`` version. Without a tag, as in ci.yml, a ``-dev`` version is
+    accepted: such a run writes the SBOM that a tag of the tree would get,
+    and publishes nothing.
 sbom-libc
     Adds musl to the CycloneDX SBOM of the nails binary. cargo-cyclonedx only
     sees crates, but the release binary links musl statically, so the C
@@ -32,7 +41,9 @@ musl-vex
     document they report the patched CVEs as open (``grype --vex`` reads it).
 
 ``check`` runs before the first build and ``sbom-check`` before the E2E
-suite, so a mistake costs one short job instead of a release run.
+suite, so a mistake costs one short job instead of a release run. ci.yml runs
+the SBOM steps, ``sbom-check`` among them, on main and on pull requests too,
+so a broken SBOM shows before a tag is pushed.
 
 Exit status: 0 on success, 1 when a check fails, 2 when an input is missing
 or unreadable.
@@ -228,6 +239,22 @@ def check_release(source: Path, tag: str) -> tuple[Release, str]:
             f"--workspace' and commit Cargo.lock with the {release.version} bump"
         )
     return release, changelog_section(changelog, release.version)
+
+
+def sbom_release(cargo_toml: str, tag: str | None = None) -> tuple[str, str]:
+    """Return the version and the tag of the release an SBOM is written for.
+
+    Both follow from the workspace version. A release's ``tag`` must be ``v``
+    plus that version, which must not be a ``-dev`` version, as for
+    ``check_version``. Without a tag, a ``-dev`` version is accepted: the SBOM
+    is then the one that a tag of the tree would get, and is never published.
+    """
+    version = workspace_version(cargo_toml)
+    if tag is not None:
+        return version, check_version(tag, version).tag
+    if not _VERSION.fullmatch(version):
+        raise ReleaseError(f"workspace version {version!r} is not X.Y.Z[-pre]")
+    return version, f"v{version}"
 
 
 def _check_musl(musl_version: str, cves: Sequence[str]) -> None:
@@ -442,6 +469,22 @@ def _check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _sbom_release(args: argparse.Namespace) -> int:
+    try:
+        cargo_toml = (args.source / "Cargo.toml").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as err:
+        raise OSError(f"cannot read the workspace manifest: {err}") from err
+    version, tag = sbom_release(cargo_toml, args.tag)
+    print(f"version={version}")
+    print(f"tag={tag}")
+    if args.tag is None:
+        note = f"no tag given: the SBOM that {tag} would get, nails {version}"
+    else:
+        note = f"{tag}: the SBOM of nails {version}"
+    print(note, file=sys.stderr)
+    return 0
+
+
 def _sbom_libc(args: argparse.Namespace) -> int:
     if args.tag != f"v{args.version}":
         raise ReleaseError(
@@ -503,6 +546,17 @@ def main(argv: list[str] | None = None) -> int:
         "--notes", type=Path, required=True, help="where to write the notes"
     )
     check.set_defaults(run=_check)
+
+    named = sub.add_parser(
+        "sbom-release", help="print the version and tag the SBOM is written for"
+    )
+    named.add_argument(
+        "--tag", help="the release tag, v<version>; omit it for a run without one"
+    )
+    named.add_argument(
+        "--source", type=Path, default=Path("."), help="checkout of the tree"
+    )
+    named.set_defaults(run=_sbom_release)
 
     libc = sub.add_parser(
         "sbom-libc", help="add musl and the serial number to the SBOM"

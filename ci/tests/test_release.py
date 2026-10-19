@@ -311,6 +311,76 @@ class CheckCommandTest(unittest.TestCase):
         self.assertIn("cannot read the release inputs", err)
 
 
+class SbomReleaseTest(unittest.TestCase):
+    def test_release_tag_names_the_workspace_version(self) -> None:
+        manifest = CARGO_TOML.format(version="0.3.0-rc.3")
+        self.assertEqual(
+            release.sbom_release(manifest, "v0.3.0-rc.3"),
+            ("0.3.0-rc.3", "v0.3.0-rc.3"),
+        )
+
+    def test_tag_of_another_version_fails(self) -> None:
+        manifest = CARGO_TOML.format(version="0.3.0")
+        for tag in ("v0.3.1", "0.3.0", ""):
+            with self.subTest(tag=tag):
+                with self.assertRaisesRegex(
+                    ReleaseError, "the tag for this tree is v0.3.0"
+                ):
+                    release.sbom_release(manifest, tag)
+
+    def test_tag_of_a_dev_version_fails(self) -> None:
+        manifest = CARGO_TOML.format(version="0.4.0-dev")
+        with self.assertRaisesRegex(ReleaseError, "never released"):
+            release.sbom_release(manifest, "v0.4.0-dev")
+
+    def test_without_a_tag_the_workspace_version_names_the_tag(self) -> None:
+        for version in ("0.3.0", "0.3.0-rc.2", "0.4.0-dev"):
+            with self.subTest(version=version):
+                manifest = CARGO_TOML.format(version=version)
+                self.assertEqual(
+                    release.sbom_release(manifest), (version, f"v{version}")
+                )
+
+    def test_malformed_workspace_version_fails_without_a_tag(self) -> None:
+        for version in ("0.4", "0.4.0+build.1"):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ReleaseError, "is not X.Y.Z"):
+                    release.sbom_release(CARGO_TOML.format(version=version))
+
+    def run_command(self, version: str | None, *argv: str) -> tuple[int, str, str]:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        if version is not None:
+            (root / "Cargo.toml").write_text(CARGO_TOML.format(version=version))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = release.main(["sbom-release", "--source", str(root), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_command_prints_github_output_lines(self) -> None:
+        code, out, err = self.run_command("0.3.0-rc.3", "--tag", "v0.3.0-rc.3")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "version=0.3.0-rc.3\ntag=v0.3.0-rc.3\n")
+        self.assertIn("v0.3.0-rc.3: the SBOM of nails 0.3.0-rc.3", err)
+
+    def test_command_without_a_tag_names_the_tag_of_the_tree(self) -> None:
+        code, out, err = self.run_command("0.4.0-dev")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "version=0.4.0-dev\ntag=v0.4.0-dev\n")
+        self.assertIn("no tag given: the SBOM that v0.4.0-dev would get", err)
+
+    def test_command_refuses_the_tag_of_another_version(self) -> None:
+        code, out, err = self.run_command("0.3.0", "--tag", "v0.3.1")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("does not match the workspace version", err)
+
+    def test_command_without_a_manifest_is_exit_2(self) -> None:
+        code, out, err = self.run_command(None)
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("cannot read the workspace manifest", err)
+
+
 class MuslTest(unittest.TestCase):
     def test_musl_becomes_a_component_and_a_dependency_of_nails(self) -> None:
         bom = sbom()

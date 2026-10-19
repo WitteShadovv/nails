@@ -44,6 +44,13 @@ FILTERS: dict[str, re.Pattern[str]] = {
     "workflows": re.compile(r"^(\.github/|ci/|scripts/|pyproject\.toml$)|\.sh$"),
     # The Markdown docs and the checker that lints them.
     "docs": re.compile(r"\.md$|^scripts/docs-check\.sh$"),
+    # What the release SBOM is made from and what makes it: the manifests and
+    # the lock of the binary's crates, the toolchain, the flake that pins
+    # musl, ci/release.py and the two workflows that run it.
+    "sbom": re.compile(
+        r"^(Cargo\.lock|(nails-[^/]+/)?Cargo\.toml|rust-toolchain\.toml|flake\.(nix|lock)"
+        r"|ci/release\.py|\.github/workflows/(release|sbom)\.yml)$"
+    ),
 }
 
 # A change to one of these can alter any job, so it runs them all.

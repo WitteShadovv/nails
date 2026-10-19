@@ -11,6 +11,7 @@ The primary CI workflow performs:
 - the dependency policy over the shipped dependency graph (`just deny`): bans, licenses and sources on every run; RustSec advisories and the `deny.toml` ignore expiry check when `Cargo.toml`, `Cargo.lock` or `deny.toml` change
 - the test suite with an enforced line-coverage threshold, the doctests and the privileged real-overlayfs tests, which support security-sensitive change control
 - the canonical Nix build of `.#nails-release` with an archive smoke test
+- the release SBOM and the VEX document, written and checked by `sbom.yml` as a release writes and checks them, on every push to `main` and on pull requests that change what they are made from; nothing is attested there
 
 ### Weekly (`.github/workflows/scheduled.yml`)
 
@@ -65,6 +66,7 @@ Without `--fail-on-errors`, `cyclonedx validate` reports problems but still exit
 | Source | Asset | Notes |
 |---|---|---|
 | Published GitHub releases and prereleases | `sbom.cdx.json`, `musl.openvex.json` | Produced and attested by `release.yml` |
+| `ci.yml` runs with an `sbom` job | `sbom.cdx.json`, `musl.openvex.json` in the `release-sbom` artifact | Written for `v` plus the workspace version and checked as a release checks them; never attested or published |
 
 ### Example downstream use
 
