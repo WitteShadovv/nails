@@ -358,8 +358,9 @@ jobs:
   # the suite still passes marks a gap no coverage percentage would reveal.
   # Heavy, so it runs weekly rather than on the gate, and the full report is
   # uploaded as an artifact for triage; a surviving mutant is to be read, not a
-  # reason to fail the job. cargo-mutants also flags surviving mutants as
-  # warning annotations on the run.
+  # reason to fail the job. The job summary lists every survivor; cargo-mutants
+  # also flags them as warning annotations, of which GitHub shows only a
+  # limited number.
   mutants:
     name: Mutation testing
     needs: tasks
@@ -382,9 +383,10 @@ jobs:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
-      # `just mutants` scopes the run to the state machine and fails only when
+      # `just mutants` scopes the run to the state machine. It fails when
       # cargo-mutants itself does, for example when the tests already fail
-      # without a mutation.
+      # without a mutation, and when no mutant was caught, since such a run
+      # proves nothing.
       - name: Mutate the state machine
         run: just mutants
 

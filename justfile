@@ -268,10 +268,12 @@ stress iterations="10":
 
 # Mutate the state machine module and check the tests catch each mutation.
 # Heavy, so it runs weekly in scheduled.yml rather than on the gate. The report
-# goes to target/mutants/mutants.out. A mutant the tests miss (exit code 2) or
-# one that makes them time out (3) is a finding to triage there, not a failed
-# run, so the recipe succeeds. Any other failure of cargo-mutants, such as
-# tests that already fail without a mutation, still fails it.
+# goes to target/mutants/mutants.out, and in CI the counts and every mutant
+# that survived or timed out also go to the job summary. Such mutants (exit
+# codes 2 and 3) are findings to triage, not a failed run, so the recipe
+# succeeds. Any other failure of cargo-mutants, such as tests that already
+# fail without a mutation, still fails it, and so does a run that caught no
+# mutant at all.
 mutants:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -283,7 +285,36 @@ mutants:
         -f 'nails-base/src/state/**/*.rs' \
         --output target/mutants || status=$?
     case "$status" in
-        0) ;;
-        2 | 3) echo "Some mutants survived or timed out; see target/mutants/mutants.out." ;;
+        0 | 2 | 3) ;;
         *) exit "$status" ;;
     esac
+    out=target/mutants/mutants.out
+    caught=$(wc -l < "$out/caught.txt")
+    missed=$(wc -l < "$out/missed.txt")
+    timed_out=$(wc -l < "$out/timeout.txt")
+    unviable=$(wc -l < "$out/unviable.txt")
+    result="$caught caught, $missed missed, $timed_out timed out, $unviable unviable"
+    echo "Mutants: $result (report in $out)"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        # cargo-mutants flags missed mutants as warning annotations, but GitHub
+        # shows only a limited number per step, so the summary lists them all.
+        section() {
+            if [ -s "$out/$2.txt" ]; then
+                printf '\n### %s\n\n```text\n' "$1"
+                cat "$out/$2.txt"
+                printf '```\n'
+            fi
+        }
+        {
+            printf '## Mutation testing\n\n%s.\n' "$result"
+            section "Missed" missed
+            section "Timed out" timeout
+        } >> "$GITHUB_STEP_SUMMARY"
+    fi
+    # cargo-mutants also exits 0 when the package or file filter matches no
+    # code and when no mutant builds. A run that caught no mutant, for those
+    # reasons or because the tests never fail on one, proves nothing.
+    if [ "$caught" -eq 0 ]; then
+        echo "No mutant was caught, so this run proves nothing; see $out" >&2
+        exit 1
+    fi
