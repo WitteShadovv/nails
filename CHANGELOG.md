@@ -13,6 +13,10 @@ of this changelog for that version becomes the release notes word for word, and
 
 ## [Unreleased]
 
+### Changed
+
+- The release binary is built with Rust 1.99.1; 0.3.0-rc.2 was built with 1.93.0.
+
 ### Fixed
 
 - The attach gate and the storage checks resolve an `/etc/fstab` or `/etc/crypttab` entry that
