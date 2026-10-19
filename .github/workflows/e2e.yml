@@ -9,7 +9,8 @@ name: E2E
 #                         substituted from the binary cache
 #   nightly schedule      execute: every test driver runs, cache or not,
 #                         durations are refreshed, the performance tests run
-#                         without blocking and red runs open an issue
+#                         without blocking and red runs open an issue; for
+#                         next, next-nightly.yml dispatches such a run
 #   dispatch or call      any mode on any runner (`runner` is runs-on JSON);
 #                         release.yml calls it with mode all for a tag.
 #                         `tests` limits the run to the named tests and
@@ -41,6 +42,12 @@ on:
         type: choice
         default: all
         options: [affected, ci, all, execute]
+      report-status:
+        description: >-
+          Report the outcome in the CI red issue of main or next, as their
+          unattended runs do; the nightly run of next sets it
+        type: boolean
+        default: false
       runner:
         description: >-
           runs-on for the shards, as JSON: "ubuntu-26.04" or a label list such
@@ -500,13 +507,15 @@ jobs:
           fi
           echo "Every E2E shard passed."
 
-  # Pushes to main and next and nightly runs are unattended: a red one opens
-  # or comments on the 'CI red: E2E' issue, 'CI red: E2E (next)' for next,
-  # and a later green run on that branch closes it.
+  # Pushes to main and next and the nightly runs of both are unattended: a
+  # red one opens or comments on the 'CI red: E2E' issue, 'CI red: E2E
+  # (next)' for next, and a later green run on that branch closes it. The
+  # nightly run of next is a dispatch from next-nightly.yml with report-status
+  # set; any run dispatched on main or next with it reports the same way.
   report-status:
     name: Report status
     needs: [plan, shard]
-    if: ${{ !cancelled() && (github.event_name == 'schedule' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next'))) }}
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || ((github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.report-status)) && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next'))) }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:

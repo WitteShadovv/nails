@@ -9,6 +9,7 @@ name: Distro E2E
 # 'distro-e2e' label, and on manual dispatch or a reusable call. The runner is
 # an input, because each VM needs KVM; a hosted ubuntu-26.04 runner exposes
 # /dev/kvm, and a self-hosted KVM runner is selected by passing its label list.
+# The nightly run of next is a dispatch from next-nightly.yml.
 #
 # One smoke scenario per distribution runs by default; the whole matrix is kept
 # at or below eight parallel jobs (distributions times their shards), planned by
