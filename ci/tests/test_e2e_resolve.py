@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from ci.e2e import resolve
+from ci.e2e import evaluate, resolve
 from ci.e2e.metadata import Metadata, parse_metadata
 
 METADATA = Metadata(
@@ -113,46 +113,63 @@ class ResolveAffectedTest(unittest.TestCase):
             self.assertEqual(resolve.resolve_affected(METADATA, "HEAD~1"), ["a"])
 
 
+# What drv_paths gives per flake reference: the drvPaths, or an error to raise.
+Sides = dict[str, dict[str, str] | Exception]
+
+
 class ChangedLeafTestsTest(unittest.TestCase):
-    def test_compares_one_evaluation_per_side(self) -> None:
-        sides = {
-            ".": {
-                "a": "/nix/store/a1.drv",
-                "b": "/nix/store/b1.drv",
-                "c": "/nix/store/c.drv",
-            },
-            "git+file:///repo?rev=abc": {
-                "a": "/nix/store/a1.drv",
-                "b": "/nix/store/b0.drv",
-            },
-        }
-        with (
-            mock.patch.object(
-                resolve, "base_flake_ref", return_value="git+file:///repo?rev=abc"
-            ),
-            mock.patch.object(
-                resolve, "drv_paths", side_effect=lambda ref, tests: sides[ref]
-            ) as evaluate,
-        ):
-            changed = resolve.changed_leaf_tests(METADATA, "main")
-        # b changed and c is new at this revision.
-        self.assertEqual(changed, ["b", "c"])
-        self.assertEqual(evaluate.call_count, 2)
+    BASE_REF = "git+file:///repo?rev=abc"
 
-    def test_a_base_that_does_not_evaluate_changes_everything(self) -> None:
-        def evaluate(ref, tests):
-            if ref == ".":
-                return {test: f"/nix/store/{test}.drv" for test in tests}
-            raise subprocess.CalledProcessError(1, ["nix"], stderr="error: boom\n")
+    def changed(self, sides: Sides) -> tuple[list[str], mock.MagicMock, str]:
+        """changed_leaf_tests with the tests evaluated per side."""
+
+        def evaluate(ref: str, tests: list[str], workers: int) -> dict[str, str]:
+            self.assertGreaterEqual(workers, 1)
+            result = sides[ref]
+            if isinstance(result, Exception):
+                raise result
+            return result
 
         with (
-            mock.patch.object(resolve, "base_flake_ref", return_value="old"),
-            mock.patch.object(resolve, "drv_paths", side_effect=evaluate),
+            mock.patch.object(resolve, "base_flake_ref", return_value=self.BASE_REF),
+            mock.patch.object(resolve, "drv_paths", side_effect=evaluate) as drv_paths,
             contextlib.redirect_stderr(io.StringIO()) as err,
         ):
-            changed = resolve.changed_leaf_tests(METADATA, "main")
+            changed = resolve.changed_leaf_tests(METADATA, "main", workers=4)
+        return changed, drv_paths, err.getvalue()
+
+    def test_compares_one_evaluation_per_side(self) -> None:
+        changed, drv_paths, _err = self.changed(
+            sides={
+                ".": {
+                    "a": "/nix/store/a1.drv",
+                    "b": "/nix/store/b1.drv",
+                    "c": "/nix/store/c.drv",
+                },
+                self.BASE_REF: {"a": "/nix/store/a1.drv", "b": "/nix/store/b0.drv"},
+            },
+        )
+        # b changed and c is new at this revision.
+        self.assertEqual(changed, ["b", "c"])
+        self.assertEqual(drv_paths.call_count, 2)
+        # The two sides share the processes.
+        self.assertEqual(sum(call.args[2] for call in drv_paths.call_args_list), 4)
+
+    def test_a_base_that_does_not_evaluate_changes_everything(self) -> None:
+        boom = subprocess.CalledProcessError(1, ["nix"], stderr="error: boom\n")
+        changed, _drv_paths, err = self.changed(
+            sides={".": {"a": "/nix/store/a.drv"}, self.BASE_REF: boom}
+        )
         self.assertEqual(changed, ["a", "b", "c"])
-        self.assertIn("error: boom", err.getvalue())
+        self.assertIn("main does not evaluate", err)
+        self.assertIn("error: boom", err)
+
+    def test_this_revision_must_evaluate(self) -> None:
+        boom = subprocess.CalledProcessError(1, ["nix"], stderr="x\nerror: broken\n")
+        with self.assertRaisesRegex(
+            resolve.ResolveError, "^this revision does not evaluate: error: broken$"
+        ):
+            self.changed(sides={".": boom, self.BASE_REF: {}})
 
 
 class FlakeRefTest(unittest.TestCase):
@@ -177,24 +194,26 @@ class FlakeRefTest(unittest.TestCase):
             with self.assertRaisesRegex(resolve.ResolveError, "not a commit"):
                 resolve.base_flake_ref("nope", Path("/repo"))
 
-    def test_drv_paths_evaluates_every_test_in_one_call(self) -> None:
+    def test_drv_paths_leaves_out_tests_missing_at_the_revision(self) -> None:
         completed = subprocess.CompletedProcess(
             [], 0, stdout='{"a": "/nix/store/a.drv"}'
         )
         with mock.patch.object(
-            resolve.subprocess, "run", return_value=completed
+            evaluate.subprocess, "run", return_value=completed
         ) as nix:
-            paths = resolve.drv_paths(".", ["a", "gone"])
+            paths = resolve.drv_paths("git+file:///r?rev=1", ["a", "gone"], 1)
         self.assertEqual(paths, {"a": "/nix/store/a.drv"})
         command = nix.call_args.args[0]
         self.assertEqual(
-            command[:4], ["nix", "eval", "--json", f".#{resolve.E2E_ATTR}"]
+            command[:4],
+            ["nix", "eval", "--json", f"git+file:///r?rev=1#{resolve.E2E_ATTR}"],
         )
         self.assertIn("''[\"a\", \"gone\"]''", command[5])
+        self.assertIn("builtins.hasAttr", command[5])
 
     def test_drv_paths_refuses_names_that_are_not_plain(self) -> None:
-        with self.assertRaisesRegex(resolve.ResolveError, "odd test name"):
-            resolve.drv_paths(".", ["a''; x"])
+        with self.assertRaisesRegex(evaluate.EvalError, "odd test name"):
+            resolve.drv_paths(".", ["a''; x"], 1)
 
 
 class ResolveCommandTest(unittest.TestCase):

@@ -207,6 +207,36 @@ class RunOptionsTest(unittest.TestCase):
         self.assertIn("FLAKY", text)
         self.assertIn("::warning title=FLAKY E2E test::a", out.getvalue())
 
+    def run_cli(self, runner: str, *args: str) -> dict[str, object]:
+        """The keyword arguments `run` passes to run_build or run_drivers."""
+        captured: dict[str, object] = {}
+
+        def fake(tests, *_args, **kwargs):
+            captured.update(kwargs)
+            return 0
+
+        with (
+            mock.patch.object(cli, "load_metadata", return_value=METADATA),
+            mock.patch.object(cli.run, runner, side_effect=fake),
+        ):
+            self.assertEqual(cli.main(["run", "a", *args]), 0)
+        return captured
+
+    def test_evaluation_options_reach_both_ways_of_running(self) -> None:
+        for extra, runner in (([], "run_build"), (["--execute"], "run_drivers")):
+            with self.subTest(runner=runner):
+                captured = self.run_cli(
+                    runner, "--eval-batch", "2", "--eval-jobs", "3", *extra
+                )
+                self.assertEqual(captured["eval_batch"], 2)
+                self.assertEqual(captured["eval_workers"], 3)
+
+    def test_eval_jobs_are_sized_from_the_host_by_default(self) -> None:
+        with mock.patch.object(cli.evaluate, "auto_workers", return_value=7):
+            captured = self.run_cli("run_build")
+        self.assertIsNone(captured["eval_batch"])
+        self.assertEqual(captured["eval_workers"], 7)
+
     def test_negative_retries_are_rejected(self) -> None:
         with contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit) as caught:

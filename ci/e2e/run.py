@@ -30,6 +30,8 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import evaluate
+
 # nix activity type for a derivation build (`Logger::Fields`, actBuild).
 ACT_BUILD = 105
 _NIX_PREFIX = "@nix "
@@ -179,50 +181,27 @@ def write_durations(
             handle.write(json.dumps(record) + "\n")
 
 
-def _eval_drv(attr: str) -> str:
-    return subprocess.run(
-        ["nix", "eval", "--raw", f"{attr}.drvPath"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-
-
-def _eval_batch(attr_prefix: str, tests: Sequence[str]) -> dict[str, str]:
-    """Evaluate the derivation paths of ``tests`` in one ``nix eval`` process."""
-    names = " ".join(json.dumps(test) for test in tests)
-    apply = (
-        "e: builtins.listToAttrs (map (n: { name = n; value = e.${n}.drvPath; }) "
-        f"[ {names} ])"
-    )
-    completed = subprocess.run(
-        ["nix", "eval", "--json", attr_prefix, "--apply", apply],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(completed.stdout)
-    return {test: str(payload[test]) for test in tests}
-
-
 def eval_drvs(
-    tests: Sequence[str], attr_prefix: str, batch_size: int | None
+    tests: Sequence[str],
+    attr_prefix: str,
+    batch_size: int | None,
+    workers: int | None = None,
 ) -> dict[str, str]:
-    """Map each test to its ``.drv`` path, evaluating in bounded batches.
+    """Map each test to its ``.drv`` path, evaluating in parallel batches.
 
-    Every test evaluates its own NixOS system, and the Nix evaluator keeps all
-    of that memory until it exits, so evaluating a whole group in the process
-    that builds it is what ran a 15 GB host out of memory. Each batch runs in
-    its own short-lived ``nix eval``, so peak evaluation memory is that of
-    ``batch_size`` tests; ``None`` evaluates every test in a process of its
-    own (the slowest and leanest setting).
+    ``batch_size`` tests go to one ``nix eval`` process, and at most
+    ``workers`` processes run at once (by default as many as the host's cores
+    and memory allow); without ``batch_size`` the tests are spread evenly
+    over the processes. See :mod:`ci.e2e.evaluate`.
     """
-    if batch_size is None:
-        return {test: _eval_drv(f"{attr_prefix}.{test}") for test in tests}
-    drvs: dict[str, str] = {}
-    for start in range(0, len(tests), batch_size):
-        drvs.update(_eval_batch(attr_prefix, tests[start : start + batch_size]))
-    return drvs
+    paths = evaluate.evaluate(
+        attr_prefix,
+        tests,
+        "t: t.drvPath",
+        workers=workers or evaluate.auto_workers(),
+        batch_size=batch_size,
+    )
+    return {test: str(drv) for test, drv in paths.items()}
 
 
 # Host memory one running test can take: a 2 GiB guest (4 GiB for the
@@ -347,12 +326,13 @@ def run_build(
     log_dir: Path | None = None,
     report: Callable[[Sequence[str], Mapping[str, TestOutcome]], None] | None = None,
     eval_batch: int | None = None,
+    eval_workers: int | None = None,
 ) -> int:
     """Build every resolved test in one ``nix build`` and record outcomes.
 
     The derivations are evaluated first, ``eval_batch`` tests per ``nix eval``
-    process (see :func:`eval_drvs`), and then built by path with at most
-    ``jobs`` VM tests at a time.
+    process and ``eval_workers`` processes at once (see :func:`eval_drvs`),
+    and then built by path with at most ``jobs`` VM tests at a time.
 
     Failed tests are rebuilt up to ``retries`` more times (Nix does not cache a
     failure); a test that passes on a retry is a flaky pass. Returns 0 when
@@ -363,7 +343,7 @@ def run_build(
     """
     if not tests:
         return 0
-    test_to_drv = eval_drvs(tests, attr_prefix, eval_batch)
+    test_to_drv = eval_drvs(tests, attr_prefix, eval_batch, eval_workers)
     drv_to_test = {drv: test for test, drv in test_to_drv.items()}
 
     status, outcomes = _build_once(tests, drv_to_test, jobs, clock)
@@ -418,14 +398,44 @@ def _tail(path: Path, count: int) -> str:
     return "\n".join(lines[-count:])
 
 
-def _build_driver(attr: str) -> Path:
+def build_drivers(
+    tests: Sequence[str],
+    attr_prefix: str,
+    batch_size: int | None = None,
+    workers: int | None = None,
+) -> dict[str, Path]:
+    """Build the driver of every test and return each one's store path.
+
+    The drivers are evaluated in parallel batches like the tests themselves
+    (see :func:`eval_drvs`), then built in one ``nix build``, which builds
+    what they share once and the rest side by side. A driver that does not
+    build is a RunError.
+    """
+    drvs = evaluate.evaluate(
+        attr_prefix,
+        tests,
+        "t: t.driver.drvPath",
+        workers=workers or evaluate.auto_workers(),
+        batch_size=batch_size,
+    )
     completed = subprocess.run(
-        ["nix", "build", "--no-link", "--print-out-paths", f"{attr}.driver"],
-        check=True,
+        ["nix", "build", "--no-link", "--json", *(f"{drv}^*" for drv in drvs.values())],
         capture_output=True,
         text=True,
+        check=False,
     )
-    return Path(completed.stdout.split()[-1])
+    if completed.returncode != 0:
+        detail = completed.stderr.strip().splitlines()[-LOG_TAIL_LINES:]
+        raise RunError(
+            "the test drivers did not build:\n" + "\n".join(detail)
+            if detail
+            else f"the test drivers did not build (exit {completed.returncode})"
+        )
+    outputs = {
+        str(built["drvPath"]): str(built["outputs"]["out"])
+        for built in json.loads(completed.stdout)
+    }
+    return {test: Path(outputs[str(drv)]) for test, drv in drvs.items()}
 
 
 def scratch_base(environ: Mapping[str, str] = os.environ) -> Path:
@@ -519,9 +529,12 @@ def run_drivers(
     retries: int = 0,
     log_dir: Path | None = None,
     report: Callable[[Sequence[str], Mapping[str, TestOutcome]], None] | None = None,
+    eval_batch: int | None = None,
+    eval_workers: int | None = None,
 ) -> int:
     """Execute every test's driver one after another, ignoring cached results.
 
+    The drivers are built first, all at once (see :func:`build_drivers`).
     Logs of failed tests stay in ``log_dir`` (passing logs are removed); the
     retry and flaky rules match ``run_build``. Returns 0 when every test
     passed and 1 otherwise. Before any driver is built, a scratch base that
@@ -537,7 +550,7 @@ def run_drivers(
         print(f"warning: {warning}", file=sys.stderr)
     keep_logs = log_dir is not None
     logs = log_dir if log_dir is not None else Path(tempfile.mkdtemp(prefix="e2e-"))
-    drivers = {test: _build_driver(f"{attr_prefix}.{test}") for test in tests}
+    drivers = build_drivers(tests, attr_prefix, eval_batch, eval_workers)
     outcomes: dict[str, TestOutcome] = {}
     for attempt in range(retries + 1):
         pending = [
