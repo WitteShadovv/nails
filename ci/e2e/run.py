@@ -12,8 +12,11 @@ Two ways to run a set of tests:
 
 A test whose output is missing from the store after its build failed. Failed
 tests can be retried; one that passes on a retry is a flaky pass, reported as
-FLAKY rather than hidden. Durations are written as the same
-``{"test","result","seconds"}`` JSON lines the weight tools read.
+FLAKY rather than hidden. A run that must boot every test (``require_boot``)
+fails a test that was not built in it, because the store or a binary cache
+already held its output, rather than count an earlier run's pass. Durations
+are written as the same ``{"test","result","seconds"}`` JSON lines the weight
+tools read.
 """
 
 from __future__ import annotations
@@ -76,6 +79,9 @@ class TestOutcome:
     result: str
     seconds: int
     flaky: bool = False
+    # A failure only because the test did not boot in a run that requires it:
+    # the store or a binary cache already held its output.
+    not_booted: bool = False
 
 
 def _drv_from_fields(payload: Mapping[str, object]) -> str | None:
@@ -165,7 +171,8 @@ def write_durations(
 
     A test with no recorded outcome was served from the Nix store, so it counts
     as a zero-second pass rather than being dropped. A flaky pass carries
-    ``"flaky": true`` next to the duration of the passing attempt.
+    ``"flaky": true`` next to the duration of the passing attempt, and a test
+    that failed only because it did not boot carries ``"not_booted": true``.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -178,6 +185,8 @@ def write_durations(
             }
             if outcome.flaky:
                 record["flaky"] = True
+            if outcome.not_booted:
+                record["not_booted"] = True
             handle.write(json.dumps(record) + "\n")
 
 
@@ -327,6 +336,7 @@ def run_build(
     report: Callable[[Sequence[str], Mapping[str, TestOutcome]], None] | None = None,
     eval_batch: int | None = None,
     eval_workers: int | None = None,
+    require_boot: bool = False,
 ) -> int:
     """Build every resolved test in one ``nix build`` and record outcomes.
 
@@ -335,11 +345,15 @@ def run_build(
     and then built by path with at most ``jobs`` VM tests at a time.
 
     Failed tests are rebuilt up to ``retries`` more times (Nix does not cache a
-    failure); a test that passes on a retry is a flaky pass. Returns 0 when
-    every test passed, 1 when a test still fails, and the ``nix build`` status
-    when the build failed without a failed test to blame (an evaluation
-    error, for example), which is never retried. Nix is required; this is
-    reached only through the ``run`` subcommand.
+    failure); a test that passes on a retry is a flaky pass. With
+    ``require_boot``, a test that passed without being built, because the
+    store or a binary cache already held its output, fails as not booted, so
+    that a runner whose own Nix settings or store hold an earlier run's pass
+    cannot pass it off as this run's. Returns 0 when every test passed, 1 when
+    a test still fails or did not boot, and the ``nix build`` status when the
+    build failed without a failed test to blame (an evaluation error, for
+    example), which is never retried. Nix is required; this is reached only
+    through the ``run`` subcommand.
     """
     if not tests:
         return 0
@@ -353,6 +367,9 @@ def run_build(
         for test in failed:
             seconds = outcomes.get(test, TestOutcome("fail", 0)).seconds
             outcomes[test] = TestOutcome("fail", seconds)
+    # A test that passed without a build in the attempt that passed it was
+    # served from the store or a binary cache: its pass is an earlier run's.
+    served = {test for test in tests if test not in outcomes}
 
     for _attempt in range(retries):
         if not failed:
@@ -368,7 +385,22 @@ def run_build(
             if test not in still_failed:
                 seconds = retried.get(test, TestOutcome("pass", 0)).seconds
                 outcomes[test] = TestOutcome("pass", seconds, flaky=True)
+                if test not in retried:
+                    served.add(test)
         failed = [test for test in failed if test in still_failed]
+
+    not_booted: list[str] = []
+    if require_boot:
+        not_booted = [test for test in tests if test in served]
+        for test in not_booted:
+            outcomes[test] = TestOutcome("fail", 0, not_booted=True)
+        if not_booted:
+            print(
+                f"{len(not_booted)} test(s) did not boot, because the store or a "
+                "binary cache already held their results, and this run must "
+                f"boot every test: {' '.join(not_booted)}",
+                file=sys.stderr,
+            )
 
     log_paths: dict[str, str] = {}
     for test in failed:
@@ -387,7 +419,7 @@ def run_build(
         # The build failed, yet every test output exists: nothing to retry and
         # nothing to blame, so pass the original status on.
         return status
-    return 1 if failed else 0
+    return 1 if failed or not_booted else 0
 
 
 def _tail(path: Path, count: int) -> str:
@@ -588,6 +620,8 @@ def run_drivers(
 
 
 def _label(outcome: TestOutcome) -> str:
+    if outcome.not_booted:
+        return "FAIL (not booted)"
     if outcome.result == "fail":
         return "FAIL"
     if outcome.flaky:
@@ -654,7 +688,13 @@ def format_annotations(
         outcome = outcomes.get(test)
         if outcome is None:
             continue
-        if outcome.result == "fail":
+        if outcome.not_booted:
+            annotations.append(
+                f"::error title=E2E test not booted::{test} did not boot: the "
+                "store or a binary cache already held its result, and this run "
+                "must boot every test"
+            )
+        elif outcome.result == "fail":
             annotations.append(f"::error title=E2E test failed::{test} failed")
         elif outcome.flaky:
             annotations.append(

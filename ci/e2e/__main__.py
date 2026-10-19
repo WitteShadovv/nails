@@ -200,6 +200,7 @@ def _command_run(args: argparse.Namespace) -> int:
         retries=args.retries,
         log_dir=args.log_dir,
         report=_reporter(args),
+        require_boot=args.require_boot,
     )
 
 
@@ -408,6 +409,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--execute",
         action="store_true",
         help="run each test's driver directly, so cached results do not count",
+    )
+    run_cmd.add_argument(
+        "--require-boot",
+        action="store_true",
+        help="fail a test that the store or a binary cache served instead of a "
+        "build in this run (--execute boots every test anyway)",
     )
     run_cmd.add_argument(
         "--log-dir", type=Path, help="write the log of every failed test here"

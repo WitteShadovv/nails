@@ -195,11 +195,16 @@ class RunBuildTest(unittest.TestCase):
             "elif args[0] == 'build':\n"
             "    with open(os.environ['FAKE_NIX_LOG'], 'a') as log:\n"
             "        log.write('build ' + ' '.join(args) + '\\n')\n"
+            # A test whose name FAKE_NIX_SERVED lists is already in the store: no build.
+            "    served = os.environ.get('FAKE_NIX_SERVED', '').split()\n"
             "    ident = 0\n"
             "    for arg in args:\n"
             "        if arg.startswith('/nix/store/') and arg.endswith('.drv^*'):\n"
-            "            ident += 1\n"
             "            drv = arg.removesuffix('^*')\n"
+            "            name = drv.removeprefix('/nix/store/').removesuffix('.drv')\n"
+            "            if name in served:\n"
+            "                continue\n"
+            "            ident += 1\n"
             "            start = {'action': 'start', 'type': 105, 'id': ident,\n"
             "                     'fields': [drv]}\n"
             "            print('@nix ' + json.dumps(start), file=sys.stderr)\n"
@@ -253,6 +258,31 @@ class RunBuildTest(unittest.TestCase):
         self.assertIn("/nix/store/basic-workflow.drv^*", args)
         self.assertFalse([a for a in args if ".e2e." in a], args)
         self.assertIn("2 test(s), 0 failed", stderr.getvalue())
+
+    def test_a_test_the_store_served_fails_only_a_run_that_must_boot(self) -> None:
+        env = {
+            **os.environ,
+            "PATH": f"{self.bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "FAKE_NIX_LOG": str(self.log),
+            "FAKE_NIX_SERVED": "verify",
+        }
+        for require_boot, expected in ((False, 0), (True, 1)):
+            durations = self.tmp / f"durations-{require_boot}.jsonl"
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+            ):
+                status = run.run_build(
+                    ["basic-workflow", "verify"],
+                    durations_out=durations,
+                    clock=iter([0.0, 30.0]).__next__,
+                    require_boot=require_boot,
+                )
+            self.assertEqual(status, expected, stderr.getvalue())
+            records = [json.loads(line) for line in durations.read_text().splitlines()]
+            self.assertEqual(records[0]["result"], "pass")
+            self.assertEqual(records[1]["result"], "fail" if require_boot else "pass")
+            self.assertEqual(records[1].get("not_booted", False), require_boot)
 
 
 class EvalDrvsTest(unittest.TestCase):
@@ -401,6 +431,7 @@ class RetryTest(unittest.TestCase):
         builds: list[tuple[int, dict[str, run.TestOutcome]]],
         missing: list[list[str]],
         retries: int,
+        require_boot: bool = False,
     ) -> tuple[int, list[dict[str, object]], list[list[str]]]:
         built: list[list[str]] = []
 
@@ -419,6 +450,7 @@ class RetryTest(unittest.TestCase):
                 durations_out=durations,
                 retries=retries,
                 log_dir=self.tmp / "logs",
+                require_boot=require_boot,
             )
         records = [json.loads(line) for line in durations.read_text().splitlines()]
         return status, records, built
@@ -483,6 +515,64 @@ class RetryTest(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(len(built), 1)
 
+    def test_a_run_that_must_boot_fails_a_test_the_store_served(self) -> None:
+        status, records, built = self.run_with(
+            builds=[
+                (
+                    0,
+                    {
+                        "a": run.TestOutcome("pass", 50),
+                        "b": run.TestOutcome("pass", 70),
+                    },
+                )
+            ],
+            missing=[],
+            retries=1,
+            require_boot=True,
+        )
+        self.assertEqual(status, 1)
+        # Building again cannot boot a test whose output the store holds.
+        self.assertEqual(len(built), 1)
+        self.assertEqual(
+            records,
+            [
+                {"test": "a", "result": "pass", "seconds": 50},
+                {"test": "b", "result": "pass", "seconds": 70},
+                {"test": "c", "result": "fail", "seconds": 0, "not_booted": True},
+            ],
+        )
+        self.assertEqual(self.logged, [])
+
+    def test_a_run_that_must_boot_passes_when_every_test_was_built(self) -> None:
+        status, records, _built = self.run_with(
+            builds=[(0, {test: run.TestOutcome("pass", 40) for test in "abc"})],
+            missing=[],
+            retries=1,
+            require_boot=True,
+        )
+        self.assertEqual(status, 0)
+        self.assertTrue(all(r["result"] == "pass" for r in records))
+
+    def test_a_run_that_must_boot_fails_a_retry_the_store_served(self) -> None:
+        # b fails its build; the retry finds its output without building it.
+        status, records, _built = self.run_with(
+            builds=[
+                (
+                    1,
+                    {test: run.TestOutcome("pass", 40) for test in "abc"},
+                ),
+                (0, {}),
+            ],
+            missing=[["b"], []],
+            retries=1,
+            require_boot=True,
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            records[1],
+            {"test": "b", "result": "fail", "seconds": 0, "not_booted": True},
+        )
+
 
 class MissingOutputsTest(unittest.TestCase):
     def test_a_test_with_an_invalid_output_is_missing(self) -> None:
@@ -532,6 +622,17 @@ class ReportTest(unittest.TestCase):
                 "::warning title=FLAKY E2E test::b failed, then passed on retry",
                 "::error title=E2E test failed::c failed",
             ],
+        )
+
+    def test_a_test_that_did_not_boot_is_named_as_such(self) -> None:
+        outcomes = {"d": run.TestOutcome("fail", 0, not_booted=True)}
+        summary = run.format_summary("E2E shard 1/1", ["d"], outcomes)
+        self.assertIn("| `d` | FAIL (not booted) | 0 |", summary)
+        self.assertIn("1 test(s): 0 passed (0 FLAKY), 1 failed.", summary)
+        (annotation,) = run.format_annotations(["d"], outcomes)
+        self.assertTrue(
+            annotation.startswith("::error title=E2E test not booted::d did not boot"),
+            annotation,
         )
 
 
@@ -798,6 +899,24 @@ class RunCommandTest(unittest.TestCase):
         build_mock.assert_called_once()
         # Round-robin without weights puts the even indices on shard 1.
         self.assertEqual(captured["tests"], ["a", "c"])
+        self.assertFalse(build_mock.call_args.kwargs["require_boot"])
+
+    def test_require_boot_reaches_the_build(self) -> None:
+        from ci.e2e import __main__ as cli
+
+        metadata = Metadata(
+            available_targets=["a"],
+            leaf_tests=["a"],
+            groups={"ci": ["a"]},
+            timeouts={"a": 900},
+        )
+        with (
+            mock.patch.object(cli, "load_metadata", return_value=metadata),
+            mock.patch.object(cli.run, "run_build", return_value=0) as build,
+        ):
+            code = cli.main(["run", "a", "--require-boot"])
+        self.assertEqual(code, 0)
+        self.assertTrue(build.call_args.kwargs["require_boot"])
 
     def test_execute_reports_a_base_too_long_for_the_sockets(self) -> None:
         from ci.e2e import __main__ as cli

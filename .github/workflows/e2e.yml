@@ -18,7 +18,9 @@ name: E2E
 #
 # With `cache` false (dispatch or call only), the run neither reads nor writes
 # the project's binary cache: no pass is substituted, so every selected test
-# boots, and every shard compiles nails itself.
+# boots, and every shard compiles nails itself. A test that does not boot all
+# the same, because the runner's own Nix settings or store held its result,
+# fails the shard.
 #
 # Only the nightly (or a dispatched 'execute') run times anything: every other
 # lane leaves the performance group out, unless `tests` names it.
@@ -336,9 +338,16 @@ jobs:
       # this shell to inherit it; a later step would start from the job's
       # limit again. The block after it records the free space where the VM
       # disks could go, the memory and the limits.
+      #
+      # Without the project cache, every test must boot here. setup-nix
+      # configures Nix only on a runner that has none, so a self-hosted
+      # runner keeps its own substituters and its store, which may hold a
+      # pass from an earlier run; --require-boot fails such a test instead of
+      # counting it.
       - name: Run tests
         env:
           MODE: ${{ needs.plan.outputs.mode }}
+          CACHE: ${{ needs.plan.outputs.cache }}
           TESTS: ${{ join(matrix.tests, ' ') }}
           INDEX: ${{ matrix.index }}
           COUNT: ${{ matrix.count }}
@@ -370,6 +379,9 @@ jobs:
           )
           if [ "$MODE" = execute ]; then
             args+=(--execute)
+          fi
+          if [ "$CACHE" = false ]; then
+            args+=(--require-boot)
           fi
           python3 -m ci.e2e "${args[@]}"
 
