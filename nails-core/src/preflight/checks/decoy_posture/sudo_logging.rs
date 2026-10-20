@@ -20,8 +20,11 @@
 use crate::Filesystem;
 use std::path::{Path, PathBuf};
 
-/// The main sudoers file.
-pub(super) const SUDOERS: &str = "/etc/sudoers";
+/// The main sudoers file, relative to the inspected root.
+const SUDOERS_REL: &str = "etc/sudoers";
+
+/// The active `sudo` binary, relative to the inspected root.
+const SUDO_BIN_REL: &str = "usr/bin/sudo";
 
 /// Include nesting limit, the same order of magnitude sudo enforces; it only
 /// stops an include cycle from looping.
@@ -79,6 +82,40 @@ impl SudoLogging {
         }
         out
     }
+}
+
+/// The decoy's sudo-logging findings for the system rooted at `root`, empty
+/// when the active sudo keeps no log of its own on the decoy disk.
+///
+/// sudo-rs — Ubuntu's default sudo since 25.10 — supports neither `logfile=` nor
+/// I/O logging: "logging is always done via syslog" (sudo-rs README, "Differences
+/// from original sudo"). Where sudo-rs is the active sudo those sudoers settings
+/// are inert, so warning about an on-disk sudo log would be a false positive; the
+/// syslog sink it uses instead is judged by the journald and syslog probes. So
+/// the sudoers scan runs only for the original sudo.
+pub(super) fn decoy_sudo_findings<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
+    if active_sudo_is_sudo_rs(fs, root) {
+        return Vec::new();
+    }
+    scan_sudoers(fs, &root.join(SUDOERS_REL)).findings()
+}
+
+/// Whether the active `sudo` under `root` is sudo-rs rather than the original
+/// sudo.
+///
+/// Ubuntu 25.10+ ships sudo-rs as the default and selects it through
+/// update-alternatives: `/usr/bin/sudo` resolves to sudo-rs's
+/// `/usr/lib/cargo/bin/sudo`, while the original sudo, kept as `/usr/bin/sudo.ws`,
+/// is selected by pointing the alternative back at it. Resolving the binary (not
+/// the mere presence of either package) tracks which one actually runs, so a
+/// decoy switched back to the original sudo is still judged as the original and
+/// keeps its warnings.
+fn active_sudo_is_sudo_rs<F: Filesystem>(fs: &F, root: &Path) -> bool {
+    let Ok(target) = fs.canonicalize(&root.join(SUDO_BIN_REL)) else {
+        return false;
+    };
+    let target = target.to_string_lossy();
+    target.contains("/cargo/bin/sudo") || target.contains("sudo-rs")
 }
 
 /// Read the sudoers configuration rooted at `main` and collect its logging

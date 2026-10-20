@@ -7,7 +7,7 @@ use crate::filesystem::{MockFilesystem, PathKind};
 
 /// Mark a systemd unit active by creating its runtime invocation marker.
 fn set_unit_active(fs: &MockFilesystem, unit: &str) {
-    let marker = format!("/{INVOCATION_DIR}/invocation:{unit}");
+    let marker = format!("/{}/invocation:{unit}", loggers::INVOCATION_DIR);
     fs.mock_set_path_exists(&marker, true);
 }
 
@@ -421,6 +421,186 @@ fn kdump_armed_warns() {
     let result = check.run(&fs).unwrap();
     assert!(result.is_warn());
     assert!(result.message().contains("kdump"));
+}
+
+#[test]
+fn a_syslog_ng_template_instance_fails_closed() {
+    // systemd runs syslog-ng from a template; only the instance is active, so
+    // the fixed-name check must match the stem and name it.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    fs.mock_set_directory_contents(
+        Path::new("/run/systemd/units"),
+        vec![std::path::PathBuf::from(
+            "/run/systemd/units/invocation:syslog-ng@default.service",
+        )],
+    );
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(result.message().contains("syslog-ng"), "{result:?}");
+}
+
+#[test]
+fn a_logger_running_only_as_a_process_fails_closed() {
+    // A daemon started outside systemd, or one a recent systemd leaves no marker
+    // for, is caught by its process name.
+    for (comm, needle) in [
+        ("rsyslogd", "rsyslog"),
+        ("syslog-ng", "syslog-ng"),
+        ("metalog", "metalog"),
+        ("auditd", "auditd"),
+    ] {
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(
+            "/etc/systemd/journald.conf",
+            "[Journal]\nStorage=volatile\n",
+        );
+        fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+        fs.mock_set_directory_contents(
+            Path::new("/proc"),
+            vec![std::path::PathBuf::from("/proc/907")],
+        );
+        fs.mock_add_file("/proc/907/comm", &format!("{comm}\n"));
+        let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+        assert!(result.is_fail(), "{comm}: {result:?}");
+        assert!(result.message().contains(needle), "{comm}: {result:?}");
+    }
+}
+
+#[test]
+fn a_logger_matched_by_unit_and_process_is_reported_once() {
+    // NixOS runs rsyslogd as syslog.service, and its process is rsyslogd: both
+    // routes fire, but the decoy keeps one syslog finding.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    set_unit_active(&fs, "syslog.service");
+    fs.mock_set_directory_contents(
+        Path::new("/proc"),
+        vec![std::path::PathBuf::from("/proc/513")],
+    );
+    fs.mock_add_file("/proc/513/comm", "rsyslogd\n");
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert_eq!(
+        result
+            .message()
+            .matches("writes logs to the decoy disk")
+            .count(),
+        1,
+        "{result:?}"
+    );
+}
+
+#[test]
+fn an_argv0_without_a_matching_comm_still_counts() {
+    // comm can be truncated or renamed; argv[0]'s basename catches the daemon.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    fs.mock_set_directory_contents(
+        Path::new("/proc"),
+        vec![std::path::PathBuf::from("/proc/42")],
+    );
+    fs.mock_add_file("/proc/42/comm", "renamed\n");
+    fs.mock_add_file("/proc/42/cmdline", "/usr/sbin/rsyslogd\0-n\0");
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(result.is_fail(), "{result:?}");
+    assert!(result.message().contains("rsyslog"), "{result:?}");
+}
+
+#[test]
+fn kdump_tools_service_warns_without_a_loaded_crash_kernel() {
+    // Ubuntu arms kdump-tools by default (24.10+); the crash kernel may not be
+    // loaded when check runs, but the enabled service still means a panic dumps.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    set_unit_active(&fs, "kdump-tools.service");
+    let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert!(result.message().contains("kdump"), "{result:?}");
+}
+
+#[test]
+fn coredump_socket_form_is_read_as_systemd_coredump() {
+    // systemd 262 / Linux 6.17+: the kernel sends dumps to a socket, not a pipe.
+    // The pattern must be understood, not misreported as a raw disk path.
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    fs.mock_add_file(CORE_PATTERN, "@@/run/systemd/coredumpd/kernel\n");
+    fs.mock_add_file(
+        "/etc/systemd/coredump.conf",
+        "[Coredump]\nStorage=external\n",
+    );
+    let result = DecoyPersistenceCheck::new(false, false).run(&fs).unwrap();
+    assert!(result.is_warn(), "{result:?}");
+    assert!(result.message().contains("systemd-coredump"), "{result:?}");
+    assert!(
+        !result
+            .message()
+            .contains("writes core dumps to the decoy disk (@@"),
+        "the socket form must not be misread as a plain path: {result:?}"
+    );
+
+    // With Storage=none and no processing, the socket decoy keeps nothing.
+    fs.mock_add_file(
+        "/etc/systemd/coredump.conf",
+        "[Coredump]\nStorage=none\nProcessSizeMax=0\n",
+    );
+    assert!(
+        DecoyPersistenceCheck::new(false, false)
+            .run(&fs)
+            .unwrap()
+            .is_pass()
+    );
+}
+
+#[test]
+fn sudo_rs_ignores_the_sudoers_log_settings() {
+    // sudo-rs (Ubuntu's default from 25.10) does not write a logfile or I/O log;
+    // the same sudoers settings must be judged for the original sudo but not for
+    // sudo-rs, selected through update-alternatives.
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    write(
+        root,
+        "etc/sudoers",
+        "Defaults logfile=/var/log/sudo.log\nDefaults log_output\n",
+    );
+
+    write(root, "usr/bin/sudo", "original sudo");
+    let classic = sudo_logging::decoy_sudo_findings(&RealFilesystem, root);
+    assert!(
+        !classic.is_empty(),
+        "the original sudo's settings must be judged: {classic:?}"
+    );
+
+    std::fs::remove_file(root.join("usr/bin/sudo")).unwrap();
+    write(root, "usr/lib/cargo/bin/sudo", "sudo-rs");
+    std::os::unix::fs::symlink("../lib/cargo/bin/sudo", root.join("usr/bin/sudo")).unwrap();
+    let sudo_rs = sudo_logging::decoy_sudo_findings(&RealFilesystem, root);
+    assert!(
+        sudo_rs.is_empty(),
+        "sudo-rs ignores these settings, so nothing is reported: {sudo_rs:?}"
+    );
 }
 
 #[test]
