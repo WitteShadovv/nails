@@ -74,6 +74,13 @@ let
   researchTag = "research";
   researchDir = toString testsRoot + "/research/";
 
+  # Soak tests (tests/soak/, tag `soak`) are the same kind of non-leaf target:
+  # buildable as `e2e.<name>` and through the `soak` link farm, but out of
+  # `all`, the tag groups, the CI shards and `--affected`. They run for hours in
+  # their own weekly lane, so the nightly must never pick them up.
+  soakTag = "soak";
+  soakDir = toString testsRoot + "/soak/";
+
   rawSpecPairs = map (path: {
     inherit path;
     spec = import path { inherit self pkgs nixpkgs; };
@@ -82,6 +89,7 @@ let
   rawNames = map (spec: spec.name) rawSpecs;
 
   isResearch = spec: lib.elem researchTag (spec.meta.tags or [ ]);
+  isSoak = spec: lib.elem soakTag (spec.meta.tags or [ ]);
 
   _assertResearchLayout = lib.all (
     pair:
@@ -90,6 +98,16 @@ let
     in
     lib.assertMsg (inResearchDir == isResearch pair.spec)
       "E2E test ${pair.spec.name}: the `${researchTag}` tag and the tests/research/ directory must go together"
+  ) rawSpecPairs;
+
+  _assertSoakLayout = lib.all (
+    pair:
+    let
+      inSoakDir = lib.hasPrefix soakDir (toString pair.path);
+    in
+    lib.assertMsg (
+      inSoakDir == isSoak pair.spec
+    ) "E2E test ${pair.spec.name}: the `${soakTag}` tag and the tests/soak/ directory must go together"
   ) rawSpecPairs;
 
   _assertUniqueNames =
@@ -225,8 +243,9 @@ let
     ) rawSpecs
   );
 
-  leafSpecs = lib.filter (spec: !isResearch spec) rawSpecs;
+  leafSpecs = lib.filter (spec: !isResearch spec && !isSoak spec) rawSpecs;
   researchNames = map (spec: spec.name) (lib.filter isResearch rawSpecs);
+  soakNames = map (spec: spec.name) (lib.filter isSoak rawSpecs);
 
   metadata = builtins.listToAttrs (
     map (
@@ -238,7 +257,7 @@ let
     ) leafSpecs
   );
 
-  testNames = builtins.attrNames (removeAttrs tests researchNames);
+  testNames = builtins.attrNames (removeAttrs tests (researchNames ++ soakNames));
 
   linkFarmForNames =
     groupName: names:
@@ -293,6 +312,7 @@ let
 
   groups = lib.mapAttrs linkFarmForNames groupMembers // {
     ${researchTag} = linkFarmForNames researchTag researchNames;
+    ${soakTag} = linkFarmForNames soakTag soakNames;
   };
 
   # Tests and groups share one attribute set, and the runner resolves a name
@@ -306,18 +326,21 @@ let
 in
 builtins.seq _assertUniqueNames (
   builtins.seq _assertResearchLayout (
-    builtins.seq _assertAliases (
-      builtins.seq _assertNoShadowedGroups (
-        tests
-        // aliasTests
-        // groups
-        // {
-          _groups = groupMembers;
-          _meta = metadata;
-          _testNames = testNames;
-          _aliases = aliases;
-          _researchTargets = researchNames ++ [ researchTag ];
-        }
+    builtins.seq _assertSoakLayout (
+      builtins.seq _assertAliases (
+        builtins.seq _assertNoShadowedGroups (
+          tests
+          // aliasTests
+          // groups
+          // {
+            _groups = groupMembers;
+            _meta = metadata;
+            _testNames = testNames;
+            _aliases = aliases;
+            _researchTargets = researchNames ++ [ researchTag ];
+            _soakTargets = soakNames ++ [ soakTag ];
+          }
+        )
       )
     )
   )
