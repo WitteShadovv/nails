@@ -93,8 +93,8 @@ pub fn execute(
     command: &ConfigCommand,
 ) -> ExitStatus {
     let outcome = run(config_override, command, settings.is_json());
-    print!("{}", outcome.stdout);
-    eprint!("{}", outcome.stderr);
+    crate::cli::output::print_tolerating_broken_pipe(&outcome.stdout);
+    crate::cli::output::eprint_tolerating_broken_pipe(&outcome.stderr);
     match outcome.code {
         0 => ExitStatus::Ok,
         EXIT_USAGE => ExitStatus::Usage,
