@@ -1,14 +1,11 @@
 # The portable distribution smoke suite.
 #
-# Maps the smoke scenario over the image table (images.nix), so every entry
-# there becomes one buildable VM test plus one metadata record. Bringing another
-# distribution online -- once its backend and detection land -- is a single entry
-# in images.nix; this file and the CI planner enumerate whatever it reports.
-#
-# The flake exposes `tests` as `legacyPackages.<system>.e2e-distro` and `metadata`
-# as `legacyPackages.<system>.e2e-distro-metadata`. The metadata is plain data the
-# ci.e2e distro planner reads (via `nix eval`) to build the CI matrix, so it
-# evaluates without building a single VM.
+# Maps the smoke scenario over the enabled entries of the image table
+# (images.nix), so every enabled entry becomes one buildable VM test plus one
+# metadata record. An entry with `enabled = false` is still a full entry the
+# `distro-images` check evaluates and the next package can boot, but it stays
+# out of the smoke set and the CI matrix, so staging a distribution changes
+# nothing that runs today; enabling it is a single flip in images.json.
 {
   self,
   pkgs,
@@ -18,6 +15,9 @@ let
   inherit (pkgs) lib;
 
   images = import ./images.nix { inherit pkgs; };
+  enabledImages = lib.filterAttrs (_: entry: entry.enabled) images;
+
+  distroVm = import ./lib/distro-vm.nix { inherit pkgs nix-vm-test; };
   makeSmoke = import ./tests/smoke.nix { inherit self pkgs nix-vm-test; };
 
   # Distribution boot plus repeated disk-image conversions make a distro VM
@@ -27,23 +27,52 @@ let
   # distro name -> its smoke test derivation, keyed "<distro>-smoke".
   scenarioName = name: "${name}-smoke";
 
-  tests = lib.mapAttrs' (name: entry: lib.nameValuePair (scenarioName name) (makeSmoke entry)) images;
+  tests = lib.mapAttrs' (
+    name: entry: lib.nameValuePair (scenarioName name) (makeSmoke entry)
+  ) enabledImages;
 
   # The login- and boot-record regression scenarios, keyed "<distro>-records".
   # They run on the host (nix-vm-test `driver`), not in CI, so they stay out of
   # the metadata and the smoke planner never sees them.
   records = import ./records.nix { inherit self pkgs nix-vm-test; };
 
-  distros = builtins.attrNames images;
+  distros = builtins.attrNames enabledImages;
 
   metadata = {
     inherit distros;
     scenarios = lib.listToAttrs (map (name: lib.nameValuePair name [ (scenarioName name) ]) distros);
     timeouts = lib.listToAttrs (map (name: lib.nameValuePair (scenarioName name) smokeTimeout) distros);
   };
+
+  # Every entry reduced to the derivation path of a minimal VM test, so the
+  # `distro-images` check can force the whole table -- fetch, prepare and build,
+  # for the disabled entries too -- through evaluation without building a VM.
+  # A pinned Debian or Ubuntu entry resolves straight to its nix-vm-test
+  # derivation; a Fedora or Arch entry resolves through the fetchurl-and-prepare
+  # seam; an unpinned entry resolves to the "unavailable" placeholder.
+  probeScript = "vm.wait_for_unit('multi-user.target')\n";
+  imageProbes = lib.mapAttrs (
+    _: entry:
+    # The drvPath forces the whole seam (fetch, prepare, build) through
+    # evaluation, which is the proof; discarding its string context keeps the
+    # VM test from becoming a build dependency, so the check stays eval-only and
+    # never tries to build a VM (or fetch a not-yet-pinned image).
+    builtins.unsafeDiscardStringContext
+      (distroVm.buildVmTest {
+        inherit entry;
+        testScript = probeScript;
+        memorySize = entry.memory;
+      }).drvPath
+  ) images;
 in
 tests
 // records
 // {
   _metadata = metadata;
+  # Plain data the `distro-images` check serialises to force evaluation of the
+  # whole table and of every entry's image seam. Not read by the CI planner.
+  _images = {
+    table = images;
+    probes = imageProbes;
+  };
 }

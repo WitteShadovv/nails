@@ -70,7 +70,8 @@ distroVm.buildVmTest {
   };
 
   # Headroom for the RAM-backed hidden root next to a full cloud-image boot.
-  memorySize = 2048;
+  # The value lives on the entry (images.nix); the enabled entries carry 2048.
+  memorySize = entry.memory;
 
   testScript = ''
     import json
