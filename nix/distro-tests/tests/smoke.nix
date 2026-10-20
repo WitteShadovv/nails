@@ -5,8 +5,9 @@
 # nix-vm-test. The scenario proves the whole-root session end to end on a
 # non-NixOS host (systemd >= 254): activation soft-reboots the stock cloud image
 # into an overlay of its own root, every hidden write (including /usr) lands on
-# the hidden root, the ESP stays read-only, and deactivation and emergency
-# soft-reboot back to the plain decoy without a trace on the decoy disk. The
+# the hidden root, every mounted boot filesystem stays read-only, and
+# deactivation and emergency soft-reboot back to the plain decoy without a trace
+# on the decoy disk. The
 # decoy runs blk-availability.service as Debian's and Ubuntu's lvm2 ships it
 # (the image's own unit where lvm2 is installed, a copy where only dmsetup
 # is), and the second session, entered without /boot or the ESP mounted, keeps
@@ -82,9 +83,19 @@ distroVm.buildVmTest {
     # The NixOS suite's in-VM helper package, for following a soft-reboot.
     sys.path.insert(0, "${../../e2e-tests/py}")
     from nails_e2e import session  # noqa: E402
+
+    # The distribution-generic smoke helpers (nix/distro-tests/py), locked by
+    # the `distro-checks` flake check: where a hidden write lands, which boot
+    # filesystems to check, and the overlay feature-option read-back.
+    sys.path.insert(0, "${../py}")
+    import distro_checks  # noqa: E402
     import subprocess
     import time
     from typing import Any
+
+    # The decoy's /etc/os-release ID, from the image-table entry. The scenario
+    # is otherwise distribution-agnostic; this names the decoy in the log.
+    os_id = "${entry.osId}"
 
     ${diskForensics.pythonSetup}
 
@@ -368,11 +379,12 @@ distroVm.buildVmTest {
     vm.wait_for_unit("multi-user.target")
     vm.succeed(f"test -x {nails}")
 
-    with subtest("platform detection selects the overlay-only Debian-family backend"):
-        # `nails init` reports the detected host. A supported FHS host (Debian or
-        # Ubuntu) has no NixOS config layer, so init prints the overlay-only skip
-        # note naming the host id -- proof the Debian-family backend was chosen
-        # and not NixOS or the unsupported refusal path.
+    with subtest("platform detection selects the overlay-only FHS backend"):
+        # `nails init` reports the detected host. A supported FHS host has no
+        # NixOS config layer, so init prints the overlay-only skip note naming
+        # the host id -- proof the overlay-only backend was chosen and not NixOS
+        # or the unsupported refusal path.
+        print(f"decoy os-release id: {os_id}")
         # init refuses a target that is not a volume of its own, and anything
         # it writes must stay off the decoy disk that the forensic check below
         # images, so it gets a throwaway tmpfs of its own below /run.
@@ -508,19 +520,65 @@ distroVm.buildVmTest {
         vm.succeed("mountpoint -q /mnt/data")
         status = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]
         assert status["posture"] == "active", f"expected the hidden session, got {status}"
-        # Every hidden write, /usr included, lands on the hidden root.
+        # Every hidden write, /usr included, lands on the hidden root. Where it
+        # lands depends on the decoy's own shape: a tree that is a filesystem of
+        # its own (a btrfs subvolume on Fedora or Arch) is overlaid separately,
+        # so its upper is named after the mount unit rather than sitting under
+        # the root upper. The mount-aware helper resolves that from the live
+        # mount table, so on a single-root image (Debian, Ubuntu) it yields the
+        # root upper exactly as before.
+        hidden_mounts = distro_checks.parse_mount_targets(
+            vm.succeed("findmnt -rn -o TARGET")
+        )
         for tree in canary_trees:
-            vm.succeed(f"echo NAILS_CANARY_{tree} > /{tree}/nails-canary-{tree}")
-            vm.succeed(f"test -s /mnt/data/root/upper/{tree}/nails-canary-{tree}")
+            name = distro_checks.canary_name(tree)
+            vm.succeed(f"echo NAILS_CANARY_{tree} > /{tree}/{name}")
+            upper = distro_checks.canary_upper("/mnt/data", tree, hidden_mounts)
+            vm.succeed(f"test -s {shlex.quote(upper)}")
         vm.succeed("sync")
 
-    with subtest("the ESP is read-only in the hidden root"):
-        esp = vm.succeed("findmnt -rn -o TARGET /boot/efi || true").strip()
-        if esp:
-            err = vm.fail("touch /boot/efi/nails-should-fail 2>&1")
-            assert "read-only" in err.lower(), f"the ESP took a hidden write: {err}"
+    with subtest("the boot filesystems are read-only in the hidden root"):
+        # Every mounted boot filesystem -- /boot, the ESP at /boot/efi and a
+        # unified /efi -- must be read-only to the hidden session, so a hidden
+        # write can never reach the decoy's boot partition. Which of them a
+        # distribution mounts differs; the helper picks out the mounted ones.
+        boot_mounts = distro_checks.boot_mounts(
+            distro_checks.parse_mount_targets(vm.succeed("findmnt -rn -o TARGET"))
+        )
+        if boot_mounts:
+            for target in boot_mounts:
+                probe = f"{target}/nails-should-fail"
+                err = vm.fail(f"touch {shlex.quote(probe)} 2>&1")
+                assert "read-only" in err.lower(), (
+                    f"{target} took a hidden write: {err}"
+                )
+            print(f"boot filesystems read-only in the hidden root: {boot_mounts}")
         else:
-            print("this image mounts no ESP at /boot/efi")
+            print("this image mounts no separate boot filesystem")
+
+    with subtest("the hidden overlays pin the forensic feature options"):
+        # NAILS pins index=off,metacopy=off,redirect_dir=nofollow on every
+        # overlay it mounts, so an overlay can never diverge from a plain
+        # copy-up. The kernel echoes a feature option only when it differs from
+        # its own compiled default, so the portable, distribution-independent
+        # check is that none of the dangerous "on" states appears on any
+        # overlay, read back from the live mount table with findmnt. The
+        # kernel-tier twin is live_overlay_pins_the_feature_options_off.
+        overlays = distro_checks.parse_findmnt_pairs(
+            vm.succeed("findmnt -rn -t overlay -o TARGET,OPTIONS")
+        )
+        assert overlays, "no overlay is mounted in the hidden root"
+        violations = distro_checks.overlay_targets_with_violations(overlays)
+        assert not violations, (
+            f"overlays with unpinned feature options: {violations}"
+        )
+        # The root overlay's options were actually read back (not an empty
+        # field), so the check above tested a real option string.
+        root_options = dict(overlays).get("/")
+        assert root_options and "upperdir" in root_options, (
+            f"the root overlay's options were not read back: {root_options}"
+        )
+        print(f"overlay feature options pinned on: {[t for t, _ in overlays]}")
 
     with subtest("emergency soft-reboots back to the plain decoy"):
         follow(f"{ram_nails_cmd} emergency --json > /dev/null", "emergency")
