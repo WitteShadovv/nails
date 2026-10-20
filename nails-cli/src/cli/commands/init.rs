@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::cli::args::InitArgs;
-use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
+use crate::cli::output::envelope::{Envelope, EnvelopePrint, ErrorBody, report_error};
 use crate::cli::output::refusal::report_refusal;
 use crate::cli::output::{ExitStatus, OutputSettings};
 use nails_core::config::CONFIG_FILE_NAME;

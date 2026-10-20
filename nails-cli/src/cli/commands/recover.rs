@@ -24,7 +24,7 @@ use serde::Serialize;
 
 use crate::cli::args::RecoverArgs;
 use crate::cli::output::deactivate::deactivate_error_body;
-use crate::cli::output::envelope::{Envelope, report_error};
+use crate::cli::output::envelope::{Envelope, EnvelopePrint, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 #[derive(Debug, Serialize)]

@@ -1,0 +1,23 @@
+[package]
+name = "nails-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Stable machine-readable contract types for the nails CLI: the JSON envelope, error body, exit codes and result payloads"
+homepage.workspace = true
+repository.workspace = true
+readme = "../README.md"
+# Never publish to a registry; see nails-core/Cargo.toml.
+publish = false
+
+[lints]
+workspace = true
+
+# The machine-readable contract is serde and nothing else: these types carry no
+# NAILS dependency so a consumer can link the `--json` shapes without the whole
+# tool, and `nails-core/tests/crate_graph.rs` pins that boundary.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

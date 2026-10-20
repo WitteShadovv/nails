@@ -46,6 +46,9 @@ tracing-subscriber = { workspace = true }
 nix = { workspace = true, features = ["user", "poll"] }
 chrono = { workspace = true }
 
+# The stable machine-readable contract types: the `--json` envelope, the error
+# body, the exit-code table and the result/DTO payloads.
+nails-api = { path = "../nails-api" }
 # Core library
 nails-core = { path = "../nails-core" }
 # The emergency hot path, dispatched from `main` before clap, config and tracing.

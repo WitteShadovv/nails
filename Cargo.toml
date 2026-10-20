@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "nails-api",
     "nails-base",
     "nails-cli",
     "nails-core",

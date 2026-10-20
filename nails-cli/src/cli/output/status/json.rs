@@ -9,8 +9,8 @@
 
 use serde::Serialize;
 
-use crate::cli::output::dto::StateJson;
-use crate::cli::output::envelope::Envelope;
+use crate::cli::output::dto::{StateJson, state_json_from_report};
+use crate::cli::output::envelope::{Envelope, EnvelopePrint};
 use nails_core::status::{PolicyMountView, ReminderSeverity, StatusReport};
 
 /// The `data` payload for `status --json`.
@@ -88,7 +88,7 @@ fn data(report: &StatusReport) -> StatusData<'_> {
         session: report.session,
         reason: report.reason.as_deref(),
         remediation: report.remediation,
-        state: StateJson::from_report(&report.state, &source_outcome(report.state_source)),
+        state: state_json_from_report(&report.state, &source_outcome(report.state_source)),
         state_source: report.state_source,
         entered_at: report.entered_at.map(|t| t.to_rfc3339()),
         uptime_seconds: report.uptime.map(|u| u.num_seconds()),
