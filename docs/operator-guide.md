@@ -1258,8 +1258,10 @@ power-off, followed by a few minutes without power, lets the contents decay:
   before handing the machine over.
 - Harden the decoy kernel so freed memory is wiped: add `init_on_free=1
   page_poison=1` to the decoy kernel command line. The hidden session runs on the
-  same kernel, so this covers it too. The `memory-wipe` pre-flight check reports
-  whether the booted command line sets `init_on_free=1`.
+  same kernel, so this covers it too. The `memory-wipe` pre-flight check reads
+  the booted command line and, when it is silent, the kernel config
+  (`CONFIG_INIT_ON_FREE_DEFAULT_ON`), and warns when the decoy kernel does not
+  zero freed memory.
 - There is no complete software defense against a memory dump of a running
   system; the protection is preventing access while it runs.
 
