@@ -4,7 +4,7 @@
 //! Human output for `nails rehearse`.
 
 use nails_core::output::{Mark, Style, Tone};
-use nails_core::rehearse::{self, ChannelRecord, ScanReport};
+use nails_core::rehearse::{ChannelRecord, ScanReport};
 
 /// One line per channel: planted, or why not.
 pub(crate) fn print_channels(style: Style, channels: &[ChannelRecord]) {
@@ -28,19 +28,19 @@ pub(crate) fn print_channels(style: Style, channels: &[ChannelRecord]) {
 
 /// The scan result: the headline, each device with its hits by offset, the
 /// channels the canary never went into, and what the scan cannot see.
+/// `fingerprint` names the canary; the token itself never reaches the renderer.
 pub(crate) fn print_scan(
     style: Style,
     report: &ScanReport,
-    token: &str,
+    fingerprint: &str,
     channels: &[ChannelRecord],
 ) {
     let hits = report.total_hits();
     let headline = if hits > 0 {
         style.paint_bold(
             format_args!(
-                "{} Canary {} FOUND on the decoy: {}",
+                "{} Canary {fingerprint} FOUND on the decoy: {}",
                 style.glyph(Mark::Fail),
-                rehearse::fingerprint(token),
                 super::count_noun(hits, "hit", "hits")
             ),
             Tone::Red,
@@ -48,9 +48,8 @@ pub(crate) fn print_scan(
     } else {
         style.paint_bold(
             format_args!(
-                "{} Canary {} not found on the scanned devices",
+                "{} Canary {fingerprint} not found on the scanned devices",
                 style.glyph(Mark::Pass),
-                rehearse::fingerprint(token)
             ),
             Tone::Green,
         )
