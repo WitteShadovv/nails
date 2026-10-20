@@ -46,14 +46,7 @@ pub mod watch;
 /// Either way an unreadable or invalid file is an error. `loaded_config_path`
 /// is set to the consulted path so cleanup preserves it.
 pub(crate) fn resolve_config(config_override: Option<&Path>) -> Result<LoadedConfig, NailsError> {
-    let path = nails_core::config::discover_config_path(config_override);
-    let mut loaded = if config_override.is_some() {
-        LoadedConfig::load(&path)?
-    } else {
-        LoadedConfig::load_or_default(&path)?
-    };
-    loaded.config.loaded_config_path = Some(path);
-    Ok(loaded)
+    nails_core::app::resolve_config(config_override)
 }
 
 /// One-line description of a configuration load failure.
