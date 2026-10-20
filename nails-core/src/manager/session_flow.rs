@@ -280,6 +280,10 @@ impl<F: Filesystem> NailsManager<F> {
         elapsed: std::time::Duration,
     ) -> Result<()> {
         let now = Utc::now();
+        // The FHS family of the detected host; the state file keeps only Fedora
+        // and Arch (see `StateFile::mark_fhs_family`), so a Debian-family host
+        // records no family and its state file stays byte identical.
+        let family = self.host_profile().and_then(|profile| profile.family);
         {
             let mut cached = self.cached_state.borrow_mut();
             if cached.is_none() {
@@ -290,7 +294,9 @@ impl<F: Filesystem> NailsManager<F> {
                     Some(system) => {
                         state_file.set_nixos_generation(Some(system.display().to_string()));
                     }
-                    None if prepared.plan.decoy.system.is_none() => state_file.mark_debian_family(),
+                    None if prepared.plan.decoy.system.is_none() => {
+                        state_file.mark_fhs_family(family)
+                    }
                     None => state_file.clear_platform(),
                 }
                 state_file.decoy_system = prepared
