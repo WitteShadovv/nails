@@ -20,6 +20,9 @@ of this changelog for that version becomes the release notes word for word, and
   `cryptsetup --version` reports. No released cryptsetup opens such a volume, and nothing outside
   the encrypted header reveals the algorithm, so it advises making both the outer and the hidden
   VeraCrypt volume with PBKDF2.
+- `nails activate` and `nails check` refuse a decoy with a pending offline system update staged
+  (a `/system-update` or `/etc/system-update` marker, on the decoy or in the overlay upper), which
+  would otherwise be applied inside the hidden session and reboot the machine out from under it.
 
 ### Changed
 
@@ -36,6 +39,9 @@ of this changelog for that version becomes the release notes word for word, and
 - A host that boots from a sealed composefs image is now refused even when it does not set
   `/run/ostree-booted`, recognised by its kernel command line or the composefs runtime directory.
   NAILS cannot overlay an immutable system.
+- The hidden session's state file can now record which Linux family the host belongs to, without
+  changing its on-disk format. A state file written by a 0.3.0 pre-release loads unchanged after the
+  upgrade with its integrity digest intact, so an existing install is never read as corrupt.
 
 ### Fixed
 
@@ -63,6 +69,15 @@ of this changelog for that version becomes the release notes word for word, and
   and masks the filesystem where the decoy really keeps it (`var-home.mount`, not `home.mount`), and
   fresh-home mode creates the home at that real path instead of a directory where the decoy has a
   symlink.
+- Decoy-persistence pre-flight now catches a syslog or audit daemon (rsyslog, syslog-ng, metalog,
+  auditd) whether it runs as a service unit, a systemd template instance (such as `syslog-ng@default`)
+  or a bare process, so a logging daemon on the decoy can no longer slip past activation. It also
+  reads the systemd 262 kernel coredump socket pattern correctly instead of mis-reporting it as a raw
+  core-dump path, warns on Ubuntu's default-enabled kdump, and no longer warns about `sudo` logfile
+  or I/O-logging settings on systems where sudo-rs (Ubuntu's default sudo since 25.10) ignores them.
+- The `memory-wipe` check reads the decoy kernel's configuration (`CONFIG_INIT_ON_FREE_DEFAULT_ON`)
+  when the kernel command line is silent, warns when the decoy kernel does not zero freed memory, and
+  notes a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe` module) when one is installed.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
