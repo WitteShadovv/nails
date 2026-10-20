@@ -680,7 +680,10 @@ fn a_recorded_fhs_entry_marks_the_debian_family() {
 
     let state = recorded(dir.path());
     assert!(state.state.is_active());
-    assert_eq!(state.platform, Some(PlatformState::DebianFamily));
+    assert_eq!(
+        state.platform,
+        Some(PlatformState::DebianFamily { family: None })
+    );
     assert_eq!(state.decoy_system, None);
 }
 
@@ -690,7 +693,7 @@ fn an_overlay_only_entry_on_nixos_records_no_platform() {
     let dir = tempfile::tempdir().unwrap();
     let mut m = manager(dir.path());
     m.seed_cached_state(StateFile {
-        platform: Some(PlatformState::DebianFamily),
+        platform: Some(PlatformState::DebianFamily { family: None }),
         ..StateFile::default()
     });
 
@@ -786,7 +789,10 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         // The record says Active before the soft-reboot kills this process.
         let state = recorded(hidden.path());
         assert!(state.state.is_active(), "{:?}", state.state);
-        assert_eq!(state.platform, Some(PlatformState::DebianFamily));
+        assert_eq!(
+            state.platform,
+            Some(PlatformState::DebianFamily { family: None })
+        );
         // `activate` prints the outcome's time and `status` the recorded one:
         // one measurement.
         assert_eq!(

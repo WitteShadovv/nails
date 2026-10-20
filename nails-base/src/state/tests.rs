@@ -927,11 +927,99 @@ fn platform_state_nixos_round_trips_through_json() {
 
 #[test]
 fn platform_state_debian_family_round_trips_through_json() {
-    let section = PlatformState::DebianFamily;
+    let section = PlatformState::DebianFamily { family: None };
     let json = serde_json::to_string(&section).unwrap();
     assert!(json.contains("\"platform\":\"debian_family\""));
     let back: PlatformState = serde_json::from_str(&json).unwrap();
     assert_eq!(section, back);
+}
+
+// Pins the serde attributes of the `DebianFamily` section exactly, so a change
+// to its tag, its field name, or the `skip_serializing_if` on `family` fails
+// here instead of silently changing the wire format and every install's digest.
+#[test]
+fn debian_family_without_a_family_serialises_to_exactly_the_platform_tag() {
+    let section = PlatformState::DebianFamily { family: None };
+    assert_eq!(
+        serde_json::to_string(&section).unwrap(),
+        r#"{"platform":"debian_family"}"#
+    );
+}
+
+#[test]
+fn debian_family_serialises_the_recorded_family_after_the_tag() {
+    assert_eq!(
+        serde_json::to_string(&PlatformState::DebianFamily {
+            family: Some(crate::Family::Fedora),
+        })
+        .unwrap(),
+        r#"{"platform":"debian_family","family":"fedora"}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&PlatformState::DebianFamily {
+            family: Some(crate::Family::Arch),
+        })
+        .unwrap(),
+        r#"{"platform":"debian_family","family":"arch"}"#
+    );
+}
+
+// The heart of the wire-format guarantee: a state file an earlier release wrote
+// with a bare `debian_family` section re-serialises byte for byte, so its
+// integrity digest is unchanged after the upgrade that added `family`.
+#[test]
+fn a_family_less_debian_family_section_re_serialises_byte_for_byte() {
+    let before = r#"{"platform":"debian_family"}"#;
+    let section: PlatformState = serde_json::from_str(before).unwrap();
+    assert_eq!(section, PlatformState::DebianFamily { family: None });
+    assert_eq!(serde_json::to_string(&section).unwrap(), before);
+}
+
+#[test]
+fn mark_fhs_family_records_only_fedora_and_arch() {
+    // Debian-family and unresolved hosts record no family, so their state file
+    // stays `{"platform":"debian_family"}` and byte identical across the upgrade.
+    for family in [None, Some(crate::Family::Debian)] {
+        let mut state = StateFile::default();
+        state.mark_fhs_family(family);
+        assert_eq!(
+            state.platform,
+            Some(PlatformState::DebianFamily { family: None })
+        );
+        assert_eq!(state.family(), None);
+    }
+
+    // Fedora and Arch are kept, ready for when those families are admitted.
+    for family in [crate::Family::Fedora, crate::Family::Arch] {
+        let mut state = StateFile::default();
+        state.mark_fhs_family(Some(family));
+        assert_eq!(
+            state.platform,
+            Some(PlatformState::DebianFamily {
+                family: Some(family)
+            })
+        );
+        assert_eq!(state.family(), Some(family));
+        assert!(!state.is_nixos());
+    }
+}
+
+#[test]
+fn mark_fhs_family_is_a_no_op_once_nixos_is_recorded() {
+    let mut state = StateFile::default();
+    state.set_nixos_generation(Some("gen-3".to_string()));
+    state.mark_fhs_family(Some(crate::Family::Fedora));
+    assert!(state.is_nixos());
+    assert_eq!(state.hidden_toplevel(), Some("gen-3"));
+    assert_eq!(state.family(), None);
+}
+
+#[test]
+fn family_accessor_is_none_off_a_debian_family_section() {
+    let mut state = StateFile::default();
+    assert_eq!(state.family(), None);
+    state.set_nixos_generation(Some("gen".to_string()));
+    assert_eq!(state.family(), None);
 }
 
 #[test]
@@ -939,7 +1027,7 @@ fn state_file_round_trips_each_platform_section() {
     for section in [
         None,
         Some(PlatformState::nixos(Some("gen-1".to_string()))),
-        Some(PlatformState::DebianFamily),
+        Some(PlatformState::DebianFamily { family: None }),
     ] {
         let state = StateFile {
             platform: section.clone(),
@@ -987,9 +1075,13 @@ fn state_file_nixos_accessors_read_the_section() {
 fn state_file_mark_debian_family_is_not_nixos_and_has_no_generation() {
     let mut state = StateFile::default();
     state.mark_debian_family();
-    assert_eq!(state.platform, Some(PlatformState::DebianFamily));
+    assert_eq!(
+        state.platform,
+        Some(PlatformState::DebianFamily { family: None })
+    );
     assert!(!state.is_nixos());
     assert_eq!(state.hidden_toplevel(), None);
+    assert_eq!(state.family(), None);
 
     // Once NixOS is recorded, marking Debian-family is a no-op.
     state.set_nixos_generation(Some("gen".to_string()));
