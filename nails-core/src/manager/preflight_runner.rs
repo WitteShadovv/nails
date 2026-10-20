@@ -248,9 +248,11 @@ pub fn build_registry<F: Filesystem>(
 
     registry.add_check(Box::new(SwapCheck));
 
-    // Informational only: reports whether the decoy kernel zeroes freed pages
-    // (init_on_free=1), so the hidden session's freed memory does not linger in
-    // RAM after deactivation. Always passes; the message carries the advice.
+    // Reports whether the decoy kernel zeroes freed pages, read from the command
+    // line and, when it is silent, the booted kernel's config
+    // (CONFIG_INIT_ON_FREE_DEFAULT_ON). Warns when freed memory is not zeroed and
+    // stays an informational pass only when neither source is readable; it also
+    // notes a RAM-wipe-on-shutdown mechanism. Read-only.
     registry.add_check(Box::new(MemoryWipeCheck::new()));
 
     // Reports whether the host would suspend an active session (lid switch, idle
