@@ -1,0 +1,72 @@
+name: Soak
+
+# The soft-reboot re-entry soak (nix/e2e-tests/tests/soak/soak-reentry.nix): one
+# VM through hundreds of activate/deactivate cycles in a single boot, beside
+# neighbour VMs that cycle on their own, so the host carries several soft-reboots
+# at once. It is hours long and not a gate, so it runs in its own weekly lane and
+# can be dispatched before a release. The soak test is excluded from the runner's
+# target set (it is not a leaf), so it is built by name like a research spike
+# rather than through the e2e driver.
+#
+# A scheduled or dispatched run only fires from the default branch, so until this
+# file reaches main this lane cannot run on `next`; see the integration notes for
+# the route the integrator takes until then.
+
+on:
+  schedule:
+    # Saturdays at 05:17 UTC, off the hour and staggered from the nightly E2E
+    # (02:17) and distro (03:41) lanes, which GitHub may otherwise delay.
+    - cron: "17 5 * * 6"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  # One soak at a time per ref; never cancel a run that is hours in.
+  group: soak-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  reentry:
+    name: Re-entry soak
+    runs-on: ubuntu-26.04
+    # The soaker's 500 cycles run about 1.4 to 2.1 hours on their own, and the
+    # neighbour load slows them, so the box is generous and still well inside a
+    # hosted job's six-hour limit.
+    timeout-minutes: 300
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      # install-nix-action (inside setup-nix) opens /dev/kvm to the runner user
+      # on hosted runners, which the VMs need.
+      - name: Set up Nix
+        uses: ./.github/actions/setup-nix
+        with:
+          cache: 'true'
+
+      # Building the test derivation runs it: the NixOS test driver boots the
+      # soaker and its neighbours and drives the cycles. -L streams the per-cycle
+      # progress and, on a hang, the stall report the guest prints.
+      - name: Soak the re-entry path
+        run: nix build -L --no-link .#e2e.soak-reentry
+
+      - name: Record the result
+        if: ${{ !cancelled() }}
+        env:
+          RESULT: ${{ job.status }}
+        run: |
+          {
+            echo "## Re-entry soak"
+            echo
+            echo "Soak result: $RESULT. See the step log for the per-cycle"
+            echo "progress and, on a failure, the stall report."
+          } >> "$GITHUB_STEP_SUMMARY"
