@@ -69,9 +69,9 @@ fn only_yes_in_any_case_confirms_the_reset() {
 }
 
 /// An answer other than yes reads as `activate`'s cancel: the neutral notice
-/// after the prompt, no error, and exit 1. A yes goes on without one.
+/// after the prompt, no error, and exit 130. A yes goes on without one.
 #[test]
-fn a_declined_reset_is_a_neutral_notice_and_exits_1() {
+fn a_declined_reset_is_a_neutral_notice_and_exits_130() {
     let plan = plan("/srv/data", &["/mnt/data/root/upper/srv/data"]);
     let ask = |answer: &[u8]| {
         let mut err = Vec::new();
@@ -85,7 +85,7 @@ fn a_declined_reset_is_a_neutral_notice_and_exits_1() {
     };
     for answer in ["n\n", "\n", ""] {
         let (status, shown) = ask(answer.as_bytes());
-        assert_eq!(status, Some(ExitStatus::Failed), "{answer:?}");
+        assert_eq!(status, Some(ExitStatus::Cancelled), "{answer:?}");
         assert!(
             shown.ends_with("Continue? [y/N]: \u{25cb} Reset cancelled; nothing was removed.\n"),
             "{shown}"

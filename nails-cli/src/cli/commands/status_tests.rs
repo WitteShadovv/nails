@@ -100,8 +100,8 @@ fn json_status_is_one_envelope() {
         .unwrap_or_else(|| panic!("no JSON line: {stdout}"));
     let value: serde_json::Value = serde_json::from_str(line).unwrap();
     assert_eq!(value["command"], "status");
-    assert_eq!(value["data"]["posture"], "decoy");
-    assert_eq!(value["data"]["state_source"], "missing");
+    assert_eq!(value["data"]["place"], "decoy");
+    assert_eq!(value["data"]["attention"], serde_json::Value::Null);
 }
 
 #[test]
