@@ -57,6 +57,10 @@ impl ActivateOptions {
 pub enum Prepared {
     /// Already in the hidden session; there is nothing to do.
     AlreadyActive,
+    /// The detected host is one NAILS refuses, declined before anything was
+    /// written: the hidden volume keeps every byte and the command exits with
+    /// the unsupported-platform code. Carries the detector's typed reason.
+    Unsupported(NailsError),
     /// The attach gate refused the hidden root before anything was written.
     Refused(Box<Refusal>),
     /// The attach gate could not be evaluated.
@@ -205,6 +209,17 @@ pub fn prepare(
 
     if manager.session_view().is_hidden() {
         return Prepared::AlreadyActive;
+    }
+
+    // The platform gate: a host NAILS refuses is declined here, before the state
+    // lock, the residue baseline or any staged configuration touches the hidden
+    // volume, so a refused host leaves nothing behind and the command exits 8.
+    // --no-preflight does not skip it, and `check` (activate --dry-run) reports
+    // the same verdict through the platform row, so the two never disagree.
+    if let Some(profile) = manager.host_profile()
+        && let Err(error) = profile.require_supported()
+    {
+        return Prepared::Unsupported(error);
     }
 
     // The attach gate decides before anything is written: the state lock, the

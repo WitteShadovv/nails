@@ -179,6 +179,12 @@ pub fn execute(
             print_result(settings, &ActivateResult::AlreadyActive, 0.0);
             return ExitStatus::Ok;
         }
+        Prepared::Unsupported(error) => {
+            // Refused before the state lock: nothing was written to the hidden
+            // volume. Reported exactly as the late path would, and exits 8.
+            print_result(settings, &ActivateResult::Failed(&error), 0.0);
+            return ExitStatus::Unsupported;
+        }
         Prepared::Refused(refusal) => return report_refusal(json, "activate", &refusal),
         Prepared::AttachError(e) => {
             return report_error(
