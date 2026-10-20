@@ -8,86 +8,11 @@
 //! the desktop's and distribution's own components, and says on a line of its
 //! own when the hidden session starts in the decoy home (`shared-home`).
 
-use serde::Serialize;
-
-use nails_core::config::PersonaConfig;
+use nails_core::EntryStatus;
+use nails_core::app::readiness::{InheritedEntry, InheritedSummary};
 use nails_core::output::{Mark, Style};
-use nails_core::{EntryStatus, PersonaInventory};
 
 use crate::cli::output::count_noun;
-
-/// One inherited decoy persona entry.
-#[derive(Debug, Serialize)]
-pub struct InheritedEntry {
-    /// The entry's name (autostart stem, unit name, or operator login).
-    pub name: String,
-    /// Where it comes from (`"user-autostart"`, `"global-unit"`, `"linger"`, …).
-    pub source: &'static str,
-    /// The name is on the list of known trace writers (name-only heuristic).
-    pub remote_linked: bool,
-    /// Whether this entry can be masked with `[persona] mask_inherited`.
-    pub maskable: bool,
-    /// `"desktop"` for a component the installed desktop or distribution
-    /// ships, `"added"` for anything added by the user or third-party software.
-    pub origin: &'static str,
-    /// What becomes of it: `"ignored"`, `"masked"` or `"review"`.
-    pub status: &'static str,
-}
-
-/// The decoy persona state the hidden session would inherit.
-#[derive(Debug, Serialize)]
-pub struct InheritedSummary {
-    /// Whether the inventory could be collected (an operator was resolved).
-    pub inspected: bool,
-    /// Every inherited entry, grouped by source.
-    pub entries: Vec<InheritedEntry>,
-    /// The names tagged as remote-linked.
-    pub remote_linked: Vec<String>,
-    /// The `[persona] mask_inherited` names that match no inherited autostart
-    /// entry or user unit; activation masks them anyway.
-    pub unmatched_masks: Vec<String>,
-}
-
-impl InheritedSummary {
-    /// The not-inspected summary used when no operator could be resolved.
-    pub fn not_inspected() -> Self {
-        Self {
-            inspected: false,
-            entries: Vec::new(),
-            remote_linked: Vec::new(),
-            unmatched_masks: Vec::new(),
-        }
-    }
-
-    /// Build the summary from a collected inventory, judged under `persona`.
-    pub fn from_inventory(inventory: &PersonaInventory, persona: &PersonaConfig) -> Self {
-        let entries = inventory
-            .entries
-            .iter()
-            .map(|entry| InheritedEntry {
-                name: entry.name.clone(),
-                source: entry.source.as_str(),
-                remote_linked: entry.remote_linked,
-                maskable: entry.source.is_maskable(),
-                origin: if entry.desktop { "desktop" } else { "added" },
-                status: entry.status(persona).as_str(),
-            })
-            .collect();
-        Self {
-            inspected: true,
-            entries,
-            remote_linked: inventory.remote_linked_names(),
-            unmatched_masks: inventory.unmatched_masks(persona),
-        }
-    }
-
-    fn count(&self, status: EntryStatus) -> usize {
-        self.entries
-            .iter()
-            .filter(|entry| entry.status == status.as_str())
-            .count()
-    }
-}
 
 /// The lines of the human "Inherited decoy state" section, without its
 /// heading. `persona_mode` is the configured mode's spelling.
@@ -194,8 +119,8 @@ pub fn inherited_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nails_core::config::PersonaMode;
-    use nails_core::{InheritedSource, PersonaEntry};
+    use nails_core::config::{PersonaConfig, PersonaMode};
+    use nails_core::{InheritedSource, PersonaEntry, PersonaInventory};
 
     const PLAIN: Style = Style {
         color: false,
