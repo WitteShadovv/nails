@@ -197,6 +197,11 @@ pub struct ReadinessReport {
     pub filesystems: Vec<String>,
     /// Which NixOS profile would be built.
     pub profile: ProfileSummary,
+    /// Whether the detected host is NixOS. A rendering hint for the human
+    /// report, which shows the NixOS-profile section only where it is
+    /// meaningful; not serialized, since the JSON always carries `profile`.
+    #[serde(skip)]
+    pub nixos_host: bool,
     /// The decoy persona state the hidden session would inherit.
     pub inherited: InheritedSummary,
     /// Why the attach gate refused the hidden root, with its code
@@ -237,6 +242,7 @@ impl ReadinessReport {
             config,
             filesystems,
             profile,
+            nixos_host: false,
             inherited,
         }
     }
@@ -258,6 +264,11 @@ pub fn readiness(
     let overlay_only = options.overlay_only;
     let state_path = config.state_file_path.clone();
     let manager = super::engine::build_nixos_manager(config, state_path, overlay_only, env);
+    // Only a NixOS host carries a config layer; the rendered report shows the
+    // NixOS-profile section on NixOS and hides it elsewhere.
+    let nixos_host = manager
+        .host_profile()
+        .is_some_and(|profile| profile.has_config_layer());
 
     let refusal = attach_refusal(
         manager.filesystem(),
@@ -295,6 +306,7 @@ pub fn readiness(
     let mut report =
         ReadinessReport::finalize(checks, config_summary, filesystems, profile, inherited);
     report.refusal = refusal;
+    report.nixos_host = nixos_host;
     Ok(report)
 }
 

@@ -764,7 +764,10 @@ fn test_check_reports_sections_and_refuses_when_volume_not_ready() {
             "Decoy filesystems in the hidden root:",
         ))
         .stdout(predicates::str::contains("Session:"))
-        .stdout(predicates::str::contains("NixOS profile:"))
+        // The "NixOS profile:" section is shown only on NixOS or with an explicit
+        // NixOS target, so it is not asserted here, where the host is whatever
+        // runs the test; its visibility is covered by the check renderer's unit
+        // tests.
         .stdout(predicates::str::contains("hidden-volume:"));
 }
 
