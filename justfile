@@ -74,6 +74,54 @@ fuzz-lock:
     cp Cargo.lock fuzz/Cargo.lock
     cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 
+# Check every fuzz target is wired into fuzz/Cargo.toml and has a seed corpus:
+# the mechanical half of the rule that every parser of bytes NAILS does not
+# control gets a fuzz target (docs/testing-strategy.md). Part of `just check`.
+fuzz-targets:
+    ./scripts/check-fuzz-targets.sh
+
+# Scaffold a new fuzz target: a stub under fuzz/fuzz_targets/, a starter seed
+# and the [[bin]] entry in fuzz/Cargo.toml, so adding one for a new parser is
+# mechanical. Fill in the target, replace the starter seed with inputs from the
+# parser's fixtures and tests, and run `just fuzz-lock`.
+new-fuzz-target name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="fuzz/fuzz_targets/{{ name }}.rs"
+    if [ -e "$target" ]; then
+        echo "$target already exists" >&2
+        exit 1
+    fi
+    cat > "$target" <<'EOF'
+    // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+    // SPDX-License-Identifier: GPL-3.0-or-later
+
+    //! TODO: the parser this drives, and the property it checks beyond that
+    //! the code neither panics nor hangs on hostile input.
+
+    #![no_main]
+
+    use libfuzzer_sys::fuzz_target;
+
+    fuzz_target!(|data: &[u8]| {
+        // TODO: drive the parser with `data` and assert its invariants.
+        let _ = data;
+    });
+    EOF
+    mkdir -p "fuzz/seeds/{{ name }}"
+    printf '' > "fuzz/seeds/{{ name }}/empty"
+    {
+        echo
+        echo '[[bin]]'
+        echo 'name = "{{ name }}"'
+        echo 'path = "fuzz_targets/{{ name }}.rs"'
+        echo 'test = false'
+        echo 'doc = false'
+        echo 'bench = false'
+    } >> fuzz/Cargo.toml
+    echo "Scaffolded the fuzz target '{{ name }}'. Next: implement it, replace"
+    echo "fuzz/seeds/{{ name }}/empty with real inputs, and run 'just fuzz-lock'."
+
 # Run the documentation tests, which nextest does not execute.
 doctest:
     cargo test --doc --workspace --all-features --locked
@@ -152,11 +200,12 @@ kernel-tests:
     NAILS_REQUIRE_USERNS=1 cargo nextest run --workspace --all-features --locked \
         -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract) | binary(privileged_mounts) | binary(maintenance_cli)'
 
-# The pre-push gate: formatting, lints, file sizes and the test suite.
-check: fmt-check lint line-count test
+# The pre-push gate: formatting, lints, file sizes, fuzz-target wiring and the
+# test suite.
+check: fmt-check lint line-count fuzz-targets test
 
 # Everything the ci.yml Rust jobs run, for reproducing the gate locally.
-ci-rust: fmt-check lint line-count coverage doctest
+ci-rust: fmt-check lint line-count fuzz-targets coverage doctest
 
 # --- Dependency policy ---
 
