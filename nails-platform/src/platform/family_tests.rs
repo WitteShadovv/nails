@@ -68,7 +68,10 @@ fn releases_are_listed_as_in_a_sentence() {
 
 #[test]
 fn the_supported_sentence_is_generated_from_the_admitted_rows() {
-    assert_eq!(supported_platforms(), "Debian 13, Ubuntu 24.04 and 26.04");
+    assert_eq!(
+        supported_platforms(),
+        "Debian 13, Ubuntu 24.04, 26.04 and 26.10"
+    );
 }
 
 #[test]
@@ -111,7 +114,7 @@ fn debian_13_is_supported_and_12_is_refused() {
 
 #[test]
 fn ubuntu_tested_releases_are_supported() {
-    for release in ["24.04", "26.04"] {
+    for release in ["24.04", "26.04", "26.10"] {
         let c = classify_of(Some("ubuntu"), &["debian"], Some(release));
         assert_eq!(c.family, Some(Family::Debian), "{release}");
         assert_eq!(c.support, FamilySupport::Supported, "{release}");
@@ -120,13 +123,13 @@ fn ubuntu_tested_releases_are_supported() {
 
 #[test]
 fn an_untested_ubuntu_release_is_admitted_with_a_warning() {
-    for release in ["26.10", "28.04", "24.10", "25.04"] {
+    for release in ["28.04", "24.10", "25.04"] {
         match classify_of(Some("ubuntu"), &["debian"], Some(release)).support {
             FamilySupport::Untested(warning) => {
                 assert!(
                     warning.starts_with(&format!(
                         "Ubuntu {release} is not a release NAILS has been tested on \
-                         (tested: Ubuntu 24.04 and 26.04)."
+                         (tested: Ubuntu 24.04, 26.04 and 26.10)."
                     )),
                     "{warning}"
                 );

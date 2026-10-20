@@ -326,6 +326,8 @@ mod tests {
         "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.04\"\nPRETTY_NAME=\"Ubuntu 26.04 LTS\"\n";
     const UBUNTU2610: &str =
         "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\nPRETTY_NAME=\"Ubuntu 26.10\"\n";
+    const UBUNTU2804: &str =
+        "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"28.04\"\nPRETTY_NAME=\"Ubuntu 28.04 LTS\"\n";
 
     #[test]
     fn nixos_by_id() {
@@ -383,16 +385,26 @@ mod tests {
     }
 
     #[test]
-    fn ubuntu_2610_runs_with_a_warning_that_it_is_untested() {
+    fn ubuntu_2610_is_a_validated_release() {
         let profile = detect(&host(UBUNTU2610, "systemd")).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Fhs);
+        assert_eq!(profile.unsupported_reason, None);
+        // 26.10 is a validated target: it runs clean, with no untested warning.
+        assert_eq!(profile.support_warning, None);
+        profile.require_supported().unwrap();
+    }
+
+    #[test]
+    fn an_untested_ubuntu_release_runs_with_a_warning() {
+        let profile = detect(&host(UBUNTU2804, "systemd")).unwrap();
         assert_eq!(profile.kind, PlatformKind::Fhs);
         assert_eq!(profile.unsupported_reason, None);
         profile.require_supported().unwrap();
         let warning = profile
             .support_warning
-            .expect("26.10 is not a tested release");
+            .expect("28.04 is not a tested release");
         assert!(
-            warning.starts_with("Ubuntu 26.10 is not a release NAILS has been tested on"),
+            warning.starts_with("Ubuntu 28.04 is not a release NAILS has been tested on"),
             "{warning}"
         );
     }
@@ -418,7 +430,7 @@ mod tests {
 
     #[test]
     fn a_split_usr_refuses_an_untested_release_without_its_warning() {
-        let fs = host(UBUNTU2610, "systemd");
+        let fs = host(UBUNTU2804, "systemd");
         fs.mock_set_path_type("/bin", crate::filesystem::PathKind::Dir);
         let profile = detect(&fs).unwrap();
         assert_eq!(profile.kind, PlatformKind::Unsupported);
