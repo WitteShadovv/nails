@@ -21,6 +21,14 @@ of this changelog for that version becomes the release notes word for word, and
   the encrypted header reveals the algorithm, so it advises making both the outer and the hidden
   VeraCrypt volume with PBKDF2.
 
+### Changed
+
+- Discards (TRIM) reaching the hidden volume now refuse activation instead of only warning:
+  forwarding TRIM to the physical device leaves a readable map of used and free blocks, where a
+  deniable volume should look like uniform random data, and writing an outer volume with discards
+  on can destroy a hidden volume inside it. A LUKS2 mapping with runtime or stored discards is
+  included, and a RAM-only zram device is excepted. The refusal names no device-mapper node.
+
 ## [0.3.0-rc.3] - 2026-10-20
 
 ### Changed

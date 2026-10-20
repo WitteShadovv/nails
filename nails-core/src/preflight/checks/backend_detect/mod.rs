@@ -70,12 +70,6 @@ impl CryptType {
             CryptType::Other(kind) => format!("dm-crypt ({kind})"),
         }
     }
-
-    /// Whether the mapping's deniability rests on its blocks being
-    /// indistinguishable from random data, which discards destroy.
-    fn relies_on_random_looking_blocks(&self) -> bool {
-        matches!(self, CryptType::Tcrypt | CryptType::Plain)
-    }
 }
 
 /// One block device in the stack under the hidden root, as sysfs reports it.
@@ -119,6 +113,29 @@ impl Layer {
         }
     }
 
+    /// A RAM-only zram block device (`zram0`, `zram1`, …), whose discards never
+    /// reach persistent storage, so the discard refusal does not apply.
+    fn is_ram_backed(&self) -> bool {
+        self.name
+            .strip_prefix("zram")
+            .is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()))
+    }
+
+    /// Whether this cryptsetup mapping forwards TRIM to the device below it,
+    /// either at runtime (`discard_max_bytes`) or through a stored LUKS2
+    /// `allow-discards` flag. A non-cryptsetup device is never counted.
+    fn forwards_discards(&self) -> bool {
+        self.crypt.is_some() && (self.discard_max_bytes > 0 || self.has_persistent_discards())
+    }
+
+    /// Whether this layer's LUKS2 header stores the persistent `allow-discards`
+    /// flag, which turns discards on at every open.
+    fn has_persistent_discards(&self) -> bool {
+        self.luks2
+            .as_ref()
+            .is_some_and(|meta| meta.flags.iter().any(|flag| flag == "allow-discards"))
+    }
+
     /// Whether this is a Shufflecake (`dm-sflc`) volume, which the tool names
     /// `sflc_<device>_<volume>` in `/dev/mapper`.
     fn is_shufflecake(&self) -> bool {
@@ -142,12 +159,15 @@ impl Layer {
 ///
 /// The backend choice changes what an adversary with one or more disk images
 /// can learn, and preflight otherwise treats every backend the same. This
-/// check walks the device stack under the hidden root and warns about:
+/// check walks the device stack under the hidden root and reports:
 ///
-/// - **Discards on a tcrypt or plain mapping.** TRIM through a hidden volume
-///   leaves a readable used/free map where the outer volume should look like
-///   random data, hole-punches a loop-backed container, and an outer volume
-///   opened with `--allow-discards` can destroy the hidden volume.
+/// - **Discards over the hidden volume** (a cryptsetup mapping that forwards
+///   TRIM, at runtime or through a stored LUKS2 flag). TRIM leaves a readable
+///   used/free map where the volume should look like uniform random data,
+///   hole-punches a loop-backed container, and an outer volume opened with
+///   discards can destroy a hidden volume inside it. This fails closed, so a
+///   RAM-only zram device is excepted; the operator accepts the risk for one
+///   run with `--allow-discards`, which turns the refusal into a warning.
 /// - **File containers.** Every read-write session updates the container's
 ///   mtime and ctime, and ctime cannot be restored.
 /// - **File containers on a copy-on-write decoy** (btrfs, zfs, bcachefs),
@@ -155,13 +175,13 @@ impl Layer {
 /// - **Loop devices backed by a FUSE file**, whose mount depends on a
 ///   userspace process the session kill can terminate.
 ///
-/// # Never fails
+/// # Pass, warn or fail
 ///
-/// The hazards are deniability trade-offs the operator may have accepted, not
-/// conditions that make activation unsafe to attempt, so the check only ever
-/// returns `Pass` or `Warn`. Anything it cannot read is treated as "no backend
-/// information" rather than an error. There is deliberately no configuration
-/// knob: detection is automatic and read-only.
+/// Discards over the hidden volume fail closed (unless accepted for the run);
+/// the other findings are deniability trade-offs the operator may have
+/// accepted, so they only warn. Anything the check cannot read is treated as
+/// "no backend information" rather than an error, and detection is automatic
+/// and read-only.
 ///
 /// # How it detects
 ///
@@ -176,12 +196,30 @@ impl Layer {
 #[derive(Debug, Clone)]
 pub struct BackendDetectCheck {
     hidden_volume_root: PathBuf,
+    /// Whether the operator accepted discards over the hidden volume for this
+    /// run (the per-run `--allow-discards` override). Off by default, so
+    /// discards fail closed.
+    allow_discards: bool,
 }
 
 impl BackendDetectCheck {
     /// Create a new `BackendDetectCheck` with a custom hidden-root path.
+    ///
+    /// Discards over the hidden volume fail closed; call
+    /// [`allowing_discards`](Self::allowing_discards) to accept them for a run.
     pub fn new(hidden_volume_root: PathBuf) -> Self {
-        Self { hidden_volume_root }
+        Self {
+            hidden_volume_root,
+            allow_discards: false,
+        }
+    }
+
+    /// Accept discards over the hidden volume for this run (the per-run
+    /// `--allow-discards` override): the discard refusal becomes a warning.
+    #[must_use]
+    pub fn allowing_discards(mut self, allow: bool) -> Self {
+        self.allow_discards = allow;
+        self
     }
 }
 
@@ -190,6 +228,7 @@ impl Default for BackendDetectCheck {
     fn default() -> Self {
         Self {
             hidden_volume_root: PathBuf::from(get_default_hidden_volume_root()),
+            allow_discards: false,
         }
     }
 }
@@ -210,17 +249,23 @@ impl<F: Filesystem> PreFlightCheck<F> for BackendDetectCheck {
             .hidden_volume_root
             .canonicalize()
             .unwrap_or_else(|_| self.hidden_volume_root.clone());
-        Ok(assess(fs, &root))
+        Ok(assess(fs, &root, self.allow_discards))
     }
 }
 
-/// Detect the backend under `root` and turn it into a `Pass` or `Warn`.
-fn assess<F: Filesystem>(fs: &F, root: &Path) -> CheckResult {
-    assess_with_dev_dir(fs, root, Path::new(DEV_DIR))
+/// Detect the backend under `root` and turn it into a `Pass`, `Warn` or, when
+/// discards are enabled and `allow_discards` is false, a `Fail`.
+fn assess<F: Filesystem>(fs: &F, root: &Path, allow_discards: bool) -> CheckResult {
+    assess_with_dev_dir(fs, root, Path::new(DEV_DIR), allow_discards)
 }
 
 /// [`assess`], reading LUKS2 headers from the device nodes in `dev_dir`.
-fn assess_with_dev_dir<F: Filesystem>(fs: &F, root: &Path, dev_dir: &Path) -> CheckResult {
+fn assess_with_dev_dir<F: Filesystem>(
+    fs: &F,
+    root: &Path,
+    dev_dir: &Path,
+    allow_discards: bool,
+) -> CheckResult {
     let Ok(content) = fs.read_file_content(Path::new(MOUNTINFO)) else {
         return CheckResult::Pass(format!(
             "Backend detection skipped: cannot read {MOUNTINFO}"
@@ -250,7 +295,21 @@ fn assess_with_dev_dir<F: Filesystem>(fs: &F, root: &Path, dev_dir: &Path) -> Ch
             .and_then(|slave| read_luks2_header(&dev_dir.join(slave)));
     }
     let summary = describe(&mount.fstype, &layers);
-    let found = hazards(&layers, &entries);
+    let discards = discards_over_hidden(&layers);
+
+    // Discards over the hidden volume fail closed: forwarding TRIM makes the
+    // used/free block map readable on the physical device, where a deniable
+    // volume should look like uniform random data. Accepted for the run with
+    // `--allow-discards`, they become a warning instead. The refusal names no
+    // device-mapper node.
+    if discards && !allow_discards {
+        return CheckResult::fail_with(DISCARD_REFUSAL, DISCARD_REMEDIATION);
+    }
+
+    let mut found = hazards(&layers, &entries);
+    if discards {
+        found.insert(0, DISCARD_ACCEPTED.to_string());
+    }
 
     if found.is_empty() {
         CheckResult::Pass(format!(
@@ -262,6 +321,31 @@ fn assess_with_dev_dir<F: Filesystem>(fs: &F, root: &Path, dev_dir: &Path) -> Ch
             found.join(" ")
         ))
     }
+}
+
+/// The deniability concerns of discards over the hidden volume, as the refusal
+/// states them and `docs/backends.md` explains them. The refusal and its
+/// remediation name no device-mapper node.
+const DISCARD_REFUSAL: &str = "Discards are enabled over the hidden volume. Forwarding TRIM to the \
+     physical device leaves a readable map of used and free blocks there, so a volume that should \
+     look like uniform random data no longer does, and writing an outer volume with discards on \
+     can destroy a hidden volume inside it.";
+const DISCARD_REMEDIATION: &str = "Re-open the hidden volume with discards off. A LUKS2 header \
+     that stores the flag keeps enabling them: run `cryptsetup refresh --persistent` without \
+     `--allow-discards`, then check that `cryptsetup luksDump` reports `(no flags)`. See \
+     docs/backends.md.";
+const DISCARD_ACCEPTED: &str = "Discards are enabled over the hidden volume, accepted for this \
+     run: TRIM leaves a readable map of used and free blocks on the physical device, where a \
+     deniable volume should look like uniform random data.";
+
+/// Whether discards reach the physical device under the hidden volume: a
+/// cryptsetup mapping forwards TRIM (at runtime or through a stored LUKS2 flag)
+/// and the stack is not a RAM-only zram device.
+fn discards_over_hidden(layers: &[Layer]) -> bool {
+    if layers.iter().any(Layer::is_ram_backed) {
+        return false;
+    }
+    layers.iter().any(Layer::forwards_discards)
 }
 
 // ============================================================================
