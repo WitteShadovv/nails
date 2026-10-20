@@ -30,7 +30,8 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// - [`ExitStatus::Config`] when the configuration file could not be loaded
 /// - [`ExitStatus::InvalidState`] in the hidden session
 /// - [`ExitStatus::Usage`] when confirmation is needed but stdin is not a terminal
-/// - [`ExitStatus::Failed`] when the operator declines, or on a lock or removal failure
+/// - [`ExitStatus::Cancelled`] when the operator declines
+/// - [`ExitStatus::Failed`] on a lock or removal failure
 pub fn execute(
     settings: &OutputSettings,
     env: &nails_core::RuntimeEnv,
