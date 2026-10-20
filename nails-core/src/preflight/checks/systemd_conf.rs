@@ -137,7 +137,7 @@ pub fn section_assignments<F: Filesystem>(
 ) -> Vec<Assignment> {
     let mut out = Vec::new();
     for file in config_files(fs, root, name) {
-        let Ok(text) = fs.read_file_content(&file) else {
+        let Some(text) = read_config_text(fs, &file) else {
             continue;
         };
         if parse_section(&text, section, &mut out).is_err() {
@@ -145,6 +145,63 @@ pub fn section_assignments<F: Filesystem>(
         }
     }
     out
+}
+
+/// The text of configuration file `path`, read the way systemd reads it.
+///
+/// systemd reads a configuration file line by line, so a line that is not valid
+/// UTF-8 — a Latin-1 comment, say — is dropped, not the whole file.
+/// [`Filesystem::read_file_content`] instead rejects a file with any invalid
+/// byte outright, which would make a `Storage=persistent` below such a comment
+/// vanish and a persistent decoy journal read as volatile. So on invalid UTF-8
+/// the bytes are read and decoded line by line ([`decode_config_bytes`]).
+///
+/// The byte fallback runs only for the real filesystem — the in-memory test
+/// double holds valid UTF-8 and never reports invalid data — and reads with
+/// `O_NOATIME`, so it leaves no access-time trail on the decoy as the normal
+/// read does. `None` when the file cannot be read.
+pub fn read_config_text<F: Filesystem>(fs: &F, path: &Path) -> Option<String> {
+    match fs.read_file_content(path) {
+        Ok(text) => Some(text),
+        Err(e) if e.io_kind() == Some(std::io::ErrorKind::InvalidData) => {
+            read_config_bytes_noatime(path)
+                .ok()
+                .map(|bytes| decode_config_bytes(&bytes))
+        }
+        Err(_) => None,
+    }
+}
+
+/// Read `path`'s bytes without updating its access time, for the UTF-8 fallback
+/// in [`read_config_text`].
+fn read_config_bytes_noatime(path: &Path) -> std::io::Result<Vec<u8>> {
+    use rustix::fs::{Mode, OFlags, open};
+    use std::io::Read;
+    let fd = nails_teardown::noatime::with_noatime(|noatime| {
+        open(
+            path,
+            OFlags::RDONLY | OFlags::CLOEXEC | noatime,
+            Mode::empty(),
+        )
+    })
+    .map_err(std::io::Error::from)?;
+    let mut bytes = Vec::new();
+    std::fs::File::from(fd).read_to_end(&mut bytes)?;
+    Ok(bytes)
+}
+
+/// Decode a configuration file's bytes the way systemd reads it: line by line
+/// ([`config_lines`]), keeping every line that is valid UTF-8 and dropping the
+/// rest, then rejoining the kept lines with `\n` for [`parse_section`]. A line
+/// that is not valid UTF-8 cannot be a `Key=value` systemd would apply, so
+/// dropping it changes no assignment; it only stops one bad line (a Latin-1
+/// comment) from hiding the rest of the file.
+pub fn decode_config_bytes(bytes: &[u8]) -> String {
+    config_lines(bytes)
+        .into_iter()
+        .filter_map(|line| std::str::from_utf8(line).ok())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// Whether any file of configuration `name` exists under `root`.
@@ -205,12 +262,11 @@ fn is_ws(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\r')
 }
 
-/// The lines of `text` as systemd's `read_line()` reads a configuration file:
-/// a line ends at a newline, a carriage return or a NUL, and a run of these
-/// ends one line as long as no kind repeats in it, so `\r\n` and `\n\r` end
-/// one line and `\n\n` two. A NUL ends its line at once.
-fn read_lines(text: &str) -> Vec<&str> {
-    let bytes = text.as_bytes();
+/// The byte lines of a configuration file as systemd's `read_line()` reads
+/// them: a line ends at a newline, a carriage return or a NUL, and a run of
+/// these ends one line as long as no kind repeats in it, so `\r\n` and `\n\r`
+/// end one line and `\n\n` two. A NUL ends its line at once.
+fn config_lines(bytes: &[u8]) -> Vec<&[u8]> {
     let mut lines = Vec::new();
     let mut at = 0;
     while at < bytes.len() {
@@ -232,9 +288,19 @@ fn read_lines(text: &str) -> Vec<&str> {
             seen |= kind;
             at += 1;
         }
-        lines.push(&text[start..end]);
+        lines.push(&bytes[start..end]);
     }
     lines
+}
+
+/// The lines of `text`, split as [`config_lines`] splits the bytes. The input
+/// is UTF-8 and every split falls on an ASCII terminator, so each line slice is
+/// itself valid UTF-8.
+fn read_lines(text: &str) -> Vec<&str> {
+    config_lines(text.as_bytes())
+        .into_iter()
+        .map(|line| std::str::from_utf8(line).unwrap_or_default())
+        .collect()
 }
 
 /// Whether `line` ends in a backslash that is not itself escaped.
@@ -598,5 +664,57 @@ mod tests {
             "[Journal]\nStorage=persistent\n",
         );
         assert_eq!(values(root, "Storage"), vec!["volatile"]);
+    }
+
+    /// systemd reads a configuration file line by line, so a comment that is
+    /// not valid UTF-8 (a Latin-1 byte) does not hide the rest of the file. A
+    /// whole-file UTF-8 read rejects the file outright and would miss the
+    /// `Storage=persistent` below such a comment, reading a persistent decoy
+    /// journal as volatile.
+    #[test]
+    fn a_latin1_comment_does_not_hide_a_later_assignment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // 0xFC is 'ü' in Latin-1 and never a valid UTF-8 byte.
+        let mut bytes = b"[Journal]\n# Gr".to_vec();
+        bytes.push(0xFC);
+        bytes.extend_from_slice(b"n\nStorage=persistent\n");
+        let path = root.join("etc/systemd/journald.conf");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+
+        // The whole-file UTF-8 read rejects it with InvalidData...
+        assert_eq!(
+            RealFilesystem
+                .read_file_content(&path)
+                .unwrap_err()
+                .io_kind(),
+            Some(std::io::ErrorKind::InvalidData)
+        );
+        // ...but the config read keeps the valid lines, so the assignment below
+        // the Latin-1 comment is seen.
+        assert_eq!(
+            last_value(
+                &section_assignments(&RealFilesystem, root, "journald.conf", "Journal"),
+                "Storage"
+            ),
+            Some("persistent")
+        );
+    }
+
+    #[test]
+    fn decode_config_bytes_keeps_valid_lines_and_drops_the_rest() {
+        let mut bytes = b"[Journal]\nStorage=persistent\n".to_vec();
+        bytes.push(0xFF); // a lone invalid byte, on its own line
+        bytes.extend_from_slice(b"\nCompress=no\n");
+        let text = decode_config_bytes(&bytes);
+        assert!(text.contains("Storage=persistent"), "{text}");
+        assert!(text.contains("Compress=no"), "{text}");
+        assert!(!text.as_bytes().contains(&0xFF), "{text:?}");
+        // Pure ASCII round-trips unchanged.
+        assert_eq!(
+            decode_config_bytes(b"[Journal]\nStorage=auto\n"),
+            "[Journal]\nStorage=auto"
+        );
     }
 }

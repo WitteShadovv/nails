@@ -26,7 +26,7 @@
 //! own log history is itself a deniability tell.
 
 use super::systemd_conf::{self, Assignment};
-use crate::Filesystem;
+use crate::{Filesystem, runtime_safety};
 use std::path::Path;
 
 /// journald's configuration name; resolved with its drop-ins by
@@ -37,6 +37,18 @@ const JOURNAL_SECTION: &str = "Journal";
 /// Persistent journal directory journald creates under `Storage=persistent`/`auto`,
 /// relative to the root.
 const JOURNAL_DIR: &str = "var/log/journal";
+/// The vendor configuration file, relative to the root: the one place whose
+/// commented `#Storage=` NAILS trusts for the built-in default (see
+/// [`vendor_storage_hint`]).
+const VENDOR_CONF_DIR: &str = "usr/lib/systemd";
+/// The first systemd release whose built-in `Storage=` default is `persistent`
+/// rather than `auto` (systemd v259 NEWS).
+const PERSISTENT_DEFAULT_SINCE: u32 = 259;
+/// The system credential store directories, highest priority first, relative to
+/// the root. journald imports `journal.storage` from here (systemd >= 257).
+const CREDSTORE_DIRS: &[&str] = &["etc/credstore", "run/credstore", "usr/lib/credstore"];
+/// The credential journald reads to set `Storage=`.
+const STORAGE_CREDENTIAL: &str = "journal.storage";
 
 /// Effective `Storage=` setting of systemd-journald.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +63,18 @@ pub enum JournaldStorage {
     Auto,
 }
 
+/// One `Storage=` value, as journald matches it: exactly, case-sensitive and
+/// without unquoting. An unrecognised value is `None`.
+fn storage_value(value: &str) -> Option<JournaldStorage> {
+    match value {
+        "persistent" => Some(JournaldStorage::Persistent),
+        "volatile" => Some(JournaldStorage::Volatile),
+        "none" => Some(JournaldStorage::None),
+        "auto" => Some(JournaldStorage::Auto),
+        _ => None,
+    }
+}
+
 /// Fold `Storage=` assignments, in application order, into the effective value.
 ///
 /// journald matches values exactly (case-sensitive, no unquoting), so an
@@ -58,20 +82,109 @@ pub enum JournaldStorage {
 /// rather than silently downgrading to the default. An empty `Storage=` is
 /// taken as a reset to the built-in default, the conservative reading. Returns
 /// `None` when no valid `Storage=` is in effect, which leaves journald's
-/// built-in `auto` default to the caller.
+/// built-in default to the caller.
 fn storage_from(assignments: &[Assignment]) -> Option<JournaldStorage> {
     let mut storage = None;
     for assignment in assignments.iter().filter(|a| a.key == "Storage") {
         match assignment.value.as_str() {
-            "persistent" => storage = Some(JournaldStorage::Persistent),
-            "volatile" => storage = Some(JournaldStorage::Volatile),
-            "none" => storage = Some(JournaldStorage::None),
-            "auto" => storage = Some(JournaldStorage::Auto),
             "" => storage = None,
-            _ => {}
+            value => {
+                if let Some(parsed) = storage_value(value) {
+                    storage = Some(parsed);
+                }
+            }
         }
     }
     storage
+}
+
+/// journald's built-in `Storage=` default when no configuration and no
+/// credential set it, by service-manager version.
+///
+/// Below systemd 259 the default is `auto`; from 259 it is `persistent` (v259
+/// NEWS), unless the *vendor* `usr/lib/systemd/journald.conf` documents a
+/// different default in its commented `#Storage=` (a distro that kept the old
+/// `auto`). An unknown version fails closed to `persistent`: a decoy whose
+/// journal might reach the disk is surfaced rather than assumed amnesic.
+pub fn built_in_default(
+    systemd_major: Option<u32>,
+    vendor_hint: Option<JournaldStorage>,
+) -> JournaldStorage {
+    match systemd_major {
+        Some(version) if version < PERSISTENT_DEFAULT_SINCE => JournaldStorage::Auto,
+        Some(_) => vendor_hint.unwrap_or(JournaldStorage::Persistent),
+        None => JournaldStorage::Persistent,
+    }
+}
+
+/// The effective `Storage=` from the three sources, in journald's precedence:
+/// an explicit assignment in any configuration file wins; failing that the
+/// `journal.storage` credential; failing that the version's built-in default.
+fn resolve_storage(
+    explicit: Option<JournaldStorage>,
+    credential: Option<JournaldStorage>,
+    vendor_hint: Option<JournaldStorage>,
+    systemd_major: Option<u32>,
+) -> JournaldStorage {
+    explicit
+        .or(credential)
+        .unwrap_or_else(|| built_in_default(systemd_major, vendor_hint))
+}
+
+/// The `[Journal] #Storage=` the vendor file documents as the built-in default,
+/// if any. Only `usr/lib/systemd/journald.conf` is read, and only its commented
+/// hint: a distro that keeps journald's pre-259 `auto` default documents it
+/// there, while a stale `/etc` comment is never trusted. The last commented
+/// `Storage=` under `[Journal]` wins, as journald would fold real assignments.
+fn vendor_storage_hint<F: Filesystem>(fs: &F, root: &Path) -> Option<JournaldStorage> {
+    let path = root.join(VENDOR_CONF_DIR).join(JOURNALD_CONF);
+    let text = systemd_conf::read_config_text(fs, &path)?;
+    let mut in_section = false;
+    let mut hint = None;
+    for line in text.lines() {
+        let line = line.trim_start_matches([' ', '\t']);
+        if let Some(header) = line.strip_prefix('[') {
+            in_section = header.strip_suffix(']') == Some(JOURNAL_SECTION);
+            continue;
+        }
+        let Some(rest) = line.strip_prefix('#').or_else(|| line.strip_prefix(';')) else {
+            continue;
+        };
+        if !in_section {
+            continue;
+        }
+        if let Some((key, value)) = rest.split_once('=')
+            && key.trim() == "Storage"
+            && let Some(parsed) = storage_value(value.trim())
+        {
+            hint = Some(parsed);
+        }
+    }
+    hint
+}
+
+/// The `journal.storage` system credential's value, if a plaintext credstore
+/// holds it (systemd >= 257). Encrypted credstores and credentials passed at
+/// boot (kernel command line, SMBIOS, firmware) are not visible to a filesystem
+/// read, so this is best-effort; a credential only counts when no configuration
+/// file set `Storage=`.
+fn storage_credential<F: Filesystem>(fs: &F, root: &Path) -> Option<JournaldStorage> {
+    CREDSTORE_DIRS
+        .iter()
+        .map(|dir| root.join(dir).join(STORAGE_CREDENTIAL))
+        .find_map(|path| fs.read_file_content(&path).ok())
+        .and_then(|text| storage_value(text.trim()))
+}
+
+/// The running service manager's major version, or `None` when it cannot be
+/// read or host interaction is skipped (a unit-test binary). `None` makes the
+/// built-in default fail closed, so a decoy of an unknown systemd is treated as
+/// persistent rather than assumed amnesic.
+fn host_systemd_major() -> Option<u32> {
+    if runtime_safety::should_skip_host_interaction() {
+        return None;
+    }
+    nails_session::session::systemd::running_version(&crate::process::RealProcessRunner)
 }
 
 /// Parse the effective `Storage=` value from one journald configuration text.
@@ -90,12 +203,18 @@ pub fn effective_journald_storage<F: Filesystem>(fs: &F) -> JournaldStorage {
     effective_journald_storage_at(fs, Path::new("/"))
 }
 
-/// [`effective_journald_storage`] for the system tree rooted at `root`. When
-/// nothing sets a valid `Storage=`, journald runs on its built-in default
-/// (`auto`).
+/// [`effective_journald_storage`] for the system tree rooted at `root`. When no
+/// configuration file sets a valid `Storage=`, the `journal.storage` credential
+/// decides, and failing that journald's version-dependent built-in default
+/// ([`built_in_default`]).
 pub fn effective_journald_storage_at<F: Filesystem>(fs: &F, root: &Path) -> JournaldStorage {
     let assignments = systemd_conf::section_assignments(fs, root, JOURNALD_CONF, JOURNAL_SECTION);
-    storage_from(&assignments).unwrap_or(JournaldStorage::Auto)
+    resolve_storage(
+        storage_from(&assignments),
+        storage_credential(fs, root),
+        vendor_storage_hint(fs, root),
+        host_systemd_major(),
+    )
 }
 
 /// Whether `/var/log/journal` is a real on-disk directory (not tmpfs, not
@@ -226,15 +345,116 @@ mod tests {
     }
 
     #[test]
-    fn missing_config_defaults_to_auto() {
-        let fs = MockFilesystem::new();
-        assert_eq!(effective_journald_storage(&fs), JournaldStorage::Auto);
+    fn built_in_default_is_version_and_vendor_aware() {
+        // Below 259 the default is auto, whatever the vendor documents.
+        assert_eq!(built_in_default(Some(255), None), JournaldStorage::Auto);
+        assert_eq!(
+            built_in_default(Some(258), Some(JournaldStorage::Persistent)),
+            JournaldStorage::Auto
+        );
+        // From 259 the default is persistent, unless the vendor file documents
+        // another one in its commented #Storage=.
+        assert_eq!(
+            built_in_default(Some(259), None),
+            JournaldStorage::Persistent
+        );
+        assert_eq!(
+            built_in_default(Some(262), Some(JournaldStorage::Auto)),
+            JournaldStorage::Auto
+        );
+        // An unknown version fails closed, ignoring any vendor hint.
+        assert_eq!(built_in_default(None, None), JournaldStorage::Persistent);
+        assert_eq!(
+            built_in_default(None, Some(JournaldStorage::Volatile)),
+            JournaldStorage::Persistent
+        );
     }
 
     #[test]
-    fn auto_without_journal_dir_does_not_persist() {
+    fn resolve_follows_conf_then_credential_then_default() {
+        // An explicit assignment wins over everything.
+        assert_eq!(
+            resolve_storage(
+                Some(JournaldStorage::Volatile),
+                Some(JournaldStorage::Persistent),
+                Some(JournaldStorage::Auto),
+                Some(259),
+            ),
+            JournaldStorage::Volatile
+        );
+        // No assignment: the credential decides, over the built-in default.
+        assert_eq!(
+            resolve_storage(None, Some(JournaldStorage::None), None, None),
+            JournaldStorage::None
+        );
+        // Neither: the version-and-vendor built-in default.
+        assert_eq!(
+            resolve_storage(None, None, None, Some(259)),
+            JournaldStorage::Persistent
+        );
+        assert_eq!(
+            resolve_storage(None, None, Some(JournaldStorage::Auto), Some(259)),
+            JournaldStorage::Auto
+        );
+    }
+
+    #[test]
+    fn an_unknown_version_with_no_config_counts_as_persistent() {
+        // Under the unit-test runtime the running version cannot be read, so
+        // the built-in default is the fail-closed one: a decoy with no journald
+        // configuration counts as persistent and is refused.
         let fs = MockFilesystem::new();
+        assert_eq!(effective_journald_storage(&fs), JournaldStorage::Persistent);
+        assert!(journald_persists_to_decoy(&fs));
+    }
+
+    #[test]
+    fn the_storage_credential_decides_when_no_conf_sets_storage() {
+        // A credstore holding journal.storage=volatile keeps the journal in RAM
+        // even though the unknown version would otherwise fail closed.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/run/credstore/journal.storage", "volatile\n");
+        assert_eq!(effective_journald_storage(&fs), JournaldStorage::Volatile);
         assert!(!journald_persists_to_decoy(&fs));
+        // An explicit Storage= in a conf file still wins over the credential.
+        fs.mock_add_file(MAIN, "[Journal]\nStorage=persistent\n");
+        assert_eq!(effective_journald_storage(&fs), JournaldStorage::Persistent);
+    }
+
+    #[test]
+    fn a_vendor_comment_is_the_default_hint_but_etc_comments_are_ignored() {
+        // The vendor file's commented #Storage=auto documents a kept pre-259
+        // default; built_in_default(>=259, this hint) then reads as auto (see
+        // built_in_default_is_version_and_vendor_aware).
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            root,
+            "usr/lib/systemd/journald.conf",
+            "[Journal]\n#Storage=auto\n#Compress=yes\n",
+        );
+        assert_eq!(
+            vendor_storage_hint(&RealFilesystem, root),
+            Some(JournaldStorage::Auto)
+        );
+        // A comment in /etc is never read as the default hint.
+        write(
+            root,
+            "etc/systemd/journald.conf",
+            "[Journal]\n#Storage=persistent\n",
+        );
+        assert_eq!(
+            vendor_storage_hint(&RealFilesystem, root),
+            Some(JournaldStorage::Auto)
+        );
+        // A real (non-comment) vendor assignment is an explicit setting, not a
+        // hint, so it is not picked up as the commented default.
+        write(
+            root,
+            "usr/lib/systemd/journald.conf",
+            "[Journal]\nStorage=persistent\n",
+        );
+        assert_eq!(vendor_storage_hint(&RealFilesystem, root), None);
     }
 
     #[test]

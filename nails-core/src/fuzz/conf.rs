@@ -6,6 +6,7 @@
 //! sections are ignored.
 
 use crate::preflight::checks::sleep_policy::{LogindSleepSettings, parse_logind_sleep};
+use crate::preflight::checks::systemd_conf::decode_config_bytes;
 use crate::preflight::checks::{JournaldStorage, parse_journald_storage};
 use proptest::prelude::*;
 
@@ -134,5 +135,17 @@ proptest! {
     fn fuzz_conf_parsers_never_panic(text in "\\PC{0,300}") {
         let _ = parse_journald_storage(&text);
         parse_logind_sleep(&text, &mut LogindSleepSettings::default());
+    }
+
+    /// The UTF-8 decode NAILS applies to a configuration file's raw bytes is
+    /// total, emits no line terminator but the newline the parser splits on,
+    /// and preserves every non-empty line across a re-decode (runs of blank
+    /// lines coalesce, which the parser ignores).
+    #[test]
+    fn fuzz_decode_config_bytes_preserves_content_lines(bytes in prop::collection::vec(any::<u8>(), 0..300)) {
+        let text = decode_config_bytes(&bytes);
+        prop_assert!(!text.contains(['\r', '\0']));
+        let nonempty = |s: &str| s.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect::<Vec<_>>();
+        prop_assert_eq!(nonempty(&decode_config_bytes(text.as_bytes())), nonempty(&text));
     }
 }
