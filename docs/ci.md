@@ -27,6 +27,7 @@ Tier 3 is everything a contributor must pass to merge. The informational `fuzz` 
 | `.github/workflows/scheduled.yml` | Weekly, twice-weekly and monthly schedules, dispatch with a `task` input | — | 4 | `ubuntu-26.04` | `just deny-full`, `just stress`, `cargo bench`, `just mutants` |
 | `.github/workflows/fuzz.yml` | PRs to `main` and `next` that change fuzzed code, daily schedule, dispatch | — (informational) | 3 (pull requests, outside its budget) and 4 (schedules) | `ubuntu-26.04` | `just fuzz-run <target>` |
 | `.github/workflows/mutants-in-diff.yml` | PRs to `main` and `next` | — (informational, never blocks) | 3 (pull requests, outside its budget) | `ubuntu-26.04` | `just mutants-in-diff <diff> <shard> <shards>` |
+| `.github/workflows/soak.yml` | Weekly, dispatch | — (informational) | 4 | `ubuntu-26.04` (KVM) | `nix build .#e2e.soak-reentry` |
 | `.github/workflows/reproducibility.yml` | `workflow_call` from `release.yml`, weekly from `scheduled.yml` | — | 4 | `ubuntu-26.04` | `nix build .#nails-release` |
 | `.github/workflows/sbom.yml` | `workflow_call` from `release.yml` and `ci.yml` | — (`gate` in `ci.yml`) | 3 (when what the SBOM is made from changes) and release | `ubuntu-26.04` | `cargo cyclonedx` ([security-validation.md](security-validation.md#generate-locally)) |
 | `.github/workflows/scorecard.yml` | Push to `main`, weekly, branch protection rule change, dispatch | — (informational) | 4 | `ubuntu-26.04` | — |
