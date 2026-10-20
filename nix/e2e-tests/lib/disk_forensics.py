@@ -791,19 +791,44 @@ def run_content_hashes(
 # --- MAC-time and content diff against a control run --------------------------
 
 # Paths on an image (fls-relative, no leading slash) that change on their own
-# across a reboot: runtime state under /var, /run and /tmp, the per-boot
-# machine id, resolver config and SSH host keys, NixOS's /etc activation stamps
-# and the Nix store's own bookkeeping. A test may pass a wider pattern.
-#: ``bin/sh`` and ``usr/bin/env`` are links the NixOS activation replaces (a new
-#: inode each time) whenever the decoy's userspace starts, at a boot and at
-#: the soft-reboot back from a hidden session alike: the way back starts the
-#: decoy once more, the same as a reboot would.
-DEFAULT_IMAGE_VOLATILE = re.compile(
-    r"(^|/)("
+# across a reboot: runtime state under /var, /run and /tmp, the per-boot machine
+# id, resolver config and SSH host keys, and NixOS's /etc activation stamps.
+# Every distribution gets these; a test may pass a wider pattern.
+_GENERIC_IMAGE_VOLATILE = (
     r"var/|run/|tmp/|etc/machine-id|etc/resolv\.conf|etc/ssh/ssh_host_|"
-    r"etc/\.(updated|clean)|nix/var/|nix/store/\.links|bin/sh$|usr/bin/env$"
-    r")"
+    r"etc/\.(updated|clean)"
 )
+
+# Extra entries only a NixOS decoy legitimately churns at every boot: the Nix
+# store's own bookkeeping, and the ``bin/sh`` and ``usr/bin/env`` links the
+# NixOS activation replaces (a new inode each time) whenever the decoy's
+# userspace starts -- at a boot and at the soft-reboot back from a hidden
+# session alike, since the way back starts the decoy once more, the same as a
+# reboot would. On an FHS distribution none of these is activation noise: a
+# changed ``/bin/sh`` or a store path that appeared there is a real finding, so
+# they are allowlisted only when the decoy's os-id is NixOS.
+_NIXOS_IMAGE_VOLATILE = r"nix/var/|nix/store/\.links|bin/sh$|usr/bin/env$"
+
+
+def image_volatile(os_id: str = "nixos") -> re.Pattern[str]:
+    """The image-volatile allowlist for a decoy of the given os-id.
+
+    Every distribution gets the generic boot-noise paths; a NixOS decoy also
+    gets the activation-churn entries, which on any other distribution would
+    mask a real change. ``os_id`` is the ``/etc/os-release`` ID (``"nixos"``,
+    ``"debian"``, ``"ubuntu"``, …); the default keeps the historical NixOS
+    behaviour for callers that pass nothing.
+    """
+    alternatives = _GENERIC_IMAGE_VOLATILE
+    if os_id == "nixos":
+        alternatives = f"{alternatives}|{_NIXOS_IMAGE_VOLATILE}"
+    return re.compile(rf"(^|/)({alternatives})")
+
+
+#: The NixOS decoy's allowlist, kept as a module constant for the NixOS forensic
+#: tests that reference it directly. Equal to ``image_volatile("nixos")`` and
+#: byte-identical to the pattern these tests have always used.
+DEFAULT_IMAGE_VOLATILE = image_volatile("nixos")
 
 
 @dataclass(frozen=True)
