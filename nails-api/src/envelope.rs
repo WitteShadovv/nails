@@ -196,7 +196,10 @@ mod tests {
 
     #[test]
     fn error_envelope_carries_code_message_and_a_null_next() {
-        let env = error_envelope("activate", ErrorBody::new("not_ready", "Not ready: 2 problems."));
+        let env = error_envelope(
+            "activate",
+            ErrorBody::new("not_ready", "Not ready: 2 problems."),
+        );
         let value: serde_json::Value = serde_json::from_str(&env.to_line()).unwrap();
         assert_eq!(value["ok"], false);
         assert_eq!(value["error"]["code"], "not_ready");

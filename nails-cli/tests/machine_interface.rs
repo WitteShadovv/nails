@@ -223,7 +223,10 @@ fn verify_json_matches_the_schema() {
     let (code, value) = run_json(&config, &["verify"]);
 
     // Secure => 0, warning => 10, critical => 11, run error => 1.
-    assert!(matches!(code, 0 | 1 | 10 | 11), "verify exit {code}: {value}");
+    assert!(
+        matches!(code, 0 | 1 | 10 | 11),
+        "verify exit {code}: {value}"
+    );
     assert_valid("verify", &value);
     assert_eq!(value["command"], "verify");
     // ok is true only for a secure scan (exit 0); 10 and 11 are not ok.

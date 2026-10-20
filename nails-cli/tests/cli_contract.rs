@@ -709,7 +709,10 @@ fn activate_schema_accepts_one_result_or_error_envelope() {
     let bad = serde_json::json!({
         "schema_version": 2, "command": "activate", "ok": true, "data": {"status": "entering"}
     });
-    assert!(!validator.is_valid(&bad), "incomplete data must be rejected");
+    assert!(
+        !validator.is_valid(&bad),
+        "incomplete data must be rejected"
+    );
 }
 
 #[test]

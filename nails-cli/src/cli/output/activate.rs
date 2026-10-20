@@ -152,9 +152,7 @@ fn failure_error(error: &NailsError) -> ErrorBody {
         NailsError::PreFlightCheckFailed(_) => {
             ErrorBody::new("not_ready", "Pre-flight checks failed")
         }
-        NailsError::UnsupportedPlatform { .. } => {
-            ErrorBody::new("unsupported", error.to_string())
-        }
+        NailsError::UnsupportedPlatform { .. } => ErrorBody::new("unsupported", error.to_string()),
         other => ErrorBody::new("activation_failed", format!("Activation failed: {other}")),
     }
 }
