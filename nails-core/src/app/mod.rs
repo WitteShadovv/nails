@@ -26,6 +26,7 @@ pub mod lock;
 pub mod readiness;
 pub mod recover;
 pub mod refusal;
+pub mod rehearse;
 pub mod status;
 pub mod verify;
 
