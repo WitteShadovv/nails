@@ -117,9 +117,13 @@ What it does not offer:
 - **Deniability of the hidden volume itself.** Whether a hidden volume can be
   told apart from random data or an outer volume's free space depends on the
   backend, not on NAILS. A LUKS volume next to the decoy is visibly an
-  encrypted volume; a VeraCrypt hidden volume is indistinguishable from its
-  outer volume's free space, but the outer volume is visible. NAILS adds
-  nothing to the backend's own claim.
+  encrypted volume. VeraCrypt's own claim is conditional: a hidden volume
+  should be impossible to prove exists *provided its requirements are
+  followed*, and its
+  [documentation](https://veracrypt.jp/en/Hidden%20Volume.html) notes that
+  multiple snapshots of the disk over time, wear-levelling or TRIM can still
+  reveal one; the outer volume is in any case visible. NAILS adds nothing to
+  the backend's own claim.
 - **Compelled disclosure of the hidden volume.** Whoever obtains the hidden
   volume's credentials sees everything: the hidden data, NAILS itself and its
   configuration. Out of scope.
@@ -352,10 +356,13 @@ has the whole catalog.
 
 ## Answer to "cannot trust the OS"
 
-A common argument, made for example by the Shufflecake authors, is that hiding
-a whole operating system by customising it to avoid leaks is hopeless: every
-application, daemon and indexer may write somewhere, and auditing them one by
-one never ends.
+A common argument is that hiding a whole operating system by tuning it
+application by application to avoid leaks is endless work: every application,
+daemon and indexer may write somewhere, and auditing them one by one never
+finishes. The Shufflecake authors, for instance, say in their
+[FAQ](https://shufflecake.net/) that they do not try to stop the operating
+system from logging, and treat a fully hidden operating system as hard enough
+that theirs is still in progress (a booting prototype).
 
 NAILS does not tune individual applications. It redirects **every write outside
 pseudo filesystems at the mount layer**: the hidden session runs entirely inside

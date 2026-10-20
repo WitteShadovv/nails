@@ -448,9 +448,11 @@ The full runbook, including cleaning up by hand when `recover` cannot run, is in
 <summary><b>FAQ</b></summary>
 
 **Does NAILS hide that a hidden volume exists?** No. That depends on the backend:
-a VeraCrypt hidden volume cannot be told apart from its outer volume's free
-space, a LUKS volume is visibly an encrypted volume. NAILS adds nothing to the
-backend's claim. It keeps the *session* off the decoy.
+VeraCrypt's own claim is conditional — it should be impossible to prove a hidden
+volume exists *if* VeraCrypt's requirements are followed, and its documentation
+notes that multiple disk snapshots over time, wear-levelling or TRIM can still
+betray one — while a LUKS volume is visibly an encrypted volume. NAILS adds
+nothing to the backend's claim. It keeps the *session* off the decoy.
 
 **Can I keep working on the decoy while the hidden session runs?** No. Only one
 of them runs at a time; switching logs you out of the other.
