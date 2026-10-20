@@ -3,7 +3,7 @@
 
 //! Artifact-file, block-device, process and memory checks, with the finding/severity helpers they share.
 
-use super::session::{CHECK_DECOY_OFFLINE, HiddenSession};
+use super::session::{HiddenSession, check_decoy_offline};
 use super::*;
 
 impl<F: Filesystem> Verifier<F> {
@@ -103,8 +103,9 @@ impl<F: Filesystem> Verifier<F> {
                 Finding::new(Severity::Info, "file", found).with_fix_guidance(format!(
                     "The hidden session's own copy, in its hidden layer ({}); the decoy is not \
                  written. The session cannot see the decoy beneath it: to check the decoy, \
-                 {CHECK_DECOY_OFFLINE}",
-                    upper.display()
+                 {}",
+                    upper.display(),
+                    check_decoy_offline()
                 )),
             );
         }
@@ -113,7 +114,8 @@ impl<F: Filesystem> Verifier<F> {
                 format!(
                     "Trace on the decoy filesystem, seen through the hidden session. Deleting it \
                  here only hides it in the hidden layer: remove it on the decoy after the \
-                 return, or first confirm it ({CHECK_DECOY_OFFLINE})"
+                 return, or first confirm it ({})",
+                    check_decoy_offline()
                 ),
             ),
         )
@@ -337,8 +339,9 @@ fn runtime_fix_guidance(id: &str, path: &Path) -> String {
     let path = path.display();
     match id {
         "runtime-copy-dir" => format!(
-            "Leftover of an interrupted activation, in RAM; run 'nails recover' on the decoy, \
-             or power off (then confirm {path} is gone)"
+            "Leftover of an interrupted activation, in RAM; run '{}' on the decoy, \
+             or power off (then confirm {path} is gone)",
+            nails_base::next_step::sudo_line(nails_base::next_step::NextStep::Recover)
         ),
         "read-only-disks-rule" => format!(
             "Left by a way back that did not finish, in RAM; power off, or remove it as \

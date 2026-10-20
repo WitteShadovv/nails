@@ -115,10 +115,13 @@ fn an_accepted_override_is_shown_in_both_forms() {
 fn a_degraded_posture_shows_its_reason_and_remedy() {
     let mut degraded = report(Posture::Degraded, "interrupted");
     degraded.reason = Some("an interrupted activation left a populated /run/nextroot".into());
-    degraded.remediation = Some("Run `nails recover` to remove them");
+    degraded.remediation = Some("Run `sudo /mnt/data/nails recover` to remove them".to_string());
     let lines = status_lines(&degraded, false, Style::default(), &chrono::Utc).join("\n");
     assert!(lines.contains("/run/nextroot"), "{lines}");
-    assert!(lines.contains("nails recover"), "{lines}");
+    assert!(
+        lines.contains("sudo") && lines.contains("recover"),
+        "{lines}"
+    );
 }
 
 #[test]

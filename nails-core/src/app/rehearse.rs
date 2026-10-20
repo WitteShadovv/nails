@@ -113,22 +113,34 @@ pub fn phase_name(state: Option<&RehearsalState>) -> &'static str {
     }
 }
 
-/// The guided next step for where the rehearsal stands, run `here`.
+/// The guided next step for where the rehearsal stands, run `here`. Each nails
+/// command is named with the real binary path, through the one renderer.
 pub fn next_step(state: Option<&RehearsalState>, here: &Here) -> String {
+    use crate::next_step::{NextStep, sudo_line};
     match state {
         None if here.session.is_some() => {
-            "Step 1 of 3: run `nails rehearse plant` in this hidden session.".into()
+            format!(
+                "Step 1 of 3: run `{}` in this hidden session.",
+                sudo_line(NextStep::RehearsePlant)
+            )
         }
-        None => "Step 1 of 3: activate a hidden session, then run `nails rehearse plant`.".into(),
-        Some(s) if s.phase == Phase::Planted && s.planted_in_this_session(here) => {
-            "Step 2 of 3: deactivate as usual (`nails deactivate`, it soft-reboots back to the \
-             decoy), then unlock and mount the hidden volume again and run `nails rehearse scan`."
-                .into()
+        None => format!(
+            "Step 1 of 3: activate a hidden session, then run `{}`.",
+            sudo_line(NextStep::RehearsePlant)
+        ),
+        Some(s) if s.phase == Phase::Planted && s.planted_in_this_session(here) => format!(
+            "Step 2 of 3: deactivate as usual (`{}`, it soft-reboots back to the decoy), then \
+             unlock and mount the hidden volume again and run `{}`.",
+            sudo_line(NextStep::Deactivate),
+            sudo_line(NextStep::RehearseScan)
+        ),
+        Some(s) if s.phase == Phase::Planted => {
+            format!("Step 3 of 3: run `{}`.", sudo_line(NextStep::RehearseScan))
         }
-        Some(s) if s.phase == Phase::Planted => "Step 3 of 3: run `nails rehearse scan`.".into(),
-        Some(_) => "Done. Scan again any time, or run `nails rehearse reset` to remove the \
-                    rehearsal from the hidden volume."
-            .into(),
+        Some(_) => format!(
+            "Done. Scan again any time, or run `{}` to remove the rehearsal from the hidden volume.",
+            sudo_line(NextStep::RehearseReset)
+        ),
     }
 }
 
@@ -231,8 +243,9 @@ impl Rehearsal {
                     ExitStatus::InvalidState,
                     "already_planted",
                     format!(
-                        "rehearsal {} is already planted; scan it, or run `nails rehearse reset` first",
-                        existing.fingerprint()
+                        "rehearsal {} is already planted; scan it, or run `{}` first",
+                        existing.fingerprint(),
+                        crate::next_step::sudo_line(crate::next_step::NextStep::RehearseReset)
                     ),
                 )));
             }

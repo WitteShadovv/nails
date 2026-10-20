@@ -76,6 +76,8 @@ pub mod naming;
 // The FHS family a host belongs to: shared vocabulary for detection, the state
 // file and the residue catalogue.
 pub mod host_family;
+// The next command the operator should run, rendered with the real binary path.
+pub mod next_step;
 
 // The parsers of `/etc/fstab` and `/etc/crypttab`.
 pub mod crypttab;

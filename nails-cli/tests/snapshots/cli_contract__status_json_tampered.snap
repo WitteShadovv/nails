@@ -14,7 +14,7 @@ expression: redact_status(value)
     "persona_mode": "shared-home",
     "policy_mounts": [],
     "posture": "unknown",
-    "remediation": "Run `nails verify` and check the hidden volume before activating again",
+    "remediation": "Run `sudo [binary] verify` and check the hidden volume before activating again",
     "session": "decoy",
     "state": {
       "kind": "unknown",

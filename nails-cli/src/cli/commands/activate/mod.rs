@@ -214,8 +214,11 @@ pub fn execute(
             ExitStatus::InvalidState,
             ErrorBody::new(
                 "invalid_state",
-                "refusing to activate: the state file is corrupt or unreadable, so the \
-                 current state is unknown. Run 'nails verify' and recover the hidden volume first.",
+                format!(
+                    "refusing to activate: the state file is corrupt or unreadable, so the \
+                     current state is unknown. Run '{}' and recover the hidden volume first.",
+                    nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Verify)
+                ),
             ),
         );
     }

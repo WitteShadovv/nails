@@ -409,10 +409,12 @@ impl<F: Filesystem> NailsManager<F> {
                 "an activation is entering the hidden root right now".to_string(),
             )),
             SessionView::Hidden(_) | SessionView::HiddenWithoutPlan(_) => {
-                Err(NailsError::InvalidState(
-                    "in the hidden session: use `nails deactivate` (or `nails emergency`)"
-                        .to_string(),
-                ))
+                use crate::next_step::{NextStep, sudo_line};
+                Err(NailsError::InvalidState(format!(
+                    "in the hidden session: use `{}` (or `{}`)",
+                    sudo_line(NextStep::Deactivate),
+                    sudo_line(NextStep::Emergency)
+                )))
             }
         }
     }

@@ -330,7 +330,7 @@ fn status_of_a_planted_rehearsal_shows_its_fingerprint_channels_and_the_scan_ste
         "{stdout}"
     );
     assert!(
-        stdout.contains("-> Step 3 of 3: run `nails rehearse scan`."),
+        stdout.contains("-> Step 3 of 3: run `sudo ") && stdout.contains("rehearse scan`."),
         "{stdout}"
     );
 }
@@ -349,8 +349,9 @@ fn status_outside_a_hidden_session_names_the_scan_step_in_the_planting_boot() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let value = json(&output);
     assert_eq!(value["data"]["phase"], "planted");
-    assert_eq!(
-        value["data"]["next_step"], "Step 3 of 3: run `nails rehearse scan`.",
+    let next_step = value["data"]["next_step"].as_str().unwrap();
+    assert!(
+        next_step.starts_with("Step 3 of 3: run `sudo ") && next_step.ends_with("rehearse scan`."),
         "{value:#}"
     );
 }
