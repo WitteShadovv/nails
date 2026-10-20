@@ -129,6 +129,10 @@ read.
   cryptsetup attached; one you attached yourself with `losetup` needs
   `sudo losetup -d /dev/loopN`. `losetup -a` must not list the container
   afterwards.
+- **Version advisory:** per VeraCrypt's release notes, hidden volumes in file
+  containers created with VeraCrypt 1.26.6 through 1.26.28 may have weakened
+  deniability; this was fixed in 1.26.29. Create the volume with 1.26.29 or
+  later.
 
 ### VeraCrypt hidden volume on a whole device
 
@@ -156,6 +160,15 @@ VeraCrypt's hidden-volume protection, so writing to an outer volume opened by
 cryptsetup can overwrite the hidden volume. Open the outer volume with
 `--readonly` when you only need to show it, and refresh decoy content in the
 outer volume with the VeraCrypt application and its hidden-volume protection.
+
+VeraCrypt's own [Security Requirements for Hidden Volumes](https://veracrypt.jp/en/Security%20Requirements%20for%20Hidden%20Volumes.html)
+go further for Linux: it says a hidden volume there should be mounted only from
+a live system that writes to a RAM disk, and that otherwise one "must not mount
+or create hidden VeraCrypt volumes under Linux". NAILS does not use the
+VeraCrypt application to mount: it unlocks the hidden volume with cryptsetup
+inside the live or hidden session and writes only into an overlay on it, and it
+does not mount the outer volume. Weigh that against VeraCrypt's rule for your
+own threat model; NAILS claims nothing beyond where and how it unlocks.
 
 ### VeraCrypt volumes made with Argon2id
 
