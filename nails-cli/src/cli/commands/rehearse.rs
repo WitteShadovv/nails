@@ -16,7 +16,7 @@ use nails_core::{Config, RealFilesystem};
 use serde::Serialize;
 
 use crate::cli::args::{RehearseArgs, RehearsePlantArgs, RehearseScanArgs, RehearseStep};
-use crate::cli::output::envelope::{Envelope, ErrorBody, report_error};
+use crate::cli::output::envelope::{Envelope, EnvelopePrint, ErrorBody, report_error};
 use crate::cli::output::refusal::report_refusal;
 use crate::cli::output::rehearse::{print_channels, print_scan};
 use crate::cli::output::{ExitStatus, OutputSettings};

@@ -9,7 +9,9 @@ use std::path::Path;
 use nails_core::output::Mark;
 
 use crate::cli::args::ResetUpperArgs;
-use crate::cli::output::envelope::{Envelope, ErrorBody, report_cancelled, report_error};
+use crate::cli::output::envelope::{
+    Envelope, EnvelopePrint, ErrorBody, report_cancelled, report_error,
+};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// The `data` payload for `reset-upper --json`.

@@ -15,6 +15,10 @@ use std::path::{Path, PathBuf};
 /// Every workspace crate and the NAILS crates it may depend on.
 const GRAPH: &[(&str, &[&str])] = &[
     ("nails-teardown", &[]),
+    // The machine-readable contract types (`--json` envelope, exit codes, result
+    // payloads). Serde and nothing else: no NAILS dependency, so a consumer can
+    // link the wire shapes without the tool.
+    ("nails-api", &[]),
     ("nails-base", &["nails-teardown"]),
     ("nails-platform", &["nails-base"]),
     (
@@ -40,7 +44,7 @@ const GRAPH: &[(&str, &[&str])] = &[
             "nails-teardown",
         ],
     ),
-    ("nails-cli", &["nails-core", "nails-teardown"]),
+    ("nails-cli", &["nails-api", "nails-core", "nails-teardown"]),
 ];
 
 fn workspace_root() -> PathBuf {

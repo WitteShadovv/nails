@@ -9,7 +9,7 @@ use nails_core::{
 };
 use serde::Serialize;
 
-use crate::cli::output::envelope::Envelope;
+use crate::cli::output::envelope::{Envelope, EnvelopePrint};
 use crate::cli::output::exit::ExitStatus;
 
 /// The `data` payload for `verify --json`.

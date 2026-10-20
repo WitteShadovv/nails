@@ -11,7 +11,7 @@
 use nails_core::NailsError;
 use serde::Serialize;
 
-use crate::cli::output::envelope::{Envelope, ErrorBody};
+use crate::cli::output::envelope::{Envelope, EnvelopePrint, ErrorBody};
 
 /// The `data` payload for a successful `deactivate --json`.
 #[derive(Debug, Serialize)]

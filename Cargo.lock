@@ -1113,6 +1113,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
 
 [[package]]
+name = "nails-api"
+version = "0.3.0-rc.3"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nails-base"
 version = "0.3.0-rc.3"
 dependencies = [
@@ -1149,6 +1157,7 @@ dependencies = [
  "insta",
  "insta-cmd",
  "jsonschema",
+ "nails-api",
  "nails-cli",
  "nails-core",
  "nails-teardown",

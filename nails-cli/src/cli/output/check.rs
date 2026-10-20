@@ -14,7 +14,7 @@ use serde::Serialize;
 use nails_core::CheckResult;
 use nails_core::output::{Mark, Style};
 
-use super::envelope::Envelope;
+use super::envelope::{Envelope, EnvelopePrint};
 
 mod inherited;
 pub use inherited::{InheritedEntry, InheritedSummary};

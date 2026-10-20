@@ -72,6 +72,7 @@
           ./Cargo.toml
           ./Cargo.lock
           (lib.fileset.maybeMissing ./.cargo)
+          (lib.fileset.maybeMissing ./nails-api)
           ./nails-base
           ./nails-cli
           ./nails-core
