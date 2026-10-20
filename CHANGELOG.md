@@ -23,6 +23,9 @@ of this changelog for that version becomes the release notes word for word, and
 - `nails activate` and `nails check` refuse a decoy with a pending offline system update staged
   (a `/system-update` or `/etc/system-update` marker, on the decoy or in the overlay upper), which
   would otherwise be applied inside the hidden session and reboot the machine out from under it.
+- `status` reports why the last session switch was refused. When a soft-reboot cannot switch root,
+  the reason is kept on the hidden volume and shown the next time, instead of a refused switch going
+  unexplained; a later successful switch clears it.
 
 ### Changed
 
