@@ -1209,6 +1209,30 @@ decoy's device, and so can the hostname on a decoy without `/etc/hostname`.
 End a session that used it with `deactivate --poweroff` (or
 `emergency --poweroff`).
 
+### Network anonymity and Tor
+
+NAILS hides the hidden session from an offline examiner of the decoy disk, not
+from a network observer. The session reaches the network over the decoy's own IP
+address and connection, with the decoy's machine-id, hostname and MAC addresses
+([Shared network identifiers](#shared-network-identifiers) above). It does not
+anonymise traffic and routes nothing through Tor. For anonymity against an ISP,
+a Wi-Fi operator or a remote service, use a tool built for it — Tor Browser,
+Tails or Whonix. NAILS is itself installed from [Tails](install-from-tails.md).
+
+You may run Tor Browser, or route the hidden session through a Whonix gateway,
+inside the session if you choose. Run it from inside the session so it lives in
+the upper and never touches the decoy: a Tor Browser bundle or flatpak in the
+hidden home, Tor Browser added to the hidden NixOS generation, or a Whonix
+gateway VM the session routes through. One caveat, and it matters: doing so is
+deniability-neutral only if the decoy plausibly uses Tor too. Tor traffic is
+recognisable on the wire, so if the decoy never touches Tor, even occasional Tor
+use from the hidden session leaves an ISP-visible "Tor from this machine, at
+these times" signal — a network record that places Tor use on this machine
+during the hours a hidden session ran, and so works against the decoy.
+
+The rule: keep the hidden session's network behaviour consistent with the
+decoy's, or do not route it through Tor.
+
 ### SSD wear-levelling
 
 SSDs distribute writes and keep spare blocks, so `shred`/`truncate`/`wipe` on an

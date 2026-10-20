@@ -78,6 +78,12 @@ NAILS does not defend against:
   [Compelled disclosure of the decoy](#compelled-disclosure-of-the-decoy) for
   the line between what is in scope and what is not);
 - an adversary who images the disk more than once and compares the images;
+- **de-anonymisation by a network observer**: NAILS provides no network
+  anonymity and routes nothing through Tor — the hidden session reaches the
+  network over the decoy's own IP address and connection. Anonymity is a
+  separate goal; for it, use a tool built for it, such as Tor Browser, Tails or
+  Whonix (see
+  [What the hidden environment shares with the decoy](#what-the-hidden-environment-shares-with-the-decoy));
 - **network-provider logs**: anything an ISP, Wi-Fi operator, VPN provider or
   other network observer records about the host's traffic;
 - **remote-service records**: anything a server, cloud service or peer device
@@ -198,8 +204,17 @@ upper changes.
   configuration (see the
   [operator guide](operator-guide.md#inherited-autostart-services-and-autologin)).
 - **Network identity.** The overlay does not change machine-id, hostname, MAC
-  addresses or NetworkManager profiles (including VPN autoconnect). The kernel
-  keeps its interfaces and addresses across the soft-reboot, in both
+  addresses or NetworkManager profiles (including VPN autoconnect). The hidden
+  session shares the decoy's network identity by design and reaches the network
+  over the decoy's own IP address and connection: NAILS does not anonymise
+  network traffic and will not route the session through Tor by default.
+  Anonymity against a network observer is a different goal, out of scope here;
+  for it, use a tool built for it — Tor Browser, Tails or Whonix (NAILS is
+  itself installed from [Tails](install-from-tails.md)). Running Tor Browser or
+  a Whonix gateway inside the hidden session is possible but carries a
+  deniability caveat; see
+  [Network anonymity and Tor](operator-guide.md#network-anonymity-and-tor). The
+  kernel keeps its interfaces and addresses across the soft-reboot, in both
   directions: what the hidden session set up stays in the decoy until power-off
   (see [residual channels](#residual-channels)); the network daemons restart and
   reconnect. An optional hidden network-identity
