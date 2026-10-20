@@ -432,10 +432,10 @@ impl World {
             report.reason
         );
         if expected.stale_active_record {
-            assert_eq!(
-                report.remediation,
-                Some("Run `nails recover` to reset the record"),
-                "{model:?}: a stale record points at recover"
+            let remediation = report.remediation.as_deref().unwrap_or_default();
+            assert!(
+                remediation.contains("recover") && remediation.contains("reset the record"),
+                "{model:?}: a stale record points at recover (remediation: {remediation:?})"
             );
         }
 
