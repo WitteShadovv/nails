@@ -1,21 +1,19 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The catalog rows. Data only: no logic lives here.
-//!
-//! Adding a row: give it a detector or a reason there is none, a VM test or a
-//! reason there is none, and a doc anchor that exists. Then regenerate the doc
-//! tables (`REGENERATE_CATALOG_DOCS=1 cargo test -p nails-forensics residue_catalog`)
-//! and commit the result. The unit tests in `tests.rs` enforce all of it.
+//! Session-residue rows: classes of trace a hidden session itself writes or
+//! causes to be written. Data only; [`super`] concatenates them into the
+//! catalog, session classes first.
 
-use super::{Channel, E2e, Platforms, Probe, ProbeSeverity, ResidueClass, ResidueKind};
+use crate::residue_catalog::{
+    Channel, E2e, Platforms, Probe, ProbeSeverity, ResidueClass, ResidueKind,
+};
 
 /// Reason shared by the rows that only a raw-disk or firmware view can see.
 const NOT_FILESYSTEM_STATE: &str = "not filesystem state, so nothing on the decoy root shows it";
 
-/// Every class of residue, session classes first, then setup traces.
-pub const CATALOG: &[ResidueClass] = &[
-    // --- Session residue ---------------------------------------------------
+/// Session residue, in the order the catalog lists it first.
+pub(super) const ROWS: &[ResidueClass] = &[
     ResidueClass {
         id: "persistent-journal",
         title: "Persistent systemd journal",
@@ -531,163 +529,5 @@ pub const CATALOG: &[ResidueClass] = &[
         e2e: E2e::None("virtual disks have no flash translation layer"),
         residual: true,
         conclusion: None,
-    },
-    // --- Setup traces ------------------------------------------------------
-    ResidueClass {
-        id: "lvm-metadata-archive",
-        title: "LVM metadata archive and backup",
-        kind: ResidueKind::Setup,
-        channel: Channel::Paths(&["/etc/lvm/archive", "/etc/lvm/backup"]),
-        platforms: Platforms::All,
-        risk: "LVM archives the volume-group metadata before every change, with the command line, host name and time; a volume group the decoy does not use names hidden storage.",
-        preflight: Probe::Paths {
-            paths: &["/etc/lvm/archive", "/etc/lvm/backup"],
-            severity: ProbeSeverity::Warn,
-        },
-        preflight_blocks: false,
-        verify: Probe::Check("examiner-lvm"),
-        mitigation: "Never run LVM tools on the hidden backend from the decoy, or disable archive and backup in the decoy's lvm.conf first.",
-        doc_anchor: "decoy-requirements.md#lvm-metadata-archives",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Logical volumes existed that the decoy does not use"),
-    },
-    ResidueClass {
-        id: "udisks2-state",
-        title: "udisks2 state",
-        kind: ResidueKind::Setup,
-        channel: Channel::Paths(&["/var/lib/udisks2"]),
-        platforms: Platforms::All,
-        risk: "Unlocking or mounting the backend through udisks (a file manager, GNOME Disks) leaves per-drive state under /var/lib/udisks2.",
-        preflight: Probe::Paths {
-            paths: &["/var/lib/udisks2"],
-            severity: ProbeSeverity::Warn,
-        },
-        preflight_blocks: false,
-        verify: Probe::Paths {
-            paths: &["/var/lib/udisks2"],
-            severity: ProbeSeverity::Warn,
-        },
-        mitigation: "Unlock and mount the backend with cryptsetup and mount from a shell, not through the desktop.",
-        doc_anchor: "decoy-requirements.md#udisks2-state",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Removable or encrypted storage was handled through the desktop"),
-    },
-    ResidueClass {
-        id: "crypttab-fstab",
-        title: "crypttab and fstab entries",
-        kind: ResidueKind::Setup,
-        channel: Channel::Paths(&["/etc/crypttab", "/etc/fstab"]),
-        platforms: Platforms::All,
-        risk: "An entry for an encrypted mapping, a tcrypt or VeraCrypt volume or a loop-mounted container names storage beyond the decoy's own.",
-        preflight: Probe::Check("backend-entries"),
-        preflight_blocks: true,
-        verify: Probe::Check("examiner-config"),
-        mitigation: "Never add the hidden backend to the decoy's crypttab or fstab; open it by hand each time. Activation refuses an entry that opens or mounts the hidden volume; the decoy's own entries are reviewed with verify --examiner.",
-        doc_anchor: "decoy-requirements.md#crypttab-and-fstab",
-        e2e: E2e::Test("preflight-decoy-filesystem"),
-        residual: false,
-        conclusion: Some("The decoy is configured to open encrypted storage"),
-    },
-    ResidueClass {
-        id: "luks-headers",
-        title: "LUKS headers on partitions",
-        kind: ResidueKind::Setup,
-        channel: Channel::Mechanism(
-            "LUKS1/LUKS2 signatures at partition starts, in gaps and in LUKS2 secondary-header slots",
-        ),
-        platforms: Platforms::All,
-        risk: "A LUKS header proves an encrypted volume exists; a second one beside the decoy's own invites the question what it holds.",
-        preflight: Probe::Check("backend-detect"),
-        preflight_blocks: false,
-        verify: Probe::Check("examiner-disk"),
-        mitigation: "Prefer a deniable backend (a VeraCrypt hidden volume) over a bare LUKS volume next to the decoy.",
-        doc_anchor: "decoy-requirements.md#encryption-headers-high-entropy-space-and-containers",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Encrypted volumes exist on this disk"),
-    },
-    ResidueClass {
-        id: "high-entropy-space",
-        title: "High-entropy unpartitioned space",
-        kind: ResidueKind::Setup,
-        channel: Channel::Mechanism(
-            "partition gaps, space after the last partition, partitions with no known signature",
-        ),
-        platforms: Platforms::All,
-        risk: "Random-looking bytes where a fresh disk holds zeros, or a partition no tool can identify, are the classic sign of a headerless encrypted volume.",
-        preflight: Probe::None(
-            "needs the raw disk, which verify --offline --examiner --disk reads",
-        ),
-        preflight_blocks: false,
-        verify: Probe::Check("examiner-disk"),
-        mitigation: "Fill free space with random data when the disk is set up, so the hidden region does not stand out; explain it as wiped space.",
-        doc_anchor: "decoy-requirements.md#encryption-headers-high-entropy-space-and-containers",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Space on this disk holds encrypted or wiped data"),
-    },
-    ResidueClass {
-        id: "container-candidates",
-        title: "Encrypted container candidates",
-        kind: ResidueKind::Setup,
-        channel: Channel::Mechanism(
-            "large files whose size is a multiple of 512, with no known header and high entropy",
-        ),
-        platforms: Platforms::All,
-        risk: "This is the TCHunt heuristic: such a file is very likely a TrueCrypt or VeraCrypt container.",
-        preflight: Probe::Check("backend-detect"),
-        preflight_blocks: false,
-        verify: Probe::Check("examiner-containers"),
-        mitigation: "Put the hidden volume on a whole device or partition rather than in a file on the decoy.",
-        doc_anchor: "decoy-requirements.md#encryption-headers-high-entropy-space-and-containers",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Encrypted containers are stored on the decoy"),
-    },
-    ResidueClass {
-        id: "backend-tooling",
-        title: "Encryption tooling and its access times",
-        kind: ResidueKind::Setup,
-        channel: Channel::Paths(&[
-            "/usr/bin/veracrypt",
-            "/usr/sbin/cryptsetup",
-            "/sbin/cryptsetup",
-        ]),
-        platforms: Platforms::All,
-        risk: "VeraCrypt installed on a decoy, or a cryptsetup binary read recently, says encrypted volumes were opened.",
-        preflight: Probe::None(
-            "the tools are part of the decoy install; their access times are what an examiner reads",
-        ),
-        preflight_blocks: false,
-        verify: Probe::Check("examiner-tooling"),
-        mitigation: "Mount the decoy root noatime; run the backend tools from the separate machine or a live medium when you can.",
-        doc_anchor: "decoy-requirements.md#backend-tooling-and-history",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Disk-encryption tools are installed and were used"),
-    },
-    ResidueClass {
-        id: "container-history",
-        title: "History naming a container or unlock",
-        kind: ResidueKind::Setup,
-        channel: Channel::Paths(&[
-            "~/.local/share/recently-used.xbel",
-            "~/.config/VeraCrypt/History.xml",
-            "~/.config/VeraCrypt/Favorite Volumes.xml",
-            "~/.bash_history",
-            "~/.zsh_history",
-        ]),
-        platforms: Platforms::All,
-        risk: "A recent-files entry, a VeraCrypt history or favourite, or a shell line running cryptsetup or veracrypt names the container and when it was opened.",
-        preflight: Probe::Check("incremental-history-flush"),
-        preflight_blocks: false,
-        verify: Probe::Check("examiner-history"),
-        mitigation: "Disable VeraCrypt's history, harden the decoy shell history, and unlock from a shell that records nothing.",
-        doc_anchor: "decoy-requirements.md#backend-tooling-and-history",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Encrypted volumes were opened from this account"),
     },
 ];
