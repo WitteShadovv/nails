@@ -575,6 +575,45 @@ pub fn exists_in_root(root: &Path, path: &Path) -> bool {
     open_in_root(root, path).is_ok()
 }
 
+/// `path` as it resolves inside `root`, with every symlink on the way followed
+/// inside `root` (absolute links and `..` stay within it): a decoy whose
+/// `/home` is a link to `var/home` yields `/var/home`, so the mount, the
+/// generated unit name and the fresh home all land where the decoy really keeps
+/// the files, never on the symlink. A trailing component that does not exist
+/// yet (a mount point or a home not created) is resolved as far as its deepest
+/// existing ancestor and then re-appended. The result is absolute, as seen from
+/// `root`. A path that resolves to nothing, or any failure, returns `path`
+/// unchanged. `path` must be absolute; a relative path is returned as is.
+pub fn canonical_in_root(root: &Path, path: &Path) -> PathBuf {
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let unresolved = || path.to_path_buf();
+    let Ok(root_real) = open_mount_root(root).and_then(|fd| real_path(&fd)) else {
+        return unresolved();
+    };
+    // Open the longest prefix of `path` that resolves inside `root`, reading
+    // its real (symlink-free) path, then re-append the components past it.
+    let mut tail: Vec<&OsStr> = Vec::new();
+    let mut prefix = path;
+    loop {
+        if let Ok(real) = open_in_root(root, prefix).and_then(|fd| real_path(&fd)) {
+            let inside = real.strip_prefix(&root_real).unwrap_or(&real);
+            let mut out = PathBuf::from("/");
+            out.push(inside);
+            out.extend(tail.iter().rev());
+            return out;
+        }
+        match (prefix.parent(), prefix.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name);
+                prefix = parent;
+            }
+            _ => return unresolved(),
+        }
+    }
+}
+
 /// Read the file at `path` as if `root` were `/` (absolute symlinks resolve
 /// inside `root`): the next root's `/etc/fstab`, which on NixOS is a link
 /// into the hidden store, or the decoy's own.
