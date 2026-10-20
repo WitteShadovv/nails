@@ -13,6 +13,10 @@
 //! tool and pins the contract as a small, reviewable surface
 //! (`nails-core/tests/crate_graph.rs` holds the boundary).
 
+// Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
+// may use it freely; production code opts in per site with a scoped allow.
+#![cfg_attr(test, allow(unsafe_code))]
+
 pub mod dto;
 pub mod envelope;
 pub mod exit;
