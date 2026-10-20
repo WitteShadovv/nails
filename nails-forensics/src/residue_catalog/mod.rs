@@ -48,36 +48,92 @@ pub enum ResidueKind {
     Setup,
 }
 
-/// The platforms a class applies to.
+/// The host families a residue class applies to, as a small bitset.
+///
+/// A class scopes to any combination of families. [`NIXOS`](Self::NIXOS) is
+/// NAILS's first-class backend; [`DEBIAN`](Self::DEBIAN), [`FEDORA`](Self::FEDORA)
+/// and [`ARCH`](Self::ARCH) are the FHS families; [`FHS`](Self::FHS) is the three
+/// of them together, and [`ALL`](Self::ALL) is every supported host. Combine them
+/// with `|` (`Platforms::NIXOS | Platforms::DEBIAN`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Platforms {
-    /// Every supported host.
-    All,
-    /// NixOS hosts only.
-    NixOs,
-    /// FHS hosts (Debian, Ubuntu) only.
-    Fhs,
-}
+pub struct Platforms(u8);
 
 impl Platforms {
-    /// Whether the class applies to a host of `kind`. An unknown host is given
-    /// every class, so nothing is skipped by a failed detection.
-    pub fn applies_to(self, kind: Option<crate::platform::PlatformKind>) -> bool {
+    /// NixOS hosts.
+    pub const NIXOS: Platforms = Platforms(0b0001);
+    /// The Debian family (Debian, Ubuntu and their derivatives).
+    pub const DEBIAN: Platforms = Platforms(0b0010);
+    /// The Fedora family (Fedora and its derivatives).
+    pub const FEDORA: Platforms = Platforms(0b0100);
+    /// The Arch family (Arch and its derivatives).
+    pub const ARCH: Platforms = Platforms(0b1000);
+    /// Every FHS family: Debian, Fedora and Arch together.
+    pub const FHS: Platforms = Platforms(Self::DEBIAN.0 | Self::FEDORA.0 | Self::ARCH.0);
+    /// Every supported host: NixOS and every FHS family.
+    pub const ALL: Platforms = Platforms(Self::NIXOS.0 | Self::FHS.0);
+
+    /// The family a detected host belongs to, or `None` when detection could not
+    /// place it: an offline image, a failed probe, or a refused host with no
+    /// resolved family. A `None` host is given every class ([`applies_to`]), so a
+    /// gap in detection never silently drops a residue class.
+    ///
+    /// A refused Fedora or Arch host still carries its family, so its family's
+    /// rows apply to it in a `verify` or `check` run even though activation
+    /// refuses it.
+    ///
+    /// [`applies_to`]: Self::applies_to
+    pub fn for_host(profile: &crate::platform::HostProfile) -> Option<Platforms> {
         use crate::platform::PlatformKind;
-        match (self, kind) {
-            (Platforms::All, _) | (_, None) => true,
-            (Platforms::NixOs, Some(kind)) => kind == PlatformKind::NixOs,
-            (Platforms::Fhs, Some(kind)) => kind == PlatformKind::Fhs,
+        if profile.kind == PlatformKind::NixOs {
+            return Some(Platforms::NIXOS);
+        }
+        match profile.family {
+            Some(nails_base::Family::Debian) => Some(Platforms::DEBIAN),
+            Some(nails_base::Family::Fedora) => Some(Platforms::FEDORA),
+            Some(nails_base::Family::Arch) => Some(Platforms::ARCH),
+            // An FHS host whose family could not be named still belongs to the
+            // FHS group; a refused host with no family reads as undetected.
+            None => (profile.kind == PlatformKind::Fhs).then_some(Platforms::FHS),
         }
     }
 
-    /// Short label for the docs.
-    pub fn label(self) -> &'static str {
-        match self {
-            Platforms::All => "all",
-            Platforms::NixOs => "NixOS",
-            Platforms::Fhs => "Debian, Ubuntu",
+    /// Whether the class applies to a host whose family bits are `host`.
+    ///
+    /// `None` — an offline image, or a host detection could not place — is given
+    /// every class. Otherwise a class applies when its families overlap the
+    /// host's.
+    pub fn applies_to(self, host: Option<Platforms>) -> bool {
+        match host {
+            None => true,
+            Some(host) => self.0 & host.0 != 0,
         }
+    }
+
+    /// The families as the docs name them: `all`, or a comma-separated list such
+    /// as `NixOS` or `Debian, Fedora, Arch`.
+    pub fn label(self) -> String {
+        if self == Platforms::ALL {
+            return "all".to_string();
+        }
+        [
+            (Platforms::NIXOS, "NixOS"),
+            (Platforms::DEBIAN, "Debian"),
+            (Platforms::FEDORA, "Fedora"),
+            (Platforms::ARCH, "Arch"),
+        ]
+        .into_iter()
+        .filter(|(bit, _)| self.0 & bit.0 != 0)
+        .map(|(_, name)| name)
+        .collect::<Vec<_>>()
+        .join(", ")
+    }
+}
+
+impl std::ops::BitOr for Platforms {
+    type Output = Platforms;
+
+    fn bitor(self, rhs: Platforms) -> Platforms {
+        Platforms(self.0 | rhs.0)
     }
 }
 

@@ -16,7 +16,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         title: "LVM metadata archive and backup",
         kind: ResidueKind::Setup,
         channel: Channel::Paths(&["/etc/lvm/archive", "/etc/lvm/backup"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "LVM archives the volume-group metadata before every change, with the command line, host name and time; a volume group the decoy does not use names hidden storage.",
         preflight: Probe::Paths {
             paths: &["/etc/lvm/archive", "/etc/lvm/backup"],
@@ -35,7 +35,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         title: "udisks2 state",
         kind: ResidueKind::Setup,
         channel: Channel::Paths(&["/var/lib/udisks2"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "Unlocking or mounting the backend through udisks (a file manager, GNOME Disks) leaves per-drive state under /var/lib/udisks2.",
         preflight: Probe::Paths {
             paths: &["/var/lib/udisks2"],
@@ -57,7 +57,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         title: "crypttab and fstab entries",
         kind: ResidueKind::Setup,
         channel: Channel::Paths(&["/etc/crypttab", "/etc/fstab"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "An entry for an encrypted mapping, a tcrypt or VeraCrypt volume or a loop-mounted container names storage beyond the decoy's own.",
         preflight: Probe::Check("backend-entries"),
         preflight_blocks: true,
@@ -75,7 +75,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "LUKS1/LUKS2 signatures at partition starts, in gaps and in LUKS2 secondary-header slots",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "A LUKS header proves an encrypted volume exists; a second one beside the decoy's own invites the question what it holds.",
         preflight: Probe::Check("backend-detect"),
         preflight_blocks: false,
@@ -93,7 +93,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "partition gaps, space after the last partition, partitions with no known signature",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "Random-looking bytes where a fresh disk holds zeros, or a partition no tool can identify, are the classic sign of a headerless encrypted volume.",
         preflight: Probe::None(
             "needs the raw disk, which verify --offline --examiner --disk reads",
@@ -113,7 +113,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "large files whose size is a multiple of 512, with no known header and high entropy",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "This is the TCHunt heuristic: such a file is very likely a TrueCrypt or VeraCrypt container.",
         preflight: Probe::Check("backend-detect"),
         preflight_blocks: false,
@@ -133,7 +133,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             "/usr/sbin/cryptsetup",
             "/sbin/cryptsetup",
         ]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "VeraCrypt installed on a decoy, or a cryptsetup binary read recently, says encrypted volumes were opened.",
         preflight: Probe::None(
             "the tools are part of the decoy install; their access times are what an examiner reads",
@@ -157,7 +157,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             "~/.bash_history",
             "~/.zsh_history",
         ]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "A recent-files entry, a VeraCrypt history or favourite, or a shell line running cryptsetup or veracrypt names the container and when it was opened.",
         preflight: Probe::Check("incremental-history-flush"),
         preflight_blocks: false,
