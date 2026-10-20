@@ -16,6 +16,7 @@
 //! code without re-deriving the decision. Nothing here prints, prompts or reads
 //! an exit code: those are the front end's.
 
+pub mod activate;
 pub mod config;
 pub mod config_view;
 pub mod deactivate;
