@@ -21,6 +21,7 @@ pub mod config_view;
 pub mod deactivate;
 pub mod emergency;
 pub mod lock;
+pub mod recover;
 pub mod status;
 
 pub use config::{

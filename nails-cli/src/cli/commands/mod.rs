@@ -19,9 +19,7 @@ use crate::cli::output::exit::ExitStatus;
 // The configuration resolution that any front end shares now lives in the
 // engine facade; the CLI keeps only the error rendering (the sudo line, the
 // structured body) on top of it.
-pub(crate) use nails_core::app::{
-    config_error_line, load_config_for_teardown, load_config_or_defaults,
-};
+pub(crate) use nails_core::app::{config_error_line, load_config_or_defaults};
 
 pub mod activate;
 pub mod check;
@@ -198,15 +196,6 @@ pub(crate) fn acquire_state_lock_or_report(
             ErrorBody::new("state_locked", error.to_string()),
         )),
     }
-}
-
-/// Take the state lock for emergency teardown, proceeding without it on timeout.
-#[must_use = "the returned guard releases the lock when dropped"]
-pub(crate) fn acquire_state_lock_for_emergency(
-    hidden_root: &Path,
-    state_file_path: &Path,
-) -> Option<nails_core::StateLock> {
-    nails_core::app::lock::acquire_for_emergency(hidden_root, state_file_path)
 }
 
 #[cfg(test)]
