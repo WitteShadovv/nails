@@ -55,6 +55,29 @@ of this changelog for that version becomes the release notes word for word, and
 - `check` shows the "NixOS profile" section only on NixOS, or where an explicit NixOS build target is
   configured; a Debian, Ubuntu, Fedora or Arch decoy no longer prints a NixOS-profile line that does
   not apply to it.
+- The machine-readable `--json` output moves to contract version 2 (`schema_version` is now `2`), a
+  breaking change for scripts. Every command prints exactly one envelope on stdout — the root
+  privilege gate, a usage error and `config` included — and `activate` no longer streams progress
+  lines before its result (`config show` likewise prints one document rather than a multi-line one).
+  The envelope's `ok` is `true` only when the exit code is `0` or `9`, so a `verify` warning, a
+  degraded `emergency` or `recover`, and a refused `check` now read as `ok: false`. `status` reports
+  where the machine is as `place` (`decoy`, `hidden` or `activating`) and the one thing that needs the
+  operator as `attention`, replacing the version-1 `posture`, `session`, `state` and `state_source`
+  fields. An error now carries a stable `code`, the human `message`, and a typed `next` step — the
+  command to run next, or `null` — in place of the free-form `hint`. A cancelled command, whether a
+  Ctrl+C or a "no" at a prompt, reports one shape everywhere: an error with the code `cancelled`, and
+  exit `130`.
+
+  Exit codes that changed in this release:
+
+  | Code | Before | Now |
+  |---|---|---|
+  | 1 | failed; also a "no" at the `activate` or `deactivate` question | failed, or not possible here. A "no" at any prompt now exits 130 instead |
+  | 130 | Ctrl+C | Ctrl+C, and a "no" at any prompt |
+
+  Codes 2, 3, 4, 5, 6, 7, 8 and 9 keep their meaning. Scripts that read the removed JSON field names,
+  that treated a declined prompt as exit 1, or that parsed `activate --json` as a stream of lines must
+  be updated. A JSON schema per command ships under `docs/schemas/`.
 
 ### Fixed
 
