@@ -278,6 +278,7 @@
       rawDistroTests = import ./nix/distro-tests { inherit self pkgs nix-vm-test; };
       distroTests = lib.filterAttrs (name: _: !(lib.hasPrefix "_" name)) rawDistroTests;
       distroMetadata = rawDistroTests._metadata;
+      distroImages = rawDistroTests._images;
       e2eTestMetadata = {
         # Research spikes and soak tests build as `e2e.<name>` but are not
         # runner targets: they stay out of the nightly and `--affected`.
@@ -308,7 +309,7 @@
       };
 
       checks.${system} = import ./nix/checks.nix {
-        inherit pkgs nails;
+        inherit pkgs nails distroImages;
         e2eMetadata = e2eTestMetadata;
       };
 

@@ -6,6 +6,7 @@
   pkgs,
   nails,
   e2eMetadata,
+  distroImages,
 }:
 let
   inherit (pkgs) lib;
@@ -42,8 +43,21 @@ let
     '';
 
   e2eMetadataJson = pkgs.writeText "e2e-metadata.json" (builtins.toJSON e2eMetadata);
+
+  # The whole distribution table, and the derivation path of a minimal VM test
+  # for every entry, serialised to one file. Writing it forces evaluation of
+  # each entry (the schema assertions in images.nix) and of each entry's image
+  # seam -- the hash-pinned fetch and nix-vm-test prepare for Fedora and Arch
+  # among them -- so a malformed entry or a broken seam fails here, at eval,
+  # with no VM built. The Debian and Ubuntu derivations are evaluated but not
+  # rebuilt, which is what keeps them byte-identical across this change.
+  distroImagesJson = pkgs.writeText "distro-images.json" (builtins.toJSON distroImages);
 in
 {
+  distro-images = pkgs.runCommandLocal "distro-images" { } ''
+    cp ${distroImagesJson} "$out"
+  '';
+
   nixfmt = lint "nixfmt" {
     files = nixFiles;
     tools = [ pkgs.nixfmt ];
@@ -157,6 +171,7 @@ in
       ../deny.toml
       ../docs/ci.md
       ../.github/workflows
+      ./distro-tests/images.json
       ./e2e-tests/default.nix
       ./e2e-tests/lib
       ./e2e-tests/tests
