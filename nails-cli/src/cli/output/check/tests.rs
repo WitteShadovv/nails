@@ -1,9 +1,13 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Unit tests for the `check` report and its two renderings.
+//! Unit tests for the two renderings of the readiness report.
 
 use super::*;
+use nails_core::CheckResult;
+use nails_core::app::readiness::{
+    ConfigSummary, InheritedEntry, InheritedSummary, ProfileSummary, ReadinessReport,
+};
 
 fn rows() -> Vec<CheckRow> {
     vec![
@@ -12,8 +16,8 @@ fn rows() -> Vec<CheckRow> {
     ]
 }
 
-fn report(rows: Vec<CheckRow>) -> CheckReport {
-    CheckReport::finalize(
+fn report(rows: Vec<CheckRow>) -> ReadinessReport {
+    ReadinessReport::finalize(
         rows,
         ConfigSummary {
             config_file: None,
@@ -42,15 +46,6 @@ fn report(rows: Vec<CheckRow>) -> CheckReport {
             unmatched_masks: Vec::new(),
         },
     )
-}
-
-#[test]
-fn finalize_counts_outcomes_and_sets_ready() {
-    let report = report(rows());
-    assert!(report.ready);
-    assert_eq!(report.summary.passed, 1);
-    assert_eq!(report.summary.warnings, 1);
-    assert_eq!(report.summary.failed, 0);
 }
 
 #[test]
@@ -85,18 +80,6 @@ fn the_summary_line_puts_a_single_warning_in_the_singular() {
 }
 
 #[test]
-fn a_failing_check_marks_the_report_not_ready() {
-    let mut rows = rows();
-    rows.push(CheckRow::from_result(
-        "c".into(),
-        &CheckResult::fail("boom".to_string()),
-    ));
-    let report = report(rows);
-    assert!(!report.ready);
-    assert_eq!(report.summary.failed, 1);
-}
-
-#[test]
 fn json_envelope_carries_checks_and_summary() {
     let report = report(rows());
     let line = Envelope::success(COMMAND, &report).to_line();
@@ -126,14 +109,6 @@ fn json_envelope_carries_inherited_inventory() {
     assert_eq!(value["data"]["inherited"]["remote_linked"][0], "dropbox");
     assert_eq!(value["data"]["inherited"]["entries"][0]["origin"], "added");
     assert_eq!(value["data"]["inherited"]["entries"][0]["status"], "review");
-}
-
-#[test]
-fn not_inspected_summary_is_empty() {
-    let summary = InheritedSummary::not_inspected();
-    assert!(!summary.inspected);
-    assert!(summary.entries.is_empty());
-    assert!(summary.remote_linked.is_empty());
 }
 
 /// Under "NixOS profile" the report prints the summary's line: the build

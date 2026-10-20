@@ -16,9 +16,10 @@ use super::ExitStatus;
 use super::envelope::{ErrorBody, report_error};
 
 /// The error body of a refused root. `exe` is the running program, named in
-/// the hint when it lies under the root.
+/// the hint when it lies under the root. The transform lives in the facade so
+/// the CLI and the window describe a refusal alike.
 pub fn refusal_error(refusal: &Refusal, exe: Option<&Path>) -> ErrorBody {
-    ErrorBody::new(refusal.code(), refusal.message()).with_hint(refusal.hint(exe).join("\n"))
+    nails_core::app::refusal::refusal_body(refusal, exe)
 }
 
 /// Report a refused root on the terminal (or as one envelope under `--json`)
