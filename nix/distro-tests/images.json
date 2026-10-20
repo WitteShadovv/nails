@@ -1,0 +1,103 @@
+{
+  "debian-13": {
+    "osId": "debian",
+    "release": "13",
+    "rootfs": "ext4",
+    "enforcing": false,
+    "memory": 2048,
+    "enabled": true,
+    "upstreamUntil": null,
+    "prepare": "nix-vm-test",
+    "source": { "kind": "nix-vm-test", "distro": "debian", "image": "13" }
+  },
+  "ubuntu-24.04": {
+    "osId": "ubuntu",
+    "release": "24.04",
+    "rootfs": "ext4",
+    "enforcing": false,
+    "memory": 2048,
+    "enabled": true,
+    "upstreamUntil": null,
+    "prepare": "nix-vm-test",
+    "source": { "kind": "nix-vm-test", "distro": "ubuntu", "image": "24_04" }
+  },
+  "ubuntu-26.04": {
+    "osId": "ubuntu",
+    "release": "26.04",
+    "rootfs": "ext4",
+    "enforcing": false,
+    "memory": 2048,
+    "enabled": false,
+    "upstreamUntil": null,
+    "prepare": "nix-vm-test",
+    "source": { "kind": "nix-vm-test", "distro": "ubuntu", "image": "26_04" }
+  },
+  "fedora-44": {
+    "osId": "fedora",
+    "release": "44",
+    "rootfs": "btrfs",
+    "enforcing": false,
+    "memory": 2048,
+    "enabled": false,
+    "upstreamUntil": "2027-06-01",
+    "prepare": "fedora",
+    "source": {
+      "kind": "upstream",
+      "family": "fedora",
+      "release": "44",
+      "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+      "name": "Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2",
+      "sha256": "sha256-KGgP5bNxpaguv0OjGSbghqFo5ZlJ0DlpxQk+cHH5C38="
+    }
+  },
+  "fedora-45": {
+    "osId": "fedora",
+    "release": "45",
+    "rootfs": "btrfs",
+    "enforcing": false,
+    "memory": 2048,
+    "enabled": false,
+    "upstreamUntil": "2027-12-01",
+    "prepare": "fedora",
+    "source": {
+      "kind": "pending",
+      "family": "fedora",
+      "release": "45"
+    }
+  },
+  "arch-boxes": {
+    "osId": "arch",
+    "release": "rolling",
+    "rootfs": "btrfs",
+    "enforcing": false,
+    "memory": 2048,
+    "enabled": false,
+    "upstreamUntil": "2026-12-20",
+    "prepare": "archlinux",
+    "source": {
+      "kind": "upstream",
+      "family": "arch-boxes",
+      "release": "20261001",
+      "url": "https://geo.mirror.pkgbuild.com/images/v20261001.604814/Arch-Linux-x86_64-basic-20261001.604814.qcow2",
+      "name": "Arch-Linux-x86_64-basic-20261001.604814.qcow2",
+      "sha256": "sha256-+foWxA5qycA/0oqboS+mq1i1ZIrERKbSezHuW9mRMYY="
+    }
+  },
+  "arch-install": {
+    "osId": "arch",
+    "release": "rolling",
+    "rootfs": "btrfs",
+    "enforcing": false,
+    "memory": 2048,
+    "enabled": false,
+    "upstreamUntil": null,
+    "prepare": "archlinux",
+    "source": {
+      "kind": "mirror",
+      "family": "arch-install",
+      "release": "rolling",
+      "asset": null,
+      "sha256": null
+    }
+  }
+}
