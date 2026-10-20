@@ -266,23 +266,45 @@ stress iterations="10":
 
 # --- Mutation testing ---
 
-# Mutate the state machine module and check the tests catch each mutation.
-# Heavy, so it runs weekly in scheduled.yml rather than on the gate. The report
-# goes to target/mutants/mutants.out, and in CI the counts and every mutant
-# that survived or timed out also go to the job summary. Such mutants (exit
-# codes 2 and 3) are findings to triage, not a failed run, so the recipe
-# succeeds. Any other failure of cargo-mutants, such as tests that already
-# fail without a mutation, still fails it, and so does a run that caught no
-# mutant at all.
-mutants:
+# The files the sweep mutates: the state machine and the teardown and session
+# decision cores, where a wrong branch is silent (a mutant the suite still
+# passes is a test gap no coverage percentage reveals). Kept here, not in the
+# workflow, so a local run and the weekly lane mutate the same code.
+mutants_files := "-f 'nails-base/src/state/**/*.rs' " + \
+    "-f 'nails-teardown/src/whole_root/plan.rs' " + \
+    "-f 'nails-teardown/src/whole_root/emergency.rs' " + \
+    "-f 'nails-teardown/src/whole_root/utab.rs' " + \
+    "-f 'nails-session/src/session/entry.rs' " + \
+    "-f 'nails-session/src/session/policy.rs' " + \
+    "-f 'nails-session/src/session/fstab.rs' " + \
+    "-f 'nails-session/src/session/probe.rs' " + \
+    "-f 'nails-session/src/session/way_back.rs'"
+
+# Mutate the state machine and the teardown/session decision cores and check
+# the tests catch each mutation. Heavy, so it runs weekly in scheduled.yml
+# rather than on the gate. The report goes to target/mutants/mutants.out, and in
+# CI the counts and every mutant that survived or timed out also go to the job
+# summary. Such mutants (exit codes 2 and 3) are findings to triage, not a
+# failed run, so the recipe succeeds. Any other failure of cargo-mutants, such
+# as tests that already fail without a mutation, still fails it, and so does a
+# full run that caught no mutant at all. `shard`/`shards` split the sweep across
+# a matrix (`just mutants 0 4`); the default is the whole sweep.
+mutants shard="" shards="":
     #!/usr/bin/env bash
     set -euo pipefail
     # cargo-mutants creates the --output directory but not its parents, and a
     # fresh checkout has no target/ yet.
     mkdir -p target/mutants
+    shard_args=()
+    if [ -n '{{ shard }}' ]; then
+        shard_args=(--shard '{{ shard }}/{{ shards }}')
+    fi
     status=0
-    cargo mutants --package nails-base --all-features --cargo-arg=--locked \
-        -f 'nails-base/src/state/**/*.rs' \
+    cargo mutants \
+        --package nails-base --package nails-teardown --package nails-session \
+        --all-features --cargo-arg=--locked \
+        {{ mutants_files }} \
+        "${shard_args[@]}" \
         --output target/mutants || status=$?
     case "$status" in
         0 | 2 | 3) ;;
@@ -312,9 +334,10 @@ mutants:
         } >> "$GITHUB_STEP_SUMMARY"
     fi
     # cargo-mutants also exits 0 when the package or file filter matches no
-    # code and when no mutant builds. A run that caught no mutant, for those
-    # reasons or because the tests never fail on one, proves nothing.
-    if [ "$caught" -eq 0 ]; then
+    # code and when no mutant builds. A full run that caught no mutant, for
+    # those reasons or because the tests never fail on one, proves nothing; a
+    # single shard may legitimately catch none, so this guards the full run.
+    if [ -z '{{ shard }}' ] && [ "$caught" -eq 0 ]; then
         echo "No mutant was caught, so this run proves nothing; see $out" >&2
         exit 1
     fi
