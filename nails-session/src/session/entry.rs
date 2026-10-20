@@ -235,7 +235,14 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
     }
     let data = if mount.root == Path::new("/") {
         None
-    } else if mount.fstype == "btrfs" {
+    } else if mount.fstype == "btrfs"
+        && mount_subvol(mount) == Some(mount.root.to_string_lossy().as_ref())
+    {
+        // A btrfs mount whose root is exactly its `subvol=` is a subvolume: the
+        // way back mounts it again with that `subvol=`. A mount root that is a
+        // deeper path (a bind of a plain folder inside the subvolume) has no
+        // `subvol=` of its own and cannot be mounted again that way, so it is
+        // refused like any other bind below.
         Some(format!("subvol={}", mount.root.display()))
     } else {
         return refuse(format!(
@@ -249,6 +256,16 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
         fstype: mount.fstype.clone(),
         data,
     })
+}
+
+/// The `subvol=` a btrfs mount's options name, if any. btrfs records it in both
+/// the per-superblock and the per-mount option fields of the mount table.
+fn mount_subvol(mount: &MountEntry) -> Option<&str> {
+    mount
+        .super_opts
+        .split(',')
+        .chain(mount.mount_opts.split(','))
+        .find_map(|opt| opt.strip_prefix("subvol="))
 }
 
 fn io(path: &Path, e: std::io::Error) -> NailsError {
@@ -888,9 +905,33 @@ mod tests {
             "1 0 0:21 / / rw - overlay overlay rw,lowerdir=/a\n",
             "1 0 0:22 / / rw - zfs /dev/zd0 rw\n",
             "1 0 8:2 /sub / rw - ext4 /dev/vda2 rw\n",
+            // A btrfs bind of a plain folder inside the subvolume /@: the mount
+            // root (/@/srv) is not the subvolume (subvol=/@), so the way back
+            // cannot mount it again by subvol.
+            "1 0 0:30 /@/srv / rw - btrfs /dev/nvme0n1p2 rw,subvolid=256,subvol=/@\n",
         ] {
             let entries = parse_mountinfo(table);
             assert!(decoy_root_of(&entries, Path::new("/")).is_err(), "{table}");
         }
+    }
+
+    #[test]
+    fn a_btrfs_bind_of_a_plain_folder_is_refused_by_path() {
+        // The refusal names the folder, never the device-mapper node or device.
+        let table = "1 0 0:30 /@/srv / rw - btrfs /dev/nvme0n1p2 rw,subvolid=256,subvol=/@\n";
+        let err = decoy_root_of(&parse_mountinfo(table), Path::new("/")).unwrap_err();
+        assert!(err.to_string().contains("/@/srv"), "{err}");
+
+        // A genuine subvolume mount, whose root equals its subvol=, is accepted
+        // even when the subvolume lives at a deeper path.
+        let table =
+            "1 0 0:30 /@/snapshots/root / rw - btrfs /dev/nvme0n1p2 rw,subvol=/@/snapshots/root\n";
+        assert_eq!(
+            decoy_root_of(&parse_mountinfo(table), Path::new("/"))
+                .unwrap()
+                .data
+                .as_deref(),
+            Some("subvol=/@/snapshots/root")
+        );
     }
 }
