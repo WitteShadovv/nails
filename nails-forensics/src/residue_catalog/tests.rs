@@ -303,6 +303,98 @@ fn links_to_the_same_doc_become_bare_anchors() {
     );
 }
 
+/// The `Platforms` bitset: how families compose, which host each class applies
+/// to, and how the set reads in the docs.
+mod platforms {
+    use super::super::Platforms;
+    use crate::platform::{FakePlatform, HostProfile, PlatformKind};
+    use nails_base::Family;
+
+    /// A detected host of the given kind and family.
+    fn host(kind: PlatformKind, family: Option<Family>) -> HostProfile {
+        let mut profile = FakePlatform::fhs().host_profile();
+        profile.kind = kind;
+        profile.family = family;
+        profile
+    }
+
+    #[test]
+    fn all_is_every_family_and_fhs_is_the_three_fhs_families() {
+        let all = Platforms::NIXOS | Platforms::DEBIAN | Platforms::FEDORA | Platforms::ARCH;
+        assert_eq!(all, Platforms::ALL);
+        let fhs = Platforms::DEBIAN | Platforms::FEDORA | Platforms::ARCH;
+        assert_eq!(fhs, Platforms::FHS);
+        assert_eq!(Platforms::NIXOS | Platforms::FHS, Platforms::ALL);
+    }
+
+    #[test]
+    fn for_host_maps_each_live_host_to_its_family() {
+        assert_eq!(
+            Platforms::for_host(&host(PlatformKind::NixOs, None)),
+            Some(Platforms::NIXOS)
+        );
+        assert_eq!(
+            Platforms::for_host(&host(PlatformKind::Fhs, Some(Family::Debian))),
+            Some(Platforms::DEBIAN)
+        );
+        // A refused Fedora or Arch host still carries its family.
+        assert_eq!(
+            Platforms::for_host(&host(PlatformKind::Unsupported, Some(Family::Fedora))),
+            Some(Platforms::FEDORA)
+        );
+        assert_eq!(
+            Platforms::for_host(&host(PlatformKind::Unsupported, Some(Family::Arch))),
+            Some(Platforms::ARCH)
+        );
+    }
+
+    #[test]
+    fn a_host_detection_cannot_place_reads_as_undetected() {
+        // A refused host with no family (ostree, non-systemd, unknown id).
+        assert_eq!(
+            Platforms::for_host(&host(PlatformKind::Unsupported, None)),
+            None
+        );
+    }
+
+    #[test]
+    fn a_class_applies_to_a_host_its_families_overlap() {
+        let nixos = Platforms::for_host(&host(PlatformKind::NixOs, None));
+        let debian = Platforms::for_host(&host(PlatformKind::Fhs, Some(Family::Debian)));
+        let fedora = Platforms::for_host(&host(PlatformKind::Unsupported, Some(Family::Fedora)));
+
+        // `All` applies everywhere; an undetected host takes every class.
+        for h in [nixos, debian, fedora, None] {
+            assert!(Platforms::ALL.applies_to(h), "{h:?}");
+        }
+
+        // A NixOS-only class is NixOS-only; an FHS class spans the FHS families.
+        assert!(Platforms::NIXOS.applies_to(nixos));
+        assert!(!Platforms::NIXOS.applies_to(debian));
+        assert!(!Platforms::NIXOS.applies_to(fedora));
+        assert!(Platforms::FHS.applies_to(debian));
+        assert!(Platforms::FHS.applies_to(fedora));
+        assert!(!Platforms::FHS.applies_to(nixos));
+        assert!(Platforms::DEBIAN.applies_to(debian));
+        assert!(!Platforms::DEBIAN.applies_to(fedora));
+
+        // An undetected host is never skipped, even for a scoped class.
+        assert!(Platforms::NIXOS.applies_to(None));
+    }
+
+    #[test]
+    fn label_reads_all_a_single_family_or_a_list() {
+        assert_eq!(Platforms::ALL.label(), "all");
+        assert_eq!(Platforms::NIXOS.label(), "NixOS");
+        assert_eq!(Platforms::DEBIAN.label(), "Debian");
+        assert_eq!(Platforms::FHS.label(), "Debian, Fedora, Arch");
+        assert_eq!(
+            (Platforms::NIXOS | Platforms::DEBIAN).label(),
+            "NixOS, Debian"
+        );
+    }
+}
+
 /// The committed docs carry the tables the catalog generates. Regenerate with
 /// `REGENERATE_CATALOG_DOCS=1 cargo test -p nails-forensics residue_catalog`.
 #[test]

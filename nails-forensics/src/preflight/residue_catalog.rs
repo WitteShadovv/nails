@@ -13,7 +13,7 @@
 //! reason to refuse activation on its own. The check only tests existence and
 //! lists directories (without updating access times); it writes nothing.
 
-use crate::residue_catalog::{self, Probe, ProbeSeverity};
+use crate::residue_catalog::{self, Platforms, Probe, ProbeSeverity};
 use crate::{Filesystem, Result};
 use nails_base::preflight::{CheckResult, PreFlightCheck};
 use std::path::{Path, PathBuf};
@@ -73,7 +73,9 @@ impl<F: Filesystem> PreFlightCheck<F> for ResidueCatalogCheck {
     }
 
     fn run(&self, fs: &F) -> Result<CheckResult> {
-        let platform = crate::platform::detect(fs).ok().map(|profile| profile.kind);
+        let platform = crate::platform::detect(fs)
+            .ok()
+            .and_then(|profile| Platforms::for_host(&profile));
         let mut hits = Vec::new();
         let mut probed = 0usize;
 

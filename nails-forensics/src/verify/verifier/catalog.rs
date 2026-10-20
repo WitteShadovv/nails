@@ -5,7 +5,7 @@
 //! a run could not cover, derived from the catalog rows instead of a fixed list.
 
 use super::*;
-use crate::residue_catalog::{self, Probe, ProbeSeverity, ResidueKind};
+use crate::residue_catalog::{self, Platforms, Probe, ProbeSeverity, ResidueKind};
 use std::time::SystemTime;
 
 /// Every check id a verify run can execute. Catalog rows name these in
@@ -34,15 +34,16 @@ pub const VERIFY_CHECK_IDS: &[&str] = &[
 ];
 
 impl<F: Filesystem> Verifier<F> {
-    /// The platform the catalog rows are filtered by: the live host's, or
-    /// `None` (every row) for an offline image, whose platform is not the host's.
-    fn catalog_platform(&self) -> Option<crate::platform::PlatformKind> {
+    /// The host family the catalog rows are filtered by: the live host's, or
+    /// `None` (every row) for an offline image — whose family is not the host's —
+    /// or a host detection could not place.
+    fn catalog_platform(&self) -> Option<Platforms> {
         if self.is_offline() {
             return None;
         }
         crate::platform::detect(&self.filesystem)
             .ok()
-            .map(|profile| profile.kind)
+            .and_then(|profile| Platforms::for_host(&profile))
     }
 
     /// Run the catalog's verify path probes for one kind of residue.
