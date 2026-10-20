@@ -167,9 +167,11 @@ the code never branches on "is this NixOS?" directly.
      names `debian` or `ubuntu`. The hidden configuration is whatever the
      upper's `/etc` holds. (A Debian 12 host is refused by the support table;
      its systemd could not soft-reboot either.) The support table also lists
-     the releases NAILS has been tested on (Debian 13, Ubuntu 24.04 and 26.04):
-     any other release it admits carries a warning in its `HostProfile`, which
-     `init` and the `platform` pre-flight check report.
+     the releases NAILS targets. Its automated VM tests cover Debian 13 and
+     Ubuntu 24.04; Ubuntu 26.04 is a supported target checked by hand, with an
+     automated image still to be added. Any other release it admits carries a
+     warning in its `HostProfile`, which `init` and the `platform` pre-flight
+     check report.
    - `UnsupportedPlatform` — refuses every other host with a typed error:
      ostree and image-based hosts, non-systemd init, Fedora, Arch and unknown
      distributions. For those hosts the refusal *is* the behaviour.
