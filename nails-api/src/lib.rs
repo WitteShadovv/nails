@@ -24,6 +24,6 @@ pub mod events;
 pub mod exit;
 
 pub use dto::StateJson;
-pub use envelope::{Envelope, ErrorBody, SCHEMA_VERSION, error_envelope};
+pub use envelope::{Envelope, ErrorBody, NextStep, SCHEMA_VERSION, error_envelope};
 pub use events::{CheckOutcome, Event};
 pub use exit::ExitStatus;

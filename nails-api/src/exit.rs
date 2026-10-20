@@ -82,11 +82,42 @@ impl ExitStatus {
     pub fn to_exit_code(self) -> ExitCode {
         ExitCode::from(self.code())
     }
+
+    /// Whether a machine-readable envelope reports this outcome as `ok`.
+    ///
+    /// True only for a plain success (code 0) and a success with a warning
+    /// (code 9); every other code is a failure a script branches on. This is
+    /// the one rule the `ok` field of the JSON envelope follows, so the exit
+    /// code and `ok` can never disagree.
+    pub fn is_success(self) -> bool {
+        matches!(self.code(), 0 | 9)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_success_and_success_with_warnings_report_ok() {
+        assert!(ExitStatus::Ok.is_success());
+        assert!(ExitStatus::SuccessWithWarnings.is_success());
+        for status in [
+            ExitStatus::Failed,
+            ExitStatus::Usage,
+            ExitStatus::Config,
+            ExitStatus::PreflightRefused,
+            ExitStatus::NeedsRoot,
+            ExitStatus::InvalidState,
+            ExitStatus::DegradedReboot,
+            ExitStatus::Unsupported,
+            ExitStatus::VerifyWarning,
+            ExitStatus::VerifyCritical,
+            ExitStatus::Cancelled,
+        ] {
+            assert!(!status.is_success(), "{status:?} must not be ok");
+        }
+    }
 
     #[test]
     fn codes_match_the_documented_table() {
