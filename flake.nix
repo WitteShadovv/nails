@@ -279,8 +279,11 @@
       distroTests = lib.filterAttrs (name: _: !(lib.hasPrefix "_" name)) rawDistroTests;
       distroMetadata = rawDistroTests._metadata;
       e2eTestMetadata = {
-        # Research spikes build as `e2e.<name>` but are not runner targets.
-        availableTargets = lib.subtractLists rawE2eTests._researchTargets (builtins.attrNames e2eTests);
+        # Research spikes and soak tests build as `e2e.<name>` but are not
+        # runner targets: they stay out of the nightly and `--affected`.
+        availableTargets = lib.subtractLists (rawE2eTests._researchTargets ++ rawE2eTests._soakTargets) (
+          builtins.attrNames e2eTests
+        );
         leafTests = rawE2eTests._testNames;
         groups = rawE2eTests._groups;
         # Former test names that now run as scenarios of a merged test.

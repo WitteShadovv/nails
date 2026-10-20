@@ -37,9 +37,9 @@ def scan_nix_metadata() -> dict[str, Any]:
     timeouts: dict[str, int] = {}
     tests_root = REPO_ROOT / "nix" / "e2e-tests" / "tests"
     for path in sorted(tests_root.rglob("*.nix")):
-        # Research spikes are not leaf tests (default.nix asserts that the
-        # `research` tag and this directory go together) and carry no weight.
-        if path.relative_to(tests_root).parts[0] == "research":
+        # Research spikes and soak tests are not leaf tests (default.nix asserts
+        # that each tag and its directory go together) and carry no weight.
+        if path.relative_to(tests_root).parts[0] in ("research", "soak"):
             continue
         text = path.read_text(encoding="utf-8")
         names = re.findall(r'^  name = "([^"]+)";$', text, re.M)
