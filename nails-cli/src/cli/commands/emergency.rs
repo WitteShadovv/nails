@@ -17,9 +17,9 @@
 //! stopping userspace (the terminal may be gone by now). It then records the
 //! state as inactive while the hidden volume is still reachable.
 
+use nails_core::app::emergency as app;
 use nails_core::output::Mark;
 use nails_teardown::whole_root::emergency::{self, Finish, HotReport, Side};
-use serde::Serialize;
 
 use crate::cli::args::EmergencyArgs;
 use crate::cli::output::envelope::Envelope;
@@ -54,19 +54,12 @@ pub fn execute(
     let report = match crate::cli::early::take_report() {
         Some(report) => report,
         None => {
-            // The early path did not run (not root): run it here. Without root
-            // nothing may be touched, so the hot path only judges the plan.
-            let _ = std::env::set_current_dir("/");
+            // The early path did not run (not root): run it here. The countdown
+            // is terminal UX and stays in the CLI; the hot path is the facade's.
             if let Some(secs) = args.countdown {
                 run_countdown(secs);
             }
-            let plan = nails_teardown::whole_root::plan::Plan::load(
-                &nails_teardown::whole_root::plan::default_plan_path(),
-            )
-            .ok();
-            let mut host = emergency::Host::system();
-            host.act = nix::unistd::geteuid().is_root();
-            emergency::run(plan, &host, requested_finish(args))
+            app::run_hot_path(requested_finish(args))
         }
     };
     log_report(&report);
@@ -76,8 +69,8 @@ pub fn execute(
         render_human(settings, &report);
     }
     crate::cli::output::flush_stdio();
-    record_inactive(env, &report, config_override);
-    exit_status(&report)
+    app::record_inactive(env, &report, config_override);
+    app::exit_status(&report)
 }
 
 /// Run the hot path in-process (the backend watcher, the sleep guard) and log
@@ -89,17 +82,6 @@ pub(crate) fn run_hot_path_with(finish: Finish) {
     .ok();
     let report = emergency::run(plan, &emergency::Host::system(), finish);
     log_report(&report);
-}
-
-fn exit_status(report: &HotReport) -> ExitStatus {
-    match report.side {
-        Side::None if report.requested == Finish::Return => ExitStatus::Ok,
-        _ if !report.remaining.is_empty() => ExitStatus::DegradedReboot,
-        Side::Decoy if report.requested == Finish::Return => ExitStatus::Ok,
-        _ if report.dispatched.is_some() => ExitStatus::Ok,
-        _ if report.kernel_power_off => ExitStatus::DegradedReboot,
-        _ => ExitStatus::Failed,
-    }
 }
 
 /// Log the outcome and the phase timings (to the hidden-volume log while it is
@@ -123,25 +105,6 @@ fn log_report(report: &HotReport) {
     );
 }
 
-/// Record the session as inactive, best-effort, while the hidden volume is
-/// still reachable. The live facts (`status` probes them) are authoritative.
-fn record_inactive(
-    env: &nails_core::RuntimeEnv,
-    report: &HotReport,
-    config_override: Option<&std::path::Path>,
-) {
-    if report.side == Side::None {
-        return;
-    }
-    let (config, _) = super::load_config_for_teardown(config_override);
-    let state_path = config.state_file_path.clone();
-    let mut manager = nails_core::NailsManager::new(nails_core::RealFilesystem, config, state_path)
-        .with_runtime_env(env.clone());
-    if let Err(e) = manager.force_state(nails_core::SystemState::Inactive) {
-        tracing::debug!(error = %e, "could not record the inactive state after the emergency");
-    }
-}
-
 /// Print an abortable countdown to stderr, one line per second, always ending
 /// with a Ctrl+C hint. Never gated by `--quiet`/`--json`.
 pub(crate) fn run_countdown(secs: u64) {
@@ -158,88 +121,8 @@ pub(crate) fn run_countdown(secs: u64) {
     }
 }
 
-fn finish_name(finish: Finish) -> &'static str {
-    match finish {
-        Finish::Return => "return_to_decoy",
-        Finish::Reboot => "reboot",
-        Finish::Poweroff => "poweroff",
-    }
-}
-
-fn side_name(side: Side) -> &'static str {
-    match side {
-        Side::Hidden => "hidden",
-        Side::Decoy => "decoy",
-        Side::None => "none",
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct PhaseData {
-    name: &'static str,
-    ms: u64,
-}
-
-#[derive(Debug, Serialize)]
-struct EmergencyData {
-    /// Where the emergency ran: `hidden`, `decoy` or `none`.
-    side: &'static str,
-    /// What was asked for.
-    requested: &'static str,
-    /// What was enqueued (`null` when nothing was).
-    dispatched: Option<&'static str>,
-    /// Why the request was replaced, if it was.
-    fallback: Option<String>,
-    /// Whether the kernel was asked to power off directly.
-    kernel_power_off: bool,
-    /// Device-mapper names marked for deferred removal.
-    backend_closing: Vec<String>,
-    /// cgroups killed.
-    cgroups_killed: usize,
-    /// Processes killed one by one.
-    processes_killed: usize,
-    /// Mounts still below `/run/nextroot` after a decoy-side cleanup.
-    remaining_mounts: Vec<String>,
-    /// The timed phases, in order.
-    phases: Vec<PhaseData>,
-    /// The whole hot path, in milliseconds.
-    elapsed_ms: u64,
-}
-
-fn data(report: &HotReport) -> EmergencyData {
-    EmergencyData {
-        side: side_name(report.side),
-        requested: finish_name(report.requested),
-        dispatched: report.dispatched.map(finish_name),
-        fallback: report.fallback.clone(),
-        kernel_power_off: report.kernel_power_off,
-        backend_closing: report
-            .deferred
-            .iter()
-            .filter(|(_, ok)| *ok)
-            .map(|(n, _)| n.clone())
-            .collect(),
-        cgroups_killed: report.kill.cgroups.len(),
-        processes_killed: report.kill.processes.len(),
-        remaining_mounts: report
-            .remaining
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect(),
-        phases: report
-            .phases
-            .iter()
-            .map(|(name, d)| PhaseData {
-                name,
-                ms: u64::try_from(d.as_millis()).unwrap_or(u64::MAX),
-            })
-            .collect(),
-        elapsed_ms: u64::try_from(report.elapsed.as_millis()).unwrap_or(u64::MAX),
-    }
-}
-
 fn print_json(report: &HotReport) {
-    let envelope = Envelope::success("emergency", data(report));
+    let envelope = Envelope::success("emergency", app::data(report));
     crate::cli::output::println_tolerating_broken_pipe(&envelope.to_line());
 }
 
@@ -271,7 +154,7 @@ fn human_lines(settings: &OutputSettings, report: &HotReport) -> Vec<String> {
     }
     if report.side != Side::Hidden && report.requested != Finish::Return {
         match report.dispatched {
-            Some(finish) => out.push(format!("  Power action: {}", finish_name(finish))),
+            Some(finish) => out.push(format!("  Power action: {}", app::finish_name(finish))),
             None => out.push("  ! The power action could not be enqueued".to_string()),
         }
     }
@@ -312,7 +195,7 @@ fn human_lines(settings: &OutputSettings, report: &HotReport) -> Vec<String> {
 }
 
 fn render_human(settings: &OutputSettings, report: &HotReport) {
-    if settings.is_quiet() && exit_status(report) == ExitStatus::Ok {
+    if settings.is_quiet() && app::exit_status(report) == ExitStatus::Ok {
         return;
     }
     for line in human_lines(settings, report) {
@@ -342,34 +225,22 @@ mod tests {
     #[test]
     fn without_a_session_emergency_succeeds_and_says_so() {
         let report = simulated(None, Finish::Return);
-        assert_eq!(exit_status(&report), ExitStatus::Ok);
+        assert_eq!(app::exit_status(&report), ExitStatus::Ok);
         let lines = human_lines(&OutputSettings::default(), &report);
         assert!(lines[0].contains("nothing to tear down"), "{lines:?}");
     }
 
     #[test]
-    fn a_power_action_is_reported_on_every_side() {
+    fn a_power_action_is_reported_in_the_human_lines() {
         let report = simulated(None, Finish::Poweroff);
         assert_eq!(report.dispatched, Some(Finish::Poweroff));
-        assert_eq!(exit_status(&report), ExitStatus::Ok);
-        let json = serde_json::to_value(data(&report)).unwrap();
-        assert_eq!(json["requested"], "poweroff");
-        assert_eq!(json["dispatched"], "poweroff");
+        let lines = human_lines(&OutputSettings::default(), &report);
         assert!(
-            json["phases"]
-                .as_array()
-                .unwrap()
+            lines
                 .iter()
-                .any(|p| p["name"] == "enqueue")
+                .any(|line| line.contains("Power action: poweroff")),
+            "{lines:?}"
         );
-    }
-
-    #[test]
-    fn the_json_names_no_product_and_carries_the_timings() {
-        let report = simulated(None, Finish::Reboot);
-        let text = serde_json::to_string(&data(&report)).unwrap();
-        assert!(!text.to_lowercase().contains("nails"), "{text}");
-        assert!(text.contains("\"elapsed_ms\""));
     }
 
     #[test]
