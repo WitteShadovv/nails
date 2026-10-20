@@ -65,7 +65,7 @@ EXIT STATUS:
   9    completed, but with a warning the caller should act on
   10   verify found warnings
   11   verify found critical artifacts, or rehearse scan found its canary
-  130  cancelled by a signal (SIGINT/SIGTERM)";
+  130  cancelled: a declined prompt, or a signal (SIGINT/SIGTERM)";
 
 /// Run a hidden session on a decoy Linux system
 #[derive(Parser, Debug)]
