@@ -79,6 +79,10 @@ pub mod host_family;
 // The next command the operator should run, rendered with the real binary path.
 pub mod next_step;
 
+// The message catalogue: every user-facing string with its ID, translator note
+// and named placeholders, checked by the copy lint.
+pub mod catalog;
+
 // The parsers of `/etc/fstab` and `/etc/crypttab`.
 pub mod crypttab;
 pub mod fstab;
