@@ -26,6 +26,8 @@ of this changelog for that version becomes the release notes word for word, and
 - `status` reports why the last session switch was refused. When a soft-reboot cannot switch root,
   the reason is kept on the hidden volume and shown the next time, instead of a refused switch going
   unexplained; a later successful switch clears it.
+- Ubuntu 26.10 is a validated target: `check` and activation name it as a tested release rather than
+  warning that it is untested.
 
 ### Changed
 
@@ -45,6 +47,14 @@ of this changelog for that version becomes the release notes word for word, and
 - The hidden session's state file can now record which Linux family the host belongs to, without
   changing its on-disk format. A state file written by a 0.3.0 pre-release loads unchanged after the
   upgrade with its integrity digest intact, so an existing install is never read as corrupt.
+- The host-tools pre-flight check requires only the tools NAILS actually spawns — `systemctl` and
+  `loginctl` on every host, and `nix` on NixOS — and names a missing one with an install hint for the
+  host's package manager (`apt`, `dnf` or `pacman`). It no longer requires `systemd-run`, `cp`,
+  `chown`, `sync`, `swapoff` or `kill`, which NAILS does through system calls or systemd units rather
+  than by spawning a binary.
+- `check` shows the "NixOS profile" section only on NixOS, or where an explicit NixOS build target is
+  configured; a Debian, Ubuntu, Fedora or Arch decoy no longer prints a NixOS-profile line that does
+  not apply to it.
 
 ### Fixed
 
@@ -81,6 +91,10 @@ of this changelog for that version becomes the release notes word for word, and
 - The `memory-wipe` check reads the decoy kernel's configuration (`CONFIG_INIT_ON_FREE_DEFAULT_ON`)
   when the kernel command line is silent, warns when the decoy kernel does not zero freed memory, and
   notes a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe` module) when one is installed.
+- `nails activate` refuses a host NAILS does not support before it writes anything to the hidden
+  volume, so a refused host is left byte-identical, with no state lock and no log line, and the
+  command exits with the unsupported-platform status (8). The refusal previously came after the state
+  lock and the log file had already been written.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
