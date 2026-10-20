@@ -4,10 +4,10 @@
 //! Verify command handler
 
 use crate::cli::args::VerifyArgs;
-use crate::cli::output::dto::system_state_kind;
 use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::verify::{print_verify_json, verify_exit_status};
 use crate::cli::output::{self, ExitStatus, OutputSettings};
+use nails_core::app::verify::VerifyOptions;
 use std::io::Write;
 use std::path::Path;
 
@@ -34,10 +34,7 @@ pub fn execute(
     args: &VerifyArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
-    use nails_core::{RealFilesystem, StateFile, StateFileStatus, Verifier};
-
     let json = settings.is_json();
-    let filesystem = RealFilesystem;
 
     // Load config fail-closed for malformed or unreadable files; missing config
     // still uses defaults.
@@ -46,52 +43,15 @@ pub fn execute(
         Err(status) => return status,
     };
 
-    // Load state file status explicitly for verify reporting.
-    let state_path = config.state_file_path.clone();
-    let (state, state_file_status) = if !state_path.exists() {
-        (
-            None,
-            StateFileStatus::Missing {
-                path: state_path.clone(),
-            },
-        )
-    } else {
-        match StateFile::load(&state_path) {
-            Ok(loaded_state) => {
-                let state_name = system_state_kind(&loaded_state.state).to_string();
-                (
-                    Some(loaded_state),
-                    StateFileStatus::Present {
-                        path: state_path.clone(),
-                        state: state_name,
-                    },
-                )
-            }
-            Err(error) => (
-                None,
-                StateFileStatus::Error {
-                    path: state_path.clone(),
-                    message: error.to_string(),
-                },
-            ),
-        }
+    let options = VerifyOptions {
+        deep: args.deep,
+        offline: args.offline,
+        root: args.root.clone(),
+        examiner: args.examiner,
+        disk: args.disk.clone(),
     };
 
-    let mut verifier =
-        Verifier::with_config(filesystem, config, state, state_file_status).with_runtime_env(env);
-    if args.offline
-        && let Some(ref root) = args.root
-    {
-        verifier = verifier.offline_under(root.clone());
-        if args.examiner {
-            verifier = verifier.with_examiner(nails_core::ExaminerOptions {
-                disk: args.disk.clone(),
-                ..nails_core::ExaminerOptions::default()
-            });
-        }
-    }
-
-    let result = match verifier.run(args.deep) {
+    let result = match nails_core::app::verify::verify(env, config, &options) {
         Ok(result) => result,
         Err(e) => {
             return report_error(

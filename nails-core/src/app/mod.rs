@@ -27,6 +27,7 @@ pub mod readiness;
 pub mod recover;
 pub mod refusal;
 pub mod status;
+pub mod verify;
 
 pub use config::{
     ConfigSource, config_error_line, load_config_for_teardown, load_config_or_defaults,
