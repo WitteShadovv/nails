@@ -129,7 +129,11 @@ const TABLE: &[FamilyRow] = &[
         family: Family::Debian,
         gate: Gate::Versioned {
             min: DistroVersion::new(24, 4),
-            validated: &[DistroVersion::new(24, 4), DistroVersion::new(26, 4)],
+            validated: &[
+                DistroVersion::new(24, 4),
+                DistroVersion::new(26, 4),
+                DistroVersion::new(26, 10),
+            ],
         },
         kind: Kind::Base,
         admitted: true,
@@ -493,7 +497,7 @@ fn unknown_reason(id: Option<&str>) -> String {
 }
 
 /// The admitted platforms as one sentence fragment, generated from the table:
-/// `Debian 13, Ubuntu 24.04 and 26.04`.
+/// `Debian 13, Ubuntu 24.04, 26.04 and 26.10`.
 fn supported_platforms() -> String {
     let parts: Vec<String> = TABLE
         .iter()
@@ -525,7 +529,7 @@ fn releases(versions: &[DistroVersion]) -> String {
 pub(crate) const USR_MERGE_REFUSAL: &str = "this Debian-family host is not usr-merged (/bin, /sbin or /lib is a real \
      directory rather than a symlink into /usr). NAILS is tested only on the merged \
      layout, which every supported release ships. Convert the host with usrmerge, \
-     or use Debian 13, Ubuntu 24.04 or Ubuntu 26.04.";
+     or use Debian 13, Ubuntu 24.04, 26.04 or 26.10.";
 
 #[cfg(test)]
 #[path = "family_tests.rs"]

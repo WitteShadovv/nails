@@ -700,7 +700,7 @@ fn platform_result(manager: &NailsManager<MockFilesystem>) -> Option<CheckResult
 #[test]
 #[tracing_test::traced_test]
 fn an_untested_release_warns_in_check_and_at_activation() {
-    let manager = manager_on_host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\n");
+    let manager = manager_on_host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"28.04\"\n");
     let names = manager
         .preflight_registry(&PreflightOptions::default())
         .expect("registry builds")
@@ -716,7 +716,7 @@ fn an_untested_release_warns_in_check_and_at_activation() {
 
     let _ = manager.run_preflight_checks(&PreflightOptions::default());
     assert!(logs_contain(
-        "platform: Ubuntu 26.10 is not a release NAILS has been tested on"
+        "platform: Ubuntu 28.04 is not a release NAILS has been tested on"
     ));
 }
 
