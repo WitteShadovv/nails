@@ -37,6 +37,33 @@ of this changelog for that version becomes the release notes word for word, and
   `/run/ostree-booted`, recognised by its kernel command line or the composefs runtime directory.
   NAILS cannot overlay an immutable system.
 
+### Fixed
+
+- The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
+  `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
+  that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up
+  only a file's metadata, or follow a redirect, so data could stay in the lower layer after a
+  rollback and the overlay no longer behaved as NAILS's forensic guarantees assume.
+- The `decoy-persistence` check judges journald's journal by the running systemd's built-in default
+  when no configuration sets `Storage=`: below systemd 259 the default is still `auto`, but from 259
+  (Ubuntu 26.04) it is `persistent`, so a decoy that keeps no explicit setting now counts as
+  persistent and is refused, where it was read as volatile before. The `journal.storage` credential
+  (systemd 257 and later) is read when no configuration file sets `Storage=`, and a systemd whose
+  version cannot be read is treated as persistent.
+- The journald, logind and systemd-coredump configuration is read line by line for UTF-8, as systemd
+  reads it: a comment or other line that is not valid UTF-8 (a Latin-1 comment, say) no longer makes
+  the whole file unreadable, so a `Storage=persistent` below such a line is still seen instead of the
+  decoy reading as amnesic.
+- A btrfs decoy root is accepted only when the mounted root is a real subvolume (its mount root
+  equals its `subvol=`). A bind mount of a plain folder on a btrfs filesystem is now refused before
+  activation, naming the folder, instead of passing the pre-flight check and then failing the
+  way-back mount.
+- A decoy mount point that is a symlink (for example `/home` linking to `var/home`, as on
+  ostree-based systems) is resolved to its real path inside the decoy root. NAILS now decides, mounts
+  and masks the filesystem where the decoy really keeps it (`var-home.mount`, not `home.mount`), and
+  fresh-home mode creates the home at that real path instead of a directory where the decoy has a
+  symlink.
+
 ## [0.3.0-rc.3] - 2026-10-20
 
 ### Changed
