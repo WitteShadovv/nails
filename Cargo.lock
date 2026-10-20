@@ -1232,6 +1232,7 @@ dependencies = [
  "assert_cmd",
  "chrono",
  "criterion",
+ "nails-api",
  "nails-base",
  "nails-core",
  "nails-forensics",

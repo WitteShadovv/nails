@@ -37,6 +37,7 @@ const GRAPH: &[(&str, &[&str])] = &[
     (
         "nails-core",
         &[
+            "nails-api",
             "nails-base",
             "nails-forensics",
             "nails-platform",
