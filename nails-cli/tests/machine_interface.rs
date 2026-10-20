@@ -246,6 +246,38 @@ fn config_path_is_one_envelope() {
 }
 
 #[test]
+fn check_json_matches_the_schema() {
+    // The isolated hidden root is a plain folder, so the attach gate refuses the
+    // readiness check (exit 4); `check` still emits one readiness envelope of its
+    // schema, which is what the contract covers. `--overlay-only` keeps the run
+    // off the hidden-NixOS build checks so it is the same on every host.
+    let (_dir, config) = isolated_config();
+    let (code, value) = run_json(&config, &["check", "--overlay-only"]);
+
+    assert_eq!(code, 4, "a folder root refuses the readiness check: {value}");
+    assert_valid("check", &value);
+    assert_eq!(value["command"], "check");
+    // A refused check is exit 4, so the envelope is not ok; the readiness report
+    // still rides in data.
+    assert_eq!(value["ok"], false, "{value}");
+    assert!(value["data"]["checks"].is_array(), "{value}");
+}
+
+#[test]
+fn rehearse_json_matches_the_schema() {
+    // With nothing planted, the guided status is a clean exit-0 envelope naming
+    // the first step; it reads the rehearsal state only, so a folder root is fine.
+    let (_dir, config) = isolated_config();
+    let (code, value) = run_json(&config, &["rehearse"]);
+
+    assert_eq!(code, 0, "the guided status exits 0: {value}");
+    assert_valid("rehearse", &value);
+    assert_eq!(value["command"], "rehearse");
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(value["data"]["phase"], "none", "{value}");
+}
+
+#[test]
 fn a_config_load_failure_is_one_error_envelope_on_stdout() {
     // A missing explicit config is a pre-dispatch failure; under --json it is
     // one error envelope on stdout, not plain text on stderr.

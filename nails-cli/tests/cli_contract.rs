@@ -778,6 +778,110 @@ fn emergency_schema_accepts_the_hot_path_report() {
 }
 
 // ---------------------------------------------------------------------------
+// init / recover / reset-upper schemas: representative-document round-trip
+//
+// These commands write to the hidden volume, or act on a live next root, and
+// need a real target to run for real (covered in the VM tier). Here we only
+// guard that the committed schemas compile and accept the exact documents the
+// handlers emit — a success payload and a typed error — while the frame and the
+// error body stay strict. The data shape itself is deliberately frame-only in
+// these schemas (a follow-up may tighten it).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn init_schema_accepts_the_layout_report_and_an_error() {
+    let schema = load_schema("init");
+    // A completed layout: the report `init` renders (InitReport), with warnings
+    // and notes present as they are on a real untested-release run.
+    let report = serde_json::json!({
+        "schema_version": 2, "command": "init", "ok": true,
+        "data": {
+            "root": "/mnt/data",
+            "items": [
+                {"path": "/mnt/data/config", "status": "created"},
+                {"path": "/mnt/data/logs", "status": "already_present"}
+            ],
+            "warnings": ["Ubuntu 28.04 is not a release NAILS has been tested on"],
+            "notes": ["The hidden NixOS layout was skipped on a non-NixOS host"],
+            "next_steps": ["Review config/nails.toml", "Run activate to enter"]
+        }
+    });
+    assert_matches_schema(&schema, &report);
+
+    // A precondition refusal: one error body, no data.
+    let refused = serde_json::json!({
+        "schema_version": 2, "command": "init", "ok": false,
+        "error": {"code": "preconditions", "message": "the target is not empty", "next": null}
+    });
+    assert_matches_schema(&schema, &refused);
+}
+
+#[test]
+fn recover_schema_accepts_the_clean_degraded_and_error_envelopes() {
+    let schema = load_schema("recover");
+    // Nothing to recover: a clean, ok outcome (RecoverData).
+    let clean = serde_json::json!({
+        "schema_version": 2, "command": "recover", "ok": true,
+        "data": {"outcome": "clean", "remaining_mounts": [], "backend": []}
+    });
+    assert_matches_schema(&schema, &clean);
+
+    // A rollback that left a mount below /run/nextroot is degraded (exit 7): ok
+    // is false, but the outcome still rides in data, not an error body.
+    let degraded = serde_json::json!({
+        "schema_version": 2, "command": "recover", "ok": false,
+        "data": {
+            "outcome": "rolled_back",
+            "remaining_mounts": ["/run/nextroot/home"],
+            "backend": [
+                {"name": "hidden-crypt", "state": "closed"},
+                {"name": "hidden-loop", "state": "in_use"}
+            ]
+        }
+    });
+    assert_matches_schema(&schema, &degraded);
+
+    // Run in the hidden session, recover refuses with a typed next step.
+    let error = serde_json::json!({
+        "schema_version": 2, "command": "recover", "ok": false,
+        "error": {
+            "code": "invalid_state",
+            "message": "recover runs on the decoy, not in the hidden session",
+            "next": {"command": "emergency"}
+        }
+    });
+    assert_matches_schema(&schema, &error);
+}
+
+#[test]
+fn reset_upper_schema_accepts_the_removal_and_cancel_envelopes() {
+    let schema = load_schema("reset-upper");
+    // A completed reset: the removed directories ride in data (DiscardData).
+    let removed = serde_json::json!({
+        "schema_version": 2, "command": "reset-upper", "ok": true,
+        "data": {
+            "target": "/home",
+            "removed": ["/mnt/data/root-upper/home", "/mnt/data/mounts/home"]
+        }
+    });
+    assert_matches_schema(&schema, &removed);
+
+    // Nothing to reset: an ok envelope with an empty removal list.
+    let nothing = serde_json::json!({
+        "schema_version": 2, "command": "reset-upper", "ok": true,
+        "data": {"target": "/home", "removed": []}
+    });
+    assert_matches_schema(&schema, &nothing);
+
+    // A declined confirmation is the one cancel shape: an error, no data.
+    let cancelled = serde_json::json!({
+        "schema_version": 2, "command": "reset-upper", "ok": false,
+        "error": {"code": "cancelled", "message": "Reset cancelled; nothing was deleted.", "next": null}
+    });
+    assert_matches_schema(&schema, &cancelled);
+}
+
+// ---------------------------------------------------------------------------
 // Error envelope
 // ---------------------------------------------------------------------------
 
