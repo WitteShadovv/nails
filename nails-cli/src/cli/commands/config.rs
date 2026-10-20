@@ -244,7 +244,12 @@ mod tests {
         let data = envelope_data(&outcome.stdout);
 
         assert_eq!(outcome.code, 0);
-        assert!(data["path"].as_str().unwrap().ends_with("config/nails.toml"));
+        assert!(
+            data["path"]
+                .as_str()
+                .unwrap()
+                .ends_with("config/nails.toml")
+        );
         assert_eq!(data["exists"], false);
     }
 

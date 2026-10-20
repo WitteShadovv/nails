@@ -129,7 +129,10 @@ fn an_entering_result_lists_the_system_filesystems_and_masks() {
         Some("/nix/store/aaa-nixos-system-hidden")
     );
     // `Leave` decisions are not reported: nothing happens to them.
-    assert_eq!(data.filesystems, vec!["/boot: read-only", "/home: overlaid"]);
+    assert_eq!(
+        data.filesystems,
+        vec!["/boot: read-only", "/home: overlaid"]
+    );
     // As `status --json` lists them: the boot-loader masks too.
     assert_eq!(
         data.masked_units,
