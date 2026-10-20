@@ -33,9 +33,10 @@ use serde_json::Value;
 /// unmounted deterministically and nothing temporary leaks into a snapshot.
 const CONTRACT_TARGET: &str = "/opt/nails-contract-home";
 
-/// Substrings that must never appear in user-facing help or version text: the
-/// old acronym expansion would identify the tool's purpose on a decoy system,
-/// and default hidden-storage paths would point an examiner at the backend.
+/// Substrings that must never appear in user-facing text: the old acronym
+/// expansion would identify the tool's purpose on a decoy system, and default
+/// hidden-storage paths would point an examiner at the backend. Checked against
+/// both the rendered help/version output and every catalogue message.
 const BLOCKED_SUBSTRINGS: &[&str] = &[
     "Anti-forensics",
     "anti-forensic",
@@ -266,6 +267,20 @@ fn help_and_version_carry_no_blocked_substrings() {
             assert!(
                 !text.contains(blocked),
                 "{args:?} output contains blocked substring {blocked:?}"
+            );
+        }
+    }
+
+    // Widened from the help text to every string: no catalogue message carries
+    // a blocked substring either, so the guard holds as the message surface
+    // moves into the catalogue. The copy lint (nails-base) enforces the
+    // full avoid list per surface; this keeps the CLI contract's own check.
+    for message in nails_core::catalog::CATALOG {
+        for blocked in BLOCKED_SUBSTRINGS {
+            assert!(
+                !message.text.contains(blocked),
+                "catalogue message {:?} contains blocked substring {blocked:?}",
+                message.id
             );
         }
     }
