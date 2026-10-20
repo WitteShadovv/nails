@@ -57,6 +57,10 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 chrono = { workspace = true }
 tempfile = { workspace = true }
+# The machine-readable contract types (the `--json` envelope, the exit-code
+# table): the facade names the outcome of an operation in the same terms a
+# front end reports it, so the exit codes cannot drift from the orchestration.
+nails-api = { path = "../nails-api" }
 # The foundation: errors, the filesystem and process seams, configuration,
 # state, the artifact registry and the pre-flight framework.
 nails-base = { path = "../nails-base" }
