@@ -46,6 +46,7 @@ use super::policy::{self, Decision};
 use super::store;
 use crate::error::{NailsError, Result};
 use crate::nixos::NixOSBuilder;
+use crate::reporter::progress::{ActivationPhase, activation_step};
 use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{
@@ -442,6 +443,8 @@ fn build(
             sudo_line(NextStep::Recover)
         )));
     }
+    let building = inputs.builder.is_some();
+    activation_step(ActivationPhase::Runtime, building);
     let snapshot = Snapshot::take(&paths.run);
     write_runtime(paths, inputs, &snapshot)?;
     let layout = Layout::new(inputs.hidden_root);
@@ -464,6 +467,7 @@ fn build(
     install_transition(paths, host, dropin)?;
     crate::cancel::checkpoint()?;
 
+    activation_step(ActivationPhase::Overlay, building);
     let decoy_mounts = relative_mounts(&mounts, &paths.root);
     if inputs.persona.mode == crate::config::PersonaMode::FreshHome {
         fresh_home(paths, inputs, &layout, &decoy_mounts)?;
@@ -479,6 +483,7 @@ fn build(
     )
     .map_err(|e| io(&nextroot, e))?;
 
+    activation_step(ActivationPhase::MountPolicy, building);
     // The decoy's own fstab first, read the way the decoy resolves it: its
     // filesystems (a separate /nix, the VM store) must be in place inside the
     // next root before anything reads the next root's store.
@@ -494,9 +499,11 @@ fn build(
 
     let mut warnings = Vec::new();
     if let Some(builder) = inputs.builder {
+        activation_step(ActivationPhase::BuildSystem, building);
         ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
         let system = host.build_hidden_system(builder, &nextroot, &layout.cache())?;
         crate::cancel::checkpoint()?;
+        activation_step(ActivationPhase::KeepClosure, building);
         // Before anything runs from it: the decoy may garbage-collect its
         // store before the next session, so the closure is kept on the
         // hidden volume.
@@ -512,6 +519,7 @@ fn build(
         // The last stop before the activation, which runs to its end once it
         // has begun.
         crate::cancel::checkpoint()?;
+        activation_step(ActivationPhase::ActivateSystem, building);
         host.activate_hidden_system(&nextroot, &system)?;
         crate::cancel::checkpoint()?;
         if let Some(decoy) = &plan.decoy.system
@@ -550,6 +558,7 @@ fn build(
     } else if !inputs.nixos {
         plan.hidden.init = fhs_init(&nextroot);
     }
+    activation_step(ActivationPhase::MaskUnits, building);
     plan.masks = policy::masks(&fstab, &decisions);
     plan.boot_masks = super::systemd::units_in_root(&nextroot, policy::BOOT_WRITER_UNITS)
         .into_iter()
@@ -559,6 +568,7 @@ fn build(
         super::persona::write_masks(&nextroot, &inputs.persona, operator);
     }
 
+    activation_step(ActivationPhase::WayBack, building);
     warnings.extend(super::way_back::keep(
         paths,
         &layout,
@@ -582,6 +592,7 @@ fn build(
     }
 
     crate::cancel::checkpoint()?;
+    activation_step(ActivationPhase::Arm, building);
     plan.armed = Some(Arm::now(Direction::Enter));
     plan.write_atomic(&paths.plan())
         .map_err(|e| io(&paths.plan(), e))?;

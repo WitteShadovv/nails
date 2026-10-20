@@ -208,6 +208,21 @@ impl<F: Filesystem> NailsManager<F> {
         options: &EnterOptions,
         host: &dyn EntryHost,
     ) -> Result<EnterOutcome> {
+        let result = self.enter_session_inner(machine, options, host);
+        // Mark the end of the activation for a watching event stream, unless
+        // there was nothing to do (already in the hidden root).
+        if !matches!(result, Ok(EnterOutcome::AlreadyActive)) {
+            crate::reporter::progress::finish(result.is_ok());
+        }
+        result
+    }
+
+    fn enter_session_inner(
+        &mut self,
+        machine: &Machine,
+        options: &EnterOptions,
+        host: &dyn EntryHost,
+    ) -> Result<EnterOutcome> {
         if self.session_view_on(machine).is_hidden() {
             return Ok(EnterOutcome::AlreadyActive);
         }
@@ -279,6 +294,9 @@ impl<F: Filesystem> NailsManager<F> {
         prepared: &entry::Entry,
         elapsed: std::time::Duration,
     ) -> Result<()> {
+        // A new activation supersedes the last switch's refusal, if any, so a
+        // stale reason never outlives the switch it described.
+        nails_teardown::whole_root::switch_refusal::clear(&self.config.hidden_volume_root);
         let now = Utc::now();
         // The FHS family of the detected host; the state file keeps only Fedora
         // and Arch (see `StateFile::mark_fhs_family`), so a Debian-family host
@@ -370,6 +388,8 @@ impl<F: Filesystem> NailsManager<F> {
                 ));
             }
         };
+        // Leaving is a new switch: supersede the last one's refusal, if any.
+        nails_teardown::whole_root::switch_refusal::clear(&self.config.hidden_volume_root);
         self.force_state(SystemState::Inactive)?;
         rustix::fs::sync();
         crate::session::leave(&machine.paths, &mut plan, to, host)

@@ -32,6 +32,7 @@ fn report(posture: Posture, session: &'static str) -> StatusReport {
         last_activation: None,
         decoy_persistent: false,
         persona_mode: PersonaMode::SharedHome,
+        switch_refusal: None,
         opsec_reminders: Vec::new(),
     }
 }

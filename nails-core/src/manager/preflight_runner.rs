@@ -330,6 +330,18 @@ pub fn build_registry<F: Filesystem>(
     Ok(registry)
 }
 
+/// The typed event outcome of a check result, for the progress event stream.
+fn check_outcome(result: &crate::preflight::CheckResult) -> nails_api::CheckOutcome {
+    use crate::preflight::CheckResult;
+    use nails_api::CheckOutcome;
+    match result {
+        CheckResult::Pass(_) => CheckOutcome::Pass,
+        CheckResult::Warn(_) => CheckOutcome::Warn,
+        CheckResult::Fail { .. } => CheckOutcome::Fail,
+        CheckResult::Skipped(_) => CheckOutcome::Skipped,
+    }
+}
+
 impl<F: Filesystem> NailsManager<F> {
     /// Build the pre-flight registry for this manager's current inputs.
     ///
@@ -397,6 +409,10 @@ impl<F: Filesystem> NailsManager<F> {
         let mut failed_checks: crate::error::PreFlightFailures = Vec::new();
 
         for (name, result) in &results {
+            // A caller watching the typed event stream sees each check as it is
+            // reported, in execution order; with no event reporter installed
+            // this is a no-op and the tracing lines below are the only record.
+            crate::reporter::progress::check(name, check_outcome(result), result.message());
             match result {
                 crate::preflight::CheckResult::Pass(msg) => {
                     tracing::debug!(check = %name, result = "pass", msg = %msg, "Preflight check passed");

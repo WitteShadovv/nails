@@ -618,6 +618,36 @@ fn a_cancel_before_the_entry_changes_nothing() {
 }
 
 #[test]
+fn a_caller_s_cancel_token_before_the_entry_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&hidden);
+    m.set_host_profile(FakePlatform::fhs().host_profile());
+    let options = EnterOptions {
+        skip_preflight: true,
+        ..EnterOptions::default()
+    };
+    let host = FakeEntryHost::default();
+
+    // A caller — a window whose control pipe closed before the point of no
+    // return — trips its token. The entry stops at a checkpoint and leaves the
+    // decoy exactly as a SIGINT would, because the token feeds the same
+    // checkpoint the signal flag does.
+    let token = crate::cancel::CancelToken::new();
+    let scope = token.install();
+    token.cancel();
+    let result = m.enter_session_on(&machine, &options, &host);
+    drop(scope);
+
+    assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 0);
+    assert!(!hidden.join("state.json").exists());
+}
+
+#[test]
 fn a_step_that_fails_while_a_cancel_is_pending_reports_the_cancel() {
     // A Ctrl+C from the terminal reaches the step's processes too.
     crate::cancel::testing::request();
