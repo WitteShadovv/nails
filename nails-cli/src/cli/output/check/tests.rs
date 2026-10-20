@@ -129,6 +129,8 @@ fn the_profile_section_prints_the_build_target_line() {
         ),
     ] {
         let mut report = report(rows());
+        // A NixOS host always shows the section.
+        report.nixos_host = true;
         report.profile.detail = detail;
         let lines = human_lines(&report, style);
         let at = lines
@@ -142,4 +144,53 @@ fn the_profile_section_prints_the_build_target_line() {
             "{lines:#?}"
         );
     }
+}
+
+/// On a non-NixOS host with no NixOS target the section is omitted: a Debian or
+/// Ubuntu decoy has no NixOS profile to build, so the line is noise.
+#[test]
+fn the_profile_section_is_hidden_on_a_non_nixos_host() {
+    let style = Style {
+        ascii: true,
+        ..Style::default()
+    };
+    let mut report = report(rows());
+    report.nixos_host = false;
+    report.profile = ProfileSummary {
+        mode: "none",
+        detail: None,
+    };
+    let lines = human_lines(&report, style);
+    assert!(
+        lines.iter().all(|line| line != "NixOS profile:"),
+        "{lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.contains("NixOS build target")),
+        "{lines:#?}"
+    );
+}
+
+/// An explicit flake is the operator's own choice and is shown on any host, so a
+/// Debian decoy pointed at a flake still reports it.
+#[test]
+fn an_explicit_flake_shows_the_profile_section_on_any_host() {
+    let style = Style {
+        ascii: true,
+        ..Style::default()
+    };
+    let mut report = report(rows());
+    report.nixos_host = false;
+    report.profile = ProfileSummary {
+        mode: "flake",
+        detail: Some("NixOS flake: /cfg#host".to_string()),
+    };
+    let lines = human_lines(&report, style);
+    let at = lines
+        .iter()
+        .position(|line| line == "NixOS profile:")
+        .expect("an explicit flake is reported on any host");
+    assert!(lines[at + 1].contains("/cfg#host"), "{lines:#?}");
 }

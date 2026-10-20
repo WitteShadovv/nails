@@ -120,13 +120,20 @@ fn human_lines(report: &ReadinessReport, style: Style) -> Vec<String> {
     ));
     out.push(String::new());
 
-    out.push("NixOS profile:".to_string());
-    out.push(format!(
-        "  {} {}",
-        style.mark(Mark::Info),
-        report.profile.line()
-    ));
-    out.push(String::new());
+    // The NixOS-profile section is shown on NixOS, and on any host where the
+    // operator configured a real NixOS build target (an explicit flake or a
+    // legacy configuration). A plain Debian, Ubuntu, Fedora or Arch host builds
+    // no NixOS profile, so the section is hidden there rather than printing a
+    // "no hidden NixOS build target" line that does not apply.
+    if report.nixos_host || matches!(report.profile.mode, "flake" | "legacy") {
+        out.push("NixOS profile:".to_string());
+        out.push(format!(
+            "  {} {}",
+            style.mark(Mark::Info),
+            report.profile.line()
+        ));
+        out.push(String::new());
+    }
 
     out.push("Inherited decoy state:".to_string());
     for line in inherited::inherited_lines(&report.inherited, report.config.persona_mode, style) {
