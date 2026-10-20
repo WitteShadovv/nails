@@ -482,7 +482,7 @@ fn build(
     // next root before anything reads the next root's store.
     let decoy_fstab = super::fstab::read_in_root(&paths.root)
         .map_err(|e| io(&paths.root.join("etc/fstab"), e))?;
-    let mut decisions = decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root)?;
+    let mut decisions = decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root, &paths.root)?;
     let decoy_fstab = super::fstab::parse_fstab(&String::from_utf8_lossy(&decoy_fstab));
     // Every entry the hidden systemd may read: the decoy's, and those of the
     // hidden generation once it is built.
@@ -529,7 +529,7 @@ fn build(
         // too, and put in place what the decoy's fstab did not already cover.
         let hidden_fstab = super::fstab::read_in_root(&nextroot)
             .map_err(|e| io(&nextroot.join("etc/fstab"), e))?;
-        let hidden = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root)?;
+        let hidden = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root, &nextroot)?;
         fstab.extend(super::fstab::parse_fstab(&String::from_utf8_lossy(
             &hidden_fstab,
         )));
@@ -618,7 +618,11 @@ fn fresh_home(
             "persona mode fresh-home needs the operator (run through sudo)".to_string(),
         )
     })?;
-    let home = operator.passwd_home();
+    // Resolve the home inside the decoy root first, so a `/home` the decoy
+    // keeps at `var/home` places the fresh home at `var/home/<user>` and never
+    // creates a directory where the decoy has a symlink.
+    let home = nextroot::canonical_in_root(&paths.root, operator.passwd_home());
+    let home = home.as_path();
     let mount = decoy_mounts
         .iter()
         .filter(|m| home.starts_with(&m.mount_point))
@@ -696,9 +700,21 @@ fn relative_mounts(mounts: &[MountEntry], root: &Path) -> Vec<MountEntry> {
 }
 
 /// Parse `fstab` and decide every entry; an entry with no safe decision
-/// refuses the entry.
-fn decide_fstab(fstab: &[u8], mounts: &[MountEntry], hidden_root: &Path) -> Result<Vec<Decision>> {
-    let entries = super::fstab::parse_fstab(&String::from_utf8_lossy(fstab));
+/// refuses the entry. Each absolute mount point is resolved inside `root`
+/// first, so a `/home` that the decoy keeps at `var/home` is decided, mounted
+/// and masked as `var/home` (`var-home.mount`), the way systemd mounts it.
+fn decide_fstab(
+    fstab: &[u8],
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+    root: &Path,
+) -> Result<Vec<Decision>> {
+    let mut entries = super::fstab::parse_fstab(&String::from_utf8_lossy(fstab));
+    for entry in &mut entries {
+        if entry.file.is_absolute() {
+            entry.file = nextroot::canonical_in_root(root, &entry.file);
+        }
+    }
     let decisions = policy::decide_all(&entries, mounts, hidden_root);
     if let Some(Decision::Refuse { target, reason }) = decisions
         .iter()
@@ -933,5 +949,20 @@ mod tests {
                 .as_deref(),
             Some("subvol=/@/snapshots/root")
         );
+    }
+
+    #[test]
+    fn a_symlinked_fstab_mount_point_is_decided_at_its_real_path() {
+        // The decoy keeps /home at var/home (an ostree layout).
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("var/home")).unwrap();
+        std::os::unix::fs::symlink("var/home", root.path().join("home")).unwrap();
+
+        // fstab names /home; nothing is mounted there now, so it is masked. The
+        // masked unit is the one systemd generates for the real mount point,
+        // var-home.mount, not home.mount, so the hidden session really masks it.
+        let fstab = b"/dev/sdb1 /home ext4 defaults 0 2\n";
+        let decisions = decide_fstab(fstab, &[], Path::new("/mnt/data"), root.path()).unwrap();
+        assert_eq!(policy::masked_units(&decisions), ["var-home.mount"]);
     }
 }
