@@ -245,7 +245,7 @@ pub fn exit_on_clap_error(error: clap::Error) -> ! {
     if is_usage && json {
         let command = command_from_argv(&invocation_args());
         error_envelope(command, ErrorBody::new("usage", error.to_string())).print();
-        std::process::exit(2);
+        crate::cli::chokepoint::exit_process(2);
     }
     error.exit()
 }

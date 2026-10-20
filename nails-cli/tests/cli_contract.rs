@@ -483,7 +483,8 @@ fn status_json_missing_state_matches_schema_and_snapshot() {
     let (code, value) = run_json(&harness.config, &["status"]);
     assert_eq!(code, 0, "status always exits 0: {value}");
     assert_matches_schema(&load_schema("status"), &value);
-    assert_eq!(value["data"]["state"]["kind"], "inactive");
+    assert_eq!(value["data"]["place"], "decoy");
+    assert!(value["data"]["attention"].is_null());
     insta::assert_json_snapshot!("status_json_missing", redact_status(value));
 }
 
@@ -494,7 +495,8 @@ fn status_json_inactive_matches_schema_and_snapshot() {
     let (code, value) = run_json(&harness.config, &["status"]);
     assert_eq!(code, 0);
     assert_matches_schema(&load_schema("status"), &value);
-    assert_eq!(value["data"]["state"]["kind"], "inactive");
+    assert_eq!(value["data"]["place"], "decoy");
+    assert!(value["data"]["attention"].is_null());
     insta::assert_json_snapshot!("status_json_inactive", redact_status(value));
 }
 
@@ -502,12 +504,13 @@ fn status_json_inactive_matches_schema_and_snapshot() {
 fn status_json_active_matches_schema_and_snapshot() {
     let harness = write_active_harness();
     let (code, value) = run_json(&harness.config, &["status"]);
-    // The live view on the test host is the plain decoy: an active record is
-    // reported next to the decoy posture, and no uptime is claimed for it.
+    // The live view on the test host is the plain decoy: an active record there
+    // means the session ended without updating the record, and no uptime is
+    // claimed for it.
     assert_eq!(code, 0);
     assert_matches_schema(&load_schema("status"), &value);
-    assert_eq!(value["data"]["state"]["kind"], "active");
-    assert_eq!(value["data"]["posture"], "decoy");
+    assert_eq!(value["data"]["place"], "decoy");
+    assert_eq!(value["data"]["attention"], "ended_abnormally");
     assert!(value["data"].get("uptime_seconds").is_none());
     insta::assert_json_snapshot!("status_json_active", redact_status(value));
 }
@@ -517,11 +520,13 @@ fn status_json_tampered_state_is_unknown_and_matches_schema() {
     let harness = Harness::new();
     harness.write_tampered_state();
     let (code, value) = run_json(&harness.config, &["status"]);
-    // An untrusted state file means the real state is unknown: fail closed.
-    assert_eq!(code, 6, "an unknown posture exits InvalidState");
+    // An untrusted state file means the record cannot be read: fail closed, and
+    // say so as the one attention that matters.
+    assert_eq!(code, 6, "an unreadable record exits InvalidState");
     assert_matches_schema(&load_schema("status"), &value);
-    assert_eq!(value["data"]["state"]["kind"], "unknown");
-    assert_eq!(value["data"]["posture"], "unknown");
+    assert_eq!(value["data"]["place"], "decoy");
+    assert_eq!(value["data"]["attention"], "record_unreadable");
+    assert_eq!(value["ok"], false);
     insta::assert_json_snapshot!("status_json_tampered", redact_status(value));
 }
 
@@ -533,12 +538,11 @@ fn status_json_degraded_matches_schema_and_snapshot() {
         reason: "in the hidden root without a way back".to_string(),
     });
     let (code, value) = run_json(&harness.config, &["status"]);
-    // The posture comes from the live view (the plain decoy here); the
-    // degraded record is reported next to it.
+    // The place comes from the live view (the plain decoy here); a degraded
+    // record while safely on the decoy needs no attention of its own.
     assert_eq!(code, 0);
     assert_matches_schema(&load_schema("status"), &value);
-    assert_eq!(value["data"]["state"]["kind"], "degraded");
-    assert_eq!(value["data"]["posture"], "decoy");
+    assert_eq!(value["data"]["place"], "decoy");
     insta::assert_json_snapshot!("status_json_degraded", redact_status(value));
 }
 
@@ -595,10 +599,13 @@ fn verify_json_matches_schema_and_snapshot() {
     assert_matches_schema(&load_schema("verify"), &value);
     assert_eq!(value["command"], "verify");
     assert_eq!(value["data"]["config_aware"], true);
+    // `ok` now follows the scan's exit code (secure 0, warning 10, critical 11),
+    // which varies with the host, so it is checked against the code rather than
+    // snapshotted; the snapshot keeps the stable structural fields.
+    assert_eq!(value["ok"], code == 0, "{value}");
     let projection = serde_json::json!({
         "schema_version": value["schema_version"],
         "command": value["command"],
-        "ok": value["ok"],
         "data": {
             "config_aware": value["data"]["config_aware"],
             "scan_depth": value["data"]["scan_depth"],
@@ -651,78 +658,89 @@ fn verify_offline_examiner_json_matches_schema_and_groups_traces() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn activate_schema_accepts_progress_result_and_error_lines() {
+fn activate_schema_accepts_one_result_or_error_envelope() {
     let schema = load_schema("activate");
-    let progress = serde_json::json!({
-        "schema_version": 1, "command": "activate", "type": "progress", "phase": "preparing"
+    // A prepared entry: one ok envelope carrying the data payload.
+    let entering = serde_json::json!({
+        "schema_version": 2, "command": "activate", "ok": true,
+        "data": {
+            "status": "entering", "duration": 12.5,
+            "hidden_system": "/nix/store/0000-nixos-system-hidden",
+            "filesystems": ["/boot: read-only", "/home: overlaid"],
+            "masked_units": ["dev-vda3.swap"],
+            "message": "Prepared in 12.5s; soft-rebooting into the hidden session"
+        }
     });
-    assert_matches_schema(&schema, &progress);
+    assert_matches_schema(&schema, &entering);
 
-    let result = serde_json::json!({
-        "schema_version": 1, "command": "activate", "type": "result",
-        "ok": true, "status": "entering", "duration": 12.5,
-        "hidden_system": "/nix/store/0000-nixos-system-hidden",
-        "filesystems": ["/boot: read-only", "/home: overlaid"],
-        "masked_units": ["dev-vda3.swap"],
-        "message": "Prepared in 12.5s; soft-rebooting into the hidden session"
-    });
-    assert_matches_schema(&schema, &result);
-
+    // A refused activation keeps its data with ok false and an error body.
     let refused = serde_json::json!({
-        "schema_version": 1, "command": "activate", "type": "result",
-        "ok": false, "status": "error", "duration": 0.2,
-        "filesystems": [], "masked_units": [],
-        "message": "Pre-flight checks failed",
-        "failed_checks": [{"name": "systemd-version", "reason": "systemd 252 is too old", "fix": "Use Debian 13"}]
+        "schema_version": 2, "command": "activate", "ok": false,
+        "error": {"code": "not_ready", "message": "Pre-flight checks failed", "next": null},
+        "data": {
+            "status": "failed", "duration": 0.2, "filesystems": [], "masked_units": [],
+            "message": "Pre-flight checks failed",
+            "failed_checks": [{"name": "systemd-version", "reason": "systemd 252 is too old", "fix": "Use Debian 13"}]
+        }
     });
     assert_matches_schema(&schema, &refused);
 
+    // The one cancel shape: an error, no data.
     let cancelled = serde_json::json!({
-        "schema_version": 1, "command": "activate", "type": "result",
-        "ok": false, "status": "cancelled", "duration": 0.0,
-        "filesystems": [], "masked_units": [],
-        "message": "Activation cancelled; nothing was changed."
+        "schema_version": 2, "command": "activate", "ok": false,
+        "error": {"code": "cancelled", "message": "Activation cancelled; nothing was changed.", "next": null}
     });
     assert_matches_schema(&schema, &cancelled);
 
-    let error = serde_json::json!({
-        "schema_version": 1, "command": "activate", "ok": false,
-        "error": {"code": "usage", "message": "no terminal to confirm on"}
+    // A usage error (no terminal to confirm on).
+    let usage = serde_json::json!({
+        "schema_version": 2, "command": "activate", "ok": false,
+        "error": {"code": "needs_confirmation", "message": "no terminal to confirm on", "next": null}
     });
-    assert_matches_schema(&schema, &error);
+    assert_matches_schema(&schema, &usage);
 
-    let bad = serde_json::json!({
-        "schema_version": 1, "command": "activate", "type": "result", "ok": true
-    });
+    // The version-1 line-stream shapes are gone: a progress event is rejected,
+    // and so is a data payload missing its required fields.
     let validator = jsonschema::validator_for(&schema).unwrap();
-    assert!(
-        !validator.is_valid(&bad),
-        "incomplete result must be rejected"
-    );
+    let progress = serde_json::json!({
+        "schema_version": 2, "command": "activate", "type": "progress", "phase": "preparing"
+    });
+    assert!(!validator.is_valid(&progress), "no line-stream event");
+    let bad = serde_json::json!({
+        "schema_version": 2, "command": "activate", "ok": true, "data": {"status": "entering"}
+    });
+    assert!(!validator.is_valid(&bad), "incomplete data must be rejected");
 }
 
 #[test]
-fn deactivate_schema_accepts_the_success_envelope() {
+fn deactivate_schema_accepts_the_success_and_error_envelopes() {
     let schema = load_schema("deactivate");
     for status in ["return_requested", "poweroff_requested"] {
         let value = serde_json::json!({
-            "schema_version": 1, "command": "deactivate", "ok": true,
+            "schema_version": 2, "command": "deactivate", "ok": true,
             "data": {"status": status}
         });
         assert_matches_schema(&schema, &value);
     }
+    // An error with a typed next step.
     let error = serde_json::json!({
-        "schema_version": 1, "command": "deactivate", "ok": false,
-        "error": {"code": "invalid_state", "message": "not in a hidden session", "hint": "nails recover"}
+        "schema_version": 2, "command": "deactivate", "ok": false,
+        "error": {"code": "invalid_state", "message": "not in a hidden session", "next": {"command": "recover"}}
     });
     assert_matches_schema(&schema, &error);
+    // The one cancel shape.
+    let cancelled = serde_json::json!({
+        "schema_version": 2, "command": "deactivate", "ok": false,
+        "error": {"code": "cancelled", "message": "Deactivation cancelled; nothing was changed.", "next": null}
+    });
+    assert_matches_schema(&schema, &cancelled);
 }
 
 #[test]
 fn emergency_schema_accepts_the_hot_path_report() {
     let schema = load_schema("emergency");
     let hidden = serde_json::json!({
-        "schema_version": 1, "command": "emergency", "ok": true,
+        "schema_version": 2, "command": "emergency", "ok": true,
         "data": {
             "side": "hidden",
             "requested": "return_to_decoy",
@@ -745,7 +763,7 @@ fn emergency_schema_accepts_the_hot_path_report() {
     });
     assert_matches_schema(&schema, &hidden);
     let fallback = serde_json::json!({
-        "schema_version": 1, "command": "emergency", "ok": true,
+        "schema_version": 2, "command": "emergency", "ok": true,
         "data": {
             "side": "hidden", "requested": "return_to_decoy", "dispatched": "poweroff",
             "fallback": "could not mount the decoy root: EBUSY; powering off instead",
@@ -915,11 +933,13 @@ fn init_refuses_a_folder_with_not_separate_volume_and_writes_nothing() {
     assert_eq!(output.status.code(), Some(4));
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["error"]["code"], "not_separate_volume", "{value}");
+    // "Nothing was written." ends the first line; the attach gate's guidance
+    // folds in below it, so it is now in the message rather than at its end.
     assert!(
         value["error"]["message"]
             .as_str()
             .unwrap()
-            .ends_with("Nothing was written."),
+            .contains("Nothing was written."),
         "{value}"
     );
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);

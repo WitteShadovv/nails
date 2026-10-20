@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/deactivate.schema.json",
   "title": "NAILS deactivate --json",
-  "description": "Machine-readable deactivate envelope, printed before the soft-reboot back to the decoy (or the power-off): one document with schema_version, command, ok, and either data or error.",
+  "description": "Machine-readable deactivate envelope (contract version 2), printed before the soft-reboot back to the decoy (or the power-off): one document with schema_version, command, ok, and either data or error. A declined prompt is the shared cancel shape: an error with the code `cancelled`, exit 130.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "command": {
       "const": "deactivate"
@@ -40,7 +40,8 @@
       "additionalProperties": false,
       "required": [
         "code",
-        "message"
+        "message",
+        "next"
       ],
       "properties": {
         "code": {
@@ -51,9 +52,11 @@
           "type": "string",
           "minLength": 1
         },
-        "hint": {
-          "type": "string",
-          "minLength": 1
+        "next": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["command"],
+          "properties": { "command": { "type": "string", "minLength": 1 } }
         }
       }
     }

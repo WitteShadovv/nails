@@ -233,8 +233,8 @@ fn test_status_command_json_output() {
     cmd.args(["status", "--json"])
         .assert()
         .success()
-        .stdout(predicates::str::contains("\"state\""))
-        .stdout(predicates::str::contains("\"posture\""));
+        .stdout(predicates::str::contains("\"place\""))
+        .stdout(predicates::str::contains("\"attention\""));
 }
 
 #[test]
@@ -516,7 +516,7 @@ fn test_verify_command_json_output() {
     );
     // The machine interface is one enveloped document.
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(parsed["schema_version"], 1, "{parsed}");
+    assert_eq!(parsed["schema_version"], 2, "{parsed}");
     assert_eq!(parsed["command"], "verify", "{parsed}");
 }
 
@@ -804,7 +804,9 @@ fn test_check_json_emits_envelope() {
     let last = stdout.lines().last().expect("one JSON line");
     let value: serde_json::Value = serde_json::from_str(last).expect("check emits valid JSON");
     assert_eq!(value["command"], "check");
-    assert_eq!(value["ok"], true);
+    // A refused check is exit 4, so the envelope is not ok; the readiness data
+    // (ready false, the checks) still rides along.
+    assert_eq!(value["ok"], false);
     assert_eq!(value["data"]["ready"], false);
     assert!(value["data"]["checks"].is_array());
     assert!(
@@ -1261,11 +1263,16 @@ fn test_explicit_config_unreadable_fails() {
     assert_eq!(output.status.code(), Some(3));
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["error"]["code"], "config");
-    assert_eq!(
-        value["error"]["hint"],
-        format!("{sudo} --json").as_str(),
+    // The "run it as root" guidance folds into the message now (there is no
+    // separate hint field); the typed next step stays null for it.
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("{sudo} --json")),
         "{value}"
     );
+    assert!(value["error"]["next"].is_null(), "{value}");
 
     // Restore permissions so temp file cleanup works
     std::fs::set_permissions(config_file.path(), std::fs::Permissions::from_mode(0o644)).unwrap();
@@ -1440,9 +1447,9 @@ fn test_global_flags_behave_identically_before_and_after_the_subcommand() {
 
     let json = run_nails(&["-c", config, "status", "--json"], &[]);
     let parsed: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
-    assert_eq!(parsed["schema_version"], 1, "{parsed}");
+    assert_eq!(parsed["schema_version"], 2, "{parsed}");
     assert_eq!(parsed["command"], "status", "{parsed}");
-    assert!(parsed["data"]["state"]["kind"].is_string(), "{parsed}");
+    assert!(parsed["data"]["place"].is_string(), "{parsed}");
 }
 
 #[test]
