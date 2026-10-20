@@ -8,6 +8,6 @@ info:
 success: true
 exit_code: 0
 ----- stdout -----
-nails 0.3.0-rc.2
+nails 0.3.0-rc.3
 
 ----- stderr -----
