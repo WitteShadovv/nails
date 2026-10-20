@@ -15,6 +15,7 @@ use crate::{Config, Filesystem, LoadOutcome, Result, StateFile, SystemState};
 use chrono::{DateTime, Duration, Utc};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::plan::{Plan, PolicyMountKind};
+use nails_teardown::whole_root::switch_refusal::{self, SwitchRefusal};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -186,6 +187,10 @@ pub struct StatusReport {
     pub decoy_persistent: bool,
     /// The persona mode.
     pub persona_mode: PersonaMode,
+    /// Why the last switch was refused, kept on the hidden volume, when there
+    /// is one and the volume is readable. `None` once a later switch supersedes
+    /// it or when the volume is not mounted.
+    pub switch_refusal: Option<SwitchRefusal>,
     /// Uptime-based OpSec reminders.
     pub opsec_reminders: Vec<OpSecReminder>,
 }
@@ -393,6 +398,9 @@ impl<F: Filesystem> StatusCommand<F> {
             decoy_persistent: !view.is_hidden()
                 && crate::preflight::DecoyPersistenceCheck::decoy_is_persistent(&self.filesystem),
             persona_mode: self.config.persona.mode,
+            // Read from the hidden volume: present only when the last switch was
+            // refused and no later switch has superseded it.
+            switch_refusal: switch_refusal::read(hidden_root),
             opsec_reminders,
             state: state_file.state,
         })
