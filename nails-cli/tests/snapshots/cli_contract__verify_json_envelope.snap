@@ -10,6 +10,5 @@ expression: projection
     "scan_depth": "standard",
     "state_file_status_kind": "missing"
   },
-  "ok": true,
-  "schema_version": 1
+  "schema_version": 2
 }

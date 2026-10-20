@@ -19,7 +19,7 @@ use nails_core::session::LeaveTo;
 
 use crate::cli::args::DeactivateArgs;
 use crate::cli::output::deactivate::{deactivate_error_body, print_deactivate_json};
-use crate::cli::output::envelope::{ErrorBody, report_cancelled, report_error};
+use crate::cli::output::envelope::{ErrorBody, NextStep, report_cancelled, report_error};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Execute the deactivate command.
@@ -55,7 +55,8 @@ pub fn execute(
                 .with_hint(format!(
                     "an interrupted activation is cleaned up with '{}'",
                     nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Recover)
-                )),
+                ))
+                .with_next(NextStep::new("recover")),
             );
         }
     };
