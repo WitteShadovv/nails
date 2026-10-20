@@ -10,8 +10,7 @@
 use std::path::Path;
 
 use super::family::{self, FamilySupport};
-use super::host_facts;
-use super::{HostProfile, PlatformKind};
+use super::{HostProfile, PlatformKind, composefs, host_facts};
 use crate::Result;
 use crate::filesystem::Filesystem;
 use nails_base::Family;
@@ -70,11 +69,13 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
     let pid1_comm = pid1.as_deref().map(str::trim).map(str::to_string);
     let is_systemd = pid1_comm.as_deref() == Some("systemd");
     let usr_merge = probe_usr_merge(fs);
+    let composefs_refusal = composefs::composefs_refusal(fs);
     let lsms = host_facts::read_lsms(fs);
     let selinux = host_facts::read_selinux(fs);
 
     let verdict = classify(
         is_ostree,
+        composefs_refusal,
         is_systemd,
         pid1_comm.as_deref(),
         &fields,
@@ -237,14 +238,16 @@ impl Verdict {
 
 /// Resolve the host facts to a [`PlatformKind`] and, when unsupported, a reason.
 ///
-/// Refusals come first: an ostree / image-based host and a non-systemd PID 1 are
-/// both declined, because NAILS cannot safely lay a hidden overlay over an
-/// immutable image or drive teardown without systemd. A systemd host is then
-/// resolved to NixOS, a supported Debian-family release (with a warning when
-/// NAILS has not been tested on that release), or a documented refusal
-/// (unsupported distribution, release below the minimum, or a non-merged layout).
+/// Refusals come first: an ostree / image-based host, a composefs-native host
+/// and a non-systemd PID 1 are all declined, because NAILS cannot safely lay a
+/// hidden overlay over an immutable image or drive teardown without systemd. A
+/// systemd host is then resolved to NixOS, a supported Debian-family release
+/// (with a warning when NAILS has not been tested on that release), or a
+/// documented refusal (unsupported distribution, release below the minimum, or
+/// a non-merged layout).
 fn classify(
     is_ostree: bool,
+    composefs_refusal: Option<String>,
     is_systemd: bool,
     pid1_comm: Option<&str>,
     fields: &OsReleaseFields,
@@ -258,6 +261,12 @@ fn classify(
              mutable installation."
                 .to_string(),
         );
+    }
+
+    // A sealed composefs image may not write /run/ostree-booted; refuse it here,
+    // before the systemd and NixOS tests, for the same reason.
+    if let Some(reason) = composefs_refusal {
+        return Verdict::refused(reason);
     }
 
     if !is_systemd {
@@ -555,6 +564,38 @@ mod tests {
         let err = profile.require_supported().unwrap_err();
         assert!(matches!(err, crate::NailsError::UnsupportedPlatform { .. }));
         assert!(err.to_string().contains("ostree"));
+    }
+
+    #[test]
+    fn a_composefs_host_without_ostree_booted_is_refused_before_the_family() {
+        // A sealed composefs boot writes no /run/ostree-booted; it is still
+        // refused as image-based, ahead of the family verdict.
+        let fs = host("ID=fedora\nVERSION_ID=44\n", "systemd");
+        fs.mock_set_file_content(
+            "/proc/cmdline",
+            "root=composefs:fedora/x86_64 ostree=/ostree/boot.1/fedora/x/0 rw",
+        );
+        let profile = detect(&fs).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
+        assert!(!profile.is_ostree);
+        let reason = profile.unsupported_reason.unwrap();
+        assert!(reason.contains("composefs"), "{reason}");
+        assert!(!reason.contains("not yet a validated platform"), "{reason}");
+    }
+
+    #[test]
+    fn the_composefs_runtime_directory_refuses() {
+        let fs = host(DEBIAN13, "systemd");
+        fs.mock_set_path_type("/run/composefs", crate::filesystem::PathKind::Dir);
+        let profile = detect(&fs).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
+        assert!(
+            profile
+                .require_supported()
+                .unwrap_err()
+                .to_string()
+                .contains("composefs")
+        );
     }
 
     #[test]
