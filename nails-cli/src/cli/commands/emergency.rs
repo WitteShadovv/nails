@@ -122,7 +122,11 @@ pub(crate) fn run_countdown(secs: u64) {
 }
 
 fn print_json(report: &HotReport) {
-    let envelope = Envelope::success("emergency", app::data(report));
+    // `ok` follows the hot path's own exit code: a clean teardown is ok, a
+    // degraded one (mounts left below /run/nextroot, or only the kernel could
+    // be asked to power off) is not.
+    let ok = app::exit_status(report).is_success();
+    let envelope = Envelope::outcome("emergency", ok, app::data(report));
     crate::cli::output::println_tolerating_broken_pipe(&envelope.to_line());
 }
 

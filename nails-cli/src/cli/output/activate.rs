@@ -4,8 +4,9 @@
 //! Output formatting for the activate command.
 //!
 //! Activation prints its result *before* it enqueues the soft-reboot, because
-//! the switch ends the terminal it runs in. Under `--json` the stream is NDJSON:
-//! progress lines, then one result line.
+//! the switch ends the terminal it runs in. Under `--json` it is one envelope:
+//! the line stream of version 1 is gone, so a reader sees exactly one document,
+//! as every other command gives (a window watches progress on its own channel).
 
 use nails_core::NailsError;
 use nails_core::output::Mark;
@@ -13,17 +14,7 @@ use nails_core::session::Entry;
 use serde::Serialize;
 
 use super::OutputSettings;
-use crate::cli::output::envelope::SCHEMA_VERSION;
-
-/// A streamed progress line for `activate --json`.
-#[derive(Debug, Serialize)]
-struct ActivateProgressEvent {
-    schema_version: u32,
-    command: &'static str,
-    #[serde(rename = "type")]
-    event_type: &'static str,
-    phase: &'static str,
-}
+use crate::cli::output::envelope::{Envelope, ErrorBody, error_envelope};
 
 #[derive(Debug, Serialize)]
 struct FailedCheckJson {
@@ -33,16 +24,10 @@ struct FailedCheckJson {
     fix: Option<String>,
 }
 
-/// The final NDJSON line for `activate --json`.
+/// The `data` payload for `activate --json`.
 #[derive(Debug, Serialize)]
-struct ActivateResultEvent {
-    schema_version: u32,
-    command: &'static str,
-    #[serde(rename = "type")]
-    event_type: &'static str,
-    ok: bool,
-    /// `entering`, `entering_with_warnings`, `already_active`, `cancelled` or
-    /// `error`.
+pub struct ActivateData {
+    /// `entering`, `entering_with_warnings`, `already_active` or `failed`.
     status: &'static str,
     /// Seconds spent preparing the entry.
     duration: f64,
@@ -75,19 +60,6 @@ pub enum ActivateResult<'a> {
 /// the prompt or pressed Ctrl+C at it or later in the entry.
 pub const CANCELLED: &str = "Activation cancelled; nothing was changed.";
 
-/// Emit a progress event on stdout, ahead of the final result line.
-pub fn print_activate_progress(phase: &'static str) {
-    let event = ActivateProgressEvent {
-        schema_version: SCHEMA_VERSION,
-        command: "activate",
-        event_type: "progress",
-        phase,
-    };
-    crate::cli::output::println_tolerating_broken_pipe(
-        &serde_json::to_string(&event).unwrap_or_default(),
-    );
-}
-
 /// `duration` (in seconds) as `status` shows the recorded activation time.
 fn shown_duration(duration: f64) -> String {
     nails_core::timing::format_duration(
@@ -114,12 +86,9 @@ fn hidden_system(entry: &Entry) -> Option<&std::path::Path> {
         .filter(|system| plan.decoy.system.as_deref() != Some(*system))
 }
 
-fn result_event(result: &ActivateResult<'_>, duration: f64) -> ActivateResultEvent {
-    let mut event = ActivateResultEvent {
-        schema_version: SCHEMA_VERSION,
-        command: "activate",
-        event_type: "result",
-        ok: true,
+/// Build the `data` payload for a result other than a cancel.
+fn activate_data(result: &ActivateResult<'_>, duration: f64) -> ActivateData {
+    let mut data = ActivateData {
         status: "already_active",
         duration,
         hidden_system: None,
@@ -132,39 +101,33 @@ fn result_event(result: &ActivateResult<'_>, duration: f64) -> ActivateResultEve
     match result {
         ActivateResult::AlreadyActive => {}
         ActivateResult::Entering(entry) => {
-            event.status = if entry.warnings.is_empty() {
+            data.status = if entry.warnings.is_empty() {
                 "entering"
             } else {
                 "entering_with_warnings"
             };
-            event.hidden_system = hidden_system(entry).map(|p| p.display().to_string());
-            event.filesystems = filesystems(entry);
+            data.hidden_system = hidden_system(entry).map(|p| p.display().to_string());
+            data.filesystems = filesystems(entry);
             // The same list `status --json` shows for the session.
-            event.masked_units = entry
+            data.masked_units = entry
                 .plan
                 .masks
                 .iter()
                 .chain(&entry.plan.boot_masks)
                 .cloned()
                 .collect();
-            event.warnings = entry.warnings.clone();
-            event.message = format!(
+            data.warnings = entry.warnings.clone();
+            data.message = format!(
                 "Prepared in {}; soft-rebooting into the hidden session",
                 shown_duration(duration)
             );
         }
-        ActivateResult::Failed(NailsError::Cancelled) => {
-            event.ok = false;
-            event.status = "cancelled";
-            event.message = CANCELLED.to_string();
-        }
         ActivateResult::Failed(error) => {
-            event.ok = false;
-            event.status = "error";
+            data.status = "failed";
             match error {
                 NailsError::PreFlightCheckFailed(failures) => {
-                    event.message = "Pre-flight checks failed".to_string();
-                    event.failed_checks = Some(
+                    data.message = "Pre-flight checks failed".to_string();
+                    data.failed_checks = Some(
                         failures
                             .iter()
                             .map(|(name, reason, fix)| FailedCheckJson {
@@ -175,18 +138,44 @@ fn result_event(result: &ActivateResult<'_>, duration: f64) -> ActivateResultEve
                             .collect(),
                     );
                 }
-                other => event.message = format!("Activation failed: {other}"),
+                other => data.message = format!("Activation failed: {other}"),
             }
         }
     }
-    event
+    data
 }
 
-/// Print the final activation result line in NDJSON.
+/// The error body for a failed (non-cancel) result: one stable code per cause.
+fn failure_error(error: &NailsError) -> ErrorBody {
+    match error {
+        NailsError::PreFlightCheckFailed(_) => {
+            ErrorBody::new("not_ready", "Pre-flight checks failed")
+        }
+        NailsError::UnsupportedPlatform { .. } => {
+            ErrorBody::new("unsupported", error.to_string())
+        }
+        other => ErrorBody::new("activation_failed", format!("Activation failed: {other}")),
+    }
+}
+
+/// Print the activation result as one JSON envelope. A cancel is the one cancel
+/// shape every command shares (an error body with the code `cancelled`, no
+/// data); every other failure keeps its data so a caller learns what was
+/// prepared, with `ok` false; a success and a success-with-warnings are `ok`.
 pub fn print_activate_json_result(result: &ActivateResult<'_>, duration: f64) {
-    crate::cli::output::println_tolerating_broken_pipe(
-        &serde_json::to_string(&result_event(result, duration)).unwrap_or_default(),
-    );
+    let line = match result {
+        ActivateResult::Failed(NailsError::Cancelled) => {
+            error_envelope("activate", ErrorBody::new("cancelled", CANCELLED)).to_line()
+        }
+        ActivateResult::Failed(error) => Envelope::failure_with_data(
+            "activate",
+            failure_error(error),
+            activate_data(result, duration),
+        )
+        .to_line(),
+        _ => Envelope::outcome("activate", true, activate_data(result, duration)).to_line(),
+    };
+    crate::cli::output::println_tolerating_broken_pipe(&line);
 }
 
 /// The human lines for a result: results on stdout, failures on stderr.

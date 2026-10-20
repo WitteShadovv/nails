@@ -30,9 +30,10 @@ fn row_mark(row: &CheckRow) -> Mark {
     }
 }
 
-/// Print the readiness report as one JSON envelope on stdout.
+/// Print the readiness report as one JSON envelope on stdout. `ok` is whether
+/// the host is ready: a refused check (exit 4) reads as not ok.
 pub fn print_check_json(report: &ReadinessReport) {
-    Envelope::success(COMMAND, report).print();
+    Envelope::outcome(COMMAND, report.ready, report).print();
 }
 
 /// Print the readiness report for people.

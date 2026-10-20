@@ -2,46 +2,41 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/status.schema.json",
   "title": "NAILS status --json",
-  "description": "Machine-readable status envelope: one document with schema_version, command, ok, and either data (success) or error (failure). The posture comes from live facts (the mount table and the session plan in /run); state is the record on the hidden volume, reported next to it.",
+  "description": "Machine-readable status envelope (contract version 2): one document with schema_version, command, ok, and either data (a report) or error (the record could not be read). `place` is where the machine is; `attention` names the one thing, if any, that needs the operator. `ok` is true only when the exit code is 0 or 9.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "command": { "const": "status" },
     "ok": { "type": "boolean" },
     "data": {
       "type": "object",
       "additionalProperties": false,
+      "required": ["place", "attention"],
       "properties": {
-        "posture": {
-          "description": "The verdict: decoy, active (in the hidden root), transitioning (an entry is under way), degraded (an interrupted entry, or a hidden root without a way back) or unknown (the state record cannot be trusted).",
+        "place": {
+          "description": "Where the machine is: the plain decoy, the hidden session, or an activation in flight.",
           "type": "string",
-          "enum": ["decoy", "active", "transitioning", "degraded", "unknown"]
+          "enum": ["decoy", "hidden", "activating"]
         },
-        "session": {
-          "description": "The live view the posture comes from.",
-          "type": "string",
-          "enum": ["decoy", "hidden", "entering", "interrupted", "hidden_without_plan"]
+        "attention": {
+          "description": "The one thing that needs the operator, or null when nothing does.",
+          "type": ["string", "null"],
+          "enum": [
+            "interrupted",
+            "ended_abnormally",
+            "switch_refused",
+            "record_unreadable",
+            "no_way_back",
+            "volume_lost",
+            "volume_covered",
+            "almost_full",
+            null
+          ]
         },
         "reason": { "type": "string", "minLength": 1 },
         "remediation": { "type": "string", "minLength": 1 },
-        "state": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["kind"],
-          "properties": {
-            "kind": {
-              "type": "string",
-              "enum": ["inactive", "active", "degraded", "unknown"]
-            },
-            "reason": { "type": "string", "minLength": 1 }
-          }
-        },
-        "state_source": {
-          "type": "string",
-          "enum": ["loaded", "missing", "unreadable", "corrupt"]
-        },
         "entered_at": { "type": "string", "format": "date-time" },
         "uptime_seconds": { "type": "integer", "minimum": 0 },
         "uptime_formatted": { "type": "string", "minLength": 1 },
@@ -109,11 +104,18 @@
     "error": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["code", "message"],
+      "required": ["code", "message", "next"],
       "properties": {
         "code": { "type": "string", "minLength": 1 },
         "message": { "type": "string", "minLength": 1 },
-        "hint": { "type": "string", "minLength": 1 }
+        "next": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["command"],
+          "properties": {
+            "command": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     }
   }

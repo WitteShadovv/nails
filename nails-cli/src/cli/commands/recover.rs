@@ -42,7 +42,9 @@ pub fn execute(
     match nails_core::app::recover::recover(env, config_override) {
         Ok(outcome) => {
             if json {
-                Envelope::success("recover", outcome.data).print();
+                // `ok` follows recover's own exit code: a clean recovery is
+                // ok, a degraded one (a mount stayed below /run/nextroot) is not.
+                Envelope::outcome("recover", outcome.exit.is_success(), outcome.data).print();
             } else {
                 for line in human_lines(&outcome.data, settings.stdout_style()) {
                     crate::cli::output::println_tolerating_broken_pipe(&line);
