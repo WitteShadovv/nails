@@ -382,6 +382,48 @@ class MacDiffTest(unittest.TestCase):
             self.assertIn("etc/a: content", str(raised.exception))
 
 
+class ImageVolatileTest(unittest.TestCase):
+    # Entries only a NixOS decoy churns at every boot (store bookkeeping and the
+    # activation-replaced links); on an FHS distro each is a real finding.
+    NIXOS_ONLY = ("nix/store/.links", "bin/sh", "usr/bin/env")
+    # Boot noise every distribution shares.
+    GENERIC = ("var/log/x", "run/y", "tmp/z", "etc/machine-id")
+    FHS_IDS = ("debian", "ubuntu", "fedora", "arch")
+
+    def test_default_is_the_nixos_allowlist(self) -> None:
+        self.assertEqual(
+            df.image_volatile("nixos").pattern, df.DEFAULT_IMAGE_VOLATILE.pattern
+        )
+        self.assertEqual(
+            df.image_volatile().pattern, df.DEFAULT_IMAGE_VOLATILE.pattern
+        )
+
+    def test_nixos_allowlists_the_activation_entries(self) -> None:
+        nixos = df.image_volatile("nixos")
+        for path in self.NIXOS_ONLY:
+            self.assertTrue(nixos.search(path), path)
+
+    def test_fhs_distros_do_not_allowlist_the_activation_entries(self) -> None:
+        for os_id in self.FHS_IDS:
+            volatile = df.image_volatile(os_id)
+            for path in self.NIXOS_ONLY:
+                self.assertIsNone(volatile.search(path), f"{os_id}: {path}")
+
+    def test_generic_boot_noise_is_allowlisted_everywhere(self) -> None:
+        for os_id in ("nixos", *self.FHS_IDS):
+            volatile = df.image_volatile(os_id)
+            for path in self.GENERIC:
+                self.assertTrue(volatile.search(path), f"{os_id}: {path}")
+
+    def test_a_general_store_path_is_a_finding_even_on_nixos(self) -> None:
+        # Only the store's .links bookkeeping is boot noise; an actual store
+        # path that appeared is a finding on every decoy, so gating the NixOS
+        # entries never over-allows.
+        store_path = "nix/store/abcd1234-hello-1.0/bin/hello"
+        self.assertIsNone(df.image_volatile("nixos").search(store_path))
+        self.assertIsNone(df.image_volatile("debian").search(store_path))
+
+
 class HashTreeTest(unittest.TestCase):
     def test_hashes_regular_files_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
