@@ -1111,3 +1111,191 @@ fn saved_state_is_stamped_with_the_current_boot_id() {
         Some("boot-a")
     );
 }
+
+// ---------------------------------------------------------------------------
+// Golden state files
+//
+// Real state files as the shipped binaries write them, committed under
+// `src/state/golden/`. They guard that the wire format — and therefore every
+// install's integrity digest — stays stable across the upgrade that added the
+// optional `family` to the Debian-family section.
+//
+// The current-format files are regenerated after a deliberate format change
+// with `REGENERATE_STATE_GOLDEN=1 cargo test -p nails-base regenerate_golden`,
+// reading every diff. `v0.2.0.json` is hand-written: it predates the typed
+// platform section entirely (it recorded `nixos_generation`, `overlay_status`
+// and a `checksum` field, not `integrity_sha256`), so the current serialiser
+// cannot produce it.
+// ---------------------------------------------------------------------------
+
+/// The directory the committed golden state files live in.
+fn golden_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/state/golden")
+}
+
+/// The current-format golden files: `(file name, the state its binary recorded)`.
+///
+/// Debian-family installs carry no family (so their file is byte identical to
+/// every earlier release); the Fedora and Arch files carry one, ready for when
+/// those families are admitted.
+fn current_format_goldens() -> Vec<(&'static str, StateFile)> {
+    let activated_at = DateTime::parse_from_rfc3339("2026-05-10T08:15:30Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let finished_at = DateTime::parse_from_rfc3339("2026-05-10T08:15:33Z")
+        .unwrap()
+        .with_timezone(&Utc);
+    let last_modified = finished_at;
+    let with_platform = move |version: &str, platform: PlatformState| StateFile {
+        version: version.to_string(),
+        state: SystemState::Active { activated_at },
+        platform: Some(platform),
+        config_fingerprint: None,
+        decoy_system: None,
+        last_activation: Some(LastActivation {
+            duration_ms: 3210,
+            finished_at,
+        }),
+        last_modified,
+        boot_id: Some("7c9e6679-7425-40de-944b-e07fc1f90ae7".to_string()),
+        owner_pid: 4242,
+        owner_start_time: Some(987654),
+        integrity_sha256: None,
+    };
+    vec![
+        (
+            "v0.3.0-rc.2.json",
+            with_platform("0.3.0-rc.2", PlatformState::DebianFamily { family: None }),
+        ),
+        (
+            "v0.3.0-rc.3.json",
+            with_platform("0.3.0-rc.3", PlatformState::DebianFamily { family: None }),
+        ),
+        (
+            "v0.3.0-rc.3-nixos.json",
+            with_platform(
+                "0.3.0-rc.3",
+                PlatformState::NixOs {
+                    generation: Some(
+                        "/nix/store/00000000000000000000000000000000-nixos-system-host-26.05"
+                            .to_string(),
+                    ),
+                    last_switch_warning: None,
+                },
+            ),
+        ),
+        (
+            "fedora.json",
+            with_platform(
+                "0.3.0",
+                PlatformState::DebianFamily {
+                    family: Some(crate::Family::Fedora),
+                },
+            ),
+        ),
+        (
+            "arch.json",
+            with_platform(
+                "0.3.0",
+                PlatformState::DebianFamily {
+                    family: Some(crate::Family::Arch),
+                },
+            ),
+        ),
+    ]
+}
+
+/// Serialise `state` exactly as [`StateFile::save`] writes it: body first, then
+/// a stamped integrity digest, pretty-printed, with a trailing newline for the
+/// repository's end-of-file convention (the binary's own on-disk write omits
+/// it, but that whitespace is outside the digest and the parser ignores it).
+fn golden_bytes(state: &StateFile) -> String {
+    let mut body = state.clone();
+    body.integrity_sha256 = None;
+    body.integrity_sha256 = Some(super::file::compute_integrity(&body).unwrap());
+    format!("{}\n", serde_json::to_string_pretty(&body).unwrap())
+}
+
+/// Rewrite the current-format golden files in place. A no-op unless
+/// `REGENERATE_STATE_GOLDEN` is set, so the normal test run never touches the
+/// working tree.
+#[test]
+fn regenerate_golden_state_files() {
+    if std::env::var_os("REGENERATE_STATE_GOLDEN").is_none() {
+        return;
+    }
+    for (name, state) in current_format_goldens() {
+        std::fs::write(golden_dir().join(name), golden_bytes(&state)).unwrap();
+    }
+}
+
+/// The committed current-format files are exactly what the current serialiser
+/// writes, so a format change that was not regenerated (and reviewed) is caught.
+#[test]
+fn current_format_golden_files_are_fresh() {
+    for (name, state) in current_format_goldens() {
+        let committed = std::fs::read_to_string(golden_dir().join(name))
+            .unwrap_or_else(|e| panic!("reading golden {name}: {e}"));
+        assert_eq!(
+            committed,
+            golden_bytes(&state),
+            "golden {name} is stale; regenerate with REGENERATE_STATE_GOLDEN=1"
+        );
+    }
+}
+
+/// Every current-format golden loads clean (its integrity digest still
+/// verifies), re-serialises byte for byte, and keeps its recorded family — so
+/// an install on any of these versions never reads as corrupt after the upgrade.
+#[test]
+fn every_current_format_golden_loads_and_re_serialises_byte_for_byte() {
+    for (name, state) in current_format_goldens() {
+        let committed = std::fs::read_to_string(golden_dir().join(name)).unwrap();
+
+        let parsed: StateFile = serde_json::from_str(&committed)
+            .unwrap_or_else(|e| panic!("parsing golden {name}: {e}"));
+        assert_eq!(parsed.platform, state.platform, "{name} platform changed");
+        assert_eq!(
+            format!("{}\n", serde_json::to_string_pretty(&parsed).unwrap()),
+            committed,
+            "re-serialising {name} changed its bytes"
+        );
+
+        // Loading through the real path verifies the committed digest.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        std::fs::write(&path, &committed).unwrap();
+        let result = StateFile::load_with_outcome(&path).unwrap();
+        assert_eq!(
+            result.outcome,
+            LoadOutcome::Loaded,
+            "{name} did not load clean"
+        );
+        assert_eq!(result.state_file.family(), state.family(), "{name} family");
+    }
+}
+
+/// A v0.2.0 state file predates the typed platform section, so the current
+/// reader cannot verify its digest. It must collapse to the safe inactive
+/// default and report the state as unknown — never trust a format it cannot
+/// read, never error, never panic. The live session probe is authoritative in
+/// that case, so an upgrade from v0.2.0 never mis-reads an active decoy as
+/// clean. (This safe degradation predates and is independent of the `family`
+/// change; the golden pins it so a later change cannot regress it.)
+#[test]
+fn a_v0_2_0_state_file_degrades_safely_to_the_inactive_default() {
+    let committed = std::fs::read_to_string(golden_dir().join("v0.2.0.json")).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("state.json");
+    std::fs::write(&path, &committed).unwrap();
+
+    let result = StateFile::load_with_outcome(&path).unwrap();
+    assert!(
+        result.outcome.is_unknown(),
+        "v0.2.0 should read as unknown, got {:?}",
+        result.outcome
+    );
+    assert_eq!(result.state_file.state, SystemState::Inactive);
+    assert_eq!(result.state_file.platform, None);
+    assert_eq!(result.state_file.family(), None);
+}
