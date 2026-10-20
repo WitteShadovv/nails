@@ -245,6 +245,32 @@ in
     '';
   };
 
+  # The portable smoke suite's host-side helpers (nix/distro-tests/py), lint
+  # and unit-tested without a VM, the same fast lane as e2e-helpers. The smoke
+  # scenario loads distro_checks on the driver; this proves the pure layout
+  # rules it depends on -- the mount-aware canary uppers, the boot-filesystem
+  # read-back and the overlay feature-option check -- stay correct, linted and
+  # typed on every `nix flake check`, not only when a distro VM test runs.
+  distro-checks = lint "distro-checks" {
+    files = fs.unions [
+      ./distro-tests/py
+      ../pyproject.toml
+    ];
+    tools = [
+      python
+      pkgs.ruff
+      pkgs.mypy
+    ];
+    script = ''
+      export HOME="$PWD"
+      python3 -m unittest discover -s nix/distro-tests/py/tests -t nix/distro-tests/py
+      ruff check nix/distro-tests/py
+      MYPYPATH=nix/distro-tests/py mypy \
+        nix/distro-tests/py/distro_checks.py \
+        nix/distro-tests/py/tests/test_distro_checks.py
+    '';
+  };
+
   # Guards the E2E suite against assertions that can never fail (the soft
   # "Note:" branch). It reads only the test files, so it runs in seconds and
   # never builds a VM. The rule it enforces lives in nix/e2e-tests/README.md.
