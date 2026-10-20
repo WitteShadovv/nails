@@ -32,6 +32,17 @@
     "prepare": "nix-vm-test",
     "source": { "kind": "nix-vm-test", "distro": "ubuntu", "image": "26_04" }
   },
+  "ubuntu-26.10": {
+    "osId": "ubuntu",
+    "release": "26.10",
+    "rootfs": "ext4",
+    "enforcing": false,
+    "memory": 2048,
+    "enabled": false,
+    "upstreamUntil": null,
+    "prepare": "nix-vm-test",
+    "source": { "kind": "pending", "family": "ubuntu", "release": "26.10" }
+  },
   "fedora-44": {
     "osId": "fedora",
     "release": "44",
