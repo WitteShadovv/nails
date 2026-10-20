@@ -211,3 +211,17 @@ A crash is a bug in NAILS until shown otherwise: fix it with a regression unit
 test next to the code, and add the input to the target's seeds, so every later
 run starts from it. A target that checks something NAILS does not promise is
 corrected instead.
+
+**A new parser of bytes NAILS does not control is not admitted without a fuzz
+target and a seed corpus.** Coverage-guided fuzzing has already caught real
+parser bugs on hostile input, the kind that table tests with hand-written
+strings miss, so this is a rule, not a preference: a change that adds code
+reading bytes from the host or the decoy — a login record, a package database,
+a unit drop-in, a label xattr — adds, in the same change, a target that drives
+that parser and a seed corpus taken from its fixtures. `just new-fuzz-target
+<name>` scaffolds the stub, a starter seed and the `[[bin]]` entry; replace the
+starter seed with real inputs and run `just fuzz-lock`.
+`scripts/check-fuzz-targets.sh`, which `just check` runs, enforces the
+mechanical half — every target is wired into `fuzz/Cargo.toml` and has a
+non-empty `fuzz/seeds/<target>/`, and no seed corpus is orphaned — and the
+review keeps the other half, that a new parser has a target at all.
