@@ -341,3 +341,52 @@ mutants shard="" shards="":
         echo "No mutant was caught, so this run proves nothing; see $out" >&2
         exit 1
     fi
+
+# Mutation testing restricted to the lines a diff changed (cargo-mutants
+# --in-diff), for a non-blocking pull-request lane: it reports surviving mutants
+# without failing, and a diff that changes no mutable code is a clean pass.
+# `diff` is a unified `git diff` of the change; `shard`/`shards` split the work
+# across a matrix, and --timeout keeps one slow mutant from running away inside
+# the lane's own time box. The report goes to target/mutants/mutants.out, with
+# the survivors in the job summary for the integration log.
+mutants-in-diff diff shard="0" shards="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p target/mutants
+    status=0
+    cargo mutants --in-diff '{{ diff }}' --shard '{{ shard }}/{{ shards }}' \
+        --all-features --cargo-arg=--locked \
+        --timeout 120 \
+        --output target/mutants || status=$?
+    # Survivors (2) and timeouts (3) are reported, never a failure; a diff with
+    # no mutable code (0, no mutants) is a clean pass. Anything else, such as a
+    # baseline that fails without a mutation, still fails the lane.
+    case "$status" in
+        0 | 2 | 3) ;;
+        *) exit "$status" ;;
+    esac
+    out=target/mutants/mutants.out
+    if [ ! -f "$out/caught.txt" ]; then
+        echo "No mutable code in this diff shard."
+        exit 0
+    fi
+    caught=$(wc -l < "$out/caught.txt")
+    missed=$(wc -l < "$out/missed.txt")
+    timed_out=$(wc -l < "$out/timeout.txt")
+    unviable=$(wc -l < "$out/unviable.txt")
+    result="$caught caught, $missed missed, $timed_out timed out, $unviable unviable"
+    echo "Mutants (in diff): $result (report in $out)"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        section() {
+            if [ -s "$out/$2.txt" ]; then
+                printf '\n### %s\n\n```text\n' "$1"
+                cat "$out/$2.txt"
+                printf '```\n'
+            fi
+        }
+        {
+            printf '## Mutation testing on the diff\n\n%s.\n' "$result"
+            section "Missed" missed
+            section "Timed out" timeout
+        } >> "$GITHUB_STEP_SUMMARY"
+    fi
