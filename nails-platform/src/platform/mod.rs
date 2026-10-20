@@ -38,6 +38,7 @@ use crate::Result;
 use crate::filesystem::Filesystem;
 use nails_base::Family;
 
+mod composefs;
 mod config_layer;
 mod detect;
 mod discover;

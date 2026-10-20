@@ -33,6 +33,9 @@ of this changelog for that version becomes the release notes word for word, and
   being accepted silently. Fedora, Arch and their known derivatives, Enterprise Linux rebuilds
   (RHEL, CentOS, AlmaLinux, Rocky, Oracle) and SteamOS are each refused with a reason that names
   them and says NAILS has not yet validated them.
+- A host that boots from a sealed composefs image is now refused even when it does not set
+  `/run/ostree-booted`, recognised by its kernel command line or the composefs runtime directory.
+  NAILS cannot overlay an immutable system.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
