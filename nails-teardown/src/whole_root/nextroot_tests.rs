@@ -210,6 +210,44 @@ fn a_missing_or_unusable_init_or_a_non_os_tree_is_refused() {
 }
 
 #[test]
+fn overlay_data_pins_the_feature_options_off() {
+    let data = overlay_data(
+        Path::new("/run/nextroot/lower"),
+        Path::new("/mnt/data/root/upper"),
+        Path::new("/mnt/data/root/work"),
+    )
+    .unwrap();
+    assert_eq!(
+        data,
+        "lowerdir=/run/nextroot/lower,upperdir=/mnt/data/root/upper,\
+         workdir=/mnt/data/root/work,index=off,metacopy=off,redirect_dir=nofollow"
+    );
+    // The dangerous on-states are never emitted, on any kernel's defaults.
+    assert!(!data.contains("index=on"));
+    assert!(!data.contains("metacopy=on"));
+    // xino is left unpinned.
+    assert!(!data.contains("xino"));
+}
+
+#[test]
+fn overlay_data_escapes_awkward_layer_paths() {
+    // A layer path with the characters the overlay option field escapes is
+    // escaped once, so the pinned options still parse as their own fields.
+    let data = overlay_data(
+        Path::new("/l,ower"),
+        Path::new("/up:per"),
+        Path::new("/work"),
+    )
+    .unwrap();
+    assert!(
+        data.ends_with(&format!(",{OVERLAY_FEATURE_OPTIONS}")),
+        "{data}"
+    );
+    assert!(data.contains("lowerdir=/l\\,ower"), "{data}");
+    assert!(data.contains("upperdir=/up\\:per"), "{data}");
+}
+
+#[test]
 fn detach_under_takes_the_deepest_mounts_first_and_only_below_the_path() {
     // Not mounted in this test: nothing is detached, nothing panics, and
     // the selection is by path component, never by string prefix.
