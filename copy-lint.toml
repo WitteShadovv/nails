@@ -1,0 +1,71 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Copy-lint rules: the one input to the copy lint.
+#
+# The message catalogue (nails-base/src/catalog) is checked against these rules
+# by nails-base/tests/copy_lint.rs, which runs in the fast gate (`just check`,
+# through the test suite). The same avoid lists guide scripts/docs-check.sh and,
+# later, the window's string checker, so there is one place to change a rule.
+#
+# Each `[[group]]` lists words refused on the surfaces named in `forbid-on`
+# (the Surface tokens: cli, json, help, alert, neutral, reference). A word made
+# only of letters and digits is matched as a whole word (case-insensitive), so
+# "overlay" does not trip on an unrelated longer word; a word with a space or
+# punctuation ("hidden root", "e.g.", "dm-") is matched as a substring, so a
+# phrase trips but its parts alone do not. Besides the groups, every message
+# must carry a translator note, name and use its placeholders, keep each plain
+# line within `max-columns`, and avoid a bare `nails <command>`.
+
+# The widest a plain line may be. A line that carries a placeholder (its width
+# depends on run-time data) or a command to paste is exempt; the rendered width
+# is held to 80 by the output snapshot tests, not here.
+max-columns = 80
+
+# The subcommands a bare-`nails <command>` hint would name. A next step must
+# print `sudo <real path> <command>` through the one renderer, never a bare
+# `nails`, because the binary is not on PATH.
+commands = [
+    "activate", "deactivate", "status", "emergency", "rehearse", "gui",
+    "init", "discard", "recover", "verify", "check", "config", "reset-upper",
+    "completions",
+]
+
+# Style words refused in all product text (every surface).
+[[group]]
+name = "style"
+forbid-on = ["cli", "json", "help", "alert", "neutral", "reference"]
+words = [
+    "e.g.", "i.e.", "etc.", "please", "simply", "just", "easy", "easily",
+    "obviously", "sorry", "!", "WARNING:", "CRITICAL:",
+]
+
+# Internal words: refused on every screen the person reads, allowed only in the
+# reference where they are defined. "upper"/"lower" alone do not trip (the
+# phrases do).
+[[group]]
+name = "internal"
+forbid-on = ["cli", "json", "help", "alert", "neutral"]
+words = [
+    "the upper", "upper layer", "lower layer", "overlay", "next root",
+    "nextroot", "posture", "persona", "pre-flight", "preflight", "readiness",
+    "way back", "teardown", "backend", "hidden root", "hidden storage",
+    "hidden environment", "residue", "artifacts", "findings", "cgroup",
+    "utab", "kmsg", "opsec", "doctor",
+]
+
+# Storage names: refused on every screen by default, allowed in the daily line,
+# the setup flow, the "Prepare a drive" page and the reference.
+[[group]]
+name = "storage"
+forbid-on = ["cli", "json", "help", "alert", "neutral"]
+words = ["VeraCrypt", "TrueCrypt", "tcrypt", "LUKS", "cryptsetup", "/dev/mapper/", "dm-"]
+
+# Neutral surfaces (alerts, window title, app id, menu entry, process and unit
+# names, inhibitor strings) name nothing about the tool or the storage: a
+# generic "Session" or "System" is the point. "NAILS" is covered by "nails"
+# (case-insensitive).
+[[group]]
+name = "neutral-forbidden"
+forbid-on = ["alert", "neutral"]
+words = ["nails", "hidden", "decoy", "emergency", "rehearsal", "VeraCrypt", "LUKS", "cryptsetup", "/mnt"]
