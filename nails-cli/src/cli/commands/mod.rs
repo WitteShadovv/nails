@@ -16,6 +16,13 @@ use nails_core::{LoadedConfig, NailsError};
 use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::exit::ExitStatus;
 
+// The configuration resolution that any front end shares now lives in the
+// engine facade; the CLI keeps only the error rendering (the sudo line, the
+// structured body) on top of it.
+pub(crate) use nails_core::app::{
+    config_error_line, load_config_for_teardown, load_config_or_defaults,
+};
+
 pub mod activate;
 pub mod check;
 pub mod completions;
@@ -47,21 +54,6 @@ pub mod watch;
 /// is set to the consulted path so cleanup preserves it.
 pub(crate) fn resolve_config(config_override: Option<&Path>) -> Result<LoadedConfig, NailsError> {
     nails_core::app::resolve_config(config_override)
-}
-
-/// One-line description of a configuration load failure.
-pub(crate) fn config_error_line(error: &NailsError) -> String {
-    match error {
-        NailsError::ConfigNotFound { path } => format!(
-            "config file not found: {} (run `nails init <root>` or pass --config)",
-            path.display()
-        ),
-        NailsError::ConfigError(message) => message.clone(),
-        NailsError::IoError { path, source } => {
-            format!("cannot read config {}: {source}", path.display())
-        }
-        other => other.to_string(),
-    }
 }
 
 /// The next step after a configuration read that was refused for lack of
@@ -123,119 +115,6 @@ pub(crate) fn load_config_or_report(
             ExitStatus::Config,
             config_error_body(&error, command),
         )
-    })
-}
-
-/// Load the configuration for a teardown command, which must never refuse.
-///
-/// On any problem this logs a single warning and continues with built-in
-/// defaults, whose hidden volume root is derived from the binary location;
-/// the teardown itself then only unmounts what the live mount table shows
-/// NAILS created.
-/// Where a teardown's configuration was ultimately loaded from.
-///
-/// Reported to the operator so a teardown that had to fall back off the failed
-/// hidden volume says so, rather than silently acting on the wrong data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ConfigSource {
-    /// The real configuration file (on the hidden volume or binary-relative).
-    File,
-    /// The RAM-backed copy under `/run`, used because the file was unreadable.
-    RuntimeCopy,
-    /// Built-in defaults, used because neither the file nor a copy was available.
-    Defaults,
-}
-
-impl ConfigSource {
-    /// A short phrase naming the source, for human-facing output.
-    pub(crate) fn describe(self) -> &'static str {
-        match self {
-            ConfigSource::File => "configuration file",
-            ConfigSource::RuntimeCopy => "RAM-backed runtime copy",
-            ConfigSource::Defaults => "built-in defaults",
-        }
-    }
-}
-
-/// Load the configuration for a teardown (emergency or recover) that must never
-/// be blocked by a failed hidden volume.
-///
-/// The real config file lives on the hidden volume, so when that volume is the
-/// thing that failed the file is unreadable. This tries, in order: the config
-/// file, the mirrored copy in the RAM-backed runtime directory under `/run`
-/// (written at activation precisely for this case), and finally the built-in
-/// defaults. The source is returned so the caller can tell the operator which one
-/// was used; in every case the teardown only acts on what the live mount table
-/// shows NAILS created.
-pub(crate) fn load_config_for_teardown(
-    config_override: Option<&Path>,
-) -> (nails_core::Config, ConfigSource) {
-    // An authoritative config file wins: either an explicit `--config` (which
-    // errors rather than defaulting when absent) or a binary-relative file that
-    // was actually present. A *missing* binary-relative file is not authoritative:
-    // `resolve_config` returns built-in defaults for it, whose hidden volume root
-    // is derived from the running binary's own location. When emergency runs from
-    // the RAM-backed copy under `/run` that root points into `/run`, not at the
-    // real overlays, so those defaults must not be preferred over the mirrored
-    // config the copy carries.
-    let file_config = match resolve_config(config_override) {
-        Ok(loaded) if config_override.is_some() || loaded.file_found => Some(loaded.into_config()),
-        _ => None,
-    };
-
-    // The RAM-backed runtime copy under `/run` records the real hidden root and
-    // state path from activation, written precisely so teardown still works when
-    // the hidden volume (and the real config and state files on it) are gone. It
-    // is strictly better than binary-relative defaults, so it is consulted whenever
-    // no authoritative file was found — not only when the file was unreadable.
-    let runtime_copy_config = if file_config.is_some() {
-        None
-    } else {
-        match nails_core::runtime_copy::read_config_copy(&nails_core::RealFilesystem) {
-            Ok(copy) => copy,
-            Err(e) => {
-                tracing::warn!(error = %e, "could not read the runtime config copy; using defaults");
-                None
-            }
-        }
-    };
-
-    let defaults = || load_config_or_defaults(config_override).into_config();
-    pick_teardown_config(file_config, runtime_copy_config, defaults)
-}
-
-/// Choose the teardown configuration and record where it came from.
-///
-/// Precedence: an authoritative config file, then the RAM-backed runtime copy
-/// under `/run`, then built-in defaults. The runtime copy must outrank defaults
-/// so an emergency launched from the copy (when the hidden volume is gone) tears
-/// down the real overlays instead of a set derived from the copied binary's own
-/// location. `defaults` is only evaluated when neither of the first two is present.
-fn pick_teardown_config(
-    file_config: Option<nails_core::Config>,
-    runtime_copy_config: Option<nails_core::Config>,
-    defaults: impl FnOnce() -> nails_core::Config,
-) -> (nails_core::Config, ConfigSource) {
-    if let Some(config) = file_config {
-        return (config, ConfigSource::File);
-    }
-    if let Some(config) = runtime_copy_config {
-        tracing::warn!("config file not found; using the RAM-backed runtime copy under /run");
-        return (config, ConfigSource::RuntimeCopy);
-    }
-    (defaults(), ConfigSource::Defaults)
-}
-
-pub(crate) fn load_config_or_defaults(config_override: Option<&Path>) -> LoadedConfig {
-    resolve_config(config_override).unwrap_or_else(|error| {
-        let path: PathBuf = nails_core::config::discover_config_path(config_override);
-        tracing::warn!(
-            "{}; continuing with defaults derived from the binary location",
-            config_error_line(&error)
-        );
-        let mut loaded = LoadedConfig::defaults(&path);
-        loaded.config.loaded_config_path = Some(path);
-        loaded
     })
 }
 
@@ -377,8 +256,8 @@ pub(crate) fn acquire_state_lock_for_emergency(
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigSource, nixos_builder_for, pick_teardown_config, sudo_line};
-    use nails_core::{Config, HostTarget, NailsError};
+    use super::{nixos_builder_for, sudo_line};
+    use nails_core::{HostTarget, NailsError};
     use std::path::{Path, PathBuf};
 
     /// Activation builds nothing for the refused decoy flake, as for
@@ -469,51 +348,5 @@ mod tests {
         assert_eq!(sudo_line(&other, "status", false, binary, &[]), None);
         let invalid = NailsError::ConfigError("invalid config".into());
         assert_eq!(sudo_line(&invalid, "status", false, binary, &[]), None);
-    }
-
-    fn config_rooted_at(root: &str) -> Config {
-        Config {
-            hidden_volume_root: PathBuf::from(root),
-            ..Config::test_default()
-        }
-    }
-
-    #[test]
-    fn teardown_config_prefers_an_authoritative_file() {
-        let file = config_rooted_at("/mnt/data/file");
-        let copy = config_rooted_at("/mnt/data/copy");
-        let (config, source) = pick_teardown_config(Some(file), Some(copy), || {
-            panic!("defaults must not be evaluated when a file is present")
-        });
-        assert_eq!(source, ConfigSource::File);
-        assert_eq!(config.hidden_volume_root, PathBuf::from("/mnt/data/file"));
-    }
-
-    #[test]
-    fn teardown_config_prefers_the_runtime_copy_over_defaults() {
-        // The regression: a missing binary-relative config yields built-in
-        // defaults, whose hidden root is derived from the running binary. When
-        // emergency runs from the RAM-backed copy that root points into /run, so
-        // the mirrored copy — which records the real hidden root — must win.
-        let copy = config_rooted_at("/mnt/data/real-hidden-root");
-        let (config, source) = pick_teardown_config(None, Some(copy), || {
-            panic!("defaults must not be evaluated when a runtime copy is present")
-        });
-        assert_eq!(source, ConfigSource::RuntimeCopy);
-        assert_eq!(
-            config.hidden_volume_root,
-            PathBuf::from("/mnt/data/real-hidden-root")
-        );
-    }
-
-    #[test]
-    fn teardown_config_falls_back_to_defaults_when_nothing_else_is_available() {
-        let defaults = config_rooted_at("/derived/from/binary");
-        let (config, source) = pick_teardown_config(None, None, || defaults.clone());
-        assert_eq!(source, ConfigSource::Defaults);
-        assert_eq!(
-            config.hidden_volume_root,
-            PathBuf::from("/derived/from/binary")
-        );
     }
 }

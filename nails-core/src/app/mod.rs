@@ -18,8 +18,12 @@
 
 pub mod config;
 pub mod config_view;
+pub mod emergency;
 pub mod status;
 
-pub use config::resolve_config;
+pub use config::{
+    ConfigSource, config_error_line, load_config_for_teardown, load_config_or_defaults,
+    resolve_config,
+};
 pub use config_view::config_view;
 pub use status::{StatusOutcome, status};
