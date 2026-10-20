@@ -417,7 +417,7 @@ mod kernel_tests {
                 row["message"]
                     .as_str()
                     .unwrap_or("")
-                    .starts_with("host 'fedora' is not a supported platform"),
+                    .starts_with("Fedora is not yet a validated platform"),
                 "{row}"
             );
             let output = nails(&config, &["activate", "-y", "--overlay-only"]);

@@ -10,9 +10,11 @@
 use std::path::Path;
 
 use super::family::{self, FamilySupport};
+use super::host_facts;
 use super::{HostProfile, PlatformKind};
 use crate::Result;
 use crate::filesystem::Filesystem;
+use nails_base::Family;
 
 /// Where the kernel exposes the running init's command name.
 const PID1_COMM: &str = "/proc/1/comm";
@@ -68,6 +70,8 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
     let pid1_comm = pid1.as_deref().map(str::trim).map(str::to_string);
     let is_systemd = pid1_comm.as_deref() == Some("systemd");
     let usr_merge = probe_usr_merge(fs);
+    let lsms = host_facts::read_lsms(fs);
+    let selinux = host_facts::read_selinux(fs);
 
     let verdict = classify(
         is_ostree,
@@ -83,6 +87,10 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
         id: fields.id,
         id_like: fields.id_like,
         version_id: fields.version_id,
+        variant_id: fields.variant_id,
+        family: verdict.family,
+        lsms,
+        selinux,
         is_systemd,
         is_ostree,
         has_current_system,
@@ -103,6 +111,7 @@ struct OsReleaseFields {
     id: Option<String>,
     id_like: Vec<String>,
     version_id: Option<String>,
+    variant_id: Option<String>,
 }
 
 /// Parse the `KEY=VALUE` lines of os-release, lowercasing identifiers and
@@ -127,6 +136,7 @@ fn parse_os_release(content: &str) -> OsReleaseFields {
                     .collect();
             }
             "VERSION_ID" => fields.version_id = Some(value.to_string()),
+            "VARIANT_ID" => fields.variant_id = Some(value.to_ascii_lowercase()),
             _ => {}
         }
     }
@@ -194,6 +204,9 @@ struct Verdict {
     /// The warning an admitted host carries: a release NAILS has not been
     /// tested on.
     support_warning: Option<String>,
+    /// The FHS family the host resolved to, where one was determined. `None` for
+    /// NixOS and for hosts refused before the family table is consulted.
+    family: Option<Family>,
 }
 
 impl Verdict {
@@ -202,6 +215,7 @@ impl Verdict {
             kind,
             unsupported_reason: None,
             support_warning,
+            family: None,
         }
     }
 
@@ -210,7 +224,14 @@ impl Verdict {
             kind: PlatformKind::Unsupported,
             unsupported_reason: Some(reason),
             support_warning: None,
+            family: None,
         }
+    }
+
+    /// Attach the resolved family to this verdict.
+    fn with_family(mut self, family: Option<Family>) -> Self {
+        self.family = family;
+        self
     }
 }
 
@@ -253,19 +274,21 @@ fn classify(
         return Verdict::admitted(PlatformKind::NixOs, None);
     }
 
-    let support_warning = match family::classify_family(
+    let classification = family::classify(
         fields.id.as_deref(),
         &fields.id_like,
         fields.version_id.as_deref(),
-    ) {
+    );
+    let family = classification.family;
+    let support_warning = match classification.support {
         FamilySupport::Supported => None,
-        FamilySupport::UntestedRelease(warning) => Some(warning),
-        FamilySupport::Refused(reason) => return Verdict::refused(reason),
+        FamilySupport::Untested(warning) => Some(warning),
+        FamilySupport::Refused(reason) => return Verdict::refused(reason).with_family(family),
     };
     if usr_merge == UsrMerge::NotMerged {
-        return Verdict::refused(family::USR_MERGE_REFUSAL.to_string());
+        return Verdict::refused(family::USR_MERGE_REFUSAL.to_string()).with_family(family);
     }
-    Verdict::admitted(PlatformKind::Fhs, support_warning)
+    Verdict::admitted(PlatformKind::Fhs, support_warning).with_family(family)
 }
 
 #[cfg(test)]
@@ -398,9 +421,13 @@ mod tests {
     fn fedora_is_refused_with_documented_reason() {
         let profile = detect(&host(FEDORA, "systemd")).unwrap();
         assert_eq!(profile.kind, PlatformKind::Unsupported);
+        assert_eq!(profile.family, Some(Family::Fedora));
         assert!(!profile.is_debian_like());
         let err = profile.require_supported().unwrap_err();
-        assert!(err.to_string().contains("fedora"));
+        assert!(
+            err.to_string()
+                .contains("Fedora is not yet a validated platform")
+        );
     }
 
     #[test]
@@ -408,7 +435,59 @@ mod tests {
         let profile = detect(&host(ARCH, "systemd")).unwrap();
         assert_eq!(profile.kind, PlatformKind::Unsupported);
         assert_eq!(profile.id.as_deref(), Some("arch"));
+        assert_eq!(profile.family, Some(Family::Arch));
         assert!(profile.require_supported().is_err());
+    }
+
+    #[test]
+    fn the_resolved_family_is_recorded_on_the_profile() {
+        // The family fact is set for every host the family table resolves,
+        // whether admitted or refused, and is absent for NixOS and the unknown.
+        let family = |os_release: &str| detect(&host(os_release, "systemd")).unwrap().family;
+        assert_eq!(family(UBUNTU), Some(Family::Debian));
+        assert_eq!(family(DEBIAN13), Some(Family::Debian));
+        assert_eq!(family(FEDORA), Some(Family::Fedora));
+        assert_eq!(family(ARCH), Some(Family::Arch));
+        assert_eq!(family(NIXOS), None);
+        assert_eq!(family("ID=voidlinux\nVERSION_ID=\"rolling\"\n"), None);
+    }
+
+    #[test]
+    fn variant_id_is_parsed_and_lowercased() {
+        let profile = detect(&host(
+            "ID=fedora\nVARIANT_ID=Workstation\nVERSION_ID=44\n",
+            "systemd",
+        ))
+        .unwrap();
+        assert_eq!(profile.variant_id.as_deref(), Some("workstation"));
+        // A host that declares none carries no variant.
+        assert_eq!(detect(&host(DEBIAN13, "systemd")).unwrap().variant_id, None);
+    }
+
+    #[test]
+    fn security_facts_are_read_onto_the_profile() {
+        use crate::platform::SelinuxMode;
+
+        let fs = host(DEBIAN13, "systemd");
+        fs.mock_set_file_content(
+            "/sys/kernel/security/lsm",
+            "capability,landlock,yama,apparmor",
+        );
+        let profile = detect(&fs).unwrap();
+        assert_eq!(profile.lsms, ["capability", "landlock", "yama", "apparmor"]);
+        assert_eq!(profile.selinux, None);
+
+        let fedora = host("ID=fedora\nVERSION_ID=44\n", "systemd");
+        fedora.mock_set_path_type("/sys/fs/selinux", crate::filesystem::PathKind::Dir);
+        fedora.mock_set_file_content("/sys/fs/selinux/enforce", "1");
+        fedora.mock_set_file_content(
+            "/etc/selinux/config",
+            "SELINUX=enforcing\nSELINUXTYPE=targeted\n",
+        );
+        let profile = detect(&fedora).unwrap();
+        let selinux = profile.selinux.expect("Fedora has SELinux");
+        assert_eq!(selinux.enforce, Some(SelinuxMode::Enforcing));
+        assert_eq!(selinux.config_policy.as_deref(), Some("targeted"));
     }
 
     #[test]

@@ -1,23 +1,26 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Debian-family support data for host detection.
+//! The family table: which systemd hosts NAILS admits, warns about or refuses.
 //!
-//! NAILS validates the overlay-only backend on Debian and Ubuntu first. The
-//! generic [`FhsPlatform`](super::FhsPlatform) is the executor for every
-//! supported FHS host; this module is the *policy* that decides which FHS hosts
-//! are supported today and which are refused until their own backend lands.
+//! NAILS validates the overlay-only backend per family. The generic
+//! [`FhsPlatform`](super::FhsPlatform) is the executor for every admitted FHS
+//! host; this module is the *policy* that decides, from `/etc/os-release`, which
+//! hosts are admitted today and which are refused until their own gate passes.
 //!
-//! Keeping the policy as a small data table means bringing another distribution
-//! online is a single entry here plus a contract-suite run — it does not fork
-//! the backend. [`detect`](super::detect) consults [`classify_family`] for every
-//! non-NixOS systemd host and turns the result into a [`PlatformKind`].
+//! Keeping the policy as one data table means admitting another family is a data
+//! change here plus its gate run — it does not fork the backend.
+//! [`detect`](super::detect) consults [`classify`] for every non-NixOS systemd
+//! host and turns the result into a [`PlatformKind`].
 //!
-//! Each entry also lists the releases NAILS has been tested on. A release at or
-//! above the minimum that is not on that list (a newer Ubuntu than the tests
-//! cover) is admitted with a warning that says so, never refused.
+//! Each row carries its family, its version gate, whether it is a base
+//! distribution or a derivative, and whether NAILS admits it. Fedora and Arch
+//! are in the table but not admitted, so they are refused as product data until
+//! their support has been verified, not hidden behind a test flag.
 //!
 //! [`PlatformKind`]: super::PlatformKind
+
+use nails_base::Family;
 
 /// A distribution version reduced to `(major, minor)`.
 ///
@@ -52,7 +55,7 @@ impl DistroVersion {
 }
 
 impl std::fmt::Display for DistroVersion {
-    /// The release as the Debian family writes it: the major alone when there is
+    /// The release as the distribution writes it: the major alone when there is
     /// no minor (`13`), otherwise with a two-digit minor (`24.04`).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.minor == 0 {
@@ -63,135 +66,444 @@ impl std::fmt::Display for DistroVersion {
     }
 }
 
-/// One supported Debian-family distribution: the floor it is admitted from and
-/// the releases it was tested on.
-struct SupportedDistro {
-    /// The `/etc/os-release` `ID`, lowercased.
-    id: &'static str,
-    /// Human-facing name used in refusal messages.
-    label: &'static str,
-    /// The oldest release NAILS supports on this distribution.
-    minimum: DistroVersion,
-    /// The releases NAILS has been tested on. Any other release at or above
-    /// [`minimum`](Self::minimum) is admitted with a warning that it is
-    /// untested.
-    validated: &'static [DistroVersion],
+/// How a family's releases are gated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Gate {
+    /// A versioned distribution: admitted from `min` upward, tested on the
+    /// `validated` releases, warning for any other release at or above `min`.
+    Versioned {
+        min: DistroVersion,
+        validated: &'static [DistroVersion],
+    },
+    /// A rolling distribution with no release to gate on.
+    Rolling,
 }
 
-/// The support table. Adding a distribution NAILS has validated is one entry
-/// here — the backend ([`FhsPlatform`](super::FhsPlatform)) is already generic —
-/// and a release the tests cover is one more `validated` version.
-const SUPPORTED: &[SupportedDistro] = &[
-    SupportedDistro {
+/// Whether a row is a base distribution or a derivative of one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// A base distribution (Debian, Ubuntu, Fedora, Arch).
+    Base,
+    /// A derivative of a base distribution, carrying its base [`Family`].
+    Derivative,
+}
+
+/// One row of the family table.
+pub(crate) struct FamilyRow {
+    /// The `/etc/os-release` `ID`, lowercased.
+    id: &'static str,
+    /// Human-facing name used in messages.
+    label: &'static str,
+    /// The family this row belongs to (its base family, for a derivative).
+    family: Family,
+    /// How the row's releases are gated.
+    gate: Gate,
+    /// Base distribution or derivative.
+    kind: Kind,
+    /// Whether NAILS admits this family. A base row that is not admitted is
+    /// refused; a derivative is refused until its base family is admitted.
+    admitted: bool,
+}
+
+/// The family table. Admitting a family is a data change here (its `admitted`
+/// flag) plus its gate run — the backend ([`FhsPlatform`](super::FhsPlatform))
+/// is already generic.
+///
+/// Fedora and Arch sit here with `admitted: false`: recognised, named in their
+/// refusal, and ready to flip to admitted once their support has been verified.
+const TABLE: &[FamilyRow] = &[
+    FamilyRow {
         id: "debian",
         label: "Debian",
-        minimum: DistroVersion::new(13, 0),
-        validated: &[DistroVersion::new(13, 0)],
+        family: Family::Debian,
+        gate: Gate::Versioned {
+            min: DistroVersion::new(13, 0),
+            validated: &[DistroVersion::new(13, 0)],
+        },
+        kind: Kind::Base,
+        admitted: true,
     },
-    SupportedDistro {
+    FamilyRow {
         id: "ubuntu",
         label: "Ubuntu",
-        minimum: DistroVersion::new(24, 4),
-        validated: &[DistroVersion::new(24, 4), DistroVersion::new(26, 4)],
+        family: Family::Debian,
+        gate: Gate::Versioned {
+            min: DistroVersion::new(24, 4),
+            validated: &[DistroVersion::new(24, 4), DistroVersion::new(26, 4)],
+        },
+        kind: Kind::Base,
+        admitted: true,
+    },
+    FamilyRow {
+        id: "fedora",
+        label: "Fedora",
+        family: Family::Fedora,
+        gate: Gate::Versioned {
+            min: DistroVersion::new(44, 0),
+            validated: &[DistroVersion::new(44, 0)],
+        },
+        kind: Kind::Base,
+        admitted: false,
+    },
+    FamilyRow {
+        id: "arch",
+        label: "Arch",
+        family: Family::Arch,
+        gate: Gate::Rolling,
+        kind: Kind::Base,
+        admitted: false,
+    },
+    // Arch derivatives: refused while Arch is, named so the refusal is precise
+    // and flips to a warning the day Arch is admitted.
+    FamilyRow {
+        id: "endeavouros",
+        label: "EndeavourOS",
+        family: Family::Arch,
+        gate: Gate::Rolling,
+        kind: Kind::Derivative,
+        admitted: false,
+    },
+    FamilyRow {
+        id: "cachyos",
+        label: "CachyOS",
+        family: Family::Arch,
+        gate: Gate::Rolling,
+        kind: Kind::Derivative,
+        admitted: false,
+    },
+    FamilyRow {
+        id: "manjaro",
+        label: "Manjaro",
+        family: Family::Arch,
+        gate: Gate::Rolling,
+        kind: Kind::Derivative,
+        admitted: false,
+    },
+    // Fedora derivatives.
+    FamilyRow {
+        id: "nobara",
+        label: "Nobara",
+        family: Family::Fedora,
+        gate: Gate::Rolling,
+        kind: Kind::Derivative,
+        admitted: false,
+    },
+    FamilyRow {
+        id: "ultramarine",
+        label: "Ultramarine",
+        family: Family::Fedora,
+        gate: Gate::Rolling,
+        kind: Kind::Derivative,
+        admitted: false,
     },
 ];
 
-/// The name of a table distribution (`Ubuntu` for `ubuntu`), or `None` for an
-/// `ID` the table does not list.
-pub(crate) fn label(id: &str) -> Option<&'static str> {
-    SUPPORTED
-        .iter()
-        .find(|entry| entry.id == id)
-        .map(|entry| entry.label)
+/// A host refused by name: a distribution NAILS recognises and declines
+/// explicitly, rather than letting it fall through to the generic refusal.
+struct NamedRefusal {
+    /// The `/etc/os-release` `ID`, lowercased.
+    id: &'static str,
+    /// Human-facing name used in messages.
+    label: &'static str,
+    /// Why, as a sentence fragment: "NAILS does not target …".
+    note: &'static str,
 }
 
-/// The outcome of consulting the support table for a non-NixOS systemd host.
+/// Distributions refused by name. Enterprise Linux rebuilds and SteamOS are
+/// recognised but out of scope, so they get a precise refusal rather than the
+/// generic "not a supported platform".
+const NAMED_REFUSALS: &[NamedRefusal] = &[
+    NamedRefusal {
+        id: "rhel",
+        label: "Red Hat Enterprise Linux",
+        note: "NAILS does not target enterprise Linux distributions",
+    },
+    NamedRefusal {
+        id: "centos",
+        label: "CentOS",
+        note: "NAILS does not target enterprise Linux distributions",
+    },
+    NamedRefusal {
+        id: "almalinux",
+        label: "AlmaLinux",
+        note: "NAILS does not target enterprise Linux distributions",
+    },
+    NamedRefusal {
+        id: "rocky",
+        label: "Rocky Linux",
+        note: "NAILS does not target enterprise Linux distributions",
+    },
+    NamedRefusal {
+        id: "ol",
+        label: "Oracle Linux",
+        note: "NAILS does not target enterprise Linux distributions",
+    },
+    NamedRefusal {
+        id: "steamos",
+        label: "SteamOS",
+        note: "NAILS does not target immutable, gaming-oriented systems",
+    },
+];
+
+/// The outcome of consulting the table for a non-NixOS systemd host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FamilySupport {
-    /// A Debian-family host on a release NAILS has been tested on, or a
-    /// derivative accepted provisionally.
+    /// An admitted family on a tested release: runs clean.
     Supported,
-    /// A table distribution at or above its minimum, on a release NAILS has not
-    /// been tested on. It is admitted; the string is the warning that says so.
-    UntestedRelease(String),
-    /// A Debian-family host below the version NAILS supports, or whose version
-    /// could not be confirmed. Carries the documented refusal reason.
+    /// An admitted family NAILS has not tested on this release, or a derivative
+    /// of an admitted family. It runs; the string is the warning that says so.
+    Untested(String),
+    /// A family NAILS does not admit, a derivative of one, or a host refused by
+    /// name or as unknown. Carries the documented refusal reason.
     Refused(String),
 }
 
-/// Classify a non-NixOS systemd host against the Debian-family support table.
+/// What [`classify`] decides: the family NAILS resolved (if any) and its verdict.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Classification {
+    /// The family the host resolved to, where one could be determined. `None`
+    /// for an unidentifiable host or one refused by name.
+    pub(crate) family: Option<Family>,
+    /// Whether NAILS runs on the host, runs with a warning, or refuses it.
+    pub(crate) support: FamilySupport,
+}
+
+/// The name a message uses for a table or named-refusal `ID` (`Ubuntu` for
+/// `ubuntu`, `Fedora` for `fedora`), or `None` for an `ID` neither lists.
+pub(crate) fn label(id: &str) -> Option<&'static str> {
+    TABLE
+        .iter()
+        .find(|row| row.id == id)
+        .map(|row| row.label)
+        .or_else(|| {
+            NAMED_REFUSALS
+                .iter()
+                .find(|row| row.id == id)
+                .map(|row| row.label)
+        })
+}
+
+/// Classify a non-NixOS systemd host against the family table.
 ///
-/// - A table `ID` (debian, ubuntu) is version-gated against its minimum, and a
-///   release at or above it that the table does not list as tested is admitted
-///   with a warning ([`FamilySupport::UntestedRelease`]).
-/// - A non-table `ID` whose `ID_LIKE` names a table family (e.g. a derivative
-///   declaring `ID_LIKE=debian`) is accepted provisionally: its own release
-///   scheme cannot be mapped to a base version reliably, and the read-only
-///   `/usr` guard protects the decoy regardless.
-/// - Anything else — Fedora, Arch, an unknown `ID`, or a missing `ID` — is
-///   refused with a documented message, because no validated backend covers it.
-pub(crate) fn classify_family(
+/// - A named refusal (Enterprise Linux, SteamOS) is declined by name first.
+/// - A table `ID` is resolved by its row: an admitted base is version-gated, a
+///   non-admitted base is refused as product data, and a derivative follows its
+///   base family (a warning once the base is admitted, a refusal until then).
+/// - A non-table `ID` whose `ID_LIKE` names `debian` or `ubuntu` is accepted
+///   provisionally, with a warning that NAILS has not tested the derivative.
+/// - A non-table `ID` whose `ID_LIKE` names `fedora`, `rhel`, `centos` or `arch`
+///   is refused, naming the family NAILS has not validated.
+/// - Anything else — an unknown or missing `ID` — is refused.
+pub(crate) fn classify(
     id: Option<&str>,
     id_like: &[String],
     version_id: Option<&str>,
-) -> FamilySupport {
-    if let Some(id) = id
-        && let Some(entry) = SUPPORTED.iter().find(|entry| entry.id == id)
-    {
-        return gate_version(entry, version_id);
+) -> Classification {
+    if let Some(id) = id {
+        if let Some(named) = NAMED_REFUSALS.iter().find(|row| row.id == id) {
+            return Classification {
+                family: None,
+                support: FamilySupport::Refused(named_refusal(named)),
+            };
+        }
+        if let Some(row) = TABLE.iter().find(|row| row.id == id) {
+            return classify_row(row, version_id);
+        }
     }
 
-    // No direct table match: accept a declared derivative of a supported family,
-    // otherwise refuse.
     if id_like
         .iter()
-        .any(|token| SUPPORTED.iter().any(|entry| entry.id == token))
+        .any(|token| token == "debian" || token == "ubuntu")
     {
-        return FamilySupport::Supported;
+        return Classification {
+            family: Some(Family::Debian),
+            support: FamilySupport::Untested(derivative_warning(Family::Debian)),
+        };
     }
 
-    FamilySupport::Refused(unknown_reason(id))
+    if let Some(family) = family_from_id_like(id_like) {
+        return Classification {
+            family: Some(family),
+            support: FamilySupport::Refused(unvalidated_like_reason(id, family)),
+        };
+    }
+
+    Classification {
+        family: None,
+        support: FamilySupport::Refused(unknown_reason(id)),
+    }
 }
 
-/// Version-gate a matched table entry.
-fn gate_version(entry: &SupportedDistro, version_id: Option<&str>) -> FamilySupport {
+/// Resolve a matched table row to a verdict.
+fn classify_row(row: &FamilyRow, version_id: Option<&str>) -> Classification {
+    let family = Some(row.family);
+    let support = match row.kind {
+        Kind::Derivative => {
+            if base_admitted(row.family) {
+                FamilySupport::Untested(derivative_warning(row.family))
+            } else {
+                FamilySupport::Refused(derivative_refusal(row))
+            }
+        }
+        Kind::Base if !row.admitted => FamilySupport::Refused(not_validated_refusal(row)),
+        Kind::Base => gate_version(row, version_id),
+    };
+    Classification { family, support }
+}
+
+/// Whether the family's base distribution is admitted.
+fn base_admitted(family: Family) -> bool {
+    TABLE
+        .iter()
+        .any(|row| row.kind == Kind::Base && row.family == family && row.admitted)
+}
+
+/// A family named by an `ID_LIKE` token, for an `ID` the table does not list.
+/// `debian`/`ubuntu` are handled separately (provisional accept), so only the
+/// unvalidated families resolve here.
+fn family_from_id_like(id_like: &[String]) -> Option<Family> {
+    for token in id_like {
+        match token.as_str() {
+            "fedora" | "rhel" | "centos" => return Some(Family::Fedora),
+            "arch" => return Some(Family::Arch),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Version-gate an admitted base row.
+fn gate_version(row: &FamilyRow, version_id: Option<&str>) -> FamilySupport {
+    let Gate::Versioned { min, validated } = row.gate else {
+        // A rolling admitted family has no release to gate on.
+        return FamilySupport::Supported;
+    };
+
     let Some(raw) = version_id else {
         return FamilySupport::Refused(format!(
             "{} host declares no VERSION_ID, so NAILS cannot confirm it is at \
-             least {} (the minimum supported release).",
-            entry.label, entry.minimum,
+             least {min} (the minimum supported release).",
+            row.label,
         ));
     };
 
     let Some(version) = DistroVersion::parse(raw) else {
         return FamilySupport::Refused(format!(
             "{} host has an unparseable VERSION_ID ('{raw}'); NAILS requires at \
-             least {}.",
-            entry.label, entry.minimum,
+             least {min}.",
+            row.label,
         ));
     };
 
-    if version < entry.minimum {
+    if version < min {
         return FamilySupport::Refused(format!(
-            "{} {raw} is older than the minimum supported release ({} {}). \
+            "{} {raw} is older than the minimum supported release ({} {min}). \
              Upgrade the host or run NAILS on a supported release.",
-            entry.label, entry.label, entry.minimum,
+            row.label, row.label,
         ));
     }
 
-    if !entry.validated.contains(&version) {
-        return FamilySupport::UntestedRelease(format!(
+    if !validated.contains(&version) {
+        return FamilySupport::Untested(format!(
             "{} {raw} is not a release NAILS has been tested on (tested: {} {}). NAILS runs \
              on it, but a change in this release can break the session or leave a trace \
              NAILS does not know about. Use a tested release, or run `nails rehearse` on this \
              computer before you rely on it.",
-            entry.label,
-            entry.label,
-            releases(entry.validated),
+            row.label,
+            row.label,
+            releases(validated),
         ));
     }
 
     FamilySupport::Supported
+}
+
+/// The warning for a derivative of an admitted family.
+fn derivative_warning(family: Family) -> String {
+    format!(
+        "this system is a derivative of the {} family, which NAILS has not tested. It runs, \
+         but a change the derivative makes can break the session or leave a trace NAILS does \
+         not know about. Use a tested release, or run `nails rehearse` on this computer before \
+         you rely on it.",
+        family.label(),
+    )
+}
+
+/// The refusal for a derivative whose base family NAILS has not admitted.
+fn derivative_refusal(row: &FamilyRow) -> String {
+    format!(
+        "{} is based on {}, which NAILS has not yet validated. NAILS refuses it until {} \
+         support has been verified. NAILS supports NixOS and the Debian family ({}).",
+        row.label,
+        row.family.label(),
+        row.family.label(),
+        supported_platforms(),
+    )
+}
+
+/// The refusal for a base family that is in the table but not admitted.
+fn not_validated_refusal(row: &FamilyRow) -> String {
+    format!(
+        "{} is not yet a validated platform. NAILS refuses it until its support has been \
+         verified. NAILS supports NixOS and the Debian family ({}).",
+        row.label,
+        supported_platforms(),
+    )
+}
+
+/// The refusal for a host whose `ID_LIKE` names an unvalidated family.
+fn unvalidated_like_reason(id: Option<&str>, family: Family) -> String {
+    let who = match id {
+        Some(id) => format!("host '{id}'"),
+        None => "this host".to_string(),
+    };
+    format!(
+        "{who} declares itself part of the {} family, which NAILS has not yet validated. \
+         NAILS supports NixOS and the Debian family ({}); other distributions are not yet \
+         validated.",
+        family.label(),
+        supported_platforms(),
+    )
+}
+
+/// The refusal for a named distribution NAILS declines explicitly.
+fn named_refusal(row: &NamedRefusal) -> String {
+    format!(
+        "{} is not a supported platform; {}. NAILS supports NixOS and the Debian family ({}).",
+        row.label,
+        row.note,
+        supported_platforms(),
+    )
+}
+
+/// The refusal for a host NAILS has no backend for.
+fn unknown_reason(id: Option<&str>) -> String {
+    match id {
+        Some(id) => format!(
+            "host '{id}' is not a supported platform. NAILS supports NixOS and the Debian \
+             family ({}); other distributions are not yet validated.",
+            supported_platforms(),
+        ),
+        None => format!(
+            "this host declares no os-release ID; NAILS supports NixOS and the Debian family \
+             ({}) and refuses hosts it cannot identify.",
+            supported_platforms(),
+        ),
+    }
+}
+
+/// The admitted platforms as one sentence fragment, generated from the table:
+/// `Debian 13, Ubuntu 24.04 and 26.04`.
+fn supported_platforms() -> String {
+    let parts: Vec<String> = TABLE
+        .iter()
+        .filter(|row| row.kind == Kind::Base && row.admitted)
+        .map(|row| match row.gate {
+            Gate::Versioned { validated, .. } => format!("{} {}", row.label, releases(validated)),
+            Gate::Rolling => row.label.to_string(),
+        })
+        .collect();
+    parts.join(", ")
 }
 
 /// `versions` as a list for a sentence: `13`, `24.04 and 26.04`, or
@@ -202,21 +514,6 @@ fn releases(versions: &[DistroVersion]) -> String {
         None => String::new(),
         Some((last, [])) => last.clone(),
         Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
-    }
-}
-
-/// The documented refusal for a host NAILS has no backend for.
-fn unknown_reason(id: Option<&str>) -> String {
-    match id {
-        Some(id) => format!(
-            "host '{id}' is not a supported platform. NAILS supports NixOS and \
-             the Debian family (Debian 13, Ubuntu 24.04 and 26.04); other \
-             distributions are not yet validated."
-        ),
-        None => "this host declares no os-release ID; NAILS supports NixOS and \
-             the Debian family (Debian 13, Ubuntu 24.04 and 26.04) and refuses \
-             hosts it cannot identify."
-            .to_string(),
     }
 }
 
@@ -231,210 +528,5 @@ pub(crate) const USR_MERGE_REFUSAL: &str = "this Debian-family host is not usr-m
      or use Debian 13, Ubuntu 24.04 or Ubuntu 26.04.";
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn version_parses_major_and_minor() {
-        assert_eq!(DistroVersion::parse("12"), Some(DistroVersion::new(12, 0)));
-        assert_eq!(
-            DistroVersion::parse("24.04"),
-            Some(DistroVersion::new(24, 4))
-        );
-        assert_eq!(
-            DistroVersion::parse(" 13 "),
-            Some(DistroVersion::new(13, 0))
-        );
-    }
-
-    #[test]
-    fn version_rejects_malformed() {
-        assert_eq!(DistroVersion::parse("rolling"), None);
-        assert_eq!(DistroVersion::parse(""), None);
-        // A non-numeric minor degrades to zero rather than failing the parse.
-        assert_eq!(
-            DistroVersion::parse("24.lts"),
-            Some(DistroVersion::new(24, 0))
-        );
-    }
-
-    #[test]
-    fn version_orders_releases() {
-        assert!(DistroVersion::new(12, 0) < DistroVersion::new(13, 0));
-        assert!(DistroVersion::new(24, 4) > DistroVersion::new(22, 4));
-        assert!(DistroVersion::new(24, 4) == DistroVersion::new(24, 4));
-        assert!(DistroVersion::new(24, 10) > DistroVersion::new(24, 4));
-    }
-
-    #[test]
-    fn version_is_written_as_the_distribution_writes_it() {
-        assert_eq!(DistroVersion::new(13, 0).to_string(), "13");
-        assert_eq!(DistroVersion::new(24, 4).to_string(), "24.04");
-        assert_eq!(DistroVersion::new(26, 10).to_string(), "26.10");
-    }
-
-    #[test]
-    fn releases_are_listed_as_in_a_sentence() {
-        let v = DistroVersion::new;
-        assert_eq!(releases(&[]), "");
-        assert_eq!(releases(&[v(13, 0)]), "13");
-        assert_eq!(releases(&[v(24, 4), v(26, 4)]), "24.04 and 26.04");
-        assert_eq!(
-            releases(&[v(22, 4), v(24, 4), v(26, 4)]),
-            "22.04, 24.04 and 26.04"
-        );
-    }
-
-    #[test]
-    fn debian_13_is_supported_and_12_refused() {
-        assert!(matches!(
-            classify_family(Some("debian"), &[], Some("12")),
-            FamilySupport::Refused(_)
-        ));
-        assert_eq!(
-            classify_family(Some("debian"), &[], Some("13")),
-            FamilySupport::Supported
-        );
-    }
-
-    #[test]
-    fn ubuntu_tested_releases_are_supported() {
-        for release in ["24.04", "26.04"] {
-            assert_eq!(
-                classify_family(Some("ubuntu"), &["debian".to_string()], Some(release)),
-                FamilySupport::Supported,
-                "{release}"
-            );
-        }
-    }
-
-    #[test]
-    fn an_untested_ubuntu_release_is_admitted_with_a_warning() {
-        // Newer than every tested release (26.10 came out on 2026-10-15), or
-        // between two of them: admitted, never refused, and the warning says so.
-        for release in ["26.10", "28.04", "24.10", "25.04", "25.10"] {
-            match classify_family(Some("ubuntu"), &["debian".to_string()], Some(release)) {
-                FamilySupport::UntestedRelease(warning) => {
-                    assert!(
-                        warning.starts_with(&format!(
-                            "Ubuntu {release} is not a release NAILS has been tested on \
-                             (tested: Ubuntu 24.04 and 26.04)."
-                        )),
-                        "{warning}"
-                    );
-                    assert!(warning.contains("nails rehearse"), "{warning}");
-                }
-                other => panic!("{release}: expected an untested release, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn a_debian_release_after_the_tested_one_is_admitted_with_a_warning() {
-        match classify_family(Some("debian"), &[], Some("14")) {
-            FamilySupport::UntestedRelease(warning) => assert!(
-                warning.starts_with(
-                    "Debian 14 is not a release NAILS has been tested on (tested: Debian 13)."
-                ),
-                "{warning}"
-            ),
-            other => panic!("expected an untested release, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn debian_below_minimum_is_refused() {
-        let outcome = classify_family(Some("debian"), &[], Some("11"));
-        match outcome {
-            FamilySupport::Refused(reason) => {
-                assert!(reason.contains("11"));
-                assert!(reason.contains("minimum"));
-                assert!(reason.contains("(Debian 13)"), "{reason}");
-            }
-            other => panic!("expected refusal, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn ubuntu_below_minimum_is_refused() {
-        let outcome = classify_family(Some("ubuntu"), &["debian".to_string()], Some("22.04"));
-        match outcome {
-            FamilySupport::Refused(reason) => {
-                assert!(reason.contains("(Ubuntu 24.04)"), "{reason}")
-            }
-            other => panic!("expected refusal, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn every_tested_release_is_one_the_table_admits() {
-        for entry in SUPPORTED {
-            assert!(!entry.validated.is_empty(), "{} lists no release", entry.id);
-            for version in entry.validated {
-                assert!(*version >= entry.minimum, "{} {version}", entry.id);
-                assert_eq!(
-                    classify_family(Some(entry.id), &[], Some(&version.to_string())),
-                    FamilySupport::Supported,
-                    "{} {version}",
-                    entry.id
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn labels_name_the_table_distributions_only() {
-        assert_eq!(label("ubuntu"), Some("Ubuntu"));
-        assert_eq!(label("debian"), Some("Debian"));
-        assert_eq!(label("linuxmint"), None);
-    }
-
-    #[test]
-    fn debian_without_version_is_refused() {
-        let outcome = classify_family(Some("debian"), &[], None);
-        match outcome {
-            FamilySupport::Refused(reason) => assert!(reason.contains("VERSION_ID")),
-            other => panic!("expected refusal, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn fedora_is_refused() {
-        let outcome = classify_family(Some("fedora"), &[], Some("40"));
-        match outcome {
-            FamilySupport::Refused(reason) => assert!(reason.contains("fedora")),
-            other => panic!("expected refusal, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn arch_is_refused() {
-        assert!(matches!(
-            classify_family(Some("arch"), &[], None),
-            FamilySupport::Refused(_)
-        ));
-    }
-
-    #[test]
-    fn missing_id_is_refused() {
-        let outcome = classify_family(None, &[], None);
-        match outcome {
-            FamilySupport::Refused(reason) => assert!(reason.contains("no os-release ID")),
-            other => panic!("expected refusal, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn debian_like_derivative_is_accepted() {
-        // A derivative declaring ID_LIKE=debian with an unknown ID is accepted
-        // provisionally; its own VERSION_ID is not gated.
-        assert_eq!(
-            classify_family(
-                Some("linuxmint"),
-                &["ubuntu".to_string(), "debian".to_string()],
-                Some("22")
-            ),
-            FamilySupport::Supported
-        );
-    }
-}
+#[path = "family_tests.rs"]
+mod tests;

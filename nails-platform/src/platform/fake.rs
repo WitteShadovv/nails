@@ -13,6 +13,7 @@ use std::path::Path;
 use super::{ConfigLayer, HostProfile, HostTarget, NixOsConfigLayer, Platform, PlatformKind};
 use crate::Result;
 use crate::filesystem::Filesystem;
+use nails_base::Family;
 
 /// A platform whose answers are fixed by the test.
 #[derive(Debug, Clone)]
@@ -72,16 +73,20 @@ impl FakePlatform {
     /// Lets a test hand the manager (or a discovery call) a profile coherent with
     /// the fake instead of spelling out every os-release field.
     pub fn host_profile(&self) -> HostProfile {
-        let (id, unsupported_reason) = match self.kind {
-            PlatformKind::NixOs => (Some("nixos"), None),
-            PlatformKind::Fhs => (Some("debian"), None),
-            PlatformKind::Unsupported => (None, Some("unsupported test host".to_string())),
+        let (id, family, unsupported_reason) = match self.kind {
+            PlatformKind::NixOs => (Some("nixos"), None, None),
+            PlatformKind::Fhs => (Some("debian"), Some(Family::Debian), None),
+            PlatformKind::Unsupported => (None, None, Some("unsupported test host".to_string())),
         };
         HostProfile {
             kind: self.kind,
             id: id.map(str::to_string),
             id_like: Vec::new(),
             version_id: None,
+            variant_id: None,
+            family,
+            lsms: Vec::new(),
+            selinux: None,
             is_systemd: true,
             is_ostree: false,
             has_current_system: self.kind == PlatformKind::NixOs,
