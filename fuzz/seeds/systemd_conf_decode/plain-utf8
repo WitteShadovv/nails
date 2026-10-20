@@ -1,0 +1,4 @@
+[Journal]
+Storage=volatile
+[Coredump]
+Storage=none

@@ -96,6 +96,13 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "systemd_conf_decode"
+path = "fuzz_targets/systemd_conf_decode.rs"
+test = false
+doc = false
+bench = false
+
 # Line numbers in a crash's stack trace.
 [profile.release]
 debug = 1
