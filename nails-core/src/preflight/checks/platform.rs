@@ -102,7 +102,7 @@ mod tests {
         assert!(
             result
                 .message()
-                .starts_with("host 'fedora' is not a supported platform"),
+                .starts_with("Fedora is not yet a validated platform"),
             "{result:?}"
         );
 

@@ -28,6 +28,11 @@ of this changelog for that version becomes the release notes word for word, and
   deniable volume should look like uniform random data, and writing an outer volume with discards
   on can destroy a hidden volume inside it. A LUKS2 mapping with runtime or stored discards is
   included, and a RAM-only zram device is excepted. The refusal names no device-mapper node.
+- A derivative of a supported distribution — one whose os-release `ID_LIKE` names `debian` or
+  `ubuntu`, such as Linux Mint — now runs with a warning that NAILS has not tested it, instead of
+  being accepted silently. Fedora, Arch and their known derivatives, Enterprise Linux rebuilds
+  (RHEL, CentOS, AlmaLinux, Rocky, Oracle) and SteamOS are each refused with a reason that names
+  them and says NAILS has not yet validated them.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
