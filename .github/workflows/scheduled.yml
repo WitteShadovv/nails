@@ -353,20 +353,26 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
-  # Mutation testing of the state machine (nails-base/src/state/):
-  # cargo-mutants changes each mutable spot and re-runs the tests, so a mutation
-  # the suite still passes marks a gap no coverage percentage would reveal.
-  # Heavy, so it runs weekly rather than on the gate, and the full report is
-  # uploaded as an artifact for triage; a surviving mutant is to be read, not a
-  # reason to fail the job. The job summary lists every survivor; cargo-mutants
-  # also flags them as warning annotations, of which GitHub shows only a
-  # limited number.
+  # Mutation testing of the state machine and the teardown/session decision
+  # cores: cargo-mutants changes each mutable spot and re-runs the tests, so a
+  # mutation the suite still passes marks a gap no coverage percentage would
+  # reveal. Heavy, so it runs weekly rather than on the gate, and the full
+  # report is uploaded as an artifact for triage; a surviving mutant is to be
+  # read, not a reason to fail the job. The job summary lists every survivor;
+  # cargo-mutants also flags them as warning annotations, of which GitHub shows
+  # only a limited number. The sweep now covers four more modules, so it is
+  # split across shards that run in parallel, each well within the box.
   mutants:
-    name: Mutation testing
+    name: Mutation testing (shard ${{ matrix.shard }})
     needs: tasks
     if: contains(fromJSON(needs.tasks.outputs.run), 'mutants')
     runs-on: ubuntu-26.04
     timeout-minutes: 90
+    strategy:
+      # A slow or red shard must not cancel the others; each reports its own.
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
 
     steps:
       - name: Checkout code
@@ -383,18 +389,21 @@ jobs:
           tool: cargo-mutants@27.1.0,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
 
-      # `just mutants` scopes the run to the state machine. It fails when
-      # cargo-mutants itself does, for example when the tests already fail
-      # without a mutation, and when no mutant was caught, since such a run
-      # proves nothing.
-      - name: Mutate the state machine
-        run: just mutants
+      # `just mutants` scopes the run to the state machine and the decision
+      # cores and splits it into four shards. It fails when cargo-mutants itself
+      # does, for example when the tests already fail without a mutation; a
+      # single shard may catch no mutant, so the "proves nothing" guard applies
+      # only to a whole, unsharded sweep.
+      - name: Mutate the decision cores
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: just mutants "$SHARD" 4
 
       - name: Upload the mutants report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
-          name: mutants-report
+          name: mutants-report-${{ matrix.shard }}
           path: target/mutants/
           if-no-files-found: error
           retention-days: 30
