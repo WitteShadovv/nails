@@ -57,8 +57,9 @@ pub enum ActivateResult<'a> {
 }
 
 /// What a cancelled activation reports, whether the operator answered `n` at
-/// the prompt or pressed Ctrl+C at it or later in the entry.
-pub const CANCELLED: &str = "Activation cancelled; nothing was changed.";
+/// the prompt or pressed Ctrl+C at it or later in the entry. From the catalogue,
+/// so the CLI and the window show the same words.
+pub const CANCELLED: &str = nails_core::catalog::CANCEL_ACTIVATE.text;
 
 /// `duration` (in seconds) as `status` shows the recorded activation time.
 fn shown_duration(duration: f64) -> String {

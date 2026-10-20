@@ -151,8 +151,8 @@ pub fn execute(
     ExitStatus::Ok
 }
 
-/// The notice of an answer other than yes at the prompt.
-const CANCELLED: &str = "Reset cancelled; nothing was removed.";
+/// The notice of an answer other than yes at the prompt, from the catalogue.
+const CANCELLED: &str = nails_core::catalog::CANCEL_RESET.text;
 
 /// Ask before deleting ([`confirm_reset`]), on stderr (`err`) so stdout stays
 /// clean for `--json`. On an answer other than yes, report the cancel, which

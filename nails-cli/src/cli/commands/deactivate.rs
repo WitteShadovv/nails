@@ -138,8 +138,8 @@ pub fn execute(
     }
 }
 
-/// The notice of an answer other than yes at the prompt.
-const CANCELLED: &str = "Deactivation cancelled; nothing was changed.";
+/// The notice of an answer other than yes at the prompt, from the catalogue.
+const CANCELLED: &str = nails_core::catalog::CANCEL_DEACTIVATE.text;
 
 /// Ask before deactivating ([`confirm_deactivate`]), on stderr (`err`) so
 /// stdout stays clean. On an answer other than yes, report the cancel, which
