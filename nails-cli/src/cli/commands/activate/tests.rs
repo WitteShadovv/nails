@@ -364,9 +364,10 @@ fn answer_to(input: &[u8], cancelled: bool) -> super::Answer {
 fn the_answer_decides_how_the_activation_ends() {
     use crate::cli::output::ExitStatus;
     assert_eq!(super::stop_status(super::Answer::Yes), None);
+    // A "no" cancels with 130, the same as a Ctrl+C: both read as a cancel.
     assert_eq!(
         super::stop_status(super::Answer::No).map(ExitStatus::code),
-        Some(1)
+        Some(130)
     );
     assert_eq!(
         super::stop_status(super::Answer::Cancelled).map(ExitStatus::code),
