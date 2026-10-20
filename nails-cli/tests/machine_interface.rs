@@ -254,7 +254,10 @@ fn check_json_matches_the_schema() {
     let (_dir, config) = isolated_config();
     let (code, value) = run_json(&config, &["check", "--overlay-only"]);
 
-    assert_eq!(code, 4, "a folder root refuses the readiness check: {value}");
+    assert_eq!(
+        code, 4,
+        "a folder root refuses the readiness check: {value}"
+    );
     assert_valid("check", &value);
     assert_eq!(value["command"], "check");
     // A refused check is exit 4, so the envelope is not ok; the readiness report
