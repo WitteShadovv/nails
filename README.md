@@ -25,6 +25,8 @@ over the whole decoy root, with every change written to an encrypted hidden
 volume you provide, and soft-reboots back to the plain decoy when you are done.
 Nothing that starts the hidden session is installed on the decoy.
 
+Website and documentation: [nails.run](https://nails.run)
+
 NixOS is the first-class platform (a declarative hidden configuration is built
 and entered in the same step); Debian 13, Ubuntu 24.04 and Ubuntu 26.04 run the
 same session with whatever the hidden `/etc` holds.
