@@ -35,6 +35,15 @@ pub fn println_tolerating_broken_pipe(line: &str) {
     let _ = write_line_tolerating_broken_pipe(&mut stdout, line);
 }
 
+/// Print `text` on stdout with no trailing newline, flushing and tolerating a
+/// broken pipe. The pipe-safe replacement for `print!` of a pre-formatted string
+/// that already carries its own newlines (as `config` builds its envelope line).
+pub fn print_tolerating_broken_pipe(text: &str) {
+    let mut stdout = io::stdout().lock();
+    let _ = write!(stdout, "{text}");
+    let _ = stdout.flush();
+}
+
 /// Print `line` and a trailing newline on stderr, tolerating a broken pipe. The
 /// pipe-safe replacement for `eprintln!`.
 ///
