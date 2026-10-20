@@ -154,6 +154,31 @@ impl CoredumpSettings {
     }
 }
 
+/// Whether `kernel.core_pattern` hands crashing processes to systemd-coredump,
+/// by either transport it uses:
+///
+/// - the classic pipe `|/path/to/systemd-coredump ...`, on every kernel;
+/// - the kernel coredump socket (Linux 6.17+ with systemd 262):
+///   `systemd-coredump-register.service` sets
+///   `kernel.core_pattern=@@/run/systemd/coredumpd/kernel`, where a leading `@`
+///   selects the socket transport and the second `@` is the request protocol.
+///   Older systemd keeps the per-dump `systemd-coredump@.service` pipe form.
+///
+/// When it does, `coredump.conf` decides what reaches the disk
+/// ([`CoredumpSettings`]). A pattern that pipes or sockets to any other handler
+/// is that handler's business, so it is left alone, as is the plain-file form,
+/// which [`super`] reports directly.
+pub(super) fn pattern_targets_systemd_coredump(pattern: &str) -> bool {
+    if let Some(helper) = pattern.strip_prefix('|') {
+        return helper.contains("systemd-coredump");
+    }
+    if let Some(socket) = pattern.strip_prefix('@') {
+        let socket = socket.strip_prefix('@').unwrap_or(socket);
+        return socket.contains("systemd") && socket.contains("coredump");
+    }
+    false
+}
+
 /// A size as systemd's `parse_size()` reads it with base 1024, the way
 /// `ProcessSizeMax=` is parsed: one or more `<number>[.<fraction>]` parts, each
 /// with an optional suffix `E`, `P`, `T`, `G`, `M`, `K` or `B` (in that order
@@ -319,6 +344,29 @@ mod tests {
             settings("[Coredump]\nStorage=none\nProcessSizeMax=0\n").finding(true),
             None
         );
+    }
+
+    #[test]
+    fn both_the_pipe_and_the_socket_form_count_as_systemd_coredump() {
+        for pattern in [
+            "|/usr/lib/systemd/systemd-coredump %P %u %g %s %t %c %h",
+            "|/run/current-system/sw/lib/systemd/systemd-coredump %P",
+            // systemd 262 / Linux 6.17+ kernel coredump socket.
+            "@@/run/systemd/coredumpd/kernel",
+            "@/run/systemd/coredump.socket",
+        ] {
+            assert!(pattern_targets_systemd_coredump(pattern), "{pattern:?}");
+        }
+        for pattern in [
+            "core",
+            "",
+            "/var/crash/core.%e.%p",
+            "|/bin/false",
+            // a socket to some other collector is that collector's business.
+            "@/run/apport/apport.socket",
+        ] {
+            assert!(!pattern_targets_systemd_coredump(pattern), "{pattern:?}");
+        }
     }
 
     #[test]

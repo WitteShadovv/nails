@@ -14,16 +14,19 @@
 //! `--accept-persistent-decoy` or `accept_persistent_decoy = true`):
 //! - systemd-journald `Storage=` persisting the journal to `/var/log/journal`
 //!   on the decoy disk (see [`super::journald_storage`]),
-//! - an active `rsyslog`, `syslog-ng` or `auditd`, each of which writes to the
-//!   decoy disk before the overlays are mounted.
+//! - an active syslog or audit daemon (`rsyslog`, `syslog-ng`, `metalog`,
+//!   `auditd`), each of which writes to the decoy disk before the overlays are
+//!   mounted, detected as a unit, a template instance or a process (see
+//!   [`loggers`]).
 //!
 //! Warn (surface the hazard, never block):
 //! - an atime policy that records read access on the decoy (`strictatime` /
 //!   missing `noatime`),
 //! - crash-dump channels that persist memory to the decoy disk: a disk
-//!   `kernel.core_pattern`, a systemd-coredump that is not set to
-//!   `Storage=none` with `ProcessSizeMax=0` (see [`coredump`]), registered
-//!   pstore records, or an armed kdump,
+//!   `kernel.core_pattern`, a systemd-coredump (reached by its pipe or its
+//!   kernel coredump socket) that is not set to `Storage=none` with
+//!   `ProcessSizeMax=0` (see [`coredump`]), registered pstore records, or an
+//!   armed kdump (Ubuntu arms kdump-tools by default from 24.10),
 //! - the NixOS `nixos-upgrade.timer` (which can rebuild and touch EFI NVRAM
 //!   from the decoy profile while the hidden session runs),
 //! - sudo logging in sudoers (`logfile=`, I/O logging with `log_input`,
@@ -45,15 +48,12 @@ use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
 mod coredump;
+mod loggers;
 mod sudo_logging;
 pub use sudo_logging::{SudoLogging, scan_sudoers};
 
 /// `/proc/self/mountinfo`, the authoritative mount table.
 const MOUNTINFO: &str = "/proc/self/mountinfo";
-/// Directory systemd populates with an `invocation:<unit>` marker per *active*
-/// unit, relative to the root. Its presence is a write-free way to tell a
-/// running unit from an installed-but-stopped one.
-const INVOCATION_DIR: &str = "run/systemd/units";
 /// Kernel core-dump pattern.
 const CORE_PATTERN: &str = "/proc/sys/kernel/core_pattern";
 /// Persistent crash-record store exposed by the pstore filesystem.
@@ -95,26 +95,6 @@ impl DecoyPersistenceCheck {
         self
     }
 
-    /// Whether a systemd unit is active, inferred from its runtime invocation
-    /// marker. A stopped-but-installed unit has no marker, so this does not fire
-    /// on a package that ships a disabled service.
-    ///
-    /// Recent systemd no longer writes that marker for every unit, so a unit
-    /// whose cgroup reports a live process (`populated 1` in its
-    /// `cgroup.events` under `system.slice`) counts as active too.
-    fn unit_active<F: Filesystem>(fs: &F, root: &Path, unit: &str) -> bool {
-        let marker = root.join(INVOCATION_DIR).join(format!("invocation:{unit}"));
-        if fs.path_exists(&marker).unwrap_or(false) {
-            return true;
-        }
-        let events = root
-            .join("sys/fs/cgroup/system.slice")
-            .join(unit)
-            .join("cgroup.events");
-        fs.read_file_content(&events)
-            .is_ok_and(|content| content.lines().any(|line| line == "populated 1"))
-    }
-
     /// Collect the fail-closed findings (persistent log sinks on the decoy).
     fn blockers<F: Filesystem>(fs: &F, root: &Path) -> Vec<String> {
         let mut out = Vec::new();
@@ -128,22 +108,7 @@ impl DecoyPersistenceCheck {
                     .to_string(),
             );
         }
-        if Self::unit_active(fs, root, "rsyslog.service") {
-            out.push("rsyslog is active and writes logs to the decoy disk".to_string());
-        } else if Self::unit_active(fs, root, "syslog.service") {
-            // NixOS runs rsyslogd as syslog.service; elsewhere the name is the
-            // conventional alias of whichever syslog daemon is installed.
-            out.push(
-                "a syslog daemon (syslog.service) is active and writes logs to the decoy disk"
-                    .to_string(),
-            );
-        }
-        if Self::unit_active(fs, root, "syslog-ng.service") {
-            out.push("syslog-ng is active and writes logs to the decoy disk".to_string());
-        }
-        if Self::unit_active(fs, root, "auditd.service") {
-            out.push("auditd is active and writes audit records to the decoy disk".to_string());
-        }
+        out.extend(loggers::active_logger_blockers(fs, root));
         out
     }
 
@@ -194,7 +159,7 @@ impl DecoyPersistenceCheck {
         }
 
         out.extend(Self::crash_posture(fs, root, is_nixos));
-        out.extend(scan_sudoers(fs, Path::new(sudo_logging::SUDOERS)).findings());
+        out.extend(sudo_logging::decoy_sudo_findings(fs, root));
 
         if is_nixos
             && fs
@@ -213,19 +178,24 @@ impl DecoyPersistenceCheck {
 
     /// Crash-dump channels that can persist memory contents to the decoy disk.
     ///
-    /// systemd-coredump's settings are read only when the kernel pipes core
-    /// dumps to it: a `coredump.conf` left behind while another helper or a
-    /// plain pattern takes the dumps decides nothing.
+    /// systemd-coredump's settings are read only when the kernel hands dumps to
+    /// it, by its pipe or its kernel coredump socket (see [`coredump`]): a
+    /// `coredump.conf` left behind while another helper or a plain pattern takes
+    /// the dumps decides nothing.
     fn crash_posture<F: Filesystem>(fs: &F, root: &Path, is_nixos: bool) -> Vec<String> {
         let mut out = Vec::new();
 
         if let Ok(pattern) = fs.read_file_content(Path::new(CORE_PATTERN)) {
             let pattern = pattern.trim();
-            if let Some(helper) = pattern.strip_prefix('|') {
-                if helper.contains("systemd-coredump") {
-                    out.extend(coredump::CoredumpSettings::read(fs, root).finding(is_nixos));
-                }
-            } else if !pattern.is_empty() && pattern != "core" {
+            if coredump::pattern_targets_systemd_coredump(pattern) {
+                out.extend(coredump::CoredumpSettings::read(fs, root).finding(is_nixos));
+            } else if !pattern.is_empty()
+                && pattern != "core"
+                && !pattern.starts_with('|')
+                && !pattern.starts_with('@')
+            {
+                // A plain path (not a pipe or a socket to another handler): the
+                // kernel writes the core straight to the decoy disk.
                 out.push(format!(
                     "kernel.core_pattern writes core dumps to the decoy disk ({pattern})"
                 ));
@@ -244,13 +214,23 @@ impl DecoyPersistenceCheck {
             );
         }
 
-        if fs
+        // kdump: a loaded crash kernel dumps memory to the decoy disk on panic.
+        // Ubuntu arms kdump-tools by default from 24.10 (so 26.04); Fedora and
+        // others ship it as kdump.service. Catch the loaded crash kernel and the
+        // enabled service alike.
+        let kdump_loaded = fs
             .read_file_content(Path::new(KEXEC_CRASH_LOADED))
             .map(|v| v.trim() == "1")
-            .unwrap_or(false)
+            .unwrap_or(false);
+        if kdump_loaded
+            || loggers::unit_active(fs, root, "kdump-tools.service")
+            || loggers::unit_active(fs, root, "kdump.service")
         {
             out.push(
-                "kdump is armed; a kernel crash dumps memory to the configured target".to_string(),
+                "kdump is armed; a kernel crash dumps memory (hidden-session contents included) \
+                 to the configured target on the decoy disk. Disable kdump on the decoy \
+                 (Ubuntu: kdump-tools; Fedora: kdump)"
+                    .to_string(),
             );
         }
 
