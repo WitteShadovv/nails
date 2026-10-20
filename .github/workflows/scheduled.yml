@@ -36,6 +36,7 @@ on:
           - stress
           - benchmarks
           - mutants
+          - distro-images
           - lockfile
 
 permissions:
@@ -74,7 +75,7 @@ jobs:
             # The Cargo.lock refresh is opt-in: it runs only on its monthly
             # schedule or when dispatched by name, because it opens a pull
             # request.
-            run='["advisories","fetcher-canary","reproducibility","cache-warm","stress","benchmarks","mutants"]'
+            run='["advisories","fetcher-canary","reproducibility","cache-warm","stress","benchmarks","mutants","distro-images"]'
           else
             run=$(jq -cn --arg task "$TASK" '[$task]')
           fi
@@ -408,6 +409,26 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  # Watches the pinned upstream cloud images the distro tests boot. It fails
+  # before an enabled entry's pin is due to lapse from its download mirror, so
+  # there is time to repin, and when an enabled entry's image URL stops
+  # resolving. The staged (disabled) Fedora and Arch entries are not a failure.
+  distro-images-link-check:
+    name: Distro image links
+    needs: tasks
+    if: contains(fromJSON(needs.tasks.outputs.run), 'distro-images')
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
+      - name: Check the pinned image links and expiry dates
+        run: python3 -m ci.distro_images link-check
+
   # Monthly transitive refresh: #54's fixes were lockfile-only bumps that
   # Dependabot's direct-dependency updates never proposed. `cargo update` moves
   # every dependency to the newest version its requirement allows, then the
@@ -537,7 +558,7 @@ jobs:
   # broken build or a missing result.
   report-ci:
     name: Report CI status
-    needs: [tasks, fetcher-canary, reproducibility, cache-warm, stress, benchmarks, mutants]
+    needs: [tasks, fetcher-canary, reproducibility, cache-warm, stress, benchmarks, mutants, distro-images-link-check]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-26.04
     timeout-minutes: 5
