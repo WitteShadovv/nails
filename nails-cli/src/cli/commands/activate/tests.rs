@@ -358,8 +358,8 @@ fn answer_to(input: &[u8], cancelled: bool) -> super::Answer {
     )
 }
 
-/// `n` ends the activation with exit 1, Ctrl+C at the prompt with 130, the
-/// code of every other signal cancel; only `y` goes on.
+/// `n` ends the activation with exit 130 (cancelled), the same as Ctrl+C at the
+/// prompt or any other signal cancel; only `y` goes on.
 #[test]
 fn the_answer_decides_how_the_activation_ends() {
     use crate::cli::output::ExitStatus;

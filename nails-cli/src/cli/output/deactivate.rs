@@ -5,8 +5,8 @@
 //!
 //! Deactivation enqueues the soft-reboot back to the decoy (or a power-off),
 //! so its machine-readable result is a small typed envelope printed before the
-//! switch, and its failures are mapped to a structured error whose `hint`
-//! carries the remedy.
+//! switch, and its failures are mapped to a structured error that folds the
+//! remedy into its `message` (the error body carries no separate hint field).
 
 use nails_core::NailsError;
 use serde::Serialize;
@@ -33,8 +33,9 @@ pub fn print_deactivate_json(poweroff: bool) {
     Envelope::success("deactivate", data).print();
 }
 
-/// Map a deactivation failure to a structured error, folding any multi-line
-/// library message into a one-line message plus a `hint`.
+/// Map a deactivation failure to a structured error: a stable code, a `message`
+/// that folds the remedy in after the library explanation (there is no separate
+/// hint field), and a typed `next` command where one applies.
 pub fn deactivate_error_body(error: &NailsError) -> ErrorBody {
     match error {
         NailsError::PermissionDenied(msg) => {
