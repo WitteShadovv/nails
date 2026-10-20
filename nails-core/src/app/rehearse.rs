@@ -116,31 +116,23 @@ pub fn phase_name(state: Option<&RehearsalState>) -> &'static str {
 /// The guided next step for where the rehearsal stands, run `here`. Each nails
 /// command is named with the real binary path, through the one renderer.
 pub fn next_step(state: Option<&RehearsalState>, here: &Here) -> String {
+    use crate::catalog;
     use crate::next_step::{NextStep, sudo_line};
     match state {
-        None if here.session.is_some() => {
-            format!(
-                "Step 1 of 3: run `{}` in this hidden session.",
-                sudo_line(NextStep::RehearsePlant)
-            )
+        None if here.session.is_some() => catalog::REHEARSE_GUIDE_PLANT_ACTIVE
+            .render(&[("command", sudo_line(NextStep::RehearsePlant).as_str())]),
+        None => catalog::REHEARSE_GUIDE_PLANT_INACTIVE
+            .render(&[("command", sudo_line(NextStep::RehearsePlant).as_str())]),
+        Some(s) if s.phase == Phase::Planted && s.planted_in_this_session(here) => {
+            catalog::REHEARSE_GUIDE_SCAN_NEXT_SESSION.render(&[
+                ("deactivate", sudo_line(NextStep::Deactivate).as_str()),
+                ("scan", sudo_line(NextStep::RehearseScan).as_str()),
+            ])
         }
-        None => format!(
-            "Step 1 of 3: activate a hidden session, then run `{}`.",
-            sudo_line(NextStep::RehearsePlant)
-        ),
-        Some(s) if s.phase == Phase::Planted && s.planted_in_this_session(here) => format!(
-            "Step 2 of 3: deactivate as usual (`{}`, it soft-reboots back to the decoy), then \
-             unlock and mount the hidden volume again and run `{}`.",
-            sudo_line(NextStep::Deactivate),
-            sudo_line(NextStep::RehearseScan)
-        ),
-        Some(s) if s.phase == Phase::Planted => {
-            format!("Step 3 of 3: run `{}`.", sudo_line(NextStep::RehearseScan))
-        }
-        Some(_) => format!(
-            "Done. Scan again any time, or run `{}` to remove the rehearsal from the hidden volume.",
-            sudo_line(NextStep::RehearseReset)
-        ),
+        Some(s) if s.phase == Phase::Planted => catalog::REHEARSE_GUIDE_SCAN_NOW
+            .render(&[("command", sudo_line(NextStep::RehearseScan).as_str())]),
+        Some(_) => catalog::REHEARSE_GUIDE_DONE
+            .render(&[("command", sudo_line(NextStep::RehearseReset).as_str())]),
     }
 }
 
