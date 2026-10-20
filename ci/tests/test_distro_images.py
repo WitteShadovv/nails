@@ -9,8 +9,8 @@ import unittest
 from ci import distro_images as di
 
 # The empty-string SHA256, as a cross-check of the hex -> SRI conversion.
-EMPTY_HEX = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-EMPTY_SRI = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="
+EMPTY_HEX = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"  # pragma: allowlist secret
+EMPTY_SRI = "sha256-47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU="  # pragma: allowlist secret
 
 THE_DAY = datetime.date(2026, 10, 20)
 
