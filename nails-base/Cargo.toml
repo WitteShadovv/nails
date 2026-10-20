@@ -47,6 +47,10 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 # The mountinfo parser and the /proc helpers the process runner uses.
 nails-teardown = { path = "../nails-teardown" }
+# The machine-readable contract types. The reporter's event adapter produces
+# the typed progress events a front end watches, and those shapes live in the
+# contract crate so a consumer can read the stream without linking the tool.
+nails-api = { path = "../nails-api" }
 
 [dev-dependencies]
 proptest = { workspace = true }

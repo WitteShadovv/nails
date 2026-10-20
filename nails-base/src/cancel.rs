@@ -30,7 +30,22 @@
 //!
 //! SIGKILL and power loss remain out of scope by design — no handler can run for
 //! them — and are covered instead by state reconciliation on the next run.
+//!
+//! ## A caller's cancel token
+//!
+//! A signal is not the only way an operation is asked to stop. A front end that
+//! drives an activation over a pipe — a window talking to its root helper — must
+//! cancel the activation if that pipe closes before the point of no return (the
+//! window died; nobody is watching the switch), and must let it run on once the
+//! switch has begun. [`CancelToken`] gives such a caller a handle it can trip,
+//! on its own or from a [closed pipe](CancelToken::cancel_on_closed_pipe). An
+//! installed token ([`CancelToken::install`]) is read by [`checkpoint`] exactly
+//! as the signal flag is, so the before/after-the-point-of-no-return behaviour
+//! is the same: the activation path checkpoints up to the last boundary before
+//! the state is recorded, and nothing after it, so a trip before that boundary
+//! unwinds through the rollback guards and a trip after it is never observed.
 
+use std::io::Read;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Once};
@@ -101,14 +116,123 @@ thread_local! {
     static TEST_CANCEL: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Whether a cancel signal (SIGINT or SIGTERM) has been received.
+thread_local! {
+    /// The caller's cancel token installed on this thread, if any. Thread-local
+    /// for the same reason as the test override: an activation runs on its
+    /// caller's thread, so only that thread's checkpoints observe the caller's
+    /// token, and a token one operation installs never cancels another running
+    /// in parallel. The flag behind it is an `Arc`, so a watcher thread (a
+    /// closed-pipe watcher) can still trip it from outside.
+    static CALLER_TOKEN: std::cell::RefCell<Option<Arc<AtomicBool>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn caller_token_cancelled() -> bool {
+    CALLER_TOKEN.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::SeqCst))
+    })
+}
+
+/// Whether cancellation has been requested: by a signal (SIGINT or SIGTERM), or
+/// by a [`CancelToken`] a caller installed on this thread.
 #[must_use]
 pub fn is_cancelled() -> bool {
     #[cfg(any(test, feature = "test-hooks"))]
     if TEST_CANCEL.with(std::cell::Cell::get) {
         return true;
     }
-    cancel_flag().load(Ordering::SeqCst)
+    cancel_flag().load(Ordering::SeqCst) || caller_token_cancelled()
+}
+
+/// A cancellation handle a caller can trip to stop a mutating operation at its
+/// next [`checkpoint`], just as a SIGINT would.
+///
+/// Clones share one flag, so a background watcher (see
+/// [`cancel_on_closed_pipe`](Self::cancel_on_closed_pipe)) can hold one clone
+/// and trip the token while the operation holds another. A token takes effect
+/// only while it is [installed](Self::install) on the thread the operation runs
+/// on; the returned guard uninstalls it when dropped, so a later operation on
+/// the same thread is not affected by a token left behind.
+#[derive(Clone, Debug)]
+pub struct CancelToken {
+    flag: Arc<AtomicBool>,
+}
+
+impl CancelToken {
+    /// A fresh, untripped token.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            flag: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    /// Request cancellation. Idempotent: every later [`checkpoint`] on the
+    /// thread this token is installed on then fails, as a received signal does.
+    pub fn cancel(&self) {
+        self.flag.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether this token has been tripped.
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.flag.load(Ordering::SeqCst)
+    }
+
+    /// Install this token on the current thread, so [`checkpoint`] and
+    /// [`is_cancelled`] observe it until the returned guard is dropped. The
+    /// signal flag is observed regardless; this only adds the caller's token.
+    #[must_use = "the token is only installed while the guard is alive"]
+    pub fn install(&self) -> CancelScope {
+        let previous = CALLER_TOKEN.with(|slot| slot.borrow_mut().replace(Arc::clone(&self.flag)));
+        CancelScope { previous }
+    }
+
+    /// Trip this token when `reader` reaches end of input, which a pipe does
+    /// when its other end closes. Spawns a detached thread that blocks reading
+    /// and returns at once; the thread trips the token on end-of-input or a
+    /// read error and then exits. Any bytes that arrive first are read and
+    /// discarded, so a control pipe may carry traffic without cancelling — only
+    /// its close does. Combined with [`install`](Self::install), a window that
+    /// dies before the point of no return cancels the activation; after it,
+    /// there is no checkpoint left to observe the trip, so the switch goes on.
+    pub fn cancel_on_closed_pipe<R: Read + Send + 'static>(&self, mut reader: R) {
+        let flag = Arc::clone(&self.flag);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 64];
+            loop {
+                match reader.read(&mut buf) {
+                    Ok(0) | Err(_) => {
+                        flag.store(true, Ordering::SeqCst);
+                        return;
+                    }
+                    Ok(_) => {}
+                }
+            }
+        });
+    }
+}
+
+impl Default for CancelToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Uninstalls the caller's cancel token from the current thread when dropped,
+/// restoring whatever token was installed before.
+#[must_use = "the token is only installed while the scope is alive"]
+pub struct CancelScope {
+    previous: Option<Arc<AtomicBool>>,
+}
+
+impl Drop for CancelScope {
+    fn drop(&mut self) {
+        let previous = self.previous.take();
+        CALLER_TOKEN.with(|slot| *slot.borrow_mut() = previous);
+    }
 }
 
 /// Fail the current operation if cancellation has been requested.
@@ -176,5 +300,80 @@ mod tests {
         // so this guards against a regression that would make the call fail.
         install_handlers();
         install_handlers();
+    }
+
+    #[test]
+    fn an_installed_token_fails_the_checkpoint_only_once_tripped() {
+        testing::reset();
+        let token = CancelToken::new();
+        let _scope = token.install();
+        // Installed but untripped: the checkpoint still passes.
+        assert!(checkpoint().is_ok());
+        assert!(!is_cancelled());
+
+        token.cancel();
+        assert!(token.is_cancelled());
+        assert!(is_cancelled());
+        assert!(matches!(checkpoint(), Err(NailsError::Cancelled)));
+    }
+
+    #[test]
+    fn the_token_is_forgotten_once_its_scope_ends() {
+        testing::reset();
+        let token = CancelToken::new();
+        {
+            let _scope = token.install();
+            token.cancel();
+            assert!(is_cancelled());
+        }
+        // The scope is dropped, so the thread no longer observes the token even
+        // though the token itself is still tripped.
+        assert!(token.is_cancelled());
+        assert!(!is_cancelled());
+        assert!(checkpoint().is_ok());
+    }
+
+    #[test]
+    fn a_closed_pipe_trips_the_token() {
+        use std::os::unix::net::UnixStream;
+
+        testing::reset();
+        let (writer, reader) = UnixStream::pair().expect("socket pair");
+        let token = CancelToken::new();
+        token.cancel_on_closed_pipe(reader);
+        assert!(!token.is_cancelled());
+
+        // Close the writing end: the watcher sees end-of-input and trips.
+        drop(writer);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !token.is_cancelled() {
+            assert!(std::time::Instant::now() < deadline, "token never tripped");
+            std::thread::yield_now();
+        }
+    }
+
+    #[test]
+    fn traffic_on_the_pipe_does_not_cancel_before_it_closes() {
+        use std::io::Write;
+        use std::os::unix::net::UnixStream;
+
+        testing::reset();
+        let (mut writer, reader) = UnixStream::pair().expect("socket pair");
+        let token = CancelToken::new();
+        token.cancel_on_closed_pipe(reader);
+
+        writer.write_all(b"ping").expect("write");
+        writer.flush().expect("flush");
+        // A short window in which, had traffic been treated as a close, the
+        // token would already be tripped.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!token.is_cancelled());
+
+        drop(writer);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !token.is_cancelled() {
+            assert!(std::time::Instant::now() < deadline, "token never tripped");
+            std::thread::yield_now();
+        }
     }
 }

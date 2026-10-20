@@ -82,11 +82,13 @@ and `nails-core/tests/crate_graph.rs` pins them:
 flowchart TD
     cli[nails-cli] --> core[nails-core]
     cli --> teardown[nails-teardown]
+    cli --> api[nails-api]
     core --> forensics[nails-forensics]
     core --> session[nails-session]
     core --> platform[nails-platform]
     core --> base[nails-base]
     core --> teardown
+    core --> api
     forensics --> session
     forensics --> platform
     forensics --> base
@@ -96,6 +98,7 @@ flowchart TD
     session --> teardown
     platform --> base
     base --> teardown
+    base --> api
 ```
 
 `nails-cli` reaches `nails-teardown` directly because `main` runs the emergency
@@ -139,6 +142,12 @@ and the transition step before anything else is initialised.
   time, and the cgroup, pidfd and shell kills. It depends on
   `rustix`, `libc`, `serde` and `serde_json` only, so `main` can run the emergency and the
   transition before clap, the configuration or tracing exist.
+- **`nails-api`** holds the machine-readable contract the CLI writes under
+  `--json` — the envelope, the error body, the exit codes, the result payloads
+  and the progress-event stream — as types that depend on `serde` alone and on
+  no NAILS crate, so a window or another consumer can link the wire shapes
+  without the tool. `nails-base` reaches it for the event types its progress
+  reporter adapts into; `nails-core` and `nails-cli` reach it for the rest.
 
 The logic lives in the libraries rather than in the binary, so the whole
 threat-relevant surface can be tested without going through the binary or a
