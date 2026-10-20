@@ -38,7 +38,7 @@ use crate::Result;
 use crate::filesystem::Filesystem;
 
 mod config_layer;
-mod debian;
+mod family;
 mod detect;
 mod discover;
 mod fhs;
@@ -109,7 +109,7 @@ impl HostProfile {
     pub fn name(&self) -> String {
         let distribution = match (self.kind, self.id.as_deref()) {
             (PlatformKind::NixOs, _) => "NixOS",
-            (_, Some(id)) => debian::label(id).unwrap_or(id),
+            (_, Some(id)) => family::label(id).unwrap_or(id),
             (_, None) => return "this host".to_string(),
         };
         match self.version_id.as_deref() {

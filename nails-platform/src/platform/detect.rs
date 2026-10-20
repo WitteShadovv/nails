@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use super::debian::{self, FamilySupport};
+use super::family::{self, FamilySupport};
 use super::{HostProfile, PlatformKind};
 use crate::Result;
 use crate::filesystem::Filesystem;
@@ -253,7 +253,7 @@ fn classify(
         return Verdict::admitted(PlatformKind::NixOs, None);
     }
 
-    let support_warning = match debian::classify_family(
+    let support_warning = match family::classify_family(
         fields.id.as_deref(),
         &fields.id_like,
         fields.version_id.as_deref(),
@@ -263,7 +263,7 @@ fn classify(
         FamilySupport::Refused(reason) => return Verdict::refused(reason),
     };
     if usr_merge == UsrMerge::NotMerged {
-        return Verdict::refused(debian::USR_MERGE_REFUSAL.to_string());
+        return Verdict::refused(family::USR_MERGE_REFUSAL.to_string());
     }
     Verdict::admitted(PlatformKind::Fhs, support_warning)
 }
