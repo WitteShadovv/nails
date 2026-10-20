@@ -199,6 +199,10 @@ pub fn build_registry<F: Filesystem>(
     // Warns, never fails: deniability hazards of the detected backend.
     registry.add_check(Box::new(BackendDetectCheck::new(hidden_root.clone())));
 
+    // Check-time advice, keyed on the installed cryptsetup version: it cannot
+    // open a VeraCrypt volume made with Argon2id, so one must use PBKDF2.
+    registry.add_check(Box::new(crate::preflight::CryptsetupArgon2idCheck));
+
     let layout = crate::session::Layout::new(&hidden_root);
     let storage_check = StorageReadinessCheck::new(
         hidden_root.clone(),

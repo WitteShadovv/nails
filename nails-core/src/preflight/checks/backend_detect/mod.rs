@@ -14,8 +14,10 @@ use crate::filesystem::mountinfo::{MountEntry, parse_mountinfo};
 use crate::{Filesystem, Result};
 use std::path::{Path, PathBuf};
 
+mod argon2;
 mod hazards;
 mod luks2;
+pub use argon2::CryptsetupArgon2idCheck;
 use hazards::hazards;
 use luks2::{Luks2Metadata, read_luks2_header};
 
