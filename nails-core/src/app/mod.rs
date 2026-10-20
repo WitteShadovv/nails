@@ -19,6 +19,7 @@
 pub mod config;
 pub mod config_view;
 pub mod deactivate;
+pub mod discard_upper;
 pub mod emergency;
 pub mod lock;
 pub mod recover;
