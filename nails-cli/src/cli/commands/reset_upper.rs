@@ -6,6 +6,7 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use nails_core::app::discard_upper::DiscardData;
 use nails_core::output::Mark;
 
 use crate::cli::args::ResetUpperArgs;
@@ -13,15 +14,6 @@ use crate::cli::output::envelope::{
     Envelope, EnvelopePrint, ErrorBody, report_cancelled, report_error,
 };
 use crate::cli::output::{ExitStatus, OutputSettings};
-
-/// The `data` payload for `reset-upper --json`.
-#[derive(Debug, serde::Serialize)]
-struct ResetUpperData {
-    /// The path whose hidden copy was deleted.
-    target: String,
-    /// The directories that were removed (empty when there was nothing to do).
-    removed: Vec<String>,
-}
 
 /// Execute the reset-upper command.
 ///
@@ -45,7 +37,7 @@ pub fn execute(
     args: &ResetUpperArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
-    use nails_core::{NailsManager, RealFilesystem};
+    use nails_core::NailsError;
 
     let json = settings.is_json();
 
@@ -55,21 +47,15 @@ pub fn execute(
         Ok(loaded) => loaded,
         Err(status) => return status,
     };
-    let config = loaded.into_config();
-
-    let state_path = config.state_file_path.clone();
-    let lock_state_path = state_path.clone();
     let target = args.target.clone();
-
-    let manager =
-        NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
+    let ready = nails_core::app::discard_upper::prepare(env, loaded.into_config());
 
     // Hold the exclusive state lock while we plan and delete, so a concurrent
     // activation cannot mount the target out from under the reset.
     let _state_lock = match super::acquire_state_lock_or_report(
-        &manager.config().hidden_volume_root,
+        ready.hidden_root(),
         nails_core::hidden_root::Allow::Nothing,
-        &lock_state_path,
+        ready.state_path(),
         "reset-upper",
         json,
     ) {
@@ -77,10 +63,9 @@ pub fn execute(
         Err(status) => return status,
     };
 
-    let plan = match manager.plan_reset_upper(&target) {
+    let plan = match ready.plan(&target) {
         Ok(plan) => plan,
         Err(e) => {
-            use nails_core::NailsError;
             let status = match e {
                 NailsError::InvalidState(_) => ExitStatus::InvalidState,
                 _ => ExitStatus::Failed,
@@ -96,14 +81,7 @@ pub fn execute(
 
     if plan.is_empty() {
         if json {
-            Envelope::success(
-                "reset-upper",
-                ResetUpperData {
-                    target: plan.target.display().to_string(),
-                    removed: Vec::new(),
-                },
-            )
-            .print();
+            Envelope::success("reset-upper", DiscardData::from_plan(&plan)).print();
         } else {
             println!(
                 "{}",
@@ -141,7 +119,7 @@ pub fn execute(
         }
     }
 
-    if let Err(e) = manager.apply_reset_upper(&plan) {
+    if let Err(e) = ready.apply(&plan) {
         return report_error(
             json,
             "reset-upper",
@@ -150,21 +128,8 @@ pub fn execute(
         );
     }
 
-    let removed: Vec<String> = plan
-        .removals()
-        .iter()
-        .map(|p| p.display().to_string())
-        .collect();
-
     if json {
-        Envelope::success(
-            "reset-upper",
-            ResetUpperData {
-                target: plan.target.display().to_string(),
-                removed,
-            },
-        )
-        .print();
+        Envelope::success("reset-upper", DiscardData::from_plan(&plan)).print();
     } else {
         let style = settings.stdout_style();
         println!(
@@ -174,8 +139,8 @@ pub fn execute(
                 format_args!("Reset the hidden upper for {}", plan.target.display())
             )
         );
-        for path in &removed {
-            println!("  removed {path}");
+        for path in plan.removals() {
+            println!("  removed {}", path.display());
         }
         println!(
             "  {} falls back to its decoy on the next activation",
