@@ -170,21 +170,12 @@ fn nixos_builder_for(target: nails_core::HostTarget) -> Option<nails_core::NixOS
     }
 }
 
-/// Directory holding the state file (and its `.lock`) on the hidden volume.
-fn state_lock_dir(state_file_path: &Path) -> &Path {
-    state_file_path.parent().unwrap_or_else(|| Path::new("."))
-}
-
 /// Take the exclusive state lock for an ordinary mutating command, or report.
 ///
-/// A concurrent `nails` operation holds this lock, so a second one fails fast
-/// with a message naming the holder PID rather than racing it over the mounts
-/// and the state file. The lock lies next to the state file and is created only
-/// on the volume mounted at `hidden_root`, or on the root the operator accepted
-/// with `allow` (`activate --allow-decoy-storage`). A root the attach gate
-/// refuses is reported with the gate's text and code (exit 4), as `activate`
-/// reports it: `deactivate` refuses a root another disk was mounted over with
-/// `root_covered`, and `emergency` is the way out. The returned guard must be
+/// The gate and the acquisition live in [`nails_core::app::lock`]; this renders
+/// the two refusals. A root the attach gate refuses is reported with the gate's
+/// text and code (exit 4), as `activate` reports it; a lock held by another
+/// operation is a `state_locked` failure (exit 1). The returned guard must be
 /// kept alive for the whole operation; dropping it (on exit) releases the lock.
 #[must_use = "the returned guard releases the lock when dropped"]
 pub(crate) fn acquire_state_lock_or_report(
@@ -194,64 +185,28 @@ pub(crate) fn acquire_state_lock_or_report(
     command: &'static str,
     json: bool,
 ) -> Result<nails_core::StateLock, ExitStatus> {
-    if let Ok(nails_core::hidden_root::Assessment::Refused(refusal)) =
-        nails_core::HiddenRoot::assess_allowing(&nails_core::RealFilesystem, hidden_root, allow)
-    {
-        return Err(crate::cli::output::refusal::report_refusal(
+    use nails_core::app::lock::LockOutcome;
+    match nails_core::app::lock::acquire_mutating(hidden_root, allow, state_file_path) {
+        LockOutcome::Acquired(lock) => Ok(lock),
+        LockOutcome::Refused(refusal) => Err(crate::cli::output::refusal::report_refusal(
             json, command, &refusal,
-        ));
-    }
-    let dir = state_lock_dir(state_file_path);
-    nails_core::hidden_root::ensure_state_dir_attached_allowing(
-        &nails_core::RealFilesystem,
-        hidden_root,
-        dir,
-        allow,
-    )
-    .and_then(|()| nails_core::StateLock::try_acquire(dir))
-    .map_err(|error| {
-        report_error(
+        )),
+        LockOutcome::Error(error) => Err(report_error(
             json,
             command,
             ExitStatus::Failed,
             ErrorBody::new("state_locked", error.to_string()),
-        )
-    })
+        )),
+    }
 }
 
 /// Take the state lock for emergency teardown, proceeding without it on timeout.
-///
-/// Emergency must never be blocked by a crashed or unresponsive holder, so after
-/// a short wait it continues without the lock. The returned guard (when present)
-/// must be kept alive for the duration of the teardown.
 #[must_use = "the returned guard releases the lock when dropped"]
 pub(crate) fn acquire_state_lock_for_emergency(
     hidden_root: &Path,
     state_file_path: &Path,
 ) -> Option<nails_core::StateLock> {
-    // Never create `.lock` in a bare mount-point directory on the decoy, nor on
-    // a disk mounted over the hidden volume: then emergency proceeds without
-    // the lock.
-    let dir = state_lock_dir(state_file_path);
-    if let Err(error) =
-        nails_core::ensure_state_dir_attached(&nails_core::RealFilesystem, hidden_root, dir)
-    {
-        tracing::warn!(%error, "Hidden volume not attached; proceeding with emergency teardown without the state lock");
-        return None;
-    }
-    match nails_core::StateLock::acquire_with_timeout(dir, nails_core::EMERGENCY_LOCK_TIMEOUT) {
-        Ok(Some(lock)) => Some(lock),
-        Ok(None) => {
-            tracing::warn!(
-                "Proceeding with emergency teardown without the state lock (acquire timed out)"
-            );
-            None
-        }
-        Err(error) => {
-            tracing::warn!(%error, "Could not open the state lock; proceeding with emergency teardown");
-            None
-        }
-    }
+    nails_core::app::lock::acquire_for_emergency(hidden_root, state_file_path)
 }
 
 #[cfg(test)]

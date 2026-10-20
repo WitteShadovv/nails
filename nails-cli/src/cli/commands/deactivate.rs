@@ -13,8 +13,9 @@
 use std::io::IsTerminal;
 use std::path::Path;
 
+use nails_core::app::deactivate::Prepared;
 use nails_core::output::Mark;
-use nails_core::session::{LeaveTo, RealTargetHost};
+use nails_core::session::LeaveTo;
 
 use crate::cli::args::DeactivateArgs;
 use crate::cli::output::deactivate::{deactivate_error_body, print_deactivate_json};
@@ -38,26 +39,23 @@ pub fn execute(
     args: &DeactivateArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
-    use nails_core::{NailsManager, RealFilesystem};
-
     let json = settings.is_json();
-    let config = super::load_config_or_defaults(config_override).into_config();
-    let state_path = config.state_file_path.clone();
-    let mut manager =
-        NailsManager::new(RealFilesystem, config, state_path.clone()).with_runtime_env(env.clone());
 
-    if !manager.session_view().is_hidden() {
-        return report_error(
-            json,
-            "deactivate",
-            ExitStatus::InvalidState,
-            ErrorBody::new(
-                "invalid_state",
-                "not in a hidden session; nothing to deactivate",
-            )
-            .with_hint("an interrupted activation is cleaned up with 'nails recover'"),
-        );
-    }
+    let ready = match nails_core::app::deactivate::prepare(env, config_override) {
+        Prepared::Ready(ready) => ready,
+        Prepared::NotHidden => {
+            return report_error(
+                json,
+                "deactivate",
+                ExitStatus::InvalidState,
+                ErrorBody::new(
+                    "invalid_state",
+                    "not in a hidden session; nothing to deactivate",
+                )
+                .with_hint("an interrupted activation is cleaned up with 'nails recover'"),
+            );
+        }
+    };
 
     if !args.yes {
         if !std::io::stdin().is_terminal() {
@@ -82,9 +80,9 @@ pub fn execute(
     }
 
     let _state_lock = match super::acquire_state_lock_or_report(
-        &manager.config().hidden_volume_root,
+        ready.hidden_root(),
         nails_core::hidden_root::Allow::Nothing,
-        &state_path,
+        ready.state_path(),
         "deactivate",
         json,
     ) {
@@ -97,13 +95,6 @@ pub fn execute(
     } else {
         LeaveTo::Decoy
     };
-    let host = RealTargetHost::for_plan(
-        match manager.session_view() {
-            nails_core::session::SessionView::Hidden(ref plan) => Some(plan),
-            _ => None,
-        }
-        .map(|p| &**p),
-    );
     // Print before enqueueing: the soft-reboot stops this terminal.
     if json {
         print_deactivate_json(args.poweroff);
@@ -125,7 +116,7 @@ pub fn execute(
         }
     }
     crate::cli::output::flush_stdio();
-    match manager.leave_session(to, &host) {
+    match ready.leave(to) {
         Ok(report) => {
             tracing::debug!(
                 backend_closing = ?report.deferred,
