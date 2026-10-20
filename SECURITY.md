@@ -17,11 +17,12 @@ If you are unsure whether something is in scope, report it anyway. We would rath
 
 ## Supported Versions
 
-NAILS is currently released as **alpha** software. Only the most recent `0.2.x` release carries security fixes; there are no backports to earlier lines.
+NAILS is currently released as **alpha** software. The current supported stable line is `0.2.x`, and only its most recent release carries security fixes; there are no backports to earlier lines. `0.3.0` is in release-candidate testing — its candidates are published as pre-releases — and becomes the supported line once `0.3.0` is released.
 
 | Version | Status | Security support |
 | --- | --- | --- |
-| `0.2.x` | Current release line | Supported |
+| `0.2.x` | Current supported stable line | Supported |
+| `0.3.0` release candidates | In testing, published as pre-releases | Testing only; not yet the supported line |
 | `0.1.x` and earlier alpha builds | Superseded | Not supported |
 
 Run the latest release and verify its artifacts before use; how releases are produced and numbered is described in [RELEASING.md](RELEASING.md).
@@ -217,4 +218,4 @@ For non-sensitive questions about hardening, threat model, or secure use:
 
 This policy is maintained with the repository. Material updates will be reflected in this file.
 
-**Last updated:** 2026-10-19
+**Last updated:** 2026-10-20
