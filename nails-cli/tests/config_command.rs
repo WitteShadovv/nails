@@ -43,8 +43,10 @@ fn config_path_reports_resolved_file_and_existence() {
         .unwrap();
     assert!(output.status.success());
     let value = stdout_json(&output);
-    assert_eq!(value["path"], path);
-    assert_eq!(value["exists"], true);
+    // Version-2 envelope: the subcommand's own fields live under `data`.
+    assert_eq!(value["command"], "config");
+    assert_eq!(value["data"]["path"], path);
+    assert_eq!(value["data"]["exists"], true);
 }
 
 #[test]
@@ -55,7 +57,7 @@ fn config_path_without_override_is_binary_relative() {
     let value = stdout_json(&output);
     let bin = std::fs::canonicalize(assert_cmd::cargo::cargo_bin!("nails")).unwrap();
     let expected = bin.parent().unwrap().join("config").join("nails.toml");
-    assert_eq!(value["path"], expected.to_str().unwrap());
+    assert_eq!(value["data"]["path"], expected.to_str().unwrap());
 }
 
 #[test]
@@ -87,10 +89,11 @@ fn config_show_annotates_sources_in_toml_and_json() {
         .unwrap();
     assert!(output.status.success());
     let value = stdout_json(&output);
-    assert_eq!(value["exists"], true);
-    assert_eq!(value["config"]["minimum_space_mb"], 750);
-    assert_eq!(value["sources"]["minimum_space_mb"], "file");
-    assert_eq!(value["sources"]["hidden_volume_root"], "derived");
+    // The effective configuration is the envelope's `data`.
+    assert_eq!(value["data"]["exists"], true);
+    assert_eq!(value["data"]["config"]["minimum_space_mb"], 750);
+    assert_eq!(value["data"]["sources"]["minimum_space_mb"], "file");
+    assert_eq!(value["data"]["sources"]["hidden_volume_root"], "derived");
 }
 
 #[test]
@@ -135,8 +138,15 @@ fn config_validate_accepts_good_and_rejects_bad_files() {
         .unwrap();
     assert_eq!(output.status.code(), Some(3));
     let value = stdout_json(&output);
-    assert_eq!(value["valid"], false);
-    assert!(value["error"].as_str().unwrap().contains("did you mean"));
+    // An invalid file is one error envelope: not ok, the config code, the reason.
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "config");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("did you mean")
+    );
 }
 
 #[test]
