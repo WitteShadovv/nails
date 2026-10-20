@@ -63,6 +63,38 @@ pub const REHEARSE_GUIDE_DONE: Message = Message {
     surface: Surface::Cli,
 };
 
+/// The notice an activation cancelled at the prompt or by Ctrl+C prints: the
+/// one cancel shape, as the human neutral line and the `--json` error message.
+pub const CANCEL_ACTIVATE: Message = Message {
+    id: "activate.cancelled",
+    text: "Activation cancelled; nothing was changed.",
+    note: "Shown when the operator answers no at the activation prompt, or presses Ctrl+C \
+           before the point of no return. The same text is the --json error message.",
+    placeholders: &[],
+    surface: Surface::Cli,
+};
+
+/// The notice a deactivation cancelled at the prompt prints.
+pub const CANCEL_DEACTIVATE: Message = Message {
+    id: "deactivate.cancelled",
+    text: "Deactivation cancelled; nothing was changed.",
+    note: "Shown when the operator answers no at the deactivation prompt. The same text is \
+           the --json error message.",
+    placeholders: &[],
+    surface: Surface::Cli,
+};
+
+/// The notice a discard (reset of a path's hidden upper) cancelled at the
+/// prompt prints.
+pub const CANCEL_RESET: Message = Message {
+    id: "reset.cancelled",
+    text: "Reset cancelled; nothing was removed.",
+    note: "Shown when the operator answers no at the prompt that discards a path's hidden \
+           changes. The same text is the --json error message.",
+    placeholders: &[],
+    surface: Surface::Cli,
+};
+
 /// Every catalogue entry, for the copy lint and any front end that walks them.
 pub const CATALOG: &[Message] = &[
     REHEARSE_GUIDE_PLANT_ACTIVE,
@@ -70,4 +102,7 @@ pub const CATALOG: &[Message] = &[
     REHEARSE_GUIDE_SCAN_NEXT_SESSION,
     REHEARSE_GUIDE_SCAN_NOW,
     REHEARSE_GUIDE_DONE,
+    CANCEL_ACTIVATE,
+    CANCEL_DEACTIVATE,
+    CANCEL_RESET,
 ];
