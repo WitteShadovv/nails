@@ -19,7 +19,6 @@ use crate::cli::output::exit::ExitStatus;
 // The configuration resolution that any front end shares now lives in the
 // engine facade; the CLI keeps only the error rendering (the sudo line, the
 // structured body) on top of it.
-pub(crate) use nails_core::app::engine::build_nixos_manager;
 pub(crate) use nails_core::app::{config_error_line, load_config_or_defaults};
 
 pub mod activate;

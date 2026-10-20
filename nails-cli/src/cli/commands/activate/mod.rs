@@ -19,79 +19,28 @@ use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::refusal::report_refusal;
 use crate::cli::output::{self, ActivateResult, ExitStatus, OutputSettings};
 
-use nails_core::hidden_root::{Assessment, Refusal};
-use nails_core::manager::{EnterOptions, EnterOutcome};
-use nails_core::session::{RealEntryHost, RealTargetHost};
+use nails_core::app::activate::{self, ActivateOptions, Prepared, ReadyActivation};
+use nails_core::hidden_root::Refusal;
+use nails_core::manager::EnterOutcome;
 use nails_core::{CliOverrides, NailsError, Verbosity};
 use std::io::IsTerminal;
 use std::time::Instant;
 
-/// Run the read-only decoy residue scan and record a pre-mount baseline on the
-/// hidden volume.
-///
-/// This is a best-effort snapshot taken before any overlay is mounted: it only
-/// reads the decoy and writes its report to `<hidden-root>/reports/`, which is
-/// torn down with the session. A scan or write failure is logged and activation
-/// continues, because the baseline is a convenience for later comparison, not a
-/// precondition for activating.
-fn write_activation_residue_baseline(
-    manager: &nails_core::NailsManager<nails_core::RealFilesystem>,
-    json: bool,
-    settings: &OutputSettings,
-) {
-    use nails_core::{RealFilesystem, StateFileStatus, Verifier};
-
-    let config = manager.config().clone();
-    let hidden_root = config.hidden_volume_root.clone();
-    if hidden_root.as_os_str().is_empty() {
-        return;
-    }
-
-    // Pre-activation: the system is Inactive, so the scan sees the decoy as it is
-    // before overlays. Standard depth keeps activation responsive; the scanners
-    // and artifact checks run at either depth. The scan is scoped to the decoy:
-    // the hidden volume is already attached for the activation about to start, so
-    // its own mount, on-volume files and backing device are deliberately attached,
-    // not residue, and must not show up as findings in the decoy baseline.
-    let verifier = Verifier::with_config(RealFilesystem, config, None, StateFileStatus::NotChecked)
-        .with_runtime_env(manager.runtime_env())
-        .scoped_to_decoy();
-    let result = match verifier.run(false) {
-        Ok(result) => result,
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "pre-activation decoy residue scan failed; continuing without a baseline report"
+/// Write the pre-mount residue baseline through the facade and report where it
+/// went: a debug line under `--json`, the summary on stdout otherwise. The scan
+/// and the write are the facade's; this only reports the result.
+fn write_baseline(settings: &OutputSettings, ready: &ReadyActivation, json: bool) {
+    if let Some(baseline) = ready.write_residue_baseline() {
+        if json {
+            tracing::debug!(
+                path = %baseline.path.display(),
+                "wrote pre-activation decoy residue report"
             );
-            return;
-        }
-    };
-
-    let timestamp = chrono::Utc::now().to_rfc3339();
-    match nails_core::write_activation_residue_report(
-        &RealFilesystem,
-        &hidden_root,
-        &result,
-        &timestamp,
-    ) {
-        Ok(summary) => {
-            if json {
-                tracing::debug!(
-                    path = %summary.path.display(),
-                    "wrote pre-activation decoy residue report"
-                );
-            } else if settings.verbosity >= Verbosity::Normal {
-                println!(
-                    "Pre-activation decoy residue baseline: {} -> {}",
-                    baseline_summary(&result),
-                    summary.path.display()
-                );
-            }
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = %e,
-                "could not write pre-activation decoy residue report; continuing"
+        } else if settings.verbosity >= Verbosity::Normal {
+            println!(
+                "Pre-activation decoy residue baseline: {} -> {}",
+                baseline_summary(&baseline.result),
+                baseline.path.display()
             );
         }
     }
@@ -169,13 +118,12 @@ fn dry_run_check_args(args: &ActivateArgs) -> crate::cli::args::CheckArgs {
     }
 }
 
-/// What the activation asks of the session entry.
-fn enter_options(args: &ActivateArgs) -> EnterOptions {
-    EnterOptions {
-        skip_preflight: args.no_preflight,
+/// What the activation asks of the facade.
+fn activate_options(args: &ActivateArgs) -> ActivateOptions {
+    ActivateOptions {
+        no_preflight: args.no_preflight,
         overlay_only: args.overlay_only,
         accept_persistent_decoy: args.accept_persistent_decoy,
-        binary: std::env::current_exe().unwrap_or_default(),
         allow_decoy_storage: args.allow_decoy_storage,
     }
 }
@@ -225,37 +173,14 @@ pub fn execute(
         );
     }
 
-    let state_path = config.state_file_path.clone();
-    let mut manager =
-        super::build_nixos_manager(config, state_path.clone(), args.overlay_only, env);
-    manager.set_verbosity(settings.verbosity);
-
-    if manager.session_view().is_hidden() {
-        print_result(settings, &ActivateResult::AlreadyActive, 0.0);
-        return ExitStatus::Ok;
-    }
-
-    // The attach gate decides before anything is written: the state lock, the
-    // residue baseline and the staged configuration all land on the root.
-    // --no-preflight does not skip it.
-    let options = enter_options(args);
-    let accepted = match nails_core::HiddenRoot::assess_allowing(
-        manager.filesystem(),
-        &manager.config().hidden_volume_root,
-        options.allow(),
-    ) {
-        Ok(Assessment::Attached) => None,
-        Ok(Assessment::Warned(refusal)) => {
-            crate::cli::output::eprintln_tolerating_broken_pipe(&format!(
-                "warning: {}",
-                refusal.warning()
-            ));
-            refusal.overridden().then_some(refusal)
+    let options = activate_options(args);
+    let mut ready = match activate::prepare(env, config, settings.verbosity, &options) {
+        Prepared::AlreadyActive => {
+            print_result(settings, &ActivateResult::AlreadyActive, 0.0);
+            return ExitStatus::Ok;
         }
-        Ok(Assessment::Refused(refusal)) => {
-            return report_refusal(json, "activate", &refusal);
-        }
-        Err(e) => {
+        Prepared::Refused(refusal) => return report_refusal(json, "activate", &refusal),
+        Prepared::AttachError(e) => {
             return report_error(
                 json,
                 "activate",
@@ -263,21 +188,26 @@ pub fn execute(
                 ErrorBody::new("preflight", e.to_string()),
             );
         }
+        Prepared::Proceed(ready) => ready,
     };
 
+    // The attach gate raised a warning the operator overrode: show it before
+    // taking the lock (the lock itself writes nothing to report).
+    if let Some(warning) = ready.warning() {
+        crate::cli::output::eprintln_tolerating_broken_pipe(&format!("warning: {warning}"));
+    }
+
     let _state_lock = match super::acquire_state_lock_or_report(
-        &manager.config().hidden_volume_root,
-        options.allow(),
-        &state_path,
+        ready.hidden_root(),
+        ready.allow(),
+        ready.state_path(),
         "activate",
         json,
     ) {
         Ok(lock) => lock,
         Err(status) => return status,
     };
-    if let Ok((_, outcome)) = manager.current_state_with_outcome()
-        && outcome.is_unknown()
-    {
+    if !ready.is_state_trusted() {
         return report_error(
             json,
             "activate",
@@ -296,7 +226,7 @@ pub fn execute(
         crate::cli::output::eprintln_tolerating_broken_pipe(&notice);
     }
     if !args.yes
-        && let Some(status) = stop_status(confirm_logout(settings, accepted.as_ref()))
+        && let Some(status) = stop_status(confirm_logout(settings, ready.accepted()))
     {
         return report_cancelled(settings, status);
     }
@@ -306,7 +236,7 @@ pub fn execute(
     if nails_core::cancel::is_cancelled() {
         return report_cancelled(settings, ExitStatus::Cancelled);
     }
-    write_activation_residue_baseline(&manager, json, settings);
+    write_baseline(settings, &ready, json);
     if nails_core::cancel::is_cancelled() {
         return report_cancelled(settings, ExitStatus::Cancelled);
     }
@@ -315,12 +245,12 @@ pub fn execute(
         output::print_activate_progress("preparing");
     } else if settings.verbosity >= Verbosity::Normal {
         crate::cli::output::eprintln_tolerating_broken_pipe(&preparing_line(
-            !options.skip_preflight,
-            manager.builds_hidden_system(&options),
+            !options.no_preflight,
+            ready.builds_hidden_system(),
         ));
     }
     let start = Instant::now();
-    let result = manager.enter_session(&options, &RealEntryHost);
+    let result = ready.enter();
     let duration = start.elapsed().as_secs_f64();
 
     let (entry, elapsed) = match result {
@@ -347,15 +277,11 @@ pub fn execute(
     );
     crate::cli::output::flush_stdio();
 
-    // The decoy's shells write their history when they exit, bash on the
-    // SIGHUP that stopping their login session sends: the soft-reboot would
-    // do that the moment it is enqueued. SIGKILL them first, ours last, so
-    // the activation command never reaches a history file on the decoy disk.
+    // The point of no return: kill the decoy's shells so none writes the
+    // activation command to its history, then enqueue the soft-reboot.
     // Everything above is already on the terminal; a failure below still
     // reaches the log.
-    nails_teardown::shells::kill_all_interactive_shells(&[]);
-    let host = RealTargetHost::for_plan(Some(&entry.plan));
-    if let Err(error) = manager.trigger_entry(&host, &RealEntryHost) {
+    if let Err(error) = ready.commit(&entry) {
         return report_error(
             json,
             "activate",

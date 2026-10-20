@@ -337,7 +337,7 @@ fn a_dry_run_checks_with_the_options_activation_uses() {
         };
         assert_eq!(
             crate::cli::commands::check::preflight_options(&super::dry_run_check_args(&args)),
-            super::enter_options(&args).preflight(),
+            super::activate_options(&args).enter_options().preflight(),
             "{args:?}"
         );
     }
