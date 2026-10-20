@@ -70,7 +70,7 @@ EXIT STATUS:
   9    completed, but with a warning the caller should act on
   10   verify found warnings
   11   verify found critical artifacts, or rehearse scan found its canary
-  130  cancelled by a signal (SIGINT/SIGTERM)
+  130  cancelled: a declined prompt, or a signal (SIGINT/SIGTERM)
 
 ###### **Subcommands:**
 
@@ -520,7 +520,7 @@ Every command shares one set of exit codes.
 | 9 | Completed, but with a warning the caller should act on |
 | 10 | `verify` found warnings |
 | 11 | `verify` found critical artifacts, or `rehearse scan` found its canary |
-| 130 | Cancelled by a signal (SIGINT/SIGTERM) |
+| 130 | Cancelled: a declined prompt, or a signal (SIGINT/SIGTERM) |
 
 Notable per-command codes: `verify` returns 0/10/11 for secure/warning/critical;
 `rehearse scan` returns 0 when the canary is not found, 11 when it is, and 9
