@@ -12,7 +12,7 @@ use std::path::Path;
 use nails_core::{CliOverrides, Config, LoadedConfig, NailsError};
 use serde_json::json;
 
-use super::{config_error_line, config_read_hint, resolve_config};
+use super::{config_error_line, config_read_hint};
 use crate::cli::args::ConfigCommand;
 use crate::cli::output::{ExitStatus, OutputSettings};
 
@@ -115,11 +115,10 @@ fn path(config_override: Option<&Path>, json: bool) -> Outcome {
 }
 
 fn show(config_override: Option<&Path>, json: bool, overrides: &CliOverrides) -> Outcome {
-    let mut loaded = match resolve_config(config_override) {
+    let loaded = match nails_core::app::config_view(config_override, overrides) {
         Ok(loaded) => loaded,
         Err(error) => return Outcome::load_error(&error, "config show"),
     };
-    loaded.apply_cli_overrides(overrides);
 
     let rendered = if json {
         loaded.to_json().and_then(|value| {

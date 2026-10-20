@@ -16,6 +16,10 @@
 //! code without re-deriving the decision. Nothing here prints, prompts or reads
 //! an exit code: those are the front end's.
 
+pub mod config;
+pub mod config_view;
 pub mod status;
 
+pub use config::resolve_config;
+pub use config_view::config_view;
 pub use status::{StatusOutcome, status};
