@@ -16,10 +16,12 @@ use std::path::{Path, PathBuf};
 const GRAPH: &[(&str, &[&str])] = &[
     ("nails-teardown", &[]),
     // The machine-readable contract types (`--json` envelope, exit codes, result
-    // payloads). Serde and nothing else: no NAILS dependency, so a consumer can
-    // link the wire shapes without the tool.
+    // payloads, the progress-event stream). Serde and nothing else: no NAILS
+    // dependency, so a consumer can link the wire shapes without the tool.
     ("nails-api", &[]),
-    ("nails-base", &["nails-teardown"]),
+    // Reaches `nails-api` for the typed progress events its reporter adapter
+    // produces; `nails-api` carries no NAILS dependency, so this adds no cycle.
+    ("nails-base", &["nails-api", "nails-teardown"]),
     ("nails-platform", &["nails-base"]),
     (
         "nails-session",

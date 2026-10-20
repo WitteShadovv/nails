@@ -576,6 +576,7 @@ dependencies = [
  "chrono",
  "colored",
  "hex",
+ "nails-api",
  "nails-teardown",
  "nix",
  "rustix",
