@@ -73,9 +73,9 @@ fn report_fail(json: bool, failure: RehearseFailure) -> ExitStatus {
     )
 }
 
-fn emit(settings: &OutputSettings, data: &RehearseData<'_>, human: impl FnOnce(Style)) {
+fn emit(settings: &OutputSettings, ok: bool, data: &RehearseData<'_>, human: impl FnOnce(Style)) {
     if settings.is_json() {
-        Envelope::success(COMMAND, data).print();
+        Envelope::outcome(COMMAND, ok, data).print();
     } else {
         let style = settings.stdout_style();
         human(style);
@@ -103,7 +103,7 @@ fn status(settings: &OutputSettings, rehearsal: &Rehearsal) -> ExitStatus {
         removed: Vec::new(),
         next_step: next_step(state.as_ref(), &here),
     };
-    emit(settings, &data, |style| match &state {
+    emit(settings, true, &data, |style| match &state {
         None => println!(
             "{}",
             style.marked(Mark::Info, "No rehearsal on this hidden volume.")
@@ -158,7 +158,7 @@ fn plant(
         removed: Vec::new(),
         next_step: next_step(Some(&state), &here),
     };
-    emit(settings, &data, |style| {
+    emit(settings, true, &data, |style| {
         println!(
             "{}",
             style.marked(
@@ -204,7 +204,7 @@ fn scan(settings: &OutputSettings, rehearsal: &Rehearsal, args: &RehearseScanArg
         removed: Vec::new(),
         next_step: next_step(state.as_ref(), &here),
     };
-    emit(settings, &data, |style| {
+    emit(settings, exit.is_success(), &data, |style| {
         print_scan(style, &report, &fingerprint, &data.channels);
     });
     exit
@@ -229,7 +229,7 @@ fn reset(settings: &OutputSettings, rehearsal: &Rehearsal) -> ExitStatus {
             .collect(),
         next_step: next_step(None, &Here::default()),
     };
-    emit(settings, &data, |style| {
+    emit(settings, true, &data, |style| {
         println!(
             "{}",
             style.marked(

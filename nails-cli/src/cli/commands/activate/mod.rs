@@ -250,9 +250,9 @@ pub fn execute(
         return report_cancelled(settings, ExitStatus::Cancelled);
     }
 
-    if json {
-        output::print_activate_progress("preparing");
-    } else if settings.verbosity >= Verbosity::Normal {
+    // Under --json activation prints one envelope and nothing else, so there is
+    // no progress line on stdout; a window watches progress on its own channel.
+    if !json && settings.verbosity >= Verbosity::Normal {
         crate::cli::output::eprintln_tolerating_broken_pipe(&preparing_line(
             !options.no_preflight,
             ready.builds_hidden_system(),
@@ -307,14 +307,13 @@ pub fn execute(
     }
 }
 
-/// How the answer at the prompt ends the activation, if it does: a `n` (or
-/// the end of the input) with exit 1, a Ctrl+C with exit 130 as a signal's
-/// cancel anywhere else. Both read alike ([`report_cancelled`]).
+/// How the answer at the prompt ends the activation, if it does: a `n` (or the
+/// end of the input) and a Ctrl+C both cancel with exit 130, so a "no" reads
+/// the same as a signal's cancel. Both print alike ([`report_cancelled`]).
 fn stop_status(answer: Answer) -> Option<ExitStatus> {
     match answer {
         Answer::Yes => None,
-        Answer::No => Some(ExitStatus::Failed),
-        Answer::Cancelled => Some(ExitStatus::Cancelled),
+        Answer::No | Answer::Cancelled => Some(ExitStatus::Cancelled),
     }
 }
 

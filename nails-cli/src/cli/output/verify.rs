@@ -150,9 +150,12 @@ impl VerifyData {
     }
 }
 
-/// Print the verification result as one envelope on stdout.
+/// Print the verification result as one envelope on stdout. `ok` follows the
+/// scan's own exit code: a secure scan is ok, a warning (10) or a critical
+/// finding (11) is not.
 pub fn print_verify_json(result: &VerifyResult) {
-    Envelope::success("verify", VerifyData::from_result(result)).print();
+    let ok = verify_exit_status(result.status).is_success();
+    Envelope::outcome("verify", ok, VerifyData::from_result(result)).print();
 }
 
 /// The exit status for a verification outcome: a warning and a critical finding

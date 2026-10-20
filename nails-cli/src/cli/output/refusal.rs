@@ -191,13 +191,17 @@ mod tests {
             let line = error_envelope("init", refusal_error(&refusal(kind), None)).to_line();
             let value: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(value["error"]["code"], code, "{line}");
+            // "Nothing was written." ends the first line; the attach gate's
+            // guidance folds in below it, so it is now in the middle of the
+            // message rather than at its end.
             assert!(
                 value["error"]["message"]
                     .as_str()
                     .unwrap()
-                    .ends_with("Nothing was written.")
+                    .contains("Nothing was written.")
             );
-            assert!(value["error"]["hint"].is_string(), "{line}");
+            // A refusal names no single command, so its typed next step is null.
+            assert!(value["error"]["next"].is_null(), "{line}");
         }
     }
 
