@@ -12,7 +12,7 @@
 # covered without a VM by nails-cli/tests/cli_contract.rs. This single VM test
 # keeps only what needs a real hidden session and a real terminal: colour
 # auto-detection on a real TTY, then (after `nails activate` soft-rebooted into
-# the whole-root overlay) the status JSON with posture "active" and the verify
+# the whole-root overlay) the status JSON with place "hidden" and the verify
 # JSON, both against the committed schemas, and the ASCII/plain rendering of
 # the active status.
 
@@ -86,7 +86,10 @@ in
             assert active["rc"] == 0, active
             assert_json_schema_valid(status_schema, active["stdout_path"], "active status JSON")
             active_payload = json.loads(active["stdout"])["data"]
-            assert active_payload["posture"] == "active", active_payload
+            # Version-2 envelope: an active hidden session is place "hidden" with
+            # no attention, in place of the version-1 posture "active".
+            assert active_payload["place"] == "hidden", active_payload
+            assert active_payload["attention"] is None, active_payload
 
         with subtest("active verify JSON matches the schema"):
             verified = run_command_capture(
