@@ -69,7 +69,9 @@ Prepare the volume where nothing reaches the decoy's disk:
   and format the volume there, then attach the drive to this computer, unlock
   and mount it, and run `nails` from it;
 - **or from a setup medium**: a live system started from a USB stick on this
-  computer, which writes nothing to its internal disk.
+  computer, which writes nothing to its internal disk. Tails is one;
+  [First install from Tails](install-from-tails.md) shows the first
+  installation from it.
 
 `init`, `activate`, `check` and the other commands that write ask the attach
 gate first and refuse anything else before they write or probe a single file.
@@ -172,11 +174,13 @@ Keep all of it `root`-owned on the hidden volume.
 
 **Activation, step by step.** `nails activate` runs on the decoy:
 
-1. It runs the pre-flight checks, among them `systemd-version` (254 or newer),
-   `soft-reboot-units` (the units that implement `systemctl soft-reboot` are
-   installed), `decoy-root` (the decoy root can be mounted again by device for
-   the way back), `session-state` (no session and no leftovers of an
-   interrupted one), `fstab-policy`, `hidden-volume`, `upper-fs-capability`,
+1. It runs the pre-flight checks, among them `platform` (the host is one NAILS
+   supports; a Debian or Ubuntu release it has not been tested on warns),
+   `systemd-version` (254 or newer), `soft-reboot-units` (the units that
+   implement `systemctl soft-reboot` are installed), `decoy-root` (the decoy
+   root can be mounted again by device for the way back), `session-state` (no
+   session and no leftovers of an interrupted one), `fstab-policy`,
+   `hidden-volume`, `upper-fs-capability`,
    `backend-entries`, `suspicious-nails-reference` (NixOS: nothing in the
    decoy's `/etc/nixos` names the hidden volume's device, mount point or the
    storage it is on, opens its mapping, or names NAILS; [the decoy
@@ -607,6 +611,16 @@ backups.
   downloads directory).
 
 ### Updating NAILS
+
+New releases appear in the releases feed,
+<https://github.com/WitteShadovv/nails/releases.atom>, which any feed reader can
+follow without a GitHub account. Follow it inside a hidden session or on
+another device, never on the decoy, where the reader's subscription would name
+the tool. The feed shows a version as soon as its tag is pushed, before its
+release is published, and keeps tags that never got a release (`v0.3.0-rc.1`):
+a version is out once the
+[Releases page](https://github.com/WitteShadovv/nails/releases) lists it with
+its files. Versions ending in `-rc.N` are release candidates.
 
 Update by replacing the binary (and, when they change, the flake and config) on
 the hidden volume with a freshly built, verified release — never by downloading

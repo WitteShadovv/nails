@@ -10,12 +10,14 @@ import re
 import resource
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
+from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
 
-from ci.e2e import run
+from ci.e2e import evaluate, run
 from ci.e2e.metadata import Metadata
 
 DRV_TO_TEST = {"/nix/store/a.drv": "a", "/nix/store/b.drv": "b"}
@@ -105,6 +107,46 @@ class DurationParserTest(unittest.TestCase):
         )
 
 
+class LiveTimingTest(unittest.TestCase):
+    """A build is timed while nix runs, as its start and stop lines arrive."""
+
+    def test_each_build_takes_the_time_between_its_lines(self) -> None:
+        lines = [
+            '@nix {"action":"start","type":105,"id":1,"fields":["/nix/store/a.drv"]}\n',
+            '@nix {"action":"start","type":105,"id":2,"fields":["/nix/store/b.drv"]}\n',
+            '@nix {"action":"stop","id":1}\n',
+            '@nix {"action":"msg","level":0,"msg":"error: a warning of b"}\n',
+            '@nix {"action":"stop","id":2}\n',
+        ]
+        arrived = 0
+
+        def stream() -> Iterator[str]:
+            nonlocal arrived
+            for line in lines:
+                arrived += 1
+                yield line
+
+        process = mock.MagicMock()
+        process.__enter__.return_value = process
+        process.stderr = stream()
+        process.wait.return_value = 0
+        with (
+            mock.patch.object(run.subprocess, "Popen", return_value=process),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            # Ten seconds pass between two lines. Lines read to the end before
+            # any was parsed would all carry the time of the last one.
+            status, outcomes = run._build_once(
+                ["a", "b"], DRV_TO_TEST, None, lambda: arrived * 10.0
+            )
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            outcomes,
+            {"a": run.TestOutcome("pass", 20), "b": run.TestOutcome("pass", 30)},
+        )
+        self.assertEqual(stderr.getvalue(), "error: a warning of b\n")
+
+
 class WriteDurationsTest(unittest.TestCase):
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -129,7 +171,6 @@ class WriteDurationsTest(unittest.TestCase):
         )
 
 
-@unittest.skipUnless(shutil.which("bash"), "the fake nix needs bash")
 class RunBuildTest(unittest.TestCase):
     """run_build against a stand-in `nix` that serves drvPaths and build logs."""
 
@@ -142,29 +183,33 @@ class RunBuildTest(unittest.TestCase):
         self.log = self.tmp / "nix.log"
         fake = bin_dir / "nix"
         fake.write_text(
-            # Resolve bash from PATH rather than /usr/bin/env, which does not
-            # exist in the hermetic Nix build sandbox the ci-python check runs in.
-            f"#!{shutil.which('bash')}\n"
-            'case "$1" in\n'
-            "  eval)\n"
-            '    attr="$3"; name="${attr##*.e2e.}"; name="${name%.drvPath}"\n'
-            '    printf "/nix/store/%s.drv" "$name"\n'
-            "    ;;\n"
-            "  build)\n"
-            '    echo "build $*" >>"$FAKE_NIX_LOG"\n'
-            '    for arg in "$@"; do\n'
-            '      case "$arg" in\n'
-            "        /nix/store/*.drv^*)\n"
-            '          name="${arg#/nix/store/}"; name="${name%.drv^*}"\n'
-            "          id=$((id + 1))\n"
-            '          printf \'@nix {"action":"start","type":105,"id":%d,'
-            '"fields":["/nix/store/%s.drv"]}\\n\' "$id" "$name" >&2\n'
-            '          printf \'@nix {"action":"stop","id":%d}\\n\' "$id" >&2\n'
-            "          ;;\n"
-            "      esac\n"
-            "    done\n"
-            "    ;;\n"
-            "esac\n",
+            # The interpreter running these tests, by its path: the hermetic Nix
+            # build sandbox the ci-python check runs in has no /usr/bin/env.
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "args = sys.argv[1:]\n"
+            "if args[0] == 'eval':\n"
+            "    expression = args[args.index('--apply') + 1]\n"
+            "    names = json.loads(expression.split(\"''\")[1])\n"
+            "    print(json.dumps({n: f'/nix/store/{n}.drv' for n in names}))\n"
+            "elif args[0] == 'build':\n"
+            "    with open(os.environ['FAKE_NIX_LOG'], 'a') as log:\n"
+            "        log.write('build ' + ' '.join(args) + '\\n')\n"
+            # A test whose name FAKE_NIX_SERVED lists is already in the store: no build.
+            "    served = os.environ.get('FAKE_NIX_SERVED', '').split()\n"
+            "    ident = 0\n"
+            "    for arg in args:\n"
+            "        if arg.startswith('/nix/store/') and arg.endswith('.drv^*'):\n"
+            "            drv = arg.removesuffix('^*')\n"
+            "            name = drv.removeprefix('/nix/store/').removesuffix('.drv')\n"
+            "            if name in served:\n"
+            "                continue\n"
+            "            ident += 1\n"
+            "            start = {'action': 'start', 'type': 105, 'id': ident,\n"
+            "                     'fields': [drv]}\n"
+            "            print('@nix ' + json.dumps(start), file=sys.stderr)\n"
+            "            stop = {'action': 'stop', 'id': ident}\n"
+            "            print('@nix ' + json.dumps(stop), file=sys.stderr)\n",
             encoding="utf-8",
         )
         fake.chmod(0o755)
@@ -214,39 +259,114 @@ class RunBuildTest(unittest.TestCase):
         self.assertFalse([a for a in args if ".e2e." in a], args)
         self.assertIn("2 test(s), 0 failed", stderr.getvalue())
 
+    def test_a_test_the_store_served_fails_only_a_run_that_must_boot(self) -> None:
+        env = {
+            **os.environ,
+            "PATH": f"{self.bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "FAKE_NIX_LOG": str(self.log),
+            "FAKE_NIX_SERVED": "verify",
+        }
+        for require_boot, expected in ((False, 0), (True, 1)):
+            durations = self.tmp / f"durations-{require_boot}.jsonl"
+            with (
+                mock.patch.dict(os.environ, env, clear=True),
+                contextlib.redirect_stderr(io.StringIO()) as stderr,
+            ):
+                status = run.run_build(
+                    ["basic-workflow", "verify"],
+                    durations_out=durations,
+                    clock=iter([0.0, 30.0]).__next__,
+                    require_boot=require_boot,
+                )
+            self.assertEqual(status, expected, stderr.getvalue())
+            records = [json.loads(line) for line in durations.read_text().splitlines()]
+            self.assertEqual(records[0]["result"], "pass")
+            self.assertEqual(records[1]["result"], "fail" if require_boot else "pass")
+            self.assertEqual(records[1].get("not_booted", False), require_boot)
+
 
 class EvalDrvsTest(unittest.TestCase):
-    def test_batches_bound_each_nix_eval_process(self) -> None:
-        calls: list[list[str]] = []
+    @staticmethod
+    def names(command: list[str]) -> list[str]:
+        return json.loads(command[command.index("--apply") + 1].split("''")[1])
 
-        def fake_run(command, **_kwargs):
+    def fake_run(self, calls: list[list[str]]):
+        def fake(command, **_kwargs):
             calls.append(command)
-            names = json.loads(
-                "["
-                + command[-1]
-                .split("[", 1)[1]
-                .rsplit("]", 1)[0]
-                .strip()
-                .replace('" "', '", "')
-                + "]"
-            )
-            payload = {name: f"/nix/store/{name}.drv" for name in names}
+            payload = {name: f"/nix/store/{name}.drv" for name in self.names(command)}
             return subprocess.CompletedProcess(command, 0, json.dumps(payload), "")
 
-        with mock.patch.object(run.subprocess, "run", side_effect=fake_run):
-            drvs = run.eval_drvs(["a", "b", "c", "d", "e"], ".#x.e2e", 2)
+        return fake
+
+    def test_batches_bound_each_nix_eval_process(self) -> None:
+        calls: list[list[str]] = []
+        with mock.patch.object(
+            evaluate.subprocess, "run", side_effect=self.fake_run(calls)
+        ):
+            drvs = run.eval_drvs(["a", "b", "c", "d", "e"], ".#x.e2e", 2, workers=3)
         self.assertEqual(len(calls), 3)
         self.assertTrue(all(c[:3] == ["nix", "eval", "--json"] for c in calls))
+        self.assertTrue(all(len(self.names(c)) <= 2 for c in calls))
         self.assertEqual(drvs["e"], "/nix/store/e.drv")
         self.assertEqual(list(drvs), ["a", "b", "c", "d", "e"])
 
-    def test_without_a_batch_size_each_test_gets_its_own_process(self) -> None:
+    def test_without_a_batch_size_the_tests_spread_over_the_processes(self) -> None:
+        calls: list[list[str]] = []
         with mock.patch.object(
-            run, "_eval_drv", side_effect=lambda attr: attr + ".drv"
-        ) as single:
-            drvs = run.eval_drvs(["a", "b"], ".#x.e2e", None)
-        self.assertEqual(single.call_count, 2)
-        self.assertEqual(drvs, {"a": ".#x.e2e.a.drv", "b": ".#x.e2e.b.drv"})
+            evaluate.subprocess, "run", side_effect=self.fake_run(calls)
+        ):
+            drvs = run.eval_drvs(["a", "b", "c", "d", "e"], ".#x.e2e", None, workers=2)
+        self.assertEqual(sorted(len(self.names(c)) for c in calls), [2, 3])
+        self.assertEqual(list(drvs), ["a", "b", "c", "d", "e"])
+
+
+class BuildDriversTest(unittest.TestCase):
+    @staticmethod
+    def fake_eval(_attr, tests, value, **_kwargs) -> dict[str, str]:
+        assert value == "t: t.driver.drvPath", value
+        return {test: f"/nix/store/{test}-driver.drv" for test in tests}
+
+    def test_evaluates_the_drivers_and_builds_them_in_one_call(self) -> None:
+        builds: list[list[str]] = []
+
+        def fake_build(command, **_kwargs):
+            builds.append(command)
+            built = [
+                {
+                    "drvPath": f"/nix/store/{test}-driver.drv",
+                    "outputs": {"out": f"/nix/store/{test}-driver"},
+                }
+                for test in ("b", "a")
+            ]
+            return subprocess.CompletedProcess(command, 0, json.dumps(built), "")
+
+        with (
+            mock.patch.object(run.evaluate, "evaluate", side_effect=self.fake_eval),
+            mock.patch.object(run.subprocess, "run", side_effect=fake_build),
+        ):
+            drivers = run.build_drivers(["a", "b"], ".#x.e2e", workers=2)
+        self.assertEqual(
+            drivers,
+            {"a": Path("/nix/store/a-driver"), "b": Path("/nix/store/b-driver")},
+        )
+        (command,) = builds
+        self.assertEqual(command[:4], ["nix", "build", "--no-link", "--json"])
+        self.assertEqual(
+            command[4:], ["/nix/store/a-driver.drv^*", "/nix/store/b-driver.drv^*"]
+        )
+
+    def test_a_driver_that_does_not_build_is_a_run_error(self) -> None:
+        failed = subprocess.CompletedProcess(
+            [], 1, "", "building\nerror: builder for 'a-driver.drv' failed\n"
+        )
+        with (
+            mock.patch.object(run.evaluate, "evaluate", side_effect=self.fake_eval),
+            mock.patch.object(run.subprocess, "run", return_value=failed),
+        ):
+            with self.assertRaisesRegex(
+                run.RunError, "did not build:\nbuilding\nerror: builder for"
+            ):
+                run.build_drivers(["a"], ".#x.e2e", workers=1)
 
 
 class AutoJobsTest(unittest.TestCase):
@@ -291,7 +411,7 @@ class RetryTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.tmp = Path(temporary.name)
         patches = [
-            mock.patch.object(run, "_eval_drv", side_effect=self._drv),
+            mock.patch.object(run, "eval_drvs", side_effect=self._drvs),
             mock.patch.object(run, "_write_nix_log", side_effect=self._log),
         ]
         for patch in patches:
@@ -300,8 +420,8 @@ class RetryTest(unittest.TestCase):
         self.logged: list[str] = []
 
     @staticmethod
-    def _drv(attr: str) -> str:
-        return f"/nix/store/{attr.rsplit('.', 1)[-1]}.drv"
+    def _drvs(tests, *_args) -> dict[str, str]:
+        return {test: f"/nix/store/{test}.drv" for test in tests}
 
     def _log(self, drv: str, path: Path) -> None:
         self.logged.append(path.name)
@@ -311,6 +431,7 @@ class RetryTest(unittest.TestCase):
         builds: list[tuple[int, dict[str, run.TestOutcome]]],
         missing: list[list[str]],
         retries: int,
+        require_boot: bool = False,
     ) -> tuple[int, list[dict[str, object]], list[list[str]]]:
         built: list[list[str]] = []
 
@@ -329,6 +450,7 @@ class RetryTest(unittest.TestCase):
                 durations_out=durations,
                 retries=retries,
                 log_dir=self.tmp / "logs",
+                require_boot=require_boot,
             )
         records = [json.loads(line) for line in durations.read_text().splitlines()]
         return status, records, built
@@ -393,6 +515,64 @@ class RetryTest(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(len(built), 1)
 
+    def test_a_run_that_must_boot_fails_a_test_the_store_served(self) -> None:
+        status, records, built = self.run_with(
+            builds=[
+                (
+                    0,
+                    {
+                        "a": run.TestOutcome("pass", 50),
+                        "b": run.TestOutcome("pass", 70),
+                    },
+                )
+            ],
+            missing=[],
+            retries=1,
+            require_boot=True,
+        )
+        self.assertEqual(status, 1)
+        # Building again cannot boot a test whose output the store holds.
+        self.assertEqual(len(built), 1)
+        self.assertEqual(
+            records,
+            [
+                {"test": "a", "result": "pass", "seconds": 50},
+                {"test": "b", "result": "pass", "seconds": 70},
+                {"test": "c", "result": "fail", "seconds": 0, "not_booted": True},
+            ],
+        )
+        self.assertEqual(self.logged, [])
+
+    def test_a_run_that_must_boot_passes_when_every_test_was_built(self) -> None:
+        status, records, _built = self.run_with(
+            builds=[(0, {test: run.TestOutcome("pass", 40) for test in "abc"})],
+            missing=[],
+            retries=1,
+            require_boot=True,
+        )
+        self.assertEqual(status, 0)
+        self.assertTrue(all(r["result"] == "pass" for r in records))
+
+    def test_a_run_that_must_boot_fails_a_retry_the_store_served(self) -> None:
+        # b fails its build; the retry finds its output without building it.
+        status, records, _built = self.run_with(
+            builds=[
+                (
+                    1,
+                    {test: run.TestOutcome("pass", 40) for test in "abc"},
+                ),
+                (0, {}),
+            ],
+            missing=[["b"], []],
+            retries=1,
+            require_boot=True,
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            records[1],
+            {"test": "b", "result": "fail", "seconds": 0, "not_booted": True},
+        )
+
 
 class MissingOutputsTest(unittest.TestCase):
     def test_a_test_with_an_invalid_output_is_missing(self) -> None:
@@ -442,6 +622,17 @@ class ReportTest(unittest.TestCase):
                 "::warning title=FLAKY E2E test::b failed, then passed on retry",
                 "::error title=E2E test failed::c failed",
             ],
+        )
+
+    def test_a_test_that_did_not_boot_is_named_as_such(self) -> None:
+        outcomes = {"d": run.TestOutcome("fail", 0, not_booted=True)}
+        summary = run.format_summary("E2E shard 1/1", ["d"], outcomes)
+        self.assertIn("| `d` | FAIL (not booted) | 0 |", summary)
+        self.assertIn("1 test(s): 0 passed (0 FLAKY), 1 failed.", summary)
+        (annotation,) = run.format_annotations(["d"], outcomes)
+        self.assertTrue(
+            annotation.startswith("::error title=E2E test not booted::d did not boot"),
+            annotation,
         )
 
 
@@ -578,8 +769,8 @@ class RunDriversTest(unittest.TestCase):
         with (
             mock.patch.object(
                 run,
-                "_build_driver",
-                side_effect=lambda attr: self.drivers[attr.rsplit(".", 1)[-1]],
+                "build_drivers",
+                side_effect=lambda tests, *_args: {t: self.drivers[t] for t in tests},
             ),
             mock.patch.dict(
                 os.environ, {"RUNNER_TEMP": str(self.runner_temp), **(environ or {})}
@@ -672,7 +863,7 @@ class RunDriversTest(unittest.TestCase):
         ):
             with (
                 self.subTest(base=base),
-                mock.patch.object(run, "_build_driver") as build,
+                mock.patch.object(run, "build_drivers") as build,
                 mock.patch.dict(os.environ, {"RUNNER_TEMP": base}),
             ):
                 with self.assertRaisesRegex(run.RunError, problem):
@@ -708,6 +899,24 @@ class RunCommandTest(unittest.TestCase):
         build_mock.assert_called_once()
         # Round-robin without weights puts the even indices on shard 1.
         self.assertEqual(captured["tests"], ["a", "c"])
+        self.assertFalse(build_mock.call_args.kwargs["require_boot"])
+
+    def test_require_boot_reaches_the_build(self) -> None:
+        from ci.e2e import __main__ as cli
+
+        metadata = Metadata(
+            available_targets=["a"],
+            leaf_tests=["a"],
+            groups={"ci": ["a"]},
+            timeouts={"a": 900},
+        )
+        with (
+            mock.patch.object(cli, "load_metadata", return_value=metadata),
+            mock.patch.object(cli.run, "run_build", return_value=0) as build,
+        ):
+            code = cli.main(["run", "a", "--require-boot"])
+        self.assertEqual(code, 0)
+        self.assertTrue(build.call_args.kwargs["require_boot"])
 
     def test_execute_reports_a_base_too_long_for_the_sockets(self) -> None:
         from ci.e2e import __main__ as cli
@@ -721,7 +930,7 @@ class RunCommandTest(unittest.TestCase):
         too_long = "/" + "x" * 100
         with (
             mock.patch.object(cli, "load_metadata", return_value=metadata),
-            mock.patch.object(cli.run, "_build_driver") as build,
+            mock.patch.object(cli.run, "build_drivers") as build,
             mock.patch.dict(os.environ, {"RUNNER_TEMP": too_long}),
             contextlib.redirect_stderr(io.StringIO()) as stderr,
         ):

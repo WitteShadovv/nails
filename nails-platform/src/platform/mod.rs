@@ -97,9 +97,27 @@ pub struct HostProfile {
     pub has_current_system: bool,
     /// When [`kind`](Self::kind) is [`PlatformKind::Unsupported`], why.
     pub unsupported_reason: Option<String>,
+    /// When the host is admitted on a release NAILS has not been tested on (a
+    /// Debian or Ubuntu release at or above the minimum that the support table
+    /// does not list as tested), the warning that says so.
+    pub support_warning: Option<String>,
 }
 
 impl HostProfile {
+    /// The host as people name it, for messages: `NixOS 26.05`, `Ubuntu 24.04`,
+    /// or the os-release `ID` and `VERSION_ID` of another host (`linuxmint 22`).
+    pub fn name(&self) -> String {
+        let distribution = match (self.kind, self.id.as_deref()) {
+            (PlatformKind::NixOs, _) => "NixOS",
+            (_, Some(id)) => debian::label(id).unwrap_or(id),
+            (_, None) => return "this host".to_string(),
+        };
+        match self.version_id.as_deref() {
+            Some(version) => format!("{distribution} {version}"),
+            None => distribution.to_string(),
+        }
+    }
+
     /// Return `Err(NailsError::UnsupportedPlatform)` when this host is one NAILS
     /// refuses, otherwise `Ok(())`.
     ///

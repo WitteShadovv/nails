@@ -14,10 +14,12 @@ The decoy also has to be one the session can enter and leave:
 
 - **systemd 254 or newer** with `soft-reboot.target` and
   `systemd-soft-reboot.service` installed (`systemd-version`,
-  `soft-reboot-units`). Debian 13, Ubuntu 24.04 and current NixOS qualify;
-  Debian 12 and Ubuntu 22.04 are refused. A NixOS decoy on a nixpkgs that does
-  not install the two units needs the module `nails check` prints (and so does a
-  hidden NixOS configuration, or the session could not leave).
+  `soft-reboot-units`). Debian 13, Ubuntu 24.04, Ubuntu 26.04 and current
+  NixOS qualify; Debian 12 and Ubuntu 22.04 are refused. A later Debian or
+  Ubuntu release runs with a warning that NAILS has not been tested on it
+  (`platform`). A NixOS decoy on a nixpkgs that does not install the two units
+  needs the module `nails check` prints (and so does a hidden NixOS
+  configuration, or the session could not leave).
 - **A decoy root on a block device** (`decoy-root`): ext4, xfs, btrfs (including
   a subvolume) or f2fs. The way back mounts it again by device, so a tmpfs root
   (impermanence), an overlay root (overlayroot, bilibop-lockfs) and ZFS are
@@ -238,8 +240,16 @@ logind.
 
 ### Ubuntu
 
-- **Ubuntu 24.04 or newer** (systemd 255+). `overlayroot` is not supported: an
-  overlay root cannot be mounted again for the way back.
+- **Ubuntu 24.04 or 26.04** (systemd 255+). A later release runs with a
+  warning that NAILS has not been tested on it. `overlayroot` is not supported:
+  an overlay root cannot be mounted again for the way back.
+- **Ubuntu 26.04: reboot fully after a session.** In the hidden session chrony
+  (time sync) and CUPS (printing) fail: AppArmor blocks their messages to
+  systemd and to the journal, whose sockets were set up before the switch, so
+  the clock is not synchronized and printing times out. After the way back the
+  decoy lists chrony as failed until its next full reboot, which hints that a
+  soft-reboot happened. A plain `systemctl soft-reboot` into another root,
+  without NAILS, breaks chrony the same way.
 - **Volatile journald**: set `Storage=volatile` under `[Journal]` in
   `/etc/systemd/journald.conf`, or in a drop-in such as
   `/etc/systemd/journald.conf.d/50-volatile.conf`. NAILS resolves the main
@@ -253,8 +263,9 @@ logind.
 
 ### Debian
 
-- **Debian 13 or newer** (systemd 257+). `bilibop-lockfs` and other RAM-overlay
-  roots are not supported: the way back mounts the decoy root by device.
+- **Debian 13** (systemd 257+). A later release runs with a warning that NAILS
+  has not been tested on it. `bilibop-lockfs` and other RAM-overlay roots are
+  not supported: the way back mounts the decoy root by device.
 - **Volatile journald**: `Storage=volatile` in `journald.conf` or a
   `journald.conf.d/*.conf` drop-in.
 - Remove or disable `rsyslog`/`syslog-ng` and `auditd`.
@@ -483,6 +494,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Hidden kernel records imported by the decoy journal](threat-model.md#residual-channels) (`kmsg-import`) | journald reads /dev/kmsg from its stored sequence number after every soft-reboot | all | `decoy-persistence` | `journal-scan` | The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last generic lines and the hidden filesystem's unmount line follow it. | `soft-reboot-mechanics` |
 | [Network state the hidden session created or changed](operator-guide.md#how-it-works) (`network-state`) | a soft-reboot keeps the kernel's network state: links, addresses, routes and VPN tunnels the hidden session set up stay as they are, and so can a MAC address or a hostname it changed | all | none: the hidden session creates them after activation | none: a link the decoy adopted looks like one the decoy made itself | Before deactivating, take down every connection and VPN tunnel you brought up and delete every link you created by hand (`ip link delete`), or end the session with `deactivate --poweroff`, which powers off before the decoy's NetworkManager starts. End a session that used the hidden network-identity snippet with `deactivate --poweroff` (or `emergency --poweroff`). | none: session-dns-records only logs the link the hidden session leaves: what the way back does with it is not decided yet |
 | [Soft-reboot counter and boot ID](threat-model.md#residual-channels) (`soft-reboot-counter`) | SoftRebootsCount (systemd 256 and newer) and the unchanged boot ID and uptime, readable with systemctl and journalctl | all | none: kernel and PID 1 state, not a file | none: RAM only, gone at power-off | Power off after the session; keep the decoy journal volatile. | `soft-reboot-mechanics` |
+| [Login and boot records around a switch](threat-model.md#residual-channels) (`login-boot-records`) | the decoy's own writers record the way back in the login and boot records (classic wtmp, wtmpdb, and the getty and login records) | all | none: the records are written by the decoy's own units after the switch, not before it | none: the records are the decoy's own; the remaining process-number difference needs a cold-boot baseline to judge | On Debian and Ubuntu the way back keeps the wtmpdb boot writer from recording soft-reboot and corrects a backdated classic-wtmp boot record to the time the decoy came back, without masking either writer, so no row goes missing and the login and boot records read as one clean power cycle. The process numbers of the records written after the way back still continue from the decoy's boot on every family, a weaker tell a later release addresses; power off after the session to leave none of it. | none: asserted against a power-cycle control by the cross-distro login- and boot-record test under nix/distro-tests, outside the NixOS e2e suite |
 | [The decoy's mounts made again by the way back](operator-guide.md#how-it-works) (`decoy-mount-table`) | the mount table after the way back: the decoy's mounts made again with new mount IDs and peer groups, its root and its initrd's mounts (the store bind) included; /run/credentials a mount of its own; the boot's mounts below /run gone | all | none: the mount table is kernel state; activation warns about a decoy mount the way back cannot make again at a place the session carries, and about one a plain soft-reboot keeps | none: RAM only, gone at power-off | The way back makes every decoy mount it can take from the decoy root or a filesystem the session carried again as the decoy had it when the entry began (its filesystem, the directory of it the mount shows, its place in a stack, its options), NixOS's read-only store bind included, and gives the decoy its utab lines back with them. Power off after the session. | `session-decoy-mount-table`, `session-emergency` |
 | [EFI NVRAM, RTC and firmware pstore](threat-model.md#invariant) (`firmware-state`) | EFI variables, the real-time clock, firmware-backed pstore | all | none: not filesystem state, so nothing on the decoy root shows it | none: EFI variables and firmware storage are not part of a disk image | NAILS never writes NVRAM; avoid firmware tools inside the session. | `uefi-esp-nvram-invariant` |
 | [Memory remanence](operator-guide.md#cold-boot-and-running-memory-attacks) (`ram-remanence`) | DRAM contents until power-off | all | `memory-wipe` | `memory-swap` | Power off (`--poweroff`) before handing the machine over; boot the decoy with init_on_free=1. | none: memory forensics is out of scope; no VM test images RAM |

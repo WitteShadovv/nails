@@ -10,9 +10,11 @@
 #   - rust-toolchain.toml (the Rust toolchain)
 # The rust-toolchain update and the rust-overlay flake input share one pull
 # request: flake.nix builds the pinned channel from rust-overlay, so a new
-# toolchain is only usable together with an overlay that knows it. Cargo.lock's
-# transitive dependencies, which no Dependabot update touches, are refreshed by
-# the lockfile task in scheduled.yml.
+# toolchain is only usable together with an overlay that knows it. The cooldown
+# holds back only the overlay (Dependabot finds no publication date for a Rust
+# release), so a release from the last seven days can arrive without it; see
+# docs/ci.md. Cargo.lock's transitive dependencies, which no Dependabot update
+# touches, are refreshed by the lockfile task in scheduled.yml.
 #
 # Every ecosystem runs monthly, groups its updates into a single pull request
 # and waits a 7-day cooldown after a release before proposing it, so a freshly

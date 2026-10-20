@@ -13,6 +13,17 @@ of this changelog for that version becomes the release notes word for word, and
 
 ## [Unreleased]
 
+### Changed
+
+- The release binary is built with Rust 1.99.1; 0.3.0-rc.2 was built with 1.93.0.
+- A release run boots every NixOS VM test on the tagged commit. Until now it took a test whose
+  derivation had passed in an earlier run from the project's binary cache, without booting it.
+- NAILS is tested on Debian 13, Ubuntu 24.04 and Ubuntu 26.04. A later release, such as Ubuntu
+  26.10 (released on 2026-10-15), still runs, but `init`, `check` and `activate` now warn that
+  NAILS has not been tested on it; 0.3.0-rc.2 accepted every release from Debian 13 and Ubuntu
+  24.04 on without a word. `check` names the detected host in a new `platform` row, which carries
+  that warning.
+
 ### Fixed
 
 - The attach gate and the storage checks resolve an `/etc/fstab` or `/etc/crypttab` entry that
@@ -36,9 +47,28 @@ of this changelog for that version becomes the release notes word for word, and
 - `nails verify --disk` no longer wraps round the block numbers of a GPT whose byte offsets do not
   fit in 64 bits, which let a corrupt or crafted table place a partition, the free space or the
   partition entries anywhere on the disk.
+- The refusal of a Debian or Ubuntu host below the minimum release, or whose release cannot be
+  read, names the minimum as the distribution writes it, `Debian 13` and `Ubuntu 24.04`, instead of
+  `Debian 13.0` and `Ubuntu 24.4`.
+- `nails check` could report a host ready that `activate` then refused with exit 8, such as Fedora,
+  Arch or a Debian host without the merged `/usr`. Its new `platform` row fails there, with the
+  reason `activate` gives.
 
 ### Security
 
+- The way back no longer leaves a login or boot record on the decoy that an ordinary power cycle
+  never writes. On Debian with wtmpdb the boot writer named the boot row `soft-reboot` when the
+  service manager reported a soft-reboot; on a service manager that keeps the userspace start time
+  across a soft-reboot (systemd 255 and earlier, as on Ubuntu 24.04) the classic-`wtmp` boot record
+  carried the decoy's first boot time, so the file held a boot stamped before the shutdown that
+  precedes it. The way back now keeps the wtmpdb boot writer from recording `soft-reboot` and
+  corrects a backdated `wtmp` boot record to the time the decoy came back, without masking either
+  writer, so no shutdown row goes missing and the decoy's login and boot records read as one clean
+  power cycle. The process numbers of the getty and login records written after the way back still
+  continue from the decoy's boot, a weaker tell a later release will address.
+  **Until you run a build with this fix**, end Debian 13 and Ubuntu 24.04 sessions with
+  `nails deactivate --poweroff` (or `nails emergency --poweroff`): a power-off has no way back, so
+  none of these records are written.
 - The hidden session masks a decoy swap or mount under the unit name systemd gives it also when its
   `/etc/fstab` entry names the device by a tag whose value holds a character udev encodes in its
   link or is in single quotes (`LABEL=swap\040space`), or has a path with a `.` component or `..`
@@ -48,6 +78,21 @@ of this changelog for that version becomes the release notes word for word, and
   layers under the simplified name, the name of its unit (`<hidden-root>/root/mounts/mnt-backup` for
   `/mnt/./backup`, where 0.3.0-rc.2 used `mnt-.-backup`): rename the directory while NAILS is
   inactive, or the hidden files in it stay out of view.
+- A release can be verified without a GitHub account. It carries its three attestations as
+  Sigstore bundles (`provenance.sigstore.json`, `sbom.sigstore.json`, `vex.sigstore.json`), which
+  cosign 3.1.3 or later checks against the downloaded files, also on a computer without a network
+  connection; `docs/verify-release.md` shows how. The release workflow runs the same check before
+  it drafts the release.
+
+### Known issues
+
+- On Ubuntu 26.04, chrony (time sync) and CUPS (printing) fail after the switch into the hidden
+  session: AppArmor blocks their messages to systemd and to the journal, whose sockets were set up
+  before the switch. Other services that AppArmor confines may fail the same way. In the hidden
+  session the clock is not synchronized and printing times out, and after the way back the decoy
+  lists chrony as failed until its next full reboot, which hints that a soft-reboot happened.
+  Reboot fully after a session to clear it. The fault lies outside NAILS: a plain
+  `systemctl soft-reboot` into another root, without NAILS, breaks chrony the same way.
 
 ## [0.3.0-rc.2] - 2026-10-16
 

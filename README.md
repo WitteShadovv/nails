@@ -13,7 +13,7 @@
 <br>
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![MSRV 1.93](https://img.shields.io/badge/MSRV-1.93-orange.svg)](rust-toolchain.toml)
-[![Platforms](https://img.shields.io/badge/platforms-NixOS%20%7C%20Debian%2013%20%7C%20Ubuntu%2024.04%2B-5277C3.svg)](#requirements)
+[![Platforms](https://img.shields.io/badge/platforms-NixOS%20%7C%20Debian%2013%20%7C%20Ubuntu%2024.04%20%26%2026.04-5277C3.svg)](#requirements)
 [![systemd 254+](https://img.shields.io/badge/systemd-254%2B-555.svg)](#requirements)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-yellow.svg)](#project-status)
 
@@ -26,8 +26,8 @@ volume you provide, and soft-reboots back to the plain decoy when you are done.
 Nothing that starts the hidden session is installed on the decoy.
 
 NixOS is the first-class platform (a declarative hidden configuration is built
-and entered in the same step); Debian 13 and Ubuntu 24.04 or newer run the same
-session with whatever the hidden `/etc` holds.
+and entered in the same step); Debian 13, Ubuntu 24.04 and Ubuntu 26.04 run the
+same session with whatever the hidden `/etc` holds.
 
 > [!WARNING]
 > NAILS is **alpha** security software. It is meant for technically experienced
@@ -109,7 +109,7 @@ model is written down; read it before relying on NAILS.
 
 | Requirement | Notes |
 |---|---|
-| A supported host | NixOS, Debian 13 or newer, or Ubuntu 24.04 or newer, with **systemd 254 or newer**. Other hosts are refused (see below). |
+| A supported host | NixOS, Debian 13, or Ubuntu 24.04 or 26.04, with **systemd 254 or newer**. A later Debian or Ubuntu release runs with a warning that NAILS has not been tested on it; other hosts are refused (see below). |
 | An amnesic decoy | The decoy must keep no durable record of the session: volatile journald, no rsyslog, syslog-ng or auditd, no disk swap. Activation fails closed otherwise; `--accept-persistent-decoy` overrides the journal, syslog and audit refusals, never the swap check. See [docs/decoy-requirements.md](docs/decoy-requirements.md). |
 | A decoy root on a block device | ext4, xfs, btrfs or f2fs. The way back mounts the decoy root again by its device. |
 | A hidden volume | Storage of its own: not a folder, a subvolume or a bind mount of a filesystem the computer uses, nor a volume inside its storage. Mounted, writable and kernel-managed (dm-crypt, a loop device), with a filesystem that can host an overlayfs upper: ext4, xfs, btrfs or f2fs. See [docs/backends.md](docs/backends.md). |
@@ -119,14 +119,16 @@ model is written down; read it before relying on NAILS.
 <details>
 <summary><b>Platform matrix and refused setups</b></summary>
 
-NAILS detects the host from `/etc/os-release` and the running init; the pre-flight
-checks then confirm it can soft-reboot.
+NAILS detects the host from `/etc/os-release` and the running init and names it
+in the `platform` row of `nails check`; the pre-flight checks then confirm it can
+soft-reboot.
 
 | Platform | Support | Notes |
 |---|---|---|
 | NixOS | Full | A hidden NixOS configuration (flake or `configuration.nix`) is built into the hidden root's store and entered in the same soft-reboot. It must run on the decoy's kernel. Pinned nixpkgs without `soft-reboot.target`/`systemd-soft-reboot.service` need a small module, which `nails check` prints. |
-| Debian 13 (trixie) and newer | Root overlay | The same whole-root session; the hidden configuration is whatever the upper's `/etc` holds. Requires the merged-`/usr` layout. |
-| Ubuntu 24.04 and newer | Root overlay | As Debian. |
+| Debian 13 (trixie) | Root overlay | The same whole-root session; the hidden configuration is whatever the upper's `/etc` holds. Requires the merged-`/usr` layout. |
+| Ubuntu 24.04 and 26.04 | Root overlay | As Debian. On 26.04, chrony and CUPS fail in the hidden session and the decoy shows chrony failed until a full reboot; see [the Ubuntu notes](docs/decoy-requirements.md#ubuntu). |
+| Other releases: Debian after 13, Ubuntu after 24.04 | Untested | Accepted on the same terms, with a warning in `init`, `check` and `activate` that NAILS has not been tested on the release, such as Ubuntu 25.04 or 26.10. |
 | Debian-family derivatives | Provisional | A host whose `ID_LIKE` names `debian` or `ubuntu` is accepted on the same terms when its systemd is new enough; its base release is not version-gated. |
 | Debian 12, Ubuntu 22.04 | Refused | systemd is too old for a soft-reboot (252 and 249). |
 | Fedora, Arch, other distributions | Refused | No validated backend yet. Planned; see [ROADMAP.md](ROADMAP.md). |
@@ -168,8 +170,9 @@ NAILS is installed by copying a verified static binary onto the mounted hidden
 volume, and in no other way. No package, registry or decoy-side install is
 supported; [docs/distribution.md](docs/distribution.md) explains why.
 
-1. Outside the decoy system (a live environment that keeps nothing, or a
-   separate machine), download the latest bundle from
+1. Outside the decoy system (a live environment that keeps nothing, such as
+   [Tails](docs/install-from-tails.md), or a separate machine), download the
+   latest bundle from
    [GitHub Releases](https://github.com/WitteShadovv/nails/releases) and verify
    it as [docs/verify-release.md](docs/verify-release.md) describes (checksum
    and build provenance). For more assurance, rebuild it:
@@ -190,6 +193,11 @@ unit names and the journal, and NAILS warns when one contains a telling word.
 
 <details>
 <summary><b>Upgrading the binary</b></summary>
+
+New releases appear in the
+[releases feed](https://github.com/WitteShadovv/nails/releases.atom), which any
+feed reader can follow without a GitHub account. Follow it inside a hidden
+session or on another device, never on the decoy.
 
 Replace the binary only while no session is active, as the
 [operator guide](docs/operator-guide.md#updating-nails) says. Fetch or build the
@@ -541,8 +549,9 @@ your setup before running the new binary.
 
 - **Session mode.** The per-directory overlays (`/etc`, `/home`, `/var`, ...) are
   gone. The only mode is the whole-root session entered and left with a
-  soft-reboot, which needs systemd 254 or newer. Besides NixOS, Debian 13 and
-  Ubuntu 24.04 or newer are now supported as decoys. The hidden root's layers
+  soft-reboot, which needs systemd 254 or newer. Besides NixOS, Debian 13,
+  Ubuntu 24.04 and Ubuntu 26.04 are now supported as decoys, and a later Debian
+  or Ubuntu release runs with a warning. The hidden root's layers
   live under `<hidden-root>/root/` (among them `upper`, `work` and `mounts`);
   the uppers of the old mode (`<hidden-root>/<name>` and
   `<hidden-root>/.work`) are not read. Move what you need from them into the

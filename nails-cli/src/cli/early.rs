@@ -19,6 +19,10 @@
 //!   disk that appears (`[session_mounts] read_only`):
 //!   `nails_teardown::whole_root::disk_guard` makes it read-only unless the
 //!   session uses it, and the process ends at once, with no output and no log.
+//! - **`reconcile-records`**, run by a one-shot unit the way back leaves for an
+//!   FHS decoy's first start: `nails_teardown::whole_root::boot_records` makes
+//!   the login and boot records read as a clean power cycle and removes itself,
+//!   then the process ends at once, with no output and no log.
 //!
 //! In every other case `dispatch` does nothing and the normal path runs.
 //!
@@ -180,6 +184,18 @@ pub fn is_transition(argv: &[OsString]) -> bool {
     argv.len() == 2 && argv[1] == nails_teardown::whole_root::transition::TRANSITION_ARG
 }
 
+/// Whether `argv` is exactly the boot-record reconcile step the way back leaves
+/// for an FHS decoy's first start, and whether it must make `/run` `noexec`
+/// again (the flag is present only when the way back cleared it).
+pub fn reconcile_records(argv: &[OsString]) -> Option<bool> {
+    use nails_teardown::whole_root::boot_records::{NOEXEC_FLAG, RECONCILE_ARG};
+    match &argv[1..] {
+        [verb] if verb == RECONCILE_ARG => Some(false),
+        [verb, flag] if verb == RECONCILE_ARG && flag == NOEXEC_FLAG => Some(true),
+        _ => None,
+    }
+}
+
 /// The device node of exactly the read-only guard udev runs.
 pub fn guarded_device(argv: &[OsString]) -> Option<&std::path::Path> {
     (argv.len() == 3
@@ -222,6 +238,16 @@ pub fn dispatch() -> bool {
         && may_run()
     {
         guard_device(node);
+        crate::cli::chokepoint::exit_process(0);
+    }
+    if let Some(restore_noexec) = reconcile_records(&argv)
+        && may_run()
+    {
+        nails_teardown::whole_root::boot_records::run(
+            std::path::Path::new("/run"),
+            std::path::Path::new("/"),
+            restore_noexec,
+        );
         crate::cli::chokepoint::exit_process(0);
     }
     let Some(args) = recognise(&argv) else {

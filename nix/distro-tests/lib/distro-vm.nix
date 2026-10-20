@@ -40,22 +40,38 @@ in
   #              NOT remounted after a reboot: a test that reboots remounts them.
   #   memorySize guest RAM in MiB (null keeps the nix-vm-test default).
   #   testScript the driver Python, same dialect as the NixOS suite.
+  #   target     which of nix-vm-test's three outputs to take:
+  #                "sandboxed"  (default) a derivation that runs the test in the
+  #                             Nix build sandbox -- hermetic, but no network;
+  #                "driver"     a `test-driver` script run on the host, outside
+  #                             the sandbox, so the guest's user-mode networking
+  #                             reaches the internet (needed to install the
+  #                             distro's own record packages, e.g. wtmpdb);
+  #                "driverInteractive" the same with a REPL and full qemu.
+  #              The smoke suite leaves this at "sandboxed"; the login- and
+  #              boot-record test uses "driver" because it installs a package in
+  #              the guest (wtmpdb on Debian).
   buildVmTest =
     {
       entry,
       sharedDirs ? { },
       memorySize ? null,
       testScript,
+      target ? "sandboxed",
     }:
     assert lib.assertMsg (
       vmLib ? ${entry.distro} && vmLib.${entry.distro} ? ${entry.image}
     ) "nix-vm-test has no ${entry.distro} image ${entry.image} (see nix/distro-tests/images.nix)";
-    # nix-vm-test returns { driver, driverInteractive, sandboxed }; the
-    # sandboxed run is the buildable test.
+    assert lib.assertMsg (builtins.elem target [
+      "sandboxed"
+      "driver"
+      "driverInteractive"
+    ]) "distro-vm target must be sandboxed, driver or driverInteractive, not ${target}";
+    # nix-vm-test returns { driver, driverInteractive, sandboxed }.
     (vmLib.${entry.distro}.${entry.image} (
       {
         inherit sharedDirs testScript;
       }
       // lib.optionalAttrs (memorySize != null) { inherit memorySize; }
-    )).sandboxed;
+    )).${target};
 }

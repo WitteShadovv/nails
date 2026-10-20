@@ -12,10 +12,11 @@ is about direction, not dates.
 
 Work in progress for the current release line.
 
-- **Debian/Ubuntu support.** Debian 13 and Ubuntu 24.04+ are the first non-NixOS platform. The
-  platform layer detects the host, refuses unsupported layouts (ostree/rpm-ostree,
-  transactional-update and non-systemd init), and runs the same whole-root session, with the hidden
-  configuration in the upper's `/etc` instead of a NixOS build.
+- **Debian/Ubuntu support.** Debian 13, Ubuntu 24.04 and Ubuntu 26.04 are the first non-NixOS
+  platform; a later release runs with a warning until it is tested. The platform layer detects the
+  host, refuses unsupported layouts (ostree/rpm-ostree, transactional-update and non-systemd init),
+  and runs the same whole-root session, with the hidden configuration in the upper's `/etc` instead
+  of a NixOS build.
 - **Safer activation, deactivation and recovery.** Reduce partial-failure cases during activation
   and the way back, tighten handling of a lost hidden volume, and improve recovery when an
   operation is interrupted or the operator falls back to `nails emergency` / `nails recover`.

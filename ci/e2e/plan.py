@@ -26,8 +26,11 @@ from pathlib import Path
 from typing import Any, TextIO
 
 # No VM test boots and passes faster than this; shorter timings are cached
-# results or bogus entries.
-MIN_WEIGHT = 30
+# results (a test served from the Nix store records 0 s) or bogus entries.
+# A boot alone takes about 8 s, and the fastest tests took 11 to 20 s on a
+# hosted runner in October 2026: a higher floor discarded their samples and
+# kept their old weights.
+MIN_WEIGHT = 5
 # A test's timeout must be at least this multiple of its weight, so slower
 # runners still finish well inside the deadline.
 TIMEOUT_HEADROOM = 2
@@ -38,9 +41,11 @@ DRIFT_THRESHOLD = 0.25
 # normalise by, and raw durations are compared instead.
 MIN_TESTS_FOR_SPEED_FACTOR = 5
 # Weighted test seconds one CI shard should hold when the shard count is
-# derived. Setting up a runner (Nix, the VM closure) costs a few minutes on
-# top, so a shard of this size finishes in about 20 minutes.
-SHARD_SECONDS = 900
+# derived: about the weight of the longest test, which no split can shorten.
+# The whole suite then spreads over the ten shards a run may use, and a small
+# selection over a few. Setting up a runner (Nix, the evaluation, the VM
+# closures) comes on top.
+SHARD_SECONDS = 300
 # A shard's job timeout is this multiple of its weighted load plus the setup
 # allowance, so one retried test or a slower runner still fits, while a hung
 # shard is stopped long before GitHub's six-hour limit.

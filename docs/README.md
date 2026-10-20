@@ -16,6 +16,7 @@ Read these before relying on NAILS, in roughly this order.
 | [Storage backends](backends.md) | Which hidden-volume backends work, how to open each, and their deniability hazards (discards, timestamps, copy-on-write). |
 | [Operator guide](operator-guide.md) | The whole workflow by where each step runs, ending a session (deactivate, emergency, recover), the panic switch, the recovery runbook and the honest limits. |
 | [Verify a release](verify-release.md) | Checking a downloaded release (checksum and provenance) without leaving a trace on the decoy. |
+| [First install from Tails](install-from-tails.md) | Installing NAILS for the first time from Tails, a live system that keeps nothing, and why its VeraCrypt volume must use PBKDF2. |
 | [Distribution channels](distribution.md) | Why the only install path is a verified binary on the hidden volume. |
 | [Shell history forensics](bash-history-forensics.md) | Where a shell can record commands, and how NAILS and the decoy setup keep them off the decoy disk. |
 

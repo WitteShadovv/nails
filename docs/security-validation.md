@@ -1,6 +1,6 @@
 # Security validation
 
-This guide documents the security validation mechanisms that are actually in use in this public repository: SBOM generation, dependency policy checks, deterministic release verification and GitHub artifact attestations.
+This guide documents the security validation mechanisms that are actually in use in this public repository: SBOM generation, dependency policy checks, static analysis with CodeQL, deterministic release verification and GitHub artifact attestations.
 
 ## Validation surfaces
 
@@ -11,6 +11,7 @@ The primary CI workflow performs:
 - the dependency policy over the shipped dependency graph (`just deny`): bans, licenses and sources on every run; RustSec advisories and the `deny.toml` ignore expiry check when `Cargo.toml`, `Cargo.lock` or `deny.toml` change
 - the test suite with an enforced line-coverage threshold, the doctests and the privileged real-overlayfs tests, which support security-sensitive change control
 - the canonical Nix build of `.#nails-release` with an archive smoke test
+- the release SBOM and the VEX document, written and checked by `sbom.yml` as a release writes and checks them, on every push to `main` and on pull requests that change what they are made from; nothing is attested there
 
 ### Weekly (`.github/workflows/scheduled.yml`)
 
@@ -24,6 +25,10 @@ The scheduled workflow never gates a merge. It runs:
 
 OpenSSF Scorecard grades the repository's supply-chain practices and never gates a merge; the README badge and code scanning show the results ([ci.md](ci.md#openssf-scorecard)).
 
+### On pull requests, on pushes to main and next, and weekly (`.github/workflows/codeql.yml`)
+
+CodeQL analyses the Rust workspace and the Python with the `security-extended` queries, and the workflows with its default suite. Its alerts go to code scanning. A pull request into `main` merges only with its results, and not with a new alert of severity error or a new security alert of severity high or critical ([ci.md](ci.md#codeql)).
+
 ### In release automation (`.github/workflows/release.yml`)
 
 The release workflow adds:
@@ -31,9 +36,9 @@ The release workflow adds:
 - a check that the annotated tag, the workspace version, `Cargo.lock` and `CHANGELOG.md` agree
 - the canonical Nix build of `.#nails-release`, compiled from source with `--locked`
 - an independent rebuild on a fresh runner, compared byte for byte via `reproducibility.yml`
-- the whole E2E suite on the tagged commit
+- the whole E2E suite on the tagged commit, without the project's binary cache, so every test boots there instead of counting a pass from an earlier run
 - the release SBOM, musl included, checked for what `actions/attest` requires before the E2E suite starts, and an OpenVEX document for musl's patched CVEs
-- GitHub artifact attestations for the archive, the binary, the SBOM and the VEX document, created only after every gate passed
+- GitHub artifact attestations for the archive, the binary, the SBOM and the VEX document, created only after every gate passed, attached to the release as Sigstore bundles and checked with cosign before the release is drafted
 
 [ci.md](ci.md#release-workflow) describes the jobs.
 
@@ -65,6 +70,7 @@ Without `--fail-on-errors`, `cyclonedx validate` reports problems but still exit
 | Source | Asset | Notes |
 |---|---|---|
 | Published GitHub releases and prereleases | `sbom.cdx.json`, `musl.openvex.json` | Produced and attested by `release.yml` |
+| `ci.yml` runs with an `sbom` job | `sbom.cdx.json`, `musl.openvex.json` in the `release-sbom` artifact | Written for `v` plus the workspace version and checked as a release checks them; never attested or published |
 
 ### Example downstream use
 
@@ -131,7 +137,7 @@ For PRs and pushes, the `nix-build` job of `ci.yml` validates the same release d
 
 ## Provenance and verification
 
-The release workflow creates GitHub artifact attestations: Sigstore-signed SLSA build provenance for the archive and the binary, an SBOM attestation that binds `sbom.cdx.json` to them, and an OpenVEX attestation for `musl.openvex.json`. They meet SLSA v1.0 Build Level 2, signed provenance from a hosted build platform; the build does not run in an isolated reusable workflow, so the project does not claim Build Level 3.
+The release workflow creates GitHub artifact attestations: Sigstore-signed SLSA build provenance for the archive and the binary, an SBOM attestation that binds `sbom.cdx.json` to them, and an OpenVEX attestation for `musl.openvex.json`. They meet SLSA v1.0 Build Level 2, signed provenance from a hosted build platform; the build does not run in an isolated reusable workflow, so the project does not claim Build Level 3. Each release carries them as Sigstore bundles (`provenance.sigstore.json`, `sbom.sigstore.json`, `vex.sigstore.json`), so cosign can check a download without a GitHub account.
 
 [verify-release.md](verify-release.md) is the one description of how to check a release: the checksum, the attestation, and where to do it without leaving a trace on the decoy system.
 
@@ -160,7 +166,7 @@ measures only code that ships.
 
 ## Caveats
 
-- GitHub artifact attestations depend on GitHub platform support; verifying them needs the GitHub CLI and a GitHub login.
+- GitHub artifact attestations depend on GitHub platform support to be signed. Checking one needs cosign (or the GitHub CLI), not a GitHub account, and a network connection unless cosign gets a saved copy of Sigstore's public keys.
 - Workflow artifacts are temporary; published release assets are the public release channel.
 - Provenance proves build origin and integrity, not that the software is free of design or implementation flaws.
 

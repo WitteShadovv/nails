@@ -86,6 +86,11 @@ pub struct RegistryInputs {
     /// binary-location check probes for decoy symlinks. `None` (the default
     /// used by unit tests that build inputs directly) probes nothing.
     pub caller_path: Option<std::ffi::OsString>,
+    /// The host detection found (see [`NailsManager::host_profile`]), which the
+    /// platform check reports. `None` (no detection ran or it failed, and the
+    /// default used by unit tests that build inputs directly) leaves that check
+    /// out, as activation then refuses no host either.
+    pub host_profile: Option<crate::platform::HostProfile>,
 }
 
 /// Assemble the pre-flight check registry for a set of [`RegistryInputs`].
@@ -117,9 +122,9 @@ pub fn build_registry<F: Filesystem>(
     use crate::preflight::{
         BackendDetectCheck, BackendEntriesCheck, BinaryLocationCheck, DecoyPersistenceCheck,
         HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck,
-        MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, ResidueCatalogCheck,
-        SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck, SwapCheck,
-        SymlinkSupportCheck, UpperFsCapabilityCheck,
+        MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, PlatformCheck,
+        ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
+        SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
@@ -153,6 +158,13 @@ pub fn build_registry<F: Filesystem>(
         paths.clone(),
         hidden_root.clone(),
     )));
+
+    // The detected host: a supported platform passes with its name, a release
+    // NAILS has not been tested on warns, and a host activation refuses fails
+    // with the same reason.
+    if let Some(profile) = &inputs.host_profile {
+        registry.add_check(Box::new(PlatformCheck::new(profile.clone())));
+    }
 
     // The hidden root is entered with `systemctl soft-reboot` (systemd 254),
     // through the two units that implement it.
@@ -335,6 +347,7 @@ impl<F: Filesystem> NailsManager<F> {
             // can inspect the decoy state; an unresolved operator simply skips it.
             operator: crate::TargetUser::resolve_with(self.runtime_env()).ok(),
             caller_path: self.runtime_env().path.clone(),
+            host_profile: self.host_profile().cloned(),
         };
 
         // The host's config layer contributes its own checks; it is `Some` only

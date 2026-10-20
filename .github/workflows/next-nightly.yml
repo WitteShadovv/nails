@@ -1,0 +1,102 @@
+name: Next nightly
+
+# The nightly runs of next, the integration branch. GitHub runs a schedule
+# only on the default branch, so this workflow on main starts them: it
+# dispatches e2e.yml in execute mode and distro-e2e.yml on next, which then
+# run with next's own workflow files and code, as main's nightly runs do with
+# main's. Their results go where main's go: with report-status set, e2e.yml
+# reports a red run in the 'CI red: E2E (next)' issue, and distro-e2e.yml
+# stays informational. Without a branch next there is nothing to start, and
+# the run passes.
+#
+# This workflow itself reports only a failure to start the runs, in the
+# 'CI red: Next nightly' issue.
+
+on:
+  schedule:
+    # Nightly at 01:23 UTC, ahead of main's E2E run at 02:17 and distro run
+    # at 03:41, so that the two nights seldom wait for each other's runners.
+    - cron: "23 1 * * *"
+  # Starts the same runs by hand.
+  workflow_dispatch:
+
+permissions: {}
+
+# A run takes seconds; a second one waits for it.
+concurrency:
+  group: next-nightly
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  dispatch:
+    name: Start the runs on next
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      actions: write # dispatch e2e.yml and distro-e2e.yml on next
+
+    steps:
+      # git ls-remote exits with 2 when the remote has no such branch. The
+      # repository is public, so this needs no checkout and no token.
+      - name: Look for the branch next
+        id: branch
+        env:
+          REMOTE: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          status=0
+          git ls-remote --exit-code --heads "$REMOTE" refs/heads/next > /dev/null || status=$?
+          case "$status" in
+            0) echo "exists=true" >> "$GITHUB_OUTPUT" ;;
+            2)
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+              echo "No branch next; there is nothing to start."
+              ;;
+            *)
+              echo "::error::git ls-remote $REMOTE failed with exit status $status"
+              exit 1
+              ;;
+          esac
+
+      - name: Start the nightly runs of next
+        if: steps.branch.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh workflow run e2e.yml --ref next -f mode=execute -f report-status=true
+          gh workflow run distro-e2e.yml --ref next
+          {
+            echo "## Nightly runs of next"
+            echo
+            echo "Started \`e2e.yml\` in execute mode and \`distro-e2e.yml\` on \`next\`; their runs are listed under each workflow for the branch \`next\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # A run nobody watches: a failure to start the runs opens or comments on the
+  # 'CI red: Next nightly' issue, and a later run that starts them closes it.
+  report-status:
+    name: Report status
+    needs: dispatch
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}

@@ -73,6 +73,23 @@ CYCLONEDX_SERIAL = re.compile(
     r"urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"
 )
 
+WORKFLOWS = Path(__file__).resolve().parents[2] / ".github" / "workflows"
+# A step's use of actions/attest: the ref and the comment after it, which for
+# a pinned commit names its release ("# v4.2.2"), as Dependabot keeps it.
+ATTEST_USES = re.compile(
+    r"""^\s*(?:-\s+)?uses:\s*["']?actions/attest@(?P<ref>[^\s"'#]+)["']?"""
+    r"(?:\s+#\s*(?P<comment>.*\S))?\s*$"
+)
+
+
+def attest_pins(text: str) -> list[tuple[int, str, str | None]]:
+    """The line number, ref and comment of each use of actions/attest."""
+    return [
+        (number, match["ref"], match["comment"])
+        for number, line in enumerate(text.splitlines(), start=1)
+        if (match := ATTEST_USES.match(line))
+    ]
+
 
 def sbom(version: str = "0.3.0", triple: str = release.TARGET_TRIPLE) -> dict[str, Any]:
     """Return the skeleton of a cargo-cyclonedx SBOM of the nails binary."""
@@ -309,6 +326,76 @@ class CheckCommandTest(unittest.TestCase):
         code, _, err, _ = self.run_check(root, "v0.3.0")
         self.assertEqual(code, 2)
         self.assertIn("cannot read the release inputs", err)
+
+
+class SbomReleaseTest(unittest.TestCase):
+    def test_release_tag_names_the_workspace_version(self) -> None:
+        manifest = CARGO_TOML.format(version="0.3.0-rc.3")
+        self.assertEqual(
+            release.sbom_release(manifest, "v0.3.0-rc.3"),
+            ("0.3.0-rc.3", "v0.3.0-rc.3"),
+        )
+
+    def test_tag_of_another_version_fails(self) -> None:
+        manifest = CARGO_TOML.format(version="0.3.0")
+        for tag in ("v0.3.1", "0.3.0", ""):
+            with self.subTest(tag=tag):
+                with self.assertRaisesRegex(
+                    ReleaseError, "the tag for this tree is v0.3.0"
+                ):
+                    release.sbom_release(manifest, tag)
+
+    def test_tag_of_a_dev_version_fails(self) -> None:
+        manifest = CARGO_TOML.format(version="0.4.0-dev")
+        with self.assertRaisesRegex(ReleaseError, "never released"):
+            release.sbom_release(manifest, "v0.4.0-dev")
+
+    def test_without_a_tag_the_workspace_version_names_the_tag(self) -> None:
+        for version in ("0.3.0", "0.3.0-rc.2", "0.4.0-dev"):
+            with self.subTest(version=version):
+                manifest = CARGO_TOML.format(version=version)
+                self.assertEqual(
+                    release.sbom_release(manifest), (version, f"v{version}")
+                )
+
+    def test_malformed_workspace_version_fails_without_a_tag(self) -> None:
+        for version in ("0.4", "0.4.0+build.1"):
+            with self.subTest(version=version):
+                with self.assertRaisesRegex(ReleaseError, "is not X.Y.Z"):
+                    release.sbom_release(CARGO_TOML.format(version=version))
+
+    def run_command(self, version: str | None, *argv: str) -> tuple[int, str, str]:
+        root = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        if version is not None:
+            (root / "Cargo.toml").write_text(CARGO_TOML.format(version=version))
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = release.main(["sbom-release", "--source", str(root), *argv])
+        return code, out.getvalue(), err.getvalue()
+
+    def test_command_prints_github_output_lines(self) -> None:
+        code, out, err = self.run_command("0.3.0-rc.3", "--tag", "v0.3.0-rc.3")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "version=0.3.0-rc.3\ntag=v0.3.0-rc.3\n")
+        self.assertIn("v0.3.0-rc.3: the SBOM of nails 0.3.0-rc.3", err)
+
+    def test_command_without_a_tag_names_the_tag_of_the_tree(self) -> None:
+        code, out, err = self.run_command("0.4.0-dev")
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "version=0.4.0-dev\ntag=v0.4.0-dev\n")
+        self.assertIn("no tag given: the SBOM that v0.4.0-dev would get", err)
+
+    def test_command_refuses_the_tag_of_another_version(self) -> None:
+        code, out, err = self.run_command("0.3.0", "--tag", "v0.3.1")
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("does not match the workspace version", err)
+
+    def test_command_without_a_manifest_is_exit_2(self) -> None:
+        code, out, err = self.run_command(None)
+        self.assertEqual(code, 2)
+        self.assertEqual(out, "")
+        self.assertIn("cannot read the workspace manifest", err)
 
 
 class MuslTest(unittest.TestCase):
@@ -677,6 +764,52 @@ class AttestCheckTest(unittest.TestCase):
                 code, err = self.run_check(path)
                 self.assertEqual(code, 2)
                 self.assertIn("cannot read", err)
+
+
+class AttestPinTest(unittest.TestCase):
+    """sbom-check copies the rules of the actions/attest that the workflows use.
+
+    A Dependabot update moves the pins and their version comments; this test
+    then fails until someone has read the new release's rules.
+    """
+
+    def test_every_pin_is_the_release_whose_rules_sbom_check_copies(self) -> None:
+        pinned = (release.ATTEST_COMMIT, release.ATTEST_VERSION)
+        found = 0
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            for line, ref, comment in attest_pins(path.read_text(encoding="utf-8")):
+                found += 1
+                with self.subTest(workflow=path.name, line=line):
+                    self.assertEqual(
+                        (ref, comment),
+                        pinned,
+                        f"{path.name}:{line} uses actions/attest@{ref} "
+                        f"# {comment}, but sbom-check copies the SBOM rules of "
+                        f"{release.ATTEST_VERSION} ({release.ATTEST_COMMIT}). "
+                        "Read src/sbom.ts and src/predicate.ts at the new pin, "
+                        "bring check_attestable and musl_vex in line with them, "
+                        "then set ATTEST_VERSION and ATTEST_COMMIT in "
+                        "ci/release.py to the pin.",
+                    )
+        self.assertGreater(found, 0, "no workflow uses actions/attest")
+
+    def test_pins_are_read_with_their_version_comment(self) -> None:
+        commit = "1" * 40
+        text = (
+            "jobs:\n"
+            "  attest:\n"
+            "    steps:\n"
+            "      - name: Attest\n"
+            f"        uses: actions/attest@{commit} # v9.1.0\n"
+            "      - uses: actions/attest@v4\n"
+            f'      - uses: "actions/attest@{commit}"\n'
+            f"      - uses: actions/attest-build-provenance@{commit} # v3.0.0\n"
+            f"        # uses: actions/attest@{commit} # v1.0.0\n"
+        )
+        self.assertEqual(
+            attest_pins(text),
+            [(5, commit, "v9.1.0"), (6, "v4", None), (7, commit, None)],
+        )
 
 
 class MuslVexTest(unittest.TestCase):

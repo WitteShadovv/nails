@@ -389,11 +389,41 @@ fn non_nixos_host_skips_the_layout() {
     };
 
     let plan = plan(&fs, &args).expect("a supported FHS host should still pass");
+    // Debian 13 is a release NAILS has been tested on: no warning.
+    assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
     match plan.bootstrap {
         HardwareBootstrap::Skip(reason) => {
             assert!(reason.contains("no NixOS config layer"), "{reason}")
         }
         HardwareBootstrap::From(path) => panic!("expected a skip, got From({})", path.display()),
+    }
+}
+
+#[test]
+fn an_untested_release_is_initialized_with_a_warning() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    fs.mock_set_file_content(
+        "/etc/os-release",
+        "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\n",
+    );
+    fs.mock_set_file_content("/proc/1/comm", "systemd\n");
+
+    let args = InitArgs {
+        path: root.to_path_buf(),
+        allow_decoy_storage: false,
+        hardware_config: None,
+        no_hardware_config: false,
+    };
+
+    let plan = plan(&fs, &args).expect("an untested release is admitted");
+    assert!(matches!(plan.bootstrap, HardwareBootstrap::Skip(_)));
+    match plan.warnings.as_slice() {
+        [warning] => assert!(
+            warning.starts_with("Ubuntu 26.10 is not a release NAILS has been tested on"),
+            "{warning}"
+        ),
+        other => panic!("expected one warning, got {other:?}"),
     }
 }
 

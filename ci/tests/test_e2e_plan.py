@@ -203,10 +203,10 @@ class ValidateTest(unittest.TestCase):
         self.assertIn("short: weight 451s exceeds 1/2", findings.issues[0])
 
     def test_weight_below_minimum_is_an_issue(self) -> None:
-        findings = plan.validate({"short": 10, "long": 30}, self.timeouts)
+        findings = plan.validate({"short": 4, "long": 5}, self.timeouts)
         self.assertEqual(findings.errors, [])
         self.assertEqual(len(findings.issues), 1)
-        self.assertIn("short: weight 10s is below 30s", findings.issues[0])
+        self.assertIn("short: weight 4s is below 5s", findings.issues[0])
 
     def test_stale_and_missing_weights_are_issues(self) -> None:
         findings = plan.validate({"short": 100, "gone": 100}, self.timeouts)
@@ -235,15 +235,20 @@ class LoadSamplesTest(TempDirTestCase):
             [
                 {"test": "a", "result": "pass", "seconds": 120},
                 {"test": "b", "result": "fail", "seconds": 300},
-                {"test": "c", "result": "pass", "seconds": 4},
+                {"test": "c", "result": "pass", "seconds": 0},
+                {"test": "d", "result": "pass", "seconds": 4},
                 "",
                 {"test": "a", "result": "pass", "seconds": 30},
+                # The fastest tests boot and pass in under half a minute.
+                {"test": "e", "result": "pass", "seconds": 11},
             ],
         )
         second = write_jsonl(
             self.tmp, "shard-2.jsonl", [{"test": "a", "result": "pass", "seconds": 90}]
         )
-        self.assertEqual(plan.load_samples([first, second]), {"a": [120, 30, 90]})
+        self.assertEqual(
+            plan.load_samples([first, second]), {"a": [120, 30, 90], "e": [11]}
+        )
 
     def test_malformed_line_names_file_and_line(self) -> None:
         path = write_jsonl(
@@ -279,7 +284,7 @@ class RegenTest(unittest.TestCase):
 
     def test_regenerates_from_samples(self) -> None:
         new, notes = plan.regen(
-            {"a": 3609, "b": 200, "c": 10, "gone": 50},
+            {"a": 3609, "b": 200, "c": 4, "gone": 50},
             {"a": [140, 150, 170], "d": [700, 900], "e": [101, 102]},
             self.timeouts,
         )
@@ -287,7 +292,7 @@ class RegenTest(unittest.TestCase):
         self.assertEqual(
             notes,
             [
-                "c: no samples and the old weight 10 is not usable; dropped",
+                "c: no samples and the old weight 4 is not usable; dropped",
                 "d: measured 800s, clamped to 750s; raise its globalTimeout to keep "
                 "the measured value",
                 "gone: not a leaf E2E test; dropped",
@@ -408,13 +413,13 @@ class CheckAndDriftCliTest(TempDirTestCase):
         weights = real_weights()
         # Any live leaf test will do; tests get merged and renamed over time.
         test = sorted(weights)[0]
-        weights[test] = 11
+        weights[test] = 4
         stale = self.write_json("weights.json", weights)
         flagged = self.run_module(
             "check", "--weights", str(stale), "--metadata", str(metadata)
         )
         self.assertEqual(flagged.returncode, 1)
-        self.assertIn(f"error: {test}: weight 11s is below 30s", flagged.stderr)
+        self.assertIn(f"error: {test}: weight 4s is below 5s", flagged.stderr)
 
     def test_drift_appends_a_summary_and_annotations(self) -> None:
         weights = self.write_json("weights.json", {"a": 100, "b": 100})

@@ -68,7 +68,7 @@ or `nodes` keeps `{ self, ... }:` or `{ self, pkgs, ... }:`.
 - `runDetachedCommandFn` → `run_detached_command(unit_name, command)`
 - `readStatusJsonFn` → `read_status_json(config_path=None)` (requires exit 0) and `read_status_json_with_rc(config_path=None)` → `(rc, data)` for fail-closed postures (exit 6 unknown, 7 degraded/inconsistent)
 - `runVerifyFn` → `run_verify(args="", config_path=None)`
-- `canonicalActivateFn` → `canonical_activate(config_path, extra_args="", label="activate")`: soft-reboots into the hidden root, follows the switch and asserts the hidden root; activate's output is in `/mnt/data/<label>.log`
+- `canonicalActivateFn` → `canonical_activate(config_path, extra_args="", label="activate")`: soft-reboots into the hidden root, follows the switch and asserts the hidden root; activate's output is in `/mnt/data/<label>.log` and, line by line, on the serial console the driver records
 - `canonicalDeactivateFn` → `canonical_deactivate(config_path, label="deactivate")`: soft-reboots back, asserts the plain decoy and waits for the hidden mapping to close
 
 The soft-reboot helpers themselves (`follow_soft_reboot`, `assert_hidden_root`,
@@ -84,10 +84,26 @@ backdoor again. `follow_soft_reboot(machine, trigger, label, deadline_s=600.0,
 start=None)` runs `trigger` in the background and polls the driver's full
 console log (not `wait_for_console_text`, which reads one queued line per
 second while a soft-reboot prints hundreds). It fails at once if the new
-userspace lands in emergency mode or PID 1 freezes, reconnects to the new
-backdoor, and returns PID 1's own timings of the switch, logged as `TIMING:`
-lines. A trigger's output is lost with the old userspace unless the trigger
-redirects it to the hidden volume.
+userspace lands in emergency mode or PID 1 freezes, or if QEMU exits (a
+power-off, a full reboot or a kernel panic instead of the switch). Otherwise it
+reconnects to the new backdoor and returns PID 1's own timings of the switch,
+logged as `TIMING:` lines. A trigger's output is lost with the old userspace
+unless the trigger redirects it to the hidden volume or copies it to
+`session.SERIAL_CONSOLE`.
+
+When the trigger returns, a `nails-trigger-exit=` line on the serial console
+reports its exit status and, if that is not 0, the system's state from
+`systemctl is-system-running`. A non-zero status while the system is not
+`stopping` means that no switch will come (an activation refused or rolled
+back), and the wait fails at once. With the switch already enqueued it is no
+failure: an activation with warnings exits 9. Only a whole report counts: the
+kernel writes its own lines to the serial port between the pieces of a line
+that a process sends there, so a report can arrive cut in two, and the wait
+ignores a cut one. A command typed on a tty (`start=`) can report the same line
+itself, as the emergency test's commands do. Write such lines to the serial
+console, never to `/dev/console`: that is the last `console=` on the kernel
+command line, `tty0` in the NixOS test VMs, and the driver records only the
+serial port.
 
 ### `lib/backend-fault.nix`
 
@@ -164,7 +180,7 @@ The tests, one link farm per group, and the metadata live under `legacyPackages.
 - `--retries 1` runs failed tests once more and reports a pass on that retry as FLAKY.
 - `--execute` runs each test's driver directly instead of building the test, so a cached result does not count.
 - `--jobs N` bounds the VM tests built at once (nix `--max-jobs`); `--jobs auto` sizes it from the host's RAM and cores (3 on a 15 GiB, 12-core host).
-- `--eval-batch N` evaluates N tests per `nix eval` process before building them by derivation path, so evaluation memory stays bounded however many tests are selected. Without it every test is evaluated in its own process.
+- Every test is evaluated before anything is built, in batches: each batch in a `nix eval` process of its own, so evaluation memory stays bounded however many tests are selected, and several processes at once, since the evaluator works on one core. `--eval-jobs N` bounds the processes that run at once; the default, `auto`, sizes it from the host's cores and RAM. `--eval-batch N` puts N tests in each process; without it the tests are spread evenly over the processes, at most 8 in each (a process grows by about 250 MiB a test). The tests are then built by derivation path, and in `--execute` mode their drivers in one `nix build`.
 - `--durations-out FILE` writes one JSON line per test (`test`, `result`, `seconds`); `--log-dir DIR` keeps the log of every failed test.
 
 Every VM gets 2 cores and 2 GB of memory, graphical nodes 4 GB (`lib/vm-config.nix`, `lib/graphical-vm-config.nix`). The size is fixed rather than derived from the host, so a test evaluates to the same derivation everywhere: the runner builds without `--impure`, the evaluation cache works, and a test that passed once can be fetched from a binary cache instead of being run again.
@@ -176,17 +192,17 @@ The interactive driver opens a Python prompt instead of running the test: `start
 ## Timeouts and shard weights
 
 - Every test runs with a driver `globalTimeout` of 900 s (`defaultGlobalTimeout` in `default.nix`). A test that needs longer sets a top-level `globalTimeout` next to its `name`, with a comment giving its measured runtime (see `tests/performance/07-performance.nix`). `meta.timeout` is derived as `globalTimeout + 60` and must not be set by a test. The effective value of each test is published as `timeouts` in the E2E metadata.
-- `session.follow_soft_reboot` (and so `canonical_activate` and `canonical_deactivate`) waits at most `deadline_s` seconds (600 by default) for the new userspace's backdoor, and fails within seconds, printing the console's timeouts and failed dependencies, when the new userspace reaches emergency mode or PID 1 freezes. A soft-reboot takes about 10 to 15 s in the VM, so a test with several round trips sets its own `globalTimeout` (see `tests/session/session-lifecycle.nix`). `session.wait_for_power_off` bounds a power-off the same way.
-- `shard-durations.json` holds one weight in seconds per leaf test, and every weight must satisfy `30 <= weight <= timeout / 2`. A weight at or above the test's timeout is a recorded hang: the planner refuses to use it. The remaining rules are enforced by `nix eval --json .#legacyPackages.x86_64-linux.e2e-metadata | python3 -m ci.e2e check --metadata -` and by the unit tests in `ci/tests/` (`python3 -m unittest discover -s ci/tests -t .`), which CI runs on every PR.
-- Each E2E shard uploads its per-test durations as the `e2e-durations-shard-N` artifact and adds a drift report to its step summary: tests more than 25% off their weight after allowing for the runner's overall speed. The report never fails the job.
+- `session.follow_soft_reboot` (and so `canonical_activate` and `canonical_deactivate`) waits at most `deadline_s` seconds (600 by default) for the new userspace's backdoor, and fails within seconds, printing the console's timeouts and failed dependencies, when the new userspace reaches emergency mode or PID 1 freezes, or when the trigger fails without enqueueing the switch, and at once when QEMU exits. A soft-reboot takes about 10 to 15 s in the VM, so a test with several round trips sets its own `globalTimeout` (see `tests/session/session-lifecycle.nix`). `session.wait_for_power_off` bounds a power-off the same way.
+- `shard-durations.json` holds one weight in seconds per leaf test, and every weight must satisfy `5 <= weight <= timeout / 2`. A weight at or above the test's timeout is a recorded hang: the planner refuses to use it. The remaining rules are enforced by `nix eval --json .#legacyPackages.x86_64-linux.e2e-metadata | python3 -m ci.e2e check --metadata -` and by the unit tests in `ci/tests/` (`python3 -m unittest discover -s ci/tests -t .`), which CI runs on every PR.
+- Each E2E shard uploads its per-test durations as the `e2e-durations-shard-N` artifact and adds a drift report to its step summary: tests more than 25% off their weight after allowing for the runner's overall speed. The report never fails the job. A test that boots in `--execute` mode is timed from its driver's start to its end; one built in a `nix build` from the start of its build to its end, as nix reports them while it runs, so tests built side by side on one runner take longer than alone. A test served from the Nix store or a binary cache did not boot and records 0 s.
 
-The nightly E2E run regenerates the weights from its own durations and uploads the result as the `shard-durations` artifact. To regenerate them by hand, download the `e2e-durations-*` artifacts of one or more runs (for example with `gh run download RUN_ID -p 'e2e-durations-*'`), then run:
+The nightly E2E run regenerates the weights from its own durations and uploads the result as the `shard-durations` artifact. To regenerate them by hand, download the `e2e-durations-*` artifacts of one or more `execute` runs, the nightly or a dispatched one (for example with `gh run download RUN_ID -p 'e2e-durations-*'`), then run:
 
 ```sh
 python3 -m ci.e2e regen-weights e2e-durations-*/*.jsonl
 ```
 
-`regen` takes the median of each test's passing runs of at least 30 s (a shorter pass was served from the Nix store without booting a VM), clamps it to half the test's timeout and reports every clamp, keeps the weights of tests without samples, and drops tests that no longer exist. Raise a test's `globalTimeout` instead of accepting a clamp.
+`regen` takes the median of each test's passing runs of at least 5 s (a shorter pass was served from the Nix store without booting a VM), clamps it to half the test's timeout and reports every clamp, keeps the weights of tests without samples, and drops tests that no longer exist. Raise a test's `globalTimeout` instead of accepting a clamp. Leave out the durations of other runs: they build their tests side by side, so a test's time there can be longer than its own, and `regen` cannot tell the two kinds apart.
 
 ### Per-test fixed cost
 

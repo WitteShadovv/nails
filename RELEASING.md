@@ -2,9 +2,10 @@
 
 A release is one annotated `v*` tag on `main`. Pushing it starts `.github/workflows/release.yml`,
 which checks the tag, builds the bundle from source, rebuilds it on a fresh runner, generates the
-SBOM, runs the whole E2E suite, attests the files and drafts the GitHub release. Publishing the
-draft is the only manual step after the tag. [docs/ci.md](docs/ci.md#release-workflow) describes
-the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on the result.
+SBOM, runs the whole E2E suite, attests the files, checks the attestations as users will and
+drafts the GitHub release. Publishing the draft is the only manual step after the tag.
+[docs/ci.md](docs/ci.md#release-workflow) describes the jobs;
+[docs/verify-release.md](docs/verify-release.md) is what users run on the result.
 
 ## Versions
 
@@ -34,13 +35,21 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
    `## [X.Y.Z] - YYYY-MM-DD` and open a new, empty `## [Unreleased]` above it. That section
    becomes the release notes word for word, so write it for users.
 4. **Merge** the pull request into `main` once `gate` and `e2e-result` are green.
-5. **Wait for the runs on `main`.** The push of the merge commit starts `ci.yml` and `e2e.yml`.
+5. **Wait for the runs on `main`.** The push of the merge commit starts `ci.yml`, whose `sbom`
+   job writes and checks the SBOM as the release run will, and `e2e.yml`.
    On `main`, `e2e.yml` runs the whole suite (mode `all`) on the runners the release run uses,
    while the pull request's `e2e-result` may have covered only the affected tests. Tag only once
    both runs are green: a test that fails there costs a fix on `main`, one that fails in the
    release run costs the version, because a pushed tag is never re-created (see
    [When something fails](#when-something-fails)). If the path filter skipped the E2E run, the
-   last E2E run on `main` must be green.
+   last E2E run on `main` must be green. The push run takes a test that passed before from the
+   binary cache, but the release run boots every test. So a run that boots every test must also
+   have passed on the commit: the nightly run, or a dispatch that runs the suite as the release
+   will:
+
+   ```bash
+   gh workflow run e2e.yml --ref main -f mode=all -f cache=false
+   ```
 6. **Tag** the merge commit with an annotated tag and push only that tag:
 
    ```bash
@@ -54,10 +63,12 @@ the jobs; [docs/verify-release.md](docs/verify-release.md) is what users run on 
    changelog section is wrong, and the `sbom` job within minutes, before the E2E suite starts,
    when `actions/attest` would refuse the SBOM; the whole run takes about as long as the E2E
    suite. A failed run opens or comments on the `CI red: Release` issue.
-8. **Review the draft** on the Releases page: the notes, and the five assets (the archive,
-   `nails`, `checksums.txt`, `sbom.cdx.json`, `musl.openvex.json`). Drafts are visible to maintainers only. Download
-   `nails` and `checksums.txt` from the draft and follow
-   [docs/verify-release.md](docs/verify-release.md).
+8. **Review the draft** on the Releases page: the notes, and the eight assets (the archive,
+   `nails`, `checksums.txt`, `sbom.cdx.json`, `musl.openvex.json` and the Sigstore bundles
+   `provenance.sigstore.json`, `sbom.sigstore.json`, `vex.sigstore.json`). Drafts are visible to
+   maintainers only, and the download URLs work only once a release is published, so download
+   `nails`, `checksums.txt` and `provenance.sigstore.json` from the draft and follow
+   [docs/verify-release.md](docs/verify-release.md) from step 2.
 9. **Publish** the draft. Once published, a release, its assets and its tag never change. For a
    candidate, keep "Set as a pre-release"; the workflow ticks it for `-rc.N` versions.
 10. **Open the next cycle.** Bump `main` to the next `-dev` version (for example `0.3.1-dev` or

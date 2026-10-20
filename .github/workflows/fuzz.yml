@@ -6,7 +6,7 @@ name: Fuzz
 # ClusterFuzzLite's images run them. One workflow serves two lanes:
 #
 #   pull request to main  fuzz: five minutes over every target; a crash or
-#                         a hang fails the job and is reported to code
+#   or next               a hang fails the job and is reported to code
 #                         scanning
 #   daily schedule        batch: an hour over every target; a crash or a
 #                         hang fails the run, which the 'CI red: Fuzz' issue
@@ -28,7 +28,7 @@ name: Fuzz
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, next]
     # Everything a fuzz target is built from.
     paths:
       - "nails-*/**"

@@ -13,6 +13,10 @@
 //! the backend. [`detect`](super::detect) consults [`classify_family`] for every
 //! non-NixOS systemd host and turns the result into a [`PlatformKind`].
 //!
+//! Each entry also lists the releases NAILS has been tested on. A release at or
+//! above the minimum that is not on that list (a newer Ubuntu than the tests
+//! cover) is admitted with a warning that says so, never refused.
+//!
 //! [`PlatformKind`]: super::PlatformKind
 
 /// A distribution version reduced to `(major, minor)`.
@@ -48,12 +52,19 @@ impl DistroVersion {
 }
 
 impl std::fmt::Display for DistroVersion {
+    /// The release as the Debian family writes it: the major alone when there is
+    /// no minor (`13`), otherwise with a two-digit minor (`24.04`).
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}", self.major, self.minor)
+        if self.minor == 0 {
+            write!(f, "{}", self.major)
+        } else {
+            write!(f, "{}.{:02}", self.major, self.minor)
+        }
     }
 }
 
-/// One supported Debian-family distribution and the floor it is validated at.
+/// One supported Debian-family distribution: the floor it is admitted from and
+/// the releases it was tested on.
 struct SupportedDistro {
     /// The `/etc/os-release` `ID`, lowercased.
     id: &'static str,
@@ -61,28 +72,48 @@ struct SupportedDistro {
     label: &'static str,
     /// The oldest release NAILS supports on this distribution.
     minimum: DistroVersion,
+    /// The releases NAILS has been tested on. Any other release at or above
+    /// [`minimum`](Self::minimum) is admitted with a warning that it is
+    /// untested.
+    validated: &'static [DistroVersion],
 }
 
 /// The support table. Adding a distribution NAILS has validated is one entry
-/// here — the backend ([`FhsPlatform`](super::FhsPlatform)) is already generic.
+/// here — the backend ([`FhsPlatform`](super::FhsPlatform)) is already generic —
+/// and a release the tests cover is one more `validated` version.
 const SUPPORTED: &[SupportedDistro] = &[
     SupportedDistro {
         id: "debian",
         label: "Debian",
         minimum: DistroVersion::new(13, 0),
+        validated: &[DistroVersion::new(13, 0)],
     },
     SupportedDistro {
         id: "ubuntu",
         label: "Ubuntu",
         minimum: DistroVersion::new(24, 4),
+        validated: &[DistroVersion::new(24, 4), DistroVersion::new(26, 4)],
     },
 ];
+
+/// The name of a table distribution (`Ubuntu` for `ubuntu`), or `None` for an
+/// `ID` the table does not list.
+pub(crate) fn label(id: &str) -> Option<&'static str> {
+    SUPPORTED
+        .iter()
+        .find(|entry| entry.id == id)
+        .map(|entry| entry.label)
+}
 
 /// The outcome of consulting the support table for a non-NixOS systemd host.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FamilySupport {
-    /// A supported Debian-family host at or above its minimum version.
+    /// A Debian-family host on a release NAILS has been tested on, or a
+    /// derivative accepted provisionally.
     Supported,
+    /// A table distribution at or above its minimum, on a release NAILS has not
+    /// been tested on. It is admitted; the string is the warning that says so.
+    UntestedRelease(String),
     /// A Debian-family host below the version NAILS supports, or whose version
     /// could not be confirmed. Carries the documented refusal reason.
     Refused(String),
@@ -90,7 +121,9 @@ pub(crate) enum FamilySupport {
 
 /// Classify a non-NixOS systemd host against the Debian-family support table.
 ///
-/// - A table `ID` (debian, ubuntu) is version-gated against its minimum.
+/// - A table `ID` (debian, ubuntu) is version-gated against its minimum, and a
+///   release at or above it that the table does not list as tested is admitted
+///   with a warning ([`FamilySupport::UntestedRelease`]).
 /// - A non-table `ID` whose `ID_LIKE` names a table family (e.g. a derivative
 ///   declaring `ID_LIKE=debian`) is accepted provisionally: its own release
 ///   scheme cannot be mapped to a base version reliably, and the read-only
@@ -146,7 +179,30 @@ fn gate_version(entry: &SupportedDistro, version_id: Option<&str>) -> FamilySupp
         ));
     }
 
+    if !entry.validated.contains(&version) {
+        return FamilySupport::UntestedRelease(format!(
+            "{} {raw} is not a release NAILS has been tested on (tested: {} {}). NAILS runs \
+             on it, but a change in this release can break the session or leave a trace \
+             NAILS does not know about. Use a tested release, or run `nails rehearse` on this \
+             computer before you rely on it.",
+            entry.label,
+            entry.label,
+            releases(entry.validated),
+        ));
+    }
+
     FamilySupport::Supported
+}
+
+/// `versions` as a list for a sentence: `13`, `24.04 and 26.04`, or
+/// `22.04, 24.04 and 26.04`.
+fn releases(versions: &[DistroVersion]) -> String {
+    let names: Vec<String> = versions.iter().map(ToString::to_string).collect();
+    match names.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// The documented refusal for a host NAILS has no backend for.
@@ -154,12 +210,12 @@ fn unknown_reason(id: Option<&str>) -> String {
     match id {
         Some(id) => format!(
             "host '{id}' is not a supported platform. NAILS supports NixOS and \
-             the Debian family (Debian 13+, Ubuntu 24.04+); other distributions \
-             are not yet validated."
+             the Debian family (Debian 13, Ubuntu 24.04 and 26.04); other \
+             distributions are not yet validated."
         ),
         None => "this host declares no os-release ID; NAILS supports NixOS and \
-             the Debian family (Debian 13+, Ubuntu 24.04+) and refuses hosts it \
-             cannot identify."
+             the Debian family (Debian 13, Ubuntu 24.04 and 26.04) and refuses \
+             hosts it cannot identify."
             .to_string(),
     }
 }
@@ -172,7 +228,7 @@ fn unknown_reason(id: Option<&str>) -> String {
 pub(crate) const USR_MERGE_REFUSAL: &str = "this Debian-family host is not usr-merged (/bin, /sbin or /lib is a real \
      directory rather than a symlink into /usr). NAILS is tested only on the merged \
      layout, which every supported release ships. Convert the host with usrmerge, \
-     or use Debian 13+ or Ubuntu 24.04+.";
+     or use Debian 13, Ubuntu 24.04 or Ubuntu 26.04.";
 
 #[cfg(test)]
 mod tests {
@@ -211,7 +267,26 @@ mod tests {
     }
 
     #[test]
-    fn debian_at_and_above_minimum_is_supported() {
+    fn version_is_written_as_the_distribution_writes_it() {
+        assert_eq!(DistroVersion::new(13, 0).to_string(), "13");
+        assert_eq!(DistroVersion::new(24, 4).to_string(), "24.04");
+        assert_eq!(DistroVersion::new(26, 10).to_string(), "26.10");
+    }
+
+    #[test]
+    fn releases_are_listed_as_in_a_sentence() {
+        let v = DistroVersion::new;
+        assert_eq!(releases(&[]), "");
+        assert_eq!(releases(&[v(13, 0)]), "13");
+        assert_eq!(releases(&[v(24, 4), v(26, 4)]), "24.04 and 26.04");
+        assert_eq!(
+            releases(&[v(22, 4), v(24, 4), v(26, 4)]),
+            "22.04, 24.04 and 26.04"
+        );
+    }
+
+    #[test]
+    fn debian_13_is_supported_and_12_refused() {
         assert!(matches!(
             classify_family(Some("debian"), &[], Some("12")),
             FamilySupport::Refused(_)
@@ -223,15 +298,48 @@ mod tests {
     }
 
     #[test]
-    fn ubuntu_at_and_above_minimum_is_supported() {
-        assert_eq!(
-            classify_family(Some("ubuntu"), &["debian".to_string()], Some("24.04")),
-            FamilySupport::Supported
-        );
-        assert_eq!(
-            classify_family(Some("ubuntu"), &["debian".to_string()], Some("25.04")),
-            FamilySupport::Supported
-        );
+    fn ubuntu_tested_releases_are_supported() {
+        for release in ["24.04", "26.04"] {
+            assert_eq!(
+                classify_family(Some("ubuntu"), &["debian".to_string()], Some(release)),
+                FamilySupport::Supported,
+                "{release}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_untested_ubuntu_release_is_admitted_with_a_warning() {
+        // Newer than every tested release (26.10 came out on 2026-10-15), or
+        // between two of them: admitted, never refused, and the warning says so.
+        for release in ["26.10", "28.04", "24.10", "25.04", "25.10"] {
+            match classify_family(Some("ubuntu"), &["debian".to_string()], Some(release)) {
+                FamilySupport::UntestedRelease(warning) => {
+                    assert!(
+                        warning.starts_with(&format!(
+                            "Ubuntu {release} is not a release NAILS has been tested on \
+                             (tested: Ubuntu 24.04 and 26.04)."
+                        )),
+                        "{warning}"
+                    );
+                    assert!(warning.contains("nails rehearse"), "{warning}");
+                }
+                other => panic!("{release}: expected an untested release, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_debian_release_after_the_tested_one_is_admitted_with_a_warning() {
+        match classify_family(Some("debian"), &[], Some("14")) {
+            FamilySupport::UntestedRelease(warning) => assert!(
+                warning.starts_with(
+                    "Debian 14 is not a release NAILS has been tested on (tested: Debian 13)."
+                ),
+                "{warning}"
+            ),
+            other => panic!("expected an untested release, got {other:?}"),
+        }
     }
 
     #[test]
@@ -241,6 +349,7 @@ mod tests {
             FamilySupport::Refused(reason) => {
                 assert!(reason.contains("11"));
                 assert!(reason.contains("minimum"));
+                assert!(reason.contains("(Debian 13)"), "{reason}");
             }
             other => panic!("expected refusal, got {other:?}"),
         }
@@ -249,7 +358,35 @@ mod tests {
     #[test]
     fn ubuntu_below_minimum_is_refused() {
         let outcome = classify_family(Some("ubuntu"), &["debian".to_string()], Some("22.04"));
-        assert!(matches!(outcome, FamilySupport::Refused(_)));
+        match outcome {
+            FamilySupport::Refused(reason) => {
+                assert!(reason.contains("(Ubuntu 24.04)"), "{reason}")
+            }
+            other => panic!("expected refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn every_tested_release_is_one_the_table_admits() {
+        for entry in SUPPORTED {
+            assert!(!entry.validated.is_empty(), "{} lists no release", entry.id);
+            for version in entry.validated {
+                assert!(*version >= entry.minimum, "{} {version}", entry.id);
+                assert_eq!(
+                    classify_family(Some(entry.id), &[], Some(&version.to_string())),
+                    FamilySupport::Supported,
+                    "{} {version}",
+                    entry.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn labels_name_the_table_distributions_only() {
+        assert_eq!(label("ubuntu"), Some("Ubuntu"));
+        assert_eq!(label("debian"), Some("Debian"));
+        assert_eq!(label("linuxmint"), None);
     }
 
     #[test]

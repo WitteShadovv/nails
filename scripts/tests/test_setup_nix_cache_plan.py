@@ -131,7 +131,10 @@ class TrustTest(unittest.TestCase):
         repo = "owner/nails"
         cases = [
             ("push", "refs/heads/main", "", True),
+            ("push", "refs/heads/next", "", True),
             ("push", "refs/heads/feature", "", False),
+            ("push", "refs/heads/next-feature", "", False),
+            ("push", "refs/tags/next", "", False),
             ("push", "refs/tags/v1.0.0", "", False),
             ("schedule", "refs/heads/main", "", True),
             ("workflow_dispatch", "refs/heads/feature", "", True),

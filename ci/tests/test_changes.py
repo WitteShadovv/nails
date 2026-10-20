@@ -20,6 +20,7 @@ NOTHING = {
     "nix": False,
     "workflows": False,
     "docs": False,
+    "sbom": False,
 }
 EVERYTHING = {
     "rust": True,
@@ -28,6 +29,7 @@ EVERYTHING = {
     "nix": True,
     "workflows": True,
     "docs": True,
+    "sbom": True,
 }
 
 
@@ -80,7 +82,7 @@ class SelectTest(unittest.TestCase):
     def test_manifests_and_lockfile_are_dependency_changes(self) -> None:
         for path in ("Cargo.toml", "Cargo.lock", "nails-core/Cargo.toml"):
             with self.subTest(path=path):
-                self.assertEqual(changes.select([path]), only("rust", "deps"))
+                self.assertEqual(changes.select([path]), only("rust", "deps", "sbom"))
 
     def test_deny_policy_is_only_a_dependency_change(self) -> None:
         self.assertEqual(changes.select(["deny.toml"]), only("deps"))
@@ -95,7 +97,7 @@ class SelectTest(unittest.TestCase):
         ):
             with self.subTest(path=path):
                 self.assertTrue(changes.select([path])["nix"])
-        self.assertEqual(changes.select(["flake.lock"]), only("nix"))
+        self.assertEqual(changes.select(["flake.lock"]), only("nix", "sbom"))
 
     def test_ci_tooling_runs_the_tooling_checks(self) -> None:
         for path in (
@@ -122,7 +124,44 @@ class SelectTest(unittest.TestCase):
 
     def test_filters_combine_over_several_paths(self) -> None:
         paths = ["docs/ci.md", "nails-cli/src/main.rs", "flake.nix"]
-        self.assertEqual(changes.select(paths), only("rust", "nix", "docs"))
+        self.assertEqual(changes.select(paths), only("rust", "nix", "docs", "sbom"))
+
+    def test_what_the_sbom_is_made_from_runs_the_sbom_check(self) -> None:
+        for path in (
+            "Cargo.lock",
+            "Cargo.toml",
+            "nails-cli/Cargo.toml",
+            "nails-session/Cargo.toml",
+            "rust-toolchain.toml",
+            "flake.nix",
+            "flake.lock",
+            "ci/release.py",
+            ".github/workflows/release.yml",
+            ".github/workflows/sbom.yml",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(changes.select([path])["sbom"])
+        self.assertEqual(changes.select(["ci/release.py"]), only("workflows", "sbom"))
+        self.assertEqual(
+            changes.select([".github/workflows/sbom.yml"]), only("workflows", "sbom")
+        )
+
+    def test_other_changes_leave_the_sbom_alone(self) -> None:
+        for path in (
+            "nails-cli/src/main.rs",
+            "fuzz/Cargo.toml",
+            "fuzz/Cargo.lock",
+            "deny.toml",
+            "nix/checks.nix",
+            "ci/docs_check.py",
+            "ci/e2e/plan.py",
+            ".github/workflows/e2e.yml",
+            ".github/actions/setup-nix/action.yml",
+            "docs/flake.nix.md",
+            "docs/ci.md",
+        ):
+            with self.subTest(path=path):
+                self.assertFalse(changes.select([path])["sbom"])
 
 
 def git(repo: Path, *args: str) -> str:
@@ -213,6 +252,7 @@ class MainTest(unittest.TestCase):
                 "nix=true",
                 "workflows=true",
                 "docs=true",
+                "sbom=true",
             ],
         )
 
@@ -227,6 +267,7 @@ class MainTest(unittest.TestCase):
                     "nix=true",
                     "workflows=true",
                     "docs=true",
+                    "sbom=true",
                 ],
             )
 
@@ -241,6 +282,7 @@ class MainTest(unittest.TestCase):
                     "nix=false",
                     "workflows=false",
                     "docs=false",
+                    "sbom=false",
                 ],
             )
 

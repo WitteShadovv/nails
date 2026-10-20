@@ -14,7 +14,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
-from . import distro, interactive, plan, resolve, run
+from . import distro, evaluate, interactive, plan, resolve, run
 from .metadata import Metadata, MetadataError, load_metadata
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -188,15 +188,19 @@ def _command_run(args: argparse.Namespace) -> int:
             retries=args.retries,
             log_dir=args.log_dir,
             report=_reporter(args),
+            eval_batch=args.eval_batch,
+            eval_workers=args.eval_jobs,
         )
     return run.run_build(
         tests,
         jobs=args.jobs,
         eval_batch=args.eval_batch,
+        eval_workers=args.eval_jobs,
         durations_out=args.durations_out,
         retries=args.retries,
         log_dir=args.log_dir,
         report=_reporter(args),
+        require_boot=args.require_boot,
     )
 
 
@@ -268,6 +272,12 @@ def _positive_int(text: str) -> int:
 def _jobs(text: str) -> int:
     if text == "auto":
         return run.auto_jobs()
+    return _positive_int(text)
+
+
+def _eval_jobs(text: str) -> int:
+    if text == "auto":
+        return evaluate.auto_workers()
     return _positive_int(text)
 
 
@@ -377,7 +387,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--eval-batch",
         type=_positive_int,
         help="tests evaluated per nix eval process, bounding evaluation memory "
-        "(default: one process per test)",
+        "(default: the tests spread evenly over --eval-jobs processes, at most "
+        f"{evaluate.MAX_BATCH} each)",
+    )
+    run_cmd.add_argument(
+        "--eval-jobs",
+        type=_eval_jobs,
+        default="auto",
+        help="nix eval processes run at once; 'auto' (the default) sizes it "
+        "from the host's cores and RAM",
     )
     run_cmd.add_argument("--weights", type=Path, default=DEFAULT_WEIGHTS)
     run_cmd.add_argument("--durations-out", type=Path, default=DEFAULT_DURATIONS)
@@ -391,6 +409,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--execute",
         action="store_true",
         help="run each test's driver directly, so cached results do not count",
+    )
+    run_cmd.add_argument(
+        "--require-boot",
+        action="store_true",
+        help="fail a test that the store or a binary cache served instead of a "
+        "build in this run (--execute boots every test anyway)",
     )
     run_cmd.add_argument(
         "--log-dir", type=Path, help="write the log of every failed test here"
@@ -453,6 +477,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (
         plan.InputError,
         resolve.ResolveError,
+        evaluate.EvalError,
         MetadataError,
         distro.DistroError,
         run.RunError,

@@ -6,11 +6,21 @@ test appends to, so following a soft-reboot is exercised without a VM.
 
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
+import tempfile
+import time
 import unittest
+from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from nails_e2e import session
+
+#: A line the kernel printed on the console of a passing switch: PID 1 logs
+#: through the kernel once the journal stops.
+KERNEL_LINE = "[   13.394631] systemd[1]: Stopping Journal Service..."
 
 
 class FakeMachine:
@@ -64,6 +74,75 @@ class FakeMachine:
         return "\n".join(self.full_console_log)
 
 
+class ShellMachine(FakeMachine):
+    """A node that runs the trigger on this host the way the driver runs a
+    command in the guest: through ``bash -c 'set -euo pipefail; ...'``,
+    returning once its stdout is closed. A scratch file stands in for the
+    serial console and a stand-in ``systemctl`` reports ``state``. The
+    console then shows ``then`` (the switch, when one comes)."""
+
+    def __init__(
+        self, scratch: Path, state: str, then: list[str] | None = None
+    ) -> None:
+        super().__init__(then or [])
+        self.console = scratch / "console"
+        self.console.touch()
+        self.asked = scratch / "systemctl-asked"
+        bin_dir = scratch / "bin"
+        bin_dir.mkdir()
+        bash = shutil.which("bash")
+        assert bash is not None, "the tests run bash"
+        systemctl = bin_dir / "systemctl"
+        # An absolute interpreter: the Nix build sandbox has no /usr/bin/env.
+        systemctl.write_text(
+            f'#!{bash}\necho "$*" >> {self.asked}\necho {state}\nexit 1\n',
+            encoding="utf-8",
+        )
+        systemctl.chmod(0o755)
+        self.env = dict(os.environ, PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+    def execute(
+        self,
+        command: str,
+        check_return: bool = True,
+        check_output: bool = True,
+        timeout: int | None = 900,
+    ) -> tuple[int, str]:
+        if not command.endswith("&"):
+            return (0, "")
+        subprocess.run(
+            ["bash", "-c", f"set -euo pipefail; {command}"],
+            env=self.env,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=60,
+            check=False,
+        )
+        report = self.console.read_text(encoding="utf-8").splitlines()
+        if not any(session.TRIGGER_EXIT_MARKER in line for line in report):
+            raise AssertionError(
+                f"the trigger left no report on the console: {command}"
+            )
+        self.full_console_log.extend(report)
+        self.full_console_log.extend(self.pending)
+        return (0, "")
+
+
+class Polled(Exception):
+    """The follower waited for another poll instead of deciding."""
+
+
+class NoPolling:
+    """The ``time`` module as the follower sees it: the clock is real, and a
+    poll, which only a wait that goes on would make, ends the test."""
+
+    monotonic = staticmethod(time.monotonic)
+
+    @staticmethod
+    def sleep(seconds: float) -> None:
+        raise Polled(f"the follower polled again after {seconds} s")
+
+
 class FollowSoftRebootTest(unittest.TestCase):
     def test_reconnects_once_the_new_backdoor_announces_itself(self) -> None:
         machine = FakeMachine(
@@ -100,6 +179,38 @@ class FollowSoftRebootTest(unittest.TestCase):
         self.assertIn("stuck", str(raised.exception))
         self.assertEqual(machine.connects, 0)
 
+    def test_a_machine_that_stops_ends_the_wait_at_once(self) -> None:
+        # An emergency that falls back to a power-off, or a kernel panic: QEMU
+        # exits, and no backdoor will ever come.
+        class Exited:
+            def poll(self) -> int:
+                return 0
+
+        machine = FakeMachine(["reboot: Power down"])
+        machine.process = Exited()
+        with (
+            mock.patch.object(session, "time", NoPolling),
+            self.assertRaises(AssertionError) as raised,
+        ):
+            session.follow_soft_reboot(machine, "true", "emergency", deadline_s=600.0)
+        self.assertEqual(
+            str(raised.exception),
+            "emergency: QEMU exited (status 0) before the new userspace came up",
+        )
+        self.assertIn("reboot: Power down", machine.logged[-1])
+        self.assertFalse(machine.connected)
+        self.assertEqual(machine.connects, 0)
+
+    def test_a_running_machine_is_followed_into_its_switch(self) -> None:
+        class Running:
+            def poll(self) -> None:
+                return None
+
+        machine = FakeMachine(["Soft-rebooting.", "backdoor: connecting to host..."])
+        machine.process = Running()
+        session.follow_soft_reboot(machine, "true", "enter", deadline_s=5)
+        self.assertEqual(machine.connects, 1)
+
 
 class PowerOffTest(unittest.TestCase):
     def test_a_power_off_that_never_ends_says_what_pid1_waits_on(self) -> None:
@@ -126,6 +237,131 @@ class TriggerFailureTest(unittest.TestCase):
 
     def test_a_zero_exit_is_not_a_failure(self) -> None:
         self.assertIsNone(session.trigger_failure(["nails-trigger-exit=0"]))
+
+    def test_a_failure_while_the_system_runs_names_its_state(self) -> None:
+        self.assertEqual(
+            session.trigger_failure(["nails-trigger-exit=4 degraded"]),
+            "exit status 4 while the system was degraded",
+        )
+        self.assertEqual(
+            session.trigger_failure(["nails-trigger-exit=1"]),
+            "exit status 1 while the system was in an unknown state",
+        )
+
+    def test_a_non_zero_exit_with_the_switch_enqueued_is_not_a_failure(self) -> None:
+        # An activation with warnings exits 9, an emergency that left mounts
+        # behind 7, both with the switch already under way.
+        self.assertIsNone(session.trigger_failure(["nails-trigger-exit=9 stopping"]))
+        self.assertIsNone(session.trigger_failure(["nails-trigger-exit=7 stopping"]))
+
+    def test_a_report_cut_by_a_kernel_message_decides_nothing(self) -> None:
+        # The kernel writes its lines to the serial port between the pieces
+        # of a line that a process sends there, as the console of a passing
+        # switch shows.
+        for cut in (
+            [f"nails-trigger-exit={KERNEL_LINE}", "0"],
+            [f"nails-trigger-exit=9 stopp{KERNEL_LINE}", "ing"],
+            [f"nails-trigger-exit=1{KERNEL_LINE}", "43 stopping"],
+            [f"nails-trigger-exit=4 {KERNEL_LINE}", "stopping"],
+        ):
+            with self.subTest(cut=cut):
+                self.assertIsNone(session.trigger_failure(cut))
+
+    def test_a_whole_state_before_a_kernel_message_still_counts(self) -> None:
+        self.assertEqual(
+            session.trigger_failure([f"nails-trigger-exit=4 running{KERNEL_LINE}"]),
+            "exit status 4 while the system was running",
+        )
+
+    def test_the_command_line_of_the_report_is_no_failure(self) -> None:
+        self.assertIsNone(
+            session.trigger_failure(
+                ['echo "nails-trigger-exit=$status $state" > /dev/ttyS0) &']
+            )
+        )
+
+    def test_a_cut_report_does_not_end_a_passing_switch(self) -> None:
+        machine = FakeMachine(
+            [
+                f"nails-trigger-exit={KERNEL_LINE}",
+                "0",
+                "backdoor: connecting to host...",
+            ]
+        )
+        session.follow_soft_reboot(
+            machine, "nails deactivate -y", "leave", deadline_s=5
+        )
+        self.assertEqual(machine.connects, 1)
+
+
+class TriggerReportTest(unittest.TestCase):
+    """The report the real shell leaves when the trigger returns, under the
+    driver's ``set -euo pipefail``, and what the follower makes of it."""
+
+    def setUp(self) -> None:
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.scratch = Path(scratch.name)
+        console = mock.patch.object(
+            session, "SERIAL_CONSOLE", str(self.scratch / "console")
+        )
+        console.start()
+        self.addCleanup(console.stop)
+
+    def test_a_failed_activation_ends_a_1200_s_wait_at_once(self) -> None:
+        # The deadline of the tests that copy a whole NixOS closure.
+        machine = ShellMachine(self.scratch, "running")
+        started = time.monotonic()
+        with (
+            mock.patch.object(session, "time", NoPolling),
+            self.assertRaises(AssertionError) as raised,
+        ):
+            session.follow_soft_reboot(machine, "exit 4", "activate", deadline_s=1200.0)
+        elapsed = time.monotonic() - started
+        self.assertEqual(
+            str(raised.exception),
+            "activate: the trigger failed (exit status 4 while the system was "
+            "running) and never soft-rebooted",
+        )
+        self.assertIn("nails-trigger-exit=4 running", machine.full_console_log)
+        self.assertLess(elapsed, 10.0)
+        asked = machine.asked.read_text(encoding="utf-8")
+        self.assertEqual(asked, "is-system-running\n")
+        self.assertEqual(machine.connects, 0)
+
+    def test_an_activation_with_warnings_is_followed_into_its_switch(self) -> None:
+        machine = ShellMachine(
+            self.scratch, "stopping", then=["backdoor: connecting to host..."]
+        )
+        session.follow_soft_reboot(machine, "exit 9", "activate", deadline_s=5)
+        self.assertIn("nails-trigger-exit=9 stopping", machine.full_console_log)
+        self.assertEqual(machine.connects, 1)
+
+    def test_a_trigger_that_exits_0_does_not_ask_the_service_manager(self) -> None:
+        machine = ShellMachine(
+            self.scratch, "running", then=["backdoor: connecting to host..."]
+        )
+        session.follow_soft_reboot(machine, "true", "deactivate", deadline_s=5)
+        reports = [
+            line.strip()
+            for line in machine.full_console_log
+            if session.TRIGGER_EXIT_MARKER in line
+        ]
+        self.assertEqual(reports, ["nails-trigger-exit=0"])
+        self.assertFalse(machine.asked.exists())
+        self.assertEqual(machine.connects, 1)
+
+    def test_the_trigger_stops_at_its_first_failing_command(self) -> None:
+        # As every command the driver runs: the trigger keeps errexit.
+        machine = ShellMachine(self.scratch, "running")
+        with (
+            mock.patch.object(session, "time", NoPolling),
+            self.assertRaises(AssertionError) as raised,
+        ):
+            session.follow_soft_reboot(machine, "false; true", "activate")
+        self.assertIn(
+            "(exit status 1 while the system was running)", str(raised.exception)
+        )
 
 
 class PureHelpersTest(unittest.TestCase):

@@ -186,6 +186,7 @@ in
   e2e-disk-forensics = lint "e2e-disk-forensics" {
     files = fs.unions [
       ./e2e-tests/lib/disk_forensics.py
+      ./e2e-tests/lib/records.py
       ./e2e-tests/lib/tests
       ./e2e-tests/fixtures/forensics
       ./e2e-tests/fixtures/indicators.json
@@ -200,7 +201,8 @@ in
       export HOME="$PWD"
       python3 -m unittest discover -s nix/e2e-tests/lib/tests -t nix/e2e-tests/lib
       ruff check nix/e2e-tests/lib
-      mypy nix/e2e-tests/lib/disk_forensics.py nix/e2e-tests/lib/tests/test_disk_forensics.py
+      mypy nix/e2e-tests/lib/disk_forensics.py nix/e2e-tests/lib/records.py \
+        nix/e2e-tests/lib/tests/test_disk_forensics.py nix/e2e-tests/lib/tests/test_records.py
     '';
   };
 

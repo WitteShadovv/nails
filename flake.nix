@@ -84,7 +84,7 @@
       };
 
       # rustc links a +crt-static musl binary against the musl that ships with
-      # the Rust toolchain (1.2.5 in Rust 1.93), not the C toolchain's, unless
+      # the Rust toolchain (1.2.5 in Rust 1.99), not the C toolchain's, unless
       # self-contained linking is off. With it off, libc.a and musl's crt files
       # (crt1/rcrt1/Scrt1.o, crti.o, crtn.o) come from pkgsMusl's musl: the one
       # nixpkgs patches and the one the release SBOM names (nails.libc). The

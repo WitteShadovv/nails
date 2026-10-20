@@ -22,6 +22,7 @@ filesystem label free of anything that hints at hidden storage: they surface in
 | **Refused** | A folder; a btrfs subvolume or a bind mount of a filesystem the decoy uses; the filesystem the decoy's fstab mounts; a logical volume or other device stacked on the decoy's storage or swap; an unencrypted image file on a decoy filesystem | Not storage of its own: everything written there lands on the decoy's disk. Refused by the attach gate before anything is written; the `preflight-decoy-filesystem` VM test covers the folder, subvolume, bind, image-file and fstab-filesystem cases. A folder is always refused; `--allow-decoy-storage` turns the other refusals into a warning, for storage you know the decoy does not use. |
 | **Expected to work** | Any local Linux filesystem that passes the preflight probes (ext4, xfs, btrfs, f2fs) on any kernel block device, including iSCSI and NBD devices | Untested. The preflight probes decide. Network traffic to a remote block device is outside the host-side threat model, and the connection must survive the soft-reboots, which stop every userspace daemon (an iSCSI or NBD client among them). |
 | **Unsupported** | NFS, CIFS/SMB, sshfs, 9p, overlays, FUSE filesystems and ZFS datasets as the hidden root; FAT, exFAT, NTFS | The attach gate refuses a filesystem that shows no disk it stores its data on (`storage_unjudged`), since where its writes land cannot be told. A ZFS dataset is one: its mount names only its pool, and the gate does not read which disks the pool is on. An image file on such a filesystem is refused the same way, unless the decoy mounts that filesystem at `/` or one of its system folders (`/home`, `/var` and the like) or lists it in its fstab; there an encrypted container only warns, as on any decoy filesystem. FAT, exFAT and NTFS cannot host an overlayfs upper layer and are refused by the `upper-fs-capability` preflight check. |
+| **Unsupported** | A VeraCrypt volume made with Argon2id ("Argon2" in the KDF list of VeraCrypt 1.26.29 and newer) | No cryptsetup release can open it yet, so cryptsetup on the decoy cannot unlock it. See [VeraCrypt volumes made with Argon2id](#veracrypt-volumes-made-with-argon2id). |
 | **Not evaluated** | Shufflecake; volumes mounted by the VeraCrypt application itself | No claims. `backend-detect` names a Shufflecake (`sflc_<dev>_<vol>`) volume in its summary, but no Shufflecake-specific hazards are checked. A cross-backend E2E matrix is not part of the suite yet. |
 
 ## Requirements for the hidden root
@@ -155,6 +156,53 @@ VeraCrypt's hidden-volume protection, so writing to an outer volume opened by
 cryptsetup can overwrite the hidden volume. Open the outer volume with
 `--readonly` when you only need to show it, and refresh decoy content in the
 outer volume with the VeraCrypt application and its hidden-volume protection.
+
+### VeraCrypt volumes made with Argon2id
+
+Checked on 2026-10-19. The versions below change; check them again when you
+set up a volume.
+
+VeraCrypt 1.26.29 (June 2026) can protect a volume's header with a key derived
+by Argon2id instead of PBKDF2. Its volume wizard lists it as "Argon2" in the
+KDF list ("KDF Algorithm" on Windows), after the PBKDF2 entries; the default
+stays PBKDF2 with SHA-512.
+No cryptsetup release can open a volume made with Argon2id. cryptsetup's
+development branch gained the support in June 2026, but the newest release,
+2.8.8 of September 2026, does not have it, and the decoys NAILS supports ship
+that release or an older one:
+
+| Decoy | cryptsetup |
+|---|---|
+| Ubuntu 24.04 | 2.7.0 |
+| Debian 13 | 2.7.5 |
+| Ubuntu 26.04 | 2.8.4 |
+| NixOS 26.05 | 2.8.6 |
+| NixOS unstable | 2.8.8 |
+
+A Debian or Ubuntu release does not normally get a newer cryptsetup version
+once it is out, so on Debian 13 and the Ubuntu LTS releases the limit is likely
+to last for years after a cryptsetup release adds the support.
+`cryptsetup --version` prints the version a decoy has. Tails 7 is based on
+Debian 13 and has its cryptsetup 2.7.5, so a
+[first install from Tails](install-from-tails.md) needs PBKDF2 as well.
+
+Opening such a volume fails without naming the cause:
+`cryptsetup open --type tcrypt` prints
+`No device header detected with this passphrase.`, the message it gives for a
+mistyped password, and asks again. A VeraCrypt header is encrypted apart
+from its 64-byte salt, so nothing outside the volume shows which algorithm it
+uses, and neither cryptsetup nor NAILS can warn you.
+
+- **Make both volumes with PBKDF2.** In VeraCrypt's wizard, keep the default
+  KDF or choose any entry other than Argon2, for the hidden volume and for
+  the outer volume: the decoy has to be able to open the outer volume when you
+  show it.
+- **Change a volume already made with Argon2id** on the separate machine.
+  VeraCrypt's Volumes ▸ Set Header Key Derivation Algorithm, with any entry
+  other than Argon2 chosen, re-encrypts the header with a key derived by
+  PBKDF2 and leaves the data as it is. Given the hidden volume's password, it
+  changes the hidden volume's header; given the outer volume's, the outer
+  one's.
 
 ### LUKS2
 

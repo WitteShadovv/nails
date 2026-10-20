@@ -379,6 +379,30 @@ pub const CATALOG: &[ResidueClass] = &[
         conclusion: None,
     },
     ResidueClass {
+        id: "login-boot-records",
+        title: "Login and boot records around a switch",
+        kind: ResidueKind::Session,
+        channel: Channel::Mechanism(
+            "the decoy's own writers record the way back in the login and boot records (classic wtmp, wtmpdb, and the getty and login records)",
+        ),
+        platforms: Platforms::All,
+        risk: "A whole-root session reaches the decoy again through a soft-reboot, and the decoy's own writers record that start. On Debian with wtmpdb the boot row would be named soft-reboot; where the service manager keeps the userspace start time across a soft-reboot (systemd 255 and earlier, classic wtmp), the boot record would carry the decoy's first boot time, so the file would hold a boot dated before the shutdown before it. Both are entries ordinary use never writes. On every family the getty and login records written after the way back also carry process numbers that continue from the decoy's boot, where a fresh kernel starts them low.",
+        preflight: Probe::None(
+            "the records are written by the decoy's own units after the switch, not before it",
+        ),
+        preflight_blocks: false,
+        verify: Probe::None(
+            "the records are the decoy's own; the remaining process-number difference needs a cold-boot baseline to judge",
+        ),
+        mitigation: "On Debian and Ubuntu the way back keeps the wtmpdb boot writer from recording soft-reboot and corrects a backdated classic-wtmp boot record to the time the decoy came back, without masking either writer, so no row goes missing and the login and boot records read as one clean power cycle. The process numbers of the records written after the way back still continue from the decoy's boot on every family, a weaker tell a later release addresses; power off after the session to leave none of it.",
+        doc_anchor: "threat-model.md#residual-channels",
+        e2e: E2e::None(
+            "asserted against a power-cycle control by the cross-distro login- and boot-record test under nix/distro-tests, outside the NixOS e2e suite",
+        ),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
         id: "decoy-mount-table",
         title: "The decoy's mounts made again by the way back",
         kind: ResidueKind::Session,

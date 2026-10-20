@@ -12,8 +12,11 @@ Two ways to run a set of tests:
 
 A test whose output is missing from the store after its build failed. Failed
 tests can be retried; one that passes on a retry is a flaky pass, reported as
-FLAKY rather than hidden. Durations are written as the same
-``{"test","result","seconds"}`` JSON lines the weight tools read.
+FLAKY rather than hidden. A run that must boot every test (``require_boot``)
+fails a test that was not built in it, because the store or a binary cache
+already held its output, rather than count an earlier run's pass. Durations
+are written as the same ``{"test","result","seconds"}`` JSON lines the weight
+tools read.
 """
 
 from __future__ import annotations
@@ -26,9 +29,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+
+from . import evaluate
 
 # nix activity type for a derivation build (`Logger::Fields`, actBuild).
 ACT_BUILD = 105
@@ -74,6 +79,9 @@ class TestOutcome:
     result: str
     seconds: int
     flaky: bool = False
+    # A failure only because the test did not boot in a run that requires it:
+    # the store or a binary cache already held its output.
+    not_booted: bool = False
 
 
 def _drv_from_fields(payload: Mapping[str, object]) -> str | None:
@@ -103,6 +111,11 @@ def durations_from_internal_json(
     build activity was served from the store and is a zero-second ``pass``.
     Nix also stops the activity of a failed build, so the caller corrects the
     result from the store afterwards (see ``missing_outputs``).
+
+    The lines carry no time of their own: ``clock`` is read as each start and
+    stop line is parsed. Pass the live stream of a running ``nix build``,
+    never lines collected after it exited, in which every build would take
+    the same instant and last zero seconds.
     """
     started: dict[int, tuple[str, float]] = {}
     outcomes: dict[str, TestOutcome] = {}
@@ -158,7 +171,8 @@ def write_durations(
 
     A test with no recorded outcome was served from the Nix store, so it counts
     as a zero-second pass rather than being dropped. A flaky pass carries
-    ``"flaky": true`` next to the duration of the passing attempt.
+    ``"flaky": true`` next to the duration of the passing attempt, and a test
+    that failed only because it did not boot carries ``"not_booted": true``.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -171,53 +185,32 @@ def write_durations(
             }
             if outcome.flaky:
                 record["flaky"] = True
+            if outcome.not_booted:
+                record["not_booted"] = True
             handle.write(json.dumps(record) + "\n")
 
 
-def _eval_drv(attr: str) -> str:
-    return subprocess.run(
-        ["nix", "eval", "--raw", f"{attr}.drvPath"],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-
-
-def _eval_batch(attr_prefix: str, tests: Sequence[str]) -> dict[str, str]:
-    """Evaluate the derivation paths of ``tests`` in one ``nix eval`` process."""
-    names = " ".join(json.dumps(test) for test in tests)
-    apply = (
-        "e: builtins.listToAttrs (map (n: { name = n; value = e.${n}.drvPath; }) "
-        f"[ {names} ])"
-    )
-    completed = subprocess.run(
-        ["nix", "eval", "--json", attr_prefix, "--apply", apply],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    payload = json.loads(completed.stdout)
-    return {test: str(payload[test]) for test in tests}
-
-
 def eval_drvs(
-    tests: Sequence[str], attr_prefix: str, batch_size: int | None
+    tests: Sequence[str],
+    attr_prefix: str,
+    batch_size: int | None,
+    workers: int | None = None,
 ) -> dict[str, str]:
-    """Map each test to its ``.drv`` path, evaluating in bounded batches.
+    """Map each test to its ``.drv`` path, evaluating in parallel batches.
 
-    Every test evaluates its own NixOS system, and the Nix evaluator keeps all
-    of that memory until it exits, so evaluating a whole group in the process
-    that builds it is what ran a 15 GB host out of memory. Each batch runs in
-    its own short-lived ``nix eval``, so peak evaluation memory is that of
-    ``batch_size`` tests; ``None`` evaluates every test in a process of its
-    own (the slowest and leanest setting).
+    ``batch_size`` tests go to one ``nix eval`` process, and at most
+    ``workers`` processes run at once (by default as many as the host's cores
+    and memory allow); without ``batch_size`` the tests are spread evenly
+    over the processes. See :mod:`ci.e2e.evaluate`.
     """
-    if batch_size is None:
-        return {test: _eval_drv(f"{attr_prefix}.{test}") for test in tests}
-    drvs: dict[str, str] = {}
-    for start in range(0, len(tests), batch_size):
-        drvs.update(_eval_batch(attr_prefix, tests[start : start + batch_size]))
-    return drvs
+    paths = evaluate.evaluate(
+        attr_prefix,
+        tests,
+        "t: t.drvPath",
+        workers=workers or evaluate.auto_workers(),
+        batch_size=batch_size,
+    )
+    return {test: str(drv) for test, drv in paths.items()}
 
 
 # Host memory one running test can take: a 2 GiB guest (4 GiB for the
@@ -298,7 +291,6 @@ def _build_once(
         command += ["--max-jobs", str(jobs)]
     command += ["--no-link", *(f"{drv}^*" for drv in wanted)]
 
-    lines: list[str] = []
     with subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
@@ -306,14 +298,23 @@ def _build_once(
         text=True,
     ) as process:
         assert process.stderr is not None
-        for raw in process.stderr:
-            line = raw.rstrip("\n")
-            lines.append(line)
-            message = _progress_line(line)
-            if message is not None:
-                print(message, file=sys.stderr)
+        # Parsed while nix runs, so each build is timed as its start and stop
+        # lines arrive.
+        outcomes = durations_from_internal_json(
+            _relay_messages(process.stderr), wanted, clock
+        )
         status = process.wait()
-    return status, durations_from_internal_json(lines, wanted, clock)
+    return status, outcomes
+
+
+def _relay_messages(stream: Iterable[str]) -> Iterator[str]:
+    """Yield the lines of a nix log stream, printing its errors and warnings."""
+    for raw in stream:
+        line = raw.rstrip("\n")
+        message = _progress_line(line)
+        if message is not None:
+            print(message, file=sys.stderr)
+        yield line
 
 
 def _write_nix_log(drv: str, path: Path) -> None:
@@ -334,23 +335,29 @@ def run_build(
     log_dir: Path | None = None,
     report: Callable[[Sequence[str], Mapping[str, TestOutcome]], None] | None = None,
     eval_batch: int | None = None,
+    eval_workers: int | None = None,
+    require_boot: bool = False,
 ) -> int:
     """Build every resolved test in one ``nix build`` and record outcomes.
 
     The derivations are evaluated first, ``eval_batch`` tests per ``nix eval``
-    process (see :func:`eval_drvs`), and then built by path with at most
-    ``jobs`` VM tests at a time.
+    process and ``eval_workers`` processes at once (see :func:`eval_drvs`),
+    and then built by path with at most ``jobs`` VM tests at a time.
 
     Failed tests are rebuilt up to ``retries`` more times (Nix does not cache a
-    failure); a test that passes on a retry is a flaky pass. Returns 0 when
-    every test passed, 1 when a test still fails, and the ``nix build`` status
-    when the build failed without a failed test to blame (an evaluation
-    error, for example), which is never retried. Nix is required; this is
-    reached only through the ``run`` subcommand.
+    failure); a test that passes on a retry is a flaky pass. With
+    ``require_boot``, a test that passed without being built, because the
+    store or a binary cache already held its output, fails as not booted, so
+    that a runner whose own Nix settings or store hold an earlier run's pass
+    cannot pass it off as this run's. Returns 0 when every test passed, 1 when
+    a test still fails or did not boot, and the ``nix build`` status when the
+    build failed without a failed test to blame (an evaluation error, for
+    example), which is never retried. Nix is required; this is reached only
+    through the ``run`` subcommand.
     """
     if not tests:
         return 0
-    test_to_drv = eval_drvs(tests, attr_prefix, eval_batch)
+    test_to_drv = eval_drvs(tests, attr_prefix, eval_batch, eval_workers)
     drv_to_test = {drv: test for test, drv in test_to_drv.items()}
 
     status, outcomes = _build_once(tests, drv_to_test, jobs, clock)
@@ -360,6 +367,9 @@ def run_build(
         for test in failed:
             seconds = outcomes.get(test, TestOutcome("fail", 0)).seconds
             outcomes[test] = TestOutcome("fail", seconds)
+    # A test that passed without a build in the attempt that passed it was
+    # served from the store or a binary cache: its pass is an earlier run's.
+    served = {test for test in tests if test not in outcomes}
 
     for _attempt in range(retries):
         if not failed:
@@ -375,7 +385,22 @@ def run_build(
             if test not in still_failed:
                 seconds = retried.get(test, TestOutcome("pass", 0)).seconds
                 outcomes[test] = TestOutcome("pass", seconds, flaky=True)
+                if test not in retried:
+                    served.add(test)
         failed = [test for test in failed if test in still_failed]
+
+    not_booted: list[str] = []
+    if require_boot:
+        not_booted = [test for test in tests if test in served]
+        for test in not_booted:
+            outcomes[test] = TestOutcome("fail", 0, not_booted=True)
+        if not_booted:
+            print(
+                f"{len(not_booted)} test(s) did not boot, because the store or a "
+                "binary cache already held their results, and this run must "
+                f"boot every test: {' '.join(not_booted)}",
+                file=sys.stderr,
+            )
 
     log_paths: dict[str, str] = {}
     for test in failed:
@@ -394,7 +419,7 @@ def run_build(
         # The build failed, yet every test output exists: nothing to retry and
         # nothing to blame, so pass the original status on.
         return status
-    return 1 if failed else 0
+    return 1 if failed or not_booted else 0
 
 
 def _tail(path: Path, count: int) -> str:
@@ -405,14 +430,44 @@ def _tail(path: Path, count: int) -> str:
     return "\n".join(lines[-count:])
 
 
-def _build_driver(attr: str) -> Path:
+def build_drivers(
+    tests: Sequence[str],
+    attr_prefix: str,
+    batch_size: int | None = None,
+    workers: int | None = None,
+) -> dict[str, Path]:
+    """Build the driver of every test and return each one's store path.
+
+    The drivers are evaluated in parallel batches like the tests themselves
+    (see :func:`eval_drvs`), then built in one ``nix build``, which builds
+    what they share once and the rest side by side. A driver that does not
+    build is a RunError.
+    """
+    drvs = evaluate.evaluate(
+        attr_prefix,
+        tests,
+        "t: t.driver.drvPath",
+        workers=workers or evaluate.auto_workers(),
+        batch_size=batch_size,
+    )
     completed = subprocess.run(
-        ["nix", "build", "--no-link", "--print-out-paths", f"{attr}.driver"],
-        check=True,
+        ["nix", "build", "--no-link", "--json", *(f"{drv}^*" for drv in drvs.values())],
         capture_output=True,
         text=True,
+        check=False,
     )
-    return Path(completed.stdout.split()[-1])
+    if completed.returncode != 0:
+        detail = completed.stderr.strip().splitlines()[-LOG_TAIL_LINES:]
+        raise RunError(
+            "the test drivers did not build:\n" + "\n".join(detail)
+            if detail
+            else f"the test drivers did not build (exit {completed.returncode})"
+        )
+    outputs = {
+        str(built["drvPath"]): str(built["outputs"]["out"])
+        for built in json.loads(completed.stdout)
+    }
+    return {test: Path(outputs[str(drv)]) for test, drv in drvs.items()}
 
 
 def scratch_base(environ: Mapping[str, str] = os.environ) -> Path:
@@ -506,9 +561,12 @@ def run_drivers(
     retries: int = 0,
     log_dir: Path | None = None,
     report: Callable[[Sequence[str], Mapping[str, TestOutcome]], None] | None = None,
+    eval_batch: int | None = None,
+    eval_workers: int | None = None,
 ) -> int:
     """Execute every test's driver one after another, ignoring cached results.
 
+    The drivers are built first, all at once (see :func:`build_drivers`).
     Logs of failed tests stay in ``log_dir`` (passing logs are removed); the
     retry and flaky rules match ``run_build``. Returns 0 when every test
     passed and 1 otherwise. Before any driver is built, a scratch base that
@@ -524,7 +582,7 @@ def run_drivers(
         print(f"warning: {warning}", file=sys.stderr)
     keep_logs = log_dir is not None
     logs = log_dir if log_dir is not None else Path(tempfile.mkdtemp(prefix="e2e-"))
-    drivers = {test: _build_driver(f"{attr_prefix}.{test}") for test in tests}
+    drivers = build_drivers(tests, attr_prefix, eval_batch, eval_workers)
     outcomes: dict[str, TestOutcome] = {}
     for attempt in range(retries + 1):
         pending = [
@@ -562,6 +620,8 @@ def run_drivers(
 
 
 def _label(outcome: TestOutcome) -> str:
+    if outcome.not_booted:
+        return "FAIL (not booted)"
     if outcome.result == "fail":
         return "FAIL"
     if outcome.flaky:
@@ -628,7 +688,13 @@ def format_annotations(
         outcome = outcomes.get(test)
         if outcome is None:
             continue
-        if outcome.result == "fail":
+        if outcome.not_booted:
+            annotations.append(
+                f"::error title=E2E test not booted::{test} did not boot: the "
+                "store or a binary cache already held its result, and this run "
+                "must boot every test"
+            )
+        elif outcome.result == "fail":
             annotations.append(f"::error title=E2E test failed::{test} failed")
         elif outcome.flaky:
             annotations.append(

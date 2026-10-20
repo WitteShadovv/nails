@@ -7,14 +7,16 @@ which starts the backdoor again. The driver's ``wait_for_console_text`` reads
 one queued console line per second and a soft-reboot prints a few hundred, so
 these helpers poll the driver's full console log instead (appended directly by
 its reader thread), fail at once if the new userspace lands in emergency mode or
-PID 1 freezes, and reconnect when the new backdoor announces itself. This is
-the mechanism the soft-reboot spike (now ``soft-reboot-mechanics``) proved.
-A switch or a power-off that never ends is reported with what PID 1 waits on
-and the SysRq dumps (:mod:`nails_e2e.stall`).
+PID 1 freezes, if the trigger failed without enqueueing the switch or if QEMU
+exits, and reconnect when the new backdoor announces itself. This is the
+mechanism the soft-reboot spike (now ``soft-reboot-mechanics``) proved. A
+switch or a power-off that never ends is reported with what PID 1 waits on and
+the SysRq dumps (:mod:`nails_e2e.stall`).
 """
 
 from __future__ import annotations
 
+import re
 import shlex
 import signal
 import time
@@ -35,8 +37,33 @@ STUCK_MARKERS = (
 #: The new backdoor's announcement on the console.
 BACKDOOR_MARKER = "connecting to host"
 
-#: Written to the console with the trigger's exit status when it returns.
+#: Written to the serial console when the trigger returns, with its exit
+#: status and, when that is not 0, the service manager's state.
 TRIGGER_EXIT_MARKER = "nails-trigger-exit="
+
+#: The states ``systemctl is-system-running`` reports.
+SYSTEM_STATES = frozenset(
+    {
+        "initializing",
+        "starting",
+        "running",
+        "degraded",
+        "maintenance",
+        "stopping",
+        "offline",
+        "unknown",
+    }
+)
+
+#: The report after the marker: the status, then a space and the state.
+_REPORT = re.compile(r"(\d+)(?: ([a-z]+))?")
+
+#: The serial console, the one console the test driver records (the backdoor
+#: writes its stderr there). The VM tests boot x86_64 guests only, whose first
+#: serial port this is. /dev/console is no substitute: it is the last
+#: ``console=`` on the kernel command line, which the NixOS test VMs set to
+#: tty0, a screen nothing reads.
+SERIAL_CONSOLE = "/dev/ttyS0"
 
 #: Where the hidden root's upper lives with the suite's hidden volume.
 DEFAULT_UPPER = "/mnt/data/root/upper"
@@ -103,12 +130,35 @@ def stuck_lines(lines: list[str]) -> list[str]:
 
 
 def trigger_failure(lines: list[str]) -> str | None:
-    """The trigger's non-zero exit status from the console, if it reported one."""
+    """Why the trigger will never switch, from the report it left on the console.
+
+    A trigger that exits non-zero while the system is not stopping (an
+    activation refused or rolled back) never soft-reboots. A non-zero exit
+    with the switch already enqueued is no failure: an activation with
+    warnings exits 9, an emergency that left mounts behind 7, and the
+    switch's own stop may end a trigger before it returns.
+
+    Only a whole report counts. The kernel writes its own lines to the serial
+    port between the pieces of a line that a process sends there, so a report
+    can arrive cut in two, its status or its state broken off by a kernel
+    line: such a line, like the report's own command line, decides nothing.
+    """
     for line in lines:
-        _, marker, status = line.partition(TRIGGER_EXIT_MARKER)
-        status = status.strip()
-        if marker and status and status != "0":
-            return f"exit status {status}"
+        _, marker, report = line.partition(TRIGGER_EXIT_MARKER)
+        if not marker:
+            continue
+        report = report.rstrip()
+        whole = _REPORT.match(report)
+        if whole is None:
+            continue
+        status, state = whole.group(1), whole.group(2)
+        if state is None and whole.end() != len(report):
+            continue  # cut off after the status
+        if state is not None and state not in SYSTEM_STATES:
+            continue  # the state cut short
+        if status != "0" and state != "stopping":
+            seen = state or "in an unknown state"
+            return f"exit status {status} while the system was {seen}"
     return None
 
 
@@ -134,19 +184,30 @@ def follow_soft_reboot(
 
     The trigger runs in the background with its output discarded: the backdoor
     that runs it dies with the old userspace. Callers that need the command's
-    output redirect it themselves to a place that survives (the hidden volume).
-    ``start``, when given, starts the soft-reboot instead (for example typed
-    keystrokes on a tty) and ``trigger`` is only logged.
+    output redirect it themselves to a place that survives (the hidden volume)
+    or copy it to :data:`SERIAL_CONSOLE`. When the trigger returns, its exit
+    status lands on the serial console, and a failure while nothing is
+    stopping fails the wait at once (:func:`trigger_failure`), as does a
+    machine that powers off or reboots instead, which ends QEMU. ``start``, when
+    given, starts the soft-reboot instead (for example typed keystrokes on a
+    tty) and ``trigger`` is only logged; a typed command reports its own
+    failure the same way.
     """
     trigger_uptime = guest_uptime(machine)
     console_index = len(machine.full_console_log)
     if start is None:
-        # The exit status goes to the console: a trigger that fails (an
-        # activation refused or rolled back) never soft-reboots, and the wait
-        # below stops at once instead of running out its deadline.
+        # The exit status goes to the serial console, with the system's
+        # state when it is not 0: a trigger that fails while nothing is
+        # stopping never soft-reboots, and the wait below stops at once
+        # instead of running out its deadline. The driver runs every command
+        # under `set -euo pipefail`. The trigger keeps it; the subshell around
+        # it turns errexit off, or a failed trigger would end it before it
+        # reports.
         machine.execute(
-            f"(({trigger}) </dev/null >/dev/null 2>&1; "
-            f'echo "{TRIGGER_EXIT_MARKER}$?" > /dev/console) &',
+            f"(set +e; (set -e; {trigger}) </dev/null >/dev/null 2>&1; status=$?; "
+            'state=; [ "$status" = 0 ] || '
+            "state=$(systemctl is-system-running 2>/dev/null); "
+            f'echo "{TRIGGER_EXIT_MARKER}$status $state" > {SERIAL_CONSOLE}) &',
             check_return=False,
             check_output=False,
         )
@@ -183,6 +244,18 @@ def follow_soft_reboot(
             )
         if any(BACKDOOR_MARKER in line for line in lines):
             break
+        # A power-off, a full reboot or a kernel panic instead of the switch
+        # ends QEMU (the suite starts every machine with the driver's
+        # -no-reboot): no backdoor will come, and the stall report needs a
+        # running machine.
+        exited = machine.process.poll() if machine.process is not None else None
+        if exited is not None:
+            machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
+            machine.wait_for_shutdown()
+            raise AssertionError(
+                f"{label}: QEMU exited (status {exited}) before the new userspace "
+                "came up"
+            )
         if time.monotonic() > deadline:
             machine.log(f"{label}: last console lines:\n" + "\n".join(lines[-150:]))
             why = stall.report(machine, label)

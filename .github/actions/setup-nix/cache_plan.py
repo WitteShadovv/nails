@@ -36,6 +36,10 @@ PUSH_ALLOW = (
 # Release bundles are always built by the job that publishes them.
 PUSH_DENY = ("nails-release-",)
 
+# The refs whose pushes are trusted to write to the cache: main and the
+# integration branch next.
+TRUSTED_PUSH_REFS = ("refs/heads/main", "refs/heads/next")
+
 STORE_PATH = "^/nix/store/[0-9a-z]{32}-"
 # Prefixes are limited to characters that are literal in an ERE and need no
 # quoting in the shell script cachix-action pastes the filter into.
@@ -113,13 +117,14 @@ def push_filter(
 def may_push(event: str, ref: str, head_repository: str, repository: str) -> bool:
     """Whether a job triggered by `event` may write to the shared cache.
 
-    Only people with write access can push to main, schedule or dispatch a
-    workflow, or open a pull request from a branch of this repository. A
-    fork's pull request runs code nobody vetted; every other event, including
-    any added later, stays read-only until someone decides otherwise.
+    Only people with write access can push to main or next, schedule or
+    dispatch a workflow, or open a pull request from a branch of this
+    repository. A fork's pull request runs code nobody vetted; every other
+    event, including any added later, stays read-only until someone decides
+    otherwise.
     """
     if event == "push":
-        return ref == "refs/heads/main"
+        return ref in TRUSTED_PUSH_REFS
     if event in ("schedule", "workflow_dispatch"):
         return True
     if event == "pull_request":

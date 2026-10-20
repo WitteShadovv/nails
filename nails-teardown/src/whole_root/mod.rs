@@ -12,6 +12,8 @@
 //! - [`run_scrub`]: the `/run` snapshot and scrub;
 //! - [`run_records`]: the decoy's records in `/run` that its start writes to
 //!   disk, put back on the way back;
+//! - [`boot_records`]: making the decoy's login and boot records read as one
+//!   clean power cycle after the way back;
 //! - [`utab`]: libmount's `utab` lines that still name a mount after a switch;
 //! - [`ret`]: preparing the way back to the decoy;
 //! - [`carry`]: the decoy filesystems the hidden session holds for the way
@@ -24,6 +26,7 @@
 //! - [`emergency`]: the emergency hot path;
 //! - [`tools`]: the bounded `systemctl` and `dmsetup` calls.
 
+pub mod boot_records;
 pub mod carry;
 pub mod decoy_mounts;
 pub mod disk_guard;

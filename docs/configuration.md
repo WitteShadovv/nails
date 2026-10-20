@@ -8,14 +8,15 @@ whole decoy root, plus a fixed policy for every other decoy filesystem (see
 ## Platform support
 
 nails runs on NixOS (full, with a declarative hidden configuration) and on the
-Debian family with the same whole-root session (Debian 13+, Ubuntu 24.04+;
-`ID_LIKE=debian` derivatives are accepted provisionally without a release
-gate). Every host needs systemd 254 or newer for `systemctl soft-reboot`, so
-Debian 12 and Ubuntu 22.04 are refused. Non-merged-`/usr` layouts, other
-distributions, ostree/image-based hosts and non-systemd hosts are refused with a
-documented message. On the Debian family there is no declarative layer: the
-`nixos_*` keys below are inert and the hidden configuration is whatever the
-upper's `/etc` holds. See the
+Debian family with the same whole-root session (Debian 13, Ubuntu 24.04 and
+26.04; a later Debian or Ubuntu release runs with a warning that nails has not
+been tested on it, and `ID_LIKE=debian` derivatives are accepted provisionally
+without a release gate). Every host needs systemd 254 or newer for
+`systemctl soft-reboot`, so Debian 12 and Ubuntu 22.04 are refused.
+Non-merged-`/usr` layouts, other distributions, ostree/image-based hosts and
+non-systemd hosts are refused with a documented message. On the Debian family
+there is no declarative layer: the `nixos_*` keys below are inert and the hidden
+configuration is whatever the upper's `/etc` holds. See the
 [platform support matrix](../README.md#requirements) for the full table.
 
 ## Where the file lives
