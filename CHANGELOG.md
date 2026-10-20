@@ -13,6 +13,8 @@ of this changelog for that version becomes the release notes word for word, and
 
 ## [Unreleased]
 
+## [0.3.0-rc.3] - 2026-10-20
+
 ### Changed
 
 - The release binary is built with Rust 1.99.1; 0.3.0-rc.2 was built with 1.93.0.
@@ -624,7 +626,8 @@ config and CLI surfaces; there are no compatibility shims.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for public contribution guidance.
 
-[Unreleased]: https://github.com/WitteShadovv/nails/compare/v0.3.0-rc.2...HEAD
+[Unreleased]: https://github.com/WitteShadovv/nails/compare/v0.3.0-rc.3...HEAD
+[0.3.0-rc.3]: https://github.com/WitteShadovv/nails/compare/v0.3.0-rc.2...v0.3.0-rc.3
 [0.3.0-rc.2]: https://github.com/WitteShadovv/nails/compare/v0.2.0...v0.3.0-rc.2
 [0.2.0]: https://github.com/WitteShadovv/nails/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/WitteShadovv/nails/releases/tag/v0.1.0

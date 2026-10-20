@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "nails-base"
-version = "0.3.0-rc.2"
+version = "0.3.0-rc.3"
 dependencies = [
  "chrono",
  "colored",
@@ -584,7 +584,7 @@ dependencies = [
 
 [[package]]
 name = "nails-core"
-version = "0.3.0-rc.2"
+version = "0.3.0-rc.3"
 dependencies = [
  "chrono",
  "nails-base",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "nails-forensics"
-version = "0.3.0-rc.2"
+version = "0.3.0-rc.3"
 dependencies = [
  "chrono",
  "hex",
@@ -633,7 +633,7 @@ dependencies = [
 
 [[package]]
 name = "nails-platform"
-version = "0.3.0-rc.2"
+version = "0.3.0-rc.3"
 dependencies = [
  "nails-base",
  "nix",
@@ -642,7 +642,7 @@ dependencies = [
 
 [[package]]
 name = "nails-session"
-version = "0.3.0-rc.2"
+version = "0.3.0-rc.3"
 dependencies = [
  "nails-base",
  "nails-platform",
@@ -655,7 +655,7 @@ dependencies = [
 
 [[package]]
 name = "nails-teardown"
-version = "0.3.0-rc.2"
+version = "0.3.0-rc.3"
 dependencies = [
  "libc",
  "rustix",
