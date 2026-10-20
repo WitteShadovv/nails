@@ -5,7 +5,7 @@
 //! `docs/backends.md` explains.
 
 use super::luks2::Luks2Metadata;
-use super::{CryptType, Layer, mount_containing};
+use super::{Layer, mount_containing};
 use crate::filesystem::mountinfo::MountEntry;
 
 /// LUKS2 token types that name the unlock method and tie it to hardware.
@@ -21,12 +21,8 @@ pub(super) fn hazards(layers: &[Layer], entries: &[MountEntry]) -> Vec<String> {
     let mut found = Vec::new();
 
     for layer in layers {
-        if let Some(crypt) = &layer.crypt
-            && crypt.relies_on_random_looking_blocks()
-            && layer.discard_max_bytes > 0
-        {
-            found.push(discard_hazard(crypt, layer));
-        }
+        // Discards over the hidden volume are judged as a fail-closed finding
+        // in `assess`, not here, so this function reports only the warnings.
         if let Some(meta) = &layer.luks2 {
             found.extend(luks2_hazards(layer, meta));
         }
@@ -69,15 +65,8 @@ pub(super) fn hazards(layers: &[Layer], entries: &[MountEntry]) -> Vec<String> {
 /// asks for by hand with `cryptsetup luksDump`.
 fn luks2_hazards(layer: &Layer, meta: &Luks2Metadata) -> Vec<String> {
     let mut found = Vec::new();
-    if meta.flags.iter().any(|flag| flag == "allow-discards") {
-        found.push(format!(
-            "The LUKS2 header of mapping {} stores the persistent allow-discards flag, so \
-             every open forwards TRIM and the device shows which blocks are in use. Clear \
-             it with cryptsetup refresh --persistent (without --allow-discards) and check \
-             that cryptsetup luksDump shows (no flags).",
-            layer.name
-        ));
-    }
+    // A stored allow-discards flag is a discard over the hidden volume, judged
+    // as a fail-closed finding in `assess`, not reported here.
     let hardware: Vec<&str> = meta
         .token_types
         .iter()
@@ -100,29 +89,6 @@ fn luks2_hazards(layer: &Layer, meta: &Luks2Metadata) -> Vec<String> {
         ));
     }
     found
-}
-
-fn discard_hazard(crypt: &CryptType, layer: &Layer) -> String {
-    let consequence = match crypt {
-        CryptType::Tcrypt => {
-            "TRIM through a hidden volume leaves a readable used/free map where the outer \
-             volume should look like random data, and hole-punches a loop-backed \
-             container; an outer volume opened with --allow-discards can destroy the \
-             hidden volume. Re-open the mapping without --allow-discards, never open the \
-             outer volume with it, and never run fstrim on a volume that contains a \
-             hidden volume."
-        }
-        _ => {
-            "TRIM leaves a readable used/free map on a device that should look like \
-             uniform random data. Re-open the mapping without --allow-discards."
-        }
-    };
-    format!(
-        "Discards are enabled on the {} mapping {} (discard_max_bytes={}). {consequence}",
-        crypt.label(),
-        layer.name,
-        layer.discard_max_bytes
-    )
 }
 
 fn container_timestamp_hazard(layer: &Layer, host: Option<&MountEntry>) -> String {

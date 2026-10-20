@@ -66,18 +66,18 @@ result, including the backend detection below.
 
 ## Backend detection in preflight
 
-The `backend-detect` check identifies the device stack under the hidden root
-and warns about hazards specific to it. It never fails activation and has no
-configuration knob. It reads `/proc/self/mountinfo` to find the hidden root's
-device, follows the device-mapper and loop layers in `/sys` and reports:
+The `backend-detect` check identifies the device stack under the hidden root.
+Discards over the hidden volume fail activation closed (a RAM-only `zram`
+device is excepted); the other findings only warn. It reads
+`/proc/self/mountinfo` to find the hidden root's device, follows the
+device-mapper and loop layers in `/sys` and reports:
 
-| Warning | Detected from | What to do |
+| Finding | Detected from | What to do |
 |---|---|---|
-| Discards are enabled on a tcrypt or plain dm-crypt mapping | `dm/uuid` starts with `CRYPT-TCRYPT-` or `CRYPT-PLAIN-` and `queue/discard_max_bytes` is non-zero | Close the mapping and open it again without `--allow-discards`. See [Discards](#discards-trim). |
+| **Refuses:** discards are enabled over the hidden volume | a cryptsetup mapping (`dm/uuid` starts with `CRYPT-`) has a non-zero `queue/discard_max_bytes`, or its LUKS2 header `config.flags` holds `allow-discards`; a RAM-only `zram` device is excepted | Re-open the hidden volume without discards. For a stored LUKS2 flag, run `cryptsetup refresh --persistent <name>` without `--allow-discards`, then check `cryptsetup luksDump` reports `(no flags)`. See [Discards](#discards-trim). |
 | The hidden root lives in a file container | A loop device in the stack has a `loop/backing_file` | Accept the [timestamp exposure](#timestamps) or move to a whole-device hidden volume. |
 | The container sits on a copy-on-write filesystem | The container file's filesystem is btrfs, zfs or bcachefs | Prefer a whole-device hidden volume; at least disable automatic snapshots of that filesystem. |
 | The loop device is backed by a file on a FUSE mount | The backing file's filesystem is `fuse.*` (for example the VeraCrypt application without kernel crypto) | The attach gate already refuses such a root (`storage_unjudged`) before the check runs. Open the volume with cryptsetup so the kernel manages the mapping. |
-| The LUKS2 header stores the persistent `allow-discards` flag | `config.flags` in the LUKS2 JSON header, read from the device below the mapping | `cryptsetup refresh --persistent <name>` without `--allow-discards`, then check `cryptsetup luksDump` reports `(no flags)`. |
 | The LUKS2 header carries a `systemd-tpm2`, `systemd-fido2` or `systemd-pkcs11` token | `tokens.*.type` in the LUKS2 JSON header | The token names the unlock method in plain text, and a TPM2 token seals the key to this machine's TPM, binding the volume to the host. Remove it with `systemd-cryptenroll --wipe-slot` or `cryptsetup token remove` if the volume must not point at this machine. |
 
 The LUKS2 header is read directly from the device node below the mapping (the
@@ -217,8 +217,9 @@ This is the backend the E2E suite runs on.
   `--allow-discards` makes filesystem-level operations visible on the
   physical device, such as the filesystem type and used space. LUKS2 can
   store the flag in its header (`--persistent`) and then enables discards on
-  every later open; the `backend-detect` check reads the header and warns when
-  the flag is stored (by hand: `cryptsetup luksDump /dev/sdX2` must report
+  every later open; the `backend-detect` check refuses activation while
+  discards reach the hidden volume, whether from a runtime `--allow-discards`
+  or a stored flag (by hand: `cryptsetup luksDump /dev/sdX2` must report
   `(no flags)` on its `Flags:` line).
 - **Timestamp behaviour:** nothing on the decoy filesystem records use of the
   device. The LUKS2 header changes only when you run a management command
