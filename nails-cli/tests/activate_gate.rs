@@ -420,8 +420,20 @@ mod kernel_tests {
                     .starts_with("Fedora is not yet a validated platform"),
                 "{row}"
             );
-            let output = nails(&config, &["activate", "-y", "--overlay-only"]);
+            // Activation refuses a host it does not support with exit 8, and
+            // before any write: a fresh hidden volume stays byte-identical, with
+            // no lock, no log and no staged config. The log file is left on (the
+            // `nails` helper), so a log line would land on the volume and show.
+            let refused_volume = ScratchTmpfs::new("");
+            let refused_dir = tempfile::tempdir().unwrap();
+            let refused_config = config_for(refused_dir.path(), refused_volume.path());
+            let output = nails(&refused_config, &["activate", "-y", "--overlay-only"]);
             assert_eq!(output.status.code(), Some(8), "{output:?}");
+            assert!(
+                entries(refused_volume.path()).is_empty(),
+                "a refused host wrote to the hidden volume: {:?}",
+                entries(refused_volume.path())
+            );
         });
     }
 }
