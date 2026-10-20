@@ -275,15 +275,35 @@ fn overlay_path(path: &Path) -> io::Result<String> {
     })
 }
 
-/// Mount an overlay at `target` with one lower layer.
-pub fn mount_overlay(lower: &Path, upper: &Path, work: &Path, target: &Path) -> io::Result<()> {
-    let data = format!(
-        "lowerdir={},upperdir={},workdir={}",
+/// The overlay feature options NAILS pins on every mount (see [`overlay_data`]).
+///
+/// `index`, `metacopy` and `redirect_dir` default differently across kernels —
+/// Arch's turns them on — and each lets the overlay diverge from a plain copy-up:
+/// an index survives into the upper, a metadata-only copy leaves the data in the
+/// lower, and a followed redirect reads from the lower after a rename. Pinning
+/// them off keeps every distribution's overlay behaving as NAILS's forensic
+/// promise assumes. `xino` is deliberately left unpinned: it stores nothing in
+/// the upper.
+pub const OVERLAY_FEATURE_OPTIONS: &str = "index=off,metacopy=off,redirect_dir=nofollow";
+
+/// The `mount(2)` data for a one-lower-layer overlay, with NAILS's pinned
+/// feature options ([`OVERLAY_FEATURE_OPTIONS`]) appended.
+///
+/// The one place the real mount ([`mount_overlay`]) and the upper-filesystem
+/// capability probe both build the option string, so the two can never pin a
+/// different set.
+pub fn overlay_data(lower: &Path, upper: &Path, work: &Path) -> io::Result<String> {
+    Ok(format!(
+        "lowerdir={},upperdir={},workdir={},{OVERLAY_FEATURE_OPTIONS}",
         overlay_path(lower)?,
         overlay_path(upper)?,
         overlay_path(work)?
-    );
-    let data = c_string(&data)?;
+    ))
+}
+
+/// Mount an overlay at `target` with one lower layer.
+pub fn mount_overlay(lower: &Path, upper: &Path, work: &Path, target: &Path) -> io::Result<()> {
+    let data = c_string(&overlay_data(lower, upper, work)?)?;
     rustix::mount::mount(
         "overlay",
         target,

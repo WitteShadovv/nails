@@ -78,6 +78,42 @@ fn live_overlay_mountinfo_round_trips_awkward_layer_paths() {
 }
 
 #[test]
+fn live_overlay_pins_the_feature_options_off() {
+    let _ = Rerun::new(test_path!(live_overlay_pins_the_feature_options_off))
+        .in_user_mount_ns()
+        .run(|| {
+            let scratch = ScratchTmpfs::new("");
+            let lower = scratch.mkdir("lower");
+            let upper = scratch.mkdir("upper");
+            let work = scratch.mkdir("work");
+            let target = scratch.mkdir("merged");
+
+            nails_teardown::whole_root::nextroot::mount_overlay(&lower, &upper, &work, &target)
+                .expect("mount the overlay");
+
+            let entry = read_mountinfo()
+                .unwrap()
+                .into_iter()
+                .find(|e| e.mount_point == target)
+                .expect("the overlay is listed");
+            let opts = &entry.super_opts;
+            // The kernel echoes a feature option only when it differs from its
+            // own compiled default, so which of the three appears depends on
+            // the kernel. `redirect_dir` is echoed here, which proves the
+            // pinned string reached the kernel; whichever appear, the dangerous
+            // on-states must never be among them, on any kernel's defaults
+            // (Arch turns index/metacopy/redirect_dir on, where the off-states
+            // would then be echoed instead).
+            assert!(opts.contains("redirect_dir=nofollow"), "{opts}");
+            assert!(!opts.contains("redirect_dir=follow"), "{opts}");
+            assert!(!opts.contains("index=on"), "{opts}");
+            assert!(!opts.contains("metacopy=on"), "{opts}");
+
+            nix::mount::umount(&target).expect("unmount the overlay");
+        });
+}
+
+#[test]
 fn copy_tree_leaves_source_atimes_untouched_on_a_strictatime_fs() {
     let _ = Rerun::new(test_path!(
         copy_tree_leaves_source_atimes_untouched_on_a_strictatime_fs

@@ -317,14 +317,10 @@ fn probe_trial_overlay(
     // merged view must store a whiteout in the upper layer.
     std::fs::write(lower.join("seed"), b"seed").map_err(ProbeError::Scaffold)?;
 
-    // Mirror the explicit options the real overlay mounts pass (see
-    // `filesystem::real::mount_ops`): the trial must exercise the same mode.
-    let options = format!(
-        "lowerdir={},upperdir={},workdir={},index=off,metacopy=off,redirect_dir=nofollow",
-        lower.display(),
-        upper.display(),
-        work.display()
-    );
+    // Exercise the exact option string the real overlay mount uses, so the
+    // probe proves the backend under the same pinned feature options.
+    let options = nails_teardown::whole_root::nextroot::overlay_data(lower, upper, work)
+        .map_err(ProbeError::Scaffold)?;
 
     // A failed mount is the common NFS/FUSE/FAT verdict, so it is a Missing
     // capability rather than a scaffolding error.
