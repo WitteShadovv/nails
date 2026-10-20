@@ -43,7 +43,7 @@ pub fn execute(
     args: &StatusArgs,
     config_override: Option<&Path>,
 ) -> ExitStatus {
-    use nails_core::{NailsError, RealFilesystem, StatusCommand};
+    use nails_core::app::StatusOutcome;
 
     let json = settings.is_json();
     let style = settings.stdout_style();
@@ -59,51 +59,20 @@ pub fn execute(
     let hidden_volume_root = config.hidden_volume_root.clone();
     let log_path = config.log_path.clone();
 
-    // Create StatusCommand and run
-    let filesystem = RealFilesystem;
-    let command = StatusCommand::new(filesystem, config, state_path.clone());
-
     // A hard error (e.g. a permission-denied state file) means the real state is
     // unknown: report the UNKNOWN posture and fail closed.
-    let report = match command.run() {
-        Ok(report) => report,
-        Err(e) => {
-            let error_msg = match e {
-                NailsError::IoError { ref source, .. } => {
-                    if source.kind() == std::io::ErrorKind::NotFound {
-                        format!("State file not found: {}", state_path.display())
-                    } else {
-                        format!("I/O error reading state file: {e}")
-                    }
-                }
-                NailsError::PermissionDenied(ref msg) => {
-                    format!(
-                        "Permission denied accessing state file {}: {}",
-                        state_path.display(),
-                        msg
-                    )
-                }
-                NailsError::ConfigError(ref msg) => {
-                    format!(
-                        "State file corrupted or invalid at {}: {}",
-                        state_path.display(),
-                        msg
-                    )
-                }
-                _ => {
-                    format!("Error reading state file {}: {}", state_path.display(), e)
-                }
-            };
-
-            let sudo = super::sudo_line_for(&e, "status");
+    let report = match nails_core::app::status(config) {
+        StatusOutcome::Report(report) => *report,
+        StatusOutcome::Unknown { message, source } => {
+            let sudo = super::sudo_line_for(&source, "status");
             if json {
-                print_status_json_unknown(error_msg, sudo);
+                print_status_json_unknown(message, sudo);
             } else {
                 output::print_status_header(style);
                 println!("State:              UNKNOWN");
                 println!("Security Posture:   {}", Posture::Unknown.render(style));
                 println!();
-                println!("Error: {}", error_msg);
+                println!("Error: {}", message);
                 println!();
                 match sudo {
                     Some(line) => println!("Run it as root: {line}"),

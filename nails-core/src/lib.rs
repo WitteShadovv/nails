@@ -68,6 +68,9 @@ mod test_world;
 // Verification, the forensic readers, the residue catalog and rehearse.
 pub use nails_forensics::{forensic, rehearse, residue_catalog, verify};
 
+// The engine facade: one function per operation, shared by every front end.
+pub mod app;
+
 // Manager module (core orchestrator)
 pub mod manager;
 
