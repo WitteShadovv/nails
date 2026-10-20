@@ -110,6 +110,16 @@ impl CheckResult {
         }
     }
 
+    /// Construct a warning together with the single action that clears it.
+    ///
+    /// A warning has no field of its own for a remedy, so the action is placed
+    /// on its own line after the warning text, the way a failure's fix is shown
+    /// beneath it. The risk and its fix are supplied separately, which keeps the
+    /// call site stable no matter how a warning comes to hold its fix.
+    pub fn warn_with(message: impl Into<String>, fix: impl Into<String>) -> Self {
+        CheckResult::Warn(format!("{}\n{}", message.into(), fix.into()))
+    }
+
     /// Construct a skip with the reason the check could not run.
     pub fn skipped(reason: impl Into<String>) -> Self {
         CheckResult::Skipped(reason.into())
@@ -684,5 +694,43 @@ mod tests {
         use crate::filesystem::MockFilesystem;
         let registry: PreFlightRegistry<MockFilesystem> = PreFlightRegistry::default();
         assert!(registry.is_empty());
+    }
+
+    #[test]
+    fn warn_with_is_a_warning() {
+        let result = CheckResult::warn_with("swap is enabled", "disable swap and retry");
+        assert!(result.is_warn());
+        assert!(!result.is_pass());
+        assert!(!result.is_fail());
+    }
+
+    #[test]
+    fn warn_with_keeps_the_fix_on_its_own_line() {
+        let result = CheckResult::warn_with("swap is enabled", "disable swap and retry");
+        assert_eq!(result.message(), "swap is enabled\ndisable swap and retry");
+    }
+
+    #[test]
+    fn warn_with_does_not_fill_the_failure_remediation_channel() {
+        // The fix rides in the warning text; the structured remediation slot
+        // stays reserved for failures.
+        let result = CheckResult::warn_with("risk", "fix it");
+        assert_eq!(result.remediation(), None);
+    }
+
+    #[test]
+    fn warn_with_accepts_owned_and_borrowed_strings() {
+        let borrowed = CheckResult::warn_with("risk", "fix it");
+        let owned = CheckResult::warn_with(String::from("risk"), String::from("fix it"));
+        assert_eq!(borrowed, owned);
+    }
+
+    #[test]
+    fn warn_with_renders_the_warn_mark_then_the_risk_and_the_fix() {
+        let _guard = crate::output::RenderStateTestGuard::new();
+
+        let rendered = format!("{}", CheckResult::warn_with("risk here", "do this"));
+
+        assert_eq!(rendered, "⚠ risk here\ndo this");
     }
 }
