@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
+use nails_core::app::init::{
+    COMMON_SUBDIRS, DEFAULT_HARDWARE_CONFIG, HardwareBootstrap, InitItem, ItemStatus,
+    NIXOS_SUBDIRS, next_steps,
+};
+use nails_core::config::CONFIG_FILE_NAME;
 use nails_core::filesystem::PathKind;
-use nails_core::{Config, Filesystem, MockFilesystem, SystemState};
+use nails_core::{Config, Filesystem, MockFilesystem, RealFilesystem, SystemState};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

@@ -22,6 +22,7 @@ pub mod deactivate;
 pub mod discard_upper;
 pub mod emergency;
 pub mod engine;
+pub mod init;
 pub mod lock;
 pub mod readiness;
 pub mod recover;
