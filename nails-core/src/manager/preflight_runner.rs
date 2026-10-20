@@ -122,9 +122,9 @@ pub fn build_registry<F: Filesystem>(
     use crate::preflight::{
         BackendDetectCheck, BackendEntriesCheck, BinaryLocationCheck, DecoyPersistenceCheck,
         HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck,
-        MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, PlatformCheck,
-        ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
-        SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+        MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, OfflineUpdateCheck,
+        PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck,
+        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
@@ -272,6 +272,14 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(DecoyPersistenceCheck::new(
         accept_persistent_decoy,
         config_layer.is_some(),
+    )));
+
+    // Refuses a decoy with a pending offline (offline-update) system update
+    // staged: once the overlays are mounted the decoy's updater would apply it
+    // inside the hidden session and reboot into it. Read-only.
+    registry.add_check(Box::new(OfflineUpdateCheck::new(
+        paths.root.clone(),
+        layout.upper(),
     )));
 
     // Warns (never fails) about the residue channels the catalog probes by path
