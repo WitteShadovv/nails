@@ -187,7 +187,8 @@ fn every_live_view_maps_to_its_posture_and_remedy() {
         false,
     );
     assert_eq!(p, Posture::Degraded);
-    assert!(r.unwrap().contains("nails recover"));
+    let r = r.unwrap();
+    assert!(r.contains("sudo ") && r.contains("recover"), "{r}");
     let (p, _, r) = posture_of(&SessionView::HiddenWithoutPlan("x".into()), false);
     assert_eq!(p, Posture::Degraded);
     assert!(r.unwrap().contains("Power off"));
@@ -224,9 +225,14 @@ fn an_active_record_on_the_plain_decoy_is_explained_with_its_remedy() {
         "{:?}",
         report.reason
     );
-    assert_eq!(
-        report.remediation,
-        Some("Run `nails recover` to reset the record")
+    let remediation = report.remediation.as_deref().expect("a remedy");
+    assert!(
+        remediation.contains("sudo ") && remediation.contains("recover"),
+        "{remediation}"
+    );
+    assert!(
+        remediation.ends_with("recover` to reset the record"),
+        "{remediation}"
     );
 
     // An inactive record on the decoy needs no word.

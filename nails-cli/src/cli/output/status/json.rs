@@ -26,7 +26,7 @@ pub struct StatusData<'a> {
     reason: Option<&'a str>,
     /// What to do about a degraded or unknown posture.
     #[serde(skip_serializing_if = "Option::is_none")]
-    remediation: Option<&'static str>,
+    remediation: Option<&'a str>,
     /// The recorded state.
     state: StateJson,
     /// How the state file loaded: loaded, missing, unreadable or corrupt.
@@ -87,7 +87,7 @@ fn data(report: &StatusReport) -> StatusData<'_> {
         posture: report.posture.as_str(),
         session: report.session,
         reason: report.reason.as_deref(),
-        remediation: report.remediation,
+        remediation: report.remediation.as_deref(),
         state: state_json_from_report(&report.state, &source_outcome(report.state_source)),
         state_source: report.state_source,
         entered_at: report.entered_at.map(|t| t.to_rfc3339()),

@@ -440,8 +440,26 @@ fn redact_status(mut value: Value) -> Value {
         if data.contains_key("hidden_root") {
             data["hidden_root"] = Value::String("[hidden_root]".to_string());
         }
+        // The remediation names the running binary's absolute path in its
+        // `sudo <path> <command>` hint, which varies by build.
+        if let Some(remediation) = data.get("remediation").and_then(Value::as_str) {
+            data["remediation"] = Value::String(redact_sudo_path(remediation));
+        }
     }
     value
+}
+
+/// Replace the binary path in a `sudo <path> <command>` hint with a placeholder,
+/// so a snapshot does not depend on where the test binary was built.
+fn redact_sudo_path(s: &str) -> String {
+    let Some(at) = s.find("sudo ") else {
+        return s.to_string();
+    };
+    let after = &s[at + "sudo ".len()..];
+    match after.find(' ') {
+        Some(space) => format!("{}sudo [binary] {}", &s[..at], &after[space + 1..]),
+        None => s.to_string(),
+    }
 }
 
 #[test]

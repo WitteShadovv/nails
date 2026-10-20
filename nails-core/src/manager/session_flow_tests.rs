@@ -288,7 +288,11 @@ fn recovery_in_the_hidden_root_points_to_deactivate() {
         .recover_session_on(&machine(dir.path(), &table), &FakeEntryHost::default())
         .unwrap_err();
 
-    assert!(error.to_string().contains("`nails deactivate`"), "{error}");
+    let error = error.to_string();
+    assert!(
+        error.contains("sudo ") && error.contains("deactivate"),
+        "{error}"
+    );
 }
 
 // ---------------------------------------------------------------------------

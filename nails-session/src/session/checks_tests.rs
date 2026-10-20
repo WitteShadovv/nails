@@ -61,7 +61,11 @@ fn only_the_plain_decoy_may_activate() {
         plan: None,
         nextroot_mounted: true,
     });
-    assert!(interrupted.remediation().unwrap().contains("nails recover"));
+    let remedy = interrupted.remediation().unwrap();
+    assert!(
+        remedy.contains("sudo ") && remedy.contains("recover"),
+        "{remedy}"
+    );
 }
 
 #[test]

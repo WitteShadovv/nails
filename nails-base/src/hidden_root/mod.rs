@@ -333,8 +333,9 @@ impl HiddenRoot {
             return Ok(AttachState::Unattached(format!(
                 "hidden root {} is mounted but holds no NAILS marker \
                  ({MARKER_STATE_FILE} or {MARKER_CONFIG_DIR}/{MARKER_CONFIG_FILE}); \
-                 run `nails init` on the hidden volume first",
-                root.display()
+                 run `{}` on the hidden volume first",
+                root.display(),
+                crate::next_step::sudo_line(crate::next_step::NextStep::Init)
             )));
         }
 

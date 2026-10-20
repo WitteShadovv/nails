@@ -435,9 +435,11 @@ fn build(
     let nextroot = paths.nextroot();
     let mounts = read_mountinfo().map_err(|e| io(Path::new("/proc/self/mountinfo"), e))?;
     if nextroot::is_mount_point(&mounts, &nextroot) {
+        use nails_base::next_step::{NextStep, sudo_line};
         return Err(NailsError::InvalidState(format!(
-            "{} is already populated; run `nails recover` first",
-            nextroot.display()
+            "{} is already populated; run `{}` first",
+            nextroot.display(),
+            sudo_line(NextStep::Recover)
         )));
     }
     let snapshot = Snapshot::take(&paths.run);

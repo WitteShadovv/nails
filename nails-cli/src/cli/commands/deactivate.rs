@@ -52,7 +52,10 @@ pub fn execute(
                     "invalid_state",
                     "not in a hidden session; nothing to deactivate",
                 )
-                .with_hint("an interrupted activation is cleaned up with 'nails recover'"),
+                .with_hint(format!(
+                    "an interrupted activation is cleaned up with '{}'",
+                    nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Recover)
+                )),
             );
         }
     };

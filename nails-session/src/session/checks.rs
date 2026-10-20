@@ -167,19 +167,26 @@ impl<F: Filesystem> PreFlightCheck<F> for DecoyRootCheck {
 
 /// Judge where the machine is.
 pub fn judge_session(view: &SessionView) -> CheckResult {
+    use nails_base::next_step::{NextStep, sudo_line};
     match view {
         SessionView::Decoy => CheckResult::Pass("on the plain decoy root".into()),
         SessionView::Hidden(_) | SessionView::HiddenWithoutPlan(_) => CheckResult::fail_with(
             "the hidden session is already active".to_string(),
-            "Run `nails deactivate` to return to the decoy.".to_string(),
+            format!(
+                "Run `{}` to return to the decoy.",
+                sudo_line(NextStep::Deactivate)
+            ),
         ),
         SessionView::Entering(_) => CheckResult::fail_with(
             "another activation is entering the hidden root".to_string(),
-            "Wait for the soft-reboot, or run `nails recover` if it hangs.".to_string(),
+            format!(
+                "Wait for the soft-reboot, or run `{}` if it hangs.",
+                sudo_line(NextStep::Recover)
+            ),
         ),
         SessionView::Interrupted { .. } => CheckResult::fail_with(
             "an interrupted activation left a next root or a session plan in /run".to_string(),
-            "Run `nails recover` to remove them.".to_string(),
+            format!("Run `{}` to remove them.", sudo_line(NextStep::Recover)),
         ),
     }
 }
