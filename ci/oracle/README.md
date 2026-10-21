@@ -86,21 +86,35 @@ Two checks keep a clean verdict honest:
 ```json
 {
   "positive_controls": [
-    { "name": "wtmpdb-boot", "tool": null, "path": "/var/log/wtmp.db", "field": null }
+    { "name": "wtmpdb-boot", "tool": "bulk_extractor", "path": "email", "field": "wtmpdb-boot@oracle.example" }
   ],
   "canary": { "tool": "bulk_extractor", "path": "email", "field": "canary@oracle.example" }
 }
 ```
 
-- **Positive controls** are baseline records the scan plants on the `after`
-  image (for example a wtmpdb boot row, a lastlog2 row). Each must be detected,
-  or the scan is blind and the run fails — never `clean`. A run with no positive
-  control also fails: it cannot prove it sees residue at all.
-- The **canary** is a fixed marker planted on every image. Finding it proves the
-  scan read the image's contents.
+Every self-check must name a **concrete planted artifact**: an exact `field`,
+never a whole directory or a value-less locus. The engine rejects a self-check
+whose `field` is null or that names a whole location, so neither can silently
+widen into a blanket residue exemption.
+
+- **Positive controls** are records the scan plants on the `after` image. Each
+  is a unique, obviously-synthetic `@oracle.example` address appended to a
+  baseline carrier that already exists on `before`/`control` — a wtmpdb login
+  row (`/var/log/wtmp.db`), a lastlog2 row (`/var/lib/lastlog/lastlog2.db`), a
+  pacman history line (`/var/log/pacman.log`). bulk_extractor carves the address
+  from the raw image bytes with no format-aware parser, so each surfaces at the
+  exact `(bulk_extractor, email, <address>)` key the control pins. Each must be
+  detected, or the scan is blind and the run fails — never `clean`. A run with
+  no positive control also fails: it cannot prove it sees residue at all. (This
+  proves the planted bytes were present and readable, not that a format-aware
+  parser understood the record — the tradeoff a bulk_extractor sentinel makes.)
+- The **canary** is a reserved address planted on every image at an
+  otherwise-uncovered path. Finding it proves the scan read the image's
+  contents. The scan may rotate it per run (`ORACLE_SEED`) and pins whatever it
+  planted in a run-time copy of this file; the committed value is the default.
 
 `tool` pins the channel that must surface a check (any channel when `null`).
-Keep these in step with what the scan actually plants.
+Keep these in step with what `make-sample-images.sh` actually plants.
 
 ## Running it
 
