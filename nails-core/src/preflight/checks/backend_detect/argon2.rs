@@ -147,14 +147,16 @@ const _: () = assert!(!opens_argon2id_tcrypt(
 ));
 
 /// The advice for the installed cryptsetup `version` (`None` when it could not
-/// be read): a warning with the PBKDF2 fix while the host cannot open Argon2id
-/// volumes, otherwise an informational pass.
+/// be read): always an informational pass, never a warning. It carries the
+/// PBKDF2 advisory while the host cannot open Argon2id volumes, and a note of
+/// support once a release can.
 pub fn argon2id_advice(version: Option<CryptsetupVersion>) -> CheckResult {
     advice(version, FIRST_RELEASE_OPENING_ARGON2ID)
 }
 
 /// [`argon2id_advice`] against an explicit first-supporting release, so the
-/// pass branch can be tested while the real constant is still `None`.
+/// support-confirming branch can be tested while the real constant is still
+/// `None`.
 fn advice(version: Option<CryptsetupVersion>, first: Option<CryptsetupVersion>) -> CheckResult {
     match version {
         None => CheckResult::Pass(
@@ -163,19 +165,13 @@ fn advice(version: Option<CryptsetupVersion>, first: Option<CryptsetupVersion>) 
         Some(version) if opens_argon2id_tcrypt(version, first) => CheckResult::Pass(format!(
             "cryptsetup {version} can open a VeraCrypt volume whose header key uses Argon2id"
         )),
-        Some(version) => CheckResult::warn_with(
-            format!(
-                "The installed cryptsetup {version} cannot open a VeraCrypt volume whose header \
-                 key is derived with Argon2id (the \"Argon2\" entry in VeraCrypt 1.26.29 and \
-                 newer). Opening one fails as if the password were wrong, and nothing outside \
-                 the encrypted header shows which algorithm it used."
-            ),
-            format!(
-                "Make both the outer and the hidden VeraCrypt volume with PBKDF2: keep \
-                 VeraCrypt's default key-derivation function, or pick any entry other than \
-                 Argon2. See {BACKENDS_DOC}."
-            ),
-        ),
+        Some(version) => CheckResult::Pass(format!(
+            "If you use VeraCrypt: the installed cryptsetup {version} cannot open a volume whose \
+             header key is derived with Argon2id (the \"Argon2\" entry in VeraCrypt 1.26.29 and \
+             newer), and nothing outside the encrypted header shows which algorithm it used. Make \
+             both the outer and the hidden VeraCrypt volume with PBKDF2: keep VeraCrypt's default \
+             key-derivation function, or pick any entry other than Argon2. See {BACKENDS_DOC}."
+        )),
     }
 }
 
@@ -201,7 +197,7 @@ impl<F: Filesystem> PreFlightCheck<F> for CryptsetupArgon2idCheck {
     }
 
     fn description(&self) -> &'static str {
-        "Warns when the installed cryptsetup cannot open VeraCrypt Argon2id volumes"
+        "Advises when the installed cryptsetup cannot open VeraCrypt Argon2id volumes"
     }
 
     fn run(&self, _fs: &F) -> Result<CheckResult> {
@@ -283,7 +279,7 @@ mod tests {
         // docs/backends.md.
         for (decoy, release) in SUPPORTED_DECOY_CRYPTSETUP {
             let result = argon2id_advice(Some(version(release)));
-            assert!(result.is_warn(), "{decoy} ({release}): {result:?}");
+            assert!(result.is_pass(), "{decoy} ({release}): {result:?}");
             assert!(!result.is_fail(), "the advice never blocks: {decoy}");
             let message = result.message();
             assert!(message.contains(*release), "{decoy}: {message}");
@@ -296,22 +292,27 @@ mod tests {
     #[test]
     fn the_newest_reviewed_cryptsetup_release_still_draws_the_advice() {
         // The boolean is guarded at compile time (see the tripwire assertion);
-        // here we confirm the advice itself still warns for that release.
-        assert!(argon2id_advice(Some(NEWEST_REVIEWED_CRYPTSETUP)).is_warn());
+        // here we confirm the advice itself still draws the PBKDF2 note (an
+        // informational pass, not a warning) for that release.
+        let result = argon2id_advice(Some(NEWEST_REVIEWED_CRYPTSETUP));
+        assert!(result.is_pass(), "{result:?}");
+        assert!(result.message().contains("PBKDF2"), "{result:?}");
     }
 
     #[test]
     fn the_advice_lifts_once_a_release_opens_argon2id() {
-        // The pass branch, exercised against an explicit first-supporting
-        // release while the real constant is still `None`.
+        // Both branches are informational passes; they are told apart by their
+        // message. Exercised against an explicit first-supporting release while
+        // the real constant is still `None`.
         let first = CryptsetupVersion::new(2, 9, 0);
         let supported = advice(Some(version("2.9.0")), Some(first));
         assert!(supported.is_pass(), "{supported:?}");
         assert!(supported.message().contains("can open"));
 
-        // A release below the boundary still draws the warning.
+        // A release below the boundary still carries the PBKDF2 advisory.
         let older = advice(Some(version("2.8.8")), Some(first));
-        assert!(older.is_warn(), "{older:?}");
+        assert!(older.is_pass(), "{older:?}");
+        assert!(older.message().contains("PBKDF2"));
     }
 
     #[test]
@@ -345,8 +346,9 @@ mod tests {
 
     #[test]
     fn the_advice_never_blocks_activation() {
-        // Pass, warn (every real version today) and the skipped case are all
-        // non-failures: the check is advice, so it can never refuse.
+        // The PBKDF2 advisory (every real version today), the support note and
+        // the skipped case are all passes, hence non-failures: the check is
+        // advice, so it can never refuse.
         assert!(!argon2id_advice(None).is_fail());
         assert!(!argon2id_advice(Some(version("2.7.5"))).is_fail());
         assert!(

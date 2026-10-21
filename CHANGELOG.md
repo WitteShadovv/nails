@@ -15,7 +15,7 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Added
 
-- `check` warns when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
+- `check` notes when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
   derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the version
   `cryptsetup --version` reports. No released cryptsetup opens such a volume, and nothing outside
   the encrypted header reveals the algorithm, so it advises making both the outer and the hidden
