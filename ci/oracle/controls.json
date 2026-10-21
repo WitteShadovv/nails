@@ -1,0 +1,23 @@
+{
+  "_comment": "Scan self-checks for the NAILS forensic oracle. The positive controls are baseline records the pipeline plants on the 'after' image and that the scan must detect: if one is missing the scan is blind and the run fails (never 'clean'), because a scan that cannot see a record it should cannot be trusted to report no residue. The canary is a fixed marker planted on every image; finding it proves the scan read the image's contents at all. 'tool' pins the channel that must surface it, or any channel when null; 'path' and 'field' locate it (an absolute image path, or a bulk_extractor feature type + value). Keep these in step with what the pipeline actually plants.",
+  "positive_controls": [
+    {
+      "name": "wtmpdb-boot",
+      "tool": null,
+      "path": "/var/log/wtmp.db",
+      "field": null,
+      "note": "Synthetic slice: any channel that recovers the file counts. Real-image slice should pin tool to plaso (or a SQL-reader channel) and field to the boot row, so detection proves the record was parsed, not merely recovered."
+    },
+    {
+      "name": "lastlog2",
+      "tool": null,
+      "path": "/var/lib/lastlog/lastlog2.db",
+      "field": null
+    }
+  ],
+  "canary": {
+    "tool": "bulk_extractor",
+    "path": "email",
+    "field": "canary@oracle.example"
+  }
+}

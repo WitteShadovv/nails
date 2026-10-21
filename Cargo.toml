@@ -5,6 +5,7 @@ members = [
     "nails-cli",
     "nails-core",
     "nails-forensics",
+    "nails-oracle",
     "nails-platform",
     "nails-session",
     "nails-teardown",

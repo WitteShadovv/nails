@@ -1,0 +1,35 @@
+[package]
+name = "nails-oracle"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "CI forensic oracle: turns disk-image analysis output into a pass/fail verdict"
+homepage.workspace = true
+repository.workspace = true
+readme = "../README.md"
+# Never publish to a registry; see nails-cli/Cargo.toml.
+publish = false
+
+[lints]
+workspace = true
+
+[lib]
+name = "nails_oracle"
+path = "src/lib.rs"
+
+[[bin]]
+name = "nails-oracle"
+path = "src/main.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+# The residue catalog is linked directly so the oracle's set of citable rows is
+# exactly the project's own: a citation resolves with `Catalog::from_forensics`
+# against the live catalog, with no generated manifest to keep in sync and no
+# way for the two to drift. Only the read-only catalog data is used; the pure
+# `verdict` function takes a `Catalog` value, so its tests inject a synthetic
+# one and never pull this in.
+nails-forensics = { path = "../nails-forensics" }

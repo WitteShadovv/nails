@@ -48,6 +48,9 @@ const GRAPH: &[(&str, &[&str])] = &[
         ],
     ),
     ("nails-cli", &["nails-api", "nails-core", "nails-teardown"]),
+    // The CI forensic oracle links the residue catalog's read-only data from
+    // nails-forensics, so a citation resolves against the project's own rows.
+    ("nails-oracle", &["nails-forensics"]),
 ];
 
 fn workspace_root() -> PathBuf {

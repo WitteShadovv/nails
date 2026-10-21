@@ -1273,6 +1273,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "nails-oracle"
+version = "0.3.0-rc.3"
+dependencies = [
+ "nails-forensics",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nails-platform"
 version = "0.3.0-rc.3"
 dependencies = [
