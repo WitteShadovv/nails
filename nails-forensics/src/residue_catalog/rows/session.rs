@@ -540,7 +540,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/lib/chrony"]),
         platforms: Platforms::FHS,
-        risk: "chrony, the clock daemon the FHS families reach for where NixOS uses timesyncd, keeps its measured drift and real-time-clock offset under /var/lib/chrony and rewrites them periodically and at shutdown, so the files date when the machine last ran.",
+        risk: "chrony, a clock daemon some FHS distributions default to for NTP (Fedora does; Debian and Ubuntu use systemd-timesyncd instead), keeps its measured drift and real-time-clock offset under /var/lib/chrony and rewrites them periodically and at shutdown, so on a decoy that runs it the files date when the machine last ran.",
         preflight: Probe::Paths {
             paths: &["/var/lib/chrony"],
             severity: ProbeSeverity::Info,
@@ -566,7 +566,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
             "NetworkManager's per-connection timestamps and seen-BSSID lists under /var/lib/NetworkManager, and the saved profiles under /etc/NetworkManager/system-connections",
         ),
         platforms: Platforms::ALL,
-        risk: "A connection the hidden session brings up through the decoy's NetworkManager lands in the upper, but a link the session creates is adopted by the decoy's NetworkManager after the way back, which records the connection and its time on the decoy disk. Only a plain-boot control tells such a record from one the decoy wrote itself.",
+        risk: "A connection the hidden session brings up through the decoy's NetworkManager lands in the upper. A link the session creates could be adopted by the decoy's NetworkManager after the way back, recording the connection and its time on the decoy disk, but the clean way back now deletes the session's links before the decoy's NetworkManager starts (see the network-state class above), so a normal deactivate leaves no such record. It can remain only after an exit that does not run the clean way back, such as an emergency that does not power off.",
         preflight: Probe::None(
             "the hidden session brings the connection up after activation, and the decoy records it only after the way back",
         ),
@@ -574,7 +574,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         verify: Probe::None(
             "a connection record the decoy wrote after adopting a session's link looks like one the decoy made itself",
         ),
-        mitigation: "End the session with deactivate --poweroff (or emergency --poweroff), which powers off before the decoy's NetworkManager starts; this shares its handling with the network-state class above.",
+        mitigation: "A clean deactivate now handles this with the network-state class above, deleting the session's links before the decoy's NetworkManager starts. End an emergency with emergency --poweroff.",
         doc_anchor: "operator-guide.md#how-it-works",
         e2e: E2e::None(
             "session-dns-records logs the link a session leaves; the on-disk connection record shares the network-state class's coverage and its raw-disk assertion waits on a cross-distro control run",
@@ -634,7 +634,7 @@ pub(super) const ROWS: &[ResidueClass] = &[
         title: "Copy-on-write and compressed storage history",
         kind: ResidueKind::Session,
         channel: Channel::Mechanism(
-            "old extents a copy-on-write filesystem keeps after data is overwritten or deleted, and compressed extents on btrfs, bcachefs or an f2fs mount with compression",
+            "old extents a copy-on-write filesystem keeps after data is overwritten or deleted, and compressed extents on btrfs, bcachefs, zfs or an f2fs mount with compression",
         ),
         platforms: Platforms::ALL,
         risk: "A copy-on-write filesystem keeps old copies of overwritten or deleted blocks in extents the live tree no longer references, recoverable with filesystem-specific tools. A raw scan reads those extents, so a leaked-then-deleted trace is still found there; but the same filesystems compress file contents, per file or subvolume and invisibly to the mount options, and a raw plaintext scan cannot read a compressed extent.",
