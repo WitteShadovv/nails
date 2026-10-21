@@ -121,10 +121,10 @@ pub fn build_registry<F: Filesystem>(
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
         BackendDetectCheck, BackendEntriesCheck, BinaryLocationCheck, DecoyPersistenceCheck,
-        HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck,
-        MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, OfflineUpdateCheck,
-        PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck,
-        StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+        DmaProtectionCheck, HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck,
+        InheritedAutostartCheck, MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck,
+        OfflineUpdateCheck, PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck,
+        StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
@@ -254,6 +254,15 @@ pub fn build_registry<F: Filesystem>(
     // stays an informational pass only when neither source is readable; it also
     // notes a RAM-wipe-on-shutdown mechanism. Read-only.
     registry.add_check(Box::new(MemoryWipeCheck::new()));
+
+    // Warns (never fails) when the host lacks DMA protection against a live /
+    // evil-maid memory attacker: the IOMMU is not remapping DMA (read from the
+    // command line and the /sys ground truth), or a Thunderbolt/USB4 controller
+    // reports iommu_dma_protection=0, so a device can read RAM over the bus. The
+    // fix rides in the warning: NAILS cannot change it (firmware/BIOS/NVRAM, the
+    // same MOR-bit boundary), so power off before the machine leaves the
+    // operator's control. It also reports the kernel lockdown state. Read-only.
+    registry.add_check(Box::new(DmaProtectionCheck::new()));
 
     // Reports whether the host would suspend an active session (lid switch, idle
     // auto-suspend), which would strand the hidden environment resident in RAM
