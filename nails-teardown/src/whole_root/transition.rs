@@ -53,7 +53,7 @@ use crate::whole_root::plan::{
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
 use crate::whole_root::{
-    boot_records, kernel_helpers, run_records, runtime_units, switch_refusal, utab,
+    boot_records, kernel_helpers, network, run_records, runtime_units, switch_refusal, utab,
 };
 use std::io;
 use std::path::{Path, PathBuf};
@@ -427,6 +427,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         .ok()
         .map(|text| parse_mountinfo(&text));
     let records = std::fs::read(env.runtime_dir.join(RECORDS_NAME)).ok();
+    let network = std::fs::read(env.runtime_dir.join(network::RECORD_NAME)).ok();
     // On an FHS decoy, keep the binary copy before the scrub removes the runtime
     // directory: the boot-record reconcile step runs it on the decoy's first
     // start. NixOS (a decoy system toplevel) leaves records that already read as
@@ -495,6 +496,16 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         let _ =
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
+    // Now that the hidden network units have stopped, give the decoy its
+    // network identity back: delete the links the session made, each device's
+    // recorded address, the hostname on a decoy that would not reset it, and
+    // the service manager's per-link runtime state. A no-op without a record.
+    network::restore(
+        &env.run,
+        Path::new(network::SYS_CLASS_NET),
+        Path::new(network::PROC_HOSTNAME),
+        network.as_deref(),
+    );
     // The decoy's copy, taken at entry, names mounts by their IDs at that time;
     // the decoy root and its other mounts come back as new mounts, whose IDs
     // the way back recorded, and the old IDs may name the session's mounts or

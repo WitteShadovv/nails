@@ -41,6 +41,7 @@
 //! after the signal.
 
 use super::layout::{Layout, Paths};
+use super::network_state;
 use super::nixos;
 use super::policy::{self, Decision};
 use super::store;
@@ -55,7 +56,7 @@ use nails_teardown::whole_root::plan::{
 };
 use nails_teardown::whole_root::run_scrub::Snapshot;
 use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
-use nails_teardown::whole_root::{kernel_helpers, ret, transition, utab};
+use nails_teardown::whole_root::{kernel_helpers, network, ret, transition, utab};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -358,6 +359,15 @@ fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -
         nails_teardown::whole_root::plan::write_private_atomic(&runtime.join(name), &bytes)
             .map_err(|e| io(&runtime.join(name), e))?;
     }
+    // The decoy's network identity, for the way back. Best effort: a failure
+    // leaves no record, and the way back then leaves the network alone.
+    network_state::record(
+        Path::new(network::SYS_CLASS_NET),
+        Path::new(network::PROC_HOSTNAME),
+        Path::new("/etc/hostname"),
+        &paths.run,
+        &runtime.join(network::RECORD_NAME),
+    );
     let copy = paths.binary_copy();
     std::fs::copy(inputs.binary, &copy).map_err(|e| io(&copy, e))?;
     std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o700))

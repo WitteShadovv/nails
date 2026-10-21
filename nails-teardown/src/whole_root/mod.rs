@@ -12,6 +12,8 @@
 //! - [`run_scrub`]: the `/run` snapshot and scrub;
 //! - [`run_records`]: the decoy's records in `/run` that its start writes to
 //!   disk, put back on the way back;
+//! - [`network`]: the decoy's network identity (links, addresses, hostname and
+//!   the service manager's per-link runtime state), put back on the way back;
 //! - [`boot_records`]: making the decoy's login and boot records read as one
 //!   clean power cycle after the way back;
 //! - [`utab`]: libmount's `utab` lines that still name a mount after a switch;
@@ -35,6 +37,7 @@ pub mod disk_guard;
 pub mod emergency;
 pub mod kernel_helpers;
 pub mod kill;
+pub mod network;
 pub mod nextroot;
 pub mod plan;
 pub mod ret;
