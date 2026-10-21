@@ -530,4 +530,150 @@ pub(super) const ROWS: &[ResidueClass] = &[
         residual: true,
         conclusion: None,
     },
+    // Cross-distro residue: classes the FHS families and copy-on-write storage
+    // add on top of the systemd defaults the rows above describe. The ones a
+    // Fedora or Arch boot would confirm are catalogued from their documented
+    // residue now, with the live assertion left to the cross-distro probe.
+    ResidueClass {
+        id: "chrony-drift",
+        title: "chrony clock drift and RTC records",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&["/var/lib/chrony"]),
+        platforms: Platforms::FHS,
+        risk: "chrony, the clock daemon the FHS families reach for where NixOS uses timesyncd, keeps its measured drift and real-time-clock offset under /var/lib/chrony and rewrites them periodically and at shutdown, so the files date when the machine last ran.",
+        preflight: Probe::Paths {
+            paths: &["/var/lib/chrony"],
+            severity: ProbeSeverity::Info,
+        },
+        preflight_blocks: false,
+        verify: Probe::Paths {
+            paths: &["/var/lib/chrony"],
+            severity: ProbeSeverity::Info,
+        },
+        mitigation: "Session writes land in the upper; on a persistent decoy, use the decoy normally after a session so its own clock activity follows the stamp.",
+        doc_anchor: "decoy-requirements.md#session-time-records",
+        e2e: E2e::None(
+            "asserted on the Fedora and Arch decoys by the cross-distro forensic probe once their images boot; shares the session-time-records mitigation meanwhile",
+        ),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
+        id: "networkmanager-connection-records",
+        title: "NetworkManager connection records",
+        kind: ResidueKind::Session,
+        channel: Channel::Mechanism(
+            "NetworkManager's per-connection timestamps and seen-BSSID lists under /var/lib/NetworkManager, and the saved profiles under /etc/NetworkManager/system-connections",
+        ),
+        platforms: Platforms::ALL,
+        risk: "A connection the hidden session brings up through the decoy's NetworkManager lands in the upper, but a link the session creates is adopted by the decoy's NetworkManager after the way back, which records the connection and its time on the decoy disk. Only a plain-boot control tells such a record from one the decoy wrote itself.",
+        preflight: Probe::None(
+            "the hidden session brings the connection up after activation, and the decoy records it only after the way back",
+        ),
+        preflight_blocks: false,
+        verify: Probe::None(
+            "a connection record the decoy wrote after adopting a session's link looks like one the decoy made itself",
+        ),
+        mitigation: "End the session with deactivate --poweroff (or emergency --poweroff), which powers off before the decoy's NetworkManager starts; this shares its handling with the network-state class above.",
+        doc_anchor: "operator-guide.md#how-it-works",
+        e2e: E2e::None(
+            "session-dns-records logs the link a session leaves; the on-disk connection record shares the network-state class's coverage and its raw-disk assertion waits on a cross-distro control run",
+        ),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
+        id: "plymouth-boot-log",
+        title: "Plymouth boot log",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&["/var/log/boot.log"]),
+        platforms: Platforms::FHS,
+        risk: "Plymouth records the boot console to /var/log/boot.log on the FHS families. The way back is a boot of the decoy, so on a persistent decoy the file's latest entries hold the way back's boot messages and their time, where a plain power cycle would not place a boot mid-day.",
+        preflight: Probe::None(
+            "the decoy writes it during the boot the way back performs, not before",
+        ),
+        preflight_blocks: false,
+        verify: Probe::Paths {
+            paths: &["/var/log/boot.log"],
+            severity: ProbeSeverity::Info,
+        },
+        mitigation: "Keep /var/log out of the decoy's persistent storage, or expect boot.log to date the way back; power off after the session.",
+        doc_anchor: "decoy-requirements.md#session-time-records",
+        e2e: E2e::None(
+            "asserted on the Fedora and Arch decoys by the cross-distro forensic probe once their images boot",
+        ),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
+        id: "snapper-timeline",
+        title: "Snapper timeline snapshots",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&["/.snapshots", "/var/lib/snapper"]),
+        platforms: Platforms::FHS,
+        risk: "Snapper keeps timeline snapshots of btrfs subvolumes and a bookkeeping record of each under /.snapshots and /var/lib/snapper, every one stamped with its time. A timeline snapshot taken while the machine runs dates that activity, and an older snapshot preserves decoy state for an examiner to compare.",
+        preflight: Probe::Paths {
+            paths: &["/.snapshots", "/var/lib/snapper"],
+            severity: ProbeSeverity::Info,
+        },
+        preflight_blocks: false,
+        verify: Probe::Paths {
+            paths: &["/.snapshots", "/var/lib/snapper"],
+            severity: ProbeSeverity::Info,
+        },
+        mitigation: "Keep the overlay upper on the hidden volume, which NAILS enforces, so a decoy snapshot never captures a session's writes; disable the snapper timeline timer on the decoy if you want no snapshot dating the machine's activity.",
+        doc_anchor: "decoy-requirements.md#session-time-records",
+        e2e: E2e::None(
+            "asserted on a btrfs decoy with snapper by the cross-distro forensic probe once those images boot",
+        ),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
+        id: "btrfs-cow-history",
+        title: "Copy-on-write and compressed storage history",
+        kind: ResidueKind::Session,
+        channel: Channel::Mechanism(
+            "old extents a copy-on-write filesystem keeps after data is overwritten or deleted, and compressed extents on btrfs, bcachefs or an f2fs mount with compression",
+        ),
+        platforms: Platforms::ALL,
+        risk: "A copy-on-write filesystem keeps old copies of overwritten or deleted blocks in extents the live tree no longer references, recoverable with filesystem-specific tools. A raw scan reads those extents, so a leaked-then-deleted trace is still found there; but the same filesystems compress file contents, per file or subvolume and invisibly to the mount options, and a raw plaintext scan cannot read a compressed extent.",
+        preflight: Probe::None(
+            "a copy-on-write or compressed decoy is a property of the decoy's own storage, not a session write",
+        ),
+        preflight_blocks: false,
+        verify: Probe::None(
+            "a raw scan reads old copy-on-write extents but cannot read compressed ones, so `nails rehearse` reports a compressed or copy-on-write decoy as not checked rather than clean",
+        ),
+        mitigation: "Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean.",
+        doc_anchor: "threat-model.md#residual-channels",
+        e2e: E2e::None(
+            "the compressed-storage verdict is unit-tested; a live rehearsal on a btrfs or f2fs decoy is a follow-up on hardware with those filesystems",
+        ),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
+        id: "grubenv-boot-success",
+        title: "Fedora GRUB boot-success state",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&["/boot/grub2/grubenv", "/boot/efi/EFI/fedora/grubenv"]),
+        platforms: Platforms::FEDORA,
+        risk: "Fedora's boot-success logic writes boot_success and boot_indeterminate into the GRUB environment block after a boot. The way back is a boot of the decoy, so the block can record it and the counter can move, where a plain power cycle would not.",
+        preflight: Probe::None(
+            "Fedora's boot-success flag is written by the decoy's own boot after the switch; NAILS binds /boot and the ESP read-only during a session, so the session never writes it",
+        ),
+        preflight_blocks: false,
+        verify: Probe::Paths {
+            paths: &["/boot/grub2/grubenv", "/boot/efi/EFI/fedora/grubenv"],
+            severity: ProbeSeverity::Info,
+        },
+        mitigation: "Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot.",
+        doc_anchor: "decoy-requirements.md#session-time-records",
+        e2e: E2e::None(
+            "asserted on the Fedora decoy by the cross-distro forensic probe once its image boots",
+        ),
+        residual: true,
+        conclusion: None,
+    },
 ];

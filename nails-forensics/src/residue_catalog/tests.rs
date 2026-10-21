@@ -383,6 +383,39 @@ mod platforms {
     }
 
     #[test]
+    fn the_cross_distro_rows_reach_the_right_families() {
+        use crate::residue_catalog::class;
+        let nixos = Platforms::for_host(&host(PlatformKind::NixOs, None));
+        let debian = Platforms::for_host(&host(PlatformKind::Fhs, Some(Family::Debian)));
+        let fedora = Platforms::for_host(&host(PlatformKind::Fhs, Some(Family::Fedora)));
+        let arch = Platforms::for_host(&host(PlatformKind::Fhs, Some(Family::Arch)));
+
+        let reaches = |id: &str, h| class(id).expect(id).platforms.applies_to(h);
+
+        // Fedora's GRUB boot-success flag is a single-family class.
+        assert!(reaches("grubenv-boot-success", fedora));
+        for other in [debian, arch, nixos] {
+            assert!(!reaches("grubenv-boot-success", other), "{other:?}");
+        }
+
+        // chrony, Plymouth's boot log and snapper belong to the FHS families,
+        // not to NixOS.
+        for id in ["chrony-drift", "plymouth-boot-log", "snapper-timeline"] {
+            for fhs in [debian, fedora, arch] {
+                assert!(reaches(id, fhs), "{id} on {fhs:?}");
+            }
+            assert!(!reaches(id, nixos), "{id} on NixOS");
+        }
+
+        // The copy-on-write and NetworkManager classes span every family.
+        for id in ["btrfs-cow-history", "networkmanager-connection-records"] {
+            for h in [nixos, debian, fedora, arch] {
+                assert!(reaches(id, h), "{id} on {h:?}");
+            }
+        }
+    }
+
+    #[test]
     fn label_reads_all_a_single_family_or_a_list() {
         assert_eq!(Platforms::ALL.label(), "all");
         assert_eq!(Platforms::NIXOS.label(), "NixOS");
