@@ -81,7 +81,7 @@ in
 
     with subtest("status before activation is the plain decoy, resolved from the binary location"):
         status = hidden_status()
-        assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
+        assert status["place"] == "decoy", f"expected the plain decoy, got {status}"
 
     with subtest("activate with no --config enters the hidden root, run by full path under sudo"):
         session.follow_soft_reboot(
@@ -95,7 +95,7 @@ in
         # The root overlay's upper is on the hidden root the binary sits on.
         session.assert_hidden_root(machine, "/mnt/data/root/upper")
         status = hidden_status()
-        assert status["posture"] == "active", f"expected active, got {status}"
+        assert status["place"] == "hidden", f"expected the hidden session, got {status}"
 
     with subtest("the pre-activation residue report lands on the hidden root"):
         report = (

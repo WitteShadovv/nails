@@ -64,7 +64,7 @@ in
             kind = read_state_kind()
             assert kind == "Active", f"cycle {cycle}: state file records {kind!r}"
             status = read_status_json(config_path=CONFIG)
-            assert status["posture"] == "active", status
+            assert status["place"] == "hidden", status
 
         with subtest(f"cycle {cycle}: the way back records Inactive"):
             canonical_deactivate(CONFIG, f"deactivate-{cycle}")
@@ -76,7 +76,7 @@ in
             perms = machine.succeed(f"stat -c %a {STATE_FILE}").strip()
             assert perms == "600", f"{STATE_FILE} has permissions {perms}, expected 600"
             status = read_status_json(config_path=CONFIG)
-            assert status["posture"] == "decoy", status
+            assert status["place"] == "decoy", status
             # Reopened for the next cycle at its start; close it here so every
             # cycle starts from the same closed backend.
             machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")

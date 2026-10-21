@@ -65,7 +65,7 @@ in
         write_state(corrupt)
         rc, status = read_status_json_with_rc(config_path=CONFIG)
         assert rc == 0, f"status must report the live session, got rc={rc}: {status}"
-        assert status["posture"] == "active", status
+        assert status["place"] == "hidden", status
 
     with subtest("emergency still runs on a corrupt state and returns to the decoy"):
         session.follow_soft_reboot(

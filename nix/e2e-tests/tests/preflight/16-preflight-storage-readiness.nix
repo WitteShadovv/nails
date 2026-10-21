@@ -49,7 +49,7 @@ in
         assert_command_failed(result)
         assert_result_contains(result, ["storage-readiness", "root work"], stream="stderr")
         session.assert_decoy_root(machine)
-        assert read_status_json(config_path=config_path)["posture"] == "decoy"
+        assert read_status_json(config_path=config_path)["place"] == "decoy"
         machine.succeed("umount /mnt/data/root/work")
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';

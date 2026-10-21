@@ -59,7 +59,7 @@ in
         assert_command_failed(result)
         assert_result_contains(result, ["swap", "leak memory", "swapoff /swapfile"], stream="stderr")
         session.assert_decoy_root(machine)
-        assert read_status_json(config_path=config_path)["posture"] == "decoy"
+        assert read_status_json(config_path=config_path)["place"] == "decoy"
 
     with subtest("RAM-only zram swap is permitted"):
         # Tear down the file swap and bring up a RAM-only zram device, which the
@@ -74,7 +74,7 @@ in
         machine.succeed("test \"$(cat /sys/block/zram0/backing_dev)\" = none")
 
         canonical_activate(config_path, "--overlay-only", "preflight-swap-zram")
-        assert read_status_json(config_path=config_path)["posture"] == "active"
+        assert read_status_json(config_path=config_path)["place"] == "hidden"
         canonical_deactivate(config_path, "preflight-swap-zram-deactivate")
   '';
 }

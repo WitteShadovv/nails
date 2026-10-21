@@ -58,7 +58,7 @@ in
         canonical_activate(headless_config, "--overlay-only", "activate-bind")
         session.assert_hidden_root(machine, UPPER)
         status = read_status_json(config_path=headless_config)
-        assert status["posture"] == "active", status
+        assert status["place"] == "hidden", status
 
     with subtest("hidden-session writes land under the bound directory"):
         machine.succeed("su - testuser -c 'echo bind-backend-ok > ~/notes.txt' && sync")
@@ -67,7 +67,7 @@ in
     with subtest("deactivate returns to the plain decoy; the backing disk keeps the file"):
         canonical_deactivate(headless_config, "deactivate-bind")
         status = read_status_json(config_path=headless_config)
-        assert status["posture"] == "decoy", status
+        assert status["place"] == "decoy", status
         machine.fail("su - testuser -c 'test -e ~/notes.txt'")
         # The switch dropped the backing mount with the hidden root; mount the
         # backing disk again to look at it.

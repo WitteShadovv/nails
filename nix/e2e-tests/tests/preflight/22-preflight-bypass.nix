@@ -52,11 +52,11 @@ in
             stream="stderr",
         )
         session.assert_decoy_root(machine)
-        assert read_status_json(config_path=config_path)["posture"] == "decoy"
+        assert read_status_json(config_path=config_path)["place"] == "decoy"
 
     with subtest("no-preflight bypasses the swap guard and enters the hidden session"):
         canonical_activate(config_path, "--overlay-only --no-preflight", "preflight-bypass")
-        assert read_status_json(config_path=config_path)["posture"] == "active"
+        assert read_status_json(config_path=config_path)["place"] == "hidden"
 
     with subtest("deactivation returns to the plain decoy after a bypassed activation"):
         canonical_deactivate(config_path, "preflight-bypass-deactivate")

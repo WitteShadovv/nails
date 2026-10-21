@@ -101,7 +101,7 @@ in
         machine.succeed(operator("status --json") + " > /run/status.json")
         status = json.loads(machine.succeed("cat /run/status.json"))["data"]
         machine.log(json.dumps(status, indent=1))
-        assert status["posture"] == "active", status
-        assert status["session"] == "hidden", status
+        assert status["place"] == "hidden", status
+        assert status["attention"] is None, status
   '';
 }

@@ -42,7 +42,7 @@ in
         with subtest("a full session leaves a signed state file behind"):
             canonical_activate(config_path, "--overlay-only", "preflight-state-activate")
             status = read_status_json(config_path=config_path)
-            assert status["posture"] == "active", status
+            assert status["place"] == "hidden", status
             canonical_deactivate(config_path, "preflight-state-deactivate")
             # The way back closed the hidden volume; reopen it to read the state
             # file the session left behind.
@@ -53,7 +53,7 @@ in
             )
             assert persisted.get("state") == "Inactive", persisted
             status = read_status_json(config_path=config_path)
-            assert status["posture"] == "decoy", status
+            assert status["place"] == "decoy", status
             machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';
 }

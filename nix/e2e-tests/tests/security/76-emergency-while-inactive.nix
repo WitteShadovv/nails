@@ -40,7 +40,7 @@ in
         assert session.backend_open(machine), "emergency closed the prepared backend"
         machine.succeed("mountpoint -q /mnt/data")
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "decoy", status
+        assert status["place"] == "decoy", status
 
 
     with subtest("precondition: the plain decoy with the backend prepared"):
