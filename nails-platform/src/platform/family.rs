@@ -70,10 +70,14 @@ impl std::fmt::Display for DistroVersion {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Gate {
     /// A versioned distribution: admitted from `min` upward, tested on the
-    /// `validated` releases, warning for any other release at or above `min`.
+    /// `validated` releases, warning for any other release at or above `min`. A
+    /// `validated` release that also appears in `caveats` stays tested — it is
+    /// still listed in the tested-release sentence — but carries that specific
+    /// warning, for a known issue that affects an otherwise supported release.
     Versioned {
         min: DistroVersion,
         validated: &'static [DistroVersion],
+        caveats: &'static [(DistroVersion, &'static str)],
     },
     /// A rolling distribution with no release to gate on.
     Rolling,
@@ -105,6 +109,19 @@ pub(crate) struct FamilyRow {
     admitted: bool,
 }
 
+/// The warning the Ubuntu 26.04 row carries. 26.04 is a tested release, but a
+/// known upstream issue affects it: after the switch into the hidden session,
+/// AppArmor keeps chrony and CUPS from reaching systemd and the journal, and on
+/// the way back the decoy reports chrony failed until a full reboot. The fault
+/// is upstream, so 26.04 stays validated and NAILS warns rather than refuses.
+const UBUNTU_2604_CAVEAT: &str = "Ubuntu 26.04 is tested, but a known upstream issue affects it: after the \
+     switch into the hidden session, AppArmor blocks chrony (time sync) and CUPS \
+     (printing) from reaching systemd and the journal, so the clock does not sync \
+     and printing times out. After the way back the decoy lists chrony as failed \
+     until its next full reboot, which hints a soft-reboot happened; reboot the \
+     decoy fully after a session to clear it. The fault is upstream, not in NAILS, \
+     and remains until Ubuntu fixes it.";
+
 /// The family table. Admitting a family is a data change here (its `admitted`
 /// flag) plus its gate run — the backend ([`FhsPlatform`](super::FhsPlatform))
 /// is already generic.
@@ -119,6 +136,7 @@ const TABLE: &[FamilyRow] = &[
         gate: Gate::Versioned {
             min: DistroVersion::new(13, 0),
             validated: &[DistroVersion::new(13, 0)],
+            caveats: &[],
         },
         kind: Kind::Base,
         admitted: true,
@@ -134,6 +152,7 @@ const TABLE: &[FamilyRow] = &[
                 DistroVersion::new(26, 4),
                 DistroVersion::new(26, 10),
             ],
+            caveats: &[(DistroVersion::new(26, 4), UBUNTU_2604_CAVEAT)],
         },
         kind: Kind::Base,
         admitted: true,
@@ -145,6 +164,7 @@ const TABLE: &[FamilyRow] = &[
         gate: Gate::Versioned {
             min: DistroVersion::new(44, 0),
             validated: &[DistroVersion::new(44, 0)],
+            caveats: &[],
         },
         kind: Kind::Base,
         admitted: false,
@@ -254,6 +274,11 @@ const NAMED_REFUSALS: &[NamedRefusal] = &[
 pub(crate) enum FamilySupport {
     /// An admitted family on a tested release: runs clean.
     Supported,
+    /// An admitted family on a tested release that still carries a specific,
+    /// documented warning: a release NAILS validates, but on which a known
+    /// issue affects the session. It stays a tested release — it is named in
+    /// the tested-release sentence — and the string is the warning NAILS emits.
+    SupportedWithCaveat(String),
     /// An admitted family NAILS has not tested on this release, or a derivative
     /// of an admitted family. It runs; the string is the warning that says so.
     Untested(String),
@@ -378,7 +403,12 @@ fn family_from_id_like(id_like: &[String]) -> Option<Family> {
 
 /// Version-gate an admitted base row.
 fn gate_version(row: &FamilyRow, version_id: Option<&str>) -> FamilySupport {
-    let Gate::Versioned { min, validated } = row.gate else {
+    let Gate::Versioned {
+        min,
+        validated,
+        caveats,
+    } = row.gate
+    else {
         // A rolling admitted family has no release to gate on.
         return FamilySupport::Supported;
     };
@@ -417,6 +447,15 @@ fn gate_version(row: &FamilyRow, version_id: Option<&str>) -> FamilySupport {
             row.label,
             releases(validated),
         ));
+    }
+
+    // A tested release can still carry a specific, documented caveat.
+    if let Some((_, caveat)) = caveats
+        .iter()
+        .copied()
+        .find(|(caveated, _)| *caveated == version)
+    {
+        return FamilySupport::SupportedWithCaveat(caveat.to_string());
     }
 
     FamilySupport::Supported

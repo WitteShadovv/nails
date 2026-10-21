@@ -114,11 +114,39 @@ fn debian_13_is_supported_and_12_is_refused() {
 
 #[test]
 fn ubuntu_tested_releases_are_supported() {
-    for release in ["24.04", "26.04", "26.10"] {
+    // 24.04 and 26.10 run clean; 26.04 is tested too but carries a caveat, so
+    // it is checked on its own below.
+    for release in ["24.04", "26.10"] {
         let c = classify_of(Some("ubuntu"), &["debian"], Some(release));
         assert_eq!(c.family, Some(Family::Debian), "{release}");
         assert_eq!(c.support, FamilySupport::Supported, "{release}");
     }
+}
+
+#[test]
+fn ubuntu_2604_is_tested_but_carries_a_caveat() {
+    // 26.04 stays a tested release, but a known upstream issue affects it, so it
+    // is admitted with a specific warning rather than a clean pass.
+    let c = classify_of(Some("ubuntu"), &["debian"], Some("26.04"));
+    assert_eq!(c.family, Some(Family::Debian));
+    match c.support {
+        FamilySupport::SupportedWithCaveat(warning) => {
+            assert!(
+                warning.starts_with("Ubuntu 26.04 is tested, but a known upstream issue"),
+                "{warning}"
+            );
+            assert!(warning.contains("AppArmor blocks chrony"), "{warning}");
+            assert!(warning.contains("reboot the decoy fully"), "{warning}");
+            assert!(warning.contains("not in NAILS"), "{warning}");
+        }
+        other => panic!("expected a tested release with a caveat, got {other:?}"),
+    }
+    // It is still named in the generated tested-release sentence.
+    assert!(
+        supported_platforms().contains("26.04"),
+        "{}",
+        supported_platforms()
+    );
 }
 
 #[test]
@@ -350,7 +378,7 @@ fn an_unknown_host_is_refused() {
 #[test]
 fn every_tested_release_of_an_admitted_family_is_supported() {
     for row in TABLE {
-        let Gate::Versioned { min, validated } = row.gate else {
+        let Gate::Versioned { min, validated, .. } = row.gate else {
             continue;
         };
         if !(row.kind == Kind::Base && row.admitted) {
@@ -359,10 +387,16 @@ fn every_tested_release_of_an_admitted_family_is_supported() {
         assert!(!validated.is_empty(), "{} lists no release", row.id);
         for version in validated {
             assert!(*version >= min, "{} {version}", row.id);
-            assert_eq!(
-                classify_of(Some(row.id), &[], Some(&version.to_string())).support,
-                FamilySupport::Supported,
-                "{} {version}",
+            // A tested release is never refused: it either runs clean or is
+            // admitted with a documented caveat. Both keep it in the
+            // tested-release sentence; a caveat only adds a warning.
+            let support = classify_of(Some(row.id), &[], Some(&version.to_string())).support;
+            assert!(
+                matches!(
+                    support,
+                    FamilySupport::Supported | FamilySupport::SupportedWithCaveat(_)
+                ),
+                "{} {version}: {support:?}",
                 row.id
             );
         }

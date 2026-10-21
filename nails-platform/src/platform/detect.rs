@@ -291,7 +291,11 @@ fn classify(
     let family = classification.family;
     let support_warning = match classification.support {
         FamilySupport::Supported => None,
-        FamilySupport::Untested(warning) => Some(warning),
+        // A tested release with a caveat and an untested release both run; each
+        // carries its warning, which the platform check and init surface.
+        FamilySupport::SupportedWithCaveat(warning) | FamilySupport::Untested(warning) => {
+            Some(warning)
+        }
         FamilySupport::Refused(reason) => return Verdict::refused(reason).with_family(family),
     };
     if usr_merge == UsrMerge::NotMerged {
@@ -377,11 +381,23 @@ mod tests {
     }
 
     #[test]
-    fn ubuntu_2604_is_a_tested_release() {
+    fn ubuntu_2604_is_tested_but_warns_about_a_known_upstream_issue() {
+        // 26.04 is a tested release, so it is not refused and `require_supported`
+        // passes; it still carries a warning about a known upstream AppArmor
+        // issue that affects chrony and CUPS on this release.
         let profile = detect(&host(UBUNTU2604, "systemd")).unwrap();
         assert_eq!(profile.kind, PlatformKind::Fhs);
-        assert_eq!(profile.support_warning, None);
         profile.require_supported().unwrap();
+        let warning = profile
+            .support_warning
+            .expect("26.04 carries a known-issue warning");
+        assert!(
+            warning.starts_with("Ubuntu 26.04 is tested, but a known upstream issue"),
+            "{warning}"
+        );
+        assert!(warning.contains("AppArmor blocks chrony"), "{warning}");
+        assert!(warning.contains("CUPS"), "{warning}");
+        assert!(warning.contains("not in NAILS"), "{warning}");
     }
 
     #[test]

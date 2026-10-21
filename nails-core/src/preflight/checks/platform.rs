@@ -70,9 +70,10 @@ mod tests {
 
     #[test]
     fn a_tested_release_passes_with_its_name() {
+        // 26.04 is tested too, but it carries a caveat and so warns rather than
+        // passing clean; it is checked on its own below.
         for (os_release, name) in [
             ("ID=ubuntu\nVERSION_ID=\"24.04\"\n", "Ubuntu 24.04"),
-            ("ID=ubuntu\nVERSION_ID=\"26.04\"\n", "Ubuntu 26.04"),
             ("ID=ubuntu\nVERSION_ID=\"26.10\"\n", "Ubuntu 26.10"),
             ("ID=debian\nVERSION_ID=\"13\"\n", "Debian 13"),
             ("ID=nixos\nVERSION_ID=\"26.05\"\n", "NixOS 26.05"),
@@ -81,6 +82,25 @@ mod tests {
             assert!(result.is_pass(), "{name}: {result:?}");
             assert_eq!(result.message(), name);
         }
+    }
+
+    #[test]
+    fn a_tested_release_with_a_caveat_warns_naming_the_issue() {
+        // Ubuntu 26.04 is a tested release, but a known upstream issue affects
+        // it, so the platform row warns (it does not fail) and names the effect.
+        let result = run_on("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.04\"\n");
+        assert!(result.is_warn(), "{result:?}");
+        assert!(!result.is_fail(), "{result:?}");
+        assert!(
+            result
+                .message()
+                .starts_with("Ubuntu 26.04 is tested, but a known upstream issue"),
+            "{result:?}"
+        );
+        assert!(
+            result.message().contains("AppArmor blocks chrony"),
+            "{result:?}"
+        );
     }
 
     #[test]
