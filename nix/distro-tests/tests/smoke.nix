@@ -496,8 +496,8 @@ distroVm.buildVmTest {
         vm.fail("test -e /run/overlay-runtime")
         vm.fail("test -e /run/systemd/system/systemd-soft-reboot.service.d")
         session.assert_decoy_root(vm)
-        posture = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]["posture"]
-        assert posture == "decoy", f"after the cancel: {posture}"
+        place = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]["place"]
+        assert place == "decoy", f"after the cancel: {place}"
         vm.succeed("systemctl reset-failed cancelled-activation.service || true")
         vm.succeed("rm -f /mnt/data/reports/activation-residue-*.json")
 
@@ -519,7 +519,7 @@ distroVm.buildVmTest {
         # the upper on it.
         vm.succeed("mountpoint -q /mnt/data")
         status = json.loads(vm.succeed(f"{nails_cmd} status --json"))["data"]
-        assert status["posture"] == "active", f"expected the hidden session, got {status}"
+        assert status["place"] == "hidden", f"expected the hidden session, got {status}"
         # Every hidden write, /usr included, lands on the hidden root. Where it
         # lands depends on the decoy's own shape: a tree that is a filesystem of
         # its own (a btrfs subvolume on Fedora or Arch) is overlaid separately,

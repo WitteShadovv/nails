@@ -64,14 +64,14 @@ in
         assert_command_failed(result)
         assert_result_contains(result, ["space", "Only", "Free up at least"], stream="stderr")
         session.assert_decoy_root(machine)
-        assert read_status_json(config_path=config_path)["posture"] == "decoy"
+        assert read_status_json(config_path=config_path)["place"] == "decoy"
 
     with subtest("freeing space restores a clean activation path"):
         machine.succeed("rm -f /mnt/data/filler.bin")
         machine.succeed("sync")
         canonical_activate(config_path, "--overlay-only", "preflight-space-activate")
-        assert read_status_json(config_path=config_path)["posture"] == "active"
+        assert read_status_json(config_path=config_path)["place"] == "hidden"
         canonical_deactivate(config_path, "preflight-space-deactivate")
-        assert read_status_json(config_path=config_path)["posture"] == "decoy"
+        assert read_status_json(config_path=config_path)["place"] == "decoy"
   '';
 }

@@ -49,7 +49,7 @@ in {
 
     with subtest("enter and leave the hidden session"):
         canonical_activate("/mnt/data/config/nails.toml", "--overlay-only")
-        assert read_status_json("/mnt/data/config/nails.toml")["posture"] == "active"
+        assert read_status_json("/mnt/data/config/nails.toml")["place"] == "hidden"
         canonical_deactivate("/mnt/data/config/nails.toml")
         session.assert_decoy_root(machine)
   '';

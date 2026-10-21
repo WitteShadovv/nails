@@ -107,7 +107,7 @@ in
     with subtest("the hidden /etc/nixos is the wrapper over the base"):
         canonical_activate(CONFIG, "--overlay-only", "activate-hardware")
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "active", status
+        assert status["place"] == "hidden", status
         live = machine.succeed("cat /etc/nixos/hardware-configuration.nix")
         assert live == wrapper, f"the hidden /etc/nixos should show the wrapper, got: {live!r}"
         live_base = machine.succeed("cat /etc/nixos/hardware-configuration.base.nix")

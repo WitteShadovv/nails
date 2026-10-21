@@ -111,7 +111,7 @@ in
         status = json.loads(
             machine.succeed(f"nails --config {headless_config} status --json")
         )["data"]
-        assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
+        assert status["place"] == "decoy", f"expected the plain decoy, got {status}"
 
     with subtest("the decoy disk image is clean of every canary and registry token"):
         post = disk_forensics.snapshot(machine, "post-emergency", restart=False)

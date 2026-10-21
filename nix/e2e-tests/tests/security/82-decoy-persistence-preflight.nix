@@ -79,7 +79,7 @@ in
         session.assert_decoy_root(machine)
         machine.succeed("test ! -e /mnt/data/root/upper")
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "decoy", status
+        assert status["place"] == "decoy", status
 
 
     with subtest("check refuses the persistent-log decoy"):
@@ -99,10 +99,10 @@ in
             CONFIG, "--overlay-only --accept-persistent-decoy", "activate-accepted"
         )
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "active", status
+        assert status["place"] == "hidden", status
         canonical_deactivate(CONFIG, "deactivate-accepted")
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "decoy", status
+        assert status["place"] == "decoy", status
   '';
 }

@@ -66,7 +66,7 @@ in
             session.assert_decoy_root(machine)
             machine.succeed("test -z \"$(ls -A /run/nextroot 2>/dev/null)\"")
             status = read_status_json(config_path=config_path)
-            assert status["posture"] == "decoy", status
+            assert status["place"] == "decoy", status
             machine.succeed("test -e /mnt/data/config/nixos/configuration.nix")
             # The wrapper design: the hidden file imports the NAILS module and the
             # broken original was preserved verbatim, not patched in place.

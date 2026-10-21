@@ -43,7 +43,7 @@ in
         def assert_nothing_prepared(config_path):
             session.assert_decoy_root(machine)
             status = read_status_json(config_path=config_path)
-            assert status["posture"] == "decoy", status
+            assert status["place"] == "decoy", status
             machine.fail("test -e /mnt/data/state.json")
             machine.fail("test -e /mnt/data/state")
 

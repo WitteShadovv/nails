@@ -38,12 +38,12 @@ in
     with subtest("missing state file reads as the plain decoy"):
         machine.succeed(f"rm -f {state_path}")
         payload = read_status_json(config_path=headless_config)
-        assert payload["posture"] == "decoy", payload
+        assert payload["place"] == "decoy", payload
 
     with subtest("activation recreates the state file and enters the session"):
         canonical_activate(headless_config, "--overlay-only", "state-missing-activate")
         payload = read_status_json(config_path=headless_config)
-        assert payload["posture"] == "active", payload
+        assert payload["place"] == "hidden", payload
         state_doc = json.loads(machine.succeed(f"cat {state_path}"))
         digest = state_doc.get("integrity_sha256") or ""
         assert re.fullmatch(r"[0-9a-f]{64}", digest), (
@@ -54,7 +54,7 @@ in
         canonical_deactivate(headless_config, "state-missing-deactivate")
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         payload = read_status_json(config_path=headless_config)
-        assert payload["posture"] == "decoy", payload
+        assert payload["place"] == "decoy", payload
 
     with subtest("a hidden session whose state file vanished never reports decoy"):
         canonical_activate(headless_config, "--overlay-only", "state-missing-activate-2")
@@ -64,7 +64,7 @@ in
         machine.succeed("umount -l /mnt/data")
         machine.fail(f"test -e {state_path}")
         _, payload = read_status_json_with_rc(config_path=headless_config)
-        assert payload.get("posture") != "decoy", (
+        assert payload.get("place") != "decoy", (
             f"status must never report decoy in the hidden root: {payload}"
         )
   '';

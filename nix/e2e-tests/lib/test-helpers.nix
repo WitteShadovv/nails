@@ -111,9 +111,7 @@
             try:
                 payload = read_status_json(config_path=config_path)
                 last_payload = payload
-                state = payload.get("state", "")
-                kind = state.get("kind", "") if isinstance(state, dict) else str(state)
-                actual = kind.lower()
+                actual = str(payload.get("place", "")).lower()
                 if actual.startswith(expected_prefix):
                     return payload
             except Exception as exc:

@@ -179,7 +179,7 @@ in
         status = json.loads(
             machine.succeed(f"nails --config {headless_config} status --json")
         )["data"]
-        assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
+        assert status["place"] == "decoy", f"expected the plain decoy, got {status}"
         session.assert_decoy_root(machine)
 
     with subtest("the decoy disk image is clean of every canary and registry token"):

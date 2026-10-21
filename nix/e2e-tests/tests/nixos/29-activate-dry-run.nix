@@ -176,7 +176,7 @@ in
 
     with subtest("state, hidden volume and root remain untouched"):
         status = read_status_json(config_path=headless_config)
-        assert status["posture"] == "decoy", status
+        assert status["place"] == "decoy", status
         session.assert_decoy_root(machine)
         machine.fail("test -e /run/nextroot/etc")
         machine.fail("test -e /mnt/data/state.json")

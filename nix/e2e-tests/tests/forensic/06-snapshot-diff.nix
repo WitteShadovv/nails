@@ -170,7 +170,7 @@ in
         machine.succeed(f"test -x {UPPER}/home/testuser/work/script.sh")
         canonical_deactivate(headless_config, "deactivate")
         status = read_status_json(config_path=headless_config)
-        assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
+        assert status["place"] == "decoy", f"expected the plain decoy, got {status}"
         machine.fail("test -e /home/testuser/work")
 
     with subtest("the live decoy filesystem is byte-identical outside volatile paths"):
