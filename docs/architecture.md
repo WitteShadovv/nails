@@ -36,6 +36,16 @@ listed under the [residual channels](threat-model.md#residual-channels). The
 kernel, its modules, the device-mapper mappings and `/run` survive the switch.
 The way back is a second soft-reboot, again without firmware or bootloader.
 
+Each decoy filesystem below the overlay is also mounted read-only, a second layer
+under the overlay's copy-up. The overlay already writes nothing to a lower — every
+change copies up into the upper on the hidden volume — but NAILS binds the lower
+read-only before it becomes the overlay's lower layer, so that is a property of the
+mount and not only of the overlay: a write that reached the lower directly is
+refused by the kernel, and the decoy's files keep their access times, because a
+read-only mount updates no atime. The carried decoy filesystems and the boot
+filesystems (the ESP) come in read-only for the same reason; only the upper on the
+hidden volume is writable.
+
 The price:
 
 - Both transitions log the user out, because the desktop itself runs inside the
