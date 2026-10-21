@@ -148,13 +148,43 @@ fn default_targets_are_the_writable_decoy_devices_and_swap() {
     let swaps = "Filename\tType\tSize\tUsed\tPriority\n/dev/sdc2 partition 1024 0 -2\n/swapfile file 10 0 -3\n";
     let targets = default_scan_targets(&mounts(), swaps, Path::new("/mnt/data"));
     assert_eq!(
-        targets,
+        targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
         vec![
             PathBuf::from("/dev/sda1"),
             PathBuf::from("/dev/sdb1"),
             PathBuf::from("/dev/sdc2"),
         ]
     );
+    // The decoy root and USB are ext4 and vfat, and swap carries no filesystem:
+    // none is a storage blind spot.
+    assert!(targets.iter().all(|t| t.blind_spot.is_none()));
+}
+
+#[test]
+fn a_copy_on_write_decoy_root_is_marked_a_blind_spot() {
+    // The decoy root is btrfs; the hidden volume and a vfat ESP are not.
+    let mounts = parse_mountinfo(
+        "1 0 8:1 / / rw,relatime - btrfs /dev/sda2 rw,ssd,space_cache=v2,subvolid=256\n\
+         2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n\
+         3 1 8:0 / /boot/efi rw,relatime - vfat /dev/sda1 rw\n",
+    );
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let root = targets
+        .iter()
+        .find(|t| t.device.as_path() == Path::new("/dev/sda2"))
+        .expect("the btrfs root is a target");
+    assert!(
+        root.blind_spot
+            .as_deref()
+            .is_some_and(|reason| reason.contains("copy-on-write")),
+        "{root:?}"
+    );
+    // The vfat ESP is verbatim storage: a clean scan of it is a clean result.
+    let esp = targets
+        .iter()
+        .find(|t| t.device.as_path() == Path::new("/dev/sda1"))
+        .expect("the ESP is a target");
+    assert!(esp.blind_spot.is_none(), "{esp:?}");
 }
 
 #[test]
@@ -197,7 +227,11 @@ fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
 
     let report = scan(
         TOKEN,
-        &[leaky.clone(), clean.clone(), missing.clone()],
+        &[
+            ScanTarget::new(leaky.clone()),
+            ScanTarget::new(clean.clone()),
+            ScanTarget::new(missing.clone()),
+        ],
         None,
     )
     .unwrap();
@@ -211,7 +245,38 @@ fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
     assert!(report.devices[1].hits.is_empty());
     assert!(report.devices[2].error.is_some());
     assert!(report.incomplete());
+    // Images carry no filesystem, so none is a storage blind spot.
+    assert!(!report.inconclusive());
+    assert!(report.devices.iter().all(|d| d.blind_spot.is_none()));
     assert!(report.not_visible.iter().any(|line| line.contains("SSD")));
+}
+
+#[test]
+fn a_clean_scan_of_compressed_or_copy_on_write_storage_is_not_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    // A clean image with nothing planted: a verbatim filesystem would read it
+    // clean, but a copy-on-write decoy cannot rule the canary out.
+    let clean = image(&dir, "clean.img", &[(1 << 20, b"nothing to see")]);
+    let reason = scan_blind_spot("btrfs", "rw,compress=zstd")
+        .unwrap()
+        .reason()
+        .to_string();
+    let target = ScanTarget {
+        device: clean.clone(),
+        blind_spot: Some(reason.clone()),
+    };
+
+    let report = scan(TOKEN, &[target], None).unwrap();
+
+    // No hit, yet the result is not clean: the device is a blind spot.
+    assert_eq!(report.total_hits(), 0);
+    assert!(report.inconclusive());
+    // A blind spot is not the same as an unreadable device.
+    assert!(!report.incomplete());
+    assert_eq!(
+        report.devices[0].blind_spot.as_deref(),
+        Some(reason.as_str())
+    );
 }
 
 #[test]

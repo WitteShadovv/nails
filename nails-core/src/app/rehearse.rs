@@ -15,7 +15,7 @@ use std::path::PathBuf;
 use nails_api::ExitStatus;
 
 use crate::hidden_root::{Assessment, Refusal, recorded_acceptance, refusal};
-use crate::rehearse::{self, Here, LiveSession, Phase, RehearsalState, ScanReport};
+use crate::rehearse::{self, Here, LiveSession, Phase, RehearsalState, ScanReport, ScanTarget};
 use crate::session::SessionView;
 use crate::{Config, HiddenRoot, RealFilesystem, RuntimeEnv, TargetUser};
 
@@ -338,8 +338,8 @@ impl Rehearsal {
                  decoy or a later session, or pass --allow-same-boot",
             ));
         }
-        let devices = match self.scan_devices(options) {
-            Ok(devices) if !devices.is_empty() => devices,
+        let targets = match self.scan_targets(options) {
+            Ok(targets) if !targets.is_empty() => targets,
             Ok(_) => {
                 return Err(RehearseFailure::new(
                     ExitStatus::Failed,
@@ -349,7 +349,7 @@ impl Rehearsal {
             }
             Err(e) => return Err(RehearseFailure::new(ExitStatus::Failed, "no_devices", e)),
         };
-        let report = rehearse::scan(&token, &devices, options.max_bytes)
+        let report = rehearse::scan(&token, &targets, options.max_bytes)
             .map_err(|e| RehearseFailure::new(ExitStatus::Failed, "scan", e.to_string()))?;
         let mut state = state;
         if let Some(s) = state.as_mut() {
@@ -357,7 +357,10 @@ impl Rehearsal {
             s.scans.push(rehearse::ScanSummary {
                 at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string(),
                 boot_id: rehearse::current_boot_id(),
-                devices: devices.iter().map(|d| d.display().to_string()).collect(),
+                devices: targets
+                    .iter()
+                    .map(|t| t.device.display().to_string())
+                    .collect(),
                 hits: report.total_hits(),
             });
             if let Err(e) =
@@ -366,9 +369,12 @@ impl Rehearsal {
                 tracing::warn!(error = %e, "could not record the scan in the rehearsal state");
             }
         }
+        // A hit is critical. Otherwise a device that could not be read (an
+        // error or a byte cap) or one whose storage hides data from a raw scan
+        // (compressed or copy-on-write) is a warning, never a clean pass.
         let exit = if report.total_hits() > 0 {
             ExitStatus::VerifyCritical
-        } else if report.incomplete() {
+        } else if report.incomplete() || report.inconclusive() {
             ExitStatus::SuccessWithWarnings
         } else {
             ExitStatus::Ok
@@ -441,14 +447,26 @@ impl Rehearsal {
         }
     }
 
-    fn scan_devices(&self, options: &ScanOptions) -> Result<Vec<PathBuf>, String> {
+    fn scan_targets(&self, options: &ScanOptions) -> Result<Vec<ScanTarget>, String> {
+        // An image file carries no mounted filesystem to inspect, so it is read
+        // as plain storage; a live device is classified from the mount table, so
+        // a compressed or copy-on-write decoy reports "not checked".
         if options.offline {
-            return Ok(options.images.clone());
-        }
-        if !options.devices.is_empty() {
-            return Ok(options.devices.clone());
+            return Ok(options
+                .images
+                .iter()
+                .cloned()
+                .map(ScanTarget::new)
+                .collect());
         }
         let mounts = crate::filesystem::read_mountinfo().map_err(|e| e.to_string())?;
+        if !options.devices.is_empty() {
+            return Ok(options
+                .devices
+                .iter()
+                .map(|device| ScanTarget::classified(device.clone(), &mounts))
+                .collect());
+        }
         let swaps = std::fs::read_to_string("/proc/swaps").unwrap_or_default();
         let root = &self.config.hidden_volume_root;
         let hidden = root.canonicalize().unwrap_or_else(|_| root.clone());
