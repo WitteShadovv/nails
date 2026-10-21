@@ -1,0 +1,103 @@
+name: Oracle nightly
+
+# Nightly forensic oracle. On GitHub-hosted runners (no KVM): build the before,
+# control and after images, run the pinned analysis tools over them, then run
+# the nails-oracle verdict tool over the outputs and fail the run on anything
+# but a clean verdict. A schedule fires only on the default branch; a
+# workflow_dispatch runs it by hand.
+
+on:
+  schedule:
+    # Nightly at 04:30 UTC, after the E2E (02:17) and distro (03:41) runs.
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: oracle-nightly
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  oracle:
+    name: Forensic oracle
+    runs-on: ubuntu-26.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: oracle
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build the verdict tool
+        run: cargo build --release --locked -p nails-oracle
+
+      # OS packages the scan needs; the scan script pins bulk_extractor (by
+      # source commit) and plaso (by container digest) itself. No KVM is used.
+      - name: Install analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y btrfs-progs openssl
+
+      # The pipeline's scan script builds the before/control/after images, runs
+      # btrfs restore / bulk_extractor / plaso over each, and writes the
+      # outputs/ tree described in ci/oracle/README.md. It needs root for the
+      # loop mounts.
+      - name: Build images and run the scan
+        run: sudo ci/oracle/run-scan.sh "$RUNNER_TEMP/oracle"
+
+      # Redirect rather than pipe so a non-zero (failing) verdict fails the step;
+      # the one-line summary goes to stderr and shows in the log.
+      - name: Render the verdict
+        run: |
+          set -euo pipefail
+          ./target/release/nails-oracle "$RUNNER_TEMP/oracle/outputs" \
+            > "$RUNNER_TEMP/oracle/verdict.json"
+          cat "$RUNNER_TEMP/oracle/verdict.json"
+
+      - name: Upload the verdict and analysis outputs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oracle-verdict
+          path: ${{ runner.temp }}/oracle/
+
+  # A run nobody watches: a red verdict opens or comments on the 'CI red: Oracle
+  # nightly' issue, and a later green run closes it.
+  report-status:
+    name: Report status
+    needs: oracle
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}
