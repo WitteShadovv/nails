@@ -45,6 +45,16 @@ pub(crate) fn print_scan(
             ),
             Tone::Red,
         )
+    } else if report.inconclusive() {
+        // A clean read of compressed or copy-on-write storage proves nothing, so
+        // it is reported "not checked" rather than clean.
+        style.paint_bold(
+            format_args!(
+                "{} Canary {fingerprint} not checked: the decoy's storage can hide a leak from a raw scan",
+                style.glyph(Mark::Warn),
+            ),
+            Tone::Yellow,
+        )
     } else {
         style.paint_bold(
             format_args!(
@@ -63,9 +73,14 @@ pub(crate) fn print_scan(
                 device.device.display()
             ),
             None => {
+                let mark = if device.blind_spot.is_some() {
+                    Mark::Warn
+                } else {
+                    Mark::Bullet
+                };
                 println!(
                     "  {} {}: {} of {} bytes read{}{}",
-                    style.glyph(Mark::Bullet),
+                    style.glyph(mark),
                     device.device.display(),
                     device.bytes_scanned,
                     device.size,
@@ -80,6 +95,12 @@ pub(crate) fn print_scan(
                         ""
                     }
                 );
+                if let Some(reason) = &device.blind_spot {
+                    println!(
+                        "      {}",
+                        style.paint(format_args!("not checked: {reason}"), Tone::Yellow)
+                    );
+                }
                 for hit in &device.hits {
                     println!("      offset {} ({:?})", hit.offset, hit.encoding);
                 }
