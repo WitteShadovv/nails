@@ -28,9 +28,19 @@ of this changelog for that version becomes the release notes word for word, and
   unexplained; a later successful switch clears it.
 - Ubuntu 26.10 is a validated target: `check` and activation name it as a tested release rather than
   warning that it is untested.
+- `check` and `rehearse` document and probe more of the cross-distro residue surface a session can
+  leave on a persistent decoy: chrony's drift and real-time-clock files, NetworkManager connection
+  records, the Plymouth boot log, snapper timeline snapshots, copy-on-write and compressed storage
+  history, and the GRUB boot-success counter on Fedora. Each is listed in the decoy requirements and
+  threat model with where it lives, how it is checked and how to avoid it.
 
 ### Changed
 
+- `rehearse` reports a decoy on a copy-on-write or compressed filesystem (btrfs, bcachefs, zfs or an
+  f2fs mount with compression) as "not checked" rather than "clean" for leaked-then-deleted traces:
+  such a filesystem keeps old copies in unreferenced extents and stores file contents compressed, so a
+  raw plaintext scan can neither reach those old copies nor read a compressed extent, and a clean scan
+  there cannot prove a trace is gone.
 - Discards (TRIM) reaching the hidden volume now refuse activation instead of only warning:
   forwarding TRIM to the physical device leaves a readable map of used and free blocks, where a
   deniable volume should look like uniform random data, and writing an outer volume with discards
