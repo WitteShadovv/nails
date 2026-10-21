@@ -236,6 +236,19 @@ fn an_offline_scan_finds_a_planted_token_by_offset_and_never_prints_it() {
             .any(|line| line.as_str().unwrap().contains("SSD")),
         "{value:#}"
     );
+    // The compression/copy-on-write caveat is serialized too, so a clean offline
+    // scan of a captured image is never read as conclusive.
+    assert!(
+        value["data"]["scan"]["not_visible"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line
+                .as_str()
+                .unwrap()
+                .contains("stored compressed or copy-on-write")),
+        "{value:#}"
+    );
 }
 
 #[test]
@@ -262,6 +275,12 @@ fn an_offline_scan_of_a_clean_image_exits_zero() {
         "{stdout}"
     );
     assert!(stdout.contains("Not visible to this scan:"), "{stdout}");
+    // The compression/copy-on-write caveat prints with every result, so a clean
+    // scan over such storage is never read as conclusive.
+    assert!(
+        stdout.contains("stored compressed or copy-on-write"),
+        "{stdout}"
+    );
     // A token file names no channels: nothing to list as untested.
     assert!(!stdout.contains("Not tested"), "{stdout}");
 }
