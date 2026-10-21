@@ -277,9 +277,11 @@ pub fn restore(
     restore_run(run, &record);
 }
 
-/// Run the link part of a plan with `ip`. Finds `ip` only when there is work,
-/// and is silent on failure: the way back is best effort throughout.
-fn apply_links(plan: &RestorePlan) {
+/// Run the link part of a plan with `ip`: delete the links the session made
+/// and set each recorded address back. Finds `ip` only when there is work, and
+/// is silent on failure, as the way back is best effort throughout. Separated
+/// so a real-kernel test can drive it against a network namespace.
+pub fn apply_links(plan: &RestorePlan) {
     if plan.delete.is_empty() && plan.set_mac.is_empty() {
         return;
     }
