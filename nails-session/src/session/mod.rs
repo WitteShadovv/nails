@@ -18,6 +18,7 @@ pub mod entry;
 pub mod fstab;
 pub mod layout;
 pub mod leave;
+pub mod network_state;
 pub mod nixos;
 pub mod persona;
 pub mod policy;
