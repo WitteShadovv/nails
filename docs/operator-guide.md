@@ -379,31 +379,26 @@ logs it in again, as at boot). The hidden volume is unmounted and its mapping
 closed by the switch itself, once the overlay that held it is released.
 
 **What a soft-reboot leaves.** On the decoy disk, none of the hidden session's
-files but one record, NetworkManager's (below); in RAM until power-off, some
-kernel state, the per-link records the network daemons keep deeper in `/run`
-and, on a volatile decoy, a journal that starts late:
+files; in RAM until power-off, some kernel state and, on a volatile decoy, a
+journal that starts late:
 
 - the kernel ring buffer (`dmesg`), with the hidden session's kernel messages;
 - `SoftRebootsCount`, two per session, readable with `systemctl show` on
   systemd 256 and newer;
 - the same boot ID and continuous uptime across both transitions;
-- the network state the hidden session set up: the way back does not undo it.
-  Links, addresses, routes and VPN tunnels stay up in the decoy until
-  power-off, and so do the hidden NetworkManager's per-link records below
-  `/run/NetworkManager`. The decoy's NetworkManager adopts a link the session
-  created as connected externally and records the profile it generates for
-  it, with the time, in `/var/lib/NetworkManager/timestamps` on the decoy
-  disk, as soon as the decoy starts, so a power-off after the return comes too
-  late for that record. The random MAC address of the hidden network-identity
-  snippet can stay on the decoy's own network device (a device keeps its
-  current MAC address when its NetworkManager profile sets none), and on a
-  decoy without `/etc/hostname` the hidden hostname stays. Before you
-  deactivate, take down every connection and VPN tunnel you brought up and
-  delete every link you created by hand (`ip link delete`; `ip link set down`
-  keeps it), or end the session with `deactivate --poweroff`, which powers off
-  before the decoy's NetworkManager starts. End a session that used the
-  network-identity snippet with `deactivate --poweroff` (or
-  `emergency --poweroff`).
+- the network state the hidden session set up: the clean way back now restores
+  it before the switch, so a normal `deactivate` leaves none of it on the
+  decoy. The way back deletes the virtual links the session brought up (a
+  tunnel, a dummy or a bridge), sets each device's MAC address back where the
+  session changed it, restores the hostname on a decoy without `/etc/hostname`,
+  and puts the per-link NetworkManager and systemd-resolved state below `/run`
+  back as it was at entry. The decoy's NetworkManager therefore does not adopt
+  a session link as connected externally or record a profile for it in
+  `/var/lib/NetworkManager/timestamps` on the decoy disk. The residue remains
+  only after an exit that does not run the clean way back, such as an emergency
+  that does not power off. End such a session with `emergency --poweroff`, which
+  powers off before the decoy's NetworkManager starts, so nothing the session
+  changed can linger.
 - on a volatile decoy, a journal that starts at the return. The way back
   deletes the runtime journal the decoy shared with the hidden session, so the
   decoy's own records from before the session (the activation's sudo line, the
@@ -1203,11 +1198,12 @@ NixOS generation, or the upper's `/etc`); NAILS ships optional snippets
 (`nix/modules/hidden-network-identity.nix`,
 `nix/modules/network-identity/00-hidden-identity.conf`). NetworkManager has no
 global VPN-autoconnect switch, so disable it per profile with `nmcli connection
-modify <vpn> connection.autoconnect no`. The way back does not undo what the
-snippet changed on the running system: the random MAC address can stay on the
-decoy's device, and so can the hostname on a decoy without `/etc/hostname`.
-End a session that used it with `deactivate --poweroff` (or
-`emergency --poweroff`).
+modify <vpn> connection.autoconnect no`. The clean way back now undoes what the
+snippet changed on the running system: it sets the random MAC address back on
+the decoy's device and restores the hostname on a decoy without
+`/etc/hostname`, so a normal `deactivate` leaves neither on the decoy. Either
+can remain only after an emergency that does not power off, so end such a
+session with `emergency --poweroff`.
 
 ### Network anonymity and Tor
 

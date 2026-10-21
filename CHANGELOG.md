@@ -118,6 +118,12 @@ of this changelog for that version becomes the release notes word for word, and
   volume, so a refused host is left byte-identical, with no state lock and no log line, and the
   command exits with the unsupported-platform status (8). The refusal previously came after the state
   lock and the log file had already been written.
+- The way back now restores the decoy's network identity before returning to it. Virtual links a
+  session brought up (a tunnel, a dummy or bridge) are deleted, each device's hardware address is set
+  back, the hostname is restored on a decoy that has no `/etc/hostname`, and the per-link runtime state
+  NetworkManager and systemd-resolved keep under `/run` is put back as it was at entry. A link, address,
+  or hostname a session changed no longer lingers on the decoy, where its NetworkManager could adopt the
+  link and record a profile on disk, until the next power-off.
 
 ## [0.3.0-rc.3] - 2026-10-20
 
