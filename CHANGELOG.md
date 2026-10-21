@@ -51,6 +51,12 @@ of this changelog for that version becomes the release notes word for word, and
   being accepted silently. Fedora, Arch and their known derivatives, Enterprise Linux rebuilds
   (RHEL, CentOS, AlmaLinux, Rocky, Oracle) and SteamOS are each refused with a reason that names
   them and says NAILS has not yet validated them.
+- `check` and activation now warn on Ubuntu 26.04 instead of treating it as a clean tested release.
+  A known upstream issue affects it: after the switch into the hidden session, AppArmor blocks chrony
+  and CUPS from reaching systemd and the journal, so the clock does not sync and printing times out,
+  and after the way back the decoy lists chrony as failed until its next full reboot, which hints a
+  soft-reboot happened. 26.04 remains a tested release; reboot the decoy fully after a session to
+  clear it. The fault is upstream, not in NAILS.
 - A host that boots from a sealed composefs image is now refused even when it does not set
   `/run/ostree-booted`, recognised by its kernel command line or the composefs runtime directory.
   NAILS cannot overlay an immutable system.
