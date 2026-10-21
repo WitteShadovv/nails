@@ -188,6 +188,28 @@ fn a_copy_on_write_decoy_root_is_marked_a_blind_spot() {
 }
 
 #[test]
+fn an_f2fs_decoy_root_is_marked_a_blind_spot() {
+    // An f2fs root with plain mount options is a blind spot all the same: its
+    // on-disk compression feature and a `chattr +c` flag can compress a file
+    // with nothing shown in the mount options, so a raw scan proves nothing.
+    let mounts = parse_mountinfo(
+        "1 0 8:1 / / rw,relatime - f2fs /dev/sda2 rw,background_gc=on\n\
+         2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n",
+    );
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let root = targets
+        .iter()
+        .find(|t| t.device.as_path() == Path::new("/dev/sda2"))
+        .expect("the f2fs root is a target");
+    assert!(
+        root.blind_spot
+            .as_deref()
+            .is_some_and(|reason| reason.contains("f2fs")),
+        "{root:?}"
+    );
+}
+
+#[test]
 fn the_recent_files_document_gains_one_bookmark() {
     use super::plant::tests_support::xbel;
     let fresh = xbel(None, "file:///home/a/x.txt", "2026-10-07T10:00:00Z");
@@ -249,6 +271,11 @@ fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
     assert!(!report.inconclusive());
     assert!(report.devices.iter().all(|d| d.blind_spot.is_none()));
     assert!(report.not_visible.iter().any(|line| line.contains("SSD")));
+    // The compression/copy-on-write caveat is always listed, so a clean scan on
+    // the image or --device path (which carries no per-device classification) is
+    // never read as conclusive.
+    let caveat = "stored compressed or copy-on-write";
+    assert!(report.not_visible.iter().any(|line| line.contains(caveat)));
 }
 
 #[test]
