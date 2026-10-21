@@ -1285,6 +1285,26 @@ power-off, followed by a few minutes without power, lets the contents decay:
 - There is no complete software defense against a memory dump of a running
   system; the protection is preventing access while it runs.
 
+Keeping the key out of RAM or encrypting idle RAM does not cover a live
+seizure. TRESOR holds the master key in the CPU's debug registers instead of
+RAM, and FridgeLock encrypts pages while the machine is suspended, but both
+protect only the *key* and *cold* memory: the live working set — the overlay's
+writable upper, the page cache and every running process's memory — must be
+plaintext in RAM to be usable at all while the volume is mounted, and neither
+mechanism touches it. A DMA-capable peripheral (a Thunderbolt or USB4 device, a
+PCIe or NVMe/M.2 card, an ExpressCard) makes this worse: it reads RAM straight
+off the bus without involving the CPU, so a register-only key is no defence —
+the TRESOR-HUNT attack (ACSAC 2012) used a DMA write to inject kernel code that
+spilled TRESOR's key out of the debug registers into ordinary RAM and then
+DMA-read it. An IOMMU set to remap DMA is the hardware defence against this. The
+`dma-protection` pre-flight check reads whether the IOMMU is remapping DMA
+(from `/sys` and the kernel command line) and whether a Thunderbolt/USB4
+controller reports DMA protection (`iommu_dma_protection`), and warns when a
+live memory attacker could read RAM over the bus; like the MOR bit it cannot
+enable the firmware's DMA protection for you, so the fix is to turn VT-d/AMD-Vi
+and Kernel DMA Protection on in BIOS/UEFI setup and, above all, to power off
+before the machine leaves your control.
+
 ### What has not been validated on hardware
 
 The session is validated in virtual machines. These are open until measured on
