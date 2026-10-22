@@ -565,4 +565,41 @@ mod tests {
             assert!(!line.contains("left as is"), "{line}");
         }
     }
+
+    /// `count` tallies exactly the entries whose status matches the one asked
+    /// for; the human `check` summary relies on it to report, for instance, how
+    /// many inherited components are ignored.
+    #[test]
+    fn count_tallies_entries_by_matching_status() {
+        // Two ignored, one for review, none masked.
+        let statuses = [
+            EntryStatus::Ignored,
+            EntryStatus::Ignored,
+            EntryStatus::Review,
+        ];
+        let entries: Vec<InheritedEntry> = statuses
+            .into_iter()
+            .enumerate()
+            .map(|(i, status)| InheritedEntry {
+                name: format!("entry-{i}"),
+                source: "user-autostart",
+                remote_linked: false,
+                maskable: true,
+                origin: "added",
+                status: status.as_str(),
+            })
+            .collect();
+        let summary = InheritedSummary {
+            inspected: true,
+            entries,
+            remote_linked: Vec::new(),
+            unmatched_masks: Vec::new(),
+        };
+
+        // The real matching count is returned (not a fixed 0 or 1), and it
+        // counts the entries that match the status, not those that differ.
+        assert_eq!(summary.count(EntryStatus::Ignored), 2);
+        assert_eq!(summary.count(EntryStatus::Review), 1);
+        assert_eq!(summary.count(EntryStatus::Masked), 0);
+    }
 }

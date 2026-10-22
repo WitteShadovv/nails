@@ -428,4 +428,57 @@ mod tests {
             result.message()
         );
     }
+
+    #[test]
+    fn without_a_ram_wipe_module_the_report_adds_no_note() {
+        // With no dracut ram-wipe module installed, the report must not claim one
+        // is: the present case is covered by `a_ram_wipe_module_is_noted`, and this
+        // is its mirror. (A check that always appended the note would falsely
+        // reassure the user that RAM is wiped on shutdown.)
+        let result = run_with(Some("init_on_free=0\n"), None, false);
+        assert!(result.is_warn(), "{}", result.message());
+        assert!(
+            !result.message().contains("RAM-wipe mechanism"),
+            "no RAM-wipe note without the module: {}",
+            result.message()
+        );
+    }
+
+    #[test]
+    fn a_comment_that_is_not_the_disabled_form_leaves_it_unknown() {
+        // The disabled default is recognised only from the exact form
+        // `# CONFIG_INIT_ON_FREE_DEFAULT_ON is not set`, which needs all three of:
+        // a leading `#`, *this* symbol's name, and the phrase "is not set". A line
+        // satisfying only some of those says nothing about init_on_free and must
+        // leave the answer unknown (`None`); otherwise the check would warn on a
+        // kernel whose default it has not actually determined.
+
+        // A *different* symbol being "not set" (leading `#` and "is not set", but
+        // not this symbol): common in real configs right beside the real line.
+        assert_eq!(
+            parse_init_on_free_config("# CONFIG_INIT_ON_ALLOC_DEFAULT_ON is not set\n"),
+            None
+        );
+        // This symbol named in a comment that is not the "is not set" form
+        // (leading `#` and the symbol, but not "is not set").
+        assert_eq!(
+            parse_init_on_free_config("# CONFIG_INIT_ON_FREE_DEFAULT_ON: see docs\n"),
+            None
+        );
+        // An ordinary generated-config header comment, mentioning neither.
+        assert_eq!(
+            parse_init_on_free_config("# Automatically generated file; DO NOT EDIT\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn the_description_names_what_it_reports() {
+        // The description is surfaced to the user, so it must be present and name
+        // its subject rather than be blank or a placeholder.
+        let check = MemoryWipeCheck::new();
+        let description = PreFlightCheck::<RealFilesystem>::description(&check);
+        assert!(!description.is_empty(), "{description:?}");
+        assert!(description.contains("freed memory"), "{description:?}");
+    }
 }

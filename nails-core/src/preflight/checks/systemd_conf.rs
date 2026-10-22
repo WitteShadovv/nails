@@ -717,4 +717,74 @@ mod tests {
             "[Journal]\nStorage=auto"
         );
     }
+
+    /// The UTF-8 byte fallback opens the decoy with `O_NOATIME`, exactly as the
+    /// normal whole-file read does, so a decoy `journald.conf` that only parses
+    /// through the fallback (it holds a non-UTF-8 byte) is still read without
+    /// stamping its access time. Drop the flag and the read leaves an atime
+    /// trail on the decoy — the trace this read path exists to avoid. Skips
+    /// unless the filesystem records a read's atime (`noatime` would prove
+    /// nothing); the test owns the file, so the kernel grants `O_NOATIME`
+    /// rather than refusing it.
+    #[test]
+    fn the_byte_fallback_reads_the_decoy_without_touching_its_atime() {
+        use std::os::unix::fs::MetadataExt;
+        use std::time::{Duration, SystemTime};
+
+        let atime = |p: &Path| {
+            let meta = fs::metadata(p).unwrap();
+            (meta.atime(), meta.atime_nsec())
+        };
+        // Backdate the atime well behind the mtime so even a relatime mount
+        // would update it on the next plain read.
+        let backdate = |p: &Path| {
+            let old = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000_000);
+            fs::File::open(p)
+                .unwrap()
+                .set_times(fs::FileTimes::new().set_accessed(old))
+                .unwrap();
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // A control read proves this filesystem records atime at all.
+        let probe = root.join("probe");
+        fs::write(&probe, b"probe").unwrap();
+        backdate(&probe);
+        let probe_before = atime(&probe);
+        let _ = fs::read(&probe).unwrap();
+        if atime(&probe) == probe_before {
+            eprintln!("skipping: the temp filesystem does not record atime updates");
+            return;
+        }
+
+        // 0xFC is never a valid UTF-8 byte, so the whole-file read rejects the
+        // file and read_config_text falls back to read_config_bytes_noatime.
+        let path = root.join("etc/systemd/journald.conf");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut bytes = b"[Journal]\n# ".to_vec();
+        bytes.push(0xFC);
+        bytes.extend_from_slice(b"\nStorage=persistent\n");
+        fs::write(&path, &bytes).unwrap();
+        assert_eq!(
+            RealFilesystem
+                .read_file_content(&path)
+                .unwrap_err()
+                .io_kind(),
+            Some(std::io::ErrorKind::InvalidData),
+            "the decoy must reach the byte fallback"
+        );
+
+        backdate(&path);
+        let before = atime(&path);
+        let text =
+            read_config_text(&RealFilesystem, &path).expect("the byte fallback reads the decoy");
+        assert!(text.contains("Storage=persistent"), "{text}");
+        assert_eq!(
+            atime(&path),
+            before,
+            "the byte fallback must open the decoy with O_NOATIME"
+        );
+    }
 }

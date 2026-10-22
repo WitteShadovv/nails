@@ -310,6 +310,12 @@ impl Reporter for Recorder {
             last_line.unwrap_or("-")
         ));
     }
+    fn check(&mut self, name: &str, outcome: CheckOutcome, message: &str) {
+        self.0
+            .lock()
+            .unwrap()
+            .push(format!("check {name} {outcome:?} {message}"));
+    }
     fn finish(&mut self, success: bool) {
         self.0.lock().unwrap().push(format!("finish {success}"));
     }
@@ -350,5 +356,25 @@ fn tee_mutes_the_primary_but_always_feeds_the_secondary() {
     assert_eq!(
         *secondary.lock().unwrap(),
         vec!["step preflight".to_string(), "finish true".to_string()]
+    );
+}
+
+#[test]
+fn tee_fans_a_check_out_to_both_reporters() {
+    let primary = Arc::new(Mutex::new(Vec::new()));
+    let secondary = Arc::new(Mutex::new(Vec::new()));
+    let mut tee = Tee::new(shared(Recorder(primary.clone())), true);
+    tee.attach(Box::new(Recorder(secondary.clone())));
+
+    tee.check("swap", CheckOutcome::Fail, "swap is on");
+
+    // Both the UI reporter and the hidden-volume record must see every check,
+    // not just one of them.
+    let expected = vec!["check swap Fail swap is on".to_string()];
+    assert_eq!(*primary.lock().unwrap(), expected, "primary sees the check");
+    assert_eq!(
+        *secondary.lock().unwrap(),
+        expected,
+        "secondary sees the check"
     );
 }

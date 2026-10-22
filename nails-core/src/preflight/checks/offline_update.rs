@@ -159,4 +159,22 @@ mod tests {
         let result = check().run(&fs).unwrap();
         assert!(result.is_fail(), "{result:?}");
     }
+
+    #[test]
+    fn the_check_reports_its_name_and_description() {
+        // The id is a status contract the preflight runner keys rows on, so pin
+        // it exactly.
+        assert_eq!(
+            PreFlightCheck::<MockFilesystem>::name(&check()),
+            "pending-offline-update"
+        );
+        // The description is surfaced to the user; it must be present and name
+        // the offline-update hazard this check guards against.
+        let description = PreFlightCheck::<MockFilesystem>::description(&check());
+        assert!(!description.is_empty(), "{description:?}");
+        assert!(
+            description.contains("offline system update"),
+            "{description:?}"
+        );
+    }
 }
