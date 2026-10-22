@@ -25,6 +25,15 @@ in
     {
       imports = [ ./../../lib/vm-config.nix ];
 
+      # Give the VM an active IOMMU so the dma-protection preflight sees DMA
+      # remapping and passes: a clean decoy then prints no warning (the README
+      # captures stay clean), and this is the positive-capability case for that
+      # check -- every other forensic VM, with no IOMMU, is the negative case.
+      # intel-iommu needs the q35 machine the test framework already uses (see
+      # session-disk-mounts' pcie-root-port) and must precede the PCI devices.
+      virtualisation.qemu.options = [ "-device intel-iommu" ];
+      boot.kernelParams = [ "intel_iommu=on" ];
+
       # docs/decoy-requirements.md, "Suspend and the lid switch".
       services.logind.settings.Login = {
         HandleLidSwitch = "lock";
