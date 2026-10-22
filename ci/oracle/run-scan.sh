@@ -89,13 +89,16 @@ if [ -n "$images_src" ]; then
   echo "==> scanning pre-built images from $images_src" >&2
 fi
 
-# --- Coverage canary. -------------------------------------------------------
-# By default the fixed committed canary is planted and the verdict reads the
-# committed ci/oracle/controls.json verbatim. Setting ORACLE_SEED (or
-# ORACLE_CANARY) rotates the canary per run, so a clean canary check proves the
-# scan read THIS run's freshly built image rather than a stale output; the
-# planted value is then pinned in a run-time copy of the controls file that the
-# verdict reads instead, leaving the committed file untouched.
+# --- Coverage canary and positive-control sentinels. ------------------------
+# Synthetic mode: the canary and sentinels are planted into the freshly built
+# images by make-sample-images.sh; ORACLE_SEED (or ORACLE_CANARY) rotates the
+# canary per run, so a clean canary check proves the scan read THIS run's image,
+# and the planted value is pinned in a run-time copy of controls.json, leaving
+# the committed file untouched. Real-image mode (ORACLE_IMAGES_DIR): the canary
+# was planted into the decoy at e2e time with the committed value and cannot be
+# re-planted or rotated on a retained raw, so the committed controls-real.json
+# is read verbatim; the positive-control sentinels are injected below into a
+# throwaway working copy of after.raw.
 canary_default="canary@oracle.example"
 if [ -n "${ORACLE_SEED:-}" ]; then
   canary="canary+${ORACLE_SEED}@oracle.example"
@@ -104,18 +107,34 @@ elif [ -n "${ORACLE_CANARY:-}" ]; then
 else
   canary="$canary_default"
 fi
-export ORACLE_CANARY="$canary"
 
-controls_src="$repo_root/ci/oracle/controls.json"
+# Positive-control sentinels (real-image mode only), the same reserved addresses
+# the synthetic controls use so the controls-real.json pins are reusable.
+WTMP_SENTINEL=${ORACLE_WTMP_SENTINEL:-wtmpdb-boot@oracle.example}
+LASTLOG_SENTINEL=${ORACLE_LASTLOG_SENTINEL:-lastlog2@oracle.example}
+PKG_SENTINEL=${ORACLE_PKG_SENTINEL:-pkg-history@oracle.example}
+
 allowlist="$repo_root/ci/oracle/allowlist.json"
-if [ "$canary" = "$canary_default" ]; then
-  controls_used="$controls_src"
+if [ -n "$images_src" ]; then
+  # The canary is fixed at e2e time and the retained raws cannot be re-planted,
+  # so it is never rotated here and controls-real.json is used verbatim.
+  if [ -n "${ORACLE_SEED:-}" ] || [ -n "${ORACLE_CANARY:-}" ]; then
+    echo "run-scan: ORACLE_SEED/ORACLE_CANARY ignored in ORACLE_IMAGES_DIR mode (the canary is planted at e2e time)" >&2
+  fi
+  canary="$canary_default"
+  controls_used="$repo_root/ci/oracle/controls-real.json"
 else
-  # The default and any rotated canary are [A-Za-z0-9+.@-] only, so the
-  # substitution is sed-safe; only the canary value differs from the committed file.
-  controls_used="$work/controls.effective.json"
-  sed "s|\"$canary_default\"|\"$canary\"|" "$controls_src" >"$controls_used"
+  controls_src="$repo_root/ci/oracle/controls.json"
+  if [ "$canary" = "$canary_default" ]; then
+    controls_used="$controls_src"
+  else
+    # The default and any rotated canary are [A-Za-z0-9+.@-] only, so the
+    # substitution is sed-safe; only the canary value differs from the committed file.
+    controls_used="$work/controls.effective.json"
+    sed "s|\"$canary_default\"|\"$canary\"|" "$controls_src" >"$controls_used"
+  fi
 fi
+export ORACLE_CANARY="$canary"
 
 # --- Build the pinned bulk_extractor once, with the loud drift guard. -------
 echo "==> building pinned bulk_extractor $BE_TAG" >&2
@@ -236,6 +255,47 @@ carve_restore() {
   esac
 }
 
+# --- Positive-control injection (real-image mode only). ---------------------
+# Before scanning the 'after' image, copy after.raw to a sparse WORKING COPY and
+# append the positive-control sentinels in place to the baseline carrier files
+# the decoy already carries, so only the new @oracle address differs and no new
+# on-image path appears (the carriers already exist on before/control, so the
+# restore channel's after - before - control set difference keeps subtracting
+# their paths; only the carved address is new). before.raw, control.raw and the
+# retained after.raw are never touched. The working copy is loop-mounted
+# read-write at the Linux partition's byte offset (reusing detect_fs /
+# partition_offset) and is unmounted under a cleanup trap; no global
+# `losetup -D` is ever run.
+inject_mnt=""
+# shellcheck disable=SC2329  # invoked indirectly by the EXIT trap below
+inject_cleanup() {
+  if [ -n "$inject_mnt" ] && mountpoint -q "$inject_mnt" 2>/dev/null; then
+    umount "$inject_mnt" 2>/dev/null || umount -l "$inject_mnt" 2>/dev/null || true
+  fi
+}
+trap inject_cleanup EXIT
+
+# inject_after_sentinels <working-image> <sector-offset>: mount the working copy
+# read-write and append the three sentinels in place, byte-for-byte as
+# make-sample-images.sh's apply_after_changes does, so plaso and the restore
+# channel behave exactly as on the proven synthetic path.
+inject_after_sentinels() {
+  local img=$1 off=$2 byte=0
+  if [ "$off" -gt 0 ]; then byte=$((off * 512)); fi
+  inject_mnt="$work/inject.mnt"
+  mkdir -p "$inject_mnt"
+  mount -o loop,rw,offset="$byte" "$img" "$inject_mnt"
+  printf 'login\tnails-oracle\tpts/9\t%s\t2026-01-01T00:05:00+00:00\n' \
+    "$WTMP_SENTINEL" >>"$inject_mnt/var/log/wtmp.db"
+  printf 'nails-oracle\tpts/9\t%s\t2026-01-01T00:05:00+00:00\n' \
+    "$LASTLOG_SENTINEL" >>"$inject_mnt/var/lib/lastlog/lastlog2.db"
+  printf '[2026-01-01T00:05:00+0000] [ALPM] installed nails-oracle-marker (%s)\n' \
+    "$PKG_SENTINEL" >>"$inject_mnt/var/log/pacman.log"
+  sync
+  umount "$inject_mnt"
+  inject_mnt=""
+}
+
 # --- Stream the three labels. -----------------------------------------------
 for label in "${LABELS[@]}"; do
   echo "==> label $label" >&2
@@ -247,6 +307,16 @@ for label in "${LABELS[@]}"; do
     img="$images_src/$label.raw"
     read -r fstype off < <(detect_fs "$img")
     off=${off:-0}
+    if [ "$label" = after ]; then
+      # Inject the positive controls into a sparse working copy; the retained
+      # source raw is left untouched and is never scanned directly for 'after'.
+      # The fstype/off detected from the source apply to the copy (same bytes).
+      injected="$work/after.injected.raw"
+      rm -f "$injected"
+      cp --sparse=always "$img" "$injected"
+      inject_after_sentinels "$injected" "$off"
+      img="$injected"
+    fi
   else
     img="$images/$label.img"
     "$here/make-sample-images.sh" "$images" "$label"
