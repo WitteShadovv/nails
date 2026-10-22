@@ -67,7 +67,14 @@ fn scan_restore(root: &Path, out: &mut BTreeSet<Finding>) {
                 Ok(ft) if ft.is_dir() => stack.push(path),
                 Ok(ft) if ft.is_file() => {
                     if let Some(abs) = restore_abs_path(root, &path) {
-                        out.insert(Finding::new(Tool::BtrfsRestore, abs, ""));
+                        // A rotating journal file is compared by its parsed
+                        // message content (see plaso_finding), not by its
+                        // per-boot unique filename, so it is not a restore-path
+                        // finding -- otherwise every new rotation would be false
+                        // residue.
+                        if !is_journal_file(&abs) {
+                            out.insert(Finding::new(Tool::BtrfsRestore, abs, ""));
+                        }
                     }
                 }
                 _ => {}
@@ -105,10 +112,36 @@ fn scan_bulk_extractor(dir: &Path, out: &mut BTreeSet<Finding>) {
             continue;
         }
         let feature_type = name.trim_end_matches(".txt");
+        if is_carved_object_recorder(feature_type) {
+            continue;
+        }
         if let Ok(contents) = fs::read_to_string(&path) {
             out.extend(bulk_extractor_findings(feature_type, &contents));
         }
     }
+}
+
+/// bulk_extractor's carving scanners -- the `*_carved` recorders (`utmp_carved`,
+/// `sqlite_carved`, `evtx_carved`, the `ntfsindx`/`ntfslogfile`/`ntfsmft`/
+/// `ntfsusn_carved` set, `winpe_carved`, `unrar_carved`, `kml_carved`) -- do not
+/// record stable feature *values*. Each line's "value" is the path of a binary
+/// object bulk_extractor reconstructed and named by its byte *offset* in the
+/// image (`utmp_carved/000/2288002688utmp`). That offset shifts with every
+/// image -- even byte-identical content lands at a different offset across
+/// before/control/after -- so a carved-object finding can never survive the
+/// after - before - control set difference, and the channel contributes only
+/// unsubtractable noise (confirmed on the real decoy images: reboot/login utmp
+/// records and Nix-store sqlite pages from ordinary boot activity).
+///
+/// Dropping it loses no detection, because its content is already covered twice:
+/// the restore channel recovers every real file by its on-image *path* (a
+/// genuinely new file is caught there), and the value recorders (email, domain,
+/// url, ...) scan the same raw bytes -- unallocated space included -- so any
+/// leaked *string* is caught whatever object it sat in. Only the value recorders
+/// feed the verdict. The match is on bulk_extractor's own `_carved` suffix, so a
+/// carving scanner added upstream is skipped on the same principle.
+fn is_carved_object_recorder(feature_type: &str) -> bool {
+    feature_type.ends_with("_carved")
 }
 
 /// Parse one bulk_extractor feature file's contents into findings. A feature
@@ -146,13 +179,95 @@ fn scan_plaso(file: &Path, out: &mut BTreeSet<Finding>) {
 /// unit-tested directly.
 pub fn plaso_finding(line: &str) -> Option<Finding> {
     let value: serde_json::Value = serde_json::from_str(line).ok()?;
+    let data_type = first_string(&value, &["data_type"]).unwrap_or_default();
+
+    // A systemd-journal event is keyed on its content, not on the journal file:
+    // journald rotates files named by a per-boot sequence and realtime stamp
+    // (`system@<seq>-<first>-<time>.journal`), so the path is unique on every
+    // image and could never subtract across before/control/after. The leak
+    // signal in a journal is the log line, so a benign boot/shutdown line
+    // (logged on every boot) subtracts and a genuinely new line surfaces.
+    if data_type == "systemd:journal" {
+        return journal_finding(&value);
+    }
+
     let path = first_string(&value, &["path", "filename", "display_name", "pathspec"])?;
+    // A non-journal event that still points at a rotating journal file (plaso's
+    // own `fs:stat` for the file, say) is dropped for the same reason: the
+    // file's identity is volatile; its content is compared above.
+    if is_journal_file(&path) {
+        return None;
+    }
     let descriptor = first_string(
         &value,
         &["data_type", "timestamp_desc", "message", "parser"],
     )
     .unwrap_or_default();
     Some(Finding::new(Tool::Plaso, path, descriptor))
+}
+
+/// A systemd-journal file, `/var/log/journal/<machine-id>/<...>.journal`. plaso
+/// prefixes the location with a type indicator (`EXT:`), which `contains`
+/// tolerates. These rotate under per-boot unique names, so they are compared by
+/// message content, never by path.
+fn is_journal_file(path: &str) -> bool {
+    path.contains("/var/log/journal/") && path.ends_with(".journal")
+}
+
+/// Key a systemd-journal event on its content: the reporting unit and the
+/// normalized message body. The event's timestamp, PID, hostname and source
+/// file are deliberately excluded -- they vary every boot and would stop any
+/// line from ever subtracting. The locus is the fixed pseudo-path `journal`, so
+/// a residual line is allowlistable by its exact content like any feature.
+fn journal_finding(value: &serde_json::Value) -> Option<Finding> {
+    let reporter = first_string(value, &["reporter", "_COMM", "parser"]).unwrap_or_default();
+    let body = first_string(value, &["message_body", "message"])?;
+    let normalized = normalize_journal_body(&body);
+    let field = if reporter.is_empty() {
+        normalized
+    } else {
+        format!("{reporter}: {normalized}")
+    };
+    Some(Finding::new(Tool::Plaso, "journal", field))
+}
+
+/// Mask the volatile tokens in a journal message body so the same line
+/// subtracts across boots while a line carrying a new identifier still stands
+/// out. Only two clearly-volatile token classes are masked, conservatively, to
+/// avoid collapsing a real leak onto a benign line: a long hex id (>= 8 chars,
+/// with both a digit and a hex letter -- boot/machine ids, UUIDs, hashes) ->
+/// `X`, and a pure decimal run (PIDs, sizes, durations, session numbers) ->
+/// `N`. Letters, words, paths, usernames and punctuation are left verbatim, so
+/// a leaked string survives normalization and shows up as residue.
+fn normalize_journal_body(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut rest = body;
+    while !rest.is_empty() {
+        // Take a maximal run of ASCII hex digits.
+        let run_len = rest
+            .char_indices()
+            .find(|(_, c)| !c.is_ascii_hexdigit())
+            .map_or(rest.len(), |(i, _)| i);
+        if run_len == 0 {
+            // Not a hex digit: copy one whole character.
+            let ch = rest.chars().next().expect("rest is non-empty");
+            out.push(ch);
+            rest = &rest[ch.len_utf8()..];
+            continue;
+        }
+        let run = &rest[..run_len];
+        let has_digit = run.bytes().any(|b| b.is_ascii_digit());
+        let has_hex_letter = run.bytes().any(|b| matches!(b, b'a'..=b'f' | b'A'..=b'F'));
+        if run_len >= 8 && has_digit && has_hex_letter {
+            out.push('X'); // a hex id (boot/machine id, UUID, hash)
+        } else if has_digit && !has_hex_letter {
+            out.push('N'); // a pure decimal run
+        } else {
+            out.push_str(run); // a hex-ish word like "cafe" or "sha": keep it
+        }
+        rest = &rest[run_len..];
+    }
+    out
 }
 
 /// The first of `keys` that `value` (a JSON object) carries as a string.
@@ -211,6 +326,29 @@ mod tests {
     }
 
     #[test]
+    fn carved_object_recorders_are_skipped_but_value_recorders_kept() {
+        // The `*_carved` recorders are offset-keyed binary carvings, redundant
+        // with the restore and value channels; the value recorders are kept.
+        for carved in [
+            "utmp_carved",
+            "sqlite_carved",
+            "ntfsmft_carved",
+            "winpe_carved",
+        ] {
+            assert!(
+                is_carved_object_recorder(carved),
+                "{carved} must be skipped"
+            );
+        }
+        for value in ["email", "domain", "url", "json", "ip"] {
+            assert!(
+                !is_carved_object_recorder(value),
+                "{value} is a value recorder and must be kept"
+            );
+        }
+    }
+
+    #[test]
     fn bulk_extractor_tolerates_a_single_column_line() {
         let findings = bulk_extractor_findings("note", "lonevalue\n");
         assert_eq!(
@@ -233,6 +371,74 @@ mod tests {
     fn plaso_without_a_path_is_skipped_and_bad_json_too() {
         assert!(plaso_finding(r#"{"message":"no path here"}"#).is_none());
         assert!(plaso_finding("not json at all").is_none());
+    }
+
+    #[test]
+    fn journal_events_key_on_content_not_the_rotating_file() {
+        // Two different journal files (rotation) carrying the same line collapse
+        // to one content-keyed finding, so a benign line subtracts across images
+        // instead of resurfacing under every new per-boot filename.
+        let a = r#"{"data_type":"systemd:journal","display_name":"EXT:/var/log/journal/m/system@aaaa-0001-1111.journal","reporter":"systemd","message_body":"Stopped target System Shutdown."}"#;
+        let b = r#"{"data_type":"systemd:journal","display_name":"EXT:/var/log/journal/m/system@bbbb-0002-2222.journal","reporter":"systemd","message_body":"Stopped target System Shutdown."}"#;
+        let fa = plaso_finding(a).expect("a journal finding");
+        let fb = plaso_finding(b).expect("a journal finding");
+        assert_eq!(fa, fb, "same content must give the same finding");
+        assert_eq!(
+            fa,
+            Finding::new(
+                Tool::Plaso,
+                "journal",
+                "systemd: Stopped target System Shutdown."
+            )
+        );
+    }
+
+    #[test]
+    fn journal_file_stat_events_are_dropped() {
+        // plaso's fs:stat for the rotating journal file itself is volatile by
+        // path and is dropped; the journal's content is compared separately.
+        let line = r#"{"data_type":"fs:stat","display_name":"/var/log/journal/m/system@cccc-0003-3333.journal"}"#;
+        assert!(plaso_finding(line).is_none());
+        // A non-journal file's stat is still a finding.
+        let other = r#"{"data_type":"fs:stat","display_name":"/home/user/secret.txt"}"#;
+        assert_eq!(
+            plaso_finding(other),
+            Some(Finding::new(
+                Tool::Plaso,
+                "/home/user/secret.txt",
+                "fs:stat"
+            ))
+        );
+    }
+
+    #[test]
+    fn normalize_journal_body_masks_volatile_tokens_but_keeps_identifiers() {
+        // Decimal runs -> N, long hex ids -> X; a leaked username/path survives.
+        assert_eq!(
+            normalize_journal_body("Sending SIGKILL to PID 1234"),
+            "Sending SIGKILL to PID N"
+        );
+        // A 32-char boot/machine id (digits + hex letters, >= 8) is masked.
+        assert_eq!(
+            normalize_journal_body("boot 3333f264b48240fc8d4c8635a75023a5 done"),
+            "boot X done"
+        );
+        // A hex-ish word (only letters) is kept, and so is a real identifier.
+        assert_eq!(
+            normalize_journal_body("session opened for user testuser"),
+            "session opened for user testuser"
+        );
+        assert_eq!(normalize_journal_body("cafe deed"), "cafe deed");
+    }
+
+    #[test]
+    fn is_journal_file_matches_only_journal_files() {
+        assert!(is_journal_file("/var/log/journal/m/system@x-1-2.journal"));
+        assert!(is_journal_file(
+            "EXT:/var/log/journal/m/user-1000@x.journal"
+        ));
+        assert!(!is_journal_file("/var/log/journal/m/secret.txt"));
+        assert!(!is_journal_file("/var/log/wtmp.db"));
     }
 
     #[test]
