@@ -22,6 +22,10 @@
 //! The actual CLI logic is in this library to allow for proper unit test
 //! coverage; `main.rs` only forwards the process arguments to [`run`].
 
+// Unsafe code is denied workspace-wide (see the root Cargo.toml). Test code
+// may use it freely; production code opts in per site with a scoped allow.
+#![cfg_attr(test, allow(unsafe_code))]
+
 pub mod catalog;
 pub mod model;
 pub mod scan;

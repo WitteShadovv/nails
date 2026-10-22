@@ -19,6 +19,7 @@
   "inherited-autostart": 32,
   "init-config": 26,
   "nix-store-placement": 33,
+  "oracle-images": 363,
   "overlay-reset-upper": 37,
   "performance-validation": 42,
   "permissions-security": 23,
