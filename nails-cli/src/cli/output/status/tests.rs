@@ -161,6 +161,19 @@ fn an_active_session_is_hidden_and_a_cover_needs_attention() {
 }
 
 #[test]
+fn an_entering_session_is_activating() {
+    // A session still entering the hidden root reports `activating`, the third
+    // place alongside `decoy` and `hidden` — not the `decoy` fallback.
+    let entering = report(Posture::Transitioning, "entering");
+    let value = serde_json::to_value(status_envelope(&entering)).unwrap();
+    assert_eq!(value["data"]["place"], "activating");
+    // Nothing needs the operator while the entry is still in flight, and a
+    // transitioning posture is a safe one.
+    assert_eq!(value["data"]["attention"], serde_json::Value::Null);
+    assert_eq!(value["ok"], true);
+}
+
+#[test]
 fn an_interrupted_activation_is_on_the_decoy_and_needs_attention() {
     let interrupted = report(Posture::Degraded, "interrupted");
     let value = serde_json::to_value(status_envelope(&interrupted)).unwrap();

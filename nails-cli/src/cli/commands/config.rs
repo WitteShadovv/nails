@@ -316,6 +316,29 @@ mod tests {
     }
 
     #[test]
+    fn show_json_reports_error_on_stdout() {
+        let file = write_config("[backend_watch]\nenable = true\n");
+        let outcome = run(Some(file.path()), &show_command(), true);
+
+        assert_eq!(outcome.code, EXIT_CONFIG_ERROR, "{outcome:?}");
+        // Under --json the load failure is one error envelope on stdout, with
+        // stderr left empty; it is not a plain `error:` line on stderr.
+        assert!(outcome.stderr.is_empty(), "{outcome:?}");
+        let value: serde_json::Value = serde_json::from_str(outcome.stdout.trim()).unwrap();
+        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["command"], "config");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "config");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("did you mean `enabled`?"),
+            "{outcome:?}"
+        );
+    }
+
+    #[test]
     fn validate_accepts_valid_file() {
         let file = write_config("hidden_volume_root = \"/mnt/hv\"\n");
         let outcome = run(

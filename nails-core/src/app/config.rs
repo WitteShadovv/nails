@@ -160,9 +160,55 @@ fn pick_teardown_config(
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigSource, config_error_line, pick_teardown_config};
+    use super::{ConfigSource, config_error_line, load_config_for_teardown, pick_teardown_config};
     use crate::{Config, NailsError};
+    use std::io::Write;
     use std::path::PathBuf;
+
+    #[test]
+    fn config_source_describe_names_each_source() {
+        // The phrase is shown to the operator so they know whether a teardown
+        // acted on the real file, the RAM-backed copy, or built-in defaults.
+        // Each variant has an exact, distinct contract string.
+        assert_eq!(ConfigSource::File.describe(), "configuration file");
+        assert_eq!(
+            ConfigSource::RuntimeCopy.describe(),
+            "RAM-backed runtime copy"
+        );
+        assert_eq!(ConfigSource::Defaults.describe(), "built-in defaults");
+    }
+
+    #[test]
+    fn teardown_with_explicit_config_treats_the_file_as_authoritative() {
+        // `--config` pointing at a readable file must be used as the
+        // authoritative source: the guard's `config_override.is_some()` arm
+        // makes it `File` without consulting the runtime copy or defaults.
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        writeln!(file, "hidden_volume_root = \"/mnt/explicit-root\"").unwrap();
+
+        let (config, source) = load_config_for_teardown(Some(file.path()));
+
+        assert_eq!(source, ConfigSource::File);
+        assert_eq!(
+            config.hidden_volume_root,
+            PathBuf::from("/mnt/explicit-root")
+        );
+    }
+
+    #[test]
+    fn teardown_without_config_never_claims_an_authoritative_file() {
+        // With no `--config` and no binary-relative file present (the test
+        // environment has neither), the config is not authoritative: teardown
+        // must fall back to the runtime copy or built-in defaults and say so,
+        // never report `File`.
+        let (_config, source) = load_config_for_teardown(None);
+
+        assert_ne!(
+            source,
+            ConfigSource::File,
+            "a teardown with no --config and no on-disk file must not claim a File source"
+        );
+    }
 
     #[test]
     fn an_unreadable_config_names_the_file() {

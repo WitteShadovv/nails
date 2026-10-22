@@ -711,3 +711,56 @@ fn a_unit_with_a_populated_cgroup_counts_as_active_without_a_marker() {
     assert!(result.message().contains("auditd"));
     assert!(!result.message().contains("syslog.service"));
 }
+
+#[test]
+fn a_template_socket_instance_is_not_a_running_service() {
+    // A template instance counts as active only when it is a `.service`: the
+    // marker must both start with the stem's `invocation:<stem>@` prefix and end
+    // in `.service`. The activation `.socket` of the same stem is not the running
+    // daemon, so an instance marker that only matches the prefix leaves the decoy
+    // clean. (If the prefix match alone sufficed, this socket marker would fail.)
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    fs.mock_set_directory_contents(
+        Path::new("/run/systemd/units"),
+        vec![std::path::PathBuf::from(
+            "/run/systemd/units/invocation:syslog-ng@default.socket",
+        )],
+    );
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(
+        result.is_pass(),
+        "a `.socket` template instance is not an active daemon: {result:?}"
+    );
+    assert!(!result.message().contains("syslog-ng"), "{result:?}");
+}
+
+#[test]
+fn a_non_numeric_proc_entry_is_not_read_as_a_process() {
+    // `/proc` holds non-numeric entries (`self`, `cpuinfo`, ...) beside the
+    // numbered process directories. A pid entry is one whose name is non-empty
+    // *and* all ASCII digits; a non-numeric name is not a process, so a
+    // logger-named `comm` found under it must be ignored. (If a non-empty name
+    // alone counted as a pid, this `self/comm` would be misread as rsyslogd.)
+    let fs = MockFilesystem::new();
+    fs.mock_add_file(
+        "/etc/systemd/journald.conf",
+        "[Journal]\nStorage=volatile\n",
+    );
+    fs.mock_add_file(MOUNTINFO, &root_mountinfo("ext4", "rw,noatime"));
+    fs.mock_set_directory_contents(
+        Path::new("/proc"),
+        vec![std::path::PathBuf::from("/proc/self")],
+    );
+    fs.mock_add_file("/proc/self/comm", "rsyslogd\n");
+    let result = DecoyPersistenceCheck::new(false, true).run(&fs).unwrap();
+    assert!(
+        result.is_pass(),
+        "a non-numeric /proc entry must not be read as a process: {result:?}"
+    );
+    assert!(!result.message().contains("rsyslog"), "{result:?}");
+}

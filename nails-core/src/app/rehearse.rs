@@ -506,6 +506,14 @@ mod tests {
         }
     }
 
+    /// The same canary, after a scan has run.
+    fn scanned() -> RehearsalState {
+        RehearsalState {
+            phase: Phase::Scanned,
+            ..planted()
+        }
+    }
+
     fn in_session(entered_at: u64) -> Here {
         Here {
             session: Some(LiveSession {
@@ -514,6 +522,215 @@ mod tests {
             boot_id: Some("b1".to_string()),
             soft_reboots: None,
         }
+    }
+
+    /// A well-formed rehearsal token (32 hex digits).
+    const HEX_TOKEN: &str = "0f1e2d3c4b5a69788796a5b4c3d2e1f0"; // pragma: allowlist secret
+
+    /// A rehearsal service whose hidden root is an empty scratch directory, so
+    /// the offline scan and token paths never touch a real hidden volume.
+    fn rooted_at(root: &std::path::Path) -> Rehearsal {
+        Rehearsal::new(Config {
+            hidden_volume_root: root.to_path_buf(),
+            ..Config::test_default()
+        })
+    }
+
+    #[test]
+    fn phase_name_is_the_exact_contract_string_for_every_state() {
+        assert_eq!(phase_name(None), "none");
+        assert_eq!(phase_name(Some(&planted())), "planted");
+        assert_eq!(phase_name(Some(&scanned())), "scanned");
+    }
+
+    #[test]
+    fn next_step_with_no_canary_in_a_session_guides_plant_in_this_session() {
+        let guide = next_step(None, &in_session(100));
+        assert!(
+            guide.contains("in this hidden session"),
+            "plant-active guidance: {guide}"
+        );
+    }
+
+    #[test]
+    fn next_step_with_no_canary_on_the_decoy_guides_activate_first() {
+        let guide = next_step(None, &Here::default());
+        assert!(
+            guide.contains("activate a hidden session"),
+            "plant-inactive guidance: {guide}"
+        );
+    }
+
+    #[test]
+    fn next_step_after_planting_in_this_session_guides_deactivate_then_scan() {
+        let guide = next_step(Some(&planted()), &in_session(100));
+        assert!(
+            guide.contains("Step 2 of 3"),
+            "scan-next-session guidance: {guide}"
+        );
+    }
+
+    #[test]
+    fn next_step_after_planting_in_an_earlier_session_guides_scan_now() {
+        let guide = next_step(Some(&planted()), &in_session(200));
+        assert!(guide.contains("Step 3 of 3"), "scan-now guidance: {guide}");
+    }
+
+    #[test]
+    fn next_step_after_a_scan_guides_done_and_reset() {
+        let guide = next_step(Some(&scanned()), &in_session(100));
+        assert!(guide.contains("Done. Scan again"), "done guidance: {guide}");
+    }
+
+    #[test]
+    fn load_reads_the_rehearsal_state_written_under_the_hidden_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = planted();
+        std::fs::create_dir_all(dir.path().join(rehearse::REHEARSE_DIR)).unwrap();
+        std::fs::write(
+            dir.path().join(rehearse::state_relative_path()),
+            serde_json::to_string(&state).unwrap(),
+        )
+        .unwrap();
+        let loaded = rooted_at(dir.path()).load().unwrap();
+        assert_eq!(loaded.expect("a state file is present").token, state.token);
+    }
+
+    #[test]
+    fn status_outside_a_hidden_session_reports_no_live_session() {
+        // The hidden root is an unmounted scratch directory, so the live probe
+        // of the real system finds the decoy, not a hidden session: `status`
+        // must carry no live session. This pins `live_session`'s `None` result
+        // outside a session against a mutant that always reports one.
+        let dir = tempfile::tempdir().unwrap();
+        // RehearseFailure is not Debug, so carry only its message into unwrap.
+        let outcome = rooted_at(dir.path())
+            .status()
+            .map_err(|e| e.message)
+            .unwrap();
+        assert!(
+            outcome.here.session.is_none(),
+            "no hidden session is mounted at the scratch root, so none is reported"
+        );
+    }
+
+    #[test]
+    fn scan_token_reads_and_trims_a_valid_token_from_the_token_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let token_file = dir.path().join("token");
+        std::fs::write(&token_file, format!("  {HEX_TOKEN}\n")).unwrap();
+        let options = ScanOptions {
+            token_file: Some(token_file),
+            offline: true,
+            ..ScanOptions::default()
+        };
+        let (token, state) = rooted_at(dir.path()).scan_token(&options).unwrap();
+        assert_eq!(token, HEX_TOKEN);
+        assert!(state.is_none(), "a token-file scan carries no state");
+    }
+
+    #[test]
+    fn scan_token_rejects_a_token_file_that_holds_no_valid_token() {
+        let dir = tempfile::tempdir().unwrap();
+        let token_file = dir.path().join("token");
+        std::fs::write(&token_file, "not-a-valid-token!!").unwrap();
+        let options = ScanOptions {
+            token_file: Some(token_file),
+            offline: true,
+            ..ScanOptions::default()
+        };
+        let err = rooted_at(dir.path())
+            .scan_token(&options)
+            .expect_err("an invalid token must be refused");
+        assert!(err.contains("no valid token"), "{err}");
+    }
+
+    #[test]
+    fn scan_targets_offline_reads_the_given_images() {
+        let dir = tempfile::tempdir().unwrap();
+        let images = vec![PathBuf::from("/x/a.img"), PathBuf::from("/x/b.img")];
+        let options = ScanOptions {
+            offline: true,
+            images: images.clone(),
+            ..ScanOptions::default()
+        };
+        let targets = rooted_at(dir.path()).scan_targets(&options).unwrap();
+        assert_eq!(
+            targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
+            images
+        );
+    }
+
+    #[test]
+    fn scan_targets_live_uses_the_explicit_devices_when_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let device = PathBuf::from("/dev/nails-mutant-canary-device");
+        let options = ScanOptions {
+            offline: false,
+            devices: vec![device.clone()],
+            ..ScanOptions::default()
+        };
+        let targets = rooted_at(dir.path()).scan_targets(&options).unwrap();
+        assert!(
+            targets.iter().any(|t| t.device == device),
+            "the explicit device is scanned, not the default set: {targets:?}"
+        );
+    }
+
+    /// Run an offline scan over `images`, reading the token from a file.
+    fn offline_scan(images: Vec<PathBuf>) -> Result<ScanOutcome, RehearseFailure> {
+        let dir = tempfile::tempdir().unwrap();
+        let token_file = dir.path().join("token");
+        std::fs::write(&token_file, HEX_TOKEN).unwrap();
+        let options = ScanOptions {
+            token_file: Some(token_file),
+            offline: true,
+            images,
+            ..ScanOptions::default()
+        };
+        rooted_at(dir.path()).scan(&options)
+    }
+
+    #[test]
+    fn a_scan_that_finds_the_canary_is_critical() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("leaky.img");
+        std::fs::write(&image, format!("padding {HEX_TOKEN} padding")).unwrap();
+        let outcome = offline_scan(vec![image]).map_err(|e| e.message).unwrap();
+        assert!(outcome.report.total_hits() >= 1, "the canary is found");
+        assert_eq!(outcome.exit, ExitStatus::VerifyCritical);
+    }
+
+    #[test]
+    fn a_clean_fully_read_scan_is_ok() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("clean.img");
+        std::fs::write(&image, "nothing to see here").unwrap();
+        let outcome = offline_scan(vec![image]).map_err(|e| e.message).unwrap();
+        assert_eq!(outcome.report.total_hits(), 0);
+        assert!(!outcome.report.incomplete());
+        assert!(!outcome.report.inconclusive());
+        assert_eq!(outcome.exit, ExitStatus::Ok);
+    }
+
+    #[test]
+    fn a_clean_scan_that_could_not_read_a_device_only_warns() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.img");
+        let outcome = offline_scan(vec![missing]).map_err(|e| e.message).unwrap();
+        assert_eq!(outcome.report.total_hits(), 0);
+        assert!(outcome.report.incomplete(), "the device could not be read");
+        assert!(!outcome.report.inconclusive());
+        assert_eq!(outcome.exit, ExitStatus::SuccessWithWarnings);
+    }
+
+    #[test]
+    fn a_scan_with_no_device_to_read_fails() {
+        // ScanOutcome is not Debug, so discard it before expect_err.
+        let err = offline_scan(Vec::new())
+            .map(|_| ())
+            .expect_err("no device, no scan");
+        assert_eq!(err.code, "no_devices");
     }
 
     #[test]

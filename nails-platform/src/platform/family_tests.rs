@@ -404,6 +404,18 @@ fn every_tested_release_of_an_admitted_family_is_supported() {
 }
 
 #[test]
+fn base_admitted_reports_which_families_have_an_admitted_base_row() {
+    // Debian is an admitted base family in the table, so its base is admitted:
+    // a derivative of it would run (with a warning) rather than be refused.
+    assert!(base_admitted(Family::Debian));
+    // Arch and Fedora sit in the table but are not admitted, and neither has an
+    // admitted base row, so their base is not admitted and their derivatives are
+    // refused until the base is verified.
+    assert!(!base_admitted(Family::Arch));
+    assert!(!base_admitted(Family::Fedora));
+}
+
+#[test]
 fn a_derivative_rows_family_has_a_base_in_the_table() {
     for row in TABLE {
         if row.kind == Kind::Derivative {

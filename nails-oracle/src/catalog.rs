@@ -126,6 +126,13 @@ mod tests {
         assert!(!catalog.anchor_exists("threat-model.md#invented"));
     }
 
+    #[test]
+    fn empty_catalog_reports_empty() {
+        let catalog = Catalog::default();
+        assert_eq!(catalog.len(), 0);
+        assert!(catalog.is_empty(), "a catalog with no rows is empty");
+    }
+
     // Links the real catalog: the oracle's citable set is the project's own.
     // The ids and anchor asserted here are ones the catalog's own tests pin as
     // stable, so this guards the wiring without coupling to volatile rows.

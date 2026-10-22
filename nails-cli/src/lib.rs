@@ -11,4 +11,11 @@
 // may use it freely; production code opts in per site with a scoped allow.
 #![cfg_attr(test, allow(unsafe_code))]
 
+/// Serializes the tests that redirect the process's real stdout (fd 1) to
+/// capture a printer's output. It is shared across every test module in this
+/// crate, so an `activate` capture and an `emergency` capture can never hold the
+/// redirection at the same time and clobber each other's fd 1.
+#[cfg(test)]
+pub(crate) static STDOUT_CAPTURE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 pub mod cli;

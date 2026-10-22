@@ -328,6 +328,21 @@ mod platforms {
     }
 
     #[test]
+    fn bitor_takes_the_union_of_overlapping_families() {
+        // `|` is a set union: combining a set with a subset it already contains
+        // leaves it unchanged, and combining a family with itself is idempotent.
+        // A symmetric-difference would instead clear the shared bits and drop
+        // those families.
+        assert_eq!(Platforms::FHS | Platforms::DEBIAN, Platforms::FHS);
+        assert_eq!(
+            (Platforms::FHS | Platforms::DEBIAN).label(),
+            "Debian, Fedora, Arch"
+        );
+        assert_eq!(Platforms::NIXOS | Platforms::NIXOS, Platforms::NIXOS);
+        assert_eq!(Platforms::ALL | Platforms::DEBIAN, Platforms::ALL);
+    }
+
+    #[test]
     fn for_host_maps_each_live_host_to_its_family() {
         assert_eq!(
             Platforms::for_host(&host(PlatformKind::NixOs, None)),

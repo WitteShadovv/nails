@@ -265,6 +265,33 @@ mod tests {
     }
 
     #[test]
+    fn at_least_is_inclusive_semver_comparison() {
+        // `at_least` is `self >= other`, compared major first, then minor, then
+        // patch. Each pair below puts one component in charge of the answer,
+        // including the inclusive patch tie, so flipping a branch's comparison
+        // to `<` or `==` changes a result here. (Turning the major or minor `>`
+        // into `>=` is an equivalent mutant: that branch runs only when the
+        // component differs, where `>=` and `>` agree, so no test can catch it.)
+
+        // A version is at least itself (the inclusive patch tie).
+        assert!(version("2.8.8").at_least(version("2.8.8")));
+
+        // The major decides first, over a larger minor and patch on the other
+        // side.
+        assert!(version("3.0.0").at_least(version("2.9.9")));
+        assert!(!version("2.9.9").at_least(version("3.0.0")));
+
+        // With equal majors, the minor decides, over a larger patch.
+        assert!(version("2.9.0").at_least(version("2.8.9")));
+        assert!(!version("2.8.9").at_least(version("2.9.0")));
+
+        // With equal major and minor, the patch decides, and a lower one is
+        // not enough.
+        assert!(version("2.8.8").at_least(version("2.8.7")));
+        assert!(!version("2.8.7").at_least(version("2.8.8")));
+    }
+
+    #[test]
     fn an_unknown_version_skips_the_advice() {
         let result = argon2id_advice(None);
         assert!(result.is_pass(), "{result:?}");

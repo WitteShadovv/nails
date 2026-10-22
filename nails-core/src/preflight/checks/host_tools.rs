@@ -329,6 +329,20 @@ mod tests {
     }
 
     #[test]
+    fn description_names_the_host_tool_contract() {
+        // The description is surfaced in the pre-flight listing, so it must be a
+        // non-empty, meaningful sentence about this check's job: resolving the host
+        // tools NAILS spawns. An empty or placeholder string would still compile.
+        let check = HostToolsCheck::new();
+        let description = PreFlightCheck::<MockFilesystem>::description(&check);
+        assert!(!description.is_empty(), "the description must not be empty");
+        assert!(
+            description.contains("host tools"),
+            "the description must name the host-tools contract: {description}"
+        );
+    }
+
+    #[test]
     fn nixos_requires_nix_on_top_of_the_common_set() {
         let nixos = required_tools(PlatformKind::NixOs);
         let fhs = required_tools(PlatformKind::Fhs);
