@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# nails-setup is its own Cargo workspace, outside the main NAILS one, as the
+# fuzz crate is. It will gain a test lane around the unfree VeraCrypt command
+# line, which must never reach a public cache, so it is kept off the shipped
+# dependency graph and built on its own. The guided volume-creation flow is not
+# implemented yet; this is the initial scaffold: the workspace, the vendored EFF
+# word list and the pieces the flow will build on.
+
+[workspace]
+members = ["nails-setup"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.93"
+authors = ["WitteShadovv"]
+license = "GPL-3.0-or-later"
+homepage = "https://nails.run"
+repository = "https://github.com/WitteShadovv/nails"
+
+# A workspace of its own does not inherit the main tree's lint policy, so it is
+# restated here: no unsafe code, and the size and complexity lints.
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "warn"
+too_many_lines = "warn"
+cognitive_complexity = "warn"

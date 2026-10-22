@@ -1,0 +1,20 @@
+# SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[package]
+name = "nails-setup"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Guided tool for preparing the hidden storage a nails session uses"
+homepage.workspace = true
+repository.workspace = true
+# Never published to a registry; distributed only with NAILS.
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
