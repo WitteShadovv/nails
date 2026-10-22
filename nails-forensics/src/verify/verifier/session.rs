@@ -23,13 +23,24 @@ const RUN_UNIT_DIR: &str = "/run/systemd/system";
 /// masks the boot-loader units.
 const RUN_CONTROL_DIR: &str = "/run/systemd/system.control";
 
-/// Guidance for an interrupted entry's leftovers.
-const RECOVER: &str = "Run 'nails recover' to remove the leftovers of the interrupted entry";
+/// Guidance for an interrupted entry's leftovers, naming the real binary path.
+fn recover_fix() -> String {
+    use nails_base::next_step::{NextStep, sudo_line};
+    format!(
+        "Run '{}' to remove the leftovers of the interrupted entry",
+        sudo_line(NextStep::Recover)
+    )
+}
 
 /// How to check the decoy itself from inside the hidden session, where the
-/// hidden layer hides what lies beneath it.
-pub(super) const CHECK_DECOY_OFFLINE: &str =
-    "run 'nails verify --offline --root <mount>' against a read-only mount of the decoy root";
+/// hidden layer hides what lies beneath it. Names the real binary path.
+pub(super) fn check_decoy_offline() -> String {
+    use nails_base::next_step::{NextStep, sudo_line};
+    format!(
+        "run '{}' against a read-only mount of the decoy root",
+        sudo_line(NextStep::VerifyOffline)
+    )
+}
 
 /// The hidden session a run is inside, as far as verify needs to know it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,13 +130,14 @@ impl<F: Filesystem> Verifier<F> {
                 )
                 .with_fix_guidance(format!(
                     "The session cannot see what its hidden layer covers on the decoy; to \
-                     check the decoy itself, {CHECK_DECOY_OFFLINE}"
+                     check the decoy itself, {}",
+                    check_decoy_offline()
                 )),
             ]);
         }
         let mut findings = Vec::new();
         let critical = |what: String| {
-            Finding::new(Severity::Critical, "session", what).with_fix_guidance(RECOVER)
+            Finding::new(Severity::Critical, "session", what).with_fix_guidance(recover_fix())
         };
         if nails_teardown::whole_root::nextroot::is_mount_point(
             &self.mount_table(),
@@ -234,7 +246,7 @@ impl<F: Filesystem> Verifier<F> {
                         "session",
                         format!("the hidden session's unit {} is left", path.display()),
                     )
-                    .with_fix_guidance(RECOVER),
+                    .with_fix_guidance(recover_fix()),
                 );
             } else if self.filesystem.is_symlink(&path)?
                 && self.filesystem.canonicalize(&path).ok().as_deref()

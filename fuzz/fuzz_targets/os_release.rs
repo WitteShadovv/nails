@@ -5,9 +5,11 @@
 //! or refuses the host, under the shell-like quoting os-release(5) allows.
 //!
 //! The input is the file. The target checks that the identifiers come out
-//! lowercased and split as documented, and that the fields, written back as
-//! os-release(5) quotes a value (in double quotes, with `$`, `"`, `\` and
-//! `` ` `` escaped), are read again unchanged, with the same decision.
+//! lowercased and split as documented, and that the fields (`ID`, `ID_LIKE`,
+//! `VERSION_ID`, `VARIANT_ID`), written back as os-release(5) quotes a value (in
+//! double quotes, with `$`, `"`, `\` and `` ` `` escaped), are read again
+//! unchanged, with the same decision: the same resolved family and the same
+//! support verdict.
 
 #![no_main]
 
@@ -20,6 +22,9 @@ fuzz_target!(|data: &[u8]| {
     if let Some(id) = &first.id {
         assert_eq!(id, &id.to_ascii_lowercase());
     }
+    if let Some(variant) = &first.variant_id {
+        assert_eq!(variant, &variant.to_ascii_lowercase());
+    }
     for token in &first.id_like {
         assert!(
             !token.is_empty() && !token.contains(char::is_whitespace),
@@ -31,11 +36,22 @@ fuzz_target!(|data: &[u8]| {
     let written = write(&first);
     let again = detect_with(&written);
     assert_eq!(
-        (&again.id, &again.id_like, &again.version_id),
-        (&first.id, &first.id_like, &first.version_id),
+        (
+            &again.id,
+            &again.id_like,
+            &again.version_id,
+            &again.variant_id
+        ),
+        (
+            &first.id,
+            &first.id_like,
+            &first.version_id,
+            &first.variant_id
+        ),
         "{written}"
     );
     assert_eq!(again.kind, first.kind);
+    assert_eq!(again.family, first.family);
     assert_eq!(again.unsupported_reason, first.unsupported_reason);
     assert_eq!(again.support_warning, first.support_warning);
 });
@@ -59,6 +75,9 @@ fn write(profile: &HostProfile) -> String {
     }
     if let Some(version) = &profile.version_id {
         text.push_str(&format!("VERSION_ID={}\n", quote(version)));
+    }
+    if let Some(variant) = &profile.variant_id {
+        text.push_str(&format!("VARIANT_ID={}\n", quote(variant)));
     }
     text
 }

@@ -54,7 +54,7 @@ where
     if let Some(reason) = &report.reason {
         out.push(format!("  {reason}"));
     }
-    if let Some(remediation) = report.remediation {
+    if let Some(remediation) = &report.remediation {
         out.push(format!("  {}", style.marked(Mark::Arrow, remediation)));
     }
     out.push(format!(

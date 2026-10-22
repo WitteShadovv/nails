@@ -145,7 +145,7 @@ in
 
             session.assert_decoy_root(machine)
             status = read_status_json(config_path="/tmp/preflight-readonly.toml")
-            assert status["posture"] == "decoy", status
+            assert status["place"] == "decoy", status
 
         machine.succeed("""${hiddenVolume.unmountHiddenVolume}""")
   '';

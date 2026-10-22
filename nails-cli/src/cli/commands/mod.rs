@@ -9,12 +9,17 @@
 //! `main` owns the process exit code and every `--json` failure can still print
 //! one envelope on stdout.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use nails_core::{LoadedConfig, NailsError};
 
 use crate::cli::output::envelope::{ErrorBody, report_error};
 use crate::cli::output::exit::ExitStatus;
+
+// The configuration resolution that any front end shares now lives in the
+// engine facade; the CLI keeps only the error rendering (the sudo line, the
+// structured body) on top of it.
+pub(crate) use nails_core::app::{config_error_line, load_config_or_defaults};
 
 pub mod activate;
 pub mod check;
@@ -46,29 +51,7 @@ pub mod watch;
 /// Either way an unreadable or invalid file is an error. `loaded_config_path`
 /// is set to the consulted path so cleanup preserves it.
 pub(crate) fn resolve_config(config_override: Option<&Path>) -> Result<LoadedConfig, NailsError> {
-    let path = nails_core::config::discover_config_path(config_override);
-    let mut loaded = if config_override.is_some() {
-        LoadedConfig::load(&path)?
-    } else {
-        LoadedConfig::load_or_default(&path)?
-    };
-    loaded.config.loaded_config_path = Some(path);
-    Ok(loaded)
-}
-
-/// One-line description of a configuration load failure.
-pub(crate) fn config_error_line(error: &NailsError) -> String {
-    match error {
-        NailsError::ConfigNotFound { path } => format!(
-            "config file not found: {} (run `nails init <root>` or pass --config)",
-            path.display()
-        ),
-        NailsError::ConfigError(message) => message.clone(),
-        NailsError::IoError { path, source } => {
-            format!("cannot read config {}: {source}", path.display())
-        }
-        other => other.to_string(),
-    }
+    nails_core::app::resolve_config(config_override)
 }
 
 /// The next step after a configuration read that was refused for lack of
@@ -133,186 +116,12 @@ pub(crate) fn load_config_or_report(
     })
 }
 
-/// Load the configuration for a teardown command, which must never refuse.
-///
-/// On any problem this logs a single warning and continues with built-in
-/// defaults, whose hidden volume root is derived from the binary location;
-/// the teardown itself then only unmounts what the live mount table shows
-/// NAILS created.
-/// Where a teardown's configuration was ultimately loaded from.
-///
-/// Reported to the operator so a teardown that had to fall back off the failed
-/// hidden volume says so, rather than silently acting on the wrong data.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ConfigSource {
-    /// The real configuration file (on the hidden volume or binary-relative).
-    File,
-    /// The RAM-backed copy under `/run`, used because the file was unreadable.
-    RuntimeCopy,
-    /// Built-in defaults, used because neither the file nor a copy was available.
-    Defaults,
-}
-
-impl ConfigSource {
-    /// A short phrase naming the source, for human-facing output.
-    pub(crate) fn describe(self) -> &'static str {
-        match self {
-            ConfigSource::File => "configuration file",
-            ConfigSource::RuntimeCopy => "RAM-backed runtime copy",
-            ConfigSource::Defaults => "built-in defaults",
-        }
-    }
-}
-
-/// Load the configuration for a teardown (emergency or recover) that must never
-/// be blocked by a failed hidden volume.
-///
-/// The real config file lives on the hidden volume, so when that volume is the
-/// thing that failed the file is unreadable. This tries, in order: the config
-/// file, the mirrored copy in the RAM-backed runtime directory under `/run`
-/// (written at activation precisely for this case), and finally the built-in
-/// defaults. The source is returned so the caller can tell the operator which one
-/// was used; in every case the teardown only acts on what the live mount table
-/// shows NAILS created.
-pub(crate) fn load_config_for_teardown(
-    config_override: Option<&Path>,
-) -> (nails_core::Config, ConfigSource) {
-    // An authoritative config file wins: either an explicit `--config` (which
-    // errors rather than defaulting when absent) or a binary-relative file that
-    // was actually present. A *missing* binary-relative file is not authoritative:
-    // `resolve_config` returns built-in defaults for it, whose hidden volume root
-    // is derived from the running binary's own location. When emergency runs from
-    // the RAM-backed copy under `/run` that root points into `/run`, not at the
-    // real overlays, so those defaults must not be preferred over the mirrored
-    // config the copy carries.
-    let file_config = match resolve_config(config_override) {
-        Ok(loaded) if config_override.is_some() || loaded.file_found => Some(loaded.into_config()),
-        _ => None,
-    };
-
-    // The RAM-backed runtime copy under `/run` records the real hidden root and
-    // state path from activation, written precisely so teardown still works when
-    // the hidden volume (and the real config and state files on it) are gone. It
-    // is strictly better than binary-relative defaults, so it is consulted whenever
-    // no authoritative file was found — not only when the file was unreadable.
-    let runtime_copy_config = if file_config.is_some() {
-        None
-    } else {
-        match nails_core::runtime_copy::read_config_copy(&nails_core::RealFilesystem) {
-            Ok(copy) => copy,
-            Err(e) => {
-                tracing::warn!(error = %e, "could not read the runtime config copy; using defaults");
-                None
-            }
-        }
-    };
-
-    let defaults = || load_config_or_defaults(config_override).into_config();
-    pick_teardown_config(file_config, runtime_copy_config, defaults)
-}
-
-/// Choose the teardown configuration and record where it came from.
-///
-/// Precedence: an authoritative config file, then the RAM-backed runtime copy
-/// under `/run`, then built-in defaults. The runtime copy must outrank defaults
-/// so an emergency launched from the copy (when the hidden volume is gone) tears
-/// down the real overlays instead of a set derived from the copied binary's own
-/// location. `defaults` is only evaluated when neither of the first two is present.
-fn pick_teardown_config(
-    file_config: Option<nails_core::Config>,
-    runtime_copy_config: Option<nails_core::Config>,
-    defaults: impl FnOnce() -> nails_core::Config,
-) -> (nails_core::Config, ConfigSource) {
-    if let Some(config) = file_config {
-        return (config, ConfigSource::File);
-    }
-    if let Some(config) = runtime_copy_config {
-        tracing::warn!("config file not found; using the RAM-backed runtime copy under /run");
-        return (config, ConfigSource::RuntimeCopy);
-    }
-    (defaults(), ConfigSource::Defaults)
-}
-
-pub(crate) fn load_config_or_defaults(config_override: Option<&Path>) -> LoadedConfig {
-    resolve_config(config_override).unwrap_or_else(|error| {
-        let path: PathBuf = nails_core::config::discover_config_path(config_override);
-        tracing::warn!(
-            "{}; continuing with defaults derived from the binary location",
-            config_error_line(&error)
-        );
-        let mut loaded = LoadedConfig::defaults(&path);
-        loaded.config.loaded_config_path = Some(path);
-        loaded
-    })
-}
-
-/// Build a [`NailsManager`](nails_core::NailsManager) with the NixOS build target
-/// activation would pick for the same configuration.
-///
-/// The host is detected once here and the build target is then asked of that
-/// host's platform backend through
-/// [`NailsManager::discover_host_target`](nails_core::NailsManager::discover_host_target):
-/// on NixOS that is overlay-only (no builder) → explicit `config.nixos_flake` →
-/// a flake in the hidden volume → the decoy's own `/etc/nixos/flake.nix`
-/// (refused: no builder, and the build-target check fails) → a legacy
-/// `/etc/nixos/configuration.nix` or system profile → no NixOS; a host without
-/// a declarative config layer has no build target at all. Activation, the
-/// `check`/`doctor` command (which also uses this to build its pre-flight
-/// registry and its profile summary) and the `nixos-build-target` check all go
-/// through that one discovery on the same host profile, so none of them can
-/// report a different build target than the others. A failed detection leaves
-/// no profile, and discovery then runs the NixOS cascade as it always has.
-pub(crate) fn build_nixos_manager(
-    config: nails_core::Config,
-    state_path: PathBuf,
-    overlay_only: bool,
-    env: &nails_core::RuntimeEnv,
-) -> nails_core::NailsManager<nails_core::RealFilesystem> {
-    use nails_core::{HostTarget, NailsManager, RealFilesystem};
-
-    let mut manager =
-        NailsManager::new(RealFilesystem, config, state_path).with_runtime_env(env.clone());
-    if let Err(e) = manager.initialize_platform() {
-        tracing::debug!(error = %e, "platform detection failed; continuing without a host profile");
-    }
-
-    let target = manager
-        .discover_host_target(overlay_only)
-        .unwrap_or(HostTarget::None);
-    if let Some(builder) = nixos_builder_for(target) {
-        manager.set_nixos_builder(builder);
-    }
-    manager
-}
-
-/// The builder of a build target. Overlay-only, no target and the refused
-/// decoy flake get none.
-fn nixos_builder_for(target: nails_core::HostTarget) -> Option<nails_core::NixOSBuilder> {
-    use nails_core::{HostTarget, NixOSBuilder};
-
-    match target {
-        HostTarget::OverlayOnly | HostTarget::None | HostTarget::DecoyFlake { .. } => None,
-        HostTarget::ExplicitFlake(flake_ref) => Some(NixOSBuilder::new_with_flake_ref(flake_ref)),
-        HostTarget::Flake(dir) => Some(NixOSBuilder::new(dir)),
-        HostTarget::Legacy(path) => Some(NixOSBuilder::new_legacy(path)),
-    }
-}
-
-/// Directory holding the state file (and its `.lock`) on the hidden volume.
-fn state_lock_dir(state_file_path: &Path) -> &Path {
-    state_file_path.parent().unwrap_or_else(|| Path::new("."))
-}
-
 /// Take the exclusive state lock for an ordinary mutating command, or report.
 ///
-/// A concurrent `nails` operation holds this lock, so a second one fails fast
-/// with a message naming the holder PID rather than racing it over the mounts
-/// and the state file. The lock lies next to the state file and is created only
-/// on the volume mounted at `hidden_root`, or on the root the operator accepted
-/// with `allow` (`activate --allow-decoy-storage`). A root the attach gate
-/// refuses is reported with the gate's text and code (exit 4), as `activate`
-/// reports it: `deactivate` refuses a root another disk was mounted over with
-/// `root_covered`, and `emergency` is the way out. The returned guard must be
+/// The gate and the acquisition live in [`nails_core::app::lock`]; this renders
+/// the two refusals. A root the attach gate refuses is reported with the gate's
+/// text and code (exit 4), as `activate` reports it; a lock held by another
+/// operation is a `state_locked` failure (exit 1). The returned guard must be
 /// kept alive for the whole operation; dropping it (on exit) releases the lock.
 #[must_use = "the returned guard releases the lock when dropped"]
 pub(crate) fn acquire_state_lock_or_report(
@@ -322,102 +131,26 @@ pub(crate) fn acquire_state_lock_or_report(
     command: &'static str,
     json: bool,
 ) -> Result<nails_core::StateLock, ExitStatus> {
-    if let Ok(nails_core::hidden_root::Assessment::Refused(refusal)) =
-        nails_core::HiddenRoot::assess_allowing(&nails_core::RealFilesystem, hidden_root, allow)
-    {
-        return Err(crate::cli::output::refusal::report_refusal(
+    use nails_core::app::lock::LockOutcome;
+    match nails_core::app::lock::acquire_mutating(hidden_root, allow, state_file_path) {
+        LockOutcome::Acquired(lock) => Ok(lock),
+        LockOutcome::Refused(refusal) => Err(crate::cli::output::refusal::report_refusal(
             json, command, &refusal,
-        ));
-    }
-    let dir = state_lock_dir(state_file_path);
-    nails_core::hidden_root::ensure_state_dir_attached_allowing(
-        &nails_core::RealFilesystem,
-        hidden_root,
-        dir,
-        allow,
-    )
-    .and_then(|()| nails_core::StateLock::try_acquire(dir))
-    .map_err(|error| {
-        report_error(
+        )),
+        LockOutcome::Error(error) => Err(report_error(
             json,
             command,
             ExitStatus::Failed,
             ErrorBody::new("state_locked", error.to_string()),
-        )
-    })
-}
-
-/// Take the state lock for emergency teardown, proceeding without it on timeout.
-///
-/// Emergency must never be blocked by a crashed or unresponsive holder, so after
-/// a short wait it continues without the lock. The returned guard (when present)
-/// must be kept alive for the duration of the teardown.
-#[must_use = "the returned guard releases the lock when dropped"]
-pub(crate) fn acquire_state_lock_for_emergency(
-    hidden_root: &Path,
-    state_file_path: &Path,
-) -> Option<nails_core::StateLock> {
-    // Never create `.lock` in a bare mount-point directory on the decoy, nor on
-    // a disk mounted over the hidden volume: then emergency proceeds without
-    // the lock.
-    let dir = state_lock_dir(state_file_path);
-    if let Err(error) =
-        nails_core::ensure_state_dir_attached(&nails_core::RealFilesystem, hidden_root, dir)
-    {
-        tracing::warn!(%error, "Hidden volume not attached; proceeding with emergency teardown without the state lock");
-        return None;
-    }
-    match nails_core::StateLock::acquire_with_timeout(dir, nails_core::EMERGENCY_LOCK_TIMEOUT) {
-        Ok(Some(lock)) => Some(lock),
-        Ok(None) => {
-            tracing::warn!(
-                "Proceeding with emergency teardown without the state lock (acquire timed out)"
-            );
-            None
-        }
-        Err(error) => {
-            tracing::warn!(%error, "Could not open the state lock; proceeding with emergency teardown");
-            None
-        }
+        )),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigSource, nixos_builder_for, pick_teardown_config, sudo_line};
-    use nails_core::{Config, HostTarget, NailsError};
-    use std::path::{Path, PathBuf};
-
-    /// Activation builds nothing for the refused decoy flake, as for
-    /// overlay-only and no target; every other target gets its builder.
-    #[test]
-    fn the_refused_decoy_flake_gets_no_builder() {
-        let decoy = HostTarget::DecoyFlake {
-            dir: PathBuf::from("/etc/nixos"),
-            hidden_volume_root: PathBuf::from("/mnt/data"),
-        };
-        for target in [decoy, HostTarget::OverlayOnly, HostTarget::None] {
-            assert_eq!(nixos_builder_for(target.clone()), None, "{target:?}");
-        }
-
-        let flake = nixos_builder_for(HostTarget::Flake(PathBuf::from("/mnt/data/nixos")));
-        assert_eq!(
-            flake.as_ref().and_then(|b| b.flake_dir()),
-            Some(Path::new("/mnt/data/nixos"))
-        );
-        let explicit = nixos_builder_for(HostTarget::ExplicitFlake("/srv/cfg#host".into()));
-        assert_eq!(
-            explicit.map(|b| b.effective_flake_arg()).as_deref(),
-            Some("/srv/cfg#host")
-        );
-        let legacy = nixos_builder_for(HostTarget::Legacy(PathBuf::from(
-            "/etc/nixos/configuration.nix",
-        )));
-        assert_eq!(
-            legacy.as_ref().and_then(|b| b.legacy_config()),
-            Some(Path::new("/etc/nixos/configuration.nix"))
-        );
-    }
+    use super::sudo_line;
+    use nails_core::NailsError;
+    use std::path::Path;
 
     fn unreadable(kind: std::io::ErrorKind) -> NailsError {
         NailsError::io("/mnt/data/config/nails.toml", std::io::Error::from(kind))
@@ -476,51 +209,5 @@ mod tests {
         assert_eq!(sudo_line(&other, "status", false, binary, &[]), None);
         let invalid = NailsError::ConfigError("invalid config".into());
         assert_eq!(sudo_line(&invalid, "status", false, binary, &[]), None);
-    }
-
-    fn config_rooted_at(root: &str) -> Config {
-        Config {
-            hidden_volume_root: PathBuf::from(root),
-            ..Config::test_default()
-        }
-    }
-
-    #[test]
-    fn teardown_config_prefers_an_authoritative_file() {
-        let file = config_rooted_at("/mnt/data/file");
-        let copy = config_rooted_at("/mnt/data/copy");
-        let (config, source) = pick_teardown_config(Some(file), Some(copy), || {
-            panic!("defaults must not be evaluated when a file is present")
-        });
-        assert_eq!(source, ConfigSource::File);
-        assert_eq!(config.hidden_volume_root, PathBuf::from("/mnt/data/file"));
-    }
-
-    #[test]
-    fn teardown_config_prefers_the_runtime_copy_over_defaults() {
-        // The regression: a missing binary-relative config yields built-in
-        // defaults, whose hidden root is derived from the running binary. When
-        // emergency runs from the RAM-backed copy that root points into /run, so
-        // the mirrored copy — which records the real hidden root — must win.
-        let copy = config_rooted_at("/mnt/data/real-hidden-root");
-        let (config, source) = pick_teardown_config(None, Some(copy), || {
-            panic!("defaults must not be evaluated when a runtime copy is present")
-        });
-        assert_eq!(source, ConfigSource::RuntimeCopy);
-        assert_eq!(
-            config.hidden_volume_root,
-            PathBuf::from("/mnt/data/real-hidden-root")
-        );
-    }
-
-    #[test]
-    fn teardown_config_falls_back_to_defaults_when_nothing_else_is_available() {
-        let defaults = config_rooted_at("/derived/from/binary");
-        let (config, source) = pick_teardown_config(None, None, || defaults.clone());
-        assert_eq!(source, ConfigSource::Defaults);
-        assert_eq!(
-            config.hidden_volume_root,
-            PathBuf::from("/derived/from/binary")
-        );
     }
 }

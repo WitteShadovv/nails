@@ -52,7 +52,7 @@ in
         machine.succeed("test ! -e /run/nextroot || test -z \"$(ls -A /run/nextroot)\"")
         machine.succeed("test ! -e /mnt/data/root/upper")
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "decoy", status
+        assert status["place"] == "decoy", status
         print(f"✓ {description} is refused with nothing left behind")
 
 
@@ -89,7 +89,7 @@ in
     with subtest("the activity log is owner-only in the hidden session"):
         canonical_activate(CONFIG, "--overlay-only", "activate")
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "active", status
+        assert status["place"] == "hidden", status
         logs = machine.succeed("find /mnt/data/logs -type f").split()
         assert logs, "activation wrote no log file under /mnt/data/logs"
         for log_file in logs:

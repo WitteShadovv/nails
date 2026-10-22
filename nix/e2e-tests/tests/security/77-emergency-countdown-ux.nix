@@ -68,7 +68,7 @@ in
         machine.succeed("systemctl is-active hidden-writer.service")
         assert session.backend_open(machine), "the aborted emergency closed the backend"
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "active", status
+        assert status["place"] == "hidden", status
 
     with subtest("--countdown counts down in order, then returns to the decoy"):
         countdown_timings, stderr = emergency_back(

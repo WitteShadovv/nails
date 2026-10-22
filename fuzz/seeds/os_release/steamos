@@ -1,0 +1,6 @@
+NAME="SteamOS"
+PRETTY_NAME="SteamOS"
+ID=steamos
+ID_LIKE=arch
+VERSION_ID=3.5
+BUILD_ID=20240501

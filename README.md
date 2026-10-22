@@ -25,6 +25,8 @@ over the whole decoy root, with every change written to an encrypted hidden
 volume you provide, and soft-reboots back to the plain decoy when you are done.
 Nothing that starts the hidden session is installed on the decoy.
 
+Website and documentation: [nails.run](https://nails.run)
+
 NixOS is the first-class platform (a declarative hidden configuration is built
 and entered in the same step); Debian 13, Ubuntu 24.04 and Ubuntu 26.04 run the
 same session with whatever the hidden `/etc` holds.
@@ -448,9 +450,11 @@ The full runbook, including cleaning up by hand when `recover` cannot run, is in
 <summary><b>FAQ</b></summary>
 
 **Does NAILS hide that a hidden volume exists?** No. That depends on the backend:
-a VeraCrypt hidden volume cannot be told apart from its outer volume's free
-space, a LUKS volume is visibly an encrypted volume. NAILS adds nothing to the
-backend's claim. It keeps the *session* off the decoy.
+VeraCrypt's own claim is conditional — it should be impossible to prove a hidden
+volume exists *if* VeraCrypt's requirements are followed, and its documentation
+notes that multiple disk snapshots over time, wear-levelling or TRIM can still
+betray one — while a LUKS volume is visibly an encrypted volume. NAILS adds
+nothing to the backend's claim. It keeps the *session* off the decoy.
 
 **Can I keep working on the decoy while the hidden session runs?** No. Only one
 of them runs at a time; switching logs you out of the other.

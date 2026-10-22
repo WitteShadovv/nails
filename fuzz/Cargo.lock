@@ -562,12 +562,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "nails-api"
+version = "0.3.0-rc.3"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nails-base"
 version = "0.3.0-rc.3"
 dependencies = [
  "chrono",
  "colored",
  "hex",
+ "nails-api",
  "nails-teardown",
  "nix",
  "rustix",
@@ -587,6 +596,7 @@ name = "nails-core"
 version = "0.3.0-rc.3"
 dependencies = [
  "chrono",
+ "nails-api",
  "nails-base",
  "nails-forensics",
  "nails-platform",

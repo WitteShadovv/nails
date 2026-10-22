@@ -1,0 +1,19 @@
+{
+  "image": "fedora-44",
+  "osId": "fedora",
+  "recorded": false,
+  "facts": {
+    "selinuxBackdoorDomain": null,
+    "mounts": [],
+    "tools": {},
+    "journaldVendorConfig": {
+      "storage": null,
+      "sources": []
+    },
+    "failedBootUnits": [],
+    "updatedbPrunePaths": [],
+    "avcs": [],
+    "ninePUnderEnforcing": null,
+    "derivativeOsRelease": {}
+  }
+}

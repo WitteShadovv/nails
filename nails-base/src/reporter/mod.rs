@@ -5,7 +5,8 @@
 //!
 //! [`progress`] carries the [`Reporter`](progress::Reporter) abstraction that
 //! activation phases report through, separating what the operator watches
-//! (steps, details, heartbeats) from the log. The rest of this module renders
+//! (steps, details, heartbeats) from the log. [`events`] adapts that reporter
+//! into the typed event stream a window watches. The rest of this module renders
 //! actionable diagnostics.
 //!
 //! This is the single place that turns a set of failures into the "what to do
@@ -23,7 +24,10 @@
 //! - A single terminal [`NailsError`]: rendered as a [`Diagnostic`] pairing the
 //!   error's message with its one [`NailsError::hint`], if it has one.
 
+pub mod events;
 pub mod progress;
+
+pub use events::{CollectingSink, EventReporter, EventSink};
 
 use crate::error::{NailsError, PreFlightFailures};
 

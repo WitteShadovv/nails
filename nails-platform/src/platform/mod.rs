@@ -36,12 +36,15 @@
 
 use crate::Result;
 use crate::filesystem::Filesystem;
+use nails_base::Family;
 
+mod composefs;
 mod config_layer;
-mod debian;
 mod detect;
 mod discover;
+mod family;
 mod fhs;
+mod host_facts;
 mod nixos;
 mod unsupported;
 
@@ -56,6 +59,7 @@ pub use config_layer::{ConfigLayer, NixOsConfigLayer};
 pub use detect::detect;
 pub use discover::{HostTarget, discover_host_target, discover_with_platform};
 pub use fhs::FhsPlatform;
+pub use host_facts::{SelinuxMode, SelinuxStatus};
 pub use nixos::{HiddenFlake, NixOsPlatform, hidden_flake};
 pub use unsupported::UnsupportedPlatform;
 
@@ -89,6 +93,18 @@ pub struct HostProfile {
     pub id_like: Vec<String>,
     /// `VERSION_ID` from `/etc/os-release` (e.g. `12`, `24.04`), unquoted.
     pub version_id: Option<String>,
+    /// `VARIANT_ID` from `/etc/os-release` (e.g. `workstation`, `cloud`, `kde`),
+    /// lowercased. Absent when the host declares none.
+    pub variant_id: Option<String>,
+    /// The FHS family the host resolved to, where one could be determined.
+    /// `None` for NixOS, an unidentifiable host, or a host refused by name.
+    pub family: Option<Family>,
+    /// The Linux Security Modules the kernel reports as active
+    /// (`/sys/kernel/security/lsm`), in kernel order. Empty when the kernel
+    /// does not expose them.
+    pub lsms: Vec<String>,
+    /// The host's SELinux status, or `None` when SELinux is not present.
+    pub selinux: Option<SelinuxStatus>,
     /// Whether PID 1 is systemd.
     pub is_systemd: bool,
     /// Whether `/run/ostree-booted` is present (ostree / image-based host).
@@ -109,7 +125,7 @@ impl HostProfile {
     pub fn name(&self) -> String {
         let distribution = match (self.kind, self.id.as_deref()) {
             (PlatformKind::NixOs, _) => "NixOS",
-            (_, Some(id)) => debian::label(id).unwrap_or(id),
+            (_, Some(id)) => family::label(id).unwrap_or(id),
             (_, None) => return "this host".to_string(),
         };
         match self.version_id.as_deref() {

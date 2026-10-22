@@ -27,12 +27,14 @@
 
 mod plant;
 mod scan;
+mod storage;
 
 #[cfg(test)]
 mod tests;
 
 pub use plant::{PlantContext, plant};
-pub use scan::{DeviceScan, NOT_VISIBLE, ScanReport, default_scan_targets, scan};
+pub use scan::{DeviceScan, NOT_VISIBLE, ScanReport, ScanTarget, default_scan_targets, scan};
+pub use storage::{ScanBlindSpot, scan_blind_spot};
 
 use crate::{Filesystem, NailsError, Result};
 use serde::{Deserialize, Serialize};

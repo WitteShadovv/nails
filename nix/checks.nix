@@ -6,6 +6,7 @@
   pkgs,
   nails,
   e2eMetadata,
+  distroImages,
 }:
 let
   inherit (pkgs) lib;
@@ -42,8 +43,21 @@ let
     '';
 
   e2eMetadataJson = pkgs.writeText "e2e-metadata.json" (builtins.toJSON e2eMetadata);
+
+  # The whole distribution table, and the derivation path of a minimal VM test
+  # for every entry, serialised to one file. Writing it forces evaluation of
+  # each entry (the schema assertions in images.nix) and of each entry's image
+  # seam -- the hash-pinned fetch and nix-vm-test prepare for Fedora and Arch
+  # among them -- so a malformed entry or a broken seam fails here, at eval,
+  # with no VM built. The Debian and Ubuntu derivations are evaluated but not
+  # rebuilt, which is what keeps them byte-identical across this change.
+  distroImagesJson = pkgs.writeText "distro-images.json" (builtins.toJSON distroImages);
 in
 {
+  distro-images = pkgs.runCommandLocal "distro-images" { } ''
+    cp ${distroImagesJson} "$out"
+  '';
+
   nixfmt = lint "nixfmt" {
     files = nixFiles;
     tools = [ pkgs.nixfmt ];
@@ -113,7 +127,7 @@ in
   # unrelated edits.
   nails-source = pkgs.runCommandLocal "nails-source" { } ''
     actual=$(cd ${nails.src} && LC_ALL=C ls -A)
-    expected=$(printf '%s\n' .cargo Cargo.lock Cargo.toml nails-base nails-cli nails-core nails-forensics nails-platform nails-session nails-teardown rust-toolchain.toml)
+    expected=$(printf '%s\n' .cargo Cargo.lock Cargo.toml nails-api nails-base nails-cli nails-core nails-forensics nails-oracle nails-platform nails-session nails-teardown rust-toolchain.toml)
     if [ "$actual" != "$expected" ]; then
       printf 'nails source holds:\n%s\nexpected exactly:\n%s\n' "$actual" "$expected" >&2
       exit 1
@@ -157,6 +171,7 @@ in
       ../deny.toml
       ../docs/ci.md
       ../.github/workflows
+      ./distro-tests/images.json
       ./e2e-tests/default.nix
       ./e2e-tests/lib
       ./e2e-tests/tests
@@ -227,6 +242,32 @@ in
       python3 -m unittest discover -s nix/e2e-tests/py/tests -t nix/e2e-tests/py
       ruff check nix/e2e-tests/py
       MYPYPATH=nix/e2e-tests/py mypy nix/e2e-tests/py/nails_e2e nix/e2e-tests/py/tests
+    '';
+  };
+
+  # The portable smoke suite's host-side helpers (nix/distro-tests/py), lint
+  # and unit-tested without a VM, the same fast lane as e2e-helpers. The smoke
+  # scenario loads distro_checks on the driver; this proves the pure layout
+  # rules it depends on -- the mount-aware canary uppers, the boot-filesystem
+  # read-back and the overlay feature-option check -- stay correct, linted and
+  # typed on every `nix flake check`, not only when a distro VM test runs.
+  distro-checks = lint "distro-checks" {
+    files = fs.unions [
+      ./distro-tests/py
+      ../pyproject.toml
+    ];
+    tools = [
+      python
+      pkgs.ruff
+      pkgs.mypy
+    ];
+    script = ''
+      export HOME="$PWD"
+      python3 -m unittest discover -s nix/distro-tests/py/tests -t nix/distro-tests/py
+      ruff check nix/distro-tests/py
+      MYPYPATH=nix/distro-tests/py mypy \
+        nix/distro-tests/py/distro_checks.py \
+        nix/distro-tests/py/tests/test_distro_checks.py
     '';
   };
 

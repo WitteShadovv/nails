@@ -76,7 +76,7 @@ in
         session.assert_decoy_root(machine)
         machine.fail("test -e /run/nextroot/etc")
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "decoy", status
+        assert status["place"] == "decoy", status
 
     with subtest("confirming the first activation enters the hidden root"):
         session.follow_soft_reboot(
@@ -87,7 +87,7 @@ in
         )
         session.assert_hidden_root(machine)
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "active", status
+        assert status["place"] == "hidden", status
 
     with subtest("the session ends normally"):
         canonical_deactivate(CONFIG, "state-concurrent-deactivate")

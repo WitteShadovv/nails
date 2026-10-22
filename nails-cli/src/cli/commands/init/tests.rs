@@ -2,8 +2,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::*;
+use nails_core::app::init::{
+    COMMON_SUBDIRS, DEFAULT_HARDWARE_CONFIG, HardwareBootstrap, InitItem, ItemStatus,
+    NIXOS_SUBDIRS, next_steps,
+};
+use nails_core::config::CONFIG_FILE_NAME;
 use nails_core::filesystem::PathKind;
-use nails_core::{Config, Filesystem, MockFilesystem, SystemState};
+use nails_core::{Config, Filesystem, MockFilesystem, RealFilesystem, SystemState};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -405,7 +410,7 @@ fn an_untested_release_is_initialized_with_a_warning() {
     let fs = attached_mock(root);
     fs.mock_set_file_content(
         "/etc/os-release",
-        "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\n",
+        "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"28.04\"\n",
     );
     fs.mock_set_file_content("/proc/1/comm", "systemd\n");
 
@@ -420,7 +425,7 @@ fn an_untested_release_is_initialized_with_a_warning() {
     assert!(matches!(plan.bootstrap, HardwareBootstrap::Skip(_)));
     match plan.warnings.as_slice() {
         [warning] => assert!(
-            warning.starts_with("Ubuntu 26.10 is not a release NAILS has been tested on"),
+            warning.starts_with("Ubuntu 28.04 is not a release NAILS has been tested on"),
             "{warning}"
         ),
         other => panic!("expected one warning, got {other:?}"),

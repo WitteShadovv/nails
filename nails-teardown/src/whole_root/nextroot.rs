@@ -275,15 +275,35 @@ fn overlay_path(path: &Path) -> io::Result<String> {
     })
 }
 
-/// Mount an overlay at `target` with one lower layer.
-pub fn mount_overlay(lower: &Path, upper: &Path, work: &Path, target: &Path) -> io::Result<()> {
-    let data = format!(
-        "lowerdir={},upperdir={},workdir={}",
+/// The overlay feature options NAILS pins on every mount (see [`overlay_data`]).
+///
+/// `index`, `metacopy` and `redirect_dir` default differently across kernels —
+/// Arch's turns them on — and each lets the overlay diverge from a plain copy-up:
+/// an index survives into the upper, a metadata-only copy leaves the data in the
+/// lower, and a followed redirect reads from the lower after a rename. Pinning
+/// them off keeps every distribution's overlay behaving as NAILS's forensic
+/// promise assumes. `xino` is deliberately left unpinned: it stores nothing in
+/// the upper.
+pub const OVERLAY_FEATURE_OPTIONS: &str = "index=off,metacopy=off,redirect_dir=nofollow";
+
+/// The `mount(2)` data for a one-lower-layer overlay, with NAILS's pinned
+/// feature options ([`OVERLAY_FEATURE_OPTIONS`]) appended.
+///
+/// The one place the real mount ([`mount_overlay`]) and the upper-filesystem
+/// capability probe both build the option string, so the two can never pin a
+/// different set.
+pub fn overlay_data(lower: &Path, upper: &Path, work: &Path) -> io::Result<String> {
+    Ok(format!(
+        "lowerdir={},upperdir={},workdir={},{OVERLAY_FEATURE_OPTIONS}",
         overlay_path(lower)?,
         overlay_path(upper)?,
         overlay_path(work)?
-    );
-    let data = c_string(&data)?;
+    ))
+}
+
+/// Mount an overlay at `target` with one lower layer.
+pub fn mount_overlay(lower: &Path, upper: &Path, work: &Path, target: &Path) -> io::Result<()> {
+    let data = c_string(&overlay_data(lower, upper, work)?)?;
     rustix::mount::mount(
         "overlay",
         target,
@@ -553,6 +573,45 @@ pub fn real_path(fd: &OwnedFd) -> io::Result<PathBuf> {
 /// and the store) is looked up in that root's store, not the running one's.
 pub fn exists_in_root(root: &Path, path: &Path) -> bool {
     open_in_root(root, path).is_ok()
+}
+
+/// `path` as it resolves inside `root`, with every symlink on the way followed
+/// inside `root` (absolute links and `..` stay within it): a decoy whose
+/// `/home` is a link to `var/home` yields `/var/home`, so the mount, the
+/// generated unit name and the fresh home all land where the decoy really keeps
+/// the files, never on the symlink. A trailing component that does not exist
+/// yet (a mount point or a home not created) is resolved as far as its deepest
+/// existing ancestor and then re-appended. The result is absolute, as seen from
+/// `root`. A path that resolves to nothing, or any failure, returns `path`
+/// unchanged. `path` must be absolute; a relative path is returned as is.
+pub fn canonical_in_root(root: &Path, path: &Path) -> PathBuf {
+    if !path.is_absolute() {
+        return path.to_path_buf();
+    }
+    let unresolved = || path.to_path_buf();
+    let Ok(root_real) = open_mount_root(root).and_then(|fd| real_path(&fd)) else {
+        return unresolved();
+    };
+    // Open the longest prefix of `path` that resolves inside `root`, reading
+    // its real (symlink-free) path, then re-append the components past it.
+    let mut tail: Vec<&OsStr> = Vec::new();
+    let mut prefix = path;
+    loop {
+        if let Ok(real) = open_in_root(root, prefix).and_then(|fd| real_path(&fd)) {
+            let inside = real.strip_prefix(&root_real).unwrap_or(&real);
+            let mut out = PathBuf::from("/");
+            out.push(inside);
+            out.extend(tail.iter().rev());
+            return out;
+        }
+        match (prefix.parent(), prefix.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name);
+                prefix = parent;
+            }
+            _ => return unresolved(),
+        }
+    }
 }
 
 /// Read the file at `path` as if `root` were `/` (absolute symlinks resolve

@@ -19,6 +19,7 @@
 //! real write paths unprivileged are never affected.
 
 use crate::cli::args::{Commands, RehearseStep};
+use crate::cli::output::envelope::{EnvelopePrint, ErrorBody, error_envelope};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Whether `command` must run as root.
@@ -171,22 +172,82 @@ pub fn enforce_root(
     }
 
     let argv0 = std::env::current_exe().ok();
-    let message = needs_root_message(
-        argv0.as_deref(),
-        subcommand_name(command),
-        &invocation_args(),
-    );
-    emit_needs_root(settings, &message);
+    let subcommand = subcommand_name(command);
+    let message = needs_root_message(argv0.as_deref(), subcommand, &invocation_args());
+    emit_needs_root(settings, subcommand, &message);
     Some(ExitStatus::NeedsRoot)
 }
 
-/// Print the remediation message on stderr using the resolved stderr style.
+/// Report the refused privileged command: one error envelope on stdout under
+/// `--json` (the code is `needs_root`, exit 5 now carries JSON too), otherwise
+/// the remediation message on stderr using the resolved stderr style.
 ///
 /// Errors are always shown, even under `--quiet`: a refused privileged command
 /// that printed nothing would look like a silent failure.
-fn emit_needs_root(settings: &OutputSettings, message: &str) {
-    use nails_core::output::Mark;
-    eprintln!("{}", settings.stderr_style().marked(Mark::Fail, message));
+fn emit_needs_root(settings: &OutputSettings, command: &'static str, message: &str) {
+    if settings.is_json() {
+        error_envelope(command, ErrorBody::new("needs_root", message)).print();
+    } else {
+        use nails_core::output::Mark;
+        eprintln!("{}", settings.stderr_style().marked(Mark::Fail, message));
+    }
+}
+
+/// Every user-facing subcommand name, for recognising the command a clap usage
+/// error was about from the raw arguments (clap has not produced a parsed
+/// command when it fails).
+const SUBCOMMAND_NAMES: &[&str] = &[
+    "activate",
+    "deactivate",
+    "emergency",
+    "recover",
+    "status",
+    "verify",
+    "rehearse",
+    "check",
+    "doctor",
+    "init",
+    "reset-upper",
+    "config",
+    "completions",
+];
+
+/// The subcommand a raw argument list names, for the usage-error envelope's
+/// `command` field. `doctor` is reported as its real name `check`. When no
+/// subcommand is present (a bad global option on its own), the envelope names
+/// the tool itself.
+fn command_from_argv(argv: &[std::ffi::OsString]) -> &'static str {
+    for arg in argv {
+        if let Some(word) = arg.to_str()
+            && let Some(name) = SUBCOMMAND_NAMES.iter().find(|n| **n == word)
+        {
+            return if *name == "doctor" { "check" } else { name };
+        }
+    }
+    "nails"
+}
+
+/// Exit on a clap parse result, enveloping a usage error under `--json`.
+///
+/// Help and version are not errors: they print to stdout and exit 0, so clap's
+/// own exit handles them. A real usage error exits 2; under `--json` it prints
+/// one error envelope on stdout (code `usage`) naming the command it was about,
+/// so a script sees the same one-document contract every other command gives.
+pub fn exit_on_clap_error(error: clap::Error) -> ! {
+    use clap::error::ErrorKind;
+    let is_usage = !matches!(
+        error.kind(),
+        ErrorKind::DisplayHelp
+            | ErrorKind::DisplayVersion
+            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
+    );
+    let json = std::env::args_os().any(|arg| arg == "--json");
+    if is_usage && json {
+        let command = command_from_argv(&invocation_args());
+        error_envelope(command, ErrorBody::new("usage", error.to_string())).print();
+        crate::cli::chokepoint::exit_process(2);
+    }
+    error.exit()
 }
 
 #[cfg(test)]

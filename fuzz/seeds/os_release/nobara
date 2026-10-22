@@ -1,0 +1,7 @@
+NAME="Nobara Linux"
+VERSION="41 (KDE Plasma)"
+ID=nobara
+ID_LIKE=fedora
+VERSION_ID=41
+VARIANT_ID=kde
+PLATFORM_ID="platform:f41"

@@ -46,6 +46,14 @@ fn an_impermanent_root_is_refused() {
 }
 
 #[test]
+fn a_btrfs_subvolume_root_passes_but_a_bind_of_a_folder_is_refused() {
+    let subvol = parse_mountinfo("1 0 0:30 /@ / rw - btrfs /dev/nvme0n1p2 rw,subvol=/@\n");
+    assert!(judge_decoy_root(&subvol, Path::new("/")).is_pass());
+    let bind = parse_mountinfo("1 0 0:30 /@/srv / rw - btrfs /dev/nvme0n1p2 rw,subvol=/@\n");
+    assert!(judge_decoy_root(&bind, Path::new("/")).is_fail());
+}
+
+#[test]
 fn only_the_plain_decoy_may_activate() {
     assert!(judge_session(&SessionView::Decoy).is_pass());
     assert!(judge_session(&SessionView::HiddenWithoutPlan("x".into())).is_fail());
@@ -53,7 +61,11 @@ fn only_the_plain_decoy_may_activate() {
         plan: None,
         nextroot_mounted: true,
     });
-    assert!(interrupted.remediation().unwrap().contains("nails recover"));
+    let remedy = interrupted.remediation().unwrap();
+    assert!(
+        remedy.contains("sudo ") && remedy.contains("recover"),
+        "{remedy}"
+    );
 }
 
 #[test]

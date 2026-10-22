@@ -5,7 +5,7 @@
 //! a run could not cover, derived from the catalog rows instead of a fixed list.
 
 use super::*;
-use crate::residue_catalog::{self, Probe, ProbeSeverity, ResidueKind};
+use crate::residue_catalog::{self, Platforms, Probe, ProbeSeverity, ResidueKind};
 use std::time::SystemTime;
 
 /// Every check id a verify run can execute. Catalog rows name these in
@@ -34,15 +34,16 @@ pub const VERIFY_CHECK_IDS: &[&str] = &[
 ];
 
 impl<F: Filesystem> Verifier<F> {
-    /// The platform the catalog rows are filtered by: the live host's, or
-    /// `None` (every row) for an offline image, whose platform is not the host's.
-    fn catalog_platform(&self) -> Option<crate::platform::PlatformKind> {
+    /// The host family the catalog rows are filtered by: the live host's, or
+    /// `None` (every row) for an offline image — whose family is not the host's —
+    /// or a host detection could not place.
+    fn catalog_platform(&self) -> Option<Platforms> {
         if self.is_offline() {
             return None;
         }
         crate::platform::detect(&self.filesystem)
             .ok()
-            .map(|profile| profile.kind)
+            .and_then(|profile| Platforms::for_host(&profile))
     }
 
     /// Run the catalog's verify path probes for one kind of residue.
@@ -271,6 +272,43 @@ mod tests {
         assert!(
             areas.contains("setup traces an examiner looks for ("),
             "{areas}"
+        );
+    }
+
+    #[test]
+    fn catalog_paths_are_filtered_to_the_detected_host_platform() {
+        use crate::MockFilesystem;
+        use crate::residue_catalog::ResidueKind;
+
+        // A live run (Host context) whose host detection resolves to NixOS:
+        // `ID=nixos` with systemd as PID 1. On a live run `catalog_platform`
+        // returns `Some(NIXOS)`, so the catalog is filtered to the host family.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/etc/os-release", "ID=nixos\nVERSION_ID=\"24.11\"\n");
+        fs.mock_add_file("/proc/1/comm", "systemd");
+        // An all-platform session class present on disk...
+        fs.mock_add_file("/var/log/sudo.log", "activation command line");
+        // ...and an FHS-only session class present on disk (Plymouth's boot log
+        // belongs to the Debian/Fedora/Arch families, never to NixOS).
+        fs.mock_add_file("/var/log/boot.log", "boot messages");
+
+        let verifier = Verifier::new(fs);
+        let findings = verifier.check_catalog_paths(ResidueKind::Session);
+        let messages: Vec<&str> = findings.iter().map(|f| f.message.as_str()).collect();
+
+        // The all-platform row applies to a NixOS host, so the probe fires and
+        // the present path is reported: this proves the probe machinery ran.
+        assert!(
+            messages.iter().any(|m| m.contains("[sudo-logfile]")),
+            "an all-platform catalog row must apply to a detected NixOS host: {messages:?}"
+        );
+        // The FHS-only row does NOT apply to a NixOS host, so its present path
+        // is filtered out. If `catalog_platform` returned `None` (every row
+        // applies), this FHS-only class would be reported — so this assertion
+        // fails the moment the host platform is not consulted.
+        assert!(
+            !messages.iter().any(|m| m.contains("[plymouth-boot-log]")),
+            "an FHS-only catalog row must be filtered out on a detected NixOS host: {messages:?}"
         );
     }
 

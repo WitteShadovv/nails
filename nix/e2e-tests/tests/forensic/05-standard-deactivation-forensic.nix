@@ -132,7 +132,7 @@ in
         status = json.loads(
             machine.succeed(f"nails --config {headless_config} status --json")
         )["data"]
-        assert status["posture"] == "decoy", f"expected the plain decoy, got {status}"
+        assert status["place"] == "decoy", f"expected the plain decoy, got {status}"
 
         # sudo's record of the deactivation was made in the hidden session, so
         # it went to the hidden journal on the hidden volume, never to this one.

@@ -214,7 +214,7 @@ in
     print("✓ Deactivated: soft-rebooted back to the decoy")
 
     status = json.loads(machine.succeed(f"nails --config {headless_config} status --json"))["data"]
-    assert status["posture"] == "decoy", f"Expected the plain decoy, got: {status}"
+    assert status["place"] == "decoy", f"Expected the plain decoy, got: {status}"
     machine.fail("test -e /boot/hidden-write")
     print("✓ NAILS status reports the plain decoy")
 

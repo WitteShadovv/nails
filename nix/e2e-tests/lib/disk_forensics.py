@@ -202,19 +202,98 @@ def root_image(machine: object) -> Path:
     )
 
 
-def snapshot(machine: object, label: str, *, restart: bool = True) -> Path:
+_ORACLE_IMAGE_LABELS = {"baseline": "before", "control": "control"}
+
+
+def oracle_image_name(label: str) -> str | None:
+    """Map a snapshot label to the forensic oracle's image name, or ``None``.
+
+    The forensic tests image a single disk lineage ``baseline -> control ->
+    post*``; the oracle consumes the same triple as ``before`` / ``control`` /
+    ``after``. ``baseline`` is the clean before-image, ``control`` the
+    no-session noise baseline, and any ``post`` or ``post-*`` label the
+    after-image under test. Any other label (``reboot``, ``positive``, a distro
+    smoke label) is not one of the oracle's images and is not retained.
+    """
+    if label in _ORACLE_IMAGE_LABELS:
+        return _ORACLE_IMAGE_LABELS[label]
+    if label == "post" or label.startswith("post-"):
+        return "after"
+    return None
+
+
+def _copy_sparse(src: Path, dest: Path) -> None:
+    """Copy ``src`` to ``dest`` preserving sparseness.
+
+    Only the data extents are written and the file is truncated to full size, so
+    holes stay holes. Reuses :func:`_data_extents` so a mostly-empty decoy root
+    (``qemu-img convert -O raw`` writes a sparse file) is kept as a sparse
+    artifact rather than inflated to its full virtual size.
+    """
+    with open(src, "rb") as reader:
+        rfd = reader.fileno()
+        size = os.fstat(rfd).st_size
+        with open(dest, "wb") as writer:
+            wfd = writer.fileno()
+            os.ftruncate(wfd, size)
+            for start, end in _data_extents(rfd, size):
+                position = start
+                while position < end:
+                    chunk = os.pread(rfd, min(_SCAN_CHUNK, end - position), position)
+                    if not chunk:
+                        break
+                    os.pwrite(wfd, chunk, position)
+                    position += len(chunk)
+
+
+def _retain_oracle_image(machine: object, label: str, raw: Path) -> Path | None:
+    """Keep a sparse copy of ``raw`` as the oracle's before/control/after image.
+
+    The forensic-oracle real-image slice scans the actual decoy disks the e2e
+    run produced, so the raw is copied into the test's ``out_dir`` (beside the
+    bodyfile and mac-diff artifacts, under ``forensics/``) named
+    ``<before|control|after>.raw``. A label that is not one of the oracle's three
+    images, or a machine with no ``out_dir``, is a no-op. The temporary raw that
+    :func:`snapshot` returns is untouched, so the existing diff path is unchanged.
+    """
+    name = oracle_image_name(label)
+    base = getattr(machine, "out_dir", None)
+    if name is None or not base:
+        return None
+    dest_dir = Path(base) / "forensics"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{name}.raw"
+    _copy_sparse(raw, dest)
+    return dest
+
+
+def snapshot(
+    machine: object, label: str, *, restart: bool = True, retain: bool = False
+) -> Path:
     """Shut the machine down and convert its root disk to a flat raw image.
 
     Shutting down first flushes the guest page cache so the image is consistent.
     ``restart`` brings the same machine back up afterwards, which is what keeps a
     single disk lineage across ``baseline -> active -> post-standard`` instead of
     a fresh disk per stage (every fresh disk used to read as a finding).
+
+    ``retain`` is opt-in and off by default: only the forensic-oracle
+    real-image slice (forensic/13) sets it. When set and the label maps to one
+    of the oracle's images (see :func:`oracle_image_name`), a sparse copy of the
+    raw is also kept in the test's ``out_dir`` as ``before.raw`` /
+    ``control.raw`` / ``after.raw`` for the real-image scan. It must not default
+    on: the other forensic tests snapshot the same ``baseline`` / ``control`` /
+    ``post-*`` labels, and retaining there would sparse-copy a 20 GiB image per
+    snapshot they never use, slowing every forensic test. This is additive: the
+    returned temporary raw and the existing diff behaviour are unchanged.
     """
     machine.shutdown()  # type: ignore[attr-defined]
     image = root_image(machine)
     out_dir = Path(tempfile.mkdtemp(prefix="nails-forensic-"))
     raw = out_dir / f"{label}.raw"
     _run([QEMU_IMG, "convert", "-O", "raw", str(image), str(raw)])
+    if retain:
+        _retain_oracle_image(machine, label, raw)
     if restart:
         # start() runs the VM's start script outside any driver log block, and
         # with useNixStoreImage that script rebuilds the erofs store image on
@@ -791,19 +870,44 @@ def run_content_hashes(
 # --- MAC-time and content diff against a control run --------------------------
 
 # Paths on an image (fls-relative, no leading slash) that change on their own
-# across a reboot: runtime state under /var, /run and /tmp, the per-boot
-# machine id, resolver config and SSH host keys, NixOS's /etc activation stamps
-# and the Nix store's own bookkeeping. A test may pass a wider pattern.
-#: ``bin/sh`` and ``usr/bin/env`` are links the NixOS activation replaces (a new
-#: inode each time) whenever the decoy's userspace starts, at a boot and at
-#: the soft-reboot back from a hidden session alike: the way back starts the
-#: decoy once more, the same as a reboot would.
-DEFAULT_IMAGE_VOLATILE = re.compile(
-    r"(^|/)("
+# across a reboot: runtime state under /var, /run and /tmp, the per-boot machine
+# id, resolver config and SSH host keys, and NixOS's /etc activation stamps.
+# Every distribution gets these; a test may pass a wider pattern.
+_GENERIC_IMAGE_VOLATILE = (
     r"var/|run/|tmp/|etc/machine-id|etc/resolv\.conf|etc/ssh/ssh_host_|"
-    r"etc/\.(updated|clean)|nix/var/|nix/store/\.links|bin/sh$|usr/bin/env$"
-    r")"
+    r"etc/\.(updated|clean)"
 )
+
+# Extra entries only a NixOS decoy legitimately churns at every boot: the Nix
+# store's own bookkeeping, and the ``bin/sh`` and ``usr/bin/env`` links the
+# NixOS activation replaces (a new inode each time) whenever the decoy's
+# userspace starts -- at a boot and at the soft-reboot back from a hidden
+# session alike, since the way back starts the decoy once more, the same as a
+# reboot would. On an FHS distribution none of these is activation noise: a
+# changed ``/bin/sh`` or a store path that appeared there is a real finding, so
+# they are allowlisted only when the decoy's os-id is NixOS.
+_NIXOS_IMAGE_VOLATILE = r"nix/var/|nix/store/\.links|bin/sh$|usr/bin/env$"
+
+
+def image_volatile(os_id: str = "nixos") -> re.Pattern[str]:
+    """The image-volatile allowlist for a decoy of the given os-id.
+
+    Every distribution gets the generic boot-noise paths; a NixOS decoy also
+    gets the activation-churn entries, which on any other distribution would
+    mask a real change. ``os_id`` is the ``/etc/os-release`` ID (``"nixos"``,
+    ``"debian"``, ``"ubuntu"``, …); the default keeps the historical NixOS
+    behaviour for callers that pass nothing.
+    """
+    alternatives = _GENERIC_IMAGE_VOLATILE
+    if os_id == "nixos":
+        alternatives = f"{alternatives}|{_NIXOS_IMAGE_VOLATILE}"
+    return re.compile(rf"(^|/)({alternatives})")
+
+
+#: The NixOS decoy's allowlist, kept as a module constant for the NixOS forensic
+#: tests that reference it directly. Equal to ``image_volatile("nixos")`` and
+#: byte-identical to the pattern these tests have always used.
+DEFAULT_IMAGE_VOLATILE = image_volatile("nixos")
 
 
 @dataclass(frozen=True)

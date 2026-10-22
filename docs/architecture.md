@@ -36,6 +36,16 @@ listed under the [residual channels](threat-model.md#residual-channels). The
 kernel, its modules, the device-mapper mappings and `/run` survive the switch.
 The way back is a second soft-reboot, again without firmware or bootloader.
 
+Each decoy filesystem below the overlay is also mounted read-only, a second layer
+under the overlay's copy-up. The overlay already writes nothing to a lower — every
+change copies up into the upper on the hidden volume — but NAILS binds the lower
+read-only before it becomes the overlay's lower layer, so that is a property of the
+mount and not only of the overlay: a write that reached the lower directly is
+refused by the kernel, and the decoy's files keep their access times, because a
+read-only mount updates no atime. The carried decoy filesystems and the boot
+filesystems (the ESP) come in read-only for the same reason; only the upper on the
+hidden volume is writable.
+
 The price:
 
 - Both transitions log the user out, because the desktop itself runs inside the
@@ -82,11 +92,13 @@ and `nails-core/tests/crate_graph.rs` pins them:
 flowchart TD
     cli[nails-cli] --> core[nails-core]
     cli --> teardown[nails-teardown]
+    cli --> api[nails-api]
     core --> forensics[nails-forensics]
     core --> session[nails-session]
     core --> platform[nails-platform]
     core --> base[nails-base]
     core --> teardown
+    core --> api
     forensics --> session
     forensics --> platform
     forensics --> base
@@ -96,6 +108,7 @@ flowchart TD
     session --> teardown
     platform --> base
     base --> teardown
+    base --> api
 ```
 
 `nails-cli` reaches `nails-teardown` directly because `main` runs the emergency
@@ -139,6 +152,12 @@ and the transition step before anything else is initialised.
   time, and the cgroup, pidfd and shell kills. It depends on
   `rustix`, `libc`, `serde` and `serde_json` only, so `main` can run the emergency and the
   transition before clap, the configuration or tracing exist.
+- **`nails-api`** holds the machine-readable contract the CLI writes under
+  `--json` — the envelope, the error body, the exit codes, the result payloads
+  and the progress-event stream — as types that depend on `serde` alone and on
+  no NAILS crate, so a window or another consumer can link the wire shapes
+  without the tool. `nails-base` reaches it for the event types its progress
+  reporter adapts into; `nails-core` and `nails-cli` reach it for the rest.
 
 The logic lives in the libraries rather than in the binary, so the whole
 threat-relevant surface can be tested without going through the binary or a
@@ -167,9 +186,11 @@ the code never branches on "is this NixOS?" directly.
      names `debian` or `ubuntu`. The hidden configuration is whatever the
      upper's `/etc` holds. (A Debian 12 host is refused by the support table;
      its systemd could not soft-reboot either.) The support table also lists
-     the releases NAILS has been tested on (Debian 13, Ubuntu 24.04 and 26.04):
-     any other release it admits carries a warning in its `HostProfile`, which
-     `init` and the `platform` pre-flight check report.
+     the releases NAILS targets. Its automated VM tests cover Debian 13 and
+     Ubuntu 24.04; Ubuntu 26.04 is a supported target checked by hand, with an
+     automated image still to be added. Any other release it admits carries a
+     warning in its `HostProfile`, which `init` and the `platform` pre-flight
+     check report.
    - `UnsupportedPlatform` — refuses every other host with a typed error:
      ostree and image-based hosts, non-systemd init, Fedora, Arch and unknown
      distributions. For those hosts the refusal *is* the behaviour.

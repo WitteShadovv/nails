@@ -5,6 +5,7 @@ expression: redact_status(value)
 {
   "command": "status",
   "data": {
+    "attention": null,
     "decoy_persistent": "[decoy_persistent]",
     "hidden_root": "[hidden_root]",
     "hidden_root_mounted": false,
@@ -12,14 +13,9 @@ expression: redact_status(value)
     "nextroot_mounted": false,
     "opsec_reminders": [],
     "persona_mode": "shared-home",
-    "policy_mounts": [],
-    "posture": "decoy",
-    "session": "decoy",
-    "state": {
-      "kind": "inactive"
-    },
-    "state_source": "missing"
+    "place": "decoy",
+    "policy_mounts": []
   },
   "ok": true,
-  "schema_version": 1
+  "schema_version": 2
 }

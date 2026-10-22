@@ -57,6 +57,10 @@ serde_json = { workspace = true }
 toml = { workspace = true }
 chrono = { workspace = true }
 tempfile = { workspace = true }
+# The machine-readable contract types (the `--json` envelope, the exit-code
+# table): the facade names the outcome of an operation in the same terms a
+# front end reports it, so the exit codes cannot drift from the orchestration.
+nails-api = { path = "../nails-api" }
 # The foundation: errors, the filesystem and process seams, configuration,
 # state, the artifact registry and the pre-flight framework.
 nails-base = { path = "../nails-base" }
@@ -76,6 +80,11 @@ assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tempfile = { workspace = true }
 proptest = { workspace = true }
+# Drives the reconciliation of the recorded state and the live session view as
+# a state machine: random activate/deactivate/emergency/recover/crash
+# sequences against a reference model (`tests/state_machine_model.rs`). Same
+# crate family as proptest; the `std` feature matches the workspace proptest.
+proptest-state-machine = "0.9.0"
 tracing-test = "0.2.5"
 criterion = { version = "0.8", features = ["html_reports"] }
 # Self dev-dependency: turns the test-only hooks on for this crate's integration

@@ -9,10 +9,11 @@
 
 use std::path::Path;
 
-use super::debian::{self, FamilySupport};
-use super::{HostProfile, PlatformKind};
+use super::family::{self, FamilySupport};
+use super::{HostProfile, PlatformKind, composefs, host_facts};
 use crate::Result;
 use crate::filesystem::Filesystem;
+use nails_base::Family;
 
 /// Where the kernel exposes the running init's command name.
 const PID1_COMM: &str = "/proc/1/comm";
@@ -68,9 +69,13 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
     let pid1_comm = pid1.as_deref().map(str::trim).map(str::to_string);
     let is_systemd = pid1_comm.as_deref() == Some("systemd");
     let usr_merge = probe_usr_merge(fs);
+    let composefs_refusal = composefs::composefs_refusal(fs);
+    let lsms = host_facts::read_lsms(fs);
+    let selinux = host_facts::read_selinux(fs);
 
     let verdict = classify(
         is_ostree,
+        composefs_refusal,
         is_systemd,
         pid1_comm.as_deref(),
         &fields,
@@ -83,6 +88,10 @@ pub fn detect<F: Filesystem>(fs: &F) -> Result<HostProfile> {
         id: fields.id,
         id_like: fields.id_like,
         version_id: fields.version_id,
+        variant_id: fields.variant_id,
+        family: verdict.family,
+        lsms,
+        selinux,
         is_systemd,
         is_ostree,
         has_current_system,
@@ -103,6 +112,7 @@ struct OsReleaseFields {
     id: Option<String>,
     id_like: Vec<String>,
     version_id: Option<String>,
+    variant_id: Option<String>,
 }
 
 /// Parse the `KEY=VALUE` lines of os-release, lowercasing identifiers and
@@ -127,6 +137,7 @@ fn parse_os_release(content: &str) -> OsReleaseFields {
                     .collect();
             }
             "VERSION_ID" => fields.version_id = Some(value.to_string()),
+            "VARIANT_ID" => fields.variant_id = Some(value.to_ascii_lowercase()),
             _ => {}
         }
     }
@@ -194,6 +205,9 @@ struct Verdict {
     /// The warning an admitted host carries: a release NAILS has not been
     /// tested on.
     support_warning: Option<String>,
+    /// The FHS family the host resolved to, where one was determined. `None` for
+    /// NixOS and for hosts refused before the family table is consulted.
+    family: Option<Family>,
 }
 
 impl Verdict {
@@ -202,6 +216,7 @@ impl Verdict {
             kind,
             unsupported_reason: None,
             support_warning,
+            family: None,
         }
     }
 
@@ -210,20 +225,29 @@ impl Verdict {
             kind: PlatformKind::Unsupported,
             unsupported_reason: Some(reason),
             support_warning: None,
+            family: None,
         }
+    }
+
+    /// Attach the resolved family to this verdict.
+    fn with_family(mut self, family: Option<Family>) -> Self {
+        self.family = family;
+        self
     }
 }
 
 /// Resolve the host facts to a [`PlatformKind`] and, when unsupported, a reason.
 ///
-/// Refusals come first: an ostree / image-based host and a non-systemd PID 1 are
-/// both declined, because NAILS cannot safely lay a hidden overlay over an
-/// immutable image or drive teardown without systemd. A systemd host is then
-/// resolved to NixOS, a supported Debian-family release (with a warning when
-/// NAILS has not been tested on that release), or a documented refusal
-/// (unsupported distribution, release below the minimum, or a non-merged layout).
+/// Refusals come first: an ostree / image-based host, a composefs-native host
+/// and a non-systemd PID 1 are all declined, because NAILS cannot safely lay a
+/// hidden overlay over an immutable image or drive teardown without systemd. A
+/// systemd host is then resolved to NixOS, a supported Debian-family release
+/// (with a warning when NAILS has not been tested on that release), or a
+/// documented refusal (unsupported distribution, release below the minimum, or
+/// a non-merged layout).
 fn classify(
     is_ostree: bool,
+    composefs_refusal: Option<String>,
     is_systemd: bool,
     pid1_comm: Option<&str>,
     fields: &OsReleaseFields,
@@ -237,6 +261,12 @@ fn classify(
              mutable installation."
                 .to_string(),
         );
+    }
+
+    // A sealed composefs image may not write /run/ostree-booted; refuse it here,
+    // before the systemd and NixOS tests, for the same reason.
+    if let Some(reason) = composefs_refusal {
+        return Verdict::refused(reason);
     }
 
     if !is_systemd {
@@ -253,19 +283,25 @@ fn classify(
         return Verdict::admitted(PlatformKind::NixOs, None);
     }
 
-    let support_warning = match debian::classify_family(
+    let classification = family::classify(
         fields.id.as_deref(),
         &fields.id_like,
         fields.version_id.as_deref(),
-    ) {
+    );
+    let family = classification.family;
+    let support_warning = match classification.support {
         FamilySupport::Supported => None,
-        FamilySupport::UntestedRelease(warning) => Some(warning),
-        FamilySupport::Refused(reason) => return Verdict::refused(reason),
+        // A tested release with a caveat and an untested release both run; each
+        // carries its warning, which the platform check and init surface.
+        FamilySupport::SupportedWithCaveat(warning) | FamilySupport::Untested(warning) => {
+            Some(warning)
+        }
+        FamilySupport::Refused(reason) => return Verdict::refused(reason).with_family(family),
     };
     if usr_merge == UsrMerge::NotMerged {
-        return Verdict::refused(debian::USR_MERGE_REFUSAL.to_string());
+        return Verdict::refused(family::USR_MERGE_REFUSAL.to_string()).with_family(family);
     }
-    Verdict::admitted(PlatformKind::Fhs, support_warning)
+    Verdict::admitted(PlatformKind::Fhs, support_warning).with_family(family)
 }
 
 #[cfg(test)]
@@ -294,6 +330,8 @@ mod tests {
         "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.04\"\nPRETTY_NAME=\"Ubuntu 26.04 LTS\"\n";
     const UBUNTU2610: &str =
         "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\nPRETTY_NAME=\"Ubuntu 26.10\"\n";
+    const UBUNTU2804: &str =
+        "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"28.04\"\nPRETTY_NAME=\"Ubuntu 28.04 LTS\"\n";
 
     #[test]
     fn nixos_by_id() {
@@ -343,24 +381,46 @@ mod tests {
     }
 
     #[test]
-    fn ubuntu_2604_is_a_tested_release() {
+    fn ubuntu_2604_is_tested_but_warns_about_a_known_upstream_issue() {
+        // 26.04 is a tested release, so it is not refused and `require_supported`
+        // passes; it still carries a warning about a known upstream AppArmor
+        // issue that affects chrony and CUPS on this release.
         let profile = detect(&host(UBUNTU2604, "systemd")).unwrap();
         assert_eq!(profile.kind, PlatformKind::Fhs);
+        profile.require_supported().unwrap();
+        let warning = profile
+            .support_warning
+            .expect("26.04 carries a known-issue warning");
+        assert!(
+            warning.starts_with("Ubuntu 26.04 is tested, but a known upstream issue"),
+            "{warning}"
+        );
+        assert!(warning.contains("AppArmor blocks chrony"), "{warning}");
+        assert!(warning.contains("CUPS"), "{warning}");
+        assert!(warning.contains("not in NAILS"), "{warning}");
+    }
+
+    #[test]
+    fn ubuntu_2610_is_a_validated_release() {
+        let profile = detect(&host(UBUNTU2610, "systemd")).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Fhs);
+        assert_eq!(profile.unsupported_reason, None);
+        // 26.10 is a validated target: it runs clean, with no untested warning.
         assert_eq!(profile.support_warning, None);
         profile.require_supported().unwrap();
     }
 
     #[test]
-    fn ubuntu_2610_runs_with_a_warning_that_it_is_untested() {
-        let profile = detect(&host(UBUNTU2610, "systemd")).unwrap();
+    fn an_untested_ubuntu_release_runs_with_a_warning() {
+        let profile = detect(&host(UBUNTU2804, "systemd")).unwrap();
         assert_eq!(profile.kind, PlatformKind::Fhs);
         assert_eq!(profile.unsupported_reason, None);
         profile.require_supported().unwrap();
         let warning = profile
             .support_warning
-            .expect("26.10 is not a tested release");
+            .expect("28.04 is not a tested release");
         assert!(
-            warning.starts_with("Ubuntu 26.10 is not a release NAILS has been tested on"),
+            warning.starts_with("Ubuntu 28.04 is not a release NAILS has been tested on"),
             "{warning}"
         );
     }
@@ -386,7 +446,7 @@ mod tests {
 
     #[test]
     fn a_split_usr_refuses_an_untested_release_without_its_warning() {
-        let fs = host(UBUNTU2610, "systemd");
+        let fs = host(UBUNTU2804, "systemd");
         fs.mock_set_path_type("/bin", crate::filesystem::PathKind::Dir);
         let profile = detect(&fs).unwrap();
         assert_eq!(profile.kind, PlatformKind::Unsupported);
@@ -398,9 +458,13 @@ mod tests {
     fn fedora_is_refused_with_documented_reason() {
         let profile = detect(&host(FEDORA, "systemd")).unwrap();
         assert_eq!(profile.kind, PlatformKind::Unsupported);
+        assert_eq!(profile.family, Some(Family::Fedora));
         assert!(!profile.is_debian_like());
         let err = profile.require_supported().unwrap_err();
-        assert!(err.to_string().contains("fedora"));
+        assert!(
+            err.to_string()
+                .contains("Fedora is not yet a validated platform")
+        );
     }
 
     #[test]
@@ -408,7 +472,59 @@ mod tests {
         let profile = detect(&host(ARCH, "systemd")).unwrap();
         assert_eq!(profile.kind, PlatformKind::Unsupported);
         assert_eq!(profile.id.as_deref(), Some("arch"));
+        assert_eq!(profile.family, Some(Family::Arch));
         assert!(profile.require_supported().is_err());
+    }
+
+    #[test]
+    fn the_resolved_family_is_recorded_on_the_profile() {
+        // The family fact is set for every host the family table resolves,
+        // whether admitted or refused, and is absent for NixOS and the unknown.
+        let family = |os_release: &str| detect(&host(os_release, "systemd")).unwrap().family;
+        assert_eq!(family(UBUNTU), Some(Family::Debian));
+        assert_eq!(family(DEBIAN13), Some(Family::Debian));
+        assert_eq!(family(FEDORA), Some(Family::Fedora));
+        assert_eq!(family(ARCH), Some(Family::Arch));
+        assert_eq!(family(NIXOS), None);
+        assert_eq!(family("ID=voidlinux\nVERSION_ID=\"rolling\"\n"), None);
+    }
+
+    #[test]
+    fn variant_id_is_parsed_and_lowercased() {
+        let profile = detect(&host(
+            "ID=fedora\nVARIANT_ID=Workstation\nVERSION_ID=44\n",
+            "systemd",
+        ))
+        .unwrap();
+        assert_eq!(profile.variant_id.as_deref(), Some("workstation"));
+        // A host that declares none carries no variant.
+        assert_eq!(detect(&host(DEBIAN13, "systemd")).unwrap().variant_id, None);
+    }
+
+    #[test]
+    fn security_facts_are_read_onto_the_profile() {
+        use crate::platform::SelinuxMode;
+
+        let fs = host(DEBIAN13, "systemd");
+        fs.mock_set_file_content(
+            "/sys/kernel/security/lsm",
+            "capability,landlock,yama,apparmor",
+        );
+        let profile = detect(&fs).unwrap();
+        assert_eq!(profile.lsms, ["capability", "landlock", "yama", "apparmor"]);
+        assert_eq!(profile.selinux, None);
+
+        let fedora = host("ID=fedora\nVERSION_ID=44\n", "systemd");
+        fedora.mock_set_path_type("/sys/fs/selinux", crate::filesystem::PathKind::Dir);
+        fedora.mock_set_file_content("/sys/fs/selinux/enforce", "1");
+        fedora.mock_set_file_content(
+            "/etc/selinux/config",
+            "SELINUX=enforcing\nSELINUXTYPE=targeted\n",
+        );
+        let profile = detect(&fedora).unwrap();
+        let selinux = profile.selinux.expect("Fedora has SELinux");
+        assert_eq!(selinux.enforce, Some(SelinuxMode::Enforcing));
+        assert_eq!(selinux.config_policy.as_deref(), Some("targeted"));
     }
 
     #[test]
@@ -476,6 +592,38 @@ mod tests {
         let err = profile.require_supported().unwrap_err();
         assert!(matches!(err, crate::NailsError::UnsupportedPlatform { .. }));
         assert!(err.to_string().contains("ostree"));
+    }
+
+    #[test]
+    fn a_composefs_host_without_ostree_booted_is_refused_before_the_family() {
+        // A sealed composefs boot writes no /run/ostree-booted; it is still
+        // refused as image-based, ahead of the family verdict.
+        let fs = host("ID=fedora\nVERSION_ID=44\n", "systemd");
+        fs.mock_set_file_content(
+            "/proc/cmdline",
+            "root=composefs:fedora/x86_64 ostree=/ostree/boot.1/fedora/x/0 rw",
+        );
+        let profile = detect(&fs).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
+        assert!(!profile.is_ostree);
+        let reason = profile.unsupported_reason.unwrap();
+        assert!(reason.contains("composefs"), "{reason}");
+        assert!(!reason.contains("not yet a validated platform"), "{reason}");
+    }
+
+    #[test]
+    fn the_composefs_runtime_directory_refuses() {
+        let fs = host(DEBIAN13, "systemd");
+        fs.mock_set_path_type("/run/composefs", crate::filesystem::PathKind::Dir);
+        let profile = detect(&fs).unwrap();
+        assert_eq!(profile.kind, PlatformKind::Unsupported);
+        assert!(
+            profile
+                .require_supported()
+                .unwrap_err()
+                .to_string()
+                .contains("composefs")
+        );
     }
 
     #[test]

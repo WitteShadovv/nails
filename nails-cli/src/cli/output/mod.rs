@@ -35,6 +35,15 @@ pub fn println_tolerating_broken_pipe(line: &str) {
     let _ = write_line_tolerating_broken_pipe(&mut stdout, line);
 }
 
+/// Print `text` on stdout with no trailing newline, flushing and tolerating a
+/// broken pipe. The pipe-safe replacement for `print!` of a pre-formatted string
+/// that already carries its own newlines (as `config` builds its envelope line).
+pub fn print_tolerating_broken_pipe(text: &str) {
+    let mut stdout = io::stdout().lock();
+    let _ = write!(stdout, "{text}");
+    let _ = stdout.flush();
+}
+
 /// Print `line` and a trailing newline on stderr, tolerating a broken pipe. The
 /// pipe-safe replacement for `eprintln!`.
 ///
@@ -80,9 +89,7 @@ pub mod status;
 pub mod verify;
 
 // Re-export commonly used formatters
-pub use activate::{
-    ActivateResult, print_activate_human, print_activate_json_result, print_activate_progress,
-};
+pub use activate::{ActivateResult, print_activate_human, print_activate_json_result};
 pub use check::{print_check_human, print_check_json};
 pub use deactivate::{deactivate_error_body, print_deactivate_json};
 pub use envelope::{Envelope, ErrorBody, report_error};

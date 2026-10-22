@@ -12,6 +12,8 @@
 //! - [`run_scrub`]: the `/run` snapshot and scrub;
 //! - [`run_records`]: the decoy's records in `/run` that its start writes to
 //!   disk, put back on the way back;
+//! - [`network`]: the decoy's network identity (links, addresses, hostname and
+//!   the service manager's per-link runtime state), put back on the way back;
 //! - [`boot_records`]: making the decoy's login and boot records read as one
 //!   clean power cycle after the way back;
 //! - [`utab`]: libmount's `utab` lines that still name a mount after a switch;
@@ -21,6 +23,8 @@
 //! - [`decoy_mounts`]: the decoy's mounts the way back makes again, in the
 //!   decoy's order with their options;
 //! - [`runtime_units`]: runtime units and masks in `/run`;
+//! - [`switch_refusal`]: why the last switch was refused, kept on the hidden
+//!   volume so `status` can say so;
 //! - [`disk_guard`]: unused disks read-only for the session (opt-in);
 //! - [`kill`]: killing all of userspace but PID 1 and the invocation;
 //! - [`emergency`]: the emergency hot path;
@@ -33,12 +37,14 @@ pub mod disk_guard;
 pub mod emergency;
 pub mod kernel_helpers;
 pub mod kill;
+pub mod network;
 pub mod nextroot;
 pub mod plan;
 pub mod ret;
 pub mod run_records;
 pub mod run_scrub;
 pub mod runtime_units;
+pub mod switch_refusal;
 pub mod tools;
 pub mod transition;
 pub mod utab;

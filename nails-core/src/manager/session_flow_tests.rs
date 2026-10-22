@@ -288,7 +288,11 @@ fn recovery_in_the_hidden_root_points_to_deactivate() {
         .recover_session_on(&machine(dir.path(), &table), &FakeEntryHost::default())
         .unwrap_err();
 
-    assert!(error.to_string().contains("`nails deactivate`"), "{error}");
+    let error = error.to_string();
+    assert!(
+        error.contains("sudo ") && error.contains("deactivate"),
+        "{error}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -614,6 +618,36 @@ fn a_cancel_before_the_entry_changes_nothing() {
 }
 
 #[test]
+fn a_caller_s_cancel_token_before_the_entry_changes_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    std::fs::create_dir_all(&hidden).unwrap();
+    let machine = machine(dir.path(), DECOY_TABLE);
+    let mut m = manager(&hidden);
+    m.set_host_profile(FakePlatform::fhs().host_profile());
+    let options = EnterOptions {
+        skip_preflight: true,
+        ..EnterOptions::default()
+    };
+    let host = FakeEntryHost::default();
+
+    // A caller — a window whose control pipe closed before the point of no
+    // return — trips its token. The entry stops at a checkpoint and leaves the
+    // decoy exactly as a SIGINT would, because the token feeds the same
+    // checkpoint the signal flag does.
+    let token = crate::cancel::CancelToken::new();
+    let scope = token.install();
+    token.cancel();
+    let result = m.enter_session_on(&machine, &options, &host);
+    drop(scope);
+
+    assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
+    assert!(!machine.paths.runtime().exists());
+    assert_eq!(host.reloads.get(), 0);
+    assert!(!hidden.join("state.json").exists());
+}
+
+#[test]
 fn a_step_that_fails_while_a_cancel_is_pending_reports_the_cancel() {
     // A Ctrl+C from the terminal reaches the step's processes too.
     crate::cancel::testing::request();
@@ -621,6 +655,88 @@ fn a_step_that_fails_while_a_cancel_is_pending_reports_the_cancel() {
     crate::cancel::testing::reset();
     assert!(matches!(result, Err(NailsError::Cancelled)), "{result:?}");
     assert_eq!(cancellable(|| Ok(7)).unwrap(), 7);
+}
+
+/// Run `body` with an event-collecting reporter installed on this thread and
+/// return the `success` of each `finish` the session flow raised, in order.
+/// `progress::finish` is called from exactly one site in the crate (the end of
+/// `enter_session_on`), so this is precisely what a watching front end sees as
+/// the activation ending.
+fn activation_finishes(body: impl FnOnce()) -> Vec<bool> {
+    let sink = crate::reporter::CollectingSink::new();
+    {
+        let reporter = crate::reporter::EventReporter::new(sink.clone());
+        let _scope =
+            crate::reporter::progress::install(crate::reporter::progress::shared(reporter));
+        body();
+    }
+    sink.events()
+        .into_iter()
+        .filter_map(|event| match event {
+            nails_api::Event::Finished { success } => Some(success),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_no_op_entry_in_the_hidden_root_raises_no_finish() {
+    // Already in the hidden root: nothing was done, so a watcher must not be
+    // told the activation finished.
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    let mut m = manager(&hidden);
+    let host = FakeEntryHost::default();
+
+    let mut outcome = None;
+    let finishes = activation_finishes(|| {
+        outcome = Some(
+            m.enter_session_on(&machine, &EnterOptions::default(), &host)
+                .unwrap(),
+        );
+    });
+
+    assert!(
+        matches!(outcome, Some(EnterOutcome::AlreadyActive)),
+        "{outcome:?}"
+    );
+    assert!(
+        finishes.is_empty(),
+        "a no-op entry raises no finish, got {finishes:?}"
+    );
+}
+
+#[test]
+fn a_refused_entry_raises_exactly_one_failed_finish() {
+    // A real activation that fails did do work, so it ends with one finish, and
+    // that finish reports the failure.
+    let dir = tempfile::tempdir().unwrap();
+    let machine = machine(dir.path(), "1 0 0:30 / / rw - tmpfs tmpfs rw\n");
+    let mut m = manager(&dir.path().join("hidden"));
+    m.set_host_profile(FakePlatform::fhs().host_profile());
+    let options = EnterOptions {
+        skip_preflight: true,
+        ..EnterOptions::default()
+    };
+    let host = FakeEntryHost::default();
+
+    let mut result = None;
+    let finishes = activation_finishes(|| {
+        result = Some(m.enter_session_on(&machine, &options, &host));
+    });
+
+    assert!(
+        matches!(result, Some(Err(_))),
+        "the RAM decoy root is refused: {result:?}"
+    );
+    assert_eq!(
+        finishes,
+        vec![false],
+        "a failed activation raises one finish that reports the failure"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -676,7 +792,10 @@ fn a_recorded_fhs_entry_marks_the_debian_family() {
 
     let state = recorded(dir.path());
     assert!(state.state.is_active());
-    assert_eq!(state.platform, Some(PlatformState::DebianFamily));
+    assert_eq!(
+        state.platform,
+        Some(PlatformState::DebianFamily { family: None })
+    );
     assert_eq!(state.decoy_system, None);
 }
 
@@ -686,7 +805,7 @@ fn an_overlay_only_entry_on_nixos_records_no_platform() {
     let dir = tempfile::tempdir().unwrap();
     let mut m = manager(dir.path());
     m.seed_cached_state(StateFile {
-        platform: Some(PlatformState::DebianFamily),
+        platform: Some(PlatformState::DebianFamily { family: None }),
         ..StateFile::default()
     });
 
@@ -782,7 +901,10 @@ fn an_fhs_entry_is_prepared_recorded_active_and_rolled_back_when_the_reboot_is_r
         // The record says Active before the soft-reboot kills this process.
         let state = recorded(hidden.path());
         assert!(state.state.is_active(), "{:?}", state.state);
-        assert_eq!(state.platform, Some(PlatformState::DebianFamily));
+        assert_eq!(
+            state.platform,
+            Some(PlatformState::DebianFamily { family: None })
+        );
         // `activate` prints the outcome's time and `status` the recorded one:
         // one measurement.
         assert_eq!(

@@ -41,6 +41,7 @@ use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+use nails_api::CheckOutcome;
 use serde::Serialize;
 
 use crate::output::{Mark, Style};
@@ -67,6 +68,12 @@ pub trait Reporter: Send {
     /// A long step is still running after `elapsed`; `last_line` is the most
     /// recent line it printed, if any.
     fn heartbeat(&mut self, activity: &str, elapsed: Duration, last_line: Option<&str>);
+    /// A pre-flight check finished, with its outcome and one-line message.
+    ///
+    /// The default does nothing: the spinner and plain surfaces leave the
+    /// checks to the log, and only a surface that watches every check (the
+    /// event adapter a window installs) overrides this.
+    fn check(&mut self, _name: &str, _outcome: CheckOutcome, _message: &str) {}
     /// The activation ended: the current step succeeded or failed.
     fn finish(&mut self, success: bool);
 }
@@ -141,6 +148,146 @@ pub fn detail(phase: &str, text: &str) {
         Some(reporter) => lock(&reporter).detail(text),
         None => tracing::info!(event = "progress", phase = phase, "{}", text),
     }
+}
+
+/// Report that a new step started to the active reporter.
+///
+/// A no-op when no reporter is installed, so wiring the emit points changes
+/// nothing on a surface that has not opted in: the steps reach a window's event
+/// stream (an installed [`EventReporter`](super::events::EventReporter)) and the
+/// CLI's spinner once it installs one, and go nowhere otherwise.
+pub fn step(step: Step<'_>) {
+    if let Some(reporter) = active() {
+        lock(&reporter).step(step);
+    }
+}
+
+/// Report that a pre-flight check finished to the active reporter. A no-op when
+/// none is installed: the pre-flight runner already logs each check as a tracing
+/// event, so a surface that wants checks installs a reporter and one that does
+/// not keeps the log it always had.
+pub fn check(name: &str, outcome: CheckOutcome, message: &str) {
+    if let Some(reporter) = active() {
+        lock(&reporter).check(name, outcome, message);
+    }
+}
+
+/// Report that the operation finished to the active reporter. A no-op when none
+/// is installed: the completion is already on the log, and this only drives an
+/// installed surface.
+pub fn finish(success: bool) {
+    if let Some(reporter) = active() {
+        lock(&reporter).finish(success);
+    }
+}
+
+/// A step of entering the hidden root, in the order
+/// [`entry`](crate::preflight) runs them.
+///
+/// Each phase carries a stable machine [`id`](Self::id) and a human
+/// [`label`](Self::label); the build phases run only when the activation builds
+/// a hidden NixOS system, so [`activation_step`] takes whether a build will run
+/// and numbers the steps that will actually happen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivationPhase {
+    /// Stage the runtime directory, the plan and the transition drop-in.
+    Runtime,
+    /// Mount the root overlay at `/run/nextroot`.
+    Overlay,
+    /// Apply the decoy fstab policy (read-only, overlaid or masked mounts).
+    MountPolicy,
+    /// Build the hidden NixOS system (only when a build runs).
+    BuildSystem,
+    /// Copy the hidden system's closure onto the hidden volume (build only).
+    KeepClosure,
+    /// Activate the hidden system into the next root (build only).
+    ActivateSystem,
+    /// Mask the decoy units the hidden systemd must not start.
+    MaskUnits,
+    /// Prepare the way back: carry the decoy's mounts and check the init.
+    WayBack,
+    /// Arm the switch.
+    Arm,
+}
+
+/// The phases in run order. [`activation_step`] filters the build-only phases
+/// when no build runs, so the numbering matches what the operator sees.
+const ACTIVATION_PHASES: [ActivationPhase; 9] = [
+    ActivationPhase::Runtime,
+    ActivationPhase::Overlay,
+    ActivationPhase::MountPolicy,
+    ActivationPhase::BuildSystem,
+    ActivationPhase::KeepClosure,
+    ActivationPhase::ActivateSystem,
+    ActivationPhase::MaskUnits,
+    ActivationPhase::WayBack,
+    ActivationPhase::Arm,
+];
+
+impl ActivationPhase {
+    /// The stable machine identifier, carried in events and logs.
+    #[must_use]
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Runtime => "runtime",
+            Self::Overlay => "overlay",
+            Self::MountPolicy => "mount_policy",
+            Self::BuildSystem => "build_system",
+            Self::KeepClosure => "keep_closure",
+            Self::ActivateSystem => "activate_system",
+            Self::MaskUnits => "mask_units",
+            Self::WayBack => "way_back",
+            Self::Arm => "arm",
+        }
+    }
+
+    /// The human-readable label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Runtime => "Staging the runtime",
+            Self::Overlay => "Mounting the root overlay",
+            Self::MountPolicy => "Applying the mount policy",
+            Self::BuildSystem => "Building the hidden system",
+            Self::KeepClosure => "Copying the hidden system",
+            Self::ActivateSystem => "Activating the hidden system",
+            Self::MaskUnits => "Masking decoy units",
+            Self::WayBack => "Preparing the way back",
+            Self::Arm => "Arming the switch",
+        }
+    }
+
+    /// Whether this phase runs only when the activation builds a hidden system.
+    fn builds(self) -> bool {
+        matches!(
+            self,
+            Self::BuildSystem | Self::ActivateSystem | Self::KeepClosure
+        )
+    }
+}
+
+/// Report that an activation phase started, numbered among the phases that run
+/// for this activation. `building` is whether a hidden NixOS system is built:
+/// the three build phases are counted only then, so a decoy-only activation is
+/// numbered out of its own, smaller total.
+pub fn activation_step(phase: ActivationPhase, building: bool) {
+    let mut index = 0;
+    let mut total = 0;
+    for candidate in ACTIVATION_PHASES {
+        if candidate.builds() && !building {
+            continue;
+        }
+        total += 1;
+        if candidate == phase {
+            index = total;
+        }
+    }
+    step(Step {
+        index,
+        total,
+        phase: phase.id(),
+        label: phase.label(),
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +606,10 @@ impl Reporter for Tee {
 
     fn heartbeat(&mut self, activity: &str, elapsed: Duration, last_line: Option<&str>) {
         self.each(|r| r.heartbeat(activity, elapsed, last_line));
+    }
+
+    fn check(&mut self, name: &str, outcome: CheckOutcome, message: &str) {
+        self.each(|r| r.check(name, outcome, message));
     }
 
     fn finish(&mut self, success: bool) {

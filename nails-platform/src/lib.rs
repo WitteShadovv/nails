@@ -45,8 +45,9 @@ pub use nixos::{
     verify_base_config_clean,
 };
 pub use platform::{
-    ConfigLayer, HostProfile, HostTarget, NixOsConfigLayer, Platform, PlatformKind, detect,
-    detect_platform, discover_host_target, discover_with_platform, platform_for,
+    ConfigLayer, HostProfile, HostTarget, NixOsConfigLayer, Platform, PlatformKind, SelinuxMode,
+    SelinuxStatus, detect, detect_platform, discover_host_target, discover_with_platform,
+    platform_for,
 };
 pub use preflight::{NixOSConfigCheck, SuspiciousNailsReferenceCheck};
 

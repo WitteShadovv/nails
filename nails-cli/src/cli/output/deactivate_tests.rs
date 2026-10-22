@@ -13,30 +13,35 @@ fn success_json_prints_one_parseable_envelope() {
 }
 
 #[test]
-fn mount_busy_error_keeps_the_suggestion_as_a_hint_and_drops_the_newline() {
+fn mount_busy_error_folds_the_suggestion_into_the_message() {
     let error = NailsError::MountBusy {
         path: PathBuf::from("/home"),
         suggestion: "Close your browser".to_string(),
     };
     let body = deactivate_error_body(&error);
     assert_eq!(body.code, "mount_busy");
-    assert!(!body.message.contains('\n'), "message={}", body.message);
-    assert!(body.message.contains("/home"));
-    assert_eq!(body.hint.as_deref(), Some("Close your browser"));
+    // The suggestion is guidance, so it folds into the message (on its own
+    // line) rather than a field of its own; the human renderer indents it.
+    assert!(body.message.contains("/home"), "message={}", body.message);
+    assert!(
+        body.message.contains("Close your browser"),
+        "message={}",
+        body.message
+    );
+    assert!(body.next.is_none());
 }
 
 #[test]
-fn unmount_error_maps_to_a_hinted_structured_error() {
+fn unmount_error_maps_to_a_structured_error_with_guidance() {
     let error = NailsError::UnmountError {
         path: PathBuf::from("/etc"),
         reason: "device busy".to_string(),
     };
     let body = deactivate_error_body(&error);
     assert_eq!(body.code, "unmount_error");
-    assert!(!body.message.contains('\n'), "message={}", body.message);
     assert!(body.message.contains("/etc"));
     assert!(body.message.contains("device busy"));
-    assert!(body.hint.is_some());
+    assert!(body.message.contains("in use"), "message={}", body.message);
 }
 
 #[test]

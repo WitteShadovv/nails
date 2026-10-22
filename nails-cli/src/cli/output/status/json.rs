@@ -3,34 +3,34 @@
 
 //! JSON output for the status command.
 //!
-//! `posture` is the verdict from live facts; `session` is the live view the
-//! verdict comes from; `state` is the record on the hidden volume, with
-//! `state_source` saying how it loaded.
+//! The version-2 envelope says two things a reader branches on: `place` is
+//! where the machine is (`decoy`, `hidden` or `activating`), and `attention`
+//! names the one thing, if any, that needs the operator. Together they replace
+//! the version-1 `posture`, `session`, `state` and `state_source` fields: the
+//! live view and the record are folded into one verdict, and the record's own
+//! read outcome shows only as the `record_unreadable` attention.
 
 use serde::Serialize;
 
-use crate::cli::output::dto::StateJson;
-use crate::cli::output::envelope::Envelope;
-use nails_core::status::{PolicyMountView, ReminderSeverity, StatusReport};
+use crate::cli::output::envelope::{Envelope, EnvelopePrint};
+use nails_core::SystemState;
+use nails_core::status::{PolicyMountView, Posture, ReminderSeverity, StatusReport};
 
 /// The `data` payload for `status --json`.
 #[derive(Debug, Serialize)]
 pub struct StatusData<'a> {
-    /// The verdict: decoy, active, transitioning, degraded or unknown.
-    posture: &'static str,
-    /// The live view: decoy, hidden, entering, interrupted or
-    /// hidden_without_plan.
-    session: &'static str,
-    /// Why the posture is degraded.
+    /// Where the machine is: `decoy`, `hidden` or `activating`.
+    place: &'static str,
+    /// The one thing that needs the operator, or `null` when nothing does:
+    /// `interrupted`, `ended_abnormally`, `switch_refused`, `record_unreadable`,
+    /// `no_way_back`, `volume_lost`, `volume_covered` or `almost_full`.
+    attention: Option<&'static str>,
+    /// Why the place needs attention, when a reason is known.
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<&'a str>,
-    /// What to do about a degraded or unknown posture.
+    /// What to do about it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    remediation: Option<&'static str>,
-    /// The recorded state.
-    state: StateJson,
-    /// How the state file loaded: loaded, missing, unreadable or corrupt.
-    state_source: &'static str,
+    remediation: Option<&'a str>,
     /// When the hidden root was entered (ISO 8601).
     #[serde(skip_serializing_if = "Option::is_none")]
     entered_at: Option<String>,
@@ -82,14 +82,52 @@ struct ReminderJson<'a> {
     message: &'a str,
 }
 
+/// Where the machine is, folded from the live view: a session entering is
+/// `activating`, a hidden root (with or without a way back) is `hidden`, and
+/// everything else — the plain decoy and an interrupted activation seen from the
+/// decoy — is `decoy`.
+fn place_of(report: &StatusReport) -> &'static str {
+    match report.session {
+        "hidden" | "hidden_without_plan" => "hidden",
+        "entering" => "activating",
+        _ => "decoy",
+    }
+}
+
+/// The one thing that needs the operator, or `None`. The record being
+/// unreadable outranks everything (nothing else can be trusted), then a hidden
+/// root without a way back, an interrupted activation, a refused switch, a
+/// session that ended without updating the record, and a disk mounted over the
+/// volume. `volume_lost` and `almost_full` are reported by the window and the
+/// alert, where the live figures are to hand.
+fn attention_of(report: &StatusReport) -> Option<&'static str> {
+    if report.posture == Posture::Unknown {
+        return Some("record_unreadable");
+    }
+    if report.session == "hidden_without_plan" {
+        return Some("no_way_back");
+    }
+    if report.session == "interrupted" {
+        return Some("interrupted");
+    }
+    if report.switch_refusal.is_some() {
+        return Some("switch_refused");
+    }
+    if report.posture == Posture::Decoy && matches!(report.state, SystemState::Active { .. }) {
+        return Some("ended_abnormally");
+    }
+    if report.hidden_root_covered_by.is_some() {
+        return Some("volume_covered");
+    }
+    None
+}
+
 fn data(report: &StatusReport) -> StatusData<'_> {
     StatusData {
-        posture: report.posture.as_str(),
-        session: report.session,
+        place: place_of(report),
+        attention: attention_of(report),
         reason: report.reason.as_deref(),
-        remediation: report.remediation,
-        state: StateJson::from_report(&report.state, &source_outcome(report.state_source)),
-        state_source: report.state_source,
+        remediation: report.remediation.as_deref(),
         entered_at: report.entered_at.map(|t| t.to_rfc3339()),
         uptime_seconds: report.uptime.map(|u| u.num_seconds()),
         uptime_formatted: report.uptime.map(nails_core::status::format_uptime),
@@ -123,18 +161,10 @@ fn data(report: &StatusReport) -> StatusData<'_> {
     }
 }
 
-fn source_outcome(source: &str) -> nails_core::LoadOutcome {
-    match source {
-        "missing" => nails_core::LoadOutcome::Missing,
-        "unreadable" => nails_core::LoadOutcome::Unreadable,
-        "corrupt" => nails_core::LoadOutcome::Corrupt,
-        _ => nails_core::LoadOutcome::Loaded,
-    }
-}
-
-/// The success envelope for a report.
+/// The envelope for a report, with `ok` taken from the posture: a safe place
+/// (decoy, active or transitioning) is `ok`, a degraded or unknown one is not.
 pub fn status_envelope(report: &StatusReport) -> Envelope<StatusData<'_>> {
-    Envelope::success("status", data(report))
+    Envelope::outcome("status", report.posture.is_safe(), data(report))
 }
 
 /// Print the status report as one JSON envelope.
@@ -142,18 +172,20 @@ pub fn print_status_json(report: &StatusReport) {
     status_envelope(report).print();
 }
 
-/// The failure data when the status could not be built at all.
+/// The failure data when the status could not be built at all: the record on
+/// the hidden volume could not be read, so the place falls back to the decoy
+/// and the attention names the unreadable record.
 #[derive(Debug, Serialize)]
 struct UnknownData {
-    posture: &'static str,
-    remediation: &'static str,
+    place: &'static str,
+    attention: &'static str,
 }
 
 /// Print an unknown status (the report could not be built) as a failure
 /// envelope. `sudo` is the line that runs status as root, when the state file
 /// was unreadable for lack of permission.
 pub fn print_status_json_unknown(error: String, sudo: Option<String>) {
-    let mut body = crate::cli::output::envelope::ErrorBody::new("unknown_state", error);
+    let mut body = crate::cli::output::envelope::ErrorBody::new("record_unreadable", error);
     if let Some(line) = sudo {
         body = body.with_hint(format!("run it as root: {line}"));
     }
@@ -161,8 +193,8 @@ pub fn print_status_json_unknown(error: String, sudo: Option<String>) {
         "status",
         body,
         UnknownData {
-            posture: "unknown",
-            remediation: "Run status as root, or fix access to the state file",
+            place: "decoy",
+            attention: "record_unreadable",
         },
     )
     .print();

@@ -78,6 +78,12 @@ NAILS does not defend against:
   [Compelled disclosure of the decoy](#compelled-disclosure-of-the-decoy) for
   the line between what is in scope and what is not);
 - an adversary who images the disk more than once and compares the images;
+- **de-anonymisation by a network observer**: NAILS provides no network
+  anonymity and routes nothing through Tor — the hidden session reaches the
+  network over the decoy's own IP address and connection. Anonymity is a
+  separate goal; for it, use a tool built for it, such as Tor Browser, Tails or
+  Whonix (see
+  [What the hidden environment shares with the decoy](#what-the-hidden-environment-shares-with-the-decoy));
 - **network-provider logs**: anything an ISP, Wi-Fi operator, VPN provider or
   other network observer records about the host's traffic;
 - **remote-service records**: anything a server, cloud service or peer device
@@ -117,9 +123,13 @@ What it does not offer:
 - **Deniability of the hidden volume itself.** Whether a hidden volume can be
   told apart from random data or an outer volume's free space depends on the
   backend, not on NAILS. A LUKS volume next to the decoy is visibly an
-  encrypted volume; a VeraCrypt hidden volume is indistinguishable from its
-  outer volume's free space, but the outer volume is visible. NAILS adds
-  nothing to the backend's own claim.
+  encrypted volume. VeraCrypt's own claim is conditional: a hidden volume
+  should be impossible to prove exists *provided its requirements are
+  followed*, and its
+  [documentation](https://veracrypt.jp/en/Hidden%20Volume.html) notes that
+  multiple snapshots of the disk over time, wear-levelling or TRIM can still
+  reveal one; the outer volume is in any case visible. NAILS adds nothing to
+  the backend's own claim.
 - **Compelled disclosure of the hidden volume.** Whoever obtains the hidden
   volume's credentials sees everything: the hidden data, NAILS itself and its
   configuration. Out of scope.
@@ -194,15 +204,26 @@ upper changes.
   configuration (see the
   [operator guide](operator-guide.md#inherited-autostart-services-and-autologin)).
 - **Network identity.** The overlay does not change machine-id, hostname, MAC
-  addresses or NetworkManager profiles (including VPN autoconnect). The kernel
-  keeps its interfaces and addresses across the soft-reboot, in both
-  directions: what the hidden session set up stays in the decoy until power-off
-  (see [residual channels](#residual-channels)); the network daemons restart and
-  reconnect. An optional hidden network-identity
-  configuration (random MAC, distinct hostname; VPN autoconnect disabled per
-  profile) can be applied in the hidden NixOS generation or as a NetworkManager
-  drop-in in the upper. It is opt-in, and the way back does not undo it: end a
-  session that used it with `deactivate --poweroff`.
+  addresses or NetworkManager profiles (including VPN autoconnect). The hidden
+  session shares the decoy's network identity by design and reaches the network
+  over the decoy's own IP address and connection: NAILS does not anonymise
+  network traffic and will not route the session through Tor by default.
+  Anonymity against a network observer is a different goal, out of scope here;
+  for it, use a tool built for it — Tor Browser, Tails or Whonix (NAILS is
+  itself installed from [Tails](install-from-tails.md)). Running Tor Browser or
+  a Whonix gateway inside the hidden session is possible but carries a
+  deniability caveat; see
+  [Network anonymity and Tor](operator-guide.md#network-anonymity-and-tor). The
+  kernel keeps its interfaces and addresses across the soft-reboot, in both
+  directions, so the clean way back restores what the hidden session set up
+  before it returns to the decoy (see [residual channels](#residual-channels)),
+  and the network daemons restart and reconnect. An optional hidden
+  network-identity configuration (random MAC, distinct hostname; VPN autoconnect
+  disabled per profile) can be applied in the hidden NixOS generation or as a
+  NetworkManager drop-in in the upper. It is opt-in, and the clean way back
+  undoes it too, setting the MAC back and restoring the hostname on a decoy
+  without `/etc/hostname`, so it remains only after an emergency that does not
+  power off. End such a session with `emergency --poweroff`.
 - **Remote state, never rolled back.** Deactivation leaves the upper on the
   hidden volume and changes nothing else. Anything the hidden session sent through a
   shared account, token or sync client lives on the remote, and a decoy sync
@@ -338,7 +359,7 @@ has the whole catalog.
 | [sudo I/O logging](decoy-requirements.md#the-sudo-log-exposure-and-its-mitigation) | `log_input`, `log_output` or the LOG_INPUT/LOG_OUTPUT tags record whole terminal sessions, keystrokes and output included, under iolog_dir on the decoy disk. | Remove every I/O logging option and tag from sudoers and sudoers.d. | path probe (warn) |
 | [Disks mounted during the hidden session](configuration.md#disks-mounted-during-the-session) | A disk the hidden session mounts itself is a real disk outside every overlay: a read-write mount takes the session's writes, and mounting it rw already writes its superblock. | The session watcher alerts on every read-write disk mount outside the hidden volume; `[session_mounts] read_only` makes every disk the session does not use read-only at the block layer for the session; deactivate unmounts them and the way back makes them writable again. | none: verify cannot tell what a session wrote to another disk |
 | [Hidden kernel records imported by the decoy journal](#residual-channels) | Records logged after the hidden journald stopped (PID 1's stop lines, a late /dev/kmsg writer) would be imported by the decoy journal, on disk with a persistent journal. | The transition step writes the decoy journald's kmsg cursor past every hidden record; only PID 1's last generic lines and the hidden filesystem's unmount line follow it. | `journal-scan` |
-| [Network state the hidden session created or changed](operator-guide.md#how-it-works) | Links, addresses, routes and tunnels the session set up stay in the decoy after the way back, until power-off. The decoy's NetworkManager adopts a link the session created as connected externally and records the profile it generates for it, with the time, in /var/lib/NetworkManager/timestamps on the decoy disk; the hidden NetworkManager's per-link records below /run/NetworkManager lie deeper than the /run scrub looks. The random MAC address of the hidden network-identity snippet can stay on the decoy's own device, since a device keeps its current MAC address when its profile sets none, and on a decoy without /etc/hostname the hidden hostname stays. | Before deactivating, take down every connection and VPN tunnel you brought up and delete every link you created by hand (`ip link delete`), or end the session with `deactivate --poweroff`, which powers off before the decoy's NetworkManager starts. End a session that used the hidden network-identity snippet with `deactivate --poweroff` (or `emergency --poweroff`). | none: a link the decoy adopted looks like one the decoy made itself |
+| [Network state the hidden session created or changed](operator-guide.md#how-it-works) | The clean way back now restores this before the switch: it deletes the virtual links the hidden session created, sets each device's MAC back where the session changed it, restores the hostname on a decoy without /etc/hostname, and puts the per-link NetworkManager and systemd-resolved state under /run back as it was at entry. A normal return therefore leaves none of these on the decoy, and the decoy's NetworkManager does not adopt a session link or record a profile for it in /var/lib/NetworkManager/timestamps. The residue can still remain after an exit that does not run the clean way back, such as an emergency that does not power off. | A clean `deactivate` now restores the decoy's network state on its own, so the links, MAC and hostname a session changed no longer need taking down by hand. End an emergency with `emergency --poweroff`, which powers off before the decoy's NetworkManager starts, so nothing a session changed can linger. | none: a link the decoy adopted looks like one the decoy made itself |
 | [Soft-reboot counter and boot ID](#residual-channels) | Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID. | Power off after the session; keep the decoy journal volatile. | none: RAM only, gone at power-off |
 | [Login and boot records around a switch](#residual-channels) | A whole-root session reaches the decoy again through a soft-reboot, and the decoy's own writers record that start. On Debian with wtmpdb the boot row would be named soft-reboot; where the service manager keeps the userspace start time across a soft-reboot (systemd 255 and earlier, classic wtmp), the boot record would carry the decoy's first boot time, so the file would hold a boot dated before the shutdown before it. Both are entries ordinary use never writes. On every family the getty and login records written after the way back also carry process numbers that continue from the decoy's boot, where a fresh kernel starts them low. | On Debian and Ubuntu the way back keeps the wtmpdb boot writer from recording soft-reboot and corrects a backdated classic-wtmp boot record to the time the decoy came back, without masking either writer, so no row goes missing and the login and boot records read as one clean power cycle. The process numbers of the records written after the way back still continue from the decoy's boot on every family, a weaker tell a later release addresses; power off after the session to leave none of it. | none: the records are the decoy's own; the remaining process-number difference needs a cold-boot baseline to judge |
 | [The decoy's mounts made again by the way back](operator-guide.md#how-it-works) | Anyone with a shell sees with findmnt that the decoy's root and the mounts its initrd made (such as the store bind) were made again after the boot, where a plain soft-reboot keeps them. A mount made after the boot by hand or by a service comes back as well, where a plain soft-reboot unmounts it. A decoy mount the way back cannot make again (a filesystem that another mount covers at a place the session carries, NixOS's /etc overlay) is missing until it is mounted again. | The way back makes every decoy mount it can take from the decoy root or a filesystem the session carried again as the decoy had it when the entry began (its filesystem, the directory of it the mount shows, its place in a stack, its options), NixOS's read-only store bind included, and gives the decoy its utab lines back with them. Power off after the session. | none: RAM only, gone at power-off |
@@ -348,14 +369,23 @@ has the whole catalog.
 | [Persistent timer stamps](decoy-requirements.md#session-time-records) | Persistent=true timers stamp their last run; a stamp from the session, or a catch-up run at the next decoy boot, dates the session. | Session stamps land in the upper; expect catch-up runs at the next decoy boot. | path probe (info) |
 | [SMART power-on hours](decoy-requirements.md#session-time-records) | The drive counts every hour it runs; hours the decoy's logs do not account for point to unlogged use. | None in software; use the decoy normally so its logged uptime is plausible. | none: a disk image does not carry SMART counters |
 | [SSD flash-translation-layer remnants](operator-guide.md#ssd-wear-levelling) | Old copies of rewritten blocks survive in cells the host can no longer address; a chip-off read can recover them. | Full-disk encryption on the decoy, so remnants are ciphertext; no TRIM on a volume that holds a hidden volume. | none: no host-side read reaches remapped flash cells, so `nails rehearse` cannot see them either |
+| [chrony clock drift and RTC records](decoy-requirements.md#session-time-records) | chrony, a clock daemon some FHS distributions default to for NTP (Fedora does; Debian and Ubuntu use systemd-timesyncd instead), keeps its measured drift and real-time-clock offset under /var/lib/chrony and rewrites them periodically and at shutdown, so on a decoy that runs it the files date when the machine last ran. | Session writes land in the upper; on a persistent decoy, use the decoy normally after a session so its own clock activity follows the stamp. | path probe (info) |
+| [NetworkManager connection records](operator-guide.md#how-it-works) | A connection the hidden session brings up through the decoy's NetworkManager lands in the upper. A link the session creates could be adopted by the decoy's NetworkManager after the way back, recording the connection and its time on the decoy disk, but the clean way back now deletes the session's links before the decoy's NetworkManager starts (see the network-state class above), so a normal deactivate leaves no such record. It can remain only after an exit that does not run the clean way back, such as an emergency that does not power off. | A clean deactivate now handles this with the network-state class above, deleting the session's links before the decoy's NetworkManager starts. End an emergency with emergency --poweroff. | none: a connection record the decoy wrote after adopting a session's link looks like one the decoy made itself |
+| [Plymouth boot log](decoy-requirements.md#session-time-records) | Plymouth records the boot console to /var/log/boot.log on the FHS families. The way back is a boot of the decoy, so on a persistent decoy the file's latest entries hold the way back's boot messages and their time, where a plain power cycle would not place a boot mid-day. | Keep /var/log out of the decoy's persistent storage, or expect boot.log to date the way back; power off after the session. | path probe (info) |
+| [Snapper timeline snapshots](decoy-requirements.md#session-time-records) | Snapper keeps timeline snapshots of btrfs subvolumes and a bookkeeping record of each under /.snapshots and /var/lib/snapper, every one stamped with its time. A timeline snapshot taken while the machine runs dates that activity, and an older snapshot preserves decoy state for an examiner to compare. | Keep the overlay upper on the hidden volume, which NAILS enforces, so a decoy snapshot never captures a session's writes; disable the snapper timeline timer on the decoy if you want no snapshot dating the machine's activity. | path probe (info) |
+| [Copy-on-write and compressed storage history](#residual-channels) | A copy-on-write filesystem keeps old copies of overwritten or deleted blocks in extents the live tree no longer references, recoverable with filesystem-specific tools. A raw scan reads those extents, so a leaked-then-deleted trace is still found there; but the same filesystems compress file contents, per file or subvolume and invisibly to the mount options, and a raw plaintext scan cannot read a compressed extent. | Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean. | none: a raw scan reads old copy-on-write extents but cannot read compressed ones, so `nails rehearse` reports a compressed or copy-on-write decoy as not checked rather than clean |
+| [Fedora GRUB boot-success state](decoy-requirements.md#session-time-records) | Fedora's boot-success logic writes boot_success and boot_indeterminate into the GRUB environment block after a boot. The way back is a boot of the decoy, so the block can record it and the counter can move, where a plain power cycle would not. | Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot. | path probe (info) |
 <!-- residue-catalog:end residual -->
 
 ## Answer to "cannot trust the OS"
 
-A common argument, made for example by the Shufflecake authors, is that hiding
-a whole operating system by customising it to avoid leaks is hopeless: every
-application, daemon and indexer may write somewhere, and auditing them one by
-one never ends.
+A common argument is that hiding a whole operating system by tuning it
+application by application to avoid leaks is endless work: every application,
+daemon and indexer may write somewhere, and auditing them one by one never
+finishes. The Shufflecake authors, for instance, say in their
+[FAQ](https://shufflecake.net/) that they do not try to stop the operating
+system from logging, and treat a fully hidden operating system as hard enough
+that theirs is still in progress (a booting prototype).
 
 NAILS does not tune individual applications. It redirects **every write outside
 pseudo filesystems at the mount layer**: the hidden session runs entirely inside

@@ -6,8 +6,9 @@ expression: value
   "command": "status",
   "error": {
     "code": "config",
-    "message": "[message]"
+    "message": "[message]",
+    "next": null
   },
   "ok": false,
-  "schema_version": 1
+  "schema_version": 2
 }

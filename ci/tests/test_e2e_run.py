@@ -39,34 +39,46 @@ def e2e_sources() -> list[Path]:
     return files
 
 
-def scan_node_names() -> dict[str, Path]:
-    """Every VM node name in the E2E suite, with the first file that names it.
+def node_names_in(text: str, shown: object) -> Iterator[str]:
+    """The VM node names one E2E source statically defines, in order.
 
     A node is named as ``nodes.<name>`` or as a key of a ``nodes = {`` block,
-    one per line two spaces deeper than the block (nixfmt layout). Any other
-    ``nodes =``, or any other entry at that depth, fails the scan rather than
-    hide a node from it.
+    one per line two spaces deeper than the block (nixfmt layout). The block
+    runs to its closing brace, dedented to the block's own indent, whether that
+    ends the statement (``};``), stands alone, or is merged onto with ``//``.
+
+    An attrset merged on with ``//`` -- ``builtins.listToAttrs (map (name:
+    {...}) names)`` in the soak lane -- builds its nodes at eval time, so it has
+    no static key in the literal and is not scanned. Any other ``nodes =``, or
+    any unrecognised entry at a key's depth, raises rather than hide a node;
+    ``shown`` names the file in that error.
     """
+    for match in re.finditer(rf"\bnodes\.({NIX_NAME})", text):
+        yield match[1]
+    for block in re.finditer(r"^( *)nodes =(.*)$", text, re.M):
+        indent = block[1]
+        if block[2] != " {":
+            raise AssertionError(f"{shown}: unrecognised {block[0].strip()!r}")
+        for line in text[block.end() :].splitlines():
+            if line.startswith(f"{indent}}}"):
+                break
+            if len(line) - len(line.lstrip()) != len(indent) + 2:
+                continue
+            entry = line.strip()
+            key = re.match(rf"({NIX_NAME}) =", entry)
+            if key is not None:
+                yield key[1]
+            elif not entry.startswith(("#", "}", "]", ")", "''")):
+                raise AssertionError(f"{shown}: unrecognised node {entry!r}")
+
+
+def scan_node_names() -> dict[str, Path]:
+    """Every VM node name in the E2E suite, with the first file that names it."""
     names: dict[str, Path] = {}
     for path in e2e_sources():
-        text = path.read_text(encoding="utf-8")
         shown = path.relative_to(REPO_ROOT)
-        for match in re.finditer(rf"\bnodes\.({NIX_NAME})", text):
-            names.setdefault(match[1], path)
-        for block in re.finditer(r"^( *)nodes =(.*)$", text, re.M):
-            indent = block[1]
-            if block[2] != " {":
-                raise AssertionError(f"{shown}: unrecognised {block[0].strip()!r}")
-            body = text[block.end() :].split(f"\n{indent}}};", 1)[0]
-            for line in body.splitlines():
-                if len(line) - len(line.lstrip()) != len(indent) + 2:
-                    continue
-                entry = line.strip()
-                key = re.match(rf"({NIX_NAME}) =", entry)
-                if key is not None:
-                    names.setdefault(key[1], path)
-                elif not entry.startswith(("#", "}", "]", ")", "''")):
-                    raise AssertionError(f"{shown}: unrecognised node {entry!r}")
+        for name in node_names_in(path.read_text(encoding="utf-8"), shown):
+            names.setdefault(name, path)
     return names
 
 
@@ -709,6 +721,64 @@ class SuiteSocketsTest(unittest.TestCase):
             if re.search(r"\b(?:tpm|sharedDirectories)\b", line)
         ]
         self.assertEqual(found, [], "count their sockets in SOCKET_TAIL_BYTES first")
+
+
+class NodeNameScanTest(unittest.TestCase):
+    """node_names_in over crafted node blocks: the scanner's parsing rules."""
+
+    def test_a_static_block_yields_every_key_in_order(self) -> None:
+        text = "  nodes = {\n    alpha = _: { };\n    beta = _: { };\n  };\n"
+        self.assertEqual(list(node_names_in(text, "t.nix")), ["alpha", "beta"])
+
+    def test_a_node_whose_value_spans_lines_is_still_one_key(self) -> None:
+        # nixfmt sets a node's own braces two spaces deeper than the block, so
+        # they are read neither as the block's close nor as another node.
+        text = (
+            "  nodes = {\n"
+            "    server =\n"
+            "      { ... }:\n"
+            "      {\n"
+            "        services.nfs.server.enable = true;\n"
+            "      };\n"
+            "    client = _: { };\n"
+            "  };\n"
+        )
+        self.assertEqual(list(node_names_in(text, "t.nix")), ["server", "client"])
+
+    def test_a_dynamic_merge_scans_the_static_keys_and_stops(self) -> None:
+        # The soak lane: a static attrset merged with a listToAttrs/map that
+        # builds its nodes at eval time. Only the static `soaker` is a key here;
+        # the mapped block must neither crash the scan nor be read as a node.
+        text = (
+            "  nodes = {\n"
+            "    soaker = _: decoyNode;\n"
+            "  }\n"
+            "  // builtins.listToAttrs (\n"
+            "    map (name: {\n"
+            "      inherit name;\n"
+            "      value = _: neighbourNode;\n"
+            "    }) neighbours\n"
+            "  );\n"
+        )
+        self.assertEqual(list(node_names_in(text, "soak.nix")), ["soaker"])
+
+    def test_a_dynamic_entry_inside_the_literal_still_fails(self) -> None:
+        # Inside the braces, at a key's depth, a construct with no node name is
+        # one the scan could not read: it must fail rather than slip through.
+        text = "  nodes = {\n    machine = _: { };\n    map (n: { }) extra\n  };\n"
+        with self.assertRaisesRegex(
+            AssertionError, r"bad\.nix: unrecognised node 'map "
+        ):
+            list(node_names_in(text, "bad.nix"))
+
+    def test_a_nodes_value_that_is_not_a_block_still_fails(self) -> None:
+        with self.assertRaisesRegex(AssertionError, r"bad\.nix: unrecognised 'nodes ="):
+            list(node_names_in("  nodes = makeNodes cfg;\n", "bad.nix"))
+
+    def test_nodes_dot_references_are_found(self) -> None:
+        self.assertEqual(
+            list(node_names_in("config.nodes.machine.system\n", "t.nix")), ["machine"]
+        )
 
 
 @unittest.skipUnless(shutil.which("bash"), "the fake drivers need bash")

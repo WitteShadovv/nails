@@ -41,11 +41,13 @@
 //! after the signal.
 
 use super::layout::{Layout, Paths};
+use super::network_state;
 use super::nixos;
 use super::policy::{self, Decision};
 use super::store;
 use crate::error::{NailsError, Result};
 use crate::nixos::NixOSBuilder;
+use crate::reporter::progress::{ActivationPhase, activation_step};
 use nails_teardown::mountinfo::{MountEntry, SELF_MOUNTINFO, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::nextroot;
 use nails_teardown::whole_root::plan::{
@@ -54,7 +56,7 @@ use nails_teardown::whole_root::plan::{
 };
 use nails_teardown::whole_root::run_scrub::Snapshot;
 use nails_teardown::whole_root::runtime_units::{self, RuntimeUnit};
-use nails_teardown::whole_root::{kernel_helpers, ret, transition, utab};
+use nails_teardown::whole_root::{kernel_helpers, network, ret, transition, utab};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -235,7 +237,14 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
     }
     let data = if mount.root == Path::new("/") {
         None
-    } else if mount.fstype == "btrfs" {
+    } else if mount.fstype == "btrfs"
+        && mount_subvol(mount) == Some(mount.root.to_string_lossy().as_ref())
+    {
+        // A btrfs mount whose root is exactly its `subvol=` is a subvolume: the
+        // way back mounts it again with that `subvol=`. A mount root that is a
+        // deeper path (a bind of a plain folder inside the subvolume) has no
+        // `subvol=` of its own and cannot be mounted again that way, so it is
+        // refused like any other bind below.
         Some(format!("subvol={}", mount.root.display()))
     } else {
         return refuse(format!(
@@ -249,6 +258,16 @@ pub fn decoy_root_of(entries: &[MountEntry], root: &Path) -> Result<DecoyRoot> {
         fstype: mount.fstype.clone(),
         data,
     })
+}
+
+/// The `subvol=` a btrfs mount's options name, if any. btrfs records it in both
+/// the per-superblock and the per-mount option fields of the mount table.
+fn mount_subvol(mount: &MountEntry) -> Option<&str> {
+    mount
+        .super_opts
+        .split(',')
+        .chain(mount.mount_opts.split(','))
+        .find_map(|opt| opt.strip_prefix("subvol="))
 }
 
 fn io(path: &Path, e: std::io::Error) -> NailsError {
@@ -340,6 +359,15 @@ fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -
         nails_teardown::whole_root::plan::write_private_atomic(&runtime.join(name), &bytes)
             .map_err(|e| io(&runtime.join(name), e))?;
     }
+    // The decoy's network identity, for the way back. Best effort: a failure
+    // leaves no record, and the way back then leaves the network alone.
+    network_state::record(
+        Path::new(network::SYS_CLASS_NET),
+        Path::new(network::PROC_HOSTNAME),
+        Path::new("/etc/hostname"),
+        &paths.run,
+        &runtime.join(network::RECORD_NAME),
+    );
     let copy = paths.binary_copy();
     std::fs::copy(inputs.binary, &copy).map_err(|e| io(&copy, e))?;
     std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o700))
@@ -418,11 +446,15 @@ fn build(
     let nextroot = paths.nextroot();
     let mounts = read_mountinfo().map_err(|e| io(Path::new("/proc/self/mountinfo"), e))?;
     if nextroot::is_mount_point(&mounts, &nextroot) {
+        use nails_base::next_step::{NextStep, sudo_line};
         return Err(NailsError::InvalidState(format!(
-            "{} is already populated; run `nails recover` first",
-            nextroot.display()
+            "{} is already populated; run `{}` first",
+            nextroot.display(),
+            sudo_line(NextStep::Recover)
         )));
     }
+    let building = inputs.builder.is_some();
+    activation_step(ActivationPhase::Runtime, building);
     let snapshot = Snapshot::take(&paths.run);
     write_runtime(paths, inputs, &snapshot)?;
     let layout = Layout::new(inputs.hidden_root);
@@ -445,6 +477,7 @@ fn build(
     install_transition(paths, host, dropin)?;
     crate::cancel::checkpoint()?;
 
+    activation_step(ActivationPhase::Overlay, building);
     let decoy_mounts = relative_mounts(&mounts, &paths.root);
     if inputs.persona.mode == crate::config::PersonaMode::FreshHome {
         fresh_home(paths, inputs, &layout, &decoy_mounts)?;
@@ -460,12 +493,13 @@ fn build(
     )
     .map_err(|e| io(&nextroot, e))?;
 
+    activation_step(ActivationPhase::MountPolicy, building);
     // The decoy's own fstab first, read the way the decoy resolves it: its
     // filesystems (a separate /nix, the VM store) must be in place inside the
     // next root before anything reads the next root's store.
     let decoy_fstab = super::fstab::read_in_root(&paths.root)
         .map_err(|e| io(&paths.root.join("etc/fstab"), e))?;
-    let mut decisions = decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root)?;
+    let mut decisions = decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root, &paths.root)?;
     let decoy_fstab = super::fstab::parse_fstab(&String::from_utf8_lossy(&decoy_fstab));
     // Every entry the hidden systemd may read: the decoy's, and those of the
     // hidden generation once it is built.
@@ -475,9 +509,11 @@ fn build(
 
     let mut warnings = Vec::new();
     if let Some(builder) = inputs.builder {
+        activation_step(ActivationPhase::BuildSystem, building);
         ensure_build_space(&layout.upper(), inputs.rebuild_space_mb)?;
         let system = host.build_hidden_system(builder, &nextroot, &layout.cache())?;
         crate::cancel::checkpoint()?;
+        activation_step(ActivationPhase::KeepClosure, building);
         // Before anything runs from it: the decoy may garbage-collect its
         // store before the next session, so the closure is kept on the
         // hidden volume.
@@ -493,6 +529,7 @@ fn build(
         // The last stop before the activation, which runs to its end once it
         // has begun.
         crate::cancel::checkpoint()?;
+        activation_step(ActivationPhase::ActivateSystem, building);
         host.activate_hidden_system(&nextroot, &system)?;
         crate::cancel::checkpoint()?;
         if let Some(decoy) = &plan.decoy.system
@@ -512,7 +549,7 @@ fn build(
         // too, and put in place what the decoy's fstab did not already cover.
         let hidden_fstab = super::fstab::read_in_root(&nextroot)
             .map_err(|e| io(&nextroot.join("etc/fstab"), e))?;
-        let hidden = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root)?;
+        let hidden = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root, &nextroot)?;
         fstab.extend(super::fstab::parse_fstab(&String::from_utf8_lossy(
             &hidden_fstab,
         )));
@@ -531,6 +568,7 @@ fn build(
     } else if !inputs.nixos {
         plan.hidden.init = fhs_init(&nextroot);
     }
+    activation_step(ActivationPhase::MaskUnits, building);
     plan.masks = policy::masks(&fstab, &decisions);
     plan.boot_masks = super::systemd::units_in_root(&nextroot, policy::BOOT_WRITER_UNITS)
         .into_iter()
@@ -540,6 +578,7 @@ fn build(
         super::persona::write_masks(&nextroot, &inputs.persona, operator);
     }
 
+    activation_step(ActivationPhase::WayBack, building);
     warnings.extend(super::way_back::keep(
         paths,
         &layout,
@@ -563,6 +602,7 @@ fn build(
     }
 
     crate::cancel::checkpoint()?;
+    activation_step(ActivationPhase::Arm, building);
     plan.armed = Some(Arm::now(Direction::Enter));
     plan.write_atomic(&paths.plan())
         .map_err(|e| io(&paths.plan(), e))?;
@@ -601,7 +641,11 @@ fn fresh_home(
             "persona mode fresh-home needs the operator (run through sudo)".to_string(),
         )
     })?;
-    let home = operator.passwd_home();
+    // Resolve the home inside the decoy root first, so a `/home` the decoy
+    // keeps at `var/home` places the fresh home at `var/home/<user>` and never
+    // creates a directory where the decoy has a symlink.
+    let home = nextroot::canonical_in_root(&paths.root, operator.passwd_home());
+    let home = home.as_path();
     let mount = decoy_mounts
         .iter()
         .filter(|m| home.starts_with(&m.mount_point))
@@ -679,9 +723,21 @@ fn relative_mounts(mounts: &[MountEntry], root: &Path) -> Vec<MountEntry> {
 }
 
 /// Parse `fstab` and decide every entry; an entry with no safe decision
-/// refuses the entry.
-fn decide_fstab(fstab: &[u8], mounts: &[MountEntry], hidden_root: &Path) -> Result<Vec<Decision>> {
-    let entries = super::fstab::parse_fstab(&String::from_utf8_lossy(fstab));
+/// refuses the entry. Each absolute mount point is resolved inside `root`
+/// first, so a `/home` that the decoy keeps at `var/home` is decided, mounted
+/// and masked as `var/home` (`var-home.mount`), the way systemd mounts it.
+fn decide_fstab(
+    fstab: &[u8],
+    mounts: &[MountEntry],
+    hidden_root: &Path,
+    root: &Path,
+) -> Result<Vec<Decision>> {
+    let mut entries = super::fstab::parse_fstab(&String::from_utf8_lossy(fstab));
+    for entry in &mut entries {
+        if entry.file.is_absolute() {
+            entry.file = nextroot::canonical_in_root(root, &entry.file);
+        }
+    }
     let decisions = policy::decide_all(&entries, mounts, hidden_root);
     if let Some(Decision::Refuse { target, reason }) = decisions
         .iter()
@@ -888,9 +944,140 @@ mod tests {
             "1 0 0:21 / / rw - overlay overlay rw,lowerdir=/a\n",
             "1 0 0:22 / / rw - zfs /dev/zd0 rw\n",
             "1 0 8:2 /sub / rw - ext4 /dev/vda2 rw\n",
+            // A btrfs bind of a plain folder inside the subvolume /@: the mount
+            // root (/@/srv) is not the subvolume (subvol=/@), so the way back
+            // cannot mount it again by subvol.
+            "1 0 0:30 /@/srv / rw - btrfs /dev/nvme0n1p2 rw,subvolid=256,subvol=/@\n",
         ] {
             let entries = parse_mountinfo(table);
             assert!(decoy_root_of(&entries, Path::new("/")).is_err(), "{table}");
         }
+    }
+
+    #[test]
+    fn a_btrfs_bind_of_a_plain_folder_is_refused_by_path() {
+        // The refusal names the folder, never the device-mapper node or device.
+        let table = "1 0 0:30 /@/srv / rw - btrfs /dev/nvme0n1p2 rw,subvolid=256,subvol=/@\n";
+        let err = decoy_root_of(&parse_mountinfo(table), Path::new("/")).unwrap_err();
+        assert!(err.to_string().contains("/@/srv"), "{err}");
+
+        // A genuine subvolume mount, whose root equals its subvol=, is accepted
+        // even when the subvolume lives at a deeper path.
+        let table =
+            "1 0 0:30 /@/snapshots/root / rw - btrfs /dev/nvme0n1p2 rw,subvol=/@/snapshots/root\n";
+        assert_eq!(
+            decoy_root_of(&parse_mountinfo(table), Path::new("/"))
+                .unwrap()
+                .data
+                .as_deref(),
+            Some("subvol=/@/snapshots/root")
+        );
+    }
+
+    /// A minimal `EntryInputs` for the helpers that do not build a system:
+    /// no builder, no operator, the persona at its default.
+    fn minimal_inputs<'a>(
+        hidden_root: &'a Path,
+        binary: &'a Path,
+        config_toml: Option<String>,
+    ) -> EntryInputs<'a> {
+        EntryInputs {
+            hidden_root,
+            decoy_root: DecoyRoot {
+                source: PathBuf::from("/dev/vda2"),
+                fstype: "ext4".into(),
+                data: None,
+            },
+            nixos: false,
+            builder: None,
+            binary,
+            config_toml,
+            session_units: Vec::new(),
+            backend: Vec::new(),
+            persona: Default::default(),
+            operator: None,
+            rebuild_space_mb: 0,
+            read_only_disks: false,
+            accepted_decoy_storage: None,
+        }
+    }
+
+    #[test]
+    fn write_runtime_populates_the_runtime_directory() {
+        let run = tempfile::tempdir().unwrap();
+        let hidden = tempfile::tempdir().unwrap();
+        let binary = run.path().join("nails-running-binary");
+        std::fs::write(&binary, b"the running binary bytes").unwrap();
+        let paths = Paths {
+            root: PathBuf::from("/"),
+            run: run.path().to_path_buf(),
+        };
+        // A scratch tree, not the real system, so the runtime lands under it.
+        assert!(!paths.is_system());
+        let toml = "hidden_volume_root = \"/x\"\n".to_string();
+        let inputs = minimal_inputs(hidden.path(), &binary, Some(toml.clone()));
+        let snapshot = Snapshot::take(&paths.run);
+
+        write_runtime(&paths, &inputs, &snapshot).unwrap();
+
+        let runtime = paths.runtime();
+        // The RAM copy of the binary is the running binary, byte for byte: the
+        // whole point of write_runtime, skipped by a body replaced with Ok(()).
+        assert_eq!(
+            std::fs::read(paths.binary_copy()).unwrap(),
+            std::fs::read(&binary).unwrap()
+        );
+        // The `/run` snapshot and the saved utab the way back reads are written.
+        assert!(runtime.join(SNAPSHOT_NAME).exists());
+        assert!(runtime.join(UTAB_NAME).exists());
+        assert!(runtime.join(UTAB_MOUNTS_NAME).exists());
+        // The configuration copy carries the effective TOML verbatim.
+        assert_eq!(
+            std::fs::read_to_string(runtime.join(CONFIG_COPY_NAME)).unwrap(),
+            toml
+        );
+        // The runtime directory is private (0o700), as write_runtime sets it.
+        let mode = std::fs::metadata(&runtime).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn fresh_home_without_the_operator_is_refused() {
+        let run = tempfile::tempdir().unwrap();
+        let hidden = tempfile::tempdir().unwrap();
+        let binary = run.path().join("nails-running-binary");
+        std::fs::write(&binary, b"bin").unwrap();
+        let paths = Paths {
+            root: run.path().join("root"),
+            run: run.path().to_path_buf(),
+        };
+        let layout = Layout::new(hidden.path());
+        // Fresh-home needs the operator (the sudo user) whose home is reset; with
+        // none, the entry must refuse rather than silently do nothing. A body
+        // replaced with Ok(()) would accept it.
+        let inputs = minimal_inputs(hidden.path(), &binary, None);
+        assert!(inputs.operator.is_none());
+
+        let error = fresh_home(&paths, &inputs, &layout, &[]).unwrap_err();
+
+        let text = error.to_string();
+        assert!(text.contains("fresh-home"), "{text}");
+        assert!(text.contains("operator"), "{text}");
+        assert!(matches!(error, NailsError::InvalidState(_)));
+    }
+
+    #[test]
+    fn a_symlinked_fstab_mount_point_is_decided_at_its_real_path() {
+        // The decoy keeps /home at var/home (an ostree layout).
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("var/home")).unwrap();
+        std::os::unix::fs::symlink("var/home", root.path().join("home")).unwrap();
+
+        // fstab names /home; nothing is mounted there now, so it is masked. The
+        // masked unit is the one systemd generates for the real mount point,
+        // var-home.mount, not home.mount, so the hidden session really masks it.
+        let fstab = b"/dev/sdb1 /home ext4 defaults 0 2\n";
+        let decisions = decide_fstab(fstab, &[], Path::new("/mnt/data"), root.path()).unwrap();
+        assert_eq!(policy::masked_units(&decisions), ["var-home.mount"]);
     }
 }

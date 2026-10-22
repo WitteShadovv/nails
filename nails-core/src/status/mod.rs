@@ -15,6 +15,7 @@ use crate::{Config, Filesystem, LoadOutcome, Result, StateFile, SystemState};
 use chrono::{DateTime, Duration, Utc};
 use nails_teardown::mountinfo::{MountEntry, read_mountinfo, top_mount_at};
 use nails_teardown::whole_root::plan::{Plan, PolicyMountKind};
+use nails_teardown::whole_root::switch_refusal::{self, SwitchRefusal};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -147,8 +148,8 @@ pub struct StatusReport {
     pub session: &'static str,
     /// Why the posture is degraded, if it is.
     pub reason: Option<String>,
-    /// What to do about it.
-    pub remediation: Option<&'static str>,
+    /// What to do about it, with the real binary path (never a bare `nails …`).
+    pub remediation: Option<String>,
     /// The recorded state.
     pub state: SystemState,
     /// How the state file was read: `loaded`, `missing`, `unreadable` or
@@ -186,6 +187,10 @@ pub struct StatusReport {
     pub decoy_persistent: bool,
     /// The persona mode.
     pub persona_mode: PersonaMode,
+    /// Why the last switch was refused, kept on the hidden volume, when there
+    /// is one and the volume is readable. `None` once a later switch supersedes
+    /// it or when the volume is not mounted.
+    pub switch_refusal: Option<SwitchRefusal>,
     /// Uptime-based OpSec reminders.
     pub opsec_reminders: Vec<OpSecReminder>,
 }
@@ -214,11 +219,13 @@ fn kind_name(kind: PolicyMountKind) -> &'static str {
     }
 }
 
-/// The posture, reason and remediation for a live view.
+/// The posture, reason and remediation for a live view. The remediation names
+/// the real binary path (`sudo <path> …`), through the one next-step renderer.
 pub fn posture_of(
     view: &SessionView,
     state_unknown: bool,
-) -> (Posture, Option<String>, Option<&'static str>) {
+) -> (Posture, Option<String>, Option<String>) {
+    use crate::next_step::{NextStep, sudo_line};
     match view {
         SessionView::Hidden(_) => (Posture::Active, None, None),
         SessionView::Entering(_) => (Posture::Transitioning, None, None),
@@ -231,17 +238,23 @@ pub fn posture_of(
             } else {
                 "an interrupted activation left its runtime files in /run".to_string()
             }),
-            Some("Run `nails recover` to remove them"),
+            Some(format!(
+                "Run `{}` to remove them",
+                sudo_line(NextStep::Recover)
+            )),
         ),
         SessionView::HiddenWithoutPlan(why) => (
             Posture::Degraded,
             Some(format!("in the hidden root without a way back: {why}")),
-            Some("Power off to end the session"),
+            Some("Power off to end the session".to_string()),
         ),
         SessionView::Decoy if state_unknown => (
             Posture::Unknown,
             None,
-            Some("Run `nails verify` and check the hidden volume before activating again"),
+            Some(format!(
+                "Run `{}` and check the hidden volume before activating again",
+                sudo_line(NextStep::Verify)
+            )),
         ),
         SessionView::Decoy => (Posture::Decoy, None, None),
     }
@@ -312,7 +325,10 @@ impl<F: Filesystem> StatusCommand<F> {
                  without updating the record (a power loss, a reset or a failed hidden volume)"
                     .to_string(),
             );
-            remediation = Some("Run `nails recover` to reset the record");
+            remediation = Some(format!(
+                "Run `{}` to reset the record",
+                crate::next_step::sudo_line(crate::next_step::NextStep::Recover)
+            ));
         }
         let plan = plan_of(view);
         let entered_at = plan
@@ -382,6 +398,9 @@ impl<F: Filesystem> StatusCommand<F> {
             decoy_persistent: !view.is_hidden()
                 && crate::preflight::DecoyPersistenceCheck::decoy_is_persistent(&self.filesystem),
             persona_mode: self.config.persona.mode,
+            // Read from the hidden volume: present only when the last switch was
+            // refused and no later switch has superseded it.
+            switch_refusal: switch_refusal::read(hidden_root),
             opsec_reminders,
             state: state_file.state,
         })

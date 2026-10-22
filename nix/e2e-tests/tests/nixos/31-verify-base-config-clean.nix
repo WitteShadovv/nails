@@ -118,7 +118,7 @@ in
         machine.fail("test -e /run/systemd/system/systemd-soft-reboot.service.d")
         assert machine.succeed("systemctl show -p SoftRebootsCount --value").strip() == "0"
         status = read_status_json(config_path=headless_config)
-        assert status["posture"] == "decoy", status
+        assert status["place"] == "decoy", status
         machine.succeed("umount /etc/nixos")
         machine.fail("test -e /etc/nixos/nails/configuration.nix")
   '';

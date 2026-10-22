@@ -72,10 +72,15 @@
           ./Cargo.toml
           ./Cargo.lock
           (lib.fileset.maybeMissing ./.cargo)
+          (lib.fileset.maybeMissing ./nails-api)
           ./nails-base
           ./nails-cli
           ./nails-core
           ./nails-forensics
+          # nails-oracle is a leaf CI tool the binary never links, but cargo
+          # reads its manifest to resolve the workspace; only the manifest is
+          # here so editing its sources never rebuilds the binary.
+          ./nails-oracle/Cargo.toml
           ./nails-platform
           ./nails-session
           ./nails-teardown
@@ -277,9 +282,13 @@
       rawDistroTests = import ./nix/distro-tests { inherit self pkgs nix-vm-test; };
       distroTests = lib.filterAttrs (name: _: !(lib.hasPrefix "_" name)) rawDistroTests;
       distroMetadata = rawDistroTests._metadata;
+      distroImages = rawDistroTests._images;
       e2eTestMetadata = {
-        # Research spikes build as `e2e.<name>` but are not runner targets.
-        availableTargets = lib.subtractLists rawE2eTests._researchTargets (builtins.attrNames e2eTests);
+        # Research spikes and soak tests build as `e2e.<name>` but are not
+        # runner targets: they stay out of the nightly and `--affected`.
+        availableTargets = lib.subtractLists (rawE2eTests._researchTargets ++ rawE2eTests._soakTargets) (
+          builtins.attrNames e2eTests
+        );
         leafTests = rawE2eTests._testNames;
         groups = rawE2eTests._groups;
         # Former test names that now run as scenarios of a merged test.
@@ -304,7 +313,7 @@
       };
 
       checks.${system} = import ./nix/checks.nix {
-        inherit pkgs nails;
+        inherit pkgs nails distroImages;
         e2eMetadata = e2eTestMetadata;
       };
 

@@ -129,6 +129,17 @@ fn init_file_layer(
         Err(_) => return Ok(None),
     };
 
+    // A host NAILS refuses must leave nothing on the hidden volume, the log
+    // directory included: decline file logging there exactly as for a root that
+    // did not pass the attach gate, so a refused host writes no log line before
+    // the command's own platform gate turns it away. A detection that fails tells
+    // us nothing, so it does not suppress the log.
+    if nails_core::platform::detect(&RealFilesystem)
+        .is_ok_and(|profile| profile.require_supported().is_err())
+    {
+        return Ok(None);
+    }
+
     let log_dir = config.log_path.clone();
     let hidden_volume_root = config.hidden_volume_root.clone();
 

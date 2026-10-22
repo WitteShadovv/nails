@@ -15,7 +15,13 @@ use std::path::{Path, PathBuf};
 /// Every workspace crate and the NAILS crates it may depend on.
 const GRAPH: &[(&str, &[&str])] = &[
     ("nails-teardown", &[]),
-    ("nails-base", &["nails-teardown"]),
+    // The machine-readable contract types (`--json` envelope, exit codes, result
+    // payloads, the progress-event stream). Serde and nothing else: no NAILS
+    // dependency, so a consumer can link the wire shapes without the tool.
+    ("nails-api", &[]),
+    // Reaches `nails-api` for the typed progress events its reporter adapter
+    // produces; `nails-api` carries no NAILS dependency, so this adds no cycle.
+    ("nails-base", &["nails-api", "nails-teardown"]),
     ("nails-platform", &["nails-base"]),
     (
         "nails-session",
@@ -33,6 +39,7 @@ const GRAPH: &[(&str, &[&str])] = &[
     (
         "nails-core",
         &[
+            "nails-api",
             "nails-base",
             "nails-forensics",
             "nails-platform",
@@ -40,7 +47,10 @@ const GRAPH: &[(&str, &[&str])] = &[
             "nails-teardown",
         ],
     ),
-    ("nails-cli", &["nails-core", "nails-teardown"]),
+    ("nails-cli", &["nails-api", "nails-core", "nails-teardown"]),
+    // The CI forensic oracle links the residue catalog's read-only data from
+    // nails-forensics, so a citation resolves against the project's own rows.
+    ("nails-oracle", &["nails-forensics"]),
 ];
 
 fn workspace_root() -> PathBuf {

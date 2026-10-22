@@ -5,6 +5,7 @@ expression: redact_status(value)
 {
   "command": "status",
   "data": {
+    "attention": "record_unreadable",
     "decoy_persistent": "[decoy_persistent]",
     "hidden_root": "[hidden_root]",
     "hidden_root_mounted": false,
@@ -12,16 +13,10 @@ expression: redact_status(value)
     "nextroot_mounted": false,
     "opsec_reminders": [],
     "persona_mode": "shared-home",
+    "place": "decoy",
     "policy_mounts": [],
-    "posture": "unknown",
-    "remediation": "Run `nails verify` and check the hidden volume before activating again",
-    "session": "decoy",
-    "state": {
-      "kind": "unknown",
-      "reason": "state file is corrupt or has no integrity digest"
-    },
-    "state_source": "corrupt"
+    "remediation": "Run `sudo [binary] verify` and check the hidden volume before activating again"
   },
-  "ok": true,
-  "schema_version": 1
+  "ok": false,
+  "schema_version": 2
 }

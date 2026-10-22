@@ -37,8 +37,12 @@
 //! the arming expired), this step detaches `/run/nextroot` instead of letting
 //! PID 1 enter it.
 //!
-//! It never writes to a disk and never logs: its output goes nowhere, and a
-//! name sent to `/dev/kmsg` would reach the decoy's ring buffer.
+//! It never writes to the decoy disk and never logs: its output goes nowhere,
+//! and a name sent to `/dev/kmsg` would reach the decoy's ring buffer. The one
+//! thing it does keep is the reason a switch was refused
+//! ([`disarm`]), written to the encrypted hidden volume beside the state file —
+//! never to the decoy — and only while that volume is still mounted on its
+//! recorded device (see [`switch_refusal`]).
 
 use crate::mountinfo::{MountEntry, parse_mountinfo, read_mountinfo};
 use crate::whole_root::disk_guard;
@@ -48,7 +52,9 @@ use crate::whole_root::plan::{
     UTAB_MOUNTS_NAME, UTAB_NAME, unix_now,
 };
 use crate::whole_root::run_scrub::{self, Snapshot};
-use crate::whole_root::{boot_records, kernel_helpers, run_records, runtime_units, utab};
+use crate::whole_root::{
+    boot_records, kernel_helpers, network, run_records, runtime_units, switch_refusal, utab,
+};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -313,6 +319,11 @@ pub fn run(env: &Env) -> Outcome {
 /// deferred removal, so nothing of the failed activation is left, its key
 /// included; in the hidden session the plan stays for a later deactivation.
 fn disarm(env: &Env, plan: &Plan, why: &str) -> Outcome {
+    // Keep why the switch was refused on the hidden volume, before detaching
+    // anything, so `status` can say so. A no-op unless a switch was armed and
+    // the hidden volume is still mounted on its recorded device, so a plain
+    // reboot that meets a leftover tree writes nothing to the decoy disk.
+    switch_refusal::record(&env.mounts, plan, why, env.now);
     nextroot::detach_tree(&env.nextroot);
     if plan.entered_at.is_none() {
         // A reboot that met the leftover tree: the volume was unmounted by
@@ -416,6 +427,7 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         .ok()
         .map(|text| parse_mountinfo(&text));
     let records = std::fs::read(env.runtime_dir.join(RECORDS_NAME)).ok();
+    let network = std::fs::read(env.runtime_dir.join(network::RECORD_NAME)).ok();
     // On an FHS decoy, keep the binary copy before the scrub removes the runtime
     // directory: the boot-record reconcile step runs it on the decoy's first
     // start. NixOS (a decoy system toplevel) leaves records that already read as
@@ -484,6 +496,16 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         let _ =
             crate::whole_root::tools::wait_for_other_jobs(systemctl, &OWN_JOBS, OTHER_JOBS_BUDGET);
     }
+    // Now that the hidden network units have stopped, give the decoy its
+    // network identity back: delete the links the session made, each device's
+    // recorded address, the hostname on a decoy that would not reset it, and
+    // the service manager's per-link runtime state. A no-op without a record.
+    network::restore(
+        &env.run,
+        Path::new(network::SYS_CLASS_NET),
+        Path::new(network::PROC_HOSTNAME),
+        network.as_deref(),
+    );
     // The decoy's copy, taken at entry, names mounts by their IDs at that time;
     // the decoy root and its other mounts come back as new mounts, whose IDs
     // the way back recorded, and the old IDs may name the session's mounts or

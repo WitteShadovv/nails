@@ -49,7 +49,7 @@ in {
 
     with subtest("enter and leave the hidden session"):
         canonical_activate("/mnt/data/config/nails.toml", "--overlay-only")
-        assert read_status_json("/mnt/data/config/nails.toml")["posture"] == "active"
+        assert read_status_json("/mnt/data/config/nails.toml")["place"] == "hidden"
         canonical_deactivate("/mnt/data/config/nails.toml")
         session.assert_decoy_root(machine)
   '';
@@ -158,6 +158,7 @@ Use only:
 - `state`
 - `contract`
 - `research` (design-decision spikes under `tests/research/`: in no other group and not in `all`; see [Research spikes](#research-spikes-testsresearch))
+- `soak` (hours-long endurance tests under `tests/soak/`: in no other group and not in `all`; see [Soak tests](#soak-tests-testssoak))
 
 ## Running tests
 
@@ -408,6 +409,23 @@ checks of config-unknown-key and config-handling run in
 6. Use `with subtest(...)` for each logical phase.
 7. Assert against the booted guest with hard `assert ...` or `machine.fail(...)`; never a `print("Note: ...")` escape hatch (the `e2e-soft-assertions` lint rejects it).
 8. Verify with a direct `nix build` target before sending for review.
+
+## Soak tests (`tests/soak/`)
+
+An endurance test that runs for hours lives under `tests/soak/` and carries the
+`soak` tag; `default.nix` asserts that the two go together. Like a research
+spike it builds like any test
+(`nix build .#legacyPackages.x86_64-linux.e2e.<name> -L`, or the whole
+`e2e.soak` link farm) but is not a leaf test: it is in no tag group, not in `ci`
+or `all`, not in the shards or `--affected`, not a runner target, and needs no
+entry in `shard-durations.json`. It runs in its own lane (`.github/workflows/soak.yml`),
+weekly and on demand, never on the gate.
+
+- `soak-reentry`: takes one VM through hundreds of activate/deactivate cycles in
+  a single boot, beside neighbour VMs that cycle on their own, and asserts every
+  re-entry reaches the hidden root's backdoor within the deadline and the decoy
+  stays clean. It keeps the soft-reboot re-entry hang closed, which only paired,
+  repeated activations under parallel-VM host load ever exposed.
 
 ## Research spikes (`tests/research/`)
 

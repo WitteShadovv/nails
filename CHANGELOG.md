@@ -13,6 +13,134 @@ of this changelog for that version becomes the release notes word for word, and
 
 ## [Unreleased]
 
+### Added
+
+- `check` notes when the installed cryptsetup cannot open a VeraCrypt volume whose header key is
+  derived with Argon2id (the "Argon2" entry added in VeraCrypt 1.26.29), keyed on the version
+  `cryptsetup --version` reports. No released cryptsetup opens such a volume, and nothing outside
+  the encrypted header reveals the algorithm, so it advises making both the outer and the hidden
+  VeraCrypt volume with PBKDF2.
+- `nails activate` and `nails check` refuse a decoy with a pending offline system update staged
+  (a `/system-update` or `/etc/system-update` marker, on the decoy or in the overlay upper), which
+  would otherwise be applied inside the hidden session and reboot the machine out from under it.
+- `status` reports why the last session switch was refused. When a soft-reboot cannot switch root,
+  the reason is kept on the hidden volume and shown the next time, instead of a refused switch going
+  unexplained; a later successful switch clears it.
+- Ubuntu 26.10 is a validated target: `check` and activation name it as a tested release rather than
+  warning that it is untested.
+- `check` and `rehearse` document and probe more of the cross-distro residue surface a session can
+  leave on a persistent decoy: chrony's drift and real-time-clock files, NetworkManager connection
+  records, the Plymouth boot log, snapper timeline snapshots, copy-on-write and compressed storage
+  history, and the GRUB boot-success counter on Fedora. Each is listed in the decoy requirements and
+  threat model with where it lives, how it is checked and how to avoid it.
+
+### Changed
+
+- `rehearse` reports a decoy on a copy-on-write or compressed filesystem (btrfs, bcachefs, zfs or an
+  f2fs mount with compression) as "not checked" rather than "clean" for leaked-then-deleted traces:
+  such a filesystem keeps old copies in unreferenced extents and stores file contents compressed, so a
+  raw plaintext scan can neither reach those old copies nor read a compressed extent, and a clean scan
+  there cannot prove a trace is gone.
+- Discards (TRIM) reaching the hidden volume now refuse activation instead of only warning:
+  forwarding TRIM to the physical device leaves a readable map of used and free blocks, where a
+  deniable volume should look like uniform random data, and writing an outer volume with discards
+  on can destroy a hidden volume inside it. A LUKS2 mapping with runtime or stored discards is
+  included, and a RAM-only zram device is excepted. The refusal names no device-mapper node.
+- A derivative of a supported distribution — one whose os-release `ID_LIKE` names `debian` or
+  `ubuntu`, such as Linux Mint — now runs with a warning that NAILS has not tested it, instead of
+  being accepted silently. Fedora, Arch and their known derivatives, Enterprise Linux rebuilds
+  (RHEL, CentOS, AlmaLinux, Rocky, Oracle) and SteamOS are each refused with a reason that names
+  them and says NAILS has not yet validated them.
+- `check` and activation now warn on Ubuntu 26.04 instead of treating it as a clean tested release.
+  A known upstream issue affects it: after the switch into the hidden session, AppArmor blocks chrony
+  and CUPS from reaching systemd and the journal, so the clock does not sync and printing times out,
+  and after the way back the decoy lists chrony as failed until its next full reboot, which hints a
+  soft-reboot happened. 26.04 remains a tested release; reboot the decoy fully after a session to
+  clear it. The fault is upstream, not in NAILS.
+- A host that boots from a sealed composefs image is now refused even when it does not set
+  `/run/ostree-booted`, recognised by its kernel command line or the composefs runtime directory.
+  NAILS cannot overlay an immutable system.
+- The hidden session's state file can now record which Linux family the host belongs to, without
+  changing its on-disk format. A state file written by a 0.3.0 pre-release loads unchanged after the
+  upgrade with its integrity digest intact, so an existing install is never read as corrupt.
+- The host-tools pre-flight check requires only the tools NAILS actually spawns — `systemctl` and
+  `loginctl` on every host, and `nix` on NixOS — and names a missing one with an install hint for the
+  host's package manager (`apt`, `dnf` or `pacman`). It no longer requires `systemd-run`, `cp`,
+  `chown`, `sync`, `swapoff` or `kill`, which NAILS does through system calls or systemd units rather
+  than by spawning a binary.
+- `check` shows the "NixOS profile" section only on NixOS, or where an explicit NixOS build target is
+  configured; a Debian, Ubuntu, Fedora or Arch decoy no longer prints a NixOS-profile line that does
+  not apply to it.
+- The machine-readable `--json` output moves to contract version 2 (`schema_version` is now `2`), a
+  breaking change for scripts. Every command prints exactly one envelope on stdout — the root
+  privilege gate, a usage error and `config` included — and `activate` no longer streams progress
+  lines before its result (`config show` likewise prints one document rather than a multi-line one).
+  The envelope's `ok` is `true` only when the exit code is `0` or `9`, so a `verify` warning, a
+  degraded `emergency` or `recover`, and a refused `check` now read as `ok: false`. `status` reports
+  where the machine is as `place` (`decoy`, `hidden` or `activating`) and the one thing that needs the
+  operator as `attention`, replacing the version-1 `posture`, `session`, `state` and `state_source`
+  fields. An error now carries a stable `code`, the human `message`, and a typed `next` step — the
+  command to run next, or `null` — in place of the free-form `hint`. A cancelled command, whether a
+  Ctrl+C or a "no" at a prompt, reports one shape everywhere: an error with the code `cancelled`, and
+  exit `130`.
+
+  Exit codes that changed in this release:
+
+  | Code | Before | Now |
+  |---|---|---|
+  | 1 | failed; also a "no" at the `activate` or `deactivate` question | failed, or not possible here. A "no" at any prompt now exits 130 instead |
+  | 130 | Ctrl+C | Ctrl+C, and a "no" at any prompt |
+
+  Codes 2, 3, 4, 5, 6, 7, 8 and 9 keep their meaning. Scripts that read the removed JSON field names,
+  that treated a declined prompt as exit 1, or that parsed `activate --json` as a stream of lines must
+  be updated. A JSON schema per command ships under `docs/schemas/`.
+
+### Fixed
+
+- The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
+  `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
+  that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up
+  only a file's metadata, or follow a redirect, so data could stay in the lower layer after a
+  rollback and the overlay no longer behaved as NAILS's forensic guarantees assume.
+- The `decoy-persistence` check judges journald's journal by the running systemd's built-in default
+  when no configuration sets `Storage=`: below systemd 259 the default is still `auto`, but from 259
+  (Ubuntu 26.04) it is `persistent`, so a decoy that keeps no explicit setting now counts as
+  persistent and is refused, where it was read as volatile before. The `journal.storage` credential
+  (systemd 257 and later) is read when no configuration file sets `Storage=`, and a systemd whose
+  version cannot be read is treated as persistent.
+- The journald, logind and systemd-coredump configuration is read line by line for UTF-8, as systemd
+  reads it: a comment or other line that is not valid UTF-8 (a Latin-1 comment, say) no longer makes
+  the whole file unreadable, so a `Storage=persistent` below such a line is still seen instead of the
+  decoy reading as amnesic.
+- A btrfs decoy root is accepted only when the mounted root is a real subvolume (its mount root
+  equals its `subvol=`). A bind mount of a plain folder on a btrfs filesystem is now refused before
+  activation, naming the folder, instead of passing the pre-flight check and then failing the
+  way-back mount.
+- A decoy mount point that is a symlink (for example `/home` linking to `var/home`, as on
+  ostree-based systems) is resolved to its real path inside the decoy root. NAILS now decides, mounts
+  and masks the filesystem where the decoy really keeps it (`var-home.mount`, not `home.mount`), and
+  fresh-home mode creates the home at that real path instead of a directory where the decoy has a
+  symlink.
+- Decoy-persistence pre-flight now catches a syslog or audit daemon (rsyslog, syslog-ng, metalog,
+  auditd) whether it runs as a service unit, a systemd template instance (such as `syslog-ng@default`)
+  or a bare process, so a logging daemon on the decoy can no longer slip past activation. It also
+  reads the systemd 262 kernel coredump socket pattern correctly instead of mis-reporting it as a raw
+  core-dump path, warns on Ubuntu's default-enabled kdump, and no longer warns about `sudo` logfile
+  or I/O-logging settings on systems where sudo-rs (Ubuntu's default sudo since 25.10) ignores them.
+- The `memory-wipe` check reads the decoy kernel's configuration (`CONFIG_INIT_ON_FREE_DEFAULT_ON`)
+  when the kernel command line is silent, warns when the decoy kernel does not zero freed memory, and
+  notes a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe` module) when one is installed.
+- `nails activate` refuses a host NAILS does not support before it writes anything to the hidden
+  volume, so a refused host is left byte-identical, with no state lock and no log line, and the
+  command exits with the unsupported-platform status (8). The refusal previously came after the state
+  lock and the log file had already been written.
+- The way back now restores the decoy's network identity before returning to it. Virtual links a
+  session brought up (a tunnel, a dummy or bridge) are deleted, each device's hardware address is set
+  back, the hostname is restored on a decoy that has no `/etc/hostname`, and the per-link runtime state
+  NetworkManager and systemd-resolved keep under `/run` is put back as it was at entry. A link, address,
+  or hostname a session changed no longer lingers on the decoy, where its NetworkManager could adopt the
+  link and record a profile on disk, until the next power-off.
+
 ## [0.3.0-rc.3] - 2026-10-20
 
 ### Changed
@@ -20,7 +148,7 @@ of this changelog for that version becomes the release notes word for word, and
 - The release binary is built with Rust 1.99.1; 0.3.0-rc.2 was built with 1.93.0.
 - A release run boots every NixOS VM test on the tagged commit. Until now it took a test whose
   derivation had passed in an earlier run from the project's binary cache, without booting it.
-- NAILS is tested on Debian 13, Ubuntu 24.04 and Ubuntu 26.04. A later release, such as Ubuntu
+- NAILS's automated VM tests cover Debian 13 and Ubuntu 24.04, and Ubuntu 26.04 is a supported target checked by hand (its automated image is still to be added). A later release, such as Ubuntu
   26.10 (released on 2026-10-15), still runs, but `init`, `check` and `activate` now warn that
   NAILS has not been tested on it; 0.3.0-rc.2 accepted every release from Debian 13 and Ubuntu
   24.04 on without a word. `check` names the detected host in a new `platform` row, which carries

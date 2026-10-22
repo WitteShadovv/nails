@@ -74,6 +74,54 @@ fuzz-lock:
     cp Cargo.lock fuzz/Cargo.lock
     cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 
+# Check every fuzz target is wired into fuzz/Cargo.toml and has a seed corpus:
+# the mechanical half of the rule that every parser of bytes NAILS does not
+# control gets a fuzz target (docs/testing-strategy.md). Part of `just check`.
+fuzz-targets:
+    ./scripts/check-fuzz-targets.sh
+
+# Scaffold a new fuzz target: a stub under fuzz/fuzz_targets/, a starter seed
+# and the [[bin]] entry in fuzz/Cargo.toml, so adding one for a new parser is
+# mechanical. Fill in the target, replace the starter seed with inputs from the
+# parser's fixtures and tests, and run `just fuzz-lock`.
+new-fuzz-target name:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    target="fuzz/fuzz_targets/{{ name }}.rs"
+    if [ -e "$target" ]; then
+        echo "$target already exists" >&2
+        exit 1
+    fi
+    cat > "$target" <<'EOF'
+    // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
+    // SPDX-License-Identifier: GPL-3.0-or-later
+
+    //! TODO: the parser this drives, and the property it checks beyond that
+    //! the code neither panics nor hangs on hostile input.
+
+    #![no_main]
+
+    use libfuzzer_sys::fuzz_target;
+
+    fuzz_target!(|data: &[u8]| {
+        // TODO: drive the parser with `data` and assert its invariants.
+        let _ = data;
+    });
+    EOF
+    mkdir -p "fuzz/seeds/{{ name }}"
+    printf '' > "fuzz/seeds/{{ name }}/empty"
+    {
+        echo
+        echo '[[bin]]'
+        echo 'name = "{{ name }}"'
+        echo 'path = "fuzz_targets/{{ name }}.rs"'
+        echo 'test = false'
+        echo 'doc = false'
+        echo 'bench = false'
+    } >> fuzz/Cargo.toml
+    echo "Scaffolded the fuzz target '{{ name }}'. Next: implement it, replace"
+    echo "fuzz/seeds/{{ name }}/empty with real inputs, and run 'just fuzz-lock'."
+
 # Run the documentation tests, which nextest does not execute.
 doctest:
     cargo test --doc --workspace --all-features --locked
@@ -152,11 +200,12 @@ kernel-tests:
     NAILS_REQUIRE_USERNS=1 cargo nextest run --workspace --all-features --locked \
         -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract) | binary(privileged_mounts) | binary(maintenance_cli)'
 
-# The pre-push gate: formatting, lints, file sizes and the test suite.
-check: fmt-check lint line-count test
+# The pre-push gate: formatting, lints, file sizes, fuzz-target wiring and the
+# test suite.
+check: fmt-check lint line-count fuzz-targets test
 
 # Everything the ci.yml Rust jobs run, for reproducing the gate locally.
-ci-rust: fmt-check lint line-count coverage doctest
+ci-rust: fmt-check lint line-count fuzz-targets coverage doctest
 
 # --- Dependency policy ---
 
@@ -266,23 +315,45 @@ stress iterations="10":
 
 # --- Mutation testing ---
 
-# Mutate the state machine module and check the tests catch each mutation.
-# Heavy, so it runs weekly in scheduled.yml rather than on the gate. The report
-# goes to target/mutants/mutants.out, and in CI the counts and every mutant
-# that survived or timed out also go to the job summary. Such mutants (exit
-# codes 2 and 3) are findings to triage, not a failed run, so the recipe
-# succeeds. Any other failure of cargo-mutants, such as tests that already
-# fail without a mutation, still fails it, and so does a run that caught no
-# mutant at all.
-mutants:
+# The files the sweep mutates: the state machine and the teardown and session
+# decision cores, where a wrong branch is silent (a mutant the suite still
+# passes is a test gap no coverage percentage reveals). Kept here, not in the
+# workflow, so a local run and the weekly lane mutate the same code.
+mutants_files := "-f 'nails-base/src/state/**/*.rs' " + \
+    "-f 'nails-teardown/src/whole_root/plan.rs' " + \
+    "-f 'nails-teardown/src/whole_root/emergency.rs' " + \
+    "-f 'nails-teardown/src/whole_root/utab.rs' " + \
+    "-f 'nails-session/src/session/entry.rs' " + \
+    "-f 'nails-session/src/session/policy.rs' " + \
+    "-f 'nails-session/src/session/fstab.rs' " + \
+    "-f 'nails-session/src/session/probe.rs' " + \
+    "-f 'nails-session/src/session/way_back.rs'"
+
+# Mutate the state machine and the teardown/session decision cores and check
+# the tests catch each mutation. Heavy, so it runs weekly in scheduled.yml
+# rather than on the gate. The report goes to target/mutants/mutants.out, and in
+# CI the counts and every mutant that survived or timed out also go to the job
+# summary. Such mutants (exit codes 2 and 3) are findings to triage, not a
+# failed run, so the recipe succeeds. Any other failure of cargo-mutants, such
+# as tests that already fail without a mutation, still fails it, and so does a
+# full run that caught no mutant at all. `shard`/`shards` split the sweep across
+# a matrix (`just mutants 0 4`); the default is the whole sweep.
+mutants shard="" shards="":
     #!/usr/bin/env bash
     set -euo pipefail
     # cargo-mutants creates the --output directory but not its parents, and a
     # fresh checkout has no target/ yet.
     mkdir -p target/mutants
+    shard_args=()
+    if [ -n '{{ shard }}' ]; then
+        shard_args=(--shard '{{ shard }}/{{ shards }}')
+    fi
     status=0
-    cargo mutants --package nails-base --all-features --cargo-arg=--locked \
-        -f 'nails-base/src/state/**/*.rs' \
+    cargo mutants \
+        --package nails-base --package nails-teardown --package nails-session \
+        --all-features --cargo-arg=--locked \
+        {{ mutants_files }} \
+        "${shard_args[@]}" \
         --output target/mutants || status=$?
     case "$status" in
         0 | 2 | 3) ;;
@@ -312,9 +383,59 @@ mutants:
         } >> "$GITHUB_STEP_SUMMARY"
     fi
     # cargo-mutants also exits 0 when the package or file filter matches no
-    # code and when no mutant builds. A run that caught no mutant, for those
-    # reasons or because the tests never fail on one, proves nothing.
-    if [ "$caught" -eq 0 ]; then
+    # code and when no mutant builds. A full run that caught no mutant, for
+    # those reasons or because the tests never fail on one, proves nothing; a
+    # single shard may legitimately catch none, so this guards the full run.
+    if [ -z '{{ shard }}' ] && [ "$caught" -eq 0 ]; then
         echo "No mutant was caught, so this run proves nothing; see $out" >&2
         exit 1
+    fi
+
+# Mutation testing restricted to the lines a diff changed (cargo-mutants
+# --in-diff), for a non-blocking pull-request lane: it reports surviving mutants
+# without failing, and a diff that changes no mutable code is a clean pass.
+# `diff` is a unified `git diff` of the change; `shard`/`shards` split the work
+# across a matrix, and --timeout keeps one slow mutant from running away inside
+# the lane's own time box. The report goes to target/mutants/mutants.out, with
+# the survivors in the job summary for the integration log.
+mutants-in-diff diff shard="0" shards="1":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    mkdir -p target/mutants
+    status=0
+    cargo mutants --in-diff '{{ diff }}' --shard '{{ shard }}/{{ shards }}' \
+        --all-features --cargo-arg=--locked \
+        --timeout 120 \
+        --output target/mutants || status=$?
+    # Survivors (2) and timeouts (3) are reported, never a failure; a diff with
+    # no mutable code (0, no mutants) is a clean pass. Anything else, such as a
+    # baseline that fails without a mutation, still fails the lane.
+    case "$status" in
+        0 | 2 | 3) ;;
+        *) exit "$status" ;;
+    esac
+    out=target/mutants/mutants.out
+    if [ ! -f "$out/caught.txt" ]; then
+        echo "No mutable code in this diff shard."
+        exit 0
+    fi
+    caught=$(wc -l < "$out/caught.txt")
+    missed=$(wc -l < "$out/missed.txt")
+    timed_out=$(wc -l < "$out/timeout.txt")
+    unviable=$(wc -l < "$out/unviable.txt")
+    result="$caught caught, $missed missed, $timed_out timed out, $unviable unviable"
+    echo "Mutants (in diff): $result (report in $out)"
+    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+        section() {
+            if [ -s "$out/$2.txt" ]; then
+                printf '\n### %s\n\n```text\n' "$1"
+                cat "$out/$2.txt"
+                printf '```\n'
+            fi
+        }
+        {
+            printf '## Mutation testing on the diff\n\n%s.\n' "$result"
+            section "Missed" missed
+            section "Timed out" timeout
+        } >> "$GITHUB_STEP_SUMMARY"
     fi

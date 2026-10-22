@@ -351,7 +351,7 @@ fn a_runtime_leftover_on_the_decoy_is_reported_once_and_points_at_recover() {
         about_runtime[0]
             .fix_guidance
             .as_deref()
-            .is_some_and(|fix| fix.contains("nails recover")),
+            .is_some_and(|fix| fix.contains("sudo ") && fix.contains("recover")),
         "{about_runtime:#?}"
     );
     let rule = artifact(&result, READ_ONLY_RULE).expect("the rule is reported");

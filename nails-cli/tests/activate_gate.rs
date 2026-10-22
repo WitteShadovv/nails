@@ -201,13 +201,14 @@ mod kernel_tests {
             });
     }
 
-    /// `activate --json` writes only lines of its schema to stdout, however far
-    /// it gets: the log (pre-flight warnings and progress included) stays on
-    /// stderr. Here it passes the gate, takes the lock, reports its progress
-    /// and ends in a result, because the pre-flight checks refuse.
+    /// `activate --json` writes exactly one envelope of its schema to stdout,
+    /// however far it gets: the version-2 contract has no line stream, so the
+    /// log (pre-flight warnings and progress included) stays on stderr. Here it
+    /// passes the gate, takes the lock, and ends in one envelope, because the
+    /// pre-flight checks refuse.
     #[test]
-    fn activate_json_prints_only_lines_of_its_schema() {
-        let _ = Rerun::new(test_path!(activate_json_prints_only_lines_of_its_schema))
+    fn activate_json_prints_one_envelope_of_its_schema() {
+        let _ = Rerun::new(test_path!(activate_json_prints_one_envelope_of_its_schema))
             .in_user_mount_ns()
             .run(|| {
                 let volume = ScratchTmpfs::new("");
@@ -221,22 +222,20 @@ mod kernel_tests {
                     serde_json::from_str(&std::fs::read_to_string(schema_path).unwrap()).unwrap();
                 let validator = jsonschema::validator_for(&schema).expect("compile the schema");
                 let stdout = String::from_utf8_lossy(&output.stdout);
-                let lines: Vec<&str> = stdout.lines().collect();
-                assert!(lines.len() >= 2, "a progress line and a result: {output:?}");
-                for line in &lines {
-                    let value: Value = serde_json::from_str(line)
-                        .unwrap_or_else(|e| panic!("not JSON ({e}): {line}\n{output:?}"));
-                    let errors: Vec<String> = validator
-                        .iter_errors(&value)
-                        .map(|e| e.to_string())
-                        .collect();
-                    assert!(errors.is_empty(), "{errors:?}: {line}\n{output:?}");
-                }
-                assert_eq!(
-                    serde_json::from_str::<Value>(lines[0]).unwrap()["type"],
-                    "progress"
-                );
-                assert_eq!(last_json(&output)["type"], "result", "{output:?}");
+                let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+                assert_eq!(lines.len(), 1, "exactly one envelope line: {output:?}");
+                let value: Value = serde_json::from_str(lines[0])
+                    .unwrap_or_else(|e| panic!("not JSON ({e}): {}\n{output:?}", lines[0]));
+                let errors: Vec<String> = validator
+                    .iter_errors(&value)
+                    .map(|e| e.to_string())
+                    .collect();
+                assert!(errors.is_empty(), "{errors:?}: {}\n{output:?}", lines[0]);
+                assert_eq!(value["schema_version"], 2, "{output:?}");
+                assert_eq!(value["command"], "activate", "{output:?}");
+                assert!(value["ok"].is_boolean(), "{output:?}");
+                // No line-stream tag survives the version-2 contract.
+                assert!(value.get("type").is_none(), "{output:?}");
             });
     }
 
@@ -378,7 +377,7 @@ mod kernel_tests {
                     .unwrap_or_else(|| panic!("no platform row: {output:?}"))
             };
 
-            for release in ["24.04", "26.04"] {
+            for release in ["24.04", "26.10"] {
                 host(&format!(
                     "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"{release}\"\n"
                 ));
@@ -387,9 +386,22 @@ mod kernel_tests {
                 assert_eq!(row["message"], format!("Ubuntu {release}"), "{row}");
             }
 
-            host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\n");
-            let warning = "Ubuntu 26.10 is not a release NAILS has been tested on \
-                           (tested: Ubuntu 24.04 and 26.04).";
+            // 26.04 is tested too, but a known upstream issue warns rather than
+            // failing: the row is a warn naming the effect, not a plain pass.
+            host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.04\"\n");
+            let row = platform_row();
+            assert_eq!(row["status"], "warn", "{row}");
+            assert!(
+                row["message"]
+                    .as_str()
+                    .unwrap_or("")
+                    .starts_with("Ubuntu 26.04 is tested, but a known upstream issue"),
+                "{row}"
+            );
+
+            host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"28.04\"\n");
+            let warning = "Ubuntu 28.04 is not a release NAILS has been tested on \
+                           (tested: Ubuntu 24.04, 26.04 and 26.10).";
             let row = platform_row();
             assert_eq!(row["status"], "warn", "{row}");
             assert!(
@@ -417,11 +429,23 @@ mod kernel_tests {
                 row["message"]
                     .as_str()
                     .unwrap_or("")
-                    .starts_with("host 'fedora' is not a supported platform"),
+                    .starts_with("Fedora is not yet a validated platform"),
                 "{row}"
             );
-            let output = nails(&config, &["activate", "-y", "--overlay-only"]);
+            // Activation refuses a host it does not support with exit 8, and
+            // before any write: a fresh hidden volume stays byte-identical, with
+            // no lock, no log and no staged config. The log file is left on (the
+            // `nails` helper), so a log line would land on the volume and show.
+            let refused_volume = ScratchTmpfs::new("");
+            let refused_dir = tempfile::tempdir().unwrap();
+            let refused_config = config_for(refused_dir.path(), refused_volume.path());
+            let output = nails(&refused_config, &["activate", "-y", "--overlay-only"]);
             assert_eq!(output.status.code(), Some(8), "{output:?}");
+            assert!(
+                entries(refused_volume.path()).is_empty(),
+                "a refused host wrote to the hidden volume: {:?}",
+                entries(refused_volume.path())
+            );
         });
     }
 }

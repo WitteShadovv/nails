@@ -236,6 +236,19 @@ fn an_offline_scan_finds_a_planted_token_by_offset_and_never_prints_it() {
             .any(|line| line.as_str().unwrap().contains("SSD")),
         "{value:#}"
     );
+    // The compression/copy-on-write caveat is serialized too, so a clean offline
+    // scan of a captured image is never read as conclusive.
+    assert!(
+        value["data"]["scan"]["not_visible"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|line| line
+                .as_str()
+                .unwrap()
+                .contains("stored compressed or copy-on-write")),
+        "{value:#}"
+    );
 }
 
 #[test]
@@ -262,6 +275,12 @@ fn an_offline_scan_of_a_clean_image_exits_zero() {
         "{stdout}"
     );
     assert!(stdout.contains("Not visible to this scan:"), "{stdout}");
+    // The compression/copy-on-write caveat prints with every result, so a clean
+    // scan over such storage is never read as conclusive.
+    assert!(
+        stdout.contains("stored compressed or copy-on-write"),
+        "{stdout}"
+    );
     // A token file names no channels: nothing to list as untested.
     assert!(!stdout.contains("Not tested"), "{stdout}");
 }
@@ -330,7 +349,7 @@ fn status_of_a_planted_rehearsal_shows_its_fingerprint_channels_and_the_scan_ste
         "{stdout}"
     );
     assert!(
-        stdout.contains("-> Step 3 of 3: run `nails rehearse scan`."),
+        stdout.contains("-> Step 3 of 3: run `sudo ") && stdout.contains("rehearse scan`."),
         "{stdout}"
     );
 }
@@ -349,8 +368,9 @@ fn status_outside_a_hidden_session_names_the_scan_step_in_the_planting_boot() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     let value = json(&output);
     assert_eq!(value["data"]["phase"], "planted");
-    assert_eq!(
-        value["data"]["next_step"], "Step 3 of 3: run `nails rehearse scan`.",
+    let next_step = value["data"]["next_step"].as_str().unwrap();
+    assert!(
+        next_step.starts_with("Step 3 of 3: run `sudo ") && next_step.ends_with("rehearse scan`."),
         "{value:#}"
     );
 }

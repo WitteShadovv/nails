@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/emergency.schema.json",
   "title": "NAILS emergency --json",
-  "description": "Machine-readable emergency envelope. The hot path runs before the CLI is initialised; this envelope reports it afterwards, best-effort: the soft-reboot it enqueued may end the process first.",
+  "description": "Machine-readable emergency envelope (contract version 2). The hot path runs before the CLI is initialised; this envelope reports it afterwards, best-effort: the soft-reboot it enqueued may end the process first. `ok` follows the exit code: a degraded teardown (code 7) reads as ok false.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema_version": {
-      "const": 1
+      "const": 2
     },
     "command": {
       "const": "emergency"
@@ -122,7 +122,8 @@
       "additionalProperties": false,
       "required": [
         "code",
-        "message"
+        "message",
+        "next"
       ],
       "properties": {
         "code": {
@@ -133,9 +134,11 @@
           "type": "string",
           "minLength": 1
         },
-        "hint": {
-          "type": "string",
-          "minLength": 1
+        "next": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["command"],
+          "properties": { "command": { "type": "string", "minLength": 1 } }
         }
       }
     }

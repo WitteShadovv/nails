@@ -66,18 +66,18 @@ result, including the backend detection below.
 
 ## Backend detection in preflight
 
-The `backend-detect` check identifies the device stack under the hidden root
-and warns about hazards specific to it. It never fails activation and has no
-configuration knob. It reads `/proc/self/mountinfo` to find the hidden root's
-device, follows the device-mapper and loop layers in `/sys` and reports:
+The `backend-detect` check identifies the device stack under the hidden root.
+Discards over the hidden volume fail activation closed (a RAM-only `zram`
+device is excepted); the other findings only warn. It reads
+`/proc/self/mountinfo` to find the hidden root's device, follows the
+device-mapper and loop layers in `/sys` and reports:
 
-| Warning | Detected from | What to do |
+| Finding | Detected from | What to do |
 |---|---|---|
-| Discards are enabled on a tcrypt or plain dm-crypt mapping | `dm/uuid` starts with `CRYPT-TCRYPT-` or `CRYPT-PLAIN-` and `queue/discard_max_bytes` is non-zero | Close the mapping and open it again without `--allow-discards`. See [Discards](#discards-trim). |
+| **Refuses:** discards are enabled over the hidden volume | a cryptsetup mapping (`dm/uuid` starts with `CRYPT-`) has a non-zero `queue/discard_max_bytes`, or its LUKS2 header `config.flags` holds `allow-discards`; a RAM-only `zram` device is excepted | Re-open the hidden volume without discards. For a stored LUKS2 flag, run `cryptsetup refresh --persistent <name>` without `--allow-discards`, then check `cryptsetup luksDump` reports `(no flags)`. See [Discards](#discards-trim). |
 | The hidden root lives in a file container | A loop device in the stack has a `loop/backing_file` | Accept the [timestamp exposure](#timestamps) or move to a whole-device hidden volume. |
 | The container sits on a copy-on-write filesystem | The container file's filesystem is btrfs, zfs or bcachefs | Prefer a whole-device hidden volume; at least disable automatic snapshots of that filesystem. |
 | The loop device is backed by a file on a FUSE mount | The backing file's filesystem is `fuse.*` (for example the VeraCrypt application without kernel crypto) | The attach gate already refuses such a root (`storage_unjudged`) before the check runs. Open the volume with cryptsetup so the kernel manages the mapping. |
-| The LUKS2 header stores the persistent `allow-discards` flag | `config.flags` in the LUKS2 JSON header, read from the device below the mapping | `cryptsetup refresh --persistent <name>` without `--allow-discards`, then check `cryptsetup luksDump` reports `(no flags)`. |
 | The LUKS2 header carries a `systemd-tpm2`, `systemd-fido2` or `systemd-pkcs11` token | `tokens.*.type` in the LUKS2 JSON header | The token names the unlock method in plain text, and a TPM2 token seals the key to this machine's TPM, binding the volume to the host. Remove it with `systemd-cryptenroll --wipe-slot` or `cryptsetup token remove` if the volume must not point at this machine. |
 
 The LUKS2 header is read directly from the device node below the mapping (the
@@ -129,6 +129,10 @@ read.
   cryptsetup attached; one you attached yourself with `losetup` needs
   `sudo losetup -d /dev/loopN`. `losetup -a` must not list the container
   afterwards.
+- **Version advisory:** per VeraCrypt's release notes, hidden volumes in file
+  containers created with VeraCrypt 1.26.6 through 1.26.28 may have weakened
+  deniability; this was fixed in 1.26.29. Create the volume with 1.26.29 or
+  later.
 
 ### VeraCrypt hidden volume on a whole device
 
@@ -156,6 +160,15 @@ VeraCrypt's hidden-volume protection, so writing to an outer volume opened by
 cryptsetup can overwrite the hidden volume. Open the outer volume with
 `--readonly` when you only need to show it, and refresh decoy content in the
 outer volume with the VeraCrypt application and its hidden-volume protection.
+
+VeraCrypt's own [Security Requirements for Hidden Volumes](https://veracrypt.jp/en/Security%20Requirements%20for%20Hidden%20Volumes.html)
+go further for Linux: it says a hidden volume there should be mounted only from
+a live system that writes to a RAM disk, and that otherwise one "must not mount
+or create hidden VeraCrypt volumes under Linux". NAILS does not use the
+VeraCrypt application to mount: it unlocks the hidden volume with cryptsetup
+inside the live or hidden session and writes only into an overlay on it, and it
+does not mount the outer volume. Weigh that against VeraCrypt's rule for your
+own threat model; NAILS claims nothing beyond where and how it unlocks.
 
 ### VeraCrypt volumes made with Argon2id
 
@@ -217,8 +230,9 @@ This is the backend the E2E suite runs on.
   `--allow-discards` makes filesystem-level operations visible on the
   physical device, such as the filesystem type and used space. LUKS2 can
   store the flag in its header (`--persistent`) and then enables discards on
-  every later open; the `backend-detect` check reads the header and warns when
-  the flag is stored (by hand: `cryptsetup luksDump /dev/sdX2` must report
+  every later open; the `backend-detect` check refuses activation while
+  discards reach the hidden volume, whether from a runtime `--allow-discards`
+  or a stored flag (by hand: `cryptsetup luksDump /dev/sdX2` must report
   `(no flags)` on its `Flags:` line).
 - **Timestamp behaviour:** nothing on the decoy filesystem records use of the
   device. The LUKS2 header changes only when you run a management command

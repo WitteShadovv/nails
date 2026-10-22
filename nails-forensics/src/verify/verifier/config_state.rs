@@ -179,7 +179,14 @@ impl<F: Filesystem> Verifier<F> {
                         "state",
                         format!("The state file records a degraded session: {reason}"),
                     )
-                    .with_fix_guidance("Run 'nails recover', then 'nails verify --deep'"),
+                    .with_fix_guidance({
+                        use nails_base::next_step::{NextStep, sudo_line};
+                        format!(
+                            "Run '{}', then '{} --deep'",
+                            sudo_line(NextStep::Recover),
+                            sudo_line(NextStep::Verify)
+                        )
+                    }),
                 );
             }
             crate::SystemState::Inactive => {}

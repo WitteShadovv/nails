@@ -1,0 +1,20 @@
+{
+  "_comment": "Cited allowlist for the NAILS forensic oracle. Each entry names one specific location that is expected to differ in the 'after' image and exactly one residue-catalog id (or threat-model doc anchor, '<file>.md#<anchor>') that explains why. The oracle rejects an entry that cites nothing, cites an unknown row, names a whole top-level directory or system subtree (e.g. /var, /var/lib, /nix, /nix/store), uses a glob, or sits outside the cited row's own channel. A bulk_extractor feature entry must set 'field' to the exact value. There is deliberately no wholesale var/ or nix/ exemption: those are where residue lands, so they are scanned, not skipped. The oracle prints the cited row's own risk and mitigation to justify each kept difference.",
+  "entries": [
+    {
+      "path": "/var/lib/nixos",
+      "cite": "var-lib-nixos",
+      "note": "The decoy rewrites the declarative user and id maps on every boot; the content varies run to run, so it escapes control-cycle subtraction yet is not a leak."
+    },
+    {
+      "path": "/var/lib/systemd/timesync/clock",
+      "cite": "timesync-clock",
+      "note": "timesyncd stamps this file at every sync and at shutdown; a known info-level time residual, not a trace of the hidden session."
+    },
+    {
+      "path": "/var/lib/systemd/timers",
+      "cite": "timer-stamps",
+      "note": "Persistent-timer stamp files move with ordinary timer activity."
+    }
+  ]
+}

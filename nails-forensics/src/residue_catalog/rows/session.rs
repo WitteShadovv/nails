@@ -1,27 +1,25 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! The catalog rows. Data only: no logic lives here.
-//!
-//! Adding a row: give it a detector or a reason there is none, a VM test or a
-//! reason there is none, and a doc anchor that exists. Then regenerate the doc
-//! tables (`REGENERATE_CATALOG_DOCS=1 cargo test -p nails-forensics residue_catalog`)
-//! and commit the result. The unit tests in `tests.rs` enforce all of it.
+//! Session-residue rows: classes of trace a hidden session itself writes or
+//! causes to be written. Data only; [`super`] concatenates them into the
+//! catalog, session classes first.
 
-use super::{Channel, E2e, Platforms, Probe, ProbeSeverity, ResidueClass, ResidueKind};
+use crate::residue_catalog::{
+    Channel, E2e, Platforms, Probe, ProbeSeverity, ResidueClass, ResidueKind,
+};
 
 /// Reason shared by the rows that only a raw-disk or firmware view can see.
 const NOT_FILESYSTEM_STATE: &str = "not filesystem state, so nothing on the decoy root shows it";
 
-/// Every class of residue, session classes first, then setup traces.
-pub const CATALOG: &[ResidueClass] = &[
-    // --- Session residue ---------------------------------------------------
+/// Session residue, in the order the catalog lists it first.
+pub(super) const ROWS: &[ResidueClass] = &[
     ResidueClass {
         id: "persistent-journal",
         title: "Persistent systemd journal",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/log/journal"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "The decoy journal records the sudo command line (including the hidden-root binary path) before the soft-reboot, and the decoy's own shutdown and start around each transition.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: true,
@@ -39,7 +37,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "journald records of `sudo nails activate`, the decoy shutdown before the soft-reboot and the decoy start after the way back",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "The decoy journal logs the sudo command line, the hidden build's progress and the decoy's own shutdown before the switch, and its start after the way back, under one boot ID. A persistent journal keeps them on the decoy disk, with a soft-reboot gap; a volatile journal holds them in RAM, where the way back deletes every record from before the return.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: true,
@@ -57,7 +55,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "the runtime journal below /run/log/journal, which the decoy and the hidden journald write alike and the way back deletes",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "On a volatile decoy, anyone with a shell after the way back sees a journal that starts at the return, mid-uptime and without the kernel's boot records, while uptime and dmesg go back to the boot: the decoy's own records from before the session are gone with the hidden ones.",
         preflight: Probe::None("the scrub causes it, as the last step before the switch back"),
         preflight_blocks: false,
@@ -73,7 +71,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "Classic syslog daemon",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/log/syslog", "/var/log/messages", "/var/log/auth.log"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "rsyslog or syslog-ng writes every logged line to /var/log on the decoy disk, outside the journal.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: true,
@@ -89,7 +87,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "Audit daemon log",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/log/audit"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "auditd records executed commands and file access in /var/log/audit, independent of journald.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: true,
@@ -108,7 +106,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "sudo log file",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/log/sudo.log"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "`Defaults logfile=` writes every sudo command line, including the activation command and binary path, to a file on the decoy disk.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: false,
@@ -127,7 +125,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "sudo I/O logging",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/log/sudo-io"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "`log_input`, `log_output` or the LOG_INPUT/LOG_OUTPUT tags record whole terminal sessions, keystrokes and output included, under iolog_dir on the decoy disk.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: false,
@@ -146,7 +144,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "Swap and hibernation",
         kind: ResidueKind::Session,
         channel: Channel::Mechanism("swap partitions and files, the hibernation image"),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "Memory pages of the hidden session are written to a decoy disk.",
         preflight: Probe::Check("swap"),
         preflight_blocks: true,
@@ -162,7 +160,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "Crash dumps",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/lib/systemd/coredump", "/var/crash"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "A disk core_pattern, systemd-coredump without both Storage=none and ProcessSizeMax=0, pstore or an armed kdump can persist process or kernel memory.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: false,
@@ -181,7 +179,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "Shell history",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["~/.bash_history", "~/.zsh_history"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "A shell that writes its history before the teardown kill, or a decoy shell used to unlock the volume, names the commands on the decoy disk.",
         preflight: Probe::Check("incremental-history-flush"),
         preflight_blocks: false,
@@ -197,7 +195,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "Desktop recent-files lists",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["~/.local/share/recently-used.xbel"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "Desktop applications record every opened file; an entry that names the hidden root survives if it reaches the decoy home.",
         preflight: Probe::None(
             "written by desktop applications during the session, into the upper on the hidden volume",
@@ -217,7 +215,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "the paths and content markers listed in the artifact registry (nails-base/src/artifacts.rs)",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "A leftover runtime directory, staged config link or import marker names the tool on the decoy.",
         preflight: Probe::Check("suspicious-nails-reference"),
         preflight_blocks: true,
@@ -233,7 +231,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "NixOS account bookkeeping",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/lib/nixos"]),
-        platforms: Platforms::NixOs,
+        platforms: Platforms::NIXOS,
         risk: "A hidden switch that reached the decoy /var/lib/nixos would record hidden users and id maps.",
         preflight: Probe::None(
             "the decoy rewrites these files on every boot; only a control run tells noise from a leak",
@@ -253,7 +251,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "fstab entries of the hidden root: a separate /home or /var, the ESP, decoy swap, a second disk",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "The root overlay covers only the root filesystem: the hidden systemd would mount every other decoy filesystem directly and read-write, and activate decoy swap.",
         preflight: Probe::Check("fstab-policy"),
         preflight_blocks: true,
@@ -271,7 +269,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "a USB drive udisks automounts, a decoy partition the policy masked mounted by hand, a Windows partition",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "A disk the hidden session mounts itself is a real disk outside every overlay: a read-write mount takes the session's writes, and mounting it rw already writes its superblock.",
         preflight: Probe::None("the disk is mounted after activation"),
         preflight_blocks: false,
@@ -289,7 +287,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "a soft-reboot carries /run: logind state, utmp, the runtime journal, utab lines, name-server records, stray files",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "Whatever the hidden session left in /run would be visible in the decoy after the way back, in RAM.",
         preflight: Probe::None("the scrub runs as the last step before the switch back"),
         preflight_blocks: false,
@@ -311,7 +309,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "an activation killed before the soft-reboot leaves /run/nextroot, the session plan and the transition drop-in",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "A populated /run/nextroot would be entered by the next soft-reboot, and the runtime directory names the hidden volume, in RAM.",
         preflight: Probe::Check("session-state"),
         preflight_blocks: true,
@@ -329,7 +327,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "journald reads /dev/kmsg from its stored sequence number after every soft-reboot",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "Records logged after the hidden journald stopped (PID 1's stop lines, a late /dev/kmsg writer) would be imported by the decoy journal, on disk with a persistent journal.",
         preflight: Probe::Check("decoy-persistence"),
         preflight_blocks: false,
@@ -345,17 +343,17 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "Network state the hidden session created or changed",
         kind: ResidueKind::Session,
         channel: Channel::Mechanism(
-            "a soft-reboot keeps the kernel's network state: links, addresses, routes and VPN tunnels the hidden session set up stay as they are, and so can a MAC address or a hostname it changed",
+            "a soft-reboot keeps the kernel's network state across the switch, so the links, addresses, routes and VPN tunnels the hidden session set up, and any MAC address or hostname it changed, are still live when the way back begins",
         ),
-        platforms: Platforms::All,
-        risk: "Links, addresses, routes and tunnels the session set up stay in the decoy after the way back, until power-off. The decoy's NetworkManager adopts a link the session created as connected externally and records the profile it generates for it, with the time, in /var/lib/NetworkManager/timestamps on the decoy disk; the hidden NetworkManager's per-link records below /run/NetworkManager lie deeper than the /run scrub looks. The random MAC address of the hidden network-identity snippet can stay on the decoy's own device, since a device keeps its current MAC address when its profile sets none, and on a decoy without /etc/hostname the hidden hostname stays.",
+        platforms: Platforms::ALL,
+        risk: "The clean way back now restores this before the switch: it deletes the virtual links the hidden session created, sets each device's MAC back where the session changed it, restores the hostname on a decoy without /etc/hostname, and puts the per-link NetworkManager and systemd-resolved state under /run back as it was at entry. A normal return therefore leaves none of these on the decoy, and the decoy's NetworkManager does not adopt a session link or record a profile for it in /var/lib/NetworkManager/timestamps. The residue can still remain after an exit that does not run the clean way back, such as an emergency that does not power off.",
         preflight: Probe::None("the hidden session creates them after activation"),
         preflight_blocks: false,
         verify: Probe::None("a link the decoy adopted looks like one the decoy made itself"),
-        mitigation: "Before deactivating, take down every connection and VPN tunnel you brought up and delete every link you created by hand (`ip link delete`), or end the session with `deactivate --poweroff`, which powers off before the decoy's NetworkManager starts. End a session that used the hidden network-identity snippet with `deactivate --poweroff` (or `emergency --poweroff`).",
+        mitigation: "A clean `deactivate` now restores the decoy's network state on its own, so the links, MAC and hostname a session changed no longer need taking down by hand. End an emergency with `emergency --poweroff`, which powers off before the decoy's NetworkManager starts, so nothing a session changed can linger.",
         doc_anchor: "operator-guide.md#how-it-works",
         e2e: E2e::None(
-            "session-dns-records only logs the link the hidden session leaves: what the way back does with it is not decided yet",
+            "a VM scenario proves the way back deletes the session's links and restores the MAC and hostname with no decoy-disk trace. It needs KVM and is a laptop or CI follow-up",
         ),
         residual: true,
         conclusion: None,
@@ -367,7 +365,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "SoftRebootsCount (systemd 256 and newer) and the unchanged boot ID and uptime, readable with systemctl and journalctl",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "Anyone with a shell sees two soft-reboots per session where systemd reports the count (256 and newer); a persistent decoy journal shows a shutdown and start under one boot ID.",
         preflight: Probe::None("kernel and PID 1 state, not a file"),
         preflight_blocks: false,
@@ -385,7 +383,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "the decoy's own writers record the way back in the login and boot records (classic wtmp, wtmpdb, and the getty and login records)",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "A whole-root session reaches the decoy again through a soft-reboot, and the decoy's own writers record that start. On Debian with wtmpdb the boot row would be named soft-reboot; where the service manager keeps the userspace start time across a soft-reboot (systemd 255 and earlier, classic wtmp), the boot record would carry the decoy's first boot time, so the file would hold a boot dated before the shutdown before it. Both are entries ordinary use never writes. On every family the getty and login records written after the way back also carry process numbers that continue from the decoy's boot, where a fresh kernel starts them low.",
         preflight: Probe::None(
             "the records are written by the decoy's own units after the switch, not before it",
@@ -409,7 +407,7 @@ pub const CATALOG: &[ResidueClass] = &[
         channel: Channel::Mechanism(
             "the mount table after the way back: the decoy's mounts made again with new mount IDs and peer groups, its root and its initrd's mounts (the store bind) included; /run/credentials a mount of its own; the boot's mounts below /run gone",
         ),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "Anyone with a shell sees with findmnt that the decoy's root and the mounts its initrd made (such as the store bind) were made again after the boot, where a plain soft-reboot keeps them. A mount made after the boot by hand or by a service comes back as well, where a plain soft-reboot unmounts it. A decoy mount the way back cannot make again (a filesystem that another mount covers at a place the session carries, NixOS's /etc overlay) is missing until it is mounted again.",
         preflight: Probe::None(
             "the mount table is kernel state; activation warns about a decoy mount the way back cannot make again at a place the session carries, and about one a plain soft-reboot keeps",
@@ -427,7 +425,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "EFI NVRAM, RTC and firmware pstore",
         kind: ResidueKind::Session,
         channel: Channel::Mechanism("EFI variables, the real-time clock, firmware-backed pstore"),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "These are not filesystem writes, so the overlay cannot redirect them; other software in the session can write them.",
         preflight: Probe::None(NOT_FILESYSTEM_STATE),
         preflight_blocks: false,
@@ -443,7 +441,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "Memory remanence",
         kind: ResidueKind::Session,
         channel: Channel::Mechanism("DRAM contents until power-off"),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "RAM holds hidden-session data until the machine is powered off; a warm reboot does not clear it.",
         preflight: Probe::Check("memory-wipe"),
         preflight_blocks: false,
@@ -459,7 +457,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "timesyncd clock stamp",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/lib/systemd/timesync/clock"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "systemd-timesyncd touches this file at every sync and at shutdown, so its mtime records when the machine last ran, which can fall after the decoy's last logged activity.",
         preflight: Probe::Paths {
             paths: &["/var/lib/systemd/timesync/clock"],
@@ -481,7 +479,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "Persistent timer stamps",
         kind: ResidueKind::Session,
         channel: Channel::Paths(&["/var/lib/systemd/timers"]),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "Persistent=true timers stamp their last run; a stamp from the session, or a catch-up run at the next decoy boot, dates the session.",
         preflight: Probe::Paths {
             paths: &["/var/lib/systemd/timers"],
@@ -503,7 +501,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "SMART power-on hours",
         kind: ResidueKind::Session,
         channel: Channel::Mechanism("the drive's own power-on-hours and power-cycle counters"),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "The drive counts every hour it runs; hours the decoy's logs do not account for point to unlogged use.",
         preflight: Probe::None(NOT_FILESYSTEM_STATE),
         preflight_blocks: false,
@@ -519,7 +517,7 @@ pub const CATALOG: &[ResidueClass] = &[
         title: "SSD flash-translation-layer remnants",
         kind: ResidueKind::Session,
         channel: Channel::Mechanism("remapped and over-provisioned flash blocks"),
-        platforms: Platforms::All,
+        platforms: Platforms::ALL,
         risk: "Old copies of rewritten blocks survive in cells the host can no longer address; a chip-off read can recover them.",
         preflight: Probe::None(NOT_FILESYSTEM_STATE),
         preflight_blocks: false,
@@ -532,162 +530,150 @@ pub const CATALOG: &[ResidueClass] = &[
         residual: true,
         conclusion: None,
     },
-    // --- Setup traces ------------------------------------------------------
+    // Cross-distro residue: classes the FHS families and copy-on-write storage
+    // add on top of the systemd defaults the rows above describe. The ones a
+    // Fedora or Arch boot would confirm are catalogued from their documented
+    // residue now, with the live assertion left to the cross-distro probe.
     ResidueClass {
-        id: "lvm-metadata-archive",
-        title: "LVM metadata archive and backup",
-        kind: ResidueKind::Setup,
-        channel: Channel::Paths(&["/etc/lvm/archive", "/etc/lvm/backup"]),
-        platforms: Platforms::All,
-        risk: "LVM archives the volume-group metadata before every change, with the command line, host name and time; a volume group the decoy does not use names hidden storage.",
+        id: "chrony-drift",
+        title: "chrony clock drift and RTC records",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&["/var/lib/chrony"]),
+        platforms: Platforms::FHS,
+        risk: "chrony, a clock daemon some FHS distributions default to for NTP (Fedora does; Debian and Ubuntu use systemd-timesyncd instead), keeps its measured drift and real-time-clock offset under /var/lib/chrony and rewrites them periodically and at shutdown, so on a decoy that runs it the files date when the machine last ran.",
         preflight: Probe::Paths {
-            paths: &["/etc/lvm/archive", "/etc/lvm/backup"],
-            severity: ProbeSeverity::Warn,
-        },
-        preflight_blocks: false,
-        verify: Probe::Check("examiner-lvm"),
-        mitigation: "Never run LVM tools on the hidden backend from the decoy, or disable archive and backup in the decoy's lvm.conf first.",
-        doc_anchor: "decoy-requirements.md#lvm-metadata-archives",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Logical volumes existed that the decoy does not use"),
-    },
-    ResidueClass {
-        id: "udisks2-state",
-        title: "udisks2 state",
-        kind: ResidueKind::Setup,
-        channel: Channel::Paths(&["/var/lib/udisks2"]),
-        platforms: Platforms::All,
-        risk: "Unlocking or mounting the backend through udisks (a file manager, GNOME Disks) leaves per-drive state under /var/lib/udisks2.",
-        preflight: Probe::Paths {
-            paths: &["/var/lib/udisks2"],
-            severity: ProbeSeverity::Warn,
+            paths: &["/var/lib/chrony"],
+            severity: ProbeSeverity::Info,
         },
         preflight_blocks: false,
         verify: Probe::Paths {
-            paths: &["/var/lib/udisks2"],
-            severity: ProbeSeverity::Warn,
+            paths: &["/var/lib/chrony"],
+            severity: ProbeSeverity::Info,
         },
-        mitigation: "Unlock and mount the backend with cryptsetup and mount from a shell, not through the desktop.",
-        doc_anchor: "decoy-requirements.md#udisks2-state",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Removable or encrypted storage was handled through the desktop"),
-    },
-    ResidueClass {
-        id: "crypttab-fstab",
-        title: "crypttab and fstab entries",
-        kind: ResidueKind::Setup,
-        channel: Channel::Paths(&["/etc/crypttab", "/etc/fstab"]),
-        platforms: Platforms::All,
-        risk: "An entry for an encrypted mapping, a tcrypt or VeraCrypt volume or a loop-mounted container names storage beyond the decoy's own.",
-        preflight: Probe::Check("backend-entries"),
-        preflight_blocks: true,
-        verify: Probe::Check("examiner-config"),
-        mitigation: "Never add the hidden backend to the decoy's crypttab or fstab; open it by hand each time. Activation refuses an entry that opens or mounts the hidden volume; the decoy's own entries are reviewed with verify --examiner.",
-        doc_anchor: "decoy-requirements.md#crypttab-and-fstab",
-        e2e: E2e::Test("preflight-decoy-filesystem"),
-        residual: false,
-        conclusion: Some("The decoy is configured to open encrypted storage"),
-    },
-    ResidueClass {
-        id: "luks-headers",
-        title: "LUKS headers on partitions",
-        kind: ResidueKind::Setup,
-        channel: Channel::Mechanism(
-            "LUKS1/LUKS2 signatures at partition starts, in gaps and in LUKS2 secondary-header slots",
+        mitigation: "Session writes land in the upper; on a persistent decoy, use the decoy normally after a session so its own clock activity follows the stamp.",
+        doc_anchor: "decoy-requirements.md#session-time-records",
+        e2e: E2e::None(
+            "asserted on the Fedora and Arch decoys by the cross-distro forensic probe once their images boot; shares the session-time-records mitigation meanwhile",
         ),
-        platforms: Platforms::All,
-        risk: "A LUKS header proves an encrypted volume exists; a second one beside the decoy's own invites the question what it holds.",
-        preflight: Probe::Check("backend-detect"),
-        preflight_blocks: false,
-        verify: Probe::Check("examiner-disk"),
-        mitigation: "Prefer a deniable backend (a VeraCrypt hidden volume) over a bare LUKS volume next to the decoy.",
-        doc_anchor: "decoy-requirements.md#encryption-headers-high-entropy-space-and-containers",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Encrypted volumes exist on this disk"),
+        residual: true,
+        conclusion: None,
     },
     ResidueClass {
-        id: "high-entropy-space",
-        title: "High-entropy unpartitioned space",
-        kind: ResidueKind::Setup,
+        id: "networkmanager-connection-records",
+        title: "NetworkManager connection records",
+        kind: ResidueKind::Session,
         channel: Channel::Mechanism(
-            "partition gaps, space after the last partition, partitions with no known signature",
+            "NetworkManager's per-connection timestamps and seen-BSSID lists under /var/lib/NetworkManager, and the saved profiles under /etc/NetworkManager/system-connections",
         ),
-        platforms: Platforms::All,
-        risk: "Random-looking bytes where a fresh disk holds zeros, or a partition no tool can identify, are the classic sign of a headerless encrypted volume.",
+        platforms: Platforms::ALL,
+        risk: "A connection the hidden session brings up through the decoy's NetworkManager lands in the upper. A link the session creates could be adopted by the decoy's NetworkManager after the way back, recording the connection and its time on the decoy disk, but the clean way back now deletes the session's links before the decoy's NetworkManager starts (see the network-state class above), so a normal deactivate leaves no such record. It can remain only after an exit that does not run the clean way back, such as an emergency that does not power off.",
         preflight: Probe::None(
-            "needs the raw disk, which verify --offline --examiner --disk reads",
+            "the hidden session brings the connection up after activation, and the decoy records it only after the way back",
         ),
         preflight_blocks: false,
-        verify: Probe::Check("examiner-disk"),
-        mitigation: "Fill free space with random data when the disk is set up, so the hidden region does not stand out; explain it as wiped space.",
-        doc_anchor: "decoy-requirements.md#encryption-headers-high-entropy-space-and-containers",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Space on this disk holds encrypted or wiped data"),
-    },
-    ResidueClass {
-        id: "container-candidates",
-        title: "Encrypted container candidates",
-        kind: ResidueKind::Setup,
-        channel: Channel::Mechanism(
-            "large files whose size is a multiple of 512, with no known header and high entropy",
+        verify: Probe::None(
+            "a connection record the decoy wrote after adopting a session's link looks like one the decoy made itself",
         ),
-        platforms: Platforms::All,
-        risk: "This is the TCHunt heuristic: such a file is very likely a TrueCrypt or VeraCrypt container.",
-        preflight: Probe::Check("backend-detect"),
-        preflight_blocks: false,
-        verify: Probe::Check("examiner-containers"),
-        mitigation: "Put the hidden volume on a whole device or partition rather than in a file on the decoy.",
-        doc_anchor: "decoy-requirements.md#encryption-headers-high-entropy-space-and-containers",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Encrypted containers are stored on the decoy"),
+        mitigation: "A clean deactivate now handles this with the network-state class above, deleting the session's links before the decoy's NetworkManager starts. End an emergency with emergency --poweroff.",
+        doc_anchor: "operator-guide.md#how-it-works",
+        e2e: E2e::None(
+            "session-dns-records logs the link a session leaves; the on-disk connection record shares the network-state class's coverage and its raw-disk assertion waits on a cross-distro control run",
+        ),
+        residual: true,
+        conclusion: None,
     },
     ResidueClass {
-        id: "backend-tooling",
-        title: "Encryption tooling and its access times",
-        kind: ResidueKind::Setup,
-        channel: Channel::Paths(&[
-            "/usr/bin/veracrypt",
-            "/usr/sbin/cryptsetup",
-            "/sbin/cryptsetup",
-        ]),
-        platforms: Platforms::All,
-        risk: "VeraCrypt installed on a decoy, or a cryptsetup binary read recently, says encrypted volumes were opened.",
+        id: "plymouth-boot-log",
+        title: "Plymouth boot log",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&["/var/log/boot.log"]),
+        platforms: Platforms::FHS,
+        risk: "Plymouth records the boot console to /var/log/boot.log on the FHS families. The way back is a boot of the decoy, so on a persistent decoy the file's latest entries hold the way back's boot messages and their time, where a plain power cycle would not place a boot mid-day.",
         preflight: Probe::None(
-            "the tools are part of the decoy install; their access times are what an examiner reads",
+            "the decoy writes it during the boot the way back performs, not before",
         ),
         preflight_blocks: false,
-        verify: Probe::Check("examiner-tooling"),
-        mitigation: "Mount the decoy root noatime; run the backend tools from the separate machine or a live medium when you can.",
-        doc_anchor: "decoy-requirements.md#backend-tooling-and-history",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Disk-encryption tools are installed and were used"),
+        verify: Probe::Paths {
+            paths: &["/var/log/boot.log"],
+            severity: ProbeSeverity::Info,
+        },
+        mitigation: "Keep /var/log out of the decoy's persistent storage, or expect boot.log to date the way back; power off after the session.",
+        doc_anchor: "decoy-requirements.md#session-time-records",
+        e2e: E2e::None(
+            "asserted on the Fedora and Arch decoys by the cross-distro forensic probe once their images boot",
+        ),
+        residual: true,
+        conclusion: None,
     },
     ResidueClass {
-        id: "container-history",
-        title: "History naming a container or unlock",
-        kind: ResidueKind::Setup,
-        channel: Channel::Paths(&[
-            "~/.local/share/recently-used.xbel",
-            "~/.config/VeraCrypt/History.xml",
-            "~/.config/VeraCrypt/Favorite Volumes.xml",
-            "~/.bash_history",
-            "~/.zsh_history",
-        ]),
-        platforms: Platforms::All,
-        risk: "A recent-files entry, a VeraCrypt history or favourite, or a shell line running cryptsetup or veracrypt names the container and when it was opened.",
-        preflight: Probe::Check("incremental-history-flush"),
+        id: "snapper-timeline",
+        title: "Snapper timeline snapshots",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&["/.snapshots", "/var/lib/snapper"]),
+        platforms: Platforms::FHS,
+        risk: "Snapper keeps timeline snapshots of btrfs subvolumes and a bookkeeping record of each under /.snapshots and /var/lib/snapper, every one stamped with its time. A timeline snapshot taken while the machine runs dates that activity, and an older snapshot preserves decoy state for an examiner to compare.",
+        preflight: Probe::Paths {
+            paths: &["/.snapshots", "/var/lib/snapper"],
+            severity: ProbeSeverity::Info,
+        },
         preflight_blocks: false,
-        verify: Probe::Check("examiner-history"),
-        mitigation: "Disable VeraCrypt's history, harden the decoy shell history, and unlock from a shell that records nothing.",
-        doc_anchor: "decoy-requirements.md#backend-tooling-and-history",
-        e2e: E2e::Test("examiner-audit"),
-        residual: false,
-        conclusion: Some("Encrypted volumes were opened from this account"),
+        verify: Probe::Paths {
+            paths: &["/.snapshots", "/var/lib/snapper"],
+            severity: ProbeSeverity::Info,
+        },
+        mitigation: "Keep the overlay upper on the hidden volume, which NAILS enforces, so a decoy snapshot never captures a session's writes; disable the snapper timeline timer on the decoy if you want no snapshot dating the machine's activity.",
+        doc_anchor: "decoy-requirements.md#session-time-records",
+        e2e: E2e::None(
+            "asserted on a btrfs decoy with snapper by the cross-distro forensic probe once those images boot",
+        ),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
+        id: "btrfs-cow-history",
+        title: "Copy-on-write and compressed storage history",
+        kind: ResidueKind::Session,
+        channel: Channel::Mechanism(
+            "old extents a copy-on-write filesystem keeps after data is overwritten or deleted, and compressed extents on btrfs, bcachefs, zfs or an f2fs mount with compression",
+        ),
+        platforms: Platforms::ALL,
+        risk: "A copy-on-write filesystem keeps old copies of overwritten or deleted blocks in extents the live tree no longer references, recoverable with filesystem-specific tools. A raw scan reads those extents, so a leaked-then-deleted trace is still found there; but the same filesystems compress file contents, per file or subvolume and invisibly to the mount options, and a raw plaintext scan cannot read a compressed extent.",
+        preflight: Probe::None(
+            "a copy-on-write or compressed decoy is a property of the decoy's own storage, not a session write",
+        ),
+        preflight_blocks: false,
+        verify: Probe::None(
+            "a raw scan reads old copy-on-write extents but cannot read compressed ones, so `nails rehearse` reports a compressed or copy-on-write decoy as not checked rather than clean",
+        ),
+        mitigation: "Full-disk encryption on the decoy keeps old extents as ciphertext; power off after the session. A rehearsal on a compressed or copy-on-write decoy is inconclusive by design, and `nails rehearse` says so rather than reporting it clean.",
+        doc_anchor: "threat-model.md#residual-channels",
+        e2e: E2e::None(
+            "the compressed-storage verdict is unit-tested; a live rehearsal on a btrfs or f2fs decoy is a follow-up on hardware with those filesystems",
+        ),
+        residual: true,
+        conclusion: None,
+    },
+    ResidueClass {
+        id: "grubenv-boot-success",
+        title: "Fedora GRUB boot-success state",
+        kind: ResidueKind::Session,
+        channel: Channel::Paths(&["/boot/grub2/grubenv", "/boot/efi/EFI/fedora/grubenv"]),
+        platforms: Platforms::FEDORA,
+        risk: "Fedora's boot-success logic writes boot_success and boot_indeterminate into the GRUB environment block after a boot. The way back is a boot of the decoy, so the block can record it and the counter can move, where a plain power cycle would not.",
+        preflight: Probe::None(
+            "Fedora's boot-success flag is written by the decoy's own boot after the switch; NAILS binds /boot and the ESP read-only during a session, so the session never writes it",
+        ),
+        preflight_blocks: false,
+        verify: Probe::Paths {
+            paths: &["/boot/grub2/grubenv", "/boot/efi/EFI/fedora/grubenv"],
+            severity: ProbeSeverity::Info,
+        },
+        mitigation: "Power off after the session so the decoy's next boot is a plain one; the block is the decoy's own, written on the way back as on any boot.",
+        doc_anchor: "decoy-requirements.md#session-time-records",
+        e2e: E2e::None(
+            "asserted on the Fedora decoy by the cross-distro forensic probe once its image boots",
+        ),
+        residual: true,
+        conclusion: None,
     },
 ];

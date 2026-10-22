@@ -15,6 +15,7 @@ pub const NOT_VISIBLE: &[&str] = &[
     "flash cells an SSD has remapped or keeps in reserve (wear levelling, over-provisioning): no host read reaches them, only a chip-off read does",
     "blocks discarded with TRIM: they read back as zeros here even where the flash still holds them",
     "disks and partitions not mounted while the scan runs (a second disk, an unused swap partition) unless named with --device",
+    "a canary stored compressed or copy-on-write (btrfs, bcachefs, zfs, f2fs): this raw plaintext scan cannot match it, and an image or a --device not in the mount table is read as plain storage, not classified for it",
     "anything outside the decrypted mapping: the encryption header area and other partitions of the same disk",
     "firmware storage (EFI variables, pstore) and RAM",
 ];
@@ -43,6 +44,11 @@ pub struct DeviceScan {
     /// Why the device could not be scanned, if it could not.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Why a clean scan of this device is not a clean result: its filesystem
+    /// compresses contents or is copy-on-write, so a leaked canary can hide from
+    /// a raw plaintext scan. `None` when a clean scan of it is conclusive.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blind_spot: Option<String>,
 }
 
 /// The result of a scan.
@@ -66,29 +72,91 @@ impl ScanReport {
             .iter()
             .any(|device| device.error.is_some() || device.limit_reached)
     }
+
+    /// Whether any device's storage hides data from a raw plaintext scan, so a
+    /// clean result over it cannot be trusted. A device with a hit still counts
+    /// as found; this reports only that a clean scan was not conclusive.
+    pub fn inconclusive(&self) -> bool {
+        self.devices
+            .iter()
+            .any(|device| device.blind_spot.is_some())
+    }
+}
+
+/// One device a scan reads, with why a clean scan of it would not be a clean
+/// result (its filesystem compresses contents or is copy-on-write) when that is
+/// the case.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanTarget {
+    /// The device or image to read.
+    pub device: PathBuf,
+    /// Why a clean scan of it is inconclusive, or `None` when it is conclusive.
+    pub blind_spot: Option<String>,
+}
+
+impl ScanTarget {
+    /// A target whose storage does not hide data from a raw scan (an image, or
+    /// a device whose filesystem is not inspected).
+    pub fn new(device: PathBuf) -> Self {
+        Self {
+            device,
+            blind_spot: None,
+        }
+    }
+
+    /// A target for `device`, classified from the filesystem the mount table
+    /// shows on it: compressed or copy-on-write storage marks it a blind spot.
+    pub fn classified(device: PathBuf, mounts: &[MountEntry]) -> Self {
+        let canonical = device
+            .canonicalize()
+            .unwrap_or_else(|_| device.to_path_buf());
+        let blind_spot = mounts
+            .iter()
+            .find(|entry| {
+                entry.source == device
+                    || entry.source.canonicalize().unwrap_or_default() == canonical
+            })
+            .and_then(|entry| super::scan_blind_spot(&entry.fstype, &entry.super_opts))
+            .map(|blind| blind.reason().to_string());
+        Self {
+            device: canonical,
+            blind_spot,
+        }
+    }
+}
+
+/// Add a target under `device`, deduplicated by canonical path, keeping the
+/// first blind-spot reason seen for it.
+fn push_target(targets: &mut Vec<ScanTarget>, device: &Path, blind_spot: Option<String>) {
+    let canonical = device
+        .canonicalize()
+        .unwrap_or_else(|_| device.to_path_buf());
+    if targets.iter().any(|target| target.device == canonical) {
+        return;
+    }
+    targets.push(ScanTarget {
+        device: canonical,
+        blind_spot,
+    });
 }
 
 /// The devices a scan reads by default: every block device mounted read-write
 /// with a writable filesystem, plus active swap partitions, minus the hidden
 /// volume and anything mounted under it. Duplicates (by canonical path) are
-/// listed once.
+/// listed once. Each filesystem-backed device carries the blind spot its
+/// storage gives a raw plaintext scan, so a scan of a compressed or
+/// copy-on-write decoy reports "not checked" rather than clean.
 pub fn default_scan_targets(
     mounts: &[MountEntry],
     swaps: &str,
     hidden_root: &Path,
-) -> Vec<PathBuf> {
+) -> Vec<ScanTarget> {
     let hidden_dev = mounts
         .iter()
         .rev()
         .find(|entry| entry.mount_point == hidden_root)
         .map(|entry| entry.dev.clone());
-    let mut targets: Vec<PathBuf> = Vec::new();
-    let mut push = |path: &Path| {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        if !targets.contains(&canonical) {
-            targets.push(canonical);
-        }
-    };
+    let mut targets: Vec<ScanTarget> = Vec::new();
     for entry in mounts {
         if !entry.source.starts_with("/dev/")
             || READ_ONLY_FORMATS.contains(&entry.fstype.as_str())
@@ -97,28 +165,32 @@ pub fn default_scan_targets(
         {
             continue;
         }
-        push(&entry.source);
+        let blind_spot = super::scan_blind_spot(&entry.fstype, &entry.super_opts)
+            .map(|blind| blind.reason().to_string());
+        push_target(&mut targets, &entry.source, blind_spot);
     }
     for line in swaps.lines().skip(1) {
         let mut fields = line.split_whitespace();
         if let (Some(device), Some("partition")) = (fields.next(), fields.next()) {
-            push(Path::new(device));
+            push_target(&mut targets, Path::new(device), None);
         }
     }
     targets
 }
 
-/// Scan `devices` for `token`.
+/// Scan `targets` for `token`.
 ///
 /// Before reading any device the matcher proves on a buffer that it finds the
 /// token in both encodings, so a clean result cannot come from a broken
 /// matcher. A device that cannot be opened or read is reported with its error;
-/// the others are still scanned.
+/// the others are still scanned. A target's blind spot (compressed or
+/// copy-on-write storage) travels onto its result, so a clean scan of such a
+/// device reads as "not checked" rather than clean.
 ///
 /// # Errors
 ///
 /// Fails when the token is malformed or the matcher self-check fails.
-pub fn scan(token: &str, devices: &[PathBuf], limit: Option<u64>) -> Result<ScanReport> {
+pub fn scan(token: &str, targets: &[ScanTarget], limit: Option<u64>) -> Result<ScanReport> {
     if !super::valid_token(token) {
         return Err(NailsError::InvalidState(
             "the canary token is malformed".to_string(),
@@ -139,7 +211,9 @@ pub fn scan(token: &str, devices: &[PathBuf], limit: Option<u64>) -> Result<Scan
         devices: Vec::new(),
         not_visible: NOT_VISIBLE.to_vec(),
     };
-    for device in devices {
+    for target in targets {
+        let device = &target.device;
+        let blind_spot = target.blind_spot.clone();
         let result = RawSource::open(device).and_then(|source| {
             let size = source.size();
             matcher.scan(&source).map(|outcome| (size, outcome))
@@ -154,6 +228,7 @@ pub fn scan(token: &str, devices: &[PathBuf], limit: Option<u64>) -> Result<Scan
                 hits_capped: outcome.hits_capped,
                 limit_reached: outcome.limit_reached,
                 error: None,
+                blind_spot,
             },
             Err(err) => DeviceScan {
                 device: device.clone(),
@@ -164,6 +239,7 @@ pub fn scan(token: &str, devices: &[PathBuf], limit: Option<u64>) -> Result<Scan
                 hits_capped: false,
                 limit_reached: false,
                 error: Some(err.to_string()),
+                blind_spot,
             },
         });
     }

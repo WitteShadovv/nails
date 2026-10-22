@@ -11,7 +11,7 @@ use super::SystemState;
 use super::is_on_hidden_volume;
 #[cfg(test)]
 use super::is_on_hidden_volume_internal;
-use crate::{NailsError, Result};
+use crate::{Family, NailsError, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -99,7 +99,20 @@ pub enum PlatformState {
         last_switch_warning: Option<String>,
     },
     /// A Debian/Ubuntu or other FHS host: no declarative configuration layer.
-    DebianFamily,
+    ///
+    /// `family` names the host's FHS family, but only when it is one NAILS
+    /// records (Fedora or Arch). A Debian-family or unresolved host leaves it
+    /// absent, and it is skipped on the wire, so the section serialises to
+    /// exactly `{"platform":"debian_family"}` — byte for byte what every release
+    /// before families were recorded wrote. That keeps the state file's
+    /// integrity digest unchanged across the upgrade for the common case.
+    DebianFamily {
+        /// The FHS family, recorded only for Fedora and Arch; absent (and
+        /// omitted from the serialised form) for a Debian-family or unresolved
+        /// host.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        family: Option<Family>,
+    },
 }
 
 impl PlatformState {
@@ -306,11 +319,37 @@ impl StateFile {
         });
     }
 
-    /// Mark the platform as Debian-family (no declarative layer) unless a NixOS
-    /// section is already recorded.
+    /// Mark the platform as FHS / Debian-family with no recorded family, unless
+    /// a NixOS section is already present. Equivalent to
+    /// [`mark_fhs_family(None)`](Self::mark_fhs_family).
     pub fn mark_debian_family(&mut self) {
+        self.mark_fhs_family(None);
+    }
+
+    /// Mark the platform as FHS / Debian-family, recording the FHS family only
+    /// when it is one NAILS keeps on the wire (Fedora or Arch).
+    ///
+    /// A Debian-family or unresolved host records no family, so its section
+    /// stays `{"platform":"debian_family"}` — byte identical to what earlier
+    /// releases wrote — and the state file's integrity digest is unchanged
+    /// across the upgrade. No-op when a NixOS section is already recorded, since
+    /// that host has a declarative layer this would erase.
+    pub fn mark_fhs_family(&mut self, family: Option<Family>) {
         if !self.is_nixos() {
-            self.platform = Some(PlatformState::DebianFamily);
+            self.platform = Some(PlatformState::DebianFamily {
+                family: recorded_family(family),
+            });
+        }
+    }
+
+    /// The FHS family recorded for the last activation, if any.
+    ///
+    /// `Some` only when a Fedora or Arch activation recorded one; `None` on a
+    /// Debian-family host, on NixOS, and before the first activation.
+    pub fn family(&self) -> Option<Family> {
+        match &self.platform {
+            Some(PlatformState::DebianFamily { family }) => *family,
+            _ => None,
         }
     }
 
@@ -600,11 +639,27 @@ fn corrupt_result() -> LoadResult {
     }
 }
 
+/// Which FHS family is kept on the wire of the state file.
+///
+/// Only Fedora and Arch are recorded. A Debian-family host (or one whose family
+/// could not be resolved) records nothing, so its section serialises to exactly
+/// `{"platform":"debian_family"}` — byte identical to what every release before
+/// families were recorded wrote. This keeps the integrity digest of the common
+/// Debian-family install unchanged across the upgrade.
+fn recorded_family(family: Option<Family>) -> Option<Family> {
+    match family {
+        Some(Family::Fedora) => Some(Family::Fedora),
+        Some(Family::Arch) => Some(Family::Arch),
+        Some(Family::Debian) | None => None,
+    }
+}
+
 /// Compute the SHA-256 integrity digest over a state file.
 ///
 /// The caller is responsible for clearing `integrity_sha256` first so the digest
-/// is computed over a deterministic body.
-fn compute_integrity(state: &StateFile) -> Result<String> {
+/// is computed over a deterministic body. Exposed to the crate so the golden
+/// state-file generator stamps a digest the same way [`StateFile::save`] does.
+pub(crate) fn compute_integrity(state: &StateFile) -> Result<String> {
     use sha2::Digest;
     let value = serde_json::to_value(state).map_err(|e| {
         NailsError::ConfigError(format!(

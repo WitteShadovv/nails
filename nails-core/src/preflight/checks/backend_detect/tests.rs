@@ -13,10 +13,17 @@ const ROOT: &str = "/mnt/hidden-volume";
 const SYS_BLOCK: &str = "/sys/block";
 
 /// [`assess`] with an empty device directory, so a LUKS layer's header is
-/// never read from the host's `/dev`.
+/// never read from the host's `/dev`. Discards fail closed (the default).
 fn assess_offline(fs: &MockFilesystem, root: &Path) -> CheckResult {
     let dev = tempfile::tempdir().unwrap();
-    assess_with_dev_dir(fs, root, dev.path())
+    assess_with_dev_dir(fs, root, dev.path(), false)
+}
+
+/// [`assess_offline`] with the per-run `--allow-discards` override on, so a
+/// discard over the hidden volume warns instead of refusing.
+fn assess_offline_allowing_discards(fs: &MockFilesystem, root: &Path) -> CheckResult {
+    let dev = tempfile::tempdir().unwrap();
+    assess_with_dev_dir(fs, root, dev.path(), true)
 }
 
 /// The cryptsetup type the check gives a device-mapper uuid.
@@ -121,6 +128,24 @@ fn new_keeps_custom_root_and_clone_preserves_it() {
         check.clone().hidden_volume_root,
         PathBuf::from("/custom/root")
     );
+}
+
+#[test]
+fn allowing_discards_sets_the_flag_and_keeps_the_custom_root() {
+    // The per-run override turns the flag on while preserving the custom
+    // hidden root; it must not reset the check to its defaults.
+    let check = BackendDetectCheck::new(PathBuf::from("/custom/root")).allowing_discards(true);
+    assert!(check.allow_discards, "the override must turn discards on");
+    assert_eq!(
+        check.hidden_volume_root,
+        PathBuf::from("/custom/root"),
+        "the override must keep the custom hidden root"
+    );
+
+    // And off keeps the fail-closed default while still preserving the root.
+    let off = BackendDetectCheck::new(PathBuf::from("/custom/root")).allowing_discards(false);
+    assert!(!off.allow_discards, "passing false must leave discards off");
+    assert_eq!(off.hidden_volume_root, PathBuf::from("/custom/root"));
 }
 
 #[test]
@@ -361,7 +386,7 @@ fn hidden_root_on_decoy_root_is_skipped() {
 }
 
 // ------------------------------------------------------------------------
-// Assessment: WARN, never FAIL
+// Assessment: PASS, WARN, and the discard refusal (fail closed)
 // ------------------------------------------------------------------------
 
 #[test]
@@ -444,7 +469,9 @@ fn a_device_two_layers_sit_on_is_named_once() {
         "4096",
     );
 
-    let result = assess_offline(&fs, Path::new(ROOT));
+    // The plain mapping has discards on, so the risk is accepted for the run to
+    // exercise the layer naming: each device is named once in the summary.
+    let result = assess_offline_allowing_discards(&fs, Path::new(ROOT));
     let message = result.message();
     assert!(result.is_warn(), "{message}");
     assert!(
@@ -462,18 +489,36 @@ fn a_device_two_layers_sit_on_is_named_once() {
 }
 
 #[test]
-fn discard_enabled_tcrypt_mapping_warns() {
+fn discard_enabled_tcrypt_mapping_refuses_unless_allowed() {
     let fs = tcrypt_container_fixture("ext4", "2147450880");
 
-    let result = assess_offline(&fs, Path::new(ROOT));
-    assert!(result.is_warn());
-    assert!(!result.is_fail());
+    // Fails closed by default, naming no device-mapper node.
+    let refused = assess_offline(&fs, Path::new(ROOT));
+    assert!(refused.is_fail(), "{refused:?}");
+    assert!(
+        refused
+            .message()
+            .contains("Discards are enabled over the hidden volume")
+    );
+    assert_names_no_dm_node(&refused);
+
+    // Accepted for the run, it warns and points at the backend guide.
+    let allowed = assess_offline_allowing_discards(&fs, Path::new(ROOT));
+    assert!(allowed.is_warn(), "{allowed:?}");
+    assert!(allowed.message().contains("accepted for this run"));
+    assert!(allowed.message().contains(BACKENDS_DOC));
+}
+
+/// The refusal and its remediation name no device-mapper node (`dm-N` or
+/// `/dev/mapper/...`).
+fn assert_names_no_dm_node(result: &CheckResult) {
     let message = result.message();
-    assert!(message.contains("Discards are enabled on the VeraCrypt/TrueCrypt (tcrypt)"));
-    assert!(message.contains("--allow-discards"));
-    assert!(message.contains("destroy the hidden volume"));
-    assert!(message.contains("fstrim"));
-    assert!(message.contains(BACKENDS_DOC));
+    let remediation = result.remediation().unwrap_or_default();
+    for text in [message, remediation] {
+        assert!(!text.contains("dm-"), "names a dm node: {text}");
+        assert!(!text.contains("/dev/mapper"), "names a mapper node: {text}");
+        assert!(!text.contains("/dev/dm"), "names a dm node: {text}");
+    }
 }
 
 #[test]
@@ -488,7 +533,7 @@ fn discard_disabled_tcrypt_mapping_has_no_discard_warning() {
 }
 
 #[test]
-fn discard_enabled_plain_mapping_warns_without_hidden_volume_wording() {
+fn discard_enabled_plain_mapping_is_a_fail_closed_finding() {
     let layers = [Layer {
         name: "dm-4".into(),
         is_dm: true,
@@ -497,15 +542,16 @@ fn discard_enabled_plain_mapping_warns_without_hidden_volume_wording() {
         ..Layer::default()
     }];
 
-    let found = hazards(&layers, &[]);
-    assert_eq!(found.len(), 1);
-    assert!(found[0].contains("plain dm-crypt mapping dm-4"));
-    assert!(found[0].contains("uniform random data"));
-    assert!(!found[0].contains("hidden volume"));
+    // The discard is detected for the fail-closed decision, and is no longer a
+    // `hazards()` warning.
+    assert!(discards_over_hidden(&layers));
+    assert!(hazards(&layers, &[]).is_empty());
 }
 
 #[test]
-fn discard_enabled_luks_mapping_is_not_a_hazard() {
+fn luks_runtime_discards_are_a_fail_closed_finding() {
+    // A LUKS mapping opened with runtime discards (no stored header flag) now
+    // counts, where it used to be ignored.
     let layers = [Layer {
         name: "dm-2".into(),
         is_dm: true,
@@ -514,7 +560,33 @@ fn discard_enabled_luks_mapping_is_not_a_hazard() {
         ..Layer::default()
     }];
 
+    assert!(discards_over_hidden(&layers));
     assert!(hazards(&layers, &[]).is_empty());
+}
+
+#[test]
+fn discards_over_a_ram_only_zram_device_are_excepted() {
+    let crypt_on = |leaf: &str| {
+        [
+            Layer {
+                name: "dm-5".into(),
+                is_dm: true,
+                crypt: Some(CryptType::Luks),
+                discard_max_bytes: 4096,
+                ..Layer::default()
+            },
+            Layer {
+                name: leaf.into(),
+                ..Layer::default()
+            },
+        ]
+    };
+    // zram is RAM-only, so TRIM never reaches persistent storage.
+    assert!(!discards_over_hidden(&crypt_on("zram0")));
+    // The same stack on a real disk still fails closed.
+    assert!(discards_over_hidden(&crypt_on("vdb")));
+    // "zram" must be followed by a device number, not any suffix.
+    assert!(discards_over_hidden(&crypt_on("zrama")));
 }
 
 #[test]
@@ -547,13 +619,17 @@ fn file_container_on_ext4_has_no_cow_warning() {
 }
 
 #[test]
-fn every_hazard_together_is_still_only_a_warning() {
+fn discards_fail_closed_even_with_other_hazards_and_warn_when_allowed() {
     let fs = tcrypt_container_fixture("btrfs", "4096");
 
-    let result = assess_offline(&fs, Path::new(ROOT));
-    assert!(result.is_warn());
-    let message = result.message();
-    assert!(message.contains("Discards are enabled"));
+    // The discard refusal takes precedence over the (warning) hazards.
+    assert!(assess_offline(&fs, Path::new(ROOT)).is_fail());
+
+    // Accepted for the run, every finding shows together as a warning.
+    let allowed = assess_offline_allowing_discards(&fs, Path::new(ROOT));
+    assert!(allowed.is_warn());
+    let message = allowed.message();
+    assert!(message.contains("Discards are enabled over the hidden volume, accepted"));
     assert!(message.contains("mtime and ctime"));
     assert!(message.contains("copy-on-write"));
 }
@@ -642,18 +718,28 @@ fn dev_dir_with_header(json: &str) -> tempfile::TempDir {
 }
 
 #[test]
-fn luks2_header_with_persistent_discards_and_tpm_token_warns() {
+fn luks2_persistent_discards_refuse_and_the_tpm_token_warns_when_allowed() {
     let fs = luks_on_partition_fixture();
     let dev = dev_dir_with_header(
         r#"{"tokens":{"0":{"type":"systemd-tpm2"}},"config":{"flags":["allow-discards"]}}"#,
     );
-    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path());
-    assert!(result.is_warn(), "{result:?}");
-    let message = result.message();
+
+    // The stored allow-discards flag is a discard over the hidden volume, so it
+    // fails closed and names no device-mapper node.
+    let refused = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
+    assert!(refused.is_fail(), "{refused:?}");
     assert!(
-        message.contains("persistent allow-discards flag"),
-        "{message}"
+        refused
+            .message()
+            .contains("Discards are enabled over the hidden volume")
     );
+    assert_names_no_dm_node(&refused);
+
+    // Accepted for the run, it warns and still surfaces the TPM-token tell.
+    let allowed = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), true);
+    assert!(allowed.is_warn(), "{allowed:?}");
+    let message = allowed.message();
+    assert!(message.contains("accepted for this run"), "{message}");
     assert!(message.contains("systemd-tpm2 token"), "{message}");
     assert!(
         message.contains("binding the volume to the host"),
@@ -665,7 +751,7 @@ fn luks2_header_with_persistent_discards_and_tpm_token_warns() {
 fn luks2_header_without_flags_or_tokens_passes() {
     let fs = luks_on_partition_fixture();
     let dev = dev_dir_with_header(r#"{"tokens":{},"config":{"flags":[]}}"#);
-    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path());
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
     assert!(result.is_pass(), "{result:?}");
     assert!(
         result.message().contains("LUKS mapping dm-2"),
@@ -680,7 +766,7 @@ fn a_detached_luks2_header_is_skipped() {
     let fs = luks_on_partition_fixture();
     let dev = tempfile::tempdir().unwrap();
     std::fs::write(dev.path().join("sdb2"), vec![0x5Au8; 32768]).unwrap();
-    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path());
+    let result = assess_with_dev_dir(&fs, Path::new(ROOT), dev.path(), false);
     assert!(result.is_pass(), "{result:?}");
 }
 

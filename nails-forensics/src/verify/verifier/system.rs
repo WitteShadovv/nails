@@ -3,7 +3,7 @@
 
 //! Artifact-file, block-device, process and memory checks, with the finding/severity helpers they share.
 
-use super::session::{CHECK_DECOY_OFFLINE, HiddenSession};
+use super::session::{HiddenSession, check_decoy_offline};
 use super::*;
 
 impl<F: Filesystem> Verifier<F> {
@@ -103,8 +103,9 @@ impl<F: Filesystem> Verifier<F> {
                 Finding::new(Severity::Info, "file", found).with_fix_guidance(format!(
                     "The hidden session's own copy, in its hidden layer ({}); the decoy is not \
                  written. The session cannot see the decoy beneath it: to check the decoy, \
-                 {CHECK_DECOY_OFFLINE}",
-                    upper.display()
+                 {}",
+                    upper.display(),
+                    check_decoy_offline()
                 )),
             );
         }
@@ -113,7 +114,8 @@ impl<F: Filesystem> Verifier<F> {
                 format!(
                     "Trace on the decoy filesystem, seen through the hidden session. Deleting it \
                  here only hides it in the hidden layer: remove it on the decoy after the \
-                 return, or first confirm it ({CHECK_DECOY_OFFLINE})"
+                 return, or first confirm it ({})",
+                    check_decoy_offline()
                 ),
             ),
         )
@@ -337,8 +339,9 @@ fn runtime_fix_guidance(id: &str, path: &Path) -> String {
     let path = path.display();
     match id {
         "runtime-copy-dir" => format!(
-            "Leftover of an interrupted activation, in RAM; run 'nails recover' on the decoy, \
-             or power off (then confirm {path} is gone)"
+            "Leftover of an interrupted activation, in RAM; run '{}' on the decoy, \
+             or power off (then confirm {path} is gone)",
+            nails_base::next_step::sudo_line(nails_base::next_step::NextStep::Recover)
         ),
         "read-only-disks-rule" => format!(
             "Left by a way back that did not finish, in RAM; power off, or remove it as \
@@ -372,5 +375,47 @@ fn block_device_finding(is_own: bool, kind: &str, label: &str, node: &str) -> Fi
         .with_fix_guidance(format!(
             "An unexpected {kind} is open; close it if it is not in use ({node})"
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The `runtime-copy-dir` leftover is an interrupted activation's RAM copy,
+    /// so its guidance is distinct from the bare fallback: it names the cause and
+    /// offers `nails recover` on the decoy as the proper undo, not only a
+    /// power-off. Dropping the arm would fall through to the generic `_` text,
+    /// which says neither, so these assertions pin the per-id guidance contract.
+    #[test]
+    fn runtime_copy_dir_guidance_names_recover_and_the_interrupted_activation() {
+        let path = Path::new("/run/overlay-runtime/copy");
+        let guidance = runtime_fix_guidance("runtime-copy-dir", path);
+
+        // The cause, which only this arm states.
+        assert!(
+            guidance.contains("Leftover of an interrupted activation"),
+            "names the interrupted-activation cause: {guidance}"
+        );
+        // The `recover` remedy this arm offers (via the rendered sudo line),
+        // which the generic fallback and the other arms do not mention.
+        assert!(
+            guidance.contains(" recover"),
+            "offers the recover command: {guidance}"
+        );
+        // Still names the leftover path to confirm after a power-off.
+        assert!(
+            guidance.contains("/run/overlay-runtime/copy"),
+            "names the leftover path: {guidance}"
+        );
+        // It must not collapse to the generic fallback wording.
+        assert_ne!(
+            guidance,
+            format!(
+                "In RAM; power off (then confirm {} is gone)",
+                path.display()
+            ),
+            "runtime-copy-dir gets its own guidance, not the fallback"
+        );
     }
 }

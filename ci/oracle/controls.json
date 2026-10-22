@@ -1,0 +1,31 @@
+{
+  "_comment": "Scan self-checks for the NAILS forensic oracle. The positive controls are records the pipeline (ci/oracle/make-sample-images.sh) plants on the 'after' image and that the scan must detect: if one is missing the scan is blind and the run fails (never 'clean'), because a scan that cannot see a record it should cannot be trusted to report no residue. Each is a unique, obviously-synthetic e-mail address appended to a baseline carrier file (a wtmpdb login row, a lastlog2 row, a pacman history line) that already exists on before/control; bulk_extractor carves the address from the raw image bytes with no format-aware parser, so the scan emits it at the exact (bulk_extractor, email, <address>) key these controls pin. This proves the planted record's bytes were present and readable, not that a format-aware parser understood the record; a 'was parsed' guarantee would need a plaso-keyed control, which plaso's coarse (path, data_type) keying cannot pin to one planted record. The canary is a reserved address planted on every image at an otherwise-uncovered path; finding it proves the scan read the image's contents. The scan may rotate the canary per run (ORACLE_SEED) and pins whatever it planted in a run-time copy of this file; the value below is the default used when nothing rotates it. 'tool' pins the channel that must surface a check; 'path' and 'field' locate it (a bulk_extractor feature type and its exact value). Keep these in step with what make-sample-images.sh plants.",
+  "positive_controls": [
+    {
+      "name": "wtmpdb-boot",
+      "tool": "bulk_extractor",
+      "path": "email",
+      "field": "wtmpdb-boot@oracle.example",
+      "note": "Appended as the remote-host text column of a wtmpdb login row in /var/log/wtmp.db on the 'after' image."
+    },
+    {
+      "name": "lastlog2",
+      "tool": "bulk_extractor",
+      "path": "email",
+      "field": "lastlog2@oracle.example",
+      "note": "Appended as the remote-host text column of a lastlog2 row in /var/lib/lastlog/lastlog2.db on the 'after' image."
+    },
+    {
+      "name": "pkg-history",
+      "tool": "bulk_extractor",
+      "path": "email",
+      "field": "pkg-history@oracle.example",
+      "note": "Appended as a comment in a pacman history line in /var/log/pacman.log on the 'after' image (a dnf history.sqlite comment on a Fedora image)."
+    }
+  ],
+  "canary": {
+    "tool": "bulk_extractor",
+    "path": "email",
+    "field": "canary@oracle.example"
+  }
+}

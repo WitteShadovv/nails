@@ -1,9 +1,13 @@
 // SPDX-FileCopyrightText: 2025-2026 WitteShadovv
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-//! Unit tests for the `check` report and its two renderings.
+//! Unit tests for the two renderings of the readiness report.
 
 use super::*;
+use nails_core::CheckResult;
+use nails_core::app::readiness::{
+    ConfigSummary, InheritedEntry, InheritedSummary, ProfileSummary, ReadinessReport,
+};
 
 fn rows() -> Vec<CheckRow> {
     vec![
@@ -12,8 +16,8 @@ fn rows() -> Vec<CheckRow> {
     ]
 }
 
-fn report(rows: Vec<CheckRow>) -> CheckReport {
-    CheckReport::finalize(
+fn report(rows: Vec<CheckRow>) -> ReadinessReport {
+    ReadinessReport::finalize(
         rows,
         ConfigSummary {
             config_file: None,
@@ -44,13 +48,23 @@ fn report(rows: Vec<CheckRow>) -> CheckReport {
     )
 }
 
+/// Each check status maps to its own mark; a passing, warning or skipped row
+/// must not fall through to the Fail mark the `_` arm uses for real failures.
 #[test]
-fn finalize_counts_outcomes_and_sets_ready() {
-    let report = report(rows());
-    assert!(report.ready);
-    assert_eq!(report.summary.passed, 1);
-    assert_eq!(report.summary.warnings, 1);
-    assert_eq!(report.summary.failed, 0);
+fn row_mark_maps_each_status_to_its_own_mark() {
+    let pass = CheckRow::from_result("a".into(), &CheckResult::Pass("ok".into()));
+    assert_eq!(row_mark(&pass), Mark::Pass);
+
+    let warn = CheckRow::from_result("b".into(), &CheckResult::Warn("careful".into()));
+    assert_eq!(row_mark(&warn), Mark::Warn);
+
+    let skipped = CheckRow::from_result("c".into(), &CheckResult::Skipped("no volume".into()));
+    assert_eq!(row_mark(&skipped), Mark::Neutral);
+
+    // The fallback arm: a real failure (and any unknown status) is Fail, which
+    // is what each of the three statuses above must stay distinct from.
+    let fail = CheckRow::from_result("d".into(), &CheckResult::fail("boom".to_string()));
+    assert_eq!(row_mark(&fail), Mark::Fail);
 }
 
 #[test]
@@ -85,18 +99,6 @@ fn the_summary_line_puts_a_single_warning_in_the_singular() {
 }
 
 #[test]
-fn a_failing_check_marks_the_report_not_ready() {
-    let mut rows = rows();
-    rows.push(CheckRow::from_result(
-        "c".into(),
-        &CheckResult::fail("boom".to_string()),
-    ));
-    let report = report(rows);
-    assert!(!report.ready);
-    assert_eq!(report.summary.failed, 1);
-}
-
-#[test]
 fn json_envelope_carries_checks_and_summary() {
     let report = report(rows());
     let line = Envelope::success(COMMAND, &report).to_line();
@@ -128,14 +130,6 @@ fn json_envelope_carries_inherited_inventory() {
     assert_eq!(value["data"]["inherited"]["entries"][0]["status"], "review");
 }
 
-#[test]
-fn not_inspected_summary_is_empty() {
-    let summary = InheritedSummary::not_inspected();
-    assert!(!summary.inspected);
-    assert!(summary.entries.is_empty());
-    assert!(summary.remote_linked.is_empty());
-}
-
 /// Under "NixOS profile" the report prints the summary's line: the build
 /// target, or that there is none, never 0.2's "no profile switch".
 #[test]
@@ -154,6 +148,8 @@ fn the_profile_section_prints_the_build_target_line() {
         ),
     ] {
         let mut report = report(rows());
+        // A NixOS host always shows the section.
+        report.nixos_host = true;
         report.profile.detail = detail;
         let lines = human_lines(&report, style);
         let at = lines
@@ -167,4 +163,53 @@ fn the_profile_section_prints_the_build_target_line() {
             "{lines:#?}"
         );
     }
+}
+
+/// On a non-NixOS host with no NixOS target the section is omitted: a Debian or
+/// Ubuntu decoy has no NixOS profile to build, so the line is noise.
+#[test]
+fn the_profile_section_is_hidden_on_a_non_nixos_host() {
+    let style = Style {
+        ascii: true,
+        ..Style::default()
+    };
+    let mut report = report(rows());
+    report.nixos_host = false;
+    report.profile = ProfileSummary {
+        mode: "none",
+        detail: None,
+    };
+    let lines = human_lines(&report, style);
+    assert!(
+        lines.iter().all(|line| line != "NixOS profile:"),
+        "{lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| !line.contains("NixOS build target")),
+        "{lines:#?}"
+    );
+}
+
+/// An explicit flake is the operator's own choice and is shown on any host, so a
+/// Debian decoy pointed at a flake still reports it.
+#[test]
+fn an_explicit_flake_shows_the_profile_section_on_any_host() {
+    let style = Style {
+        ascii: true,
+        ..Style::default()
+    };
+    let mut report = report(rows());
+    report.nixos_host = false;
+    report.profile = ProfileSummary {
+        mode: "flake",
+        detail: Some("NixOS flake: /cfg#host".to_string()),
+    };
+    let lines = human_lines(&report, style);
+    let at = lines
+        .iter()
+        .position(|line| line == "NixOS profile:")
+        .expect("an explicit flake is reported on any host");
+    assert!(lines[at + 1].contains("/cfg#host"), "{lines:#?}");
 }

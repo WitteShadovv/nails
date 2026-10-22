@@ -5,15 +5,19 @@
 //!
 //! `nails config path|show|validate` inspects the configuration file. Every
 //! subcommand is read-only: nothing is mounted, written or logged to the
-//! hidden volume beyond what any command's logging setup does.
+//! hidden volume beyond what any command's logging setup does. Under `--json`
+//! each subcommand prints exactly one version-2 envelope line on stdout, errors
+//! included.
 
 use std::path::Path;
 
 use nails_core::{CliOverrides, Config, LoadedConfig, NailsError};
+use serde::Serialize;
 use serde_json::json;
 
-use super::{config_error_line, config_read_hint, resolve_config};
+use super::{config_error_line, config_read_hint};
 use crate::cli::args::ConfigCommand;
+use crate::cli::output::envelope::{Envelope, ErrorBody, error_envelope};
 use crate::cli::output::{ExitStatus, OutputSettings};
 
 /// Exit code for a command-line usage error.
@@ -58,6 +62,26 @@ impl Outcome {
     }
 }
 
+/// One envelope line on stdout carrying `data`.
+fn envelope_line<T: Serialize>(data: T) -> String {
+    format!("{}\n", Envelope::success("config", data).to_line())
+}
+
+/// A configuration load failure for `command`, as one error envelope line on
+/// stdout: the error line, with the `sudo` line folded in when the read was
+/// refused for lack of permission.
+fn json_load_error(error: &NailsError, command: &str, code: i32) -> Outcome {
+    let mut body = ErrorBody::new("config", config_error_line(error));
+    if let Some(hint) = config_read_hint(error, command) {
+        body = body.with_hint(hint);
+    }
+    Outcome {
+        code,
+        stdout: format!("{}\n", error_envelope("config", body).to_line()),
+        stderr: String::new(),
+    }
+}
+
 /// Execute a `nails config` subcommand.
 ///
 /// Returns [`ExitStatus::Ok`] on success, [`ExitStatus::Usage`] for
@@ -69,8 +93,8 @@ pub fn execute(
     command: &ConfigCommand,
 ) -> ExitStatus {
     let outcome = run(config_override, command, settings.is_json());
-    print!("{}", outcome.stdout);
-    eprint!("{}", outcome.stderr);
+    crate::cli::output::print_tolerating_broken_pipe(&outcome.stdout);
+    crate::cli::output::eprint_tolerating_broken_pipe(&outcome.stderr);
     match outcome.code {
         0 => ExitStatus::Ok,
         EXIT_USAGE => ExitStatus::Usage,
@@ -83,9 +107,18 @@ fn run(config_override: Option<&Path>, command: &ConfigCommand, json: bool) -> O
         ConfigCommand::Path => path(config_override, json),
         ConfigCommand::Show { example: true, .. } if json => Outcome {
             code: EXIT_USAGE,
-            stderr: "error: --example prints commented TOML and cannot be combined with --json\n"
-                .to_string(),
-            ..Outcome::default()
+            stdout: format!(
+                "{}\n",
+                error_envelope(
+                    "config",
+                    ErrorBody::new(
+                        "usage",
+                        "--example prints commented TOML and cannot be combined with --json",
+                    ),
+                )
+                .to_line()
+            ),
+            stderr: String::new(),
         },
         ConfigCommand::Show { example: true, .. } => Outcome::ok(Config::example_config()),
         ConfigCommand::Show { nixos_flake, .. } => {
@@ -103,7 +136,7 @@ fn path(config_override: Option<&Path>, json: bool) -> Outcome {
     let exists = path.is_file();
 
     if json {
-        return Outcome::ok(format!("{}\n", json!({ "path": path, "exists": exists })));
+        return Outcome::ok(envelope_line(json!({ "path": path, "exists": exists })));
     }
 
     let status = match (exists, config_override.is_some()) {
@@ -115,23 +148,20 @@ fn path(config_override: Option<&Path>, json: bool) -> Outcome {
 }
 
 fn show(config_override: Option<&Path>, json: bool, overrides: &CliOverrides) -> Outcome {
-    let mut loaded = match resolve_config(config_override) {
+    let loaded = match nails_core::app::config_view(config_override, overrides) {
         Ok(loaded) => loaded,
+        Err(error) if json => return json_load_error(&error, "config show", EXIT_CONFIG_ERROR),
         Err(error) => return Outcome::load_error(&error, "config show"),
     };
-    loaded.apply_cli_overrides(overrides);
 
-    let rendered = if json {
-        loaded.to_json().and_then(|value| {
-            serde_json::to_string_pretty(&value)
-                .map(|text| text + "\n")
-                .map_err(|e| nails_core::NailsError::ConfigError(e.to_string()))
-        })
-    } else {
-        loaded.to_annotated_toml()
-    };
+    if json {
+        return match loaded.to_json() {
+            Ok(value) => Outcome::ok(envelope_line(value)),
+            Err(error) => json_load_error(&error, "config show", EXIT_CONFIG_ERROR),
+        };
+    }
 
-    match rendered {
+    match loaded.to_annotated_toml() {
         Ok(text) => Outcome::ok(text),
         Err(error) => Outcome::config_error(&config_error_line(&error)),
     }
@@ -149,20 +179,9 @@ fn validate(config_override: Option<&Path>, explicit: Option<&Path>, json: bool)
         None => "config validate".to_string(),
     };
     match LoadedConfig::load(&path) {
-        Ok(_) if json => Outcome::ok(format!("{}\n", json!({ "path": path, "valid": true }))),
+        Ok(_) if json => Outcome::ok(envelope_line(json!({ "path": path, "valid": true }))),
         Ok(_) => Outcome::ok(format!("{}: valid\n", path.display())),
-        Err(error) if json => {
-            let mut value =
-                json!({ "path": path, "valid": false, "error": config_error_line(&error) });
-            if let Some(hint) = config_read_hint(&error, &command) {
-                value["hint"] = json!(hint);
-            }
-            Outcome {
-                code: EXIT_CONFIG_ERROR,
-                stdout: format!("{value}\n"),
-                stderr: String::new(),
-            }
-        }
+        Err(error) if json => json_load_error(&error, &command, EXIT_CONFIG_ERROR),
         Err(error) => Outcome::load_error(&error, &command),
     }
 }
@@ -171,6 +190,15 @@ fn validate(config_override: Option<&Path>, explicit: Option<&Path>, json: bool)
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// The `data` payload of a one-line config envelope, with the shape asserted.
+    fn envelope_data(stdout: &str) -> serde_json::Value {
+        let value: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(value["schema_version"], 2, "{value}");
+        assert_eq!(value["command"], "config", "{value}");
+        assert_eq!(value["ok"], true, "{value}");
+        value["data"].clone()
+    }
 
     fn write_config(contents: &str) -> tempfile::NamedTempFile {
         let mut file = tempfile::NamedTempFile::new().unwrap();
@@ -213,16 +241,16 @@ mod tests {
     #[test]
     fn path_defaults_to_binary_relative_toml() {
         let outcome = run(None, &ConfigCommand::Path, true);
-        let value: serde_json::Value = serde_json::from_str(&outcome.stdout).unwrap();
+        let data = envelope_data(&outcome.stdout);
 
         assert_eq!(outcome.code, 0);
         assert!(
-            value["path"]
+            data["path"]
                 .as_str()
                 .unwrap()
                 .ends_with("config/nails.toml")
         );
-        assert_eq!(value["exists"], false);
+        assert_eq!(data["exists"], false);
     }
 
     #[test]
@@ -252,12 +280,14 @@ mod tests {
             },
             true,
         );
-        let value: serde_json::Value = serde_json::from_str(&outcome.stdout).unwrap();
+        let data = envelope_data(&outcome.stdout);
 
-        assert_eq!(value["config"]["nixos_flake"], "/c#d");
-        assert_eq!(value["sources"]["nixos_flake"], "cli");
-        assert_eq!(value["sources"]["minimum_space_mb"], "default");
-        assert_eq!(value["exists"], true);
+        // The config view is the envelope's data; one line, not pretty-printed.
+        assert_eq!(outcome.stdout.trim().lines().count(), 1, "{outcome:?}");
+        assert_eq!(data["config"]["nixos_flake"], "/c#d");
+        assert_eq!(data["sources"]["nixos_flake"], "cli");
+        assert_eq!(data["sources"]["minimum_space_mb"], "default");
+        assert_eq!(data["exists"], true);
     }
 
     #[test]
@@ -283,6 +313,29 @@ mod tests {
         assert_eq!(outcome.code, EXIT_CONFIG_ERROR);
         assert!(outcome.stdout.is_empty());
         assert!(outcome.stderr.contains("did you mean `enabled`?"));
+    }
+
+    #[test]
+    fn show_json_reports_error_on_stdout() {
+        let file = write_config("[backend_watch]\nenable = true\n");
+        let outcome = run(Some(file.path()), &show_command(), true);
+
+        assert_eq!(outcome.code, EXIT_CONFIG_ERROR, "{outcome:?}");
+        // Under --json the load failure is one error envelope on stdout, with
+        // stderr left empty; it is not a plain `error:` line on stderr.
+        assert!(outcome.stderr.is_empty(), "{outcome:?}");
+        let value: serde_json::Value = serde_json::from_str(outcome.stdout.trim()).unwrap();
+        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["command"], "config");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "config");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("did you mean `enabled`?"),
+            "{outcome:?}"
+        );
     }
 
     #[test]
@@ -330,12 +383,16 @@ mod tests {
             },
             true,
         );
-        let value: serde_json::Value = serde_json::from_str(&outcome.stdout).unwrap();
+        let value: serde_json::Value = serde_json::from_str(outcome.stdout.trim()).unwrap();
 
         assert_eq!(outcome.code, EXIT_CONFIG_ERROR);
-        assert_eq!(value["valid"], false);
+        // An invalid file is one error envelope: ok false, the code, the reason.
+        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["command"], "config");
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "config");
         assert!(
-            value["error"]
+            value["error"]["message"]
                 .as_str()
                 .unwrap()
                 .contains("unknown key `bogus`")
@@ -347,9 +404,9 @@ mod tests {
             &ConfigCommand::Validate { path: None },
             true,
         );
-        let value: serde_json::Value = serde_json::from_str(&outcome.stdout).unwrap();
+        let data = envelope_data(&outcome.stdout);
         assert_eq!(outcome.code, 0);
-        assert_eq!(value["valid"], true);
+        assert_eq!(data["valid"], true);
     }
 
     #[test]
@@ -386,7 +443,17 @@ mod tests {
         );
 
         assert_eq!(outcome.code, EXIT_USAGE);
-        assert!(outcome.stdout.is_empty());
-        assert!(outcome.stderr.contains("--example"), "{outcome:?}");
+        // The refusal is one error envelope on stdout, not a line on stderr.
+        assert!(outcome.stderr.is_empty(), "{outcome:?}");
+        let value: serde_json::Value = serde_json::from_str(outcome.stdout.trim()).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "usage");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("--example"),
+            "{outcome:?}"
+        );
     }
 }

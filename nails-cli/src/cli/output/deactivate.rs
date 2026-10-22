@@ -5,13 +5,13 @@
 //!
 //! Deactivation enqueues the soft-reboot back to the decoy (or a power-off),
 //! so its machine-readable result is a small typed envelope printed before the
-//! switch, and its failures are mapped to a structured error whose `hint`
-//! carries the remedy.
+//! switch, and its failures are mapped to a structured error that folds the
+//! remedy into its `message` (the error body carries no separate hint field).
 
 use nails_core::NailsError;
 use serde::Serialize;
 
-use crate::cli::output::envelope::{Envelope, ErrorBody};
+use crate::cli::output::envelope::{Envelope, EnvelopePrint, ErrorBody, NextStep};
 
 /// The `data` payload for a successful `deactivate --json`.
 #[derive(Debug, Serialize)]
@@ -33,8 +33,9 @@ pub fn print_deactivate_json(poweroff: bool) {
     Envelope::success("deactivate", data).print();
 }
 
-/// Map a deactivation failure to a structured error, folding any multi-line
-/// library message into a one-line message plus a `hint`.
+/// Map a deactivation failure to a structured error: a stable code, a `message`
+/// that folds the remedy in after the library explanation (there is no separate
+/// hint field), and a typed `next` command where one applies.
 pub fn deactivate_error_body(error: &NailsError) -> ErrorBody {
     match error {
         NailsError::PermissionDenied(msg) => {
@@ -50,9 +51,12 @@ pub fn deactivate_error_body(error: &NailsError) -> ErrorBody {
             format!("unmount failed: {}: {reason}", path.display()),
         )
         .with_hint("check if the overlay is in use and retry"),
-        NailsError::InvalidState(msg) => ErrorBody::new("invalid_state", msg.clone()).with_hint(
-            "'nails emergency' kills the hidden session and returns, or powers off with --poweroff",
-        ),
+        NailsError::InvalidState(msg) => ErrorBody::new("invalid_state", msg.clone())
+            .with_hint(format!(
+                "'{}' kills the hidden session and returns, or powers off with --poweroff",
+                nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Emergency)
+            ))
+            .with_next(NextStep::new("emergency")),
         other => ErrorBody::new("deactivation_failed", other.to_string())
             .with_hint("check system state and retry"),
     }

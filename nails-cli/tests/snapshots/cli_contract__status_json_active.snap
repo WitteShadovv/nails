@@ -5,6 +5,7 @@ expression: redact_status(value)
 {
   "command": "status",
   "data": {
+    "attention": "ended_abnormally",
     "decoy_persistent": "[decoy_persistent]",
     "hidden_root": "[hidden_root]",
     "hidden_root_mounted": false,
@@ -12,16 +13,11 @@ expression: redact_status(value)
     "nextroot_mounted": false,
     "opsec_reminders": [],
     "persona_mode": "shared-home",
+    "place": "decoy",
     "policy_mounts": [],
-    "posture": "decoy",
     "reason": "the record still holds an active session, but none is running: it ended without updating the record (a power loss, a reset or a failed hidden volume)",
-    "remediation": "Run `nails recover` to reset the record",
-    "session": "decoy",
-    "state": {
-      "kind": "active"
-    },
-    "state_source": "loaded"
+    "remediation": "Run `sudo [binary] recover` to reset the record"
   },
   "ok": true,
-  "schema_version": 1
+  "schema_version": 2
 }

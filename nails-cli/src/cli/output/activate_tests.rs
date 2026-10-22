@@ -5,6 +5,24 @@
 
 use super::*;
 
+/// The one-line envelope `activate --json` prints for `result`, as a value.
+fn envelope_value(result: &ActivateResult<'_>, duration: f64) -> serde_json::Value {
+    let line = match result {
+        ActivateResult::Failed(NailsError::Cancelled) => {
+            error_envelope("activate", ErrorBody::new("cancelled", CANCELLED)).to_line()
+        }
+        ActivateResult::Failed(error) => Envelope::failure_with_data(
+            "activate",
+            failure_error(error),
+            activate_data(result, duration),
+        )
+        .to_line(),
+        _ => Envelope::outcome("activate", true, activate_data(result, duration)).to_line(),
+    };
+    assert_eq!(line.lines().count(), 1, "one physical line: {line}");
+    serde_json::from_str(&line).unwrap()
+}
+
 #[test]
 fn a_preflight_refusal_lists_each_check_with_its_fix() {
     let error = NailsError::PreFlightCheckFailed(vec![(
@@ -12,11 +30,18 @@ fn a_preflight_refusal_lists_each_check_with_its_fix() {
         "systemd 252 is too old".to_string(),
         Some("Use Debian 13".to_string()),
     )]);
-    let event = result_event(&ActivateResult::Failed(&error), 0.5);
-    assert!(!event.ok);
-    assert_eq!(event.status, "error");
-    let checks = event.failed_checks.unwrap();
+    let data = activate_data(&ActivateResult::Failed(&error), 0.5);
+    assert_eq!(data.status, "failed");
+    let checks = data.failed_checks.unwrap();
     assert_eq!(checks[0].name, "systemd-version");
+
+    let value = envelope_value(&ActivateResult::Failed(&error), 0.5);
+    assert_eq!(value["schema_version"], 2);
+    assert_eq!(value["command"], "activate");
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "not_ready");
+    assert_eq!(value["data"]["failed_checks"][0]["name"], "systemd-version");
+
     let (_, err) = human_lines(
         &ActivateResult::Failed(&error),
         0.5,
@@ -26,12 +51,15 @@ fn a_preflight_refusal_lists_each_check_with_its_fix() {
 }
 
 #[test]
-fn already_active_is_a_success_with_its_own_status() {
-    let event = result_event(&ActivateResult::AlreadyActive, 0.0);
-    assert!(event.ok);
-    assert_eq!(event.status, "already_active");
-    let text = serde_json::to_string(&event).unwrap();
-    assert!(text.contains("\"type\":\"result\""));
+fn already_active_is_one_ok_envelope_with_its_own_status() {
+    let data = activate_data(&ActivateResult::AlreadyActive, 0.0);
+    assert_eq!(data.status, "already_active");
+    let value = envelope_value(&ActivateResult::AlreadyActive, 0.0);
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["data"]["status"], "already_active");
+    // The version-1 line stream is gone: no `type` tag, one envelope only.
+    assert!(value.get("type").is_none(), "{value}");
+    assert!(value["data"].get("type").is_none(), "{value}");
 }
 
 /// A prepared entry with a hidden NixOS toplevel, one masked unit, and one
@@ -93,31 +121,31 @@ fn entry(warnings: Vec<String>) -> Entry {
 #[test]
 fn an_entering_result_lists_the_system_filesystems_and_masks() {
     let entry = entry(Vec::new());
-    let event = result_event(&ActivateResult::Entering(&entry), 2.34);
+    let data = activate_data(&ActivateResult::Entering(&entry), 2.34);
 
-    assert!(event.ok);
-    assert_eq!(event.status, "entering");
+    assert_eq!(data.status, "entering");
     assert_eq!(
-        event.hidden_system.as_deref(),
+        data.hidden_system.as_deref(),
         Some("/nix/store/aaa-nixos-system-hidden")
     );
     // `Leave` decisions are not reported: nothing happens to them.
     assert_eq!(
-        event.filesystems,
+        data.filesystems,
         vec!["/boot: read-only", "/home: overlaid"]
     );
     // As `status --json` lists them: the boot-loader masks too.
     assert_eq!(
-        event.masked_units,
+        data.masked_units,
         vec!["dev-vda3.swap", "systemd-boot-random-seed.service"]
     );
     assert_eq!(
-        event.message,
+        data.message,
         "Prepared in 2.3s; soft-rebooting into the hidden session"
     );
-    let value = serde_json::to_value(&event).unwrap();
-    assert!(value.get("warnings").is_none(), "{value}");
-    assert!(value.get("failed_checks").is_none(), "{value}");
+    let value = envelope_value(&ActivateResult::Entering(&entry), 2.34);
+    assert_eq!(value["ok"], true);
+    assert!(value["data"].get("warnings").is_none(), "{value}");
+    assert!(value["data"].get("failed_checks").is_none(), "{value}");
 }
 
 #[test]
@@ -125,11 +153,13 @@ fn an_entry_with_warnings_reports_its_own_status_and_carries_them() {
     let entry = entry(vec![
         "hidden kernel differs from the running one".to_string(),
     ]);
-    let event = result_event(&ActivateResult::Entering(&entry), 1.0);
-    assert_eq!(event.status, "entering_with_warnings");
-    let value = serde_json::to_value(&event).unwrap();
+    let data = activate_data(&ActivateResult::Entering(&entry), 1.0);
+    assert_eq!(data.status, "entering_with_warnings");
+    let value = envelope_value(&ActivateResult::Entering(&entry), 1.0);
+    // Entering with warnings is exit 9, still a success for `ok`.
+    assert_eq!(value["ok"], true);
     assert_eq!(
-        value["warnings"][0],
+        value["data"]["warnings"][0],
         "hidden kernel differs from the running one"
     );
 }
@@ -183,10 +213,11 @@ fn quiet_entering_output_drops_the_details_but_keeps_the_warnings() {
 #[test]
 fn a_plain_failure_names_the_error_on_stderr_and_promises_no_leftovers() {
     let error = NailsError::InvalidState("the root is not a mount point".to_string());
-    let event = result_event(&ActivateResult::Failed(&error), 0.1);
-    assert!(!event.ok);
-    assert!(event.failed_checks.is_none());
-    assert_eq!(event.message, format!("Activation failed: {error}"));
+    let data = activate_data(&ActivateResult::Failed(&error), 0.1);
+    assert_eq!(data.status, "failed");
+    assert!(data.failed_checks.is_none());
+    assert_eq!(data.message, format!("Activation failed: {error}"));
+    assert_eq!(failure_error(&error).code, "activation_failed");
 
     let (out, err) = human_lines(
         &ActivateResult::Failed(&error),
@@ -203,16 +234,20 @@ fn a_plain_failure_names_the_error_on_stderr_and_promises_no_leftovers() {
     );
 }
 
-/// A cancel is no failure: it reads the same whether the operator
-/// answered `n` or pressed Ctrl+C, at the prompt or during the entry.
+/// A cancel is the one cancel shape, no failure: it reads the same whether the
+/// operator answered `n` or pressed Ctrl+C, at the prompt or during the entry.
 #[test]
-fn a_cancel_reads_as_a_cancel_not_a_failure() {
+fn a_cancel_reads_as_the_one_cancel_shape() {
     let cancelled = ActivateResult::Failed(&NailsError::Cancelled);
-    let event = result_event(&cancelled, 0.0);
-    assert!(!event.ok);
-    assert_eq!(event.status, "cancelled");
-    assert_eq!(event.message, "Activation cancelled; nothing was changed.");
-    assert!(event.failed_checks.is_none());
+    let value = envelope_value(&cancelled, 0.0);
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "cancelled");
+    assert_eq!(
+        value["error"]["message"],
+        "Activation cancelled; nothing was changed."
+    );
+    // The cancel shape carries no data.
+    assert!(value.get("data").is_none(), "{value}");
 
     let (out, err) = human_lines(&cancelled, 0.0, &OutputSettings::default());
     assert!(out.is_empty(), "{out:?}");
@@ -248,9 +283,11 @@ fn a_multi_line_fix_is_indented_line_by_line() {
             "  Nothing was changed: no next root is left behind.".to_string(),
         ]
     );
-    let event = result_event(&ActivateResult::Failed(&error), 0.0);
-    let value = serde_json::to_value(&event).unwrap();
-    assert!(value["failed_checks"][1].get("fix").is_none(), "{value}");
+    let value = envelope_value(&ActivateResult::Failed(&error), 0.0);
+    assert!(
+        value["data"]["failed_checks"][1].get("fix").is_none(),
+        "{value}"
+    );
 }
 
 #[test]
@@ -280,6 +317,6 @@ fn an_overlay_only_entry_names_no_hidden_system() {
         !out.iter().any(|line| line.contains("Hidden system")),
         "{out:?}"
     );
-    let value = serde_json::to_value(result_event(&ActivateResult::Entering(&entry), 3.0)).unwrap();
-    assert!(value.get("hidden_system").is_none(), "{value}");
+    let value = envelope_value(&ActivateResult::Entering(&entry), 3.0);
+    assert!(value["data"].get("hidden_system").is_none(), "{value}");
 }

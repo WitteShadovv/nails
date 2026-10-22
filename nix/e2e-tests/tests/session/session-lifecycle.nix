@@ -108,7 +108,7 @@ in
         machine.log(out)
         assert rc == 0, f"check refused a ready host (rc={rc})"
         status = read_status_json(config_path=CONFIG)
-        assert status["state"]["kind"] == "inactive", status
+        assert status["place"] == "decoy", status
 
     # One line the decoy logs before activation and one the hidden session
     # logs. Neither names the tool or the hidden volume, so verify's journal
@@ -142,7 +142,7 @@ in
         session.assert_hidden_root(machine, UPPER)
         status = read_status_json(config_path=CONFIG)
         machine.log(json.dumps(status, indent=1))
-        assert status["posture"] == "active", status
+        assert status["place"] == "hidden", status
         count = machine.succeed("systemctl show -p SoftRebootsCount --value").strip()
         assert count == "1", f"SoftRebootsCount={count}"
 
@@ -255,7 +255,7 @@ in
     with subtest("the upper persists into the next session"):
         machine.succeed("""${hiddenVolume.reopenHiddenVolume}""")
         status = read_status_json(config_path=CONFIG)
-        assert status["state"]["kind"] == "inactive", status
+        assert status["place"] == "decoy", status
         canonical_activate(CONFIG, "--overlay-only", "activate-2")
         assert machine.succeed("cat /root/hidden-canary").strip() == canary
 

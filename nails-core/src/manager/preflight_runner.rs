@@ -121,10 +121,10 @@ pub fn build_registry<F: Filesystem>(
 ) -> Result<PreFlightRegistry<F>> {
     use crate::preflight::{
         BackendDetectCheck, BackendEntriesCheck, BinaryLocationCheck, DecoyPersistenceCheck,
-        HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck, InheritedAutostartCheck,
-        MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck, PlatformCheck,
-        ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck, StateCheck, StorageReadinessCheck,
-        SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
+        DmaProtectionCheck, HiddenVolumeCheck, HostToolsCheck, IncrementalHistoryFlushCheck,
+        InheritedAutostartCheck, MemoryWipeCheck, MountNamespaceCheck, NixOSBuildTargetCheck,
+        OfflineUpdateCheck, PlatformCheck, ResidueCatalogCheck, SleepPolicyCheck, SpaceCheck,
+        StateCheck, StorageReadinessCheck, SwapCheck, SymlinkSupportCheck, UpperFsCapabilityCheck,
     };
     use crate::session::checks::{
         DecoyRootCheck, FstabPolicyCheck, SessionStateCheck, SoftRebootUnitsCheck,
@@ -199,6 +199,10 @@ pub fn build_registry<F: Filesystem>(
     // Warns, never fails: deniability hazards of the detected backend.
     registry.add_check(Box::new(BackendDetectCheck::new(hidden_root.clone())));
 
+    // Check-time advice, keyed on the installed cryptsetup version: it cannot
+    // open a VeraCrypt volume made with Argon2id, so one must use PBKDF2.
+    registry.add_check(Box::new(crate::preflight::CryptsetupArgon2idCheck));
+
     let layout = crate::session::Layout::new(&hidden_root);
     let storage_check = StorageReadinessCheck::new(
         hidden_root.clone(),
@@ -244,10 +248,21 @@ pub fn build_registry<F: Filesystem>(
 
     registry.add_check(Box::new(SwapCheck));
 
-    // Informational only: reports whether the decoy kernel zeroes freed pages
-    // (init_on_free=1), so the hidden session's freed memory does not linger in
-    // RAM after deactivation. Always passes; the message carries the advice.
+    // Reports whether the decoy kernel zeroes freed pages, read from the command
+    // line and, when it is silent, the booted kernel's config
+    // (CONFIG_INIT_ON_FREE_DEFAULT_ON). Warns when freed memory is not zeroed and
+    // stays an informational pass only when neither source is readable; it also
+    // notes a RAM-wipe-on-shutdown mechanism. Read-only.
     registry.add_check(Box::new(MemoryWipeCheck::new()));
+
+    // Warns (never fails) when the host lacks DMA protection against a live /
+    // evil-maid memory attacker: the IOMMU is not remapping DMA (read from the
+    // command line and the /sys ground truth), or a Thunderbolt/USB4 controller
+    // reports iommu_dma_protection=0, so a device can read RAM over the bus. The
+    // fix rides in the warning: NAILS cannot change it (firmware/BIOS/NVRAM, the
+    // same MOR-bit boundary), so power off before the machine leaves the
+    // operator's control. It also reports the kernel lockdown state. Read-only.
+    registry.add_check(Box::new(DmaProtectionCheck::new()));
 
     // Reports whether the host would suspend an active session (lid switch, idle
     // auto-suspend), which would strand the hidden environment resident in RAM
@@ -268,6 +283,14 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(DecoyPersistenceCheck::new(
         accept_persistent_decoy,
         config_layer.is_some(),
+    )));
+
+    // Refuses a decoy with a pending offline (offline-update) system update
+    // staged: once the overlays are mounted the decoy's updater would apply it
+    // inside the hidden session and reboot into it. Read-only.
+    registry.add_check(Box::new(OfflineUpdateCheck::new(
+        paths.root.clone(),
+        layout.upper(),
     )));
 
     // Warns (never fails) about the residue channels the catalog probes by path
@@ -314,6 +337,18 @@ pub fn build_registry<F: Filesystem>(
     registry.add_check(Box::new(StateCheck::new(inputs.current_state.clone())));
 
     Ok(registry)
+}
+
+/// The typed event outcome of a check result, for the progress event stream.
+fn check_outcome(result: &crate::preflight::CheckResult) -> nails_api::CheckOutcome {
+    use crate::preflight::CheckResult;
+    use nails_api::CheckOutcome;
+    match result {
+        CheckResult::Pass(_) => CheckOutcome::Pass,
+        CheckResult::Warn(_) => CheckOutcome::Warn,
+        CheckResult::Fail { .. } => CheckOutcome::Fail,
+        CheckResult::Skipped(_) => CheckOutcome::Skipped,
+    }
 }
 
 impl<F: Filesystem> NailsManager<F> {
@@ -383,6 +418,10 @@ impl<F: Filesystem> NailsManager<F> {
         let mut failed_checks: crate::error::PreFlightFailures = Vec::new();
 
         for (name, result) in &results {
+            // A caller watching the typed event stream sees each check as it is
+            // reported, in execution order; with no event reporter installed
+            // this is a no-op and the tracing lines below are the only record.
+            crate::reporter::progress::check(name, check_outcome(result), result.message());
             match result {
                 crate::preflight::CheckResult::Pass(msg) => {
                     tracing::debug!(check = %name, result = "pass", msg = %msg, "Preflight check passed");

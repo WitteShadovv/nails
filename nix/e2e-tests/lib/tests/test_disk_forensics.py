@@ -382,6 +382,48 @@ class MacDiffTest(unittest.TestCase):
             self.assertIn("etc/a: content", str(raised.exception))
 
 
+class ImageVolatileTest(unittest.TestCase):
+    # Entries only a NixOS decoy churns at every boot (store bookkeeping and the
+    # activation-replaced links); on an FHS distro each is a real finding.
+    NIXOS_ONLY = ("nix/store/.links", "bin/sh", "usr/bin/env")
+    # Boot noise every distribution shares.
+    GENERIC = ("var/log/x", "run/y", "tmp/z", "etc/machine-id")
+    FHS_IDS = ("debian", "ubuntu", "fedora", "arch")
+
+    def test_default_is_the_nixos_allowlist(self) -> None:
+        self.assertEqual(
+            df.image_volatile("nixos").pattern, df.DEFAULT_IMAGE_VOLATILE.pattern
+        )
+        self.assertEqual(
+            df.image_volatile().pattern, df.DEFAULT_IMAGE_VOLATILE.pattern
+        )
+
+    def test_nixos_allowlists_the_activation_entries(self) -> None:
+        nixos = df.image_volatile("nixos")
+        for path in self.NIXOS_ONLY:
+            self.assertTrue(nixos.search(path), path)
+
+    def test_fhs_distros_do_not_allowlist_the_activation_entries(self) -> None:
+        for os_id in self.FHS_IDS:
+            volatile = df.image_volatile(os_id)
+            for path in self.NIXOS_ONLY:
+                self.assertIsNone(volatile.search(path), f"{os_id}: {path}")
+
+    def test_generic_boot_noise_is_allowlisted_everywhere(self) -> None:
+        for os_id in ("nixos", *self.FHS_IDS):
+            volatile = df.image_volatile(os_id)
+            for path in self.GENERIC:
+                self.assertTrue(volatile.search(path), f"{os_id}: {path}")
+
+    def test_a_general_store_path_is_a_finding_even_on_nixos(self) -> None:
+        # Only the store's .links bookkeeping is boot noise; an actual store
+        # path that appeared is a finding on every decoy, so gating the NixOS
+        # entries never over-allows.
+        store_path = "nix/store/abcd1234-hello-1.0/bin/hello"
+        self.assertIsNone(df.image_volatile("nixos").search(store_path))
+        self.assertIsNone(df.image_volatile("debian").search(store_path))
+
+
 class HashTreeTest(unittest.TestCase):
     def test_hashes_regular_files_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -401,6 +443,40 @@ class HashTreeTest(unittest.TestCase):
             path = df.write_artifact(_Machine(), "x.body", "0|/a|1\n")
             self.assertEqual(path, Path(tmp) / "forensics" / "x.body")
             self.assertEqual(path.read_text(encoding="utf-8"), "0|/a|1\n")
+
+
+class OracleImageNameTest(unittest.TestCase):
+    """The snapshot-label -> oracle-image-name mapping the real-image slice keys
+    on. A single disk lineage ``baseline -> control -> post*`` becomes the
+    oracle's ``before`` / ``control`` / ``after`` triple; everything else is not
+    an oracle image."""
+
+    def test_baseline_control_and_post_map_to_the_triple(self) -> None:
+        self.assertEqual(df.oracle_image_name("baseline"), "before")
+        self.assertEqual(df.oracle_image_name("control"), "control")
+        self.assertEqual(df.oracle_image_name("post"), "after")
+
+    def test_every_post_variant_is_the_after_image(self) -> None:
+        for label in ("post-standard", "post-emergency", "post-deactivation"):
+            self.assertEqual(df.oracle_image_name(label), "after")
+
+    def test_other_labels_are_not_oracle_images(self) -> None:
+        for label in ("reboot", "positive", "active", "pre_session", ""):
+            self.assertIsNone(df.oracle_image_name(label))
+
+
+class CopySparseTest(unittest.TestCase):
+    def test_round_trips_data_and_holes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "src.raw"
+            dest = Path(tmp) / "dest.raw"
+            with open(src, "wb") as handle:
+                handle.write(b"head")
+                handle.seek(1 << 20)  # a hole
+                handle.write(b"tail")
+            df._copy_sparse(src, dest)
+            self.assertEqual(dest.stat().st_size, src.stat().st_size)
+            self.assertEqual(dest.read_bytes(), src.read_bytes())
 
 
 if __name__ == "__main__":

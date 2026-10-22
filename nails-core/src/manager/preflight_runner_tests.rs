@@ -47,6 +47,7 @@ fn build_registry_includes_the_shared_checks() {
         "nixos-config",
         "nixos-build-target",
         "binary-location",
+        "dma-protection",
         "state",
     ] {
         assert!(
@@ -700,7 +701,7 @@ fn platform_result(manager: &NailsManager<MockFilesystem>) -> Option<CheckResult
 #[test]
 #[tracing_test::traced_test]
 fn an_untested_release_warns_in_check_and_at_activation() {
-    let manager = manager_on_host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\n");
+    let manager = manager_on_host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"28.04\"\n");
     let names = manager
         .preflight_registry(&PreflightOptions::default())
         .expect("registry builds")
@@ -716,7 +717,7 @@ fn an_untested_release_warns_in_check_and_at_activation() {
 
     let _ = manager.run_preflight_checks(&PreflightOptions::default());
     assert!(logs_contain(
-        "platform: Ubuntu 26.10 is not a release NAILS has been tested on"
+        "platform: Ubuntu 28.04 is not a release NAILS has been tested on"
     ));
 }
 
@@ -724,10 +725,10 @@ fn an_untested_release_warns_in_check_and_at_activation() {
 /// row with activation's reason, so `check` no longer reports it ready.
 #[test]
 fn the_platform_row_names_a_tested_host_and_fails_a_refused_one() {
-    let manager = manager_on_host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.04\"\n");
+    let manager = manager_on_host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n");
     let result = platform_result(&manager).expect("a platform row");
     assert!(result.is_pass(), "{result:?}");
-    assert_eq!(result.message(), "Ubuntu 26.04");
+    assert_eq!(result.message(), "Ubuntu 24.04");
 
     let manager = manager_on_host("ID=arch\nBUILD_ID=rolling\n");
     let result = platform_result(&manager).expect("a platform row");

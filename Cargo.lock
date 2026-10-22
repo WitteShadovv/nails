@@ -269,7 +269,16 @@ version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
 dependencies = [
- "bit-vec",
+ "bit-vec 0.8.0",
+]
+
+[[package]]
+name = "bit-set"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "56d87354e4229f54a44f7bf2435906a4656dba36026ab6eaca629a2c436a691c"
+dependencies = [
+ "bit-vec 0.10.1",
 ]
 
 [[package]]
@@ -277,6 +286,16 @@ name = "bit-vec"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
+
+[[package]]
+name = "bit-vec"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5727b15fa97d4f4fee0a3b7c3d550ed0269f54329207b86388de918604e31269"
+dependencies = [
+ "borsh",
+ "serde",
+]
 
 [[package]]
 name = "bitflags"
@@ -313,6 +332,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc0b364ead1874514c8c2855ab558056ebfeb775653e7ae45ff72f28f8f3166c"
 
 [[package]]
+name = "borsh"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "553c5d846a6ba5150c65e3b1b8ec073bcf1abc20f9b7220de384a4443ea4e20a"
+dependencies = [
+ "borsh-derive",
+ "bytes",
+ "cfg_aliases",
+]
+
+[[package]]
+name = "borsh-derive"
+version = "1.8.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "12cdfe656708a01f89b451a7d36466e6fe6c414de0aa18fc54f864f6f9ca9f56"
+dependencies = [
+ "once_cell",
+ "proc-macro-crate",
+ "proc-macro2",
+ "quote",
+ "syn 3.0.8",
+]
+
+[[package]]
 name = "bstr"
 version = "1.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -334,6 +377,12 @@ name = "bytecount"
 version = "0.6.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "175812e0be2bccb6abe50bb8d566126198344f707e304f45c648fd8f2cc0365e"
+
+[[package]]
+name = "bytes"
+version = "1.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc652a48c352aef3ea3aed32080501cf3ef6ed5da78602a020c991775b0aff04"
 
 [[package]]
 name = "cast"
@@ -731,7 +780,7 @@ version = "0.19.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d301f5bf187b3c295fce6468d3875037a0bccc5f6b151c63cac2f85babf21912"
 dependencies = [
- "bit-set",
+ "bit-set 0.8.0",
  "regex-automata",
  "regex-syntax",
 ]
@@ -767,6 +816,12 @@ dependencies = [
  "ref-cast",
  "serde",
 ]
+
+[[package]]
+name = "fnv"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "foldhash"
@@ -1113,12 +1168,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a86d3146ed3995b5913c414f6664344b9617457320782e64f0bb44afd49d74"
 
 [[package]]
+name = "nails-api"
+version = "0.3.0-rc.3"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "nails-base"
 version = "0.3.0-rc.3"
 dependencies = [
  "chrono",
  "colored",
  "hex",
+ "nails-api",
  "nails-base",
  "nails-teardown",
  "nix",
@@ -1149,6 +1213,7 @@ dependencies = [
  "insta",
  "insta-cmd",
  "jsonschema",
+ "nails-api",
  "nails-cli",
  "nails-core",
  "nails-teardown",
@@ -1168,6 +1233,7 @@ dependencies = [
  "assert_cmd",
  "chrono",
  "criterion",
+ "nails-api",
  "nails-base",
  "nails-core",
  "nails-forensics",
@@ -1177,6 +1243,7 @@ dependencies = [
  "nix",
  "predicates",
  "proptest",
+ "proptest-state-machine",
  "rustix",
  "serde",
  "serde_json",
@@ -1203,6 +1270,15 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+]
+
+[[package]]
+name = "nails-oracle"
+version = "0.3.0-rc.3"
+dependencies = [
+ "nails-forensics",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1585,6 +1661,8 @@ version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b8530004ccb15eae51c7e40009fbe317f341f804db54dc033eec1c50be28cfa0"
 dependencies = [
+ "bit-set 0.11.1",
+ "bit-vec 0.10.1",
  "bitflags",
  "chacha20",
  "core_detect",
@@ -1592,7 +1670,18 @@ dependencies = [
  "rand",
  "rand_xorshift",
  "regex-syntax",
+ "rusty-fork",
+ "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "proptest-state-machine"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "76fe42bc434fdb72020f41a6e9dbc6d29fdcc3ac43fb3470dba5147039cf5220"
+dependencies = [
+ "proptest",
 ]
 
 [[package]]
@@ -1603,6 +1692,12 @@ checksum = "200b9ff220857e53e184257720a14553b2f4aa02577d2ed9842d45d4b9654810"
 dependencies = [
  "cc",
 ]
+
+[[package]]
+name = "quick-error"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quote"
@@ -1769,6 +1864,18 @@ name = "rustversion"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
+
+[[package]]
+name = "rusty-fork"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
+dependencies = [
+ "fnv",
+ "quick-error",
+ "tempfile",
+ "wait-timeout",
+]
 
 [[package]]
 name = "same-file"

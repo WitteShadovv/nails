@@ -65,7 +65,7 @@ EXIT STATUS:
   9    completed, but with a warning the caller should act on
   10   verify found warnings
   11   verify found critical artifacts, or rehearse scan found its canary
-  130  cancelled by a signal (SIGINT/SIGTERM)";
+  130  cancelled: a declined prompt, or a signal (SIGINT/SIGTERM)";
 
 /// Run a hidden session on a decoy Linux system
 #[derive(Parser, Debug)]
@@ -82,9 +82,12 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// Parse the process arguments, exiting with a usage error (code 2) on failure.
+    /// Parse the process arguments, exiting with a usage error (code 2) on
+    /// failure. Under `--json` a usage error is one error envelope on stdout
+    /// (see [`crate::cli::main_guard::exit_on_clap_error`]).
     pub fn parse_checked() -> Self {
-        Self::try_parse_checked_from(std::env::args_os()).unwrap_or_else(|error| error.exit())
+        Self::try_parse_checked_from(std::env::args_os())
+            .unwrap_or_else(|error| crate::cli::main_guard::exit_on_clap_error(error))
     }
 
     /// Parse `argv` and apply the checks clap cannot express for global flags.

@@ -1,0 +1,117 @@
+name: Oracle nightly
+
+# Nightly forensic oracle. On GitHub-hosted runners (no KVM): the scan script
+# builds the before, control and after images one at a time (streaming, so peak
+# disk is one image's worth), runs the pinned analysis tools over each, and
+# finishes by rendering the nails-oracle verdict over the outputs. Anything but
+# a clean verdict (residue, a blind scan, a missing canary or a bad allowlist)
+# fails the run. A schedule fires only on the default branch; a
+# workflow_dispatch runs it by hand.
+
+on:
+  schedule:
+    # Nightly at 04:30 UTC, after the E2E (02:17) and distro (03:41) runs.
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: oracle-nightly
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  oracle:
+    name: Forensic oracle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install
+
+      - name: Set up Rust cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: oracle
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build the verdict tool
+        run: cargo build --release --locked -p nails-oracle
+
+      # OS packages the scan needs. The scan script pins bulk_extractor (built
+      # from its source commit, so its build chain and libraries are installed
+      # here) and plaso (pulled by container digest). sleuthkit (mmls) and
+      # e2fsprogs (debugfs) carve the restore channel from real ext4 decoy
+      # images in ORACLE_IMAGES_DIR mode; they are harmless for the synthetic
+      # btrfs path. Docker is preinstalled on the GitHub-hosted ubuntu runners,
+      # so no apt docker package is added. No KVM is used.
+      - name: Install analysis tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends \
+            btrfs-progs sleuthkit e2fsprogs \
+            git autoconf automake build-essential libtool pkg-config flex \
+            libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
+            libabsl-dev libgcrypt20-dev libgpg-error-dev
+
+      # The scan script builds the before/control/after images one at a time,
+      # runs btrfs restore / bulk_extractor / plaso over each into the outputs/
+      # tree described in ci/oracle/README.md, and finishes by rendering the
+      # nails-oracle verdict over that tree (writing verdict.json). A non-clean
+      # verdict exits non-zero and fails this step. It needs root for the loop
+      # mounts. The coverage canary is the fixed committed value; set
+      # ORACLE_SEED here to rotate it per run instead.
+      - name: Build images, run the scan and render the verdict
+        run: |
+          sudo env \
+            "ORACLE_BIN=$PWD/target/release/nails-oracle" \
+            ci/oracle/run-scan.sh "$RUNNER_TEMP/oracle"
+
+      - name: Show the verdict
+        if: ${{ !cancelled() }}
+        run: |
+          cat "$RUNNER_TEMP/oracle/verdict.json" 2>/dev/null \
+            || echo "(no verdict.json: the scan did not reach the verdict)"
+
+      - name: Upload the verdict and analysis outputs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: oracle-verdict
+          path: ${{ runner.temp }}/oracle/
+
+  # A run nobody watches: a red verdict opens or comments on the 'CI red: Oracle
+  # nightly' issue, and a later green run closes it.
+  report-status:
+    name: Report status
+    needs: oracle
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write # open, comment on and close the tracking issue
+
+    steps:
+      - name: Checkout the report action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/actions/report-status
+
+      - name: Report status
+        uses: ./.github/actions/report-status
+        with:
+          needs: ${{ toJSON(needs) }}

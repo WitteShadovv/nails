@@ -16,9 +16,10 @@ use super::ExitStatus;
 use super::envelope::{ErrorBody, report_error};
 
 /// The error body of a refused root. `exe` is the running program, named in
-/// the hint when it lies under the root.
+/// the hint when it lies under the root. The transform lives in the facade so
+/// the CLI and the window describe a refusal alike.
 pub fn refusal_error(refusal: &Refusal, exe: Option<&Path>) -> ErrorBody {
-    ErrorBody::new(refusal.code(), refusal.message()).with_hint(refusal.hint(exe).join("\n"))
+    nails_core::app::refusal::refusal_body(refusal, exe)
 }
 
 /// Report a refused root on the terminal (or as one envelope under `--json`)
@@ -190,13 +191,17 @@ mod tests {
             let line = error_envelope("init", refusal_error(&refusal(kind), None)).to_line();
             let value: serde_json::Value = serde_json::from_str(&line).unwrap();
             assert_eq!(value["error"]["code"], code, "{line}");
+            // "Nothing was written." ends the first line; the attach gate's
+            // guidance folds in below it, so it is now in the middle of the
+            // message rather than at its end.
             assert!(
                 value["error"]["message"]
                     .as_str()
                     .unwrap()
-                    .ends_with("Nothing was written.")
+                    .contains("Nothing was written.")
             );
-            assert!(value["error"]["hint"].is_string(), "{line}");
+            // A refusal names no single command, so its typed next step is null.
+            assert!(value["error"]["next"].is_null(), "{line}");
         }
     }
 

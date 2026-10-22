@@ -73,6 +73,16 @@ pub mod hidden_root;
 // Words that give hidden storage away in a mount path, mapper name or label.
 pub mod naming;
 
+// The FHS family a host belongs to: shared vocabulary for detection, the state
+// file and the residue catalogue.
+pub mod host_family;
+// The next command the operator should run, rendered with the real binary path.
+pub mod next_step;
+
+// The message catalogue: every user-facing string with its ID, translator note
+// and named placeholders, checked by the copy lint.
+pub mod catalog;
+
 // The parsers of `/etc/fstab` and `/etc/crypttab`.
 pub mod crypttab;
 pub mod fstab;
@@ -103,6 +113,7 @@ pub use filesystem::{Filesystem, RealFilesystem};
 #[cfg(any(test, feature = "test-support"))]
 pub use filesystem::{MockFilesystem, PathKind};
 pub use hidden_root::{AttachState, HiddenRoot, ensure_state_dir_attached};
+pub use host_family::Family;
 pub use runtime_env::RuntimeEnv;
 pub use target_user::TargetUser;
 

@@ -80,9 +80,9 @@ fn only_yes_in_any_case_confirms_deactivation() {
 }
 
 /// An answer other than yes reads as `activate`'s cancel: the neutral notice
-/// after the prompt, no error, and exit 1. A yes goes on without one.
+/// after the prompt, no error, and exit 130. A yes goes on without one.
 #[test]
-fn a_declined_deactivation_is_a_neutral_notice_and_exits_1() {
+fn a_declined_deactivation_is_a_neutral_notice_and_exits_130() {
     let ask = |answer: &[u8]| {
         let mut err = Vec::new();
         let status = super::confirm_or_cancel(
@@ -95,7 +95,7 @@ fn a_declined_deactivation_is_a_neutral_notice_and_exits_1() {
     };
     for answer in ["n\n", "\n", ""] {
         let (status, shown) = ask(answer.as_bytes());
-        assert_eq!(status, Some(ExitStatus::Failed), "{answer:?}");
+        assert_eq!(status, Some(ExitStatus::Cancelled), "{answer:?}");
         assert!(
             shown.ends_with(
                 "Continue? [y/N]: \u{25cb} Deactivation cancelled; nothing was changed.\n"

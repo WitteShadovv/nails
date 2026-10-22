@@ -167,6 +167,29 @@ fn directories_are_created_and_listed_through_links_resolved_inside_the_root() {
 }
 
 #[test]
+fn canonical_in_root_resolves_symlinked_mount_points() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("var/home/alice")).unwrap();
+    // The decoy's /home is a link to var/home (as on an ostree host).
+    symlink("var/home", root.path().join("home")).unwrap();
+
+    let canon = |p: &str| canonical_in_root(root.path(), Path::new(p));
+    // A symlinked mount point resolves to its real path inside the root, and so
+    // does a path through it, whether or not the tail exists yet.
+    assert_eq!(canon("/home"), Path::new("/var/home"));
+    assert_eq!(canon("/home/alice"), Path::new("/var/home/alice"));
+    assert_eq!(canon("/home/bob/x"), Path::new("/var/home/bob/x"));
+    // A plain path with no symlink on the way is unchanged.
+    assert_eq!(canon("/var/home"), Path::new("/var/home"));
+    assert_eq!(canon("/srv/data"), Path::new("/srv/data"));
+    // A relative path is returned as is (swap's `none`, an odd fstab target).
+    assert_eq!(
+        canonical_in_root(root.path(), Path::new("none")),
+        Path::new("none")
+    );
+}
+
+#[test]
 fn nothing_is_created_through_a_dangling_link_or_a_dot_dot() {
     let root = tempfile::tempdir().unwrap();
     symlink("/gone", root.path().join("away")).unwrap();
@@ -206,6 +229,66 @@ fn a_missing_or_unusable_init_or_a_non_os_tree_is_refused() {
     assert_eq!(
         precheck(root.path(), Path::new("/sbin/init")),
         Err(PrecheckError::NotAnOsTree)
+    );
+}
+
+#[test]
+fn overlay_data_pins_the_feature_options_off() {
+    let data = overlay_data(
+        Path::new("/run/nextroot/lower"),
+        Path::new("/mnt/data/root/upper"),
+        Path::new("/mnt/data/root/work"),
+    )
+    .unwrap();
+    assert_eq!(
+        data,
+        "lowerdir=/run/nextroot/lower,upperdir=/mnt/data/root/upper,\
+         workdir=/mnt/data/root/work,index=off,metacopy=off,redirect_dir=nofollow"
+    );
+    // The dangerous on-states are never emitted, on any kernel's defaults.
+    assert!(!data.contains("index=on"));
+    assert!(!data.contains("metacopy=on"));
+    // xino is left unpinned.
+    assert!(!data.contains("xino"));
+}
+
+#[test]
+fn overlay_data_escapes_awkward_layer_paths() {
+    // A layer path with the characters the overlay option field escapes is
+    // escaped once, so the pinned options still parse as their own fields.
+    let data = overlay_data(
+        Path::new("/l,ower"),
+        Path::new("/up:per"),
+        Path::new("/work"),
+    )
+    .unwrap();
+    assert!(
+        data.ends_with(&format!(",{OVERLAY_FEATURE_OPTIONS}")),
+        "{data}"
+    );
+    assert!(data.contains("lowerdir=/l\\,ower"), "{data}");
+    assert!(data.contains("upperdir=/up\\:per"), "{data}");
+}
+
+#[test]
+fn mount_overlay_refuses_an_unescapable_layer_before_mounting() {
+    // mount_overlay builds its option string with overlay_data before the
+    // mount(2) syscall. A layer path that cannot be represented in a mount
+    // option line (a newline, which escape_overlay_path rejects) makes that
+    // step fail, so the real mount_overlay returns an error and never reaches
+    // the kernel. This needs no privileges; it pins that mount_overlay does
+    // the work overlay_data describes rather than reporting success blindly.
+    let err = mount_overlay(
+        Path::new("/run/nextroot/low\ner"),
+        Path::new("/mnt/data/root/upper"),
+        Path::new("/mnt/data/root/work"),
+        Path::new("/run/nextroot"),
+    )
+    .expect_err("a newline in a layer path cannot be an overlay layer");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    assert!(
+        err.to_string().contains("cannot be an overlay layer"),
+        "{err}"
     );
 }
 

@@ -63,7 +63,7 @@ in
         ).strip()
         assert upper == "", f"activation wrote into the hidden upper: {upper}"
         status = read_status_json(config_path=CONFIG)
-        assert status["posture"] == "decoy", status
+        assert status["place"] == "decoy", status
         assert persisted_state() == persisted_before, (
             "the persisted decoy state changed"
         )

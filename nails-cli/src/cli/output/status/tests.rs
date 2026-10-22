@@ -32,6 +32,7 @@ fn report(posture: Posture, session: &'static str) -> StatusReport {
         last_activation: None,
         decoy_persistent: false,
         persona_mode: PersonaMode::SharedHome,
+        switch_refusal: None,
         opsec_reminders: Vec::new(),
     }
 }
@@ -115,20 +116,25 @@ fn an_accepted_override_is_shown_in_both_forms() {
 fn a_degraded_posture_shows_its_reason_and_remedy() {
     let mut degraded = report(Posture::Degraded, "interrupted");
     degraded.reason = Some("an interrupted activation left a populated /run/nextroot".into());
-    degraded.remediation = Some("Run `nails recover` to remove them");
+    degraded.remediation = Some("Run `sudo /mnt/data/nails recover` to remove them".to_string());
     let lines = status_lines(&degraded, false, Style::default(), &chrono::Utc).join("\n");
     assert!(lines.contains("/run/nextroot"), "{lines}");
-    assert!(lines.contains("nails recover"), "{lines}");
+    assert!(
+        lines.contains("sudo") && lines.contains("recover"),
+        "{lines}"
+    );
 }
 
 #[test]
-fn the_json_envelope_carries_the_live_view_and_the_record() {
+fn the_json_envelope_carries_the_place_and_the_attention() {
     let decoy = report(Posture::Decoy, "decoy");
     let value = serde_json::to_value(status_envelope(&decoy)).unwrap();
     assert_eq!(value["command"], "status");
-    assert_eq!(value["data"]["posture"], "decoy");
-    assert_eq!(value["data"]["session"], "decoy");
-    assert_eq!(value["data"]["state"]["kind"], "inactive");
+    assert_eq!(value["ok"], true);
+    assert_eq!(value["data"]["place"], "decoy");
+    // A plain decoy needs no attention; the field is present and null.
+    assert!(value["data"].get("attention").is_some());
+    assert_eq!(value["data"]["attention"], serde_json::Value::Null);
     assert_eq!(value["data"]["hidden_root_mounted"], true);
     assert!(
         !value
@@ -136,6 +142,45 @@ fn the_json_envelope_carries_the_live_view_and_the_record() {
             .to_lowercase()
             .contains("overlay_verification")
     );
+}
+
+#[test]
+fn an_active_session_is_hidden_and_a_cover_needs_attention() {
+    let active = report(Posture::Active, "hidden");
+    let value = serde_json::to_value(status_envelope(&active)).unwrap();
+    assert_eq!(value["data"]["place"], "hidden");
+    assert_eq!(value["data"]["attention"], serde_json::Value::Null);
+
+    let mut covered = report(Posture::Active, "hidden");
+    covered.hidden_root_covered_by = Some(CoverView {
+        source: "/dev/sdc1".into(),
+        mount_point: "/mnt/data".into(),
+    });
+    let value = serde_json::to_value(status_envelope(&covered)).unwrap();
+    assert_eq!(value["data"]["attention"], "volume_covered");
+}
+
+#[test]
+fn an_entering_session_is_activating() {
+    // A session still entering the hidden root reports `activating`, the third
+    // place alongside `decoy` and `hidden` — not the `decoy` fallback.
+    let entering = report(Posture::Transitioning, "entering");
+    let value = serde_json::to_value(status_envelope(&entering)).unwrap();
+    assert_eq!(value["data"]["place"], "activating");
+    // Nothing needs the operator while the entry is still in flight, and a
+    // transitioning posture is a safe one.
+    assert_eq!(value["data"]["attention"], serde_json::Value::Null);
+    assert_eq!(value["ok"], true);
+}
+
+#[test]
+fn an_interrupted_activation_is_on_the_decoy_and_needs_attention() {
+    let interrupted = report(Posture::Degraded, "interrupted");
+    let value = serde_json::to_value(status_envelope(&interrupted)).unwrap();
+    assert_eq!(value["data"]["place"], "decoy");
+    assert_eq!(value["data"]["attention"], "interrupted");
+    // A degraded posture is not a safe one, so the envelope is not ok.
+    assert_eq!(value["ok"], false);
 }
 
 /// The report shows its times in the given zone with the offset, as the

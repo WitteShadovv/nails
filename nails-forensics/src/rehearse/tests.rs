@@ -148,12 +148,139 @@ fn default_targets_are_the_writable_decoy_devices_and_swap() {
     let swaps = "Filename\tType\tSize\tUsed\tPriority\n/dev/sdc2 partition 1024 0 -2\n/swapfile file 10 0 -3\n";
     let targets = default_scan_targets(&mounts(), swaps, Path::new("/mnt/data"));
     assert_eq!(
-        targets,
+        targets.iter().map(|t| t.device.clone()).collect::<Vec<_>>(),
         vec![
             PathBuf::from("/dev/sda1"),
             PathBuf::from("/dev/sdb1"),
             PathBuf::from("/dev/sdc2"),
         ]
+    );
+    // The decoy root and USB are ext4 and vfat, and swap carries no filesystem:
+    // none is a storage blind spot.
+    assert!(targets.iter().all(|t| t.blind_spot.is_none()));
+}
+
+#[test]
+fn a_copy_on_write_decoy_root_is_marked_a_blind_spot() {
+    // The decoy root is btrfs; the hidden volume and a vfat ESP are not.
+    let mounts = parse_mountinfo(
+        "1 0 8:1 / / rw,relatime - btrfs /dev/sda2 rw,ssd,space_cache=v2,subvolid=256\n\
+         2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n\
+         3 1 8:0 / /boot/efi rw,relatime - vfat /dev/sda1 rw\n",
+    );
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let root = targets
+        .iter()
+        .find(|t| t.device.as_path() == Path::new("/dev/sda2"))
+        .expect("the btrfs root is a target");
+    assert!(
+        root.blind_spot
+            .as_deref()
+            .is_some_and(|reason| reason.contains("copy-on-write")),
+        "{root:?}"
+    );
+    // The vfat ESP is verbatim storage: a clean scan of it is a clean result.
+    let esp = targets
+        .iter()
+        .find(|t| t.device.as_path() == Path::new("/dev/sda1"))
+        .expect("the ESP is a target");
+    assert!(esp.blind_spot.is_none(), "{esp:?}");
+}
+
+#[test]
+fn an_f2fs_decoy_root_is_marked_a_blind_spot() {
+    // An f2fs root with plain mount options is a blind spot all the same: its
+    // on-disk compression feature and a `chattr +c` flag can compress a file
+    // with nothing shown in the mount options, so a raw scan proves nothing.
+    let mounts = parse_mountinfo(
+        "1 0 8:1 / / rw,relatime - f2fs /dev/sda2 rw,background_gc=on\n\
+         2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/mapper/data rw\n",
+    );
+    let targets = default_scan_targets(&mounts, "", Path::new("/mnt/data"));
+    let root = targets
+        .iter()
+        .find(|t| t.device.as_path() == Path::new("/dev/sda2"))
+        .expect("the f2fs root is a target");
+    assert!(
+        root.blind_spot
+            .as_deref()
+            .is_some_and(|reason| reason.contains("f2fs")),
+        "{root:?}"
+    );
+}
+
+#[test]
+fn classified_reads_the_blind_spot_from_the_matching_mount_entry() {
+    // Two devices named only in the mount table (so neither path canonicalizes),
+    // matched to their entry by an exact source path. A `classified` target
+    // carries the blind spot of the filesystem on its own device, not another's.
+    let mounts = parse_mountinfo(
+        "1 0 8:1 / / rw,relatime - btrfs /dev/nails-test-btrfs rw,ssd,space_cache=v2\n\
+         2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/nails-test-ext4 rw\n",
+    );
+
+    // The btrfs device matches its own entry: a copy-on-write blind spot lands on
+    // it. (Kills `==`->`!=` at the source match and `||`->`&&`: either flip makes
+    // this entry stop matching, so the btrfs reason is lost.)
+    let cow = ScanTarget::classified(PathBuf::from("/dev/nails-test-btrfs"), &mounts);
+    assert_eq!(cow.device, PathBuf::from("/dev/nails-test-btrfs"));
+    assert!(
+        cow.blind_spot
+            .as_deref()
+            .is_some_and(|reason| reason.contains("copy-on-write")),
+        "{cow:?}"
+    );
+
+    // The ext4 device matches its own entry, not the btrfs one: a clean scan of
+    // verbatim storage is conclusive. (A flipped source match would pick the
+    // btrfs entry and wrongly mark it a blind spot.)
+    let plain = ScanTarget::classified(PathBuf::from("/dev/nails-test-ext4"), &mounts);
+    assert_eq!(plain.device, PathBuf::from("/dev/nails-test-ext4"));
+    assert!(plain.blind_spot.is_none(), "{plain:?}");
+}
+
+#[test]
+fn classified_matches_a_device_to_its_entry_by_canonical_path() {
+    // The device and the mount entry name the same disk through two different
+    // symlinks (as /dev/disk/by-id/… and /dev/mapper/… do): not equal as text,
+    // tied together only by canonicalizing both to the real node. The btrfs blind
+    // spot must still reach the device. This exercises the second comparison,
+    // whose `==`->`!=` flip only shows up when the exact source match is false
+    // and canonicalization succeeds on both sides.
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("realdev");
+    std::fs::write(&real, b"").unwrap();
+    let real = real.canonicalize().unwrap();
+    let by_device = dir.path().join("by-id");
+    let by_mount = dir.path().join("by-uuid");
+    std::os::unix::fs::symlink(&real, &by_device).unwrap();
+    std::os::unix::fs::symlink(&real, &by_mount).unwrap();
+    assert_ne!(by_device, by_mount, "the two names must differ as text");
+
+    let entry = crate::filesystem::MountEntry {
+        mount_id: 1,
+        parent_id: 0,
+        dev: "253:0".to_string(),
+        root: PathBuf::from("/"),
+        mount_point: PathBuf::from("/"),
+        mount_opts: "rw,relatime".to_string(),
+        fstype: "btrfs".to_string(),
+        source: by_mount.clone(),
+        super_opts: "rw,ssd,space_cache=v2".to_string(),
+    };
+
+    let target = ScanTarget::classified(by_device.clone(), &[entry]);
+    // The device is recorded by its canonical node.
+    assert_eq!(target.device, real);
+    // And matched to the entry through that node, carrying the blind spot. With
+    // the second comparison flipped to `!=`, the entry no longer matches and the
+    // blind spot is lost.
+    assert!(
+        target
+            .blind_spot
+            .as_deref()
+            .is_some_and(|reason| reason.contains("copy-on-write")),
+        "{target:?}"
     );
 }
 
@@ -197,7 +324,11 @@ fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
 
     let report = scan(
         TOKEN,
-        &[leaky.clone(), clean.clone(), missing.clone()],
+        &[
+            ScanTarget::new(leaky.clone()),
+            ScanTarget::new(clean.clone()),
+            ScanTarget::new(missing.clone()),
+        ],
         None,
     )
     .unwrap();
@@ -211,7 +342,43 @@ fn a_scan_reports_both_encodings_by_offset_and_a_clean_image_has_none() {
     assert!(report.devices[1].hits.is_empty());
     assert!(report.devices[2].error.is_some());
     assert!(report.incomplete());
+    // Images carry no filesystem, so none is a storage blind spot.
+    assert!(!report.inconclusive());
+    assert!(report.devices.iter().all(|d| d.blind_spot.is_none()));
     assert!(report.not_visible.iter().any(|line| line.contains("SSD")));
+    // The compression/copy-on-write caveat is always listed, so a clean scan on
+    // the image or --device path (which carries no per-device classification) is
+    // never read as conclusive.
+    let caveat = "stored compressed or copy-on-write";
+    assert!(report.not_visible.iter().any(|line| line.contains(caveat)));
+}
+
+#[test]
+fn a_clean_scan_of_compressed_or_copy_on_write_storage_is_not_checked() {
+    let dir = tempfile::tempdir().unwrap();
+    // A clean image with nothing planted: a verbatim filesystem would read it
+    // clean, but a copy-on-write decoy cannot rule the canary out.
+    let clean = image(&dir, "clean.img", &[(1 << 20, b"nothing to see")]);
+    let reason = scan_blind_spot("btrfs", "rw,compress=zstd")
+        .unwrap()
+        .reason()
+        .to_string();
+    let target = ScanTarget {
+        device: clean.clone(),
+        blind_spot: Some(reason.clone()),
+    };
+
+    let report = scan(TOKEN, &[target], None).unwrap();
+
+    // No hit, yet the result is not clean: the device is a blind spot.
+    assert_eq!(report.total_hits(), 0);
+    assert!(report.inconclusive());
+    // A blind spot is not the same as an unreadable device.
+    assert!(!report.incomplete());
+    assert_eq!(
+        report.devices[0].blind_spot.as_deref(),
+        Some(reason.as_str())
+    );
 }
 
 #[test]
