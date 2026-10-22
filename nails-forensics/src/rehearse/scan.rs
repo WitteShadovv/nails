@@ -4,6 +4,7 @@
 //! Step three of a rehearsal: search the raw decoy devices for the canary.
 
 use crate::filesystem::MountEntry;
+use crate::forensic::layout::{self, Signature};
 use crate::forensic::{Hit, RawSource, TokenScan};
 use crate::{NailsError, Result};
 use serde::Serialize;
@@ -15,7 +16,7 @@ pub const NOT_VISIBLE: &[&str] = &[
     "flash cells an SSD has remapped or keeps in reserve (wear levelling, over-provisioning): no host read reaches them, only a chip-off read does",
     "blocks discarded with TRIM: they read back as zeros here even where the flash still holds them",
     "disks and partitions not mounted while the scan runs (a second disk, an unused swap partition) unless named with --device",
-    "a canary stored compressed or copy-on-write (btrfs, bcachefs, zfs, f2fs): this raw plaintext scan cannot match it, and an image or a --device not in the mount table is read as plain storage, not classified for it",
+    "a canary stored compressed or copy-on-write (btrfs, bcachefs, zfs, f2fs): this raw plaintext scan cannot match it. An image or a --device is classified from its on-disk superblock, so a btrfs or f2fs one is reported not-checked; a whole-disk image, or a bcachefs or zfs one, whose format the superblock check does not identify, is read as plain storage",
     "anything outside the decrypted mapping: the encryption header area and other partitions of the same disk",
     "firmware storage (EFI variables, pstore) and RAM",
 ];
@@ -178,6 +179,23 @@ pub fn default_scan_targets(
     targets
 }
 
+/// Identify the filesystem on a device from its raw superblock and, for a
+/// copy-on-write or compression-capable format (btrfs, f2fs), give the reason a
+/// clean scan of it is not conclusive. This classifies an offline image or an
+/// unmounted `--device`, which the mount table cannot. A verbatim format (ext4,
+/// xfs, vfat), a format whose superblock this does not identify (a whole-disk
+/// image, bcachefs, zfs), or a read error all return `None`: a raw plaintext
+/// scan of verbatim or unidentified bytes is conclusive, and an unreadable
+/// device is reported by the scan itself.
+fn detect_blind_spot(source: &RawSource) -> Option<String> {
+    match layout::signature_at(source, 0) {
+        Ok(Signature::Format(fstype)) => {
+            super::scan_blind_spot(fstype, "").map(|blind| blind.reason().to_string())
+        }
+        _ => None,
+    }
+}
+
 /// Scan `targets` for `token`.
 ///
 /// Before reading any device the matcher proves on a buffer that it finds the
@@ -213,8 +231,15 @@ pub fn scan(token: &str, targets: &[ScanTarget], limit: Option<u64>) -> Result<S
     };
     for target in targets {
         let device = &target.device;
-        let blind_spot = target.blind_spot.clone();
+        let mut blind_spot = target.blind_spot.clone();
         let result = RawSource::open(device).and_then(|source| {
+            // The mount table classifies a live device; an offline image or an
+            // unmounted --device it cannot, so identify the filesystem from the
+            // raw superblock here, lest a copy-on-write or compressing decoy
+            // read this way be reported clean rather than "not checked".
+            if blind_spot.is_none() {
+                blind_spot = detect_blind_spot(&source);
+            }
             let size = source.size();
             matcher.scan(&source).map(|outcome| (size, outcome))
         });
