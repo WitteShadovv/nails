@@ -81,7 +81,7 @@ jobs:
       # Prebuilt binaries, checked against the digests that install-action
       # pins, instead of tools compiled or downloaded unchecked here.
       - name: Install cargo-cyclonedx and cyclonedx-cli
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-cyclonedx@0.5.9,cyclonedx@0.33.1
 

@@ -91,7 +91,7 @@ jobs:
           save-if: false
 
       - name: Install just
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: just@1.58.0
           fallback: none
@@ -146,7 +146,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/next' }}
 
       - name: Install test tools
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-llvm-cov@0.9.1,cargo-nextest@0.9.146,just@1.58.0
           fallback: none
@@ -239,7 +239,7 @@ jobs:
           save-if: false
 
       - name: Install just
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: just@1.58.0
           fallback: none
@@ -273,7 +273,7 @@ jobs:
         run: rustup toolchain install
 
       - name: Install policy tools
-        uses: taiki-e/install-action@ab6895351a88b908e96a4697860d4ffea5e57dbe
+        uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8
         with:
           tool: cargo-deny@0.20.2,just@1.58.0
           fallback: none
