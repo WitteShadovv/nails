@@ -54,10 +54,23 @@ in
 
   nodes = {
     machine =
-      { ... }:
+      { lib, ... }:
       {
         imports = [ ./../../lib/forensic-vm-config.nix ];
         environment.systemPackages = [ self.packages.x86_64-linux.nails ];
+
+        # Image the decoy configuration NAILS actually guarantees: a VOLATILE
+        # decoy. NAILS refuses to activate on a persistent-journald decoy by
+        # default (docs/decoy-requirements.md, accept_persistent_decoy), because
+        # what the decoy logs while it shuts down for the soft-reboot and starts
+        # again -- the /mnt/data mount/unmount, the dm-crypt filesystem, the
+        # soft-reboot markers -- would survive on its disk. The forensic profile
+        # forces persistent journald to image log residue for OTHER tests; here
+        # we override it back to the volatile default (journald writes to tmpfs,
+        # wiped at power-off) so the imaged decoy disk reflects the supported,
+        # guaranteed posture. The on-disk Nix store (useNixStoreImage) stays, so
+        # store and file residue are still imaged and scanned adversarially.
+        services.journald.settings.Journal.Storage = lib.mkForce "volatile";
       };
   };
 
@@ -130,6 +143,15 @@ in
         # as forensic/06 does.
         machine.succeed("mkdir -p /mnt/data")
         plant_oracle_baseline()
+        # dhcpcd.wait = "background" (vm-config.nix) lets multi-user.target come
+        # up before dhcpcd has leased eth0, so /var/lib/dhcpcd/eth0.lease -- and
+        # the 10.0.2.x lease addresses bulk_extractor carves from it -- would
+        # land only on `after` (long enough for the background lease to finish)
+        # and not on the briefer before/control, surfacing as false residue.
+        # Hold for the lease so it is present identically on all three images and
+        # subtracts away. The QEMU user-mode network hands out the same 10.0.2.15
+        # every boot, so the carved addresses match across images too.
+        machine.wait_until_succeeds("test -s /var/lib/dhcpcd/eth0.lease")
         before_raw = disk_forensics.snapshot(machine, "baseline", retain=True)
         print(f"retained before.raw from {before_raw}")
 
@@ -140,6 +162,10 @@ in
         machine.shutdown()
         machine.start()
         machine.wait_for_unit("multi-user.target")
+        # The control reboot re-leases eth0; hold for the lease to be rewritten
+        # before imaging, the same background-lease wait as the baseline, so
+        # control carries the same eth0.lease (and 10.0.2.x) as before/after.
+        machine.wait_until_succeeds("test -s /var/lib/dhcpcd/eth0.lease")
         control_raw = disk_forensics.snapshot(machine, "control", retain=True)
         print(f"retained control.raw from {control_raw}")
 
@@ -149,9 +175,10 @@ in
         # volume must be freshly set up immediately before the session, as in
         # forensic/06.
         machine.succeed("""${hiddenVolume.setupHiddenVolume}""")
-        canonical_activate(
-            headless_config, "--overlay-only --accept-persistent-decoy", "activate"
-        )
+        # No --accept-persistent-decoy: the decoy is volatile (journald override
+        # above), so NAILS's persistent-decoy preflight passes and activation
+        # runs the default, supported path.
+        canonical_activate(headless_config, "--overlay-only", "activate")
         machine.succeed("su - testuser -c 'id -un | grep -qx testuser'")
         machine.succeed("su - testuser -c 'mkdir -p ~/work/project'")
         machine.succeed(
