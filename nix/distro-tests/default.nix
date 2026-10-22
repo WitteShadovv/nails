@@ -36,6 +36,13 @@ let
   # the metadata and the smoke planner never sees them.
   records = import ./records.nix { inherit self pkgs nix-vm-test; };
 
+  # Fact-capture probes for the families not admitted yet, keyed "<name>-probe".
+  # Like the records tests they are host drivers, run by hand on a KVM machine,
+  # so they stay out of the metadata and the CI planner never sees them.
+  probes = lib.mapAttrs' (name: drv: lib.nameValuePair "${name}-probe" drv) (
+    import ./probe.nix { inherit pkgs nix-vm-test; }
+  );
+
   distros = builtins.attrNames enabledImages;
 
   metadata = {
@@ -67,6 +74,7 @@ let
 in
 tests
 // records
+// probes
 // {
   _metadata = metadata;
   # Plain data the `distro-images` check serialises to force evaluation of the
