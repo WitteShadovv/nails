@@ -5,14 +5,21 @@ name: Mutants (in diff)
 # scheduled.yml. It never gates the merge: surviving mutants are a triage
 # artifact for the integration log, and a change that touches no mutable code is
 # a clean pass. The work is sharded and each shard is time-boxed, so the lane
-# stays short even when a change to the teardown plan or the session entry
-# produces dozens of mutants.
+# stays short on the small diff of a feature pull request, which is what it is
+# for: it catches a coverage gap in a change as that change lands on `next`.
+#
+# It runs on pull requests into `next`, not into `main`. A `next` -> `main`
+# release pull request carries the whole accumulated round, whose diff has
+# hundreds of mutants: they cannot finish inside the time-boxed shards (the
+# shards are cancelled, or a worker fills the runner's disk, and the lane goes
+# red), and re-testing them proves nothing, because every line in that diff
+# already went through this lane on the feature pull request that added it. The
+# weekly full sweep in scheduled.yml is the release-level backstop.
 
 on:
   pull_request:
     branches:
       - next
-      - main
 
 permissions:
   contents: read
