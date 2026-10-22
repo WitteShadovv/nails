@@ -974,6 +974,98 @@ mod tests {
         );
     }
 
+    /// A minimal `EntryInputs` for the helpers that do not build a system:
+    /// no builder, no operator, the persona at its default.
+    fn minimal_inputs<'a>(
+        hidden_root: &'a Path,
+        binary: &'a Path,
+        config_toml: Option<String>,
+    ) -> EntryInputs<'a> {
+        EntryInputs {
+            hidden_root,
+            decoy_root: DecoyRoot {
+                source: PathBuf::from("/dev/vda2"),
+                fstype: "ext4".into(),
+                data: None,
+            },
+            nixos: false,
+            builder: None,
+            binary,
+            config_toml,
+            session_units: Vec::new(),
+            backend: Vec::new(),
+            persona: Default::default(),
+            operator: None,
+            rebuild_space_mb: 0,
+            read_only_disks: false,
+            accepted_decoy_storage: None,
+        }
+    }
+
+    #[test]
+    fn write_runtime_populates_the_runtime_directory() {
+        let run = tempfile::tempdir().unwrap();
+        let hidden = tempfile::tempdir().unwrap();
+        let binary = run.path().join("nails-running-binary");
+        std::fs::write(&binary, b"the running binary bytes").unwrap();
+        let paths = Paths {
+            root: PathBuf::from("/"),
+            run: run.path().to_path_buf(),
+        };
+        // A scratch tree, not the real system, so the runtime lands under it.
+        assert!(!paths.is_system());
+        let toml = "hidden_volume_root = \"/x\"\n".to_string();
+        let inputs = minimal_inputs(hidden.path(), &binary, Some(toml.clone()));
+        let snapshot = Snapshot::take(&paths.run);
+
+        write_runtime(&paths, &inputs, &snapshot).unwrap();
+
+        let runtime = paths.runtime();
+        // The RAM copy of the binary is the running binary, byte for byte: the
+        // whole point of write_runtime, skipped by a body replaced with Ok(()).
+        assert_eq!(
+            std::fs::read(paths.binary_copy()).unwrap(),
+            std::fs::read(&binary).unwrap()
+        );
+        // The `/run` snapshot and the saved utab the way back reads are written.
+        assert!(runtime.join(SNAPSHOT_NAME).exists());
+        assert!(runtime.join(UTAB_NAME).exists());
+        assert!(runtime.join(UTAB_MOUNTS_NAME).exists());
+        // The configuration copy carries the effective TOML verbatim.
+        assert_eq!(
+            std::fs::read_to_string(runtime.join(CONFIG_COPY_NAME)).unwrap(),
+            toml
+        );
+        // The runtime directory is private (0o700), as write_runtime sets it.
+        let mode = std::fs::metadata(&runtime).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+    }
+
+    #[test]
+    fn fresh_home_without_the_operator_is_refused() {
+        let run = tempfile::tempdir().unwrap();
+        let hidden = tempfile::tempdir().unwrap();
+        let binary = run.path().join("nails-running-binary");
+        std::fs::write(&binary, b"bin").unwrap();
+        let paths = Paths {
+            root: run.path().join("root"),
+            run: run.path().to_path_buf(),
+        };
+        let layout = Layout::new(hidden.path());
+        // Fresh-home needs the operator (the sudo user) whose home is reset; with
+        // none, the entry must refuse rather than silently do nothing. A body
+        // replaced with Ok(()) would accept it.
+        let inputs = minimal_inputs(hidden.path(), &binary, None);
+        assert!(inputs.operator.is_none());
+
+        let error = fresh_home(&paths, &inputs, &layout, &[]).unwrap_err();
+
+        let text = error.to_string();
+        assert!(text.contains("fresh-home"), "{text}");
+        assert!(text.contains("operator"), "{text}");
+        assert!(matches!(error, NailsError::InvalidState(_)));
+    }
+
     #[test]
     fn a_symlinked_fstab_mount_point_is_decided_at_its_real_path() {
         // The decoy keeps /home at var/home (an ostree layout).

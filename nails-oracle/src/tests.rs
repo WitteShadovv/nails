@@ -556,6 +556,91 @@ fn breadth_reason_rejects_broad_paths_only() {
 }
 
 #[test]
+fn path_covers_rejects_an_empty_pattern() {
+    // An empty pattern names nothing, so it must cover no absolute path: the
+    // cross-absoluteness guard (one side absolute, the other not) returns false
+    // rather than letting "" slip through as a universal prefix.
+    assert!(!path_covers("", "/foo"));
+    assert!(!path_covers("", "/var/lib/nixos"));
+    // Equal empty strings are still trivially equal.
+    assert!(path_covers("", ""));
+}
+
+#[test]
+fn path_covers_needs_a_strictly_longer_child() {
+    // A pattern only covers a path that is equal or strictly longer with a '/'
+    // boundary. Two distinct same-length absolute paths cover neither: the
+    // length must be strictly greater, not merely equal.
+    assert!(!path_covers("/var/lib/nix", "/var/lib/niy"));
+    assert!(!path_covers("/aaa", "/bbb"));
+    assert!(path_covers("/var/lib/nix", "/var/lib/nix/x"));
+}
+
+#[test]
+fn breadth_reason_allows_a_two_segment_non_system_path() {
+    // Only the enumerated SYSTEM_ROOTS reject a two-segment path as a whole
+    // subtree; a two-segment path under an unlisted top-level directory is
+    // specific enough to allowlist.
+    assert!(breadth_reason("/data/app").is_none());
+    assert!(breadth_reason("/custom/store").is_none());
+    // A listed system root at two segments is still rejected, for contrast.
+    assert!(breadth_reason("/var/lib").is_some());
+}
+
+#[test]
+fn is_clean_tracks_the_status() {
+    let clean = decide(&clean_scans(), &clean_policy());
+    assert_eq!(clean.status, Status::Clean);
+    assert!(clean.is_clean(), "a clean verdict reads as clean");
+
+    let mut scans = clean_scans();
+    scans.after.insert(restore("/home/user/secret.txt"));
+    let failed = decide(&scans, &clean_policy());
+    assert_eq!(failed.status, Status::Fail);
+    assert!(
+        !failed.is_clean(),
+        "a failing verdict does not read as clean"
+    );
+}
+
+#[test]
+fn exit_code_is_zero_only_when_clean() {
+    let clean = decide(&clean_scans(), &clean_policy());
+    assert_eq!(clean.exit_code(), 0, "a clean run exits 0");
+
+    let mut scans = clean_scans();
+    scans.after.insert(restore("/home/user/secret.txt"));
+    let failed = decide(&scans, &clean_policy());
+    assert_eq!(failed.exit_code(), 1, "a failing run exits 1");
+}
+
+#[test]
+fn summary_renders_the_clean_and_fail_lines() {
+    // The one-line summary is a human-facing contract: a clean run names its
+    // reconciled residue counts, a failing run is marked FAIL with the
+    // unexplained count. This pins the branch and the rendered content.
+    let clean = decide(&clean_scans(), &clean_policy());
+    assert_eq!(
+        clean.summary,
+        "CLEAN: 2 residue (1 noise subtracted, 1 cited, 1 self-check)"
+    );
+
+    let mut scans = clean_scans();
+    scans.after.insert(restore("/home/user/secret.txt"));
+    let failed = decide(&scans, &clean_policy());
+    assert!(
+        failed.summary.starts_with("FAIL"),
+        "a failing run is marked FAIL: {}",
+        failed.summary
+    );
+    assert!(
+        failed.summary.contains("1 of 3 residue unexplained"),
+        "the fail line names the unexplained count: {}",
+        failed.summary
+    );
+}
+
+#[test]
 fn timesync_clock_is_citable_within_its_own_channel() {
     // A second path-channel row, to be sure the containment check is per-row.
     let mut scans = clean_scans();

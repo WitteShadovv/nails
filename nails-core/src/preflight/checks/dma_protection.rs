@@ -539,6 +539,37 @@ mod tests {
         );
     }
 
+    #[test]
+    fn kstrtobool_parses_the_kernel_boolean_spellings() {
+        // The documented kstrtobool contract, including the two-character `on`
+        // and `off` spellings that need a second character to disambiguate.
+        for truthy in ["y", "Y", "t", "1", "yes", "true", "on", "ON"] {
+            assert_eq!(kstrtobool(truthy), Some(true), "{truthy:?} should be true");
+        }
+        for falsy in ["n", "N", "f", "0", "no", "false", "off", "OFF"] {
+            assert_eq!(kstrtobool(falsy), Some(false), "{falsy:?} should be false");
+        }
+        // A leading `o` that is neither `on` nor `off` is rejected, as is junk.
+        assert_eq!(kstrtobool("ouch"), None);
+        assert_eq!(kstrtobool("maybe"), None);
+        assert_eq!(kstrtobool(""), None);
+    }
+
+    #[test]
+    fn iommu_nopt_reverses_an_earlier_passthrough_request() {
+        // `iommu=nopt` asks for no passthrough; as the last assignment it cancels
+        // a preceding `iommu=pt`, so nothing ends up requesting passthrough.
+        assert_eq!(
+            parse_iommu_cmdline("iommu=pt iommu=nopt"),
+            IommuCmdline::Unset
+        );
+        // It also cancels an explicit iommu.passthrough=1 that came before it.
+        assert_eq!(
+            parse_iommu_cmdline("iommu.passthrough=1 iommu=nopt"),
+            IommuCmdline::Unset
+        );
+    }
+
     // ----- pure lockdown parsing -----
 
     #[test]
@@ -676,6 +707,75 @@ mod tests {
             result
                 .message()
                 .contains("virtual-machine or container guest")
+        );
+    }
+
+    #[test]
+    fn a_protected_pass_crediting_both_signals_names_both() {
+        // Both the active IOMMU and the Thunderbolt controller confirm
+        // protection: the basis names the IOMMU remapping AND the controller.
+        let result = verdict(
+            TbProtection::Protected,
+            IommuState::Translating,
+            Lockdown::Unavailable,
+            true,
+        );
+        assert!(result.is_pass(), "{}", result.message());
+        assert!(
+            result
+                .message()
+                .contains("remapping DMA and the Thunderbolt"),
+            "both signals must be cited: {}",
+            result.message()
+        );
+    }
+
+    #[test]
+    fn a_protected_pass_on_the_thunderbolt_signal_alone_does_not_claim_remapping() {
+        // The controller reports protection but /sys could not confirm remapping
+        // (IOMMU Unknown): the basis is the Thunderbolt signal only, and it must
+        // not assert the IOMMU is remapping DMA.
+        let result = verdict(
+            TbProtection::Protected,
+            IommuState::Unknown,
+            Lockdown::Unavailable,
+            true,
+        );
+        assert!(result.is_pass(), "{}", result.message());
+        assert!(
+            result
+                .message()
+                .contains("controller reports IOMMU DMA protection"),
+            "{}",
+            result.message()
+        );
+        assert!(
+            !result.message().contains("remapping DMA and"),
+            "must not claim the IOMMU is remapping: {}",
+            result.message()
+        );
+    }
+
+    #[test]
+    fn a_protected_pass_on_the_iommu_alone_credits_only_the_iommu() {
+        // No Thunderbolt signal, IOMMU translating: the basis is the active
+        // IOMMU alone and cites no Thunderbolt controller.
+        let result = verdict(
+            TbProtection::Absent,
+            IommuState::Translating,
+            Lockdown::Unavailable,
+            true,
+        );
+        assert!(result.is_pass(), "{}", result.message());
+        assert!(
+            result.message().contains("an active IOMMU is present"),
+            "{}",
+            result.message()
+        );
+        assert!(
+            !result.message().contains("Thunderbolt"),
+            "there is no Thunderbolt signal to cite: {}",
+            result.message()
         );
     }
 
@@ -821,6 +921,30 @@ mod tests {
         with_iommu_groups(&fs, "DMA-FQ", 2);
         let result = DmaProtectionCheck::new().run(&fs).unwrap();
         assert!(result.is_pass(), "{}", result.message());
+    }
+
+    #[test]
+    fn run_lets_a_remapping_group_outrank_a_passthrough_group() {
+        // A mix of domain types: one group remaps DMA (DMA-FQ) while another is
+        // identity-mapped (passthrough). A single remapping group proves the
+        // IOMMU is translating, so a passthrough group must not downgrade it.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file(PROC_CMDLINE, "quiet\n");
+        let translating = "/sys/kernel/iommu_groups/0";
+        let passthrough = "/sys/kernel/iommu_groups/1";
+        fs.mock_set_directory_contents(
+            Path::new(IOMMU_GROUPS),
+            vec![PathBuf::from(translating), PathBuf::from(passthrough)],
+        );
+        fs.mock_add_file(&format!("{translating}/{IOMMU_GROUP_TYPE}"), "DMA-FQ\n");
+        fs.mock_add_file(&format!("{passthrough}/{IOMMU_GROUP_TYPE}"), "identity\n");
+        let result = DmaProtectionCheck::new().run(&fs).unwrap();
+        assert!(result.is_pass(), "{}", result.message());
+        assert!(
+            result.message().contains("remapping DMA"),
+            "{}",
+            result.message()
+        );
     }
 
     #[test]

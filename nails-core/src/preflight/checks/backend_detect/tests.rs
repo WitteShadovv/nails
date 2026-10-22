@@ -131,6 +131,24 @@ fn new_keeps_custom_root_and_clone_preserves_it() {
 }
 
 #[test]
+fn allowing_discards_sets_the_flag_and_keeps_the_custom_root() {
+    // The per-run override turns the flag on while preserving the custom
+    // hidden root; it must not reset the check to its defaults.
+    let check = BackendDetectCheck::new(PathBuf::from("/custom/root")).allowing_discards(true);
+    assert!(check.allow_discards, "the override must turn discards on");
+    assert_eq!(
+        check.hidden_volume_root,
+        PathBuf::from("/custom/root"),
+        "the override must keep the custom hidden root"
+    );
+
+    // And off keeps the fail-closed default while still preserving the root.
+    let off = BackendDetectCheck::new(PathBuf::from("/custom/root")).allowing_discards(false);
+    assert!(!off.allow_discards, "passing false must leave discards off");
+    assert_eq!(off.hidden_volume_root, PathBuf::from("/custom/root"));
+}
+
+#[test]
 fn trait_metadata_is_stable() {
     let check = BackendDetectCheck::default();
     assert_eq!(

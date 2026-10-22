@@ -602,4 +602,84 @@ mod tests {
         assert_eq!(summary.count(EntryStatus::Review), 1);
         assert_eq!(summary.count(EntryStatus::Masked), 0);
     }
+
+    /// The attach gate's refusal is surfaced into the report's `refusal`: a root
+    /// the gate rejects (here, one that does not exist) yields the gate's own
+    /// error body, with its stable code and message, not `None`. Without
+    /// `--allow-decoy-storage`, a `Missing` refusal is never downgraded.
+    #[test]
+    fn attach_refusal_surfaces_a_refused_root() {
+        let fs = MockFilesystem::new();
+        let options = PreflightOptions::default();
+        assert!(!options.allow_decoy_storage);
+
+        let body = attach_refusal(&fs, Path::new("/mnt/vault"), &options)
+            .expect("the gate refuses a root that does not exist, so a body must be returned");
+        assert_eq!(body.code, "not_separate_volume");
+        assert!(
+            body.message.contains("does not exist"),
+            "message should name the missing-root reason: {}",
+            body.message
+        );
+    }
+
+    /// Every line `decoy_filesystems` reports is a real, structured decision
+    /// description of the `"<path>: <verb>"` shape `Decision::describe` produces:
+    /// never an empty string and never a bare token. This holds for whatever the
+    /// host's fstab and mounts yield, so it pins the contract without depending on
+    /// a particular host layout.
+    #[test]
+    fn decoy_filesystems_lines_are_structured_descriptions() {
+        for line in decoy_filesystems(Path::new("/mnt/data")) {
+            assert!(!line.is_empty(), "a decision description is never empty");
+            assert!(
+                line.contains(": "),
+                "every line is a `<path>: <verb>` describe() line, got {line:?}"
+            );
+        }
+    }
+
+    /// `inherited_summary` honours the persona mode: in shared-home the decoy's
+    /// enabled *user* units carry into the hidden session and are listed, while
+    /// fresh-home replaces the home and drops them. The `mode == FreshHome` test
+    /// is exactly what decides this, so flipping it empties the user-unit list.
+    #[test]
+    fn inherited_summary_lists_user_units_in_shared_home_mode() {
+        // Resolve the same operator `inherited_summary` will, through the real
+        // passwd database, by pointing resolution at uid 0 (root exists on every
+        // host). The mock filesystem supplies the inherited state under its home.
+        let env = RuntimeEnv::empty().with_target_uid("0");
+        let user = TargetUser::resolve_with(&env)
+            .expect("uid 0 resolves against the passwd database on any host");
+
+        let fs = MockFilesystem::new();
+        let user_dir = user.home().join(".config/systemd/user");
+        let wants = user_dir.join("default.target.wants");
+        fs.mock_set_directory_contents(&user_dir, vec![wants.clone()]);
+        fs.mock_set_directory_contents(&wants, vec![wants.join("syncthing.service")]);
+
+        let shared_home = Config {
+            persona: PersonaConfig {
+                mode: PersonaMode::SharedHome,
+                ..PersonaConfig::default()
+            },
+            ..Config::default()
+        };
+        let summary = inherited_summary(&shared_home, &fs, &env);
+        assert!(
+            summary.inspected,
+            "the operator resolved, so it is inspected"
+        );
+        let user_units: Vec<&str> = summary
+            .entries
+            .iter()
+            .filter(|entry| entry.source == "user-unit")
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            user_units,
+            vec!["syncthing.service"],
+            "shared-home inherits the decoy's enabled user units"
+        );
+    }
 }

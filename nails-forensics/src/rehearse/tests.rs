@@ -210,6 +210,81 @@ fn an_f2fs_decoy_root_is_marked_a_blind_spot() {
 }
 
 #[test]
+fn classified_reads_the_blind_spot_from_the_matching_mount_entry() {
+    // Two devices named only in the mount table (so neither path canonicalizes),
+    // matched to their entry by an exact source path. A `classified` target
+    // carries the blind spot of the filesystem on its own device, not another's.
+    let mounts = parse_mountinfo(
+        "1 0 8:1 / / rw,relatime - btrfs /dev/nails-test-btrfs rw,ssd,space_cache=v2\n\
+         2 1 253:0 / /mnt/data rw,relatime - ext4 /dev/nails-test-ext4 rw\n",
+    );
+
+    // The btrfs device matches its own entry: a copy-on-write blind spot lands on
+    // it. (Kills `==`->`!=` at the source match and `||`->`&&`: either flip makes
+    // this entry stop matching, so the btrfs reason is lost.)
+    let cow = ScanTarget::classified(PathBuf::from("/dev/nails-test-btrfs"), &mounts);
+    assert_eq!(cow.device, PathBuf::from("/dev/nails-test-btrfs"));
+    assert!(
+        cow.blind_spot
+            .as_deref()
+            .is_some_and(|reason| reason.contains("copy-on-write")),
+        "{cow:?}"
+    );
+
+    // The ext4 device matches its own entry, not the btrfs one: a clean scan of
+    // verbatim storage is conclusive. (A flipped source match would pick the
+    // btrfs entry and wrongly mark it a blind spot.)
+    let plain = ScanTarget::classified(PathBuf::from("/dev/nails-test-ext4"), &mounts);
+    assert_eq!(plain.device, PathBuf::from("/dev/nails-test-ext4"));
+    assert!(plain.blind_spot.is_none(), "{plain:?}");
+}
+
+#[test]
+fn classified_matches_a_device_to_its_entry_by_canonical_path() {
+    // The device and the mount entry name the same disk through two different
+    // symlinks (as /dev/disk/by-id/… and /dev/mapper/… do): not equal as text,
+    // tied together only by canonicalizing both to the real node. The btrfs blind
+    // spot must still reach the device. This exercises the second comparison,
+    // whose `==`->`!=` flip only shows up when the exact source match is false
+    // and canonicalization succeeds on both sides.
+    let dir = tempfile::tempdir().unwrap();
+    let real = dir.path().join("realdev");
+    std::fs::write(&real, b"").unwrap();
+    let real = real.canonicalize().unwrap();
+    let by_device = dir.path().join("by-id");
+    let by_mount = dir.path().join("by-uuid");
+    std::os::unix::fs::symlink(&real, &by_device).unwrap();
+    std::os::unix::fs::symlink(&real, &by_mount).unwrap();
+    assert_ne!(by_device, by_mount, "the two names must differ as text");
+
+    let entry = crate::filesystem::MountEntry {
+        mount_id: 1,
+        parent_id: 0,
+        dev: "253:0".to_string(),
+        root: PathBuf::from("/"),
+        mount_point: PathBuf::from("/"),
+        mount_opts: "rw,relatime".to_string(),
+        fstype: "btrfs".to_string(),
+        source: by_mount.clone(),
+        super_opts: "rw,ssd,space_cache=v2".to_string(),
+    };
+
+    let target = ScanTarget::classified(by_device.clone(), &[entry]);
+    // The device is recorded by its canonical node.
+    assert_eq!(target.device, real);
+    // And matched to the entry through that node, carrying the blind spot. With
+    // the second comparison flipped to `!=`, the entry no longer matches and the
+    // blind spot is lost.
+    assert!(
+        target
+            .blind_spot
+            .as_deref()
+            .is_some_and(|reason| reason.contains("copy-on-write")),
+        "{target:?}"
+    );
+}
+
+#[test]
 fn the_recent_files_document_gains_one_bookmark() {
     use super::plant::tests_support::xbel;
     let fresh = xbel(None, "file:///home/a/x.txt", "2026-10-07T10:00:00Z");

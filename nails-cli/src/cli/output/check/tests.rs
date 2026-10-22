@@ -48,6 +48,25 @@ fn report(rows: Vec<CheckRow>) -> ReadinessReport {
     )
 }
 
+/// Each check status maps to its own mark; a passing, warning or skipped row
+/// must not fall through to the Fail mark the `_` arm uses for real failures.
+#[test]
+fn row_mark_maps_each_status_to_its_own_mark() {
+    let pass = CheckRow::from_result("a".into(), &CheckResult::Pass("ok".into()));
+    assert_eq!(row_mark(&pass), Mark::Pass);
+
+    let warn = CheckRow::from_result("b".into(), &CheckResult::Warn("careful".into()));
+    assert_eq!(row_mark(&warn), Mark::Warn);
+
+    let skipped = CheckRow::from_result("c".into(), &CheckResult::Skipped("no volume".into()));
+    assert_eq!(row_mark(&skipped), Mark::Neutral);
+
+    // The fallback arm: a real failure (and any unknown status) is Fail, which
+    // is what each of the three statuses above must stay distinct from.
+    let fail = CheckRow::from_result("d".into(), &CheckResult::fail("boom".to_string()));
+    assert_eq!(row_mark(&fail), Mark::Fail);
+}
+
 #[test]
 fn the_summary_line_puts_a_single_warning_in_the_singular() {
     let style = Style {

@@ -364,6 +364,11 @@ mod tests {
             "|/bin/false",
             // a socket to some other collector is that collector's business.
             "@/run/apport/apport.socket",
+            // a systemd socket that is not for coredumps, and a coredump
+            // socket that is not systemd's: both halves must match, so one
+            // alone is left alone.
+            "@/run/systemd/notify.socket",
+            "@@/run/othercoredumpd/kernel",
         ] {
             assert!(!pattern_targets_systemd_coredump(pattern), "{pattern:?}");
         }

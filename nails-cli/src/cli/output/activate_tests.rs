@@ -290,6 +290,103 @@ fn a_multi_line_fix_is_indented_line_by_line() {
     );
 }
 
+/// Serialize the two tests that redirect the process's real stdout, so one
+/// never restores fd 1 while the other is still capturing.
+/// Run `f`, capturing everything it writes to the process's real stdout (fd 1).
+///
+/// `print_activate_json_result` writes through `println_tolerating_broken_pipe`,
+/// which locks `io::stdout()` directly; the test harness's per-thread capture
+/// does not intercept that, so the only way to observe the real printer (rather
+/// than the `envelope_value` copy of its routing) is to redirect fd 1 to a file.
+fn capture_stdout(f: impl FnOnce()) -> String {
+    use nix::libc;
+    use std::io::{Read, Seek, SeekFrom, Write};
+    use std::os::fd::AsRawFd;
+
+    let _guard = crate::STDOUT_CAPTURE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut tmp = tempfile::tempfile().expect("temp file for stdout capture");
+
+    let _ = std::io::stdout().flush();
+    // SAFETY: STDOUT_FILENO is always a valid descriptor; dup returns a fresh
+    // owned fd or -1, which the assert on the next line checks.
+    let saved = unsafe { libc::dup(libc::STDOUT_FILENO) };
+    assert!(saved >= 0, "dup the real stdout");
+    // SAFETY: `tmp` owns a live fd and STDOUT_FILENO is valid; dup2 only rewires
+    // fd 1 onto the capture file, and its result is asserted.
+    let to_file = unsafe { libc::dup2(tmp.as_raw_fd(), libc::STDOUT_FILENO) };
+    assert!(to_file >= 0, "redirect fd 1 to the capture file");
+
+    f();
+
+    let _ = std::io::stdout().flush();
+    // SAFETY: `saved` is the fd dup'd above and STDOUT_FILENO is valid; dup2
+    // restores fd 1, and its result is asserted.
+    let restored = unsafe { libc::dup2(saved, libc::STDOUT_FILENO) };
+    assert!(restored >= 0, "restore the real stdout");
+    // SAFETY: `saved` is an owned fd produced by dup above, closed exactly once.
+    unsafe {
+        libc::close(saved);
+    }
+
+    let mut captured = String::new();
+    tmp.seek(SeekFrom::Start(0)).expect("rewind capture file");
+    tmp.read_to_string(&mut captured)
+        .expect("read captured stdout");
+    captured
+}
+
+/// Drive the real `print_activate_json_result` and parse the `activate`
+/// envelope it prints. Other fd-1 writers that happen to run in parallel land
+/// in the same capture file, so the activate line is picked out by `command`.
+fn printed_activate_envelope(result: &ActivateResult<'_>, duration: f64) -> serde_json::Value {
+    let captured = capture_stdout(|| print_activate_json_result(result, duration));
+    let line = captured
+        .lines()
+        .find(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|v| {
+                    v.get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .map(|c| c == "activate")
+                })
+                .unwrap_or(false)
+        })
+        .unwrap_or_else(|| panic!("no activate envelope in captured stdout: {captured:?}"));
+    serde_json::from_str(line).expect("captured activate line is JSON")
+}
+
+/// The real printer must route a cancel to the shared cancel shape: `ok` false,
+/// code `cancelled`, no data. Deleting the `Failed(Cancelled)` arm routes the
+/// cancel through the generic failure arm instead, which stamps the code
+/// `activation_failed` and attaches a data payload.
+#[test]
+fn print_activate_json_routes_a_cancel_to_the_cancel_shape() {
+    let value = printed_activate_envelope(&ActivateResult::Failed(&NailsError::Cancelled), 0.0);
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "cancelled");
+    assert_eq!(value["error"]["message"], CANCELLED);
+    assert!(
+        value.get("data").is_none(),
+        "a cancel carries no data: {value}"
+    );
+}
+
+/// The real printer must route a non-cancel failure to a failure envelope:
+/// `ok` false, its stable failure code, and the prepared-state data. Deleting
+/// the generic `Failed(error)` arm falls through to the success arm, which
+/// would print `ok` true with no error body.
+#[test]
+fn print_activate_json_routes_a_plain_failure_to_a_failure_envelope() {
+    let error = NailsError::InvalidState("the root is not a mount point".to_string());
+    let value = printed_activate_envelope(&ActivateResult::Failed(&error), 0.1);
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "activation_failed");
+    assert_eq!(value["data"]["status"], "failed");
+}
+
 #[test]
 fn already_active_prints_one_success_line() {
     let (out, err) = human_lines(

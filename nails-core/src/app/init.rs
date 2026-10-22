@@ -659,6 +659,14 @@ mod tests {
     }
 
     #[test]
+    fn item_status_labels_are_the_exact_human_strings() {
+        // The labels are a surfaced contract (shown to the operator and matched
+        // against in reports), so both are pinned exactly, not merely non-empty.
+        assert_eq!(ItemStatus::Created.label(), "created");
+        assert_eq!(ItemStatus::AlreadyPresent.label(), "already present");
+    }
+
+    #[test]
     fn next_steps_lists_the_three_activation_steps() {
         let steps = next_steps(Path::new("/mnt/data"));
 

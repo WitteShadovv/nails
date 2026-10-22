@@ -657,6 +657,88 @@ fn a_step_that_fails_while_a_cancel_is_pending_reports_the_cancel() {
     assert_eq!(cancellable(|| Ok(7)).unwrap(), 7);
 }
 
+/// Run `body` with an event-collecting reporter installed on this thread and
+/// return the `success` of each `finish` the session flow raised, in order.
+/// `progress::finish` is called from exactly one site in the crate (the end of
+/// `enter_session_on`), so this is precisely what a watching front end sees as
+/// the activation ending.
+fn activation_finishes(body: impl FnOnce()) -> Vec<bool> {
+    let sink = crate::reporter::CollectingSink::new();
+    {
+        let reporter = crate::reporter::EventReporter::new(sink.clone());
+        let _scope =
+            crate::reporter::progress::install(crate::reporter::progress::shared(reporter));
+        body();
+    }
+    sink.events()
+        .into_iter()
+        .filter_map(|event| match event {
+            nails_api::Event::Finished { success } => Some(success),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_no_op_entry_in_the_hidden_root_raises_no_finish() {
+    // Already in the hidden root: nothing was done, so a watcher must not be
+    // told the activation finished.
+    let dir = tempfile::tempdir().unwrap();
+    let hidden = dir.path().join("hidden");
+    let session = plan(&hidden);
+    let machine = machine(dir.path(), &hidden_table(&session.upper));
+    write_plan(&machine, &session);
+    let mut m = manager(&hidden);
+    let host = FakeEntryHost::default();
+
+    let mut outcome = None;
+    let finishes = activation_finishes(|| {
+        outcome = Some(
+            m.enter_session_on(&machine, &EnterOptions::default(), &host)
+                .unwrap(),
+        );
+    });
+
+    assert!(
+        matches!(outcome, Some(EnterOutcome::AlreadyActive)),
+        "{outcome:?}"
+    );
+    assert!(
+        finishes.is_empty(),
+        "a no-op entry raises no finish, got {finishes:?}"
+    );
+}
+
+#[test]
+fn a_refused_entry_raises_exactly_one_failed_finish() {
+    // A real activation that fails did do work, so it ends with one finish, and
+    // that finish reports the failure.
+    let dir = tempfile::tempdir().unwrap();
+    let machine = machine(dir.path(), "1 0 0:30 / / rw - tmpfs tmpfs rw\n");
+    let mut m = manager(&dir.path().join("hidden"));
+    m.set_host_profile(FakePlatform::fhs().host_profile());
+    let options = EnterOptions {
+        skip_preflight: true,
+        ..EnterOptions::default()
+    };
+    let host = FakeEntryHost::default();
+
+    let mut result = None;
+    let finishes = activation_finishes(|| {
+        result = Some(m.enter_session_on(&machine, &options, &host));
+    });
+
+    assert!(
+        matches!(result, Some(Err(_))),
+        "the RAM decoy root is refused: {result:?}"
+    );
+    assert_eq!(
+        finishes,
+        vec![false],
+        "a failed activation raises one finish that reports the failure"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // record
 // ---------------------------------------------------------------------------

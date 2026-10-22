@@ -320,3 +320,125 @@ fn restore_puts_the_hostname_and_runtime_state_back_without_touching_links() {
 fn the_record_name_carries_no_product_name() {
     assert!(!RECORD_NAME.to_lowercase().contains("nails"));
 }
+
+#[test]
+fn an_absent_runtime_directory_is_skipped_while_a_present_one_is_still_copied() {
+    // NetworkManager state is present; systemd/resolve/netif does not exist.
+    let run = tempfile::tempdir().unwrap();
+    let r = run.path();
+    fs::create_dir_all(r.join("NetworkManager/devices")).unwrap();
+    fs::write(r.join("NetworkManager/devices/2"), "[device]\n").unwrap();
+
+    // The absent directory reads as NotFound and is simply skipped, so the
+    // present directory's state still makes it into the copy. A guard that
+    // does not recognise NotFound would abandon the whole copy instead.
+    let snapshot = snapshot_run(r);
+    assert!(
+        snapshot
+            .iter()
+            .any(|entry| entry.path == Path::new("NetworkManager/devices/2")),
+        "the present directory's file is copied even though the other is absent: {snapshot:?}"
+    );
+}
+
+#[test]
+fn a_non_notfound_error_reading_runtime_state_abandons_the_whole_copy() {
+    // NetworkManager is a plain file, so reading NetworkManager/devices below
+    // it fails with a not-a-directory error, which is not NotFound. The
+    // systemd state is present and would be copied if that error were wrongly
+    // swallowed as a missing directory.
+    let run = tempfile::tempdir().unwrap();
+    let r = run.path();
+    fs::write(r.join("NetworkManager"), "not a directory").unwrap();
+    fs::create_dir_all(r.join("systemd/resolve/netif")).unwrap();
+    fs::write(r.join("systemd/resolve/netif/2"), "DNS=10.0.2.3\n").unwrap();
+
+    // A real error must propagate: the copy is abandoned, never partially kept.
+    assert!(
+        snapshot_run(r).is_empty(),
+        "a non-NotFound error abandons the copy rather than skipping the entry"
+    );
+}
+
+#[test]
+fn the_runtime_copy_stops_at_the_maximum_depth() {
+    let run = tempfile::tempdir().unwrap();
+    let r = run.path();
+    // NetworkManager/devices is depth 0; a/b/c/d descends to RUN_MAX_DEPTH, and
+    // `e` sits one level below that, past the limit.
+    let at_limit = r.join("NetworkManager/devices/a/b/c/d");
+    fs::create_dir_all(&at_limit).unwrap();
+    fs::write(at_limit.join("e"), "too deep\n").unwrap();
+
+    let snapshot = snapshot_run(r);
+    assert!(
+        snapshot
+            .iter()
+            .any(|entry| entry.path == Path::new("NetworkManager/devices/a/b/c/d")),
+        "the directory at the maximum depth is still copied: {snapshot:?}"
+    );
+    assert!(
+        snapshot
+            .iter()
+            .all(|entry| entry.path != Path::new("NetworkManager/devices/a/b/c/d/e")),
+        "nothing below the maximum depth is copied: {snapshot:?}"
+    );
+}
+
+#[test]
+fn runtime_state_at_the_size_limit_is_copied_but_past_it_abandons_the_copy() {
+    // A file of exactly RUN_MAX_BYTES is within budget and is copied.
+    let at = tempfile::tempdir().unwrap();
+    let a = at.path();
+    fs::create_dir_all(a.join("NetworkManager/devices")).unwrap();
+    fs::write(
+        a.join("NetworkManager/devices/at_limit"),
+        vec![b'x'; RUN_MAX_BYTES],
+    )
+    .unwrap();
+    let snapshot = snapshot_run(a);
+    assert!(
+        snapshot
+            .iter()
+            .any(|entry| entry.path == Path::new("NetworkManager/devices/at_limit")),
+        "a file at exactly the limit is kept: {snapshot:?}"
+    );
+
+    // One byte past the budget abandons the whole copy.
+    let over = tempfile::tempdir().unwrap();
+    let o = over.path();
+    fs::create_dir_all(o.join("NetworkManager/devices")).unwrap();
+    fs::write(
+        o.join("NetworkManager/devices/over"),
+        vec![b'x'; RUN_MAX_BYTES + 1],
+    )
+    .unwrap();
+    assert!(
+        snapshot_run(o).is_empty(),
+        "a file past the limit abandons the copy"
+    );
+}
+
+#[test]
+fn a_restored_file_gets_its_parent_directory_created() {
+    let run = tempfile::tempdir().unwrap();
+    let r = run.path();
+    // A record that lists a file without first listing its parent directory:
+    // restoring it must create the parent before writing the file, so the
+    // write does not fail and silently drop the state.
+    let record = NetworkRecord {
+        links: Vec::new(),
+        hostname: Vec::new(),
+        etc_hostname_present: true,
+        run: vec![RunEntry {
+            path: PathBuf::from("NetworkManager/devices/2"),
+            kind: RunKind::File(b"[device]\n".to_vec()),
+        }],
+    };
+    restore_run(r, &record);
+    assert_eq!(
+        fs::read(r.join("NetworkManager/devices/2")).unwrap(),
+        b"[device]\n",
+        "the file is written, its parent having been created first"
+    );
+}

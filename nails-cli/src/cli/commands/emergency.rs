@@ -267,4 +267,127 @@ mod tests {
         run_countdown(0);
         assert!(start.elapsed().as_millis() < 500);
     }
+
+    /// The phrase the Side::None human report always carries; distinctive enough
+    /// that a parallel fd-1 writer never produces it, so a `contains` assertion
+    /// over the capture file stays robust under the test harness's parallelism.
+    const NO_SESSION_PHRASE: &str = "nothing to tear down";
+
+    /// Run `f`, capturing everything it writes to the process's real stdout
+    /// (fd 1).
+    ///
+    /// `print_json` and `render_human` write through
+    /// `println_tolerating_broken_pipe`, which locks `io::stdout()` directly; the
+    /// test harness's per-thread capture does not intercept that, so observing
+    /// the real printers means redirecting fd 1 to a file. Mirrors the helper in
+    /// `cli::output::activate_tests`; both share `crate::STDOUT_CAPTURE_LOCK` so
+    /// the two never redirect fd 1 at the same time.
+    fn capture_stdout(f: impl FnOnce()) -> String {
+        use nix::libc;
+        use std::io::{Read, Seek, SeekFrom, Write};
+        use std::os::fd::AsRawFd;
+
+        let _guard = crate::STDOUT_CAPTURE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut tmp = tempfile::tempfile().expect("temp file for stdout capture");
+
+        let _ = std::io::stdout().flush();
+        // SAFETY: STDOUT_FILENO is always a valid descriptor; dup returns a fresh
+        // owned fd or -1, which the assert on the next line checks.
+        let saved = unsafe { libc::dup(libc::STDOUT_FILENO) };
+        assert!(saved >= 0, "dup the real stdout");
+        // SAFETY: `tmp` owns a live fd and STDOUT_FILENO is valid; dup2 only
+        // rewires fd 1 onto the capture file, and its result is asserted.
+        let to_file = unsafe { libc::dup2(tmp.as_raw_fd(), libc::STDOUT_FILENO) };
+        assert!(to_file >= 0, "redirect fd 1 to the capture file");
+
+        f();
+
+        let _ = std::io::stdout().flush();
+        // SAFETY: `saved` is the fd dup'd above and STDOUT_FILENO is valid; dup2
+        // restores fd 1, and its result is asserted.
+        let restored = unsafe { libc::dup2(saved, libc::STDOUT_FILENO) };
+        assert!(restored >= 0, "restore the real stdout");
+        // SAFETY: `saved` is an owned fd produced by dup above, closed exactly once.
+        unsafe {
+            libc::close(saved);
+        }
+
+        let mut captured = String::new();
+        tmp.seek(SeekFrom::Start(0)).expect("rewind capture file");
+        tmp.read_to_string(&mut captured)
+            .expect("read captured stdout");
+        captured
+    }
+
+    fn quiet_settings() -> OutputSettings {
+        OutputSettings {
+            verbosity: nails_core::Verbosity::Quiet,
+            ..OutputSettings::default()
+        }
+    }
+
+    /// `print_json` must actually emit the `emergency` outcome envelope, with
+    /// `ok` following the hot path's own success (a Side::None return is clean).
+    /// Replacing its body with `()` prints nothing, so no emergency line appears.
+    #[test]
+    fn print_json_emits_the_emergency_outcome_envelope() {
+        let report = simulated(None, Finish::Return);
+        assert_eq!(app::exit_status(&report), ExitStatus::Ok);
+        let captured = capture_stdout(|| print_json(&report));
+        let line = captured
+            .lines()
+            .find(|line| {
+                serde_json::from_str::<serde_json::Value>(line)
+                    .ok()
+                    .and_then(|v| {
+                        v.get("command")
+                            .and_then(serde_json::Value::as_str)
+                            .map(|c| c == "emergency")
+                    })
+                    .unwrap_or(false)
+            })
+            .unwrap_or_else(|| panic!("no emergency envelope in captured stdout: {captured:?}"));
+        let value: serde_json::Value =
+            serde_json::from_str(line).expect("captured emergency line is JSON");
+        assert_eq!(value["command"], "emergency", "{value}");
+        assert_eq!(
+            value["ok"], true,
+            "a Side::None return is a clean teardown: {value}"
+        );
+    }
+
+    /// `render_human` prints the human report when not silenced. Replacing its
+    /// body with `()` — and flipping `&&` to `||`, which would silence a loud,
+    /// successful run — both drop the report; capturing fd 1 catches that.
+    #[test]
+    fn render_human_prints_the_report_when_not_quiet() {
+        let report = simulated(None, Finish::Return);
+        assert_eq!(app::exit_status(&report), ExitStatus::Ok);
+        let settings = OutputSettings::default();
+        assert!(!settings.is_quiet());
+        let captured = capture_stdout(|| render_human(&settings, &report));
+        assert!(
+            captured.contains(NO_SESSION_PHRASE),
+            "a non-quiet successful run must print its report: {captured:?}"
+        );
+    }
+
+    /// The quiet guard silences only a quiet, successful run: `is_quiet() &&
+    /// exit == Ok`. Flipping `==` to `!=` makes it instead print on a quiet,
+    /// *successful* run (and silence a quiet failure), so a quiet Side::None run
+    /// would wrongly emit its report. The real guard prints nothing here.
+    #[test]
+    fn render_human_is_silent_on_a_quiet_successful_run() {
+        let report = simulated(None, Finish::Return);
+        assert_eq!(app::exit_status(&report), ExitStatus::Ok);
+        let settings = quiet_settings();
+        assert!(settings.is_quiet());
+        let captured = capture_stdout(|| render_human(&settings, &report));
+        assert!(
+            !captured.contains(NO_SESSION_PHRASE),
+            "a quiet successful run must stay silent: {captured:?}"
+        );
+    }
 }

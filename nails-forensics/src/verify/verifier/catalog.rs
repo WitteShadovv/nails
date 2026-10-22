@@ -276,6 +276,43 @@ mod tests {
     }
 
     #[test]
+    fn catalog_paths_are_filtered_to_the_detected_host_platform() {
+        use crate::MockFilesystem;
+        use crate::residue_catalog::ResidueKind;
+
+        // A live run (Host context) whose host detection resolves to NixOS:
+        // `ID=nixos` with systemd as PID 1. On a live run `catalog_platform`
+        // returns `Some(NIXOS)`, so the catalog is filtered to the host family.
+        let fs = MockFilesystem::new();
+        fs.mock_add_file("/etc/os-release", "ID=nixos\nVERSION_ID=\"24.11\"\n");
+        fs.mock_add_file("/proc/1/comm", "systemd");
+        // An all-platform session class present on disk...
+        fs.mock_add_file("/var/log/sudo.log", "activation command line");
+        // ...and an FHS-only session class present on disk (Plymouth's boot log
+        // belongs to the Debian/Fedora/Arch families, never to NixOS).
+        fs.mock_add_file("/var/log/boot.log", "boot messages");
+
+        let verifier = Verifier::new(fs);
+        let findings = verifier.check_catalog_paths(ResidueKind::Session);
+        let messages: Vec<&str> = findings.iter().map(|f| f.message.as_str()).collect();
+
+        // The all-platform row applies to a NixOS host, so the probe fires and
+        // the present path is reported: this proves the probe machinery ran.
+        assert!(
+            messages.iter().any(|m| m.contains("[sudo-logfile]")),
+            "an all-platform catalog row must apply to a detected NixOS host: {messages:?}"
+        );
+        // The FHS-only row does NOT apply to a NixOS host, so its present path
+        // is filtered out. If `catalog_platform` returned `None` (every row
+        // applies), this FHS-only class would be reported — so this assertion
+        // fails the moment the host platform is not consulted.
+        assert!(
+            !messages.iter().any(|m| m.contains("[plymouth-boot-log]")),
+            "an FHS-only catalog row must be filtered out on a detected NixOS host: {messages:?}"
+        );
+    }
+
+    #[test]
     fn every_verify_check_id_is_unique() {
         let mut ids: Vec<&str> = super::VERIFY_CHECK_IDS.to_vec();
         ids.sort_unstable();

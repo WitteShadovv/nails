@@ -271,6 +271,28 @@ fn overlay_data_escapes_awkward_layer_paths() {
 }
 
 #[test]
+fn mount_overlay_refuses_an_unescapable_layer_before_mounting() {
+    // mount_overlay builds its option string with overlay_data before the
+    // mount(2) syscall. A layer path that cannot be represented in a mount
+    // option line (a newline, which escape_overlay_path rejects) makes that
+    // step fail, so the real mount_overlay returns an error and never reaches
+    // the kernel. This needs no privileges; it pins that mount_overlay does
+    // the work overlay_data describes rather than reporting success blindly.
+    let err = mount_overlay(
+        Path::new("/run/nextroot/low\ner"),
+        Path::new("/mnt/data/root/upper"),
+        Path::new("/mnt/data/root/work"),
+        Path::new("/run/nextroot"),
+    )
+    .expect_err("a newline in a layer path cannot be an overlay layer");
+    assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+    assert!(
+        err.to_string().contains("cannot be an overlay layer"),
+        "{err}"
+    );
+}
+
+#[test]
 fn detach_under_takes_the_deepest_mounts_first_and_only_below_the_path() {
     // Not mounted in this test: nothing is detached, nothing panics, and
     // the selection is by path component, never by string prefix.

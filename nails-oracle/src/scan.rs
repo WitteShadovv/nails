@@ -452,4 +452,286 @@ mod tests {
         // The root itself maps to nothing.
         assert_eq!(restore_abs_path(&root, &root), None);
     }
+
+    // --- normalization boundaries (pure, no filesystem) ---------------------
+
+    #[test]
+    fn normalize_masks_a_pure_decimal_run_to_n() {
+        // Exercises the `run_len == 0` discriminator (scan.rs:251) with an
+        // all-hex input so the masker terminates: a pure decimal run is a
+        // volatile token and must collapse to `N`. If the `== 0` test were
+        // flipped to `!= 0`, each hex char would be copied verbatim and "1234"
+        // would survive as "1234" instead of masking to "N".
+        assert_eq!(normalize_journal_body("1234"), "N");
+    }
+
+    #[test]
+    fn normalize_keeps_a_long_all_letter_hex_word() {
+        // The hex-id rule is `run_len >= 8 && has_digit && has_hex_letter`
+        // (scan.rs:261). A run of eight hex *letters* with no digit is a
+        // hex-ish word, not an identifier, so it is kept verbatim. If the first
+        // `&&` were an `||`, the >= 8 length alone would mask it to "X".
+        assert_eq!(normalize_journal_body("deadbeef"), "deadbeef");
+    }
+
+    #[test]
+    fn normalize_keeps_a_short_mixed_hex_run() {
+        // The decimal rule is `has_digit && !has_hex_letter` (scan.rs:263). A
+        // short run that has both a digit and a hex letter ("a1") is neither a
+        // long hex id nor a pure decimal, so it is kept verbatim. If that `&&`
+        // were an `||`, the digit alone would mask it to "N".
+        assert_eq!(normalize_journal_body("a1"), "a1");
+    }
+
+    // --- filesystem-facing scanners (real tmp tree, no root needed) ---------
+
+    /// A self-cleaning unique temp directory built with the standard library
+    /// only (nails-oracle carries no `tempfile` dev-dependency).
+    struct TmpDir {
+        path: PathBuf,
+    }
+
+    impl TmpDir {
+        fn new() -> Self {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static COUNTER: AtomicU32 = AtomicU32::new(0);
+            let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            let path = std::env::temp_dir().join(format!(
+                "nails-oracle-scan-{}-{}-{}",
+                std::process::id(),
+                nanos,
+                n
+            ));
+            fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TmpDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// Write a populated `outputs/` tree for the `before` image: one restored
+    /// file, one bulk_extractor feature file, one plaso event line.
+    fn build_before_outputs(outputs: &Path) {
+        let restore = outputs.join("restore").join("before").join("etc");
+        fs::create_dir_all(&restore).expect("restore dir");
+        fs::write(restore.join("hostname"), b"host").expect("restore file");
+
+        let be = outputs.join("bulk_extractor").join("before");
+        fs::create_dir_all(&be).expect("bulk_extractor dir");
+        fs::write(be.join("email.txt"), "4096\ta@b.example\tctx\n").expect("feature file");
+
+        let plaso = outputs.join("plaso");
+        fs::create_dir_all(&plaso).expect("plaso dir");
+        fs::write(
+            plaso.join("before.jsonl"),
+            "{\"path\":\"/var/log/wtmp.db\",\"data_type\":\"linux:wtmp:event\"}\n",
+        )
+        .expect("plaso file");
+    }
+
+    #[test]
+    fn scan_all_errors_when_the_outputs_directory_is_missing() {
+        // scan_all must surface a NotFound error when `outputs` is absent (the
+        // `!outputs.is_dir()` guard, scan.rs:31). Dropping the `!`, or stubbing
+        // the body to `Ok(Default::default())`, would return an empty success
+        // instead of the error.
+        let dir = TmpDir::new();
+        let missing = dir.path().join("does-not-exist");
+        let err = scan_all(&missing).expect_err("a missing outputs dir is an error");
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn scan_all_reads_findings_from_every_tool_subtree() {
+        // A populated tree yields the restore, bulk_extractor and plaso findings
+        // for the scanned image. A stubbed scan_all (`Ok(Default::default())`),
+        // a stubbed scan_image (`BTreeSet::new()`), or the `is_dir` guard
+        // flipped (which would error on this valid directory) all lose these.
+        let dir = TmpDir::new();
+        let outputs = dir.path().join("outputs");
+        build_before_outputs(&outputs);
+
+        let scans = scan_all(&outputs).expect("a populated outputs dir scans cleanly");
+        assert!(
+            scans
+                .before
+                .contains(&Finding::new(Tool::BtrfsRestore, "/etc/hostname", "")),
+            "restore finding missing: {:?}",
+            scans.before
+        );
+        assert!(
+            scans
+                .before
+                .contains(&Finding::new(Tool::BulkExtractor, "email", "a@b.example")),
+            "bulk_extractor finding missing: {:?}",
+            scans.before
+        );
+        assert!(
+            scans.before.contains(&Finding::new(
+                Tool::Plaso,
+                "/var/log/wtmp.db",
+                "linux:wtmp:event"
+            )),
+            "plaso finding missing: {:?}",
+            scans.before
+        );
+    }
+
+    #[test]
+    fn scan_image_collects_the_restore_findings() {
+        // scan_image returns the per-image findings; a stub returning an empty
+        // set would drop them.
+        let dir = TmpDir::new();
+        let outputs = dir.path().join("outputs");
+        build_before_outputs(&outputs);
+
+        let out = scan_image(&outputs, ImageLabel::Before);
+        assert!(
+            out.contains(&Finding::new(Tool::BtrfsRestore, "/etc/hostname", "")),
+            "{out:?}"
+        );
+        assert!(
+            out.contains(&Finding::new(Tool::BulkExtractor, "email", "a@b.example")),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn scan_restore_walks_subdirs_files_and_excludes_journals() {
+        // Builds a restore tree with a nested regular file, a top-level regular
+        // file, a journal file, and (on unix) a symlink, then asserts exactly
+        // what walking it must yield. This pins the recursion and the file/dir
+        // match guards (scan.rs:67-68), the journal exclusion (`!is_journal_file`,
+        // scan.rs:75), and that the walker populates `out` at all (scan.rs:59):
+        //   - a stubbed body, or `is_dir`/`is_file` set false, drops the nested
+        //     file /etc/hostname;
+        //   - `is_dir` forced true treats every entry as a dir, dropping all
+        //     file findings;
+        //   - dropping the `!` on the journal guard would keep the journal file
+        //     and drop the ordinary files;
+        //   - `is_file` forced true would turn the symlink into a finding.
+        let dir = TmpDir::new();
+        let root = dir.path().join("restore_root");
+        let nested = root.join("etc");
+        fs::create_dir_all(&nested).expect("nested dir");
+        fs::write(nested.join("hostname"), b"host").expect("nested file");
+        fs::write(root.join("topfile.txt"), b"top").expect("top file");
+
+        let journal = root.join("var").join("log").join("journal").join("m");
+        fs::create_dir_all(&journal).expect("journal dir");
+        fs::write(journal.join("system@x-1-2.journal"), b"j").expect("journal file");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("dangling-target", root.join("link")).expect("symlink");
+
+        let mut out = BTreeSet::new();
+        scan_restore(&root, &mut out);
+
+        assert!(
+            out.contains(&Finding::new(Tool::BtrfsRestore, "/etc/hostname", "")),
+            "nested file must be recovered: {out:?}"
+        );
+        assert!(
+            out.contains(&Finding::new(Tool::BtrfsRestore, "/topfile.txt", "")),
+            "top-level file must be recovered: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|f| f.path.ends_with(".journal")),
+            "a journal file must be excluded by content-keying: {out:?}"
+        );
+        #[cfg(unix)]
+        assert!(
+            !out.iter().any(|f| f.path == "/link"),
+            "a symlink is neither a dir nor a regular file and is not a finding: {out:?}"
+        );
+    }
+
+    #[test]
+    fn scan_bulk_extractor_reads_features_and_skips_histograms() {
+        // A `*.txt` feature file yields findings; a `*_histogram.txt` file is
+        // skipped. This pins the directory read (a stub does nothing), the
+        // `.txt` suffix test (dropping its `!` would skip the feature file), and
+        // the histogram exclusion (turning its `||` into `&&` would process the
+        // histogram).
+        let dir = TmpDir::new();
+        fs::write(dir.path().join("email.txt"), "4096\ta@b.example\tctx\n").expect("feature file");
+        fs::write(
+            dir.path().join("foo_histogram.txt"),
+            "4096\tHIST_VALUE\tctx\n",
+        )
+        .expect("histogram file");
+
+        let mut out = BTreeSet::new();
+        scan_bulk_extractor(dir.path(), &mut out);
+
+        assert!(
+            out.contains(&Finding::new(Tool::BulkExtractor, "email", "a@b.example")),
+            "feature file must be read: {out:?}"
+        );
+        assert!(
+            !out.iter().any(|f| f.field == "HIST_VALUE"),
+            "a histogram file must be skipped: {out:?}"
+        );
+    }
+
+    #[test]
+    fn scan_plaso_reads_event_lines_from_the_timeline_file() {
+        // scan_plaso parses each JSON line into a finding; a stub does nothing.
+        let dir = TmpDir::new();
+        let file = dir.path().join("after.jsonl");
+        fs::write(
+            &file,
+            "{\"path\":\"/var/log/wtmp.db\",\"data_type\":\"linux:wtmp:event\"}\n",
+        )
+        .expect("plaso file");
+
+        let mut out = BTreeSet::new();
+        scan_plaso(&file, &mut out);
+        assert!(
+            out.contains(&Finding::new(
+                Tool::Plaso,
+                "/var/log/wtmp.db",
+                "linux:wtmp:event"
+            )),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn load_allowlist_parses_a_file_and_errors_on_a_missing_one() {
+        // load_allowlist must actually read and deserialize the file, and must
+        // surface a read error for a missing path. A stub returning
+        // `Ok(Default::default())` would yield an empty allowlist and never
+        // error.
+        let dir = TmpDir::new();
+        let file = dir.path().join("allow.json");
+        fs::write(
+            &file,
+            r#"{"entries":[{"path":"/var/lib/nixos","cite":"var-lib-nixos"}]}"#,
+        )
+        .expect("allowlist file");
+
+        let allowlist = load_allowlist(&file).expect("a valid allowlist parses");
+        assert_eq!(allowlist.entries.len(), 1);
+        assert_eq!(allowlist.entries[0].path, "/var/lib/nixos");
+        assert_eq!(allowlist.entries[0].cite, "var-lib-nixos");
+
+        let missing = dir.path().join("nope.json");
+        assert!(
+            load_allowlist(&missing).is_err(),
+            "a missing allowlist file is an error"
+        );
+    }
 }
