@@ -27,7 +27,7 @@ defaults:
 jobs:
   oracle:
     name: Forensic oracle
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
       contents: read
@@ -96,7 +96,7 @@ jobs:
     name: Report status
     needs: oracle
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
