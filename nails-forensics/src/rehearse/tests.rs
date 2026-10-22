@@ -382,6 +382,75 @@ fn a_clean_scan_of_compressed_or_copy_on_write_storage_is_not_checked() {
 }
 
 #[test]
+fn an_offline_image_on_a_copy_on_write_filesystem_is_classified_from_its_superblock() {
+    let dir = tempfile::tempdir().unwrap();
+    // A btrfs image (its superblock magic at 0x10040) with nothing planted: the
+    // mount table never sees it, but the superblock marks it copy-on-write, so a
+    // clean scan of it must read "not checked", not clean.
+    let btrfs = image(&dir, "decoy-root.img", &[(0x1_0040, b"_BHRfS_M")]);
+    let target = ScanTarget::new(btrfs);
+    assert!(
+        target.blind_spot.is_none(),
+        "new() carries no classification"
+    );
+
+    let report = scan(TOKEN, &[target], None).unwrap();
+
+    assert_eq!(report.total_hits(), 0);
+    assert!(!report.incomplete());
+    assert!(
+        report.inconclusive(),
+        "a btrfs image read offline is a blind spot"
+    );
+    assert!(
+        report.devices[0]
+            .blind_spot
+            .as_deref()
+            .is_some_and(|reason| reason.contains("copy-on-write")),
+        "{:?}",
+        report.devices[0].blind_spot
+    );
+}
+
+#[test]
+fn an_offline_image_on_an_f2fs_filesystem_is_classified_from_its_superblock() {
+    let dir = tempfile::tempdir().unwrap();
+    // f2fs superblock magic 0x10 0x20 0xF5 0xF2 at offset 0x400.
+    let f2fs = image(
+        &dir,
+        "decoy-root.img",
+        &[(0x400, &[0x10, 0x20, 0xF5, 0xF2])],
+    );
+
+    let report = scan(TOKEN, &[ScanTarget::new(f2fs)], None).unwrap();
+
+    assert!(report.inconclusive());
+    assert!(
+        report.devices[0]
+            .blind_spot
+            .as_deref()
+            .is_some_and(|reason| reason.contains("f2fs")),
+        "{:?}",
+        report.devices[0].blind_spot
+    );
+}
+
+#[test]
+fn an_offline_image_on_a_verbatim_filesystem_stays_conclusive() {
+    let dir = tempfile::tempdir().unwrap();
+    // ext4 superblock magic 0x53 0xEF at offset 0x438 is read verbatim.
+    let ext4 = image(&dir, "decoy-root.img", &[(0x438, &[0x53, 0xEF])]);
+
+    let report = scan(TOKEN, &[ScanTarget::new(ext4)], None).unwrap();
+
+    assert!(
+        !report.inconclusive(),
+        "an ext4 image is read verbatim, so a clean scan of it is conclusive"
+    );
+    assert!(report.devices[0].blind_spot.is_none());
+}
+
+#[test]
 fn a_malformed_token_is_refused_before_any_read() {
     assert!(scan("not-hex", &[], None).is_err());
 }

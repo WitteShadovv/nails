@@ -40,7 +40,10 @@ of this changelog for that version becomes the release notes word for word, and
   f2fs mount with compression) as "not checked" rather than "clean" for leaked-then-deleted traces:
   such a filesystem keeps old copies in unreferenced extents and stores file contents compressed, so a
   raw plaintext scan can neither reach those old copies nor read a compressed extent, and a clean scan
-  there cannot prove a trace is gone.
+  there cannot prove a trace is gone. A live decoy is classified from its mount table; an offline image
+  or an unmounted `--device` is classified from its on-disk superblock, so a btrfs or f2fs one read that
+  way is reported "not checked" too, while a whole-disk image or a bcachefs or zfs one, whose format the
+  superblock check cannot identify, is read as plain storage.
 - Discards (TRIM) reaching the hidden volume now refuse activation instead of only warning:
   forwarding TRIM to the physical device leaves a readable map of used and free blocks, where a
   deniable volume should look like uniform random data, and writing an outer volume with discards

@@ -448,9 +448,11 @@ impl Rehearsal {
     }
 
     fn scan_targets(&self, options: &ScanOptions) -> Result<Vec<ScanTarget>, String> {
-        // An image file carries no mounted filesystem to inspect, so it is read
-        // as plain storage; a live device is classified from the mount table, so
-        // a compressed or copy-on-write decoy reports "not checked".
+        // An image file and an unmounted --device carry no mount-table entry, so
+        // they start as plain storage here and the scan step classifies them
+        // from their on-disk superblock; a live device is classified from the
+        // mount table. Either way a compressed or copy-on-write decoy reports
+        // "not checked".
         if options.offline {
             return Ok(options
                 .images
