@@ -77,6 +77,10 @@
           ./nails-cli
           ./nails-core
           ./nails-forensics
+          # nails-oracle is a leaf CI tool the binary never links, but cargo
+          # reads its manifest to resolve the workspace; only the manifest is
+          # here so editing its sources never rebuilds the binary.
+          ./nails-oracle/Cargo.toml
           ./nails-platform
           ./nails-session
           ./nails-teardown

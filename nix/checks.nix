@@ -127,7 +127,7 @@ in
   # unrelated edits.
   nails-source = pkgs.runCommandLocal "nails-source" { } ''
     actual=$(cd ${nails.src} && LC_ALL=C ls -A)
-    expected=$(printf '%s\n' .cargo Cargo.lock Cargo.toml nails-base nails-cli nails-core nails-forensics nails-platform nails-session nails-teardown rust-toolchain.toml)
+    expected=$(printf '%s\n' .cargo Cargo.lock Cargo.toml nails-api nails-base nails-cli nails-core nails-forensics nails-oracle nails-platform nails-session nails-teardown rust-toolchain.toml)
     if [ "$actual" != "$expected" ]; then
       printf 'nails source holds:\n%s\nexpected exactly:\n%s\n' "$actual" "$expected" >&2
       exit 1
