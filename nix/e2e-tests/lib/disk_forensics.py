@@ -268,7 +268,7 @@ def _retain_oracle_image(machine: object, label: str, raw: Path) -> Path | None:
 
 
 def snapshot(
-    machine: object, label: str, *, restart: bool = True, retain: bool = True
+    machine: object, label: str, *, restart: bool = True, retain: bool = False
 ) -> Path:
     """Shut the machine down and convert its root disk to a flat raw image.
 
@@ -277,10 +277,14 @@ def snapshot(
     single disk lineage across ``baseline -> active -> post-standard`` instead of
     a fresh disk per stage (every fresh disk used to read as a finding).
 
-    When ``retain`` is set (the default) and the label maps to one of the
-    oracle's images (see :func:`oracle_image_name`), a sparse copy of the raw is
-    also kept in the test's ``out_dir`` as ``before.raw`` / ``control.raw`` /
-    ``after.raw`` for the forensic-oracle real-image scan. This is additive: the
+    ``retain`` is opt-in and off by default: only the forensic-oracle
+    real-image slice (forensic/13) sets it. When set and the label maps to one
+    of the oracle's images (see :func:`oracle_image_name`), a sparse copy of the
+    raw is also kept in the test's ``out_dir`` as ``before.raw`` /
+    ``control.raw`` / ``after.raw`` for the real-image scan. It must not default
+    on: the other forensic tests snapshot the same ``baseline`` / ``control`` /
+    ``post-*`` labels, and retaining there would sparse-copy a 20 GiB image per
+    snapshot they never use, slowing every forensic test. This is additive: the
     returned temporary raw and the existing diff behaviour are unchanged.
     """
     machine.shutdown()  # type: ignore[attr-defined]
