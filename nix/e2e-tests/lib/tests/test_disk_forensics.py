@@ -445,5 +445,39 @@ class HashTreeTest(unittest.TestCase):
             self.assertEqual(path.read_text(encoding="utf-8"), "0|/a|1\n")
 
 
+class OracleImageNameTest(unittest.TestCase):
+    """The snapshot-label -> oracle-image-name mapping the real-image slice keys
+    on. A single disk lineage ``baseline -> control -> post*`` becomes the
+    oracle's ``before`` / ``control`` / ``after`` triple; everything else is not
+    an oracle image."""
+
+    def test_baseline_control_and_post_map_to_the_triple(self) -> None:
+        self.assertEqual(df.oracle_image_name("baseline"), "before")
+        self.assertEqual(df.oracle_image_name("control"), "control")
+        self.assertEqual(df.oracle_image_name("post"), "after")
+
+    def test_every_post_variant_is_the_after_image(self) -> None:
+        for label in ("post-standard", "post-emergency", "post-deactivation"):
+            self.assertEqual(df.oracle_image_name(label), "after")
+
+    def test_other_labels_are_not_oracle_images(self) -> None:
+        for label in ("reboot", "positive", "active", "pre_session", ""):
+            self.assertIsNone(df.oracle_image_name(label))
+
+
+class CopySparseTest(unittest.TestCase):
+    def test_round_trips_data_and_holes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / "src.raw"
+            dest = Path(tmp) / "dest.raw"
+            with open(src, "wb") as handle:
+                handle.write(b"head")
+                handle.seek(1 << 20)  # a hole
+                handle.write(b"tail")
+            df._copy_sparse(src, dest)
+            self.assertEqual(dest.stat().st_size, src.stat().st_size)
+            self.assertEqual(dest.read_bytes(), src.read_bytes())
+
+
 if __name__ == "__main__":
     unittest.main()

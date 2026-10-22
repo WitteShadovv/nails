@@ -17,11 +17,23 @@
 # so the source path in its timeline is identical across the three images and
 # the before/control/after findings collapse as they must.
 #
+# Image source is pluggable. By default the three synthetic btrfs images are
+# built here, one at a time (the proven path). Setting ORACLE_IMAGES_DIR to a
+# directory holding before.raw / control.raw / after.raw scans those real decoy
+# images instead -- e.g. the raws the e2e disk-forensics harness retains -- and
+# the restore channel is carved per detected filesystem (btrfs restore for the
+# synthetic btrfs images, debugfs rdump for the ext4 decoy roots). The
+# bulk_extractor and plaso channels read the image bytes directly and are
+# identical either way.
+#
 #   sudo run-scan.sh <workdir>
+#   sudo env ORACLE_IMAGES_DIR=/path/with/before.raw,control.raw,after.raw run-scan.sh <workdir>
 #
 # Needs root (loop mounts), btrfs-progs, git + the bulk_extractor build chain,
-# and docker (for the pinned plaso container). The verdict binary is found at
-# $ORACLE_BIN, or target/release/nails-oracle under the repository root. No KVM.
+# and docker (for the pinned plaso container); pre-built-image mode also needs
+# sleuthkit (mmls) and e2fsprogs (debugfs) plus util-linux (blkid). The verdict
+# binary is found at $ORACLE_BIN, or target/release/nails-oracle under the
+# repository root. No KVM.
 set -euo pipefail
 
 # --- Pins (verbatim from the image-analysis feasibility probe). -------------
@@ -56,6 +68,26 @@ for t in git make btrfs mkfs.btrfs truncate find; do
 done
 have_docker=1
 command -v docker >/dev/null || { echo "run-scan: docker absent; the plaso channel is skipped" >&2; have_docker=0; }
+
+# --- Image source. ----------------------------------------------------------
+# Empty means the default: build the synthetic btrfs images here, one per label.
+# Set means scan the caller's pre-built before.raw / control.raw / after.raw;
+# those are read-only sources (kept artifacts) and are never deleted, unlike the
+# synthetic intermediates.
+images_src=${ORACLE_IMAGES_DIR:-}
+if [ -n "$images_src" ]; then
+  [ -d "$images_src" ] || { echo "run-scan: ORACLE_IMAGES_DIR is not a directory: $images_src" >&2; exit 2; }
+  images_src=$(cd "$images_src" && pwd)
+  for label in "${LABELS[@]}"; do
+    [ -f "$images_src/$label.raw" ] \
+      || { echo "run-scan: ORACLE_IMAGES_DIR set but $label.raw is missing in $images_src" >&2; exit 2; }
+  done
+  for t in blkid debugfs mmls; do
+    command -v "$t" >/dev/null \
+      || { echo "run-scan: missing required tool for pre-built images: $t" >&2; exit 1; }
+  done
+  echo "==> scanning pre-built images from $images_src" >&2
+fi
 
 # --- Coverage canary. -------------------------------------------------------
 # By default the fixed committed canary is planted and the verdict reads the
@@ -139,17 +171,94 @@ plaso_label() {
     --entrypoint bash "$PLASO_IMAGE" -c "$plaso_cmd" </dev/null >&2
 }
 
+# --- Restore-channel carving (pluggable per filesystem). --------------------
+# The restore channel recovers the file tree into outputs/restore/<label>/ so
+# that each recovered regular file stands for its absolute on-image path (the
+# verdict keys a restore finding on that path alone, with an empty field). btrfs
+# and ext4 land the same shape there; only the carving tool differs.
+
+# partition_offset <image>: the 512-byte sector start of the Linux filesystem
+# partition on a whole-disk image, or 0 for a bare (unpartitioned) filesystem.
+# Mirrors disk_forensics.partition_offset: pick the Linux/ext partition with the
+# greatest start. mawk-safe (no gawk match() captures).
+partition_offset() {
+  local img=$1
+  command -v mmls >/dev/null 2>&1 || { echo 0; return; }
+  mmls "$img" 2>/dev/null | awk '
+    /^[0-9]+:/ {
+      start = $3; desc = "";
+      for (i = 6; i <= NF; i++) desc = desc " " $i;
+      dl = tolower(desc);
+      if (dl ~ /linux/ || dl ~ /ext/) { if (start + 0 > best + 0) best = start + 0 }
+    }
+    END { print best + 0 }'
+}
+
+# detect_fs <image>: print "<fstype> <sector-offset>". A bare filesystem probes
+# at offset 0; otherwise the Linux partition of a whole-disk image is probed at
+# its own offset. An unrecognised image prints an empty fstype.
+detect_fs() {
+  local img=$1 t off=0
+  t=$(blkid -o value -s TYPE "$img" 2>/dev/null || true)
+  if [ -n "$t" ]; then
+    printf '%s 0\n' "$t"
+    return
+  fi
+  off=$(partition_offset "$img")
+  if [ "$off" -gt 0 ]; then
+    t=$(blkid -o value -s TYPE -O "$((off * 512))" "$img" 2>/dev/null || true)
+  fi
+  # A non-empty placeholder keeps the two fields aligned for `read`.
+  printf '%s %s\n' "${t:-unknown}" "$off"
+}
+
+# carve_restore <image> <dest> <fstype> <sector-offset>: recover the file tree
+# into <dest>. btrfs uses `btrfs restore` (the synthetic path, bare image,
+# offset 0); ext{2,3,4} uses `debugfs rdump /` at the partition's byte offset,
+# exactly as disk_forensics._rdump lifts a tree out of an ext4 image. Both leave
+# <dest>/var/log/x for an on-image /var/log/x.
+carve_restore() {
+  local img=$1 dest=$2 fstype=$3 off=$4
+  case "$fstype" in
+    btrfs)
+      btrfs restore -i "$img" "$dest" >/dev/null
+      ;;
+    ext2 | ext3 | ext4)
+      if [ "$off" -gt 0 ]; then
+        debugfs -o "$((off * 512))" -R "rdump / $dest" "$img" >/dev/null 2>&1
+      else
+        debugfs -R "rdump / $dest" "$img" >/dev/null 2>&1
+      fi
+      ;;
+    *)
+      echo "run-scan: unrecognised filesystem '$fstype' on $img; restore channel skipped" >&2
+      ;;
+  esac
+}
+
 # --- Stream the three labels. -----------------------------------------------
 for label in "${LABELS[@]}"; do
-  img="$images/$label.img"
   echo "==> label $label" >&2
-  "$here/make-sample-images.sh" "$images" "$label"
 
-  # btrfs file-level restore, then keep only the recovered paths: the verdict
-  # keys a restore finding on the path alone, so the contents are dropped to
-  # free the bulk of the disk before the next tool.
+  # Image source: a caller-supplied pre-built raw, or a freshly built synthetic
+  # btrfs image. In synthetic mode the filesystem is always our bare btrfs, so
+  # the restore below is byte-for-byte the proven synthetic `btrfs restore`.
+  if [ -n "$images_src" ]; then
+    img="$images_src/$label.raw"
+    read -r fstype off < <(detect_fs "$img")
+    off=${off:-0}
+  else
+    img="$images/$label.img"
+    "$here/make-sample-images.sh" "$images" "$label"
+    fstype=btrfs
+    off=0
+  fi
+
+  # File-level restore, then keep only the recovered paths: the verdict keys a
+  # restore finding on the path alone, so the contents are dropped to free the
+  # bulk of the disk before the next tool.
   mkdir -p "$outputs/restore/$label"
-  btrfs restore -i "$img" "$outputs/restore/$label" >/dev/null
+  carve_restore "$img" "$outputs/restore/$label" "$fstype" "$off"
   find "$outputs/restore/$label" -type f -exec truncate -s 0 {} +
 
   # bulk_extractor creates outputs/bulk_extractor/<label> itself.
@@ -159,8 +268,10 @@ for label in "${LABELS[@]}"; do
     plaso_label "$img" "$label" || { echo "run-scan: plaso failed on $label" >&2; plaso_failed=1; }
   fi
 
-  # Delete this label's image before building the next (bounded peak disk).
-  rm -f "$img"
+  # Delete this label's synthetic image before building the next (bounded peak
+  # disk). A caller-supplied pre-built image is a retained source; never delete
+  # it.
+  if [ -z "$images_src" ]; then rm -f "$img"; fi
 done
 
 # plaso is all-or-nothing: a partial timeline would make one image's events look
