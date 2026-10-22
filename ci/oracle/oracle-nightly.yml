@@ -52,14 +52,16 @@ jobs:
 
       # OS packages the scan needs. The scan script pins bulk_extractor (built
       # from its source commit, so its build chain and libraries are installed
-      # here) and plaso (pulled by container digest). Docker is preinstalled on
-      # the GitHub-hosted ubuntu runners, so no apt docker package is added. No
-      # KVM is used.
+      # here) and plaso (pulled by container digest). sleuthkit (mmls) and
+      # e2fsprogs (debugfs) carve the restore channel from real ext4 decoy
+      # images in ORACLE_IMAGES_DIR mode; they are harmless for the synthetic
+      # btrfs path. Docker is preinstalled on the GitHub-hosted ubuntu runners,
+      # so no apt docker package is added. No KVM is used.
       - name: Install analysis tools
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends \
-            btrfs-progs \
+            btrfs-progs sleuthkit e2fsprogs \
             git autoconf automake build-essential libtool pkg-config flex \
             libssl-dev zlib1g-dev libexpat1-dev libre2-dev \
             libabsl-dev libgcrypt20-dev libgpg-error-dev

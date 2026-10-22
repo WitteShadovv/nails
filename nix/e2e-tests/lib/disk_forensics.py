@@ -202,19 +202,94 @@ def root_image(machine: object) -> Path:
     )
 
 
-def snapshot(machine: object, label: str, *, restart: bool = True) -> Path:
+_ORACLE_IMAGE_LABELS = {"baseline": "before", "control": "control"}
+
+
+def oracle_image_name(label: str) -> str | None:
+    """Map a snapshot label to the forensic oracle's image name, or ``None``.
+
+    The forensic tests image a single disk lineage ``baseline -> control ->
+    post*``; the oracle consumes the same triple as ``before`` / ``control`` /
+    ``after``. ``baseline`` is the clean before-image, ``control`` the
+    no-session noise baseline, and any ``post`` or ``post-*`` label the
+    after-image under test. Any other label (``reboot``, ``positive``, a distro
+    smoke label) is not one of the oracle's images and is not retained.
+    """
+    if label in _ORACLE_IMAGE_LABELS:
+        return _ORACLE_IMAGE_LABELS[label]
+    if label == "post" or label.startswith("post-"):
+        return "after"
+    return None
+
+
+def _copy_sparse(src: Path, dest: Path) -> None:
+    """Copy ``src`` to ``dest`` preserving sparseness.
+
+    Only the data extents are written and the file is truncated to full size, so
+    holes stay holes. Reuses :func:`_data_extents` so a mostly-empty decoy root
+    (``qemu-img convert -O raw`` writes a sparse file) is kept as a sparse
+    artifact rather than inflated to its full virtual size.
+    """
+    with open(src, "rb") as reader:
+        rfd = reader.fileno()
+        size = os.fstat(rfd).st_size
+        with open(dest, "wb") as writer:
+            wfd = writer.fileno()
+            os.ftruncate(wfd, size)
+            for start, end in _data_extents(rfd, size):
+                position = start
+                while position < end:
+                    chunk = os.pread(rfd, min(_SCAN_CHUNK, end - position), position)
+                    if not chunk:
+                        break
+                    os.pwrite(wfd, chunk, position)
+                    position += len(chunk)
+
+
+def _retain_oracle_image(machine: object, label: str, raw: Path) -> Path | None:
+    """Keep a sparse copy of ``raw`` as the oracle's before/control/after image.
+
+    The forensic-oracle real-image slice scans the actual decoy disks the e2e
+    run produced, so the raw is copied into the test's ``out_dir`` (beside the
+    bodyfile and mac-diff artifacts, under ``forensics/``) named
+    ``<before|control|after>.raw``. A label that is not one of the oracle's three
+    images, or a machine with no ``out_dir``, is a no-op. The temporary raw that
+    :func:`snapshot` returns is untouched, so the existing diff path is unchanged.
+    """
+    name = oracle_image_name(label)
+    base = getattr(machine, "out_dir", None)
+    if name is None or not base:
+        return None
+    dest_dir = Path(base) / "forensics"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{name}.raw"
+    _copy_sparse(raw, dest)
+    return dest
+
+
+def snapshot(
+    machine: object, label: str, *, restart: bool = True, retain: bool = True
+) -> Path:
     """Shut the machine down and convert its root disk to a flat raw image.
 
     Shutting down first flushes the guest page cache so the image is consistent.
     ``restart`` brings the same machine back up afterwards, which is what keeps a
     single disk lineage across ``baseline -> active -> post-standard`` instead of
     a fresh disk per stage (every fresh disk used to read as a finding).
+
+    When ``retain`` is set (the default) and the label maps to one of the
+    oracle's images (see :func:`oracle_image_name`), a sparse copy of the raw is
+    also kept in the test's ``out_dir`` as ``before.raw`` / ``control.raw`` /
+    ``after.raw`` for the forensic-oracle real-image scan. This is additive: the
+    returned temporary raw and the existing diff behaviour are unchanged.
     """
     machine.shutdown()  # type: ignore[attr-defined]
     image = root_image(machine)
     out_dir = Path(tempfile.mkdtemp(prefix="nails-forensic-"))
     raw = out_dir / f"{label}.raw"
     _run([QEMU_IMG, "convert", "-O", "raw", str(image), str(raw)])
+    if retain:
+        _retain_oracle_image(machine, label, raw)
     if restart:
         # start() runs the VM's start script outside any driver log block, and
         # with useNixStoreImage that script rebuilds the erofs store image on
