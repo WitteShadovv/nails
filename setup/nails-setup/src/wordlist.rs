@@ -8,6 +8,12 @@
 //! `6^5` = 7776 words. The file ships one `NNNNN<TAB>word` line per entry, in
 //! roll order; the roll is implied by position, so only the words are kept
 //! here. The list is third-party data under its own licence (see `REUSE.toml`).
+//!
+//! A word drawn at random is worth log2(7776), about 12.9 bits, only while
+//! the 7776 words are distinct. The tests below pin the file to EFF's by its
+//! SHA-256 and check that its rolls are every five-dice combination in order
+//! and that no word repeats, so an edit or a merge that would weaken the list
+//! fails the tests instead of reaching a passphrase.
 
 /// The list as shipped: one `NNNNN<TAB>word` line per entry, 7776 lines.
 const RAW: &str = include_str!("../data/eff_large_wordlist.txt");
@@ -28,7 +34,43 @@ pub fn words() -> Vec<&'static str> {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::fmt::Write as _;
+
+    use sha2::{Digest as _, Sha256};
+
     use super::*;
+
+    /// The SHA-256 of `eff_large_wordlist.txt` as EFF serves it from
+    /// <https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt>. EFF
+    /// publishes no checksum of its own, so this is the digest of that file,
+    /// which the vendored copy matches byte for byte.
+    const EFF_SHA256: &str = "addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e"; // pragma: allowlist secret
+
+    /// The roll at `index` in roll order: `index` written in base 6 with five
+    /// digits, each counted from 1 as a die face is, so `0` is `11111` and
+    /// `7775` is `66666`.
+    fn roll_at(index: u32) -> String {
+        (0..5)
+            .rev()
+            .map(|place| {
+                let face = index / 6_u32.pow(place) % 6 + 1;
+                char::from_digit(face, 10).expect("a die face is a decimal digit")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn the_file_is_byte_for_byte_the_one_eff_publishes() {
+        let mut digest = String::new();
+        for byte in Sha256::digest(RAW.as_bytes()) {
+            write!(digest, "{byte:02x}").expect("writing to a String cannot fail");
+        }
+        assert_eq!(
+            digest, EFF_SHA256,
+            "the vendored word list differs from the file EFF publishes"
+        );
+    }
 
     #[test]
     fn the_list_holds_one_word_per_roll() {
@@ -51,6 +93,29 @@ mod tests {
                 "word {word:?} is not a lowercase, optionally hyphenated word"
             );
         }
+    }
+
+    #[test]
+    fn the_rolls_are_every_five_dice_combination_in_order() {
+        let rolls: Vec<&str> = RAW
+            .lines()
+            .map(|line| line.split_once('\t').map_or(line, |(roll, _word)| roll))
+            .collect();
+        assert_eq!(rolls.len(), 6_usize.pow(5));
+        for (index, roll) in (0_u32..).zip(rolls) {
+            assert_eq!(roll, roll_at(index), "line {index} is out of roll order");
+        }
+    }
+
+    #[test]
+    fn no_two_rolls_share_a_word() {
+        // A repeated word comes up twice as often as any other, which takes
+        // entropy from every passphrase drawn from the list.
+        let mut seen = HashSet::with_capacity(WORD_COUNT);
+        for word in words() {
+            assert!(seen.insert(word), "{word:?} appears more than once");
+        }
+        assert_eq!(seen.len(), WORD_COUNT);
     }
 
     #[test]
