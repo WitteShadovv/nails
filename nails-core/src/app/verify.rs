@@ -35,8 +35,14 @@ pub struct VerifyOptions {
 ///
 /// Reads the state file status for the report (missing, present with its
 /// recorded state, or an error), builds the verifier and runs it. An error
-/// means the verification itself could not run.
+/// means the verification itself could not run. An offline scan without the
+/// root of its image is refused, never run as a scan of the live host.
 pub fn verify(env: &RuntimeEnv, config: Config, options: &VerifyOptions) -> Result<VerifyResult> {
+    if options.offline && options.root.is_none() {
+        return Err(crate::NailsError::InvalidArgument(
+            "an offline scan needs the root of the mounted decoy image".to_string(),
+        ));
+    }
     let state_path = config.state_file_path.clone();
     let (state, state_file_status) = if !state_path.exists() {
         (
@@ -159,6 +165,29 @@ mod tests {
             }
             other => panic!("an existing state file must be reported Present, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn an_offline_scan_without_its_image_root_is_refused() {
+        // Offline with no root would fall through to a scan of the live host,
+        // whose verdict a front end would show as the image's.
+        let root = tempfile::tempdir().unwrap();
+        let options = VerifyOptions {
+            offline: true,
+            root: None,
+            ..VerifyOptions::default()
+        };
+        let error = verify(
+            &RuntimeEnv::default(),
+            config_rooted_at(root.path()),
+            &options,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&error, crate::NailsError::InvalidArgument(message)
+                if message.contains("root of the mounted decoy image")),
+            "{error:?}"
+        );
     }
 
     #[test]
