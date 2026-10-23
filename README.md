@@ -153,7 +153,7 @@ soft-reboot.
 | Debian 13 (trixie) | Root overlay | The same whole-root session; the hidden configuration is whatever the upper's `/etc` holds. Requires the merged-`/usr` layout. |
 | Ubuntu 24.04 and 26.04 | Root overlay | As Debian. On 26.04, chrony and CUPS fail in the hidden session and the decoy shows chrony failed until a full reboot; see [the Ubuntu notes](docs/decoy-requirements.md#ubuntu). |
 | Other releases: Debian after 13, Ubuntu after 24.04 | Untested | Accepted on the same terms, with a warning in `init`, `check` and `activate` that NAILS has not been tested on the release, such as Ubuntu 25.04 or 26.10. |
-| Debian-family derivatives | Provisional | A host whose `ID_LIKE` names `debian` or `ubuntu` is accepted on the same terms when its systemd is new enough; its base release is not version-gated. |
+| Debian-family derivatives | Provisional | A host whose `ID_LIKE` names `debian` or `ubuntu` runs with a warning that NAILS has not tested it, when its systemd is new enough; its base release is not version-gated. One whose `ID_LIKE` also names Fedora, RHEL, CentOS or Arch is refused, wherever each stands in the list. |
 | Debian 12, Ubuntu 22.04 | Refused | systemd is too old for a soft-reboot (252 and 249). |
 | Fedora, Arch, other distributions | Refused | No validated backend yet. Planned; see [ROADMAP.md](ROADMAP.md). |
 | ostree and image-based hosts | Refused | NAILS cannot overlay an immutable system. |

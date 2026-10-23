@@ -356,6 +356,37 @@ fn an_arch_like_unknown_id_is_refused_naming_the_family() {
 }
 
 #[test]
+fn an_unvalidated_family_anywhere_in_id_like_refuses_the_host() {
+    // os-release lists ID_LIKE closest relative first. Arch named first is an
+    // Arch derivative; Debian named first still declares kinship with Arch,
+    // which NAILS has not validated. Both are refused rather than run as a
+    // Debian derivative.
+    for like in [["arch", "debian"], ["debian", "arch"], ["ubuntu", "arch"]] {
+        let c = classify_of(Some("someos"), &like, Some("1"));
+        assert_eq!(c.family, Some(Family::Arch), "{like:?}");
+        let FamilySupport::Refused(reason) = &c.support else {
+            panic!("{like:?}: expected a refusal, got {:?}", c.support);
+        };
+        assert!(reason.contains("part of the Arch family"), "{reason}");
+    }
+}
+
+#[test]
+fn the_refusal_names_the_closest_unvalidated_family() {
+    let c = classify_of(Some("someos"), &["debian", "fedora", "arch"], None);
+    assert_eq!(c.family, Some(Family::Fedora));
+    let c = classify_of(Some("someos"), &["arch", "rhel"], None);
+    assert_eq!(c.family, Some(Family::Arch));
+}
+
+#[test]
+fn a_table_id_is_classified_by_its_row_whatever_id_like_says() {
+    let c = classify_of(Some("ubuntu"), &["arch"], Some("24.04"));
+    assert_eq!(c.family, Some(Family::Debian));
+    assert_eq!(c.support, FamilySupport::Supported);
+}
+
+#[test]
 fn an_unknown_host_is_refused() {
     let c = classify_of(Some("voidlinux"), &["musl"], Some("rolling"));
     assert_eq!(c.family, None);
@@ -428,39 +459,114 @@ fn a_derivative_rows_family_has_a_base_in_the_table() {
 
 // --- Properties ----------------------------------------------------------
 
+/// An `ID_LIKE` token for a generated host: one the classifier recognises,
+/// Debian-family and unvalidated alike, or a word it does not.
+fn id_like_token() -> impl proptest::strategy::Strategy<Value = String> {
+    use proptest::strategy::Strategy;
+    proptest::prop_oneof![
+        proptest::sample::select(vec!["debian", "ubuntu", "fedora", "rhel", "centos", "arch"])
+            .prop_map(str::to_string),
+        "[a-z]{1,8}",
+    ]
+}
+
+/// The family an `ID_LIKE` token names when it is one NAILS has not validated.
+fn unvalidated_family(token: &str) -> Option<Family> {
+    match token {
+        "fedora" | "rhel" | "centos" => Some(Family::Fedora),
+        "arch" => Some(Family::Arch),
+        _ => None,
+    }
+}
+
+/// Every `ID` the table or the named refusals list.
+fn listed_ids() -> Vec<&'static str> {
+    TABLE
+        .iter()
+        .map(|row| row.id)
+        .chain(NAMED_REFUSALS.iter().map(|row| row.id))
+        .collect()
+}
+
 proptest::proptest! {
     /// An unknown `ID` whose `ID_LIKE` names an unvalidated family is always
-    /// refused, whatever the rest of the tokens or the version say.
+    /// refused, naming the first such family in the list's closest-first
+    /// order. That holds wherever the family stands in the list and whatever
+    /// else it names, `debian` and `ubuntu` before or after it included, and
+    /// whatever the version.
     #[test]
     fn an_unknown_id_like_an_unvalidated_family_is_always_refused(
         id in "[a-z][a-z0-9_-]{0,12}",
+        before in proptest::collection::vec(id_like_token(), 0..3),
         family in proptest::sample::select(vec!["fedora", "rhel", "centos", "arch"]),
-        extra in proptest::collection::vec("[a-z]{1,6}", 0..3),
+        after in proptest::collection::vec(id_like_token(), 0..3),
         version in proptest::option::of("[0-9][0-9.]{0,6}"),
     ) {
         // Skip ids the table or named-refusal lists claim directly.
         proptest::prop_assume!(label(&id).is_none());
-        let mut like = extra;
-        like.push(family.to_string());
+        let like: Vec<String> = before
+            .into_iter()
+            .chain([family.to_string()])
+            .chain(after)
+            .collect();
+        let closest = like
+            .iter()
+            .find_map(|token| unvalidated_family(token))
+            .expect("the list names an unvalidated family");
         let like_refs: Vec<&str> = like.iter().map(String::as_str).collect();
         let c = classify_of(Some(&id), &like_refs, version.as_deref());
+        proptest::prop_assert_eq!(c.family, Some(closest), "{} {:?}", id, like);
+        let named = format!("part of the {} family", closest.label());
         proptest::prop_assert!(
-            matches!(c.support, FamilySupport::Refused(_)),
+            matches!(&c.support, FamilySupport::Refused(reason) if reason.contains(&named)),
             "{id} {like:?}: {:?}", c.support
         );
     }
 
-    /// Classification is a pure function of its inputs: the same host reads the
-    /// same verdict every time (no hidden state, same live and offline).
+    /// An `ID` outside the table runs only as an untested Debian derivative:
+    /// it is admitted, with the derivative warning and never as a tested
+    /// release, exactly when `ID_LIKE` names `debian` or `ubuntu` and no
+    /// unvalidated family, whatever the version; every other such host is
+    /// refused.
     #[test]
-    fn classification_is_deterministic(
-        id in proptest::option::of("[a-z][a-z0-9_-]{0,12}"),
-        like in proptest::collection::vec("[a-z]{1,8}", 0..4),
+    fn an_unknown_id_runs_only_as_an_untested_debian_derivative(
+        id in "[a-z][a-z0-9_-]{0,12}",
+        like in proptest::collection::vec(id_like_token(), 0..5),
+        version in proptest::option::of("[0-9][0-9.]{0,6}"),
+    ) {
+        proptest::prop_assume!(label(&id).is_none());
+        let like_refs: Vec<&str> = like.iter().map(String::as_str).collect();
+        let c = classify_of(Some(&id), &like_refs, version.as_deref());
+        let debian_like = like.iter().any(|token| token == "debian" || token == "ubuntu");
+        let unvalidated = like.iter().any(|token| unvalidated_family(token).is_some());
+        if debian_like && !unvalidated {
+            proptest::prop_assert_eq!(c.family, Some(Family::Debian));
+            proptest::prop_assert_eq!(
+                c.support,
+                FamilySupport::Untested(derivative_warning(Family::Debian))
+            );
+        } else {
+            proptest::prop_assert!(
+                matches!(c.support, FamilySupport::Refused(_)),
+                "{id} {like:?}: {:?}", c.support
+            );
+        }
+    }
+
+    /// An `ID` the table or the named refusals list is classified by its row
+    /// alone: whatever `ID_LIKE` names, the verdict is the one the same `ID`
+    /// and version get with no `ID_LIKE` at all.
+    #[test]
+    fn a_listed_id_is_classified_by_its_row_whatever_id_like_says(
+        id in proptest::sample::select(listed_ids()),
+        like in proptest::collection::vec(id_like_token(), 1..4),
         version in proptest::option::of("[0-9][0-9.]{0,6}"),
     ) {
         let like_refs: Vec<&str> = like.iter().map(String::as_str).collect();
-        let first = classify_of(id.as_deref(), &like_refs, version.as_deref());
-        let again = classify_of(id.as_deref(), &like_refs, version.as_deref());
-        proptest::prop_assert_eq!(first, again);
+        proptest::prop_assert_eq!(
+            classify_of(Some(id), &like_refs, version.as_deref()),
+            classify_of(Some(id), &[], version.as_deref()),
+            "{} {:?}", id, like
+        );
     }
 }

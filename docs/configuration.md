@@ -11,7 +11,8 @@ nails runs on NixOS (full, with a declarative hidden configuration) and on the
 Debian family with the same whole-root session (Debian 13, Ubuntu 24.04 and
 26.04; a later Debian or Ubuntu release runs with a warning that nails has not
 been tested on it, and `ID_LIKE=debian` derivatives are accepted provisionally
-without a release gate). Every host needs systemd 254 or newer for
+without a release gate, unless their `ID_LIKE` also names Fedora, RHEL, CentOS
+or Arch). Every host needs systemd 254 or newer for
 `systemctl soft-reboot`, so Debian 12 and Ubuntu 22.04 are refused.
 Non-merged-`/usr` layouts, other distributions, ostree/image-based hosts and
 non-systemd hosts are refused with a documented message. On the Debian family
