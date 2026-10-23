@@ -667,13 +667,14 @@ fn timesync_clock_is_citable_within_its_own_channel() {
 // --- false-clean hole 1: a path-less citation must not exempt a subtree -------
 
 #[test]
-fn a_mechanism_cite_cannot_wholesale_exempt_a_home_subtree() {
-    // login-boot-records is a mechanism row (no channel paths). Citing it for a
-    // whole home directory must not vouch for everything beneath it: /home is a
-    // user-data root the breadth guard now covers, and a mechanism cite may
-    // vouch only for the exact concrete leaf it names. The leak beneath the
-    // locus surfaces as unexplained residue, while the valid path-channel cite
-    // stays explained.
+fn a_mechanism_cite_for_a_whole_home_account_is_rejected_by_the_breadth_guard() {
+    // /home/user names a whole account, so the breadth guard rejects this locus
+    // outright (home is a user-data SYSTEM_ROOT) before the login-boot-records
+    // mechanism cite is ever consulted: the path-less citation can never
+    // wholesale-exempt the subtree. The leak beneath the locus surfaces as
+    // unexplained residue, while the valid path-channel cite stays explained.
+    // Leaf coverage for a locus that clears the breadth guard is exercised by
+    // the sibling test below.
     let mut scans = clean_scans();
     scans.after.insert(restore("/home/user/secret.txt"));
     let policy = OraclePolicy {
