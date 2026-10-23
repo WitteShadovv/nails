@@ -201,12 +201,12 @@ of this changelog for that version becomes the release notes word for word, and
   ostree-based systems) is resolved to its real path inside the decoy root. NAILS now decides, mounts
   and masks the filesystem where the decoy really keeps it (`var-home.mount`, not `home.mount`), and
   fresh-home mode creates the home at that real path instead of a directory where the decoy has a
-  symlink. The automount of such an entry is masked under its real path too (`var-home.automount`),
-  so the hidden session no longer starts in emergency mode when the filesystem behind it is
-  overlaid, and `nails check` reports the decision at the real path. An entry that the hidden
-  session's own files resolve to another path than the decoy's (a symlink on the way that a session
-  replaced) is also decided at that path, so the hidden systemd cannot mount the decoy's filesystem
-  there.
+  symlink. A link whose target does not exist yet is followed too, as systemd follows it. The
+  automount of such an entry is masked under its real path too (`var-home.automount`), so the
+  hidden session no longer starts in emergency mode when the filesystem behind it is overlaid, and
+  `nails check` reports the decision at the real path. An entry that the hidden session's own files
+  resolve to another path than the decoy's (a symlink on the way that a session replaced) is also
+  decided at that path, so the hidden systemd cannot mount the decoy's filesystem there.
 - Decoy-persistence pre-flight now catches a syslog or audit daemon (rsyslog, syslog-ng, metalog,
   auditd) whether it runs as a service unit, a systemd template instance (such as `syslog-ng@default`)
   or a bare process, so a logging daemon on the decoy can no longer slip past activation. It also
