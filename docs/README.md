@@ -26,7 +26,7 @@ Read these before relying on NAILS, in roughly this order.
 |---|---|
 | [CLI reference](cli.md) | Every command, flag and exit code. Generated from the code; regenerate with `REGENERATE_CLI_DOCS=1 cargo test -p nails-cli --test cli_reference`. Also shipped as the `nails.1` man page. |
 | [Configuration reference](configuration.md) | Every `nails.toml` key with its default, what the session covers (the fstab policy), persona modes, the backend watcher, the sleep policy. Its key table is checked against the code. |
-| [JSON schemas](schemas/) | The schemas of the `--json` output of `activate`, `deactivate`, `emergency`, `status` and `verify`. |
+| [JSON schemas](schemas/) | The schemas of the `--json` output (contract version 2), one per command. |
 
 ## Design
 

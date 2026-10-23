@@ -380,10 +380,11 @@ Both transitions log you out. Save your work first.
 
 <img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: posture active, session hidden, the hidden system path, the overlaid mounts, the masked boot-loader unit and the last activation's duration" width="820">
 
-Every command accepts `--json` and prints one line with a versioned envelope
-(`schema_version`, `command`, `ok`, then `data` or `error`), except `activate`,
-which prints a progress line before its result (one JSON object per line). The
-schemas are in [docs/schemas/](docs/schemas/).
+`place` says where the machine is (`decoy`, `hidden` or `activating`), and
+`attention` names the one thing that needs you, such as `interrupted` or
+`no_way_back`, or is `null`. The object is the `data` of a one-line versioned
+envelope (`schema_version` 2); [Commands](#commands) describes the envelope and
+the exit codes, and [docs/schemas/](docs/schemas/) has a schema per command.
 
 </details>
 
@@ -552,15 +553,18 @@ Every command returns one of these codes; scripts can rely on them.
 | `9` | Completed, but with a warning the caller should act on |
 | `10` | `verify` found warnings |
 | `11` | `verify` found critical artifacts, or `rehearse scan` found its canary |
-| `130` | Cancelled by a signal (SIGINT/SIGTERM); an entry in progress is rolled back |
+| `130` | Cancelled: a declined prompt, or a signal (SIGINT/SIGTERM); an entry in progress is rolled back |
 
-With `--json`, every command writes one line: a stable envelope with
-`schema_version` (currently `1`), the `command` name, an `ok` boolean, and either
-a typed `data` object or an `error` object with a snake_case `code`, a `message`
-and an optional `hint`. `activate` is the exception: it prints a progress line
-first and then its result, one JSON object per line
-([docs/schemas/activate.schema.json](docs/schemas/activate.schema.json)). A new
-schema version signals an incompatible change.
+With `--json`, every command but `completions` writes exactly one line on
+stdout, `activate` included: a stable envelope with `schema_version` (currently
+`2`), the `command` name, an `ok` boolean that is `true` only for exit `0` or
+`9`, and a typed `data` object, an `error` object, or both (a failed `activate`
+still reports its data). An `error` has a snake_case `code`, a `message` that
+may run to several lines, and `next`: the command to run next, without the
+binary's path (`{"command": "recover"}`), or `null`. A declined prompt, like an
+activation cancelled with Ctrl+C, reports the error `cancelled` and exits `130`.
+Each command's schema is in [docs/schemas/](docs/schemas/). A new schema
+version signals an incompatible change.
 
 </details>
 
@@ -635,7 +639,13 @@ your setup before running the new binary.
   skipped the prompt unless `--interactive` was given. Add `-y` to every
   script, keybinding or unit that runs them; `emergency` never prompts.
 - **Exit codes and JSON.** The process returns the documented exit codes, and
-  `--json` emits the versioned envelope (`schema_version = 1`).
+  `--json` prints one versioned envelope per command (`schema_version = 2`).
+  Scripts written for version 1, which the 0.3.0 release candidates printed,
+  must be updated: `status` reports `place` and `attention` instead of
+  `posture`, `session`, `state` and `state_source`; an error carries a typed
+  `next` instead of `hint`; `ok` is `true` only for exit 0 or 9; `activate`
+  no longer prints a progress line before its result; and a "no" at a prompt
+  exits 130 instead of 1.
 - **State schema.** `state.json` carries a `version` field. The states are
   `Inactive`, `Active` and `Degraded`; `nails status` reads the live session from
   the mount table and the session plan in `/run`, because a soft-reboot keeps the

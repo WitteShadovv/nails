@@ -53,8 +53,8 @@ it can). `emergency` reads no configuration at all.
 
 `nails init` writes the file readable by root only. A command run without root
 that cannot read it exits with status 3 too, and names the full line to run
-instead (`sudo /mnt/data/nails status`), in its text and as the hint of its
-JSON error.
+instead (`sudo /mnt/data/nails status`), in its text and on a line of its own
+in the `message` of its JSON error.
 
 | Command | Purpose |
 |---|---|
