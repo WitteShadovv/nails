@@ -151,6 +151,14 @@ the decision for every entry (the `fstab-policy` check). A decoy partition you
 mount by hand inside the hidden session is outside this policy and is written
 directly.
 
+A mount point the fstab names through a symlink (a `/home` that links to
+`var/home`) is decided, mounted and masked at its real path, the way systemd
+resolves it: `var-home.mount` and `var-home.automount`, never `home.mount`.
+`nails check` resolves each entry in the decoy root. Activation also resolves
+it in the hidden session's root, where a symlink a session changed can lead
+elsewhere, and decides the entry at that path too, so the hidden systemd
+finds it masked or in place there as well.
+
 The hidden volume must be storage of its own, because everything nails writes
 there would otherwise land on the decoy disk. The attach gate refuses a plain
 directory, a btrfs subvolume or bind mount of a filesystem the decoy uses, a

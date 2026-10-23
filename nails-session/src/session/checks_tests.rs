@@ -4,6 +4,7 @@
 //! Unit tests for the session's pre-flight checks.
 
 use super::*;
+use crate::session::fstab::parse_fstab;
 use nails_teardown::mountinfo::parse_mountinfo;
 
 #[test]
@@ -82,6 +83,31 @@ fn masked_filesystems_warn_and_a_refusal_fails() {
     assert!(boot.message().contains("/boot: read-only"));
     assert!(judge_fstab(&decide("/dev/sdb1 /data ext4 defaults 0 2\n")).is_warn());
     assert!(judge_fstab(&decide("/dev/sdb1 data ext4 defaults 0 2\n")).is_fail());
+}
+
+/// The check decides a symlinked mount point where activation does, at its
+/// real path inside the decoy root, so `nails check` names the unit the
+/// hidden session masks.
+#[test]
+fn the_policy_check_decides_a_symlinked_mount_point_at_its_real_path() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("etc")).unwrap();
+    std::fs::create_dir_all(root.path().join("var/nails-check-home")).unwrap();
+    std::os::unix::fs::symlink("var/nails-check-home", root.path().join("home")).unwrap();
+    std::fs::write(
+        root.path().join("etc/fstab"),
+        "/dev/sdb1 /home ext4 defaults,x-systemd.automount 0 2\n",
+    )
+    .unwrap();
+    let check = FstabPolicyCheck::new(root.path().to_path_buf(), PathBuf::from("/mnt/data"));
+    let result = check
+        .run(&crate::filesystem::MockFilesystem::new())
+        .unwrap();
+    assert!(
+        result.message().contains("/var/nails-check-home: masked"),
+        "{result:?}"
+    );
+    assert!(!result.message().contains("/home: masked"), "{result:?}");
 }
 
 /// An fstab that cannot be read fails the check: taken for an empty one, it
