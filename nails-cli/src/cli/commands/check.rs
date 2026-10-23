@@ -11,8 +11,9 @@
 //! `activate --dry-run` is a thin alias for this command, so the two always agree.
 //!
 //! A root the attach gate refuses is reported first, on stderr and in the words
-//! `init` and `activate` use, then the readiness report follows; under `--json`
-//! the refusal is the report's `refusal`.
+//! `init` and `activate` use, before any check runs and also when the checks
+//! cannot be assembled; then the readiness report follows. Under `--json` the
+//! refusal is the report's `refusal`.
 
 use std::io::Write;
 use std::path::Path;
@@ -53,7 +54,17 @@ pub fn execute(
     let config = loaded.into_config();
     let options = preflight_options(args);
 
-    let report = match nails_core::app::readiness::readiness(env, &config_path, config, &options) {
+    let readiness = nails_core::app::readiness::prepare(env, &config_path, config, &options);
+
+    // The human surface prints the attach-gate refusal first, on stderr and in
+    // the words `init` and `activate` use: before the checks run (and log), and
+    // also when they cannot be assembled. Under `--json` it is the report's
+    // `refusal` field.
+    if let Some(error) = readiness.refusal().filter(|_| !json) {
+        write_human_error(&mut std::io::stderr().lock(), error);
+    }
+
+    let report = match readiness.run() {
         Ok(report) => report,
         Err(e) => {
             return report_error(
@@ -64,13 +75,6 @@ pub fn execute(
             );
         }
     };
-
-    // The human surface prints the attach-gate refusal first, on stderr and in
-    // the words `init` and `activate` use; under `--json` it is the report's
-    // `refusal` field.
-    if let Some(error) = report.refusal.as_ref().filter(|_| !json) {
-        write_human_error(&mut std::io::stderr().lock(), error);
-    }
 
     if json {
         print_check_json(&report);
