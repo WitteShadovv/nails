@@ -74,7 +74,6 @@ mod tests {
         // passing clean; it is checked on its own below.
         for (os_release, name) in [
             ("ID=ubuntu\nVERSION_ID=\"24.04\"\n", "Ubuntu 24.04"),
-            ("ID=ubuntu\nVERSION_ID=\"26.10\"\n", "Ubuntu 26.10"),
             ("ID=debian\nVERSION_ID=\"13\"\n", "Debian 13"),
             ("ID=nixos\nVERSION_ID=\"26.05\"\n", "NixOS 26.05"),
         ] {
@@ -105,15 +104,20 @@ mod tests {
 
     #[test]
     fn an_untested_ubuntu_release_warns_and_does_not_fail() {
-        let result = run_on("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"28.04\"\n");
-        assert!(result.is_warn(), "{result:?}");
-        assert!(
-            result.message().starts_with(
-                "Ubuntu 28.04 is not a release NAILS has been tested on \
-                 (tested: Ubuntu 24.04, 26.04 and 26.10)."
-            ),
-            "{result:?}"
-        );
+        // 26.10 among them: no run of NAILS on it has passed yet.
+        for release in ["26.10", "28.04"] {
+            let result = run_on(&format!(
+                "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"{release}\"\n"
+            ));
+            assert!(result.is_warn(), "{result:?}");
+            assert!(
+                result.message().starts_with(&format!(
+                    "Ubuntu {release} is not a release NAILS has been tested on \
+                     (tested: Ubuntu 24.04 and 26.04)."
+                )),
+                "{result:?}"
+            );
+        }
     }
 
     #[test]
