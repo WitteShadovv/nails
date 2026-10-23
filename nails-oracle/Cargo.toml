@@ -35,7 +35,7 @@ serde_json = { workspace = true }
 nails-forensics = { path = "../nails-forensics" }
 
 [dev-dependencies]
-# Property-test backstop over the verdict engine's reconciliation invariants
-# (src/verdict_prop_tests.rs). Dev-only, so it never reaches the shipped binary;
-# `std`-only, matching the workspace proptest.
+# Property tests of the verdict engine against expectations the test works out
+# itself (src/verdict_prop_tests.rs). Dev-only, so it never reaches the shipped
+# binary; `std`-only, matching the workspace proptest.
 proptest = { workspace = true }
