@@ -11,9 +11,10 @@
 # from this mirror.
 #
 # `base` is the release-download root of that assets repository. It is empty
-# until the assets repository exists, and both the `distro-images` check and the
-# weekly link check read an empty base as "mirror not configured yet" rather
-# than as an error, so the seam can land before the hosting does. Fill it with
+# until the assets repository exists, and the `distro-images` check reads an
+# empty base as "mirror not configured yet" rather than as an error, so the seam
+# can land before the hosting does. The weekly link check probes no mirror
+# asset: it lists an enabled mirror entry as not checked. Fill it with
 #   "https://github.com/<owner>/<assets-repo>/releases/download"
 # once the repository is created; nothing else moves.
 rec {

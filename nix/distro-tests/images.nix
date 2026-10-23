@@ -2,10 +2,11 @@
 # suites know about, and how each one's cloud image is obtained.
 #
 # The table itself is plain data in images.json, so a pin can be bumped by a
-# script (scripts/distro_images.py) without touching Nix. Everything downstream
-# -- the per-distribution smoke tests, the flake's `e2e-distro` attribute set,
-# the distro metadata the CI planner reads -- is derived by mapping over this
-# set, so bringing a distribution into the matrix is a single `enabled` flip.
+# script (`python3 -m ci.distro_images`) without touching Nix. Everything
+# downstream -- the per-distribution smoke tests, the flake's `e2e-distro`
+# attribute set, the distro metadata the CI planner reads -- is derived by
+# mapping over this set, so bringing a distribution into the matrix is a single
+# `enabled` flip.
 #
 # Each entry carries:
 #   osId           the /etc/os-release ID ("debian", "ubuntu", "fedora", "arch");
@@ -16,8 +17,11 @@
 #   enabled        whether the smoke matrix runs it today (false stages an image
 #                  that the next package can boot without putting it in CI);
 #   upstreamUntil  the date the pinned upstream image is expected to lapse from
-#                  its download mirror (null when the source does not expire, as
-#                  for a nix-vm-test pin or a self-hosted mirror asset);
+#                  its download mirror, or null when no date is known. A
+#                  nix-vm-test pin is a dated upstream URL too, which its mirror
+#                  can prune: the weekly link check probes the URL nix-vm-test
+#                  pins at the locked revision, and a newer lock repins it. A
+#                  self-hosted mirror asset carries no date;
 #   prepare        which image-preparation path builds the bootable qcow2
 #                  ("nix-vm-test" for a pinned nix-vm-test release, "fedora" or
 #                  "archlinux" for nix-vm-test's per-family prepare function);
@@ -91,7 +95,7 @@ let
       !(entry.enabled && kind == "pending")
     ) "distro image ${name}: a pending source cannot be enabled";
     assert lib.assertMsg (!(entry.enabled && kind == "upstream" && entry.source.sha256 == lib.fakeHash))
-      "distro image ${name}: still has the placeholder hash; run `scripts/distro_images.py repin ${name}` before enabling it";
+      "distro image ${name}: still has the placeholder hash; run `python3 -m ci.distro_images repin ${name}` before enabling it";
     assert (kind == "upstream") -> (requires "url" && requires "name" && requires "sha256");
     assert (kind == "nix-vm-test") -> (requires "distro" && requires "image");
     entry;
