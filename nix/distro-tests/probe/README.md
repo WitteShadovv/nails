@@ -10,19 +10,18 @@ vendor journald configuration, the boot-loader units that fail on their own, the
 `updatedb` prune paths, any AVC denials, whether a 9p share works while SELinux
 is enforcing, and the `os-release` values a derivative carries.
 
-These facts need a booted VM, which needs KVM, so recording them is a follow-up
-on a KVM-capable host (the build server has none). This directory holds the
-**structure** so that adding a real recording later is a drop-in: one JSON file
-per image key in `../images.json`, with the fact schema already in place and
-`"recorded": false` until the probe has run.
+These facts need a booted VM, which needs KVM, so they are recorded on a
+KVM-capable host (the build server has none): one JSON file per image key in
+`../images.json`, with `"recorded": false` until the probe has run on it.
 
 ## Files
 
 One file per image the probe will cover, named after its `../images.json` key:
 
-- `fedora-44.json`  -- the pinned Fedora 44 cloud image
+- `fedora-44.json`  -- the pinned Fedora 44 cloud image (recorded, booted with
+  SELinux permissive as `../images.json` pins it)
 - `fedora-45.json`  -- Fedora 45 once its image is pinned
-- `arch-boxes.json` -- the pinned Arch `arch-boxes` image
+- `arch-boxes.json` -- the pinned Arch `arch-boxes` image (recorded)
 - `arch-install.json` -- the `archinstall`-built Arch image, once hosted
 
 Debian and Ubuntu need no probe: they are admitted and covered by the smoke
@@ -38,26 +37,44 @@ Each file is an object:
   skip or xfail a fact file whose `recorded` is `false`.
 - `facts`   -- the recorded facts, each `null`/empty until recorded:
   - `selinuxBackdoorDomain` -- the SELinux domain a backdoor-style unit runs in
-    on the stock image (string, or `null` where SELinux is not enforcing).
+    on the stock image (string, or `null` where the image has no SELinux; a
+    permissive boot labels processes as an enforcing one does, so it records
+    the domain too).
   - `mounts` -- the image's own mount layout: a list of
     `{ "target": ..., "fstype": ..., "options": ... }`.
   - `tools` -- host tools NAILS may spawn, mapped to their absolute path on the
     image (`{ "<tool>": "<path>" }`); an absent tool is omitted.
   - `journaldVendorConfig` -- the effective vendor `Storage=` and the files that
-    set it (`{ "storage": ..., "sources": [ ... ] }`).
+    set it (`{ "storage": ..., "sources": [ ... ] }`); `sources` is empty when
+    no file sets it and the compiled-in default applies.
   - `failedBootUnits` -- boot-loader and early units that show as failed on a
     plain boot of the stock image (list of unit names).
   - `updatedbPrunePaths` -- the `PRUNEPATHS` the image's `updatedb` ships (list).
   - `avcs` -- AVC denials seen on a plain boot (list of raw AVC lines).
   - `ninePUnderEnforcing` -- whether a 9p share mounts and reads while SELinux is
-    enforcing (`true`/`false`/`null`).
+    enforcing (`true`/`false`, or `null` when the probe booted permissive or
+    the image has no SELinux).
   - `derivativeOsRelease` -- for a derivative, the `ID`, `ID_LIKE` and
     `VARIANT_ID` its `os-release` carries (`{ ... }`).
 
 ## Regenerating
 
-On a KVM-capable host, boot the image through the same `nix-vm-test` seam the
-smoke suite uses (`../lib/distro-vm.nix`), gather the facts above on the stock
-decoy before NAILS touches it, and write them into the matching file with
-`recorded` set to `true`. Keep the key order and the schema; a consumer in the
-platform or session tests reads the file by its `image` key.
+On a KVM-capable host, build the probe driver of the image (`../probe.nix`, the
+same `nix-vm-test` seam the smoke suite uses) and run it. The driver keeps the
+VM state and its sockets in `XDG_RUNTIME_DIR`, falling back to `TMPDIR`; point
+both at a short directory on disk, since a Unix socket path holds at most 107
+bytes and the state is several GB:
+
+```bash
+nix build .#e2e-distro.fedora-44-probe -o fedora-44-probe
+mkdir -p /var/tmp/p
+TMPDIR=/var/tmp/p XDG_RUNTIME_DIR=/var/tmp/p ./fedora-44-probe/bin/test-driver
+```
+
+The driver prints one `=== <fact> ===` block per query. Copy what the blocks
+show into the matching file and set `recorded` to `true`. Keep the key order
+and the schema; a consumer in the platform or session tests reads the file by
+its `image` key. The `/nix/.ro-store` 9p share and the `backdoor.service` and
+`mount-store.service` units belong to the test harness, not to the image, so
+they stay out of `mounts`; the domain the backdoor unit runs in is exactly what
+`selinuxBackdoorDomain` records.

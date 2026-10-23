@@ -32,14 +32,20 @@ let
         print("=== " + label + " ===")
         print(vm.succeed("( " + cmd + " ) 2>&1 || true"))
 
+    # Every command runs in the backdoor's root shell, so the shell's own
+    # context is the domain the backdoor unit runs in; its arguments do not
+    # name the unit, so a process grep cannot find it.
     dump("os-release",     "cat /etc/os-release")
     dump("selinux",        "getenforce; sestatus")
-    dump("backdoor",       "ps -eo label,args | grep -Ei 'backdoor|mount-store' | grep -v grep")
+    dump("backdoor",       "cat /proc/self/attr/current; echo; systemctl show backdoor.service mount-store.service -p Id -p ExecStart")
     dump("mounts",         "findmnt --real -o TARGET,FSTYPE,OPTIONS")
-    dump("tools",          "for t in cryptsetup mke2fs swapoff systemd-run modprobe findmnt mount umount cp chown kill sync; do echo $t: $(command -v $t); done")
-    dump("journald",       "cat /usr/lib/systemd/journald.conf 2>/dev/null; systemctl show systemd-journald -p Storage")
+    # type -P searches PATH even for a name the shell has as a builtin (kill).
+    dump("tools",          "for t in cryptsetup mke2fs swapoff systemd-run modprobe findmnt mount umount cp chown kill sync; do echo $t: $(type -P $t); done")
+    # The effective configuration with the file each part comes from, and where
+    # the journal is actually written.
+    dump("journald",       "systemd-analyze cat-config systemd/journald.conf | grep -E '^# /|Storage'; ls -d /var/log/journal /run/log/journal")
     dump("failed-units",   "systemctl --failed --no-legend")
-    dump("updatedb-prune", "grep -hs PRUNEPATHS /etc/updatedb.conf /usr/lib/updatedb.conf")
+    dump("updatedb-prune", "grep -hs PRUNEPATHS /etc/updatedb.conf /usr/lib/updatedb.conf; for t in updatedb plocate locate; do echo $t: $(type -P $t); done")
     dump("avcs",           "journalctl -k -b | grep -i 'avc:  denied'; ausearch -m avc")
     dump("ninep",          "findmnt -t 9p; mount | grep 9p")
   '';

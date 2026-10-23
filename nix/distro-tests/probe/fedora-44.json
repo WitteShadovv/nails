@@ -1,13 +1,51 @@
 {
   "image": "fedora-44",
   "osId": "fedora",
-  "recorded": false,
+  "recorded": true,
   "facts": {
-    "selinuxBackdoorDomain": null,
-    "mounts": [],
-    "tools": {},
+    "selinuxBackdoorDomain": "unconfined_service_t",
+    "mounts": [
+      {
+        "target": "/",
+        "fstype": "btrfs",
+        "options": "rw,relatime,seclabel,compress=zstd:1,discard=async,space_cache=v2,subvolid=256,subvol=/root"
+      },
+      {
+        "target": "/var",
+        "fstype": "btrfs",
+        "options": "rw,relatime,seclabel,compress=zstd:1,discard=async,space_cache=v2,subvolid=259,subvol=/var"
+      },
+      {
+        "target": "/home",
+        "fstype": "btrfs",
+        "options": "rw,relatime,seclabel,compress=zstd:1,discard=async,space_cache=v2,subvolid=258,subvol=/home"
+      },
+      {
+        "target": "/boot",
+        "fstype": "btrfs",
+        "options": "rw,relatime,seclabel,compress=zstd:1,discard=async,space_cache=v2,subvolid=257,subvol=/boot"
+      },
+      {
+        "target": "/boot/efi",
+        "fstype": "vfat",
+        "options": "rw,relatime,fmask=0077,dmask=0077,codepage=437,iocharset=ascii,shortname=winnt,errors=remount-ro"
+      }
+    ],
+    "tools": {
+      "mke2fs": "/usr/bin/mke2fs",
+      "swapoff": "/usr/bin/swapoff",
+      "systemd-run": "/usr/bin/systemd-run",
+      "modprobe": "/usr/bin/modprobe",
+      "findmnt": "/usr/bin/findmnt",
+      "mount": "/usr/bin/mount",
+      "umount": "/usr/bin/umount",
+      "cp": "/usr/bin/cp",
+      "chown": "/usr/bin/chown",
+      "kill": "/usr/bin/kill",
+      "sync": "/usr/bin/sync"
+    },
     "journaldVendorConfig": {
-      "storage": null,
+      "storage": "persistent",
       "sources": []
     },
     "failedBootUnits": [],
