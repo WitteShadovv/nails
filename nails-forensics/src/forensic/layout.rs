@@ -250,6 +250,28 @@ pub fn compressing_format_at(source: &RawSource, start: u64) -> io::Result<Optio
     Ok(first_match(&head, COMPRESSING_FORMATS))
 }
 
+/// Where an f2fs superblock keeps its feature flags: `feature`, 0x884 bytes
+/// into the superblock at 1 KiB (`struct f2fs_super_block`).
+const F2FS_FEATURES: u64 = 0x400 + 0x884;
+
+/// The f2fs feature flag of a filesystem made with compression
+/// (`F2FS_FEATURE_COMPRESSION`).
+const F2FS_FEATURE_COMPRESSION: u32 = 0x2000;
+
+/// Whether the f2fs at `start` was made with the compression feature
+/// (`mkfs.f2fs -O compression`), from its superblock's feature flags. A
+/// superblock that ends before its flags counts as one with the feature: what
+/// cannot be read is not shown to be verbatim.
+///
+/// # Errors
+///
+/// Propagates a read error.
+pub fn f2fs_compression(source: &RawSource, start: u64) -> io::Result<bool> {
+    let mut features = [0u8; 4];
+    let read = source.read_at(&mut features, start.saturating_add(F2FS_FEATURES))?;
+    Ok(read < features.len() || u32::from_le_bytes(features) & F2FS_FEATURE_COMPRESSION != 0)
+}
+
 /// What a filesystem's superblock says about the bytes the filesystem spans.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordedSize {
@@ -264,7 +286,8 @@ pub enum RecordedSize {
 
 /// How many bytes the filesystem of `format` at `start` says it spans: an
 /// ext2/3/4 superblock's block count times its block size, an xfs
-/// superblock's data blocks times its block size.
+/// superblock's data blocks times its block size, an f2fs superblock's block
+/// count times its block size.
 ///
 /// # Errors
 ///
@@ -302,6 +325,21 @@ pub fn recorded_size(source: &RawSource, start: u64, format: &str) -> io::Result
                     RecordedSize::Implausible
                 },
             )
+        }
+        "f2fs" => {
+            // The superblock at 1 KiB, through block_count: log2 of the block
+            // size at 0x10 and the block count at 0x24; past the end of the
+            // source its fields read as zero.
+            let mut sb = [0u8; 0x2C];
+            source.read_at(&mut sb, start.saturating_add(0x400))?;
+            let log_block = le_u32(&sb, 0x10);
+            let blocks = le_u64(&sb, 0x24);
+            // An f2fs block is the page size: 4 KiB, up to 64 KiB.
+            Ok(if (12..=16).contains(&log_block) {
+                RecordedSize::Bytes(blocks.saturating_mul(1 << log_block))
+            } else {
+                RecordedSize::Implausible
+            })
         }
         _ => Ok(RecordedSize::Unrecorded),
     }

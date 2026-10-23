@@ -35,7 +35,7 @@ mod tests;
 
 pub use plant::{PlantContext, plant};
 pub use scan::{DeviceScan, NOT_VISIBLE, ScanReport, ScanTarget, default_scan_targets, scan};
-pub use storage::{ScanBlindSpot, scan_blind_spot};
+pub use storage::{ScanBlindSpot, f2fs_image_blind_spot, scan_blind_spot};
 
 use crate::{Filesystem, NailsError, Result};
 use serde::{Deserialize, Serialize};
