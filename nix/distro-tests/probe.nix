@@ -21,6 +21,13 @@ let
   ];
   probeImages = lib.filterAttrs (_: entry: builtins.elem entry.osId probeOsIds) images;
 
+  # Fedora boots SELinux permissive as images.json pins it, which hides what
+  # only an enforcing boot shows (denials, whether the 9p share still mounts).
+  # Each Fedora image therefore also gets a "<name>-enforcing" variant.
+  enforcingImages = lib.mapAttrs' (
+    name: entry: lib.nameValuePair "${name}-enforcing" (entry // { enforcing = true; })
+  ) (lib.filterAttrs (_: entry: entry.osId == "fedora") probeImages);
+
   # Boot the stock image (no nails share, no activation) and print the facts the
   # fixtures record. Every query runs in a subshell with its status discarded
   # (`( ... ) 2>&1 || true`): the host driver does not return a guest command's
@@ -39,15 +46,23 @@ let
     dump("selinux",        "getenforce; sestatus")
     dump("backdoor",       "cat /proc/self/attr/current; echo; systemctl show backdoor.service mount-store.service -p Id -p ExecStart")
     dump("mounts",         "findmnt --real -o TARGET,FSTYPE,OPTIONS")
-    # type -P searches PATH even for a name the shell has as a builtin (kill).
-    dump("tools",          "for t in cryptsetup mke2fs swapoff systemd-run modprobe findmnt mount umount cp chown kill sync; do echo $t: $(type -P $t); done")
+    # The programs the NAILS sources name, resolved with type -P, which searches
+    # PATH even for a name the shell has as a builtin (kill).
+    dump("tools",          "for t in systemctl loginctl busctl journalctl dmsetup ip cryptsetup veracrypt tcplay sh mount notify-send nix sync swapoff kill systemd-run modprobe cp chown; do echo $t: $(type -P $t); done")
     # The effective configuration with the file each part comes from, and where
     # the journal is actually written.
     dump("journald",       "systemd-analyze cat-config systemd/journald.conf | grep -E '^# /|Storage'; ls -d /var/log/journal /run/log/journal")
     dump("failed-units",   "systemctl --failed --no-legend")
+    # Every masked unit; the test harness masks some, and a unit it masks can
+    # never show up in failed-units.
+    dump("masked-units",   "systemctl list-unit-files --state=masked --no-legend")
     dump("updatedb-prune", "grep -hs PRUNEPATHS /etc/updatedb.conf /usr/lib/updatedb.conf; for t in updatedb plocate locate; do echo $t: $(type -P $t); done")
     dump("avcs",           "journalctl -k -b | grep -i 'avc:  denied'; ausearch -m avc")
-    dump("ninep",          "findmnt -t 9p; mount | grep 9p")
+    # Whether the harness's 9p store share is mounted and a file reads through
+    # it. A virtio 9p channel takes one mount only, so the share cannot be
+    # mounted a second time to test it; the enforcing variant answers whether
+    # it mounts and reads under enforcing.
+    dump("ninep",          "findmnt -t 9p; f=$(find /nix/.ro-store -maxdepth 3 -type f -print -quit); if [ -n \"$f\" ] && head -c 64 \"$f\" >/dev/null; then echo read-ok; else echo read-failed; fi")
   '';
 
   probeFor =
@@ -59,4 +74,4 @@ let
       target = "driver";
     };
 in
-lib.mapAttrs probeFor probeImages
+lib.mapAttrs probeFor (probeImages // enforcingImages)
