@@ -7,14 +7,14 @@
 //! pass/fail verdict on whether a torn-down hidden session left a trace.
 //!
 //! It compares three images of one host — `before` the session, a clean
-//! `control` boot cycle, and `after` the session — by what `btrfs restore`,
-//! `bulk_extractor` and `plaso` recover from each. A difference in `after` is a
-//! leak unless it also appears in the clean control cycle (scan noise) or a
-//! cited allowlist entry explains it. Three self-checks keep a clean verdict
-//! honest: planted positive controls must be detected (or the scan is blind),
-//! a coverage canary must be detected (or the scan did not read the image), and
-//! every analysis channel must report on every image (or the scan could not
-//! look through it).
+//! `control` boot cycle, and `after` the session — by what the restore carve
+//! (`btrfs restore` or `debugfs rdump`), `bulk_extractor` and `plaso` recover
+//! from each. A difference in `after` is a leak unless it also appears in the
+//! clean control cycle (scan noise) or a cited allowlist entry explains it.
+//! Three self-checks keep a clean verdict honest: planted positive controls
+//! must be detected (or the scan is blind), a coverage canary must be detected
+//! (or the scan did not read the image), and every analysis channel must
+//! report on every image (or the scan could not look through it).
 //!
 //! The decision lives in [`verdict::scan_verdict`], a pure function unit-tested
 //! over synthetic findings. The [`scan`] parsers that feed it are lenient, but

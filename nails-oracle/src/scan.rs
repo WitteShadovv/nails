@@ -57,11 +57,12 @@ fn scan_image(outputs: &Path, label: ImageLabel) -> BTreeSet<Finding> {
 }
 
 /// Walk a restored file tree, emitting one finding per recovered entry: its
-/// absolute on-image path, with the entry's kind as the field. A directory
-/// (`dir`) and a symbolic link (`symlink`) are traces in their own right, an
-/// empty staging directory or a unit's enablement link, so they are reported
-/// like a file (an empty field), never only walked through or skipped. Any
-/// other entry a carver recovers is reported as a file too.
+/// absolute on-image path, with the entry's kind as the field (empty for a
+/// file). A directory (`dir`) and a symbolic link (`symlink`) are traces in
+/// their own right, an empty staging directory or a unit's enablement link, so
+/// each is reported as a finding like a file, with its kind as the field, and
+/// never only walked through or skipped. Any other entry a carver recovers is
+/// reported as a file, with an empty field.
 fn scan_restore(root: &Path, out: &mut BTreeSet<Finding>) {
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
