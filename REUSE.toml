@@ -11,6 +11,14 @@ path = "**"
 SPDX-FileCopyrightText = "2025-2026 WitteShadovv"
 SPDX-License-Identifier = "GPL-3.0-or-later"
 
+# The graphical-interface crate is licensed GPL-3.0-only rather than the tree's
+# GPL-3.0-or-later. A longer path is "closer", so this and the crate's own file
+# headers win over the catch-all for everything under gui/, its lockfile too.
+[[annotations]]
+path = "gui/**"
+SPDX-FileCopyrightText = "2025-2026 WitteShadovv"
+SPDX-License-Identifier = "GPL-3.0-only"
+
 # The EFF "large" diceware word list is third-party data under its own licence,
 # not the project's. When several annotations match a path the last one wins,
 # so this comes after the catch-all.
