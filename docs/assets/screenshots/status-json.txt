@@ -1,19 +1,15 @@
 title: nails status --json (NixOS VM, hidden session)
 command: sudo /mnt/data/nails status --json
-caption: Real data captured from the session-readme-captures NixOS VM test (nix build .#e2e.session-readme-captures), 2026-10-16, right after the activation: the `data` object of the JSON envelope, pretty-printed by the test.
+caption: Real data captured from the session-readme-captures NixOS VM test (nix build .#e2e.session-readme-captures), 2026-10-23, right after the activation: the `data` object of the JSON envelope, pretty-printed by the test.
 ---
 {
- "posture": "active",
- "session": "hidden",
- "state": {
-  "kind": "active"
- },
- "state_source": "loaded",
- "entered_at": "2026-10-16T07:09:09+00:00",
- "uptime_seconds": 2,
+ "place": "hidden",
+ "attention": null,
+ "entered_at": "2026-10-23T16:04:13+00:00",
+ "uptime_seconds": 15,
  "uptime_formatted": "0 minutes",
- "hidden_system": "/nix/store/cr7m2rdcarz5yy5cxmxrjqca1mk4whd9-nixos-system-machine-test",
- "decoy_system": "/nix/store/cr7m2rdcarz5yy5cxmxrjqca1mk4whd9-nixos-system-machine-test",
+ "hidden_system": "/nix/store/rcg2hd7l7drkh0byxfygs8l3xq2n8xhj-nixos-system-machine-test",
+ "decoy_system": "/nix/store/rcg2hd7l7drkh0byxfygs8l3xq2n8xhj-nixos-system-machine-test",
  "hidden_root": "/mnt/data",
  "hidden_root_mounted": true,
  "policy_mounts": [
@@ -45,8 +41,8 @@ caption: Real data captured from the session-readme-captures NixOS VM test (nix 
  "decoy_persistent": false,
  "persona_mode": "shared-home",
  "last_activation": {
-  "duration_ms": 397,
-  "finished_at": "2026-10-16T07:09:08.764947918Z"
+  "duration_ms": 4580,
+  "finished_at": "2026-10-23T16:04:09.967381186Z"
  },
  "opsec_reminders": []
 }

@@ -378,7 +378,7 @@ Both transitions log you out. Save your work first.
 <details>
 <summary><b>What <code>nails status --json</code> reports in the hidden session</b></summary>
 
-<img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: posture active, session hidden, the hidden system path, the overlaid mounts, the masked boot-loader unit and the last activation's duration" width="820">
+<img src="docs/assets/screenshots/status-json.svg" alt="The data object of nails status --json in the hidden session: place hidden, attention null, the hidden system path, the overlaid mounts, the masked boot-loader unit and the last activation's duration" width="820">
 
 `place` says where the machine is (`decoy`, `hidden` or `activating`), and
 `attention` names the one thing that needs you, such as `interrupted` or
