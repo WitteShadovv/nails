@@ -55,18 +55,19 @@ nothing) fails the run as `channel_missing` and marks it blind, never `clean`.
 No channel stands in for another: the restore channel leaves the journal files
 to plaso, and every shipped self-check is a bulk_extractor finding.
 `run-scan.sh` drops the plaso channel whole when docker is missing, its pinned
-image cannot be pulled, or any image's timeline fails or runs past 20 minutes,
-so such a run fails. There is no switch to skip a channel; the verdict is still
-written, so a local run without docker can read what the other channels found.
+image cannot be pulled, or any image's timeline fails, runs past 20 minutes or
+does not show that plaso read the image (see below), so such a run fails. There
+is no switch to skip a channel; the verdict is still written, so a local run
+without docker can read what the other channels found.
 
 ### Carving the restore channel
 
 `run-scan.sh` carves the file tree with `btrfs restore` for btrfs (snapshots and
 symlinks included) and `debugfs rdump` for ext{2,3,4}. An image is a bare
 filesystem, or a whole-disk image with exactly one btrfs or ext{2,3,4}
-partition. A disk with several (a separate `/boot` or `/home`) fails the run,
-because the root cannot be told apart safely: scan the root filesystem's own
-image instead.
+partition (plaso also needs it to be the only partition: see below). A disk
+with several (a separate `/boot` or `/home`) fails the run, because the root
+cannot be told apart safely: scan the root filesystem's own image instead.
 
 A carve must report no error and must hold the canary's file
 (`/var/lib/nails-oracle/canary.txt` on the synthetic images,
@@ -76,6 +77,24 @@ filesystem with no carver here (xfs, f2fs, bcachefs, zfs) stops the run with
 that reason rather than leaving this channel empty, which would fail the verdict
 anyway. Add a carver to `carve_restore` in `run-scan.sh` to certify such a
 decoy.
+
+### Proving plaso read each image
+
+plaso reads the files in an image only when it can open the image's file
+system. An image it cannot open, it reads as one opaque file, and it still
+dates that file. Those events name the one path every image is read through, so
+they collapse across the images: the plaso channel reports something on every
+image, and the run could read clean, while plaso read no file in any of them.
+`run-scan.sh` therefore keeps a timeline only when it has an event for the
+canary's file (`timeline-has-file.sh` checks the events' `filename`), and drops
+the plaso channel otherwise.
+
+plaso opens ext{2,3,4} but not btrfs, so a btrfs image, the synthetic ones
+included, fails the plaso channel and with it the run. It also opens a
+whole-disk image only when the image holds a single partition: `run-scan.sh`
+runs log2timeline unattended and without `--partitions`, and log2timeline then
+stops rather than choose among several, an EFI system or BIOS boot partition
+next to the root included. Scan the root filesystem's own image instead.
 
 ## allowlist.json — the citation rule
 
