@@ -5,9 +5,9 @@
 //!
 //! One function per operation, so every front end drives the same
 //! orchestration. The CLI parses arguments and renders the result; a future
-//! window speaks to these functions over its helper. Neither holds the sequence
-//! of library calls that takes a session up or down, reads the live state or
-//! judges a host: that lives here, once.
+//! window speaks to these functions over its helper. The sequence of library
+//! calls that takes a session up or down, the reading of the live state and the
+//! judging of a host live here, once.
 //!
 //! Each function takes the already-resolved inputs (a [`Config`](crate::Config),
 //! the [`RuntimeEnv`](crate::RuntimeEnv) and the operation's own options) and
@@ -15,6 +15,23 @@
 //! refusal, a prepared entry — so a front end maps it to its own output and exit
 //! code without re-deriving the decision. Nothing here prints, prompts or reads
 //! an exit code: those are the front end's.
+//!
+//! Some steps stay with the front end; a new front end takes them as the CLI
+//! does, since nothing in the types makes it:
+//!
+//! - the exclusive state lock ([`lock`]) around every operation that changes
+//!   the mounts or the state file, taken once the operation's own gates have
+//!   passed and held until its last step: `enter` and `commit` of
+//!   [`activate`], `leave` of [`deactivate`] and `apply` of [`discard_upper`]
+//!   run whether or not it is held;
+//! - the trusted-state check of an activation
+//!   ([`activate::ReadyActivation::is_state_trusted`]), made under that lock
+//!   before anything else;
+//! - the confirmation, and the cancel checks between the steps;
+//! - the argument combinations the CLI's parser refuses, other than the ones an
+//!   operation refuses itself (an offline [`verify`] without its image root);
+//! - keeping secrets out of logs and other channels: a [`rehearse`] outcome
+//!   carries the canary token.
 
 pub mod activate;
 pub mod config;
