@@ -289,10 +289,11 @@ EXAMPLES:
   nails rehearse plant --user alice   Plant the canary for alice's session
   nails rehearse scan                 Scan the mounted decoy devices
   nails rehearse scan --offline --image decoy.raw
-                                      Scan a disk image instead
+                                      Scan an image of the unlocked decoy
 
 The scan exits 0 when no canary is found, 11 when one is, and 9 when a device
-could not be scanned completely.
+could not be scanned completely or its storage can hide the canary from a raw
+scan (reported not checked).
 
 ###### **Subcommands:**
 
@@ -324,8 +325,12 @@ Step 3, after deactivating: scan the raw decoy devices for the canary
 ###### **Options:**
 
 * `--device <DEVICE>` — Scan this block device instead of the mounted decoy devices (repeatable)
+
+   Name the unlocked decoy filesystem. A mounted device is classified by its mount. One that is not mounted is identified from its raw superblock, a whole disk partition by partition: an encrypted container (scan its unlocked mapping instead), a compressing or copy-on-write filesystem, or storage the scan does not identify is reported not checked rather than clean.
 * `--offline` — Scan disk images or devices given with --image, not this machine's mounts
 * `--image <IMAGE>` — An image or device to scan in --offline mode (repeatable)
+
+   An image of the unlocked decoy filesystem, or of a whole disk, whose partitions are then classified one by one from their raw superblocks. An encrypted container (scan its unlocked mapping instead), a compressing or copy-on-write filesystem, storage the scan does not identify, or an image that ends before its filesystem does is reported not checked rather than clean, and an empty image is not scanned.
 * `--token-file <FILE>` — Read the canary token from this file instead of the hidden volume's rehearsal state (--offline only)
 * `--allow-same-boot` — Scan even in the session the canary was planted in (proves little: the session's writes may not have reached the disk yet)
 * `--max-bytes <BYTES>` — Stop each device after this many bytes
@@ -504,6 +509,7 @@ Every command shares one set of exit codes.
 
 Notable per-command codes: `verify` returns 0/10/11 for secure/warning/critical;
 `rehearse scan` returns 0 when the canary is not found, 11 when it is, and 9
-when a device could not be scanned completely;
+when a device could not be scanned completely or its storage can hide the
+canary from a raw scan (reported not checked);
 `status` returns 7 on a degraded posture and 6 on an untrusted state file; every
 mutating command returns 5 when run without root.
