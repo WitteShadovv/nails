@@ -373,13 +373,11 @@ fn write_runtime(paths: &Paths, inputs: &EntryInputs<'_>, snapshot: &Snapshot) -
         nails_teardown::whole_root::plan::write_private_atomic(&runtime.join(name), &bytes)
             .map_err(|e| io(&runtime.join(name), e))?;
     }
-    // The decoy's network identity, for the way back. Best effort: a failure
-    // leaves no record, and the way back then leaves the network alone.
+    // The decoy's network state, for the way back. Best effort: a part that
+    // cannot be read is recorded as unknown and left alone by the way back, and
+    // a record that cannot be written leaves the network alone altogether.
     network_state::record(
-        Path::new(network::SYS_CLASS_NET),
-        Path::new(network::PROC_HOSTNAME),
-        Path::new("/etc/hostname"),
-        &paths.run,
+        &network::Places::system(&paths.run),
         &runtime.join(network::RECORD_NAME),
     );
     let copy = paths.binary_copy();

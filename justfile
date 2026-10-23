@@ -214,13 +214,14 @@ coverage:
 
 # The tests that ask the kernel directly from an unprivileged user + mount
 # namespace (overlay mount ids and st_dev, live mountinfo, fdinfo, strictatime,
-# a real broken pipe, the mount contract, the rootless privileged_mounts tests
-# and the CLI's write paths on a tmpfs hidden root; see
-# docs/testing-strategy.md). They run in `just test` too, where a host without
-# user namespaces skips them; here a skip fails.
+# a real broken pipe, the mount contract, the rootless privileged_mounts tests,
+# the CLI's write paths on a tmpfs hidden root and the way back's network
+# restore in a network namespace; see docs/testing-strategy.md). They run in
+# `just test` too, where a host without user namespaces skips them; here a skip
+# fails.
 kernel-tests:
     NAILS_REQUIRE_USERNS=1 cargo nextest run --workspace --all-features --locked \
-        -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract) | binary(privileged_mounts) | binary(maintenance_cli)'
+        -E 'test(/kernel_tests::|test_support::/) | binary(kernel_semantics) | binary(broken_pipe) | binary(filesystem_contract) | binary(privileged_mounts) | binary(maintenance_cli) | binary(network_way_back_kernel)'
 
 # The pre-push gate: formatting, lints, file sizes, fuzz-target wiring and the
 # test suite.
