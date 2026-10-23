@@ -70,7 +70,8 @@ pub enum EnterOutcome {
     /// Already in the hidden root; nothing changed.
     AlreadyActive,
     /// The entry is prepared and armed; [`NailsManager::trigger_entry`] starts
-    /// the soft-reboot.
+    /// the soft-reboot, and a watching event stream sees the activation end
+    /// there.
     Prepared {
         /// The prepared entry.
         entry: Box<entry::Entry>,
@@ -228,10 +229,12 @@ impl<F: Filesystem> NailsManager<F> {
         run_preflight: bool,
     ) -> Result<EnterOutcome> {
         let result = self.enter_session_inner(machine, options, host, run_preflight);
-        // Mark the end of the activation for a watching event stream, unless
-        // there was nothing to do (already in the hidden root).
-        if !matches!(result, Ok(EnterOutcome::AlreadyActive)) {
-            crate::reporter::progress::finish(result.is_ok());
+        // A failed activation ends here for a watching event stream. A prepared
+        // one ends when its soft-reboot is enqueued or refused
+        // (`trigger_entry`), and an entry already in the hidden root did
+        // nothing.
+        if result.is_err() {
+            crate::reporter::progress::finish(false);
         }
         result
     }
@@ -362,7 +365,8 @@ impl<F: Filesystem> NailsManager<F> {
     }
 
     /// Enqueue the soft-reboot into the prepared root. On failure the entry is
-    /// rolled back and the state returns to inactive.
+    /// rolled back and the state returns to inactive. Either way the
+    /// activation has ended, which a watching event stream sees here.
     pub fn trigger_entry(
         &mut self,
         target: &dyn TargetHost,
@@ -377,13 +381,15 @@ impl<F: Filesystem> NailsManager<F> {
         target: &dyn TargetHost,
         entry_host: &dyn EntryHost,
     ) -> Result<()> {
-        if let Err(e) = target.start_target("soft-reboot.target") {
+        let enqueued = target.start_target("soft-reboot.target");
+        if enqueued.is_err() {
             entry::rollback(&machine.paths);
             let _ = entry_host.daemon_reload();
             let _ = self.force_state(SystemState::Inactive);
-            return Err(e);
         }
-        Ok(())
+        // The activation ends here: with the switch enqueued, or rolled back.
+        crate::reporter::progress::finish(enqueued.is_ok());
+        enqueued
     }
 
     /// Leave the hidden root: soft-reboot back to the plain decoy (or power

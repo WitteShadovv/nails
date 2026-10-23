@@ -421,6 +421,18 @@ impl<F: Filesystem> PreFlightRegistry<F> {
     /// * `Vec<(String, CheckResult)>` - All check results in execution order
     /// * `bool` - True if all checks passed (no Fail results)
     pub fn run_all_detailed(&self, fs: &F) -> (Vec<(String, CheckResult)>, bool) {
+        self.run_all_detailed_with(fs, |_, _| {})
+    }
+
+    /// [`run_all_detailed`](Self::run_all_detailed), handing each result to
+    /// `on_result` the moment its check has run or been skipped, in execution
+    /// order: a caller that shows the checks live sees each one as it ends,
+    /// not all of them once the last has run.
+    pub fn run_all_detailed_with(
+        &self,
+        fs: &F,
+        mut on_result: impl FnMut(&str, &CheckResult),
+    ) -> (Vec<(String, CheckResult)>, bool) {
         let mut results: Vec<(String, CheckResult)> = Vec::new();
         let mut all_passed = true;
         let mut hidden_volume_failed = false;
@@ -431,32 +443,22 @@ impl<F: Filesystem> PreFlightRegistry<F> {
             // Once the hidden-volume gate has failed, report its dependents as
             // skipped instead of running them: a skip is not a failure, so it
             // does not flip `all_passed` and keeps the cascade out of the report.
-            if hidden_volume_failed && check.requires_hidden_volume() {
-                results.push((name, CheckResult::skipped(SKIPPED_NO_HIDDEN_VOLUME)));
-                continue;
-            }
-
-            match check.run(fs) {
-                Ok(result) => {
-                    if result.is_fail() {
-                        all_passed = false;
-                        if check.is_hidden_volume_gate() {
-                            hidden_volume_failed = true;
-                        }
-                    }
-                    results.push((name, result));
-                }
-                Err(e) => {
+            let result = if hidden_volume_failed && check.requires_hidden_volume() {
+                CheckResult::skipped(SKIPPED_NO_HIDDEN_VOLUME)
+            } else {
+                let result = check
+                    .run(fs)
+                    .unwrap_or_else(|e| CheckResult::fail(format!("Check execution error: {}", e)));
+                if result.is_fail() {
                     all_passed = false;
                     if check.is_hidden_volume_gate() {
                         hidden_volume_failed = true;
                     }
-                    results.push((
-                        name,
-                        CheckResult::fail(format!("Check execution error: {}", e)),
-                    ));
                 }
-            }
+                result
+            };
+            on_result(&name, &result);
+            results.push((name, result));
         }
 
         (results, all_passed)
@@ -571,6 +573,79 @@ mod tests {
         // An independent check still runs after the gate fails.
         let swap = results.iter().find(|(n, _)| n == "swap").unwrap();
         assert!(swap.1.is_pass(), "{:?}", swap.1);
+    }
+
+    /// A passing check that notes in a shared log when it runs.
+    struct Noting(&'static str, Arc<std::sync::Mutex<Vec<String>>>);
+    impl<F: Filesystem> PreFlightCheck<F> for Noting {
+        fn name(&self) -> &'static str {
+            self.0
+        }
+        fn description(&self) -> &'static str {
+            "noting"
+        }
+        fn run(&self, _fs: &F) -> Result<CheckResult> {
+            self.1.lock().unwrap().push(format!("run {}", self.0));
+            Ok(CheckResult::Pass("ok".into()))
+        }
+    }
+
+    /// A check that cannot run at all.
+    struct Broken;
+    impl<F: Filesystem> PreFlightCheck<F> for Broken {
+        fn name(&self) -> &'static str {
+            "broken"
+        }
+        fn description(&self) -> &'static str {
+            "broken"
+        }
+        fn run(&self, _fs: &F) -> Result<CheckResult> {
+            Err(NailsError::InvalidState("unreadable".into()))
+        }
+    }
+
+    #[test]
+    fn each_result_is_handed_on_as_soon_as_its_check_has_run() {
+        let log = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut registry: PreFlightRegistry<MockFilesystem> = PreFlightRegistry::new();
+        registry.add_check(Box::new(Noting("first", log.clone())));
+        registry.add_check(Box::new(Broken));
+        registry.add_check(Box::new(FailingGate));
+        registry.add_check(Box::new(Dependent(Arc::new(AtomicBool::new(false)))));
+        registry.add_check(Box::new(Noting("last", log.clone())));
+
+        let (results, all_passed) =
+            registry.run_all_detailed_with(&MockFilesystem::new(), |name, result| {
+                let outcome = if result.is_skipped() {
+                    "skipped"
+                } else if result.is_fail() {
+                    "fail"
+                } else {
+                    "pass"
+                };
+                log.lock().unwrap().push(format!("{name}: {outcome}"));
+            });
+
+        // Each result is handed on right after its own check ran, before the
+        // next one runs.
+        assert_eq!(
+            *log.lock().unwrap(),
+            [
+                "run first",
+                "first: pass",
+                "broken: fail",
+                "hidden-volume: fail",
+                "storage: skipped",
+                "run last",
+                "last: pass",
+            ]
+        );
+        assert!(!all_passed);
+        assert_eq!(results.len(), 5);
+        assert_eq!(
+            results[1].1.message(),
+            "Check execution error: Invalid state: unreadable"
+        );
     }
 
     #[test]
