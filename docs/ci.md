@@ -9,7 +9,7 @@ Work runs in four tiers. Each is a superset of the one above it in coverage and 
 | Tier | Runs | Budget | Scope |
 |---|---|---|---|
 | 1. pre-commit | On `git commit`, changed files only | under 10 s | Formatting, Rust file sizes, file and secret checks (`.pre-commit-config.yaml`). |
-| 2. pre-push / `just check` | On `git push`, and on demand | about 90 s | `just fmt-check lint line-count test`: the whole offline Rust gate without coverage or Nix. |
+| 2. pre-push / `just check` | On `git push`, and on demand | about 90 s | `just fmt-check lint line-count fuzz-targets test`: the whole offline Rust gate without coverage or Nix. |
 | 3. PR gate | Every pull request to `main` or `next`, and every push to either | about 10 min p95 | `ci.yml` (summarised by `gate`), the affected `e2e.yml` run (`e2e-result`) and `pr-title.yml`. These three are the required checks. |
 | 4. Post-merge, nightly, weekly | Schedules and labels, never a pull request | unbounded | The full E2E suite, the full-graph advisory scan, the crate fetcher canary, the stress loop, the benchmarks, the reproducibility check, batch fuzzing, the weekly CodeQL analysis and the OpenSSF Scorecard analysis. A release runs on its tag. |
 

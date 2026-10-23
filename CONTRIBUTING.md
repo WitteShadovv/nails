@@ -50,7 +50,7 @@ nix develop
 pre-commit install
 
 # Baseline validation (the justfile is the single source of these commands)
-just check        # formatting, clippy, Rust file sizes and the tests
+just check        # formatting, clippy, Rust file sizes, the fuzz targets and the tests
 nix flake check   # Nix, shell and workflow linters; builds no VM test
 ```
 
