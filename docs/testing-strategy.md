@@ -219,9 +219,12 @@ strings miss, so this is a rule, not a preference: a change that adds code
 reading bytes from the host or the decoy — a login record, a package database,
 a unit drop-in, a label xattr — adds, in the same change, a target that drives
 that parser and a seed corpus taken from its fixtures. `just new-fuzz-target
-<name>` scaffolds the stub, a starter seed and the `[[bin]]` entry; replace the
-starter seed with real inputs and run `just fuzz-lock`.
-`scripts/check-fuzz-targets.sh`, which `just check` runs, enforces the
-mechanical half — every target is wired into `fuzz/Cargo.toml` and has a
-non-empty `fuzz/seeds/<target>/`, and no seed corpus is orphaned — and the
-review keeps the other half, that a new parser has a target at all.
+<name>` scaffolds the stub, an empty starter seed and the `[[bin]]` entry;
+implement the stub, replace the starter seed with real inputs and run
+`just fuzz-lock`. `scripts/check-fuzz-targets.sh`, which the pre-commit hook,
+`just check` and CI's `lint` job run, enforces the mechanical half — every
+target is wired into `fuzz/Cargo.toml`, is no longer the scaffold's stub (its
+TODO markers, or a body that only discards the input), and has a seed corpus in
+`fuzz/seeds/<target>/` with at least one input that is not empty, and no seed
+corpus is orphaned — and the review keeps the other half, that a new parser has
+a target at all and that the target checks it.

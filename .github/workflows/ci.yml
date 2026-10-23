@@ -120,6 +120,11 @@ jobs:
       - name: Check Rust file sizes
         run: just line-count
 
+      # Every fuzz target is wired into fuzz/Cargo.toml, is more than the
+      # scaffold's stub and has a seed that is not empty.
+      - name: Check the fuzz targets
+        run: just fuzz-targets
+
       - name: Check for orphan (undeclared) modules
         run: ./scripts/check-orphan-modules.sh
 
