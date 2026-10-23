@@ -38,7 +38,12 @@ a plaso runtime. Each tool normalizes to findings keyed by `(tool, path,
 field)`:
 
 - restore — `path` is the recovered file's absolute on-image path; `field` is
-  empty.
+  empty. The file tree is carved with `btrfs restore` for btrfs and `debugfs
+  rdump` for ext{2,3,4}. A filesystem with no carver here (xfs, f2fs, bcachefs,
+  zfs) fails the run closed rather than leaving this channel empty: a silently
+  empty restore channel could pass a decoy that carries a path-keyed trace (a
+  new leftover file, an empty directory, a symlink) as clean. Add a carver to
+  `carve_restore` in `run-scan.sh` to certify such a decoy.
 - bulk_extractor — `path` is the feature type (`email`, `url`, ...); `field` is
   the feature value. This channel still sees a deleted-but-not-overwritten
   trace in free space.

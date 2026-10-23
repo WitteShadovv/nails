@@ -235,7 +235,8 @@ detect_fs() {
 # into <dest>. btrfs uses `btrfs restore` (the synthetic path, bare image,
 # offset 0); ext{2,3,4} uses `debugfs rdump /` at the partition's byte offset,
 # exactly as disk_forensics._rdump lifts a tree out of an ext4 image. Both leave
-# <dest>/var/log/x for an on-image /var/log/x.
+# <dest>/var/log/x for an on-image /var/log/x. A filesystem with no carver here
+# fails the run closed rather than leaving the channel empty: see the `*)` arm.
 carve_restore() {
   local img=$1 dest=$2 fstype=$3 off=$4
   case "$fstype" in
@@ -250,7 +251,17 @@ carve_restore() {
       fi
       ;;
     *)
-      echo "run-scan: unrecognised filesystem '$fstype' on $img; restore channel skipped" >&2
+      # Fail closed. The restore channel is the only one that catches a
+      # path-keyed residue -- a new leftover file whose bytes are not
+      # distinctively carvable, an empty directory, a symlink -- so leaving it
+      # empty for a filesystem it cannot carve would let a decoy that carries
+      # such a trace pass as clean (nails-oracle drops bulk_extractor's carved
+      # recorders on the premise that restore recovers every real file by its
+      # path). An unrecognised filesystem is therefore a hard error, not a
+      # skipped channel. Add a carver for it (see README.md) or scan a btrfs or
+      # ext{2,3,4} image.
+      echo "run-scan: no restore carver for filesystem '$fstype' on $img; failing closed. A skipped restore channel could certify a decoy that carries a file-level trace as clean. Add a carver for '$fstype' (see ci/oracle/README.md) or scan a btrfs or ext{2,3,4} image." >&2
+      exit 1
       ;;
   esac
 }
