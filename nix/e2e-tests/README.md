@@ -421,7 +421,8 @@ spike it builds like any test
 `e2e.soak` link farm) but is not a leaf test: it is in no tag group, not in `ci`
 or `all`, not in the shards or `--affected`, not a runner target, and needs no
 entry in `shard-durations.json`. It runs in its own lane (`.github/workflows/soak.yml`),
-weekly and on demand, never on the gate.
+weekly and on demand, never on the gate; a red run on `main` opens or comments
+on the `CI red: Soak` issue.
 
 - `soak-reentry`: takes one VM through hundreds of activate/deactivate cycles in
   a single boot, beside neighbour VMs that cycle on their own, and asserts every

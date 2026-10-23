@@ -94,7 +94,7 @@ The policy is compiled in, so `cargo build`, clippy and every editor enforce it 
 
 ### Tracking issues for unattended runs
 
-Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, `fuzz.yml` on its schedules, `scorecard.yml`, `codeql.yml` and `oracle-real-nightly.yml` on `main`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
+Runs nobody watches end in a job that calls the `.github/actions/report-status` composite action: `ci.yml` on pushes to `main`, `e2e.yml` on pushes to `main` and nightly, `scheduled.yml`, `fuzz.yml` on its schedules, `scorecard.yml`, `codeql.yml`, `oracle-real-nightly.yml` and `soak.yml` on `main`, and `release.yml`. It keeps one open issue per workflow and label in step with the latest run:
 
 - A failed or cancelled job opens the issue (label `ci-red`, title `CI red: <workflow>`; `CI red: main` for `ci.yml`), or comments on it with the run link and the red jobs when it is already open. The runs of `next` keep issues of their own, and so does `next-nightly.yml`, which starts them (see [The integration branch `next`](#the-integration-branch-next)).
 - A run in which every reported job passed closes the issue. A run that skipped some jobs without a failure (for example a manual dispatch of a single `scheduled.yml` task) leaves it as it is.
