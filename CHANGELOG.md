@@ -33,11 +33,12 @@ of this changelog for that version becomes the release notes word for word, and
   records, the Plymouth boot log, snapper timeline snapshots, copy-on-write and compressed storage
   history, and the GRUB boot-success counter on Fedora. Each is listed in the decoy requirements and
   threat model with where it lives, how it is checked and how to avoid it.
-- `nails activate` and `nails check` take a buried, per-run `--allow-discards` expert flag that turns
-  the discards-over-the-hidden-volume refusal into a warning for one activation. It changes nothing
-  about the encryption mapping and is never stored in `nails.toml`. It is distinct from cryptsetup's
-  open-time `--allow-discards` (the option that turns discards on in the first place); the safe fix
-  is still to re-open the volume with discards off. See docs/backends.md.
+- `nails activate` and `nails check` take a per-run `--allow-discards` expert flag that turns the
+  discards-over-the-hidden-volume refusal into a warning for one activation. It is buried in the
+  long help: `--help` lists it, `-h` does not. It changes nothing about the encryption mapping and
+  is never stored in `nails.toml`. It is distinct from cryptsetup's open-time `--allow-discards`
+  (the option that turns discards on in the first place); the safe fix is still to re-open the
+  volume with discards off. See docs/backends.md.
 
 ### Changed
 

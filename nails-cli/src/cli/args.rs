@@ -291,7 +291,7 @@ pub struct ActivateArgs {
     /// for this activation only and cannot be stored. It is distinct from
     /// cryptsetup's open-time `--allow-discards`, which is what enables
     /// discards; prefer re-opening the volume with discards off instead.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true)]
     pub allow_discards: bool,
 }
 
@@ -549,7 +549,7 @@ pub struct CheckArgs {
     /// Mirrors `activate --allow-discards` so `check`/`--dry-run` reflects what
     /// activation would do. A per-run expert override that is never stored and
     /// is distinct from cryptsetup's open-time `--allow-discards`.
-    #[arg(long)]
+    #[arg(long, hide_short_help = true)]
     pub allow_discards: bool,
 }
 
@@ -731,6 +731,25 @@ mod tests {
             .find(|cmd| cmd.get_name() == "recover")
             .expect("recover subcommand exists");
         assert!(!recover.is_hide_set(), "recover must be visible in help");
+    }
+
+    /// `--allow-discards` is buried: `activate` and `check` list it in their
+    /// long help (`--help`) only, never in the short help (`-h`) beside the
+    /// everyday flags. Being buried is a help-surface property, not a removal:
+    /// both commands still take it.
+    #[test]
+    fn allow_discards_is_listed_only_in_long_help() {
+        let mut command = Cli::command();
+        for name in ["activate", "check"] {
+            let sub = command
+                .find_subcommand_mut(name)
+                .expect("the subcommand exists");
+            let short = sub.render_help().to_string();
+            let long = sub.render_long_help().to_string();
+            assert!(!short.contains("--allow-discards"), "{name} -h:\n{short}");
+            assert!(long.contains("--allow-discards"), "{name} --help:\n{long}");
+            assert!(parse(&[name, "--allow-discards"]).is_ok(), "{name}");
+        }
     }
 
     #[test]
