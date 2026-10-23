@@ -22,6 +22,11 @@ use std::cell::{Cell, RefCell};
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+// The model-based test of the session flow and its reconciliation, on the
+// scratch machines and fakes below.
+#[path = "session_model_tests.rs"]
+mod model;
+
 /// The plain decoy: `/` is the decoy's own ext4.
 const DECOY_TABLE: &str = "1 0 8:2 / / rw - ext4 /dev/vda2 rw\n";
 
