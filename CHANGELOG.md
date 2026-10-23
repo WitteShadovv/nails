@@ -54,10 +54,9 @@ of this changelog for that version becomes the release notes word for word, and
   f2fs mount with compression) as "not checked" rather than "clean" for leaked-then-deleted traces:
   such a filesystem keeps old copies in unreferenced extents and stores file contents compressed, so a
   raw plaintext scan can neither reach those old copies nor read a compressed extent, and a clean scan
-  there cannot prove a trace is gone. A live decoy is classified from its mount table; an offline image
-  or an unmounted `--device` is classified from its on-disk superblock, so a btrfs or f2fs one read that
-  way is reported "not checked" too, while a whole-disk image or a bcachefs or zfs one, whose format the
-  superblock check cannot identify, is read as plain storage.
+  there cannot prove a trace is gone. A live decoy is classified from its mount table, and an offline
+  image or an unmounted `--device` from its on-disk superblock and, for a whole disk, partition by
+  partition, so a decoy read that way is reported "not checked" too.
 - Discards (TRIM) reaching the hidden volume now refuse activation instead of only warning:
   forwarding TRIM to the physical device leaves a readable map of used and free blocks, where a
   deniable volume should look like uniform random data, and writing an outer volume with discards
@@ -128,6 +127,17 @@ of this changelog for that version becomes the release notes word for word, and
 
 ### Fixed
 
+- `nails rehearse scan` no longer reports a clean pass where it cannot have seen the canary. An
+  offline image or an unmounted `--device` that is an encrypted container (LUKS or BitLocker) is
+  reported "not checked" with the advice to scan its unlocked mapping instead, where its ciphertext
+  used to count as a clean scan; so are an LVM physical volume, storage on which the scan identifies no
+  filesystem, and an ext4 or xfs image that ends before its filesystem does. A whole-disk image is
+  classified partition by partition and names each partition it could not check, a btrfs, f2fs or
+  bcachefs superblock is found even beside a stale signature of another format (an ISO9660 descriptor
+  mkfs.f2fs left in place), and a zfs dataset of the live decoy is listed as not checked instead of
+  being skipped. An empty image or device (a copy that failed, a loop device with no file behind it) is
+  reported as not scanned with exit 9 instead of a clean pass with exit 0, and a scan that left a
+  device unread no longer prints the green "not found" headline.
 - The whole-root session overlay pins its feature options (`index=off`, `metacopy=off`,
   `redirect_dir=nofollow`) on every host, matching the pre-flight capability probe. On a kernel
   that turns these on by default (such as Arch's), the hidden overlay could keep an index, copy up

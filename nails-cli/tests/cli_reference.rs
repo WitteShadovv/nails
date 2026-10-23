@@ -75,7 +75,8 @@ Every command shares one set of exit codes.
 
 Notable per-command codes: `verify` returns 0/10/11 for secure/warning/critical;
 `rehearse scan` returns 0 when the canary is not found, 11 when it is, and 9
-when a device could not be scanned completely;
+when a device could not be scanned completely or its storage can hide the
+canary from a raw scan (reported not checked);
 `status` returns 7 on a degraded posture and 6 on an untrusted state file; every
 mutating command returns 5 when run without root.
 ";

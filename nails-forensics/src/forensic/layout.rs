@@ -84,8 +84,27 @@ const LUKS2_SECONDARY_OFFSETS: &[u64] = &[
 /// How much of a region is read to identify it (covers btrfs at 64 KiB + 64).
 const PROBE_LEN: usize = 0x1_1000;
 
-/// `(offset, magic, name)` for the formats identified by a fixed magic.
-const FORMATS: &[(usize, &[u8], &str)] = &[
+/// A format identified by a fixed magic: `(offset, magic, name)`.
+type Magic = (usize, &'static [u8], &'static str);
+
+/// The btrfs superblock magic, 64 KiB + 64 bytes in.
+const BTRFS: Magic = (0x1_0040, b"_BHRfS_M", "btrfs");
+/// The f2fs superblock magic, 1 KiB in.
+const F2FS: Magic = (0x400, &[0x10, 0x20, 0xF5, 0xF2], "f2fs");
+/// The bcachefs superblock magic (a UUID), 0x18 bytes into the superblock at
+/// 4 KiB.
+const BCACHEFS: Magic = (
+    0x1018,
+    &[
+        0xC6, 0x85, 0x73, 0xF6, 0x66, 0xCE, 0x90, 0xA9, 0xD9, 0x6A, 0x60, 0xCF, 0x80, 0x3D, 0xF7,
+        0xEF,
+    ],
+    "bcachefs",
+);
+
+/// The formats identified by a fixed magic, in the order [`signature_at`]
+/// tries them.
+const FORMATS: &[Magic] = &[
     (0, b"XFSB", "xfs"),
     (0, b"hsqs", "squashfs"),
     (3, b"NTFS    ", "ntfs"),
@@ -98,11 +117,24 @@ const FORMATS: &[(usize, &[u8], &str)] = &[
     (0xff6, b"SWAPSPACE2", "swap"),
     (0xff6, b"SWAP-SPACE", "swap"),
     (0x8001, b"CD001", "iso9660"),
-    (0x1_0040, b"_BHRfS_M", "btrfs"),
+    BTRFS,
     (0x438, &[0x53, 0xEF], "ext2/3/4"),
     (0x400, &[0xE2, 0xE1, 0xF5, 0xE0], "erofs"),
-    (0x400, &[0x10, 0x20, 0xF5, 0xF2], "f2fs"),
+    F2FS,
 ];
+
+/// The filesystems that can store file contents compressed, so a raw read
+/// does not see them verbatim. [`compressing_format_at`] looks for these on
+/// their own, outside the first-match order of [`FORMATS`].
+const COMPRESSING_FORMATS: &[Magic] = &[BTRFS, F2FS, BCACHEFS];
+
+/// The first format in `formats` whose magic `head` carries.
+fn first_match(head: &[u8], formats: &[Magic]) -> Option<&'static str> {
+    formats
+        .iter()
+        .find(|(offset, magic, _)| head.get(*offset..offset + magic.len()) == Some(*magic))
+        .map(|(_, _, name)| *name)
+}
 
 /// Identify what the region starting at `start` holds.
 ///
@@ -116,10 +148,8 @@ pub fn signature_at(source: &RawSource, start: u64) -> io::Result<Signature> {
     if head.starts_with(LUKS_MAGIC) && head.len() >= 8 {
         return Ok(Signature::Luks(u16::from_be_bytes([head[6], head[7]])));
     }
-    for (offset, magic, name) in FORMATS {
-        if head.len() >= offset + magic.len() && &head[*offset..offset + magic.len()] == *magic {
-            return Ok(Signature::Format(name));
-        }
+    if let Some(name) = first_match(&head, FORMATS) {
+        return Ok(Signature::Format(name));
     }
     let mut magic = [0u8; 6];
     for offset in LUKS2_SECONDARY_OFFSETS {
@@ -130,6 +160,65 @@ pub fn signature_at(source: &RawSource, start: u64) -> io::Result<Signature> {
         }
     }
     Ok(Signature::Unknown)
+}
+
+/// The filesystem that can store file contents compressed (btrfs, f2fs,
+/// bcachefs) whose magic the region starting at `start` carries, if any.
+///
+/// Unlike [`signature_at`], which takes the first format that matches, this
+/// finds such a filesystem whatever other signature sits beside it. mkfs.f2fs,
+/// for one, rewrites only its first blocks and leaves the rest of the first
+/// 2 MiB to discard, so on a device without discard an older ISO9660 volume
+/// descriptor at 32 KiB survives it, and that descriptor comes first in
+/// [`FORMATS`].
+///
+/// # Errors
+///
+/// Propagates a read error.
+pub fn compressing_format_at(source: &RawSource, start: u64) -> io::Result<Option<&'static str>> {
+    let mut head = vec![0u8; PROBE_LEN];
+    let read = source.read_at(&mut head, start)?;
+    head.truncate(read);
+    Ok(first_match(&head, COMPRESSING_FORMATS))
+}
+
+/// How many bytes the filesystem of `format` at `start` says it spans: an
+/// ext2/3/4 superblock's block count times its block size, an xfs
+/// superblock's data blocks times its block size. `None` for any other
+/// format, and for a block size neither filesystem uses.
+///
+/// # Errors
+///
+/// Propagates a read error.
+pub fn recorded_size(source: &RawSource, start: u64, format: &str) -> io::Result<Option<u64>> {
+    match format {
+        "ext2/3/4" => {
+            // The superblock at 1 KiB, through s_blocks_count_hi; past the
+            // end of the source its fields read as zero.
+            let mut sb = [0u8; 0x154];
+            source.read_at(&mut sb, start.saturating_add(0x400))?;
+            let log_block = le_u32(&sb, 0x18);
+            let mut blocks = le_u32(&sb, 0x04);
+            // The 64bit feature adds the high half of the block count.
+            if le_u32(&sb, 0x60) & 0x80 != 0 {
+                blocks += le_u32(&sb, 0x150) << 32;
+            }
+            // ext2/3/4 blocks are 1 KiB to 64 KiB.
+            Ok((log_block <= 6).then(|| blocks.saturating_mul(1024 << log_block)))
+        }
+        "xfs" => {
+            let mut sb = [0u8; 16];
+            source.read_at(&mut sb, start)?;
+            let block = u64::from(u32::from_be_bytes([sb[4], sb[5], sb[6], sb[7]]));
+            let blocks = u64::from_be_bytes(sb[8..16].try_into().unwrap_or_default());
+            // xfs blocks are a power of two from 512 bytes to 64 KiB.
+            Ok(
+                (block.is_power_of_two() && (512..=1 << 16).contains(&block))
+                    .then(|| blocks.saturating_mul(block)),
+            )
+        }
+        _ => Ok(None),
+    }
 }
 
 fn le_u32(bytes: &[u8], at: usize) -> u64 {
@@ -267,6 +356,15 @@ fn finish(table: TableKind, mut partitions: Vec<Partition>, from: u64, to: u64) 
     }
 }
 
+/// The layout of a source with no partition table.
+fn no_table() -> Layout {
+    Layout {
+        table: TableKind::None,
+        partitions: Vec::new(),
+        gaps: Vec::new(),
+    }
+}
+
 /// Read the layout of `source`: GPT first (512- and 4096-byte blocks), then
 /// MBR, else no table.
 ///
@@ -274,207 +372,46 @@ fn finish(table: TableKind, mut partitions: Vec<Partition>, from: u64, to: u64) 
 ///
 /// Propagates a read error.
 pub fn read_layout(source: &RawSource) -> io::Result<Layout> {
-    let none = Layout {
-        table: TableKind::None,
-        partitions: Vec::new(),
-        gaps: Vec::new(),
-    };
     // A filesystem at offset 0 (a FAT or NTFS boot sector carries the same
     // 0x55AA signature as an MBR) means there is no partition table.
     if let Signature::Format(_) = signature_at(source, 0)? {
-        return Ok(none);
+        return Ok(no_table());
     }
+    read_table(source)
+}
+
+/// Read the partition table of `source` as [`read_layout`] does, but whatever
+/// signature lies beyond the first sector. Partitioning rewrites only the
+/// table, so an older filesystem's signature in the space before the first
+/// partition (an ISO9660 descriptor at 32 KiB, an ext4 superblock at 1 KiB
+/// behind an MBR) can outlive it, and [`read_layout`] would then see that
+/// filesystem and no table. Only a first sector that is itself a filesystem's
+/// boot sector or superblock (FAT, NTFS, exFAT, BitLocker, xfs, squashfs) or a
+/// LUKS header rules an MBR out.
+///
+/// # Errors
+///
+/// Propagates a read error.
+pub fn read_table(source: &RawSource) -> io::Result<Layout> {
     let mut sector0 = [0u8; 512];
     let read = source.read_at(&mut sector0, 0)?;
+    let sector0 = &sector0[..read];
     let protective = read == 512 && sector0[510..512] == [0x55, 0xAA] && sector0[450] == 0xEE;
     for block in [SECTOR, 4096] {
         if let Some(layout) = parse_gpt(source, block, block)? {
             return Ok(layout);
         }
     }
-    if !protective && let Some(layout) = parse_mbr(source, &sector0[..read]) {
+    // Only the formats whose magic lies in the first sector can match here.
+    let boot_sector = sector0.starts_with(LUKS_MAGIC) || first_match(sector0, FORMATS).is_some();
+    if !protective
+        && !boot_sector
+        && let Some(layout) = parse_mbr(source, sector0)
+    {
         return Ok(layout);
     }
-    Ok(none)
+    Ok(no_table())
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use std::io::{Seek, SeekFrom, Write};
-
-    /// Write `bytes` at `offset` into an image file.
-    pub(crate) fn put(file: &mut std::fs::File, offset: u64, bytes: &[u8]) {
-        file.seek(SeekFrom::Start(offset)).unwrap();
-        file.write_all(bytes).unwrap();
-    }
-
-    /// A sparse image of `size` bytes with an MBR listing `parts` as
-    /// `(type, start_sector, sectors)`.
-    pub(crate) fn mbr_image(
-        dir: &tempfile::TempDir,
-        size: u64,
-        parts: &[(u8, u32, u32)],
-    ) -> (std::path::PathBuf, std::fs::File) {
-        let path = dir.path().join("mbr.img");
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.set_len(size).unwrap();
-        let mut sector = [0u8; 512];
-        for (index, (kind, start, sectors)) in parts.iter().enumerate() {
-            let at = 446 + 16 * index;
-            sector[at + 4] = *kind;
-            sector[at + 8..at + 12].copy_from_slice(&start.to_le_bytes());
-            sector[at + 12..at + 16].copy_from_slice(&sectors.to_le_bytes());
-        }
-        sector[510] = 0x55;
-        sector[511] = 0xAA;
-        put(&mut file, 0, &sector);
-        (path, file)
-    }
-
-    #[test]
-    fn an_mbr_layout_lists_partitions_and_gaps() {
-        let dir = tempfile::tempdir().unwrap();
-        // 64 MiB disk: p1 at 1 MiB for 16 MiB, p2 at 32 MiB for 8 MiB.
-        let (path, file) = mbr_image(&dir, 64 << 20, &[(0x83, 2048, 32768), (0x83, 65536, 16384)]);
-        file.sync_all().unwrap();
-
-        let layout = read_layout(&RawSource::open(&path).unwrap()).unwrap();
-
-        assert_eq!(layout.table, TableKind::Mbr);
-        assert_eq!(layout.partitions.len(), 2);
-        assert_eq!(layout.partitions[0].start, 1 << 20);
-        assert_eq!(layout.partitions[1].end(), 40 << 20);
-        assert_eq!(
-            layout.gaps,
-            vec![(512, 1 << 20), (17 << 20, 32 << 20), (40 << 20, 64 << 20)]
-        );
-    }
-
-    #[test]
-    fn a_gpt_layout_is_parsed() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("gpt.img");
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.set_len(16 << 20).unwrap();
-        // Protective MBR.
-        let mut mbr = [0u8; 512];
-        mbr[450] = 0xEE;
-        mbr[510] = 0x55;
-        mbr[511] = 0xAA;
-        put(&mut file, 0, &mbr);
-        let mut header = [0u8; 92];
-        header[..8].copy_from_slice(b"EFI PART");
-        header[40..48].copy_from_slice(&34u64.to_le_bytes()); // first usable LBA
-        header[48..56].copy_from_slice(&(32_734u64).to_le_bytes()); // last usable LBA
-        header[72..80].copy_from_slice(&2u64.to_le_bytes()); // entries LBA
-        header[80..84].copy_from_slice(&128u32.to_le_bytes());
-        header[84..88].copy_from_slice(&128u32.to_le_bytes());
-        put(&mut file, 512, &header);
-        let mut entry = [0u8; 128];
-        entry[..16].copy_from_slice(&[0xAF; 16]);
-        entry[32..40].copy_from_slice(&2048u64.to_le_bytes());
-        entry[40..48].copy_from_slice(&10_239u64.to_le_bytes());
-        put(&mut file, 1024, &entry);
-        file.sync_all().unwrap();
-
-        let layout = read_layout(&RawSource::open(&path).unwrap()).unwrap();
-
-        assert_eq!(layout.table, TableKind::Gpt);
-        assert_eq!(layout.partitions.len(), 1);
-        assert_eq!(layout.partitions[0].start, 1 << 20);
-        assert_eq!(layout.partitions[0].size, 4 << 20);
-        assert_eq!(layout.gaps.len(), 2);
-        assert_eq!(layout.gaps[1], (5 << 20, 32_735 * 512));
-    }
-
-    /// Block numbers whose byte offsets do not fit 64 bits, found by the
-    /// `disk_layout` fuzz target: the multiplication overflowed, and in a
-    /// release build wrapped round to a small offset on the disk.
-    #[test]
-    fn block_numbers_past_any_disk_do_not_wrap() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("gpt.img");
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.set_len(16 << 20).unwrap();
-        let mut header = [0u8; 92];
-        header[..8].copy_from_slice(b"EFI PART");
-        header[40..48].copy_from_slice(&u64::MAX.to_le_bytes()); // first usable LBA
-        header[48..56].copy_from_slice(&u64::MAX.to_le_bytes()); // last usable LBA
-        header[72..80].copy_from_slice(&2u64.to_le_bytes()); // entries LBA
-        header[80..84].copy_from_slice(&128u32.to_le_bytes());
-        header[84..88].copy_from_slice(&128u32.to_le_bytes());
-        put(&mut file, 512, &header);
-        let entry = |first: u64, last: u64| {
-            let mut entry = [0u8; 128];
-            entry[..16].copy_from_slice(&[0xAF; 16]);
-            entry[32..40].copy_from_slice(&first.to_le_bytes());
-            entry[40..48].copy_from_slice(&last.to_le_bytes());
-            entry
-        };
-        // 2^55 + 2 blocks are 2^64 + 1 KiB bytes, which wrapped to 1 KiB.
-        put(&mut file, 1024, &entry((1 << 55) + 2, (1 << 55) + 10));
-        // The last block there is: the partition runs to the end of the disk.
-        put(&mut file, 1024 + 128, &entry(2048, u64::MAX));
-        file.sync_all().unwrap();
-
-        let layout = read_layout(&RawSource::open(&path).unwrap()).unwrap();
-        assert_eq!(layout.table, TableKind::Gpt);
-        assert_eq!(layout.partitions.len(), 1, "{layout:?}");
-        assert_eq!(layout.partitions[0].number, 2);
-        assert_eq!(layout.partitions[0].start, 1 << 20);
-        assert_eq!(layout.partitions[0].end(), 16 << 20);
-        // The first usable block lies past the disk, so nothing is free.
-        assert!(layout.gaps.is_empty(), "{layout:?}");
-
-        // An entry array past the end of the disk holds no entry: beyond
-        // 2^63 bytes the read itself failed, and beyond 2^64 it wrapped.
-        for lba in [1u64 << 54, 1 << 60] {
-            header[72..80].copy_from_slice(&lba.to_le_bytes());
-            put(&mut file, 512, &header);
-            file.sync_all().unwrap();
-            let layout = read_layout(&RawSource::open(&path).unwrap()).unwrap();
-            assert_eq!(layout.table, TableKind::Gpt);
-            assert!(layout.partitions.is_empty(), "{layout:?}");
-        }
-    }
-
-    #[test]
-    fn signatures_are_identified() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("sig.img");
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.set_len(32 << 20).unwrap();
-        // LUKS2 at 0, ext4 at 4 MiB, LUKS2 secondary only at 8 MiB + 16 KiB.
-        put(&mut file, 0, b"LUKS\xba\xbe\x00\x02");
-        put(&mut file, (4 << 20) + 0x438, &[0x53, 0xEF]);
-        put(&mut file, (8 << 20) + 0x4000, b"SKUL\xba\xbe\x00\x02");
-        file.sync_all().unwrap();
-        let source = RawSource::open(&path).unwrap();
-
-        assert_eq!(signature_at(&source, 0).unwrap(), Signature::Luks(2));
-        assert_eq!(
-            signature_at(&source, 4 << 20).unwrap(),
-            Signature::Format("ext2/3/4")
-        );
-        assert_eq!(
-            signature_at(&source, 8 << 20).unwrap(),
-            Signature::Luks2Secondary(0x4000)
-        );
-        assert_eq!(signature_at(&source, 16 << 20).unwrap(), Signature::Unknown);
-    }
-
-    #[test]
-    fn a_bare_filesystem_has_no_table() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("fs.img");
-        let mut file = std::fs::File::create(&path).unwrap();
-        file.set_len(4 << 20).unwrap();
-        put(&mut file, 0x438, &[0x53, 0xEF]);
-        file.sync_all().unwrap();
-
-        let layout = read_layout(&RawSource::open(&path).unwrap()).unwrap();
-        assert_eq!(layout.table, TableKind::None);
-        assert!(layout.partitions.is_empty());
-    }
-}
+pub(crate) mod tests;

@@ -75,6 +75,20 @@ impl RawSource {
         Ok(source)
     }
 
+    /// A source over the image at `path` opened write-only, so every read of
+    /// it fails: lets a test drive a read error through code that reads one.
+    #[cfg(test)]
+    pub(crate) fn unreadable(path: &Path) -> io::Result<Self> {
+        let file = std::fs::OpenOptions::new().write(true).open(path)?;
+        let size = file.metadata()?.len();
+        Ok(Self {
+            path: path.to_path_buf(),
+            file,
+            size,
+            kind: SourceKind::Image,
+        })
+    }
+
     /// The path that was opened.
     pub fn path(&self) -> &Path {
         &self.path
