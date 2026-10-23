@@ -238,6 +238,9 @@ of this changelog for that version becomes the release notes word for word, and
   with `ok` false and exit 1. The switch stops the reader too, so a reader stopped first may not
   read a success. Without `--json` the output is unchanged: it still comes before the switch, which
   ends the terminal.
+- `nails activate` refuses a state file it is not allowed to read (a permission denied, as an
+  SELinux or AppArmor label can cause) as an unknown state, with exit 6, as the 0.3.0-rc.2 notes
+  say it refuses an unreadable one. It took such a file for a state it could trust and went on.
 
 ## [0.3.0-rc.3] - 2026-10-20
 

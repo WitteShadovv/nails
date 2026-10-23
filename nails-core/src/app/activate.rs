@@ -9,10 +9,20 @@
 //! A front end confirms with the operator and shows a person the result before
 //! the switch (which stops its terminal; a machine-readable result waits for
 //! the commit), so the operation is split: [`prepare`] builds the manager and
-//! runs the gates (already-active, the attach gate, the trusted-state check)
-//! without writing to the hidden volume, [`ReadyActivation::enter`] stages the
-//! entry, and [`ReadyActivation::commit`] kills the decoy's shells and enqueues
-//! the soft-reboot. The attach gate decides before anything is written.
+//! runs the gates that read only (already-active, the platform gate, the attach
+//! gate) without writing to the hidden volume, [`ReadyActivation::enter`]
+//! stages the entry, and [`ReadyActivation::commit`] kills the decoy's shells
+//! and enqueues the soft-reboot. The attach gate decides before anything is
+//! written.
+//!
+//! The state lock and the trusted-state check are the front end's, between
+//! `prepare` and `enter`: it takes the exclusive lock
+//! ([`acquire_mutating`](super::lock::acquire_mutating) with
+//! [`ReadyActivation::allow`]), refuses while holding it when
+//! [`ReadyActivation::is_state_trusted`] is false, and keeps the lock until
+//! the commit. Neither `enter` nor `commit` takes the lock or makes the check,
+//! so a front end that skips them activates over a state file it cannot trust
+//! and can race another operation over the mounts and the state file.
 
 use std::path::Path;
 
@@ -81,7 +91,9 @@ pub struct Baseline {
 }
 
 /// An activation whose gates have passed, ready to confirm and enter. The state
-/// lock is the caller's: take it before [`is_state_trusted`](Self::is_state_trusted).
+/// lock and the trusted-state check are the caller's (see the module docs): take
+/// the lock, then ask [`is_state_trusted`](Self::is_state_trusted), before
+/// [`enter`](Self::enter).
 pub struct ReadyActivation {
     manager: NailsManager<RealFilesystem>,
     options: EnterOptions,
@@ -118,12 +130,10 @@ impl ReadyActivation {
     }
 
     /// Whether the recorded state can be trusted. A corrupt or unreadable state
-    /// file means the current state is unknown, so activation must refuse.
+    /// file means the current state is unknown, so activation must refuse; a
+    /// state file this process is not allowed to read is unreadable too.
     pub fn is_state_trusted(&self) -> bool {
-        match self.manager.current_state_with_outcome() {
-            Ok((_, outcome)) => !outcome.is_unknown(),
-            Err(_) => true,
-        }
+        trusted(&self.manager.current_state_with_outcome())
     }
 
     /// Whether this activation builds a hidden NixOS system (for the progress line).
@@ -189,6 +199,20 @@ impl ReadyActivation {
         kill_all_interactive_shells(&[]);
         let host = RealTargetHost::for_plan(Some(&entry.plan));
         self.manager.trigger_entry(&host, &RealEntryHost)
+    }
+}
+
+/// Whether a load of the state file can be trusted: a file that loaded and
+/// passed its integrity check, or no file at all (inactive). A corrupt or
+/// unreadable file, and an error reading it (a permission denied), leave the
+/// real state unknown.
+fn trusted(load: &Result<(crate::SystemState, crate::LoadOutcome)>) -> bool {
+    match load {
+        Ok((_, outcome)) => !outcome.is_unknown(),
+        Err(error) => {
+            tracing::warn!(%error, "the state file cannot be read; the current state is unknown");
+            false
+        }
     }
 }
 
@@ -419,6 +443,50 @@ mod tests {
         assert!(
             !ready.is_state_trusted(),
             "a corrupt state file is unknown, which must not be trusted"
+        );
+    }
+
+    #[test]
+    fn an_error_reading_the_state_file_is_not_trusted() {
+        // A state file that cannot be read at all (a permission denied, which
+        // the load returns as an error) leaves the state as unknown as a
+        // corrupt one. An `Err(_) => true` arm would let activation go on.
+        let denied = Err(NailsError::PermissionDenied(
+            "Cannot read state file /mnt/data/state.json".to_string(),
+        ));
+        assert!(!trusted(&denied), "an unreadable state file is unknown");
+        // The two outcomes a load can be trusted with, for contrast.
+        assert!(trusted(&Ok((
+            crate::SystemState::Inactive,
+            crate::LoadOutcome::Missing
+        ))));
+        assert!(trusted(&Ok((
+            crate::SystemState::Inactive,
+            crate::LoadOutcome::Loaded
+        ))));
+        assert!(!trusted(&Ok((
+            crate::SystemState::Inactive,
+            crate::LoadOutcome::Unreadable
+        ))));
+    }
+
+    #[test]
+    fn a_state_file_this_process_may_not_read_is_not_trusted() {
+        use std::os::unix::fs::PermissionsExt;
+        if nix::unistd::geteuid().is_root() {
+            // root reads a file whatever its mode, so nothing is denied.
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state.json");
+        std::fs::write(&state, b"{}").unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let ready = ready(manager_at(dir.path()), EnterOptions::default(), None, None);
+        let verdict = ready.is_state_trusted();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(
+            !verdict,
+            "a state file the activating process cannot read must not be trusted"
         );
     }
 
