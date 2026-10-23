@@ -102,6 +102,11 @@ fn file_round_trip<F: Filesystem>(fs: &F, root: &Path) {
         "hello contract",
         "read should return exactly what was written"
     );
+    assert_eq!(
+        fs.read_file_bytes(&file).unwrap(),
+        b"hello contract",
+        "a byte read should return exactly the bytes written"
+    );
     assert!(
         !fs.is_directory(&file).unwrap(),
         "a written file is not a directory"
@@ -128,6 +133,10 @@ fn missing_file_queries<F: Filesystem>(fs: &F, root: &Path) {
     assert!(
         fs.read_file_content(&missing).is_err(),
         "reading a missing file should error"
+    );
+    assert!(
+        fs.read_file_bytes(&missing).is_err(),
+        "a byte read of a missing file should error"
     );
     assert!(
         fs.file_size(&missing).is_err(),

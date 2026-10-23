@@ -175,6 +175,10 @@ impl Filesystem for RealFilesystem {
         file_ops::read_file_content(path)
     }
 
+    fn read_file_bytes(&self, path: &Path) -> Result<Vec<u8>> {
+        file_ops::read_file_bytes(path)
+    }
+
     fn write_file_content(&self, path: &Path, content: &str) -> Result<()> {
         file_ops::write_file_content(path, content)
     }

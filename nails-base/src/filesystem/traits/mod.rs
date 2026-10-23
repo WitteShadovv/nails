@@ -275,6 +275,16 @@ pub trait Filesystem: Send + Sync + Clone + 'static {
     /// Read the contents of a text file.
     fn read_file_content(&self, path: &Path) -> Result<String>;
 
+    /// Read the contents of a file that need not be text, such as the
+    /// kernel's gzip-compressed `/proc/config.gz`, as raw bytes.
+    ///
+    /// The default reads the file as text, so an implementation that holds
+    /// only text answers as [`read_file_content`](Self::read_file_content)
+    /// does.
+    fn read_file_bytes(&self, path: &Path) -> Result<Vec<u8>> {
+        self.read_file_content(path).map(String::into_bytes)
+    }
+
     /// Find files matching a pattern in a directory (recursive).
     fn find_files_with_pattern(&self, dir: &Path, pattern: &str) -> Result<Vec<PathBuf>>;
 
