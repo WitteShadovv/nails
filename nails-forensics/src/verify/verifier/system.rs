@@ -333,8 +333,9 @@ fn artifact_fix_guidance(artifact: &artifacts::Artifact, path: &Path) -> String 
 
 /// What to do about a NAILS file left in RAM. `nails recover` removes what an
 /// interrupted activation left; nothing removes the read-only rule a way back
-/// that did not finish left, or the fixed paths of an earlier release, but a
-/// power-off clears them all.
+/// that did not finish left, the login- and boot-record pieces whose step never
+/// ran, or the fixed paths of an earlier release, but a power-off clears them
+/// all.
 fn runtime_fix_guidance(id: &str, path: &Path) -> String {
     let path = path.display();
     match id {
@@ -346,6 +347,15 @@ fn runtime_fix_guidance(id: &str, path: &Path) -> String {
         "read-only-disks-rule" => format!(
             "Left by a way back that did not finish, in RAM; power off, or remove it as \
              root: rm {path}"
+        ),
+        "boot-records-copy"
+        | "boot-records-unit"
+        | "boot-records-unit-link"
+        | "boot-writer-dropin" => format!(
+            "Left by a way back whose login- and boot-record step never ran on the \
+             decoy's start, in RAM, with /run possibly still executable; power off, or \
+             as root remove it (rm -rf {path}) and, where the decoy mounts /run noexec, \
+             run: mount -o remount,noexec /run"
         ),
         "runtime-dir-legacy" | "pivot-staging-run-legacy" => format!(
             "Left by a session of an earlier release, in RAM; power off (then confirm {path} \

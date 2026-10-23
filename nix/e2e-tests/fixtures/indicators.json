@@ -75,6 +75,42 @@
       "description": "Runtime udev rule that keeps unused disks read-only in the hidden session ([session_mounts] read_only); removed on the way back, so a leftover on the decoy is a teardown failure."
     },
     {
+      "id": "boot-records-copy",
+      "kind": "absolute-path",
+      "scope": "runtime",
+      "severity": "warn",
+      "value": "/run/overlay-runtime-boot",
+      "image_token": "overlay-runtime-boot",
+      "description": "RAM copy of the binary that the way back leaves on an FHS decoy for its first start, which runs it to make the login and boot records read as a power cycle and then removes it; a leftover means that step never ran, and /run may still be executable."
+    },
+    {
+      "id": "boot-records-unit",
+      "kind": "absolute-path",
+      "scope": "runtime",
+      "severity": "warn",
+      "value": "/run/systemd/system/overlay-runtime-boot.service",
+      "image_token": "overlay-runtime-boot.service",
+      "description": "Runtime one-shot unit the way back leaves on an FHS decoy to reconcile its login and boot records on the first start; it removes itself, so a leftover means it never ran."
+    },
+    {
+      "id": "boot-records-unit-link",
+      "kind": "absolute-path",
+      "scope": "runtime",
+      "severity": "warn",
+      "value": "/run/systemd/system/multi-user.target.wants/overlay-runtime-boot.service",
+      "image_token": "overlay-runtime-boot.service",
+      "description": "Runtime link that pulls the login- and boot-record one-shot into the decoy's first start after the way back; removed with the unit."
+    },
+    {
+      "id": "boot-writer-dropin",
+      "kind": "absolute-path",
+      "scope": "runtime",
+      "severity": "warn",
+      "value": "/run/systemd/system/wtmpdb-update-boot.service.d/zz-overlay-runtime.conf",
+      "image_token": "zz-overlay-runtime.conf",
+      "description": "Runtime drop-in the way back leaves for a wtmpdb decoy's boot writer, so that it records the way back as a power cycle; removed when the writer starts, so a leftover means it never started."
+    },
+    {
       "id": "pivot-staging-run-legacy",
       "kind": "absolute-path",
       "scope": "runtime",
