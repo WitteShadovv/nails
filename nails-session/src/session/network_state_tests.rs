@@ -51,10 +51,12 @@ fn the_record_is_written_privately_and_matches_what_was_captured() {
 }
 
 #[test]
-fn a_record_that_cannot_be_written_leaves_no_file() {
+fn a_write_to_a_missing_directory_creates_no_file() {
     let world = world();
     let root = world.path();
-    // `out`'s parent does not exist, so the atomic write fails.
+    // `out`'s parent does not exist, so the atomic write fails before it ever
+    // creates `out`. This does NOT exercise the stale-record cleanup: `out`
+    // never existed, so there is nothing to remove (see the next test).
     let out = root.join("no-such-dir/net-identity");
     record(
         &root.join("sys"),
@@ -64,4 +66,28 @@ fn a_record_that_cannot_be_written_leaves_no_file() {
         &out,
     );
     assert!(!out.exists());
+}
+
+#[test]
+fn a_failed_write_removes_a_stale_record_from_a_prior_capture() {
+    let world = world();
+    let root = world.path();
+    let out = root.join("runtime/net-identity");
+    fs::create_dir_all(out.parent().unwrap()).unwrap();
+    // A record a PRIOR successful capture left in the fixed, soft-reboot
+    // persisted runtime directory; it names a decoy identity that may no
+    // longer be current.
+    fs::write(&out, b"stale-prior-identity").unwrap();
+
+    // This capture's atomic write fails (ENOSPC, a read-only remount, a failed
+    // rename). The stale record must not survive: the way back reads whatever
+    // file is here and would otherwise set the OLD MAC and hostname back.
+    write_record(&out, b"current", |_, _| {
+        Err(std::io::Error::other("injected"))
+    });
+
+    assert!(
+        !out.exists(),
+        "a failed capture left a stale net-identity for the way back to apply"
+    );
 }
