@@ -36,6 +36,9 @@ pub enum NextStep {
     RehearseScan,
     /// `rehearse reset`: remove the rehearsal.
     RehearseReset,
+    /// `discard <path>`: delete the hidden session's copy of a path, so the
+    /// decoy's own shows through again.
+    Discard,
 }
 
 impl NextStep {
@@ -50,6 +53,7 @@ impl NextStep {
         NextStep::RehearsePlant,
         NextStep::RehearseScan,
         NextStep::RehearseReset,
+        NextStep::Discard,
     ];
 
     /// The subcommand words after the binary.
@@ -64,6 +68,7 @@ impl NextStep {
             NextStep::RehearsePlant => "rehearse plant",
             NextStep::RehearseScan => "rehearse scan",
             NextStep::RehearseReset => "rehearse reset",
+            NextStep::Discard => "discard <path>",
         }
     }
 }
@@ -83,6 +88,23 @@ pub fn sudo_line(step: NextStep) -> String {
 /// Render `step` as `sudo <binary> <command>` for an explicit binary path.
 pub fn sudo_line_with(binary: &Path, step: NextStep) -> String {
     format!("sudo {} {}", binary.display(), step.command())
+}
+
+/// Render `step` as [`sudo_line`] does, with `argument` in place of its
+/// `<…>` placeholder: `discard <path>` with `/system-update` reads
+/// `sudo /mnt/data/nails discard /system-update`.
+pub fn sudo_line_for(step: NextStep, argument: &str) -> String {
+    sudo_line_for_with(&running_binary(), step, argument)
+}
+
+/// [`sudo_line_for`] for an explicit binary path. A step without a
+/// placeholder gets `argument` appended.
+pub fn sudo_line_for_with(binary: &Path, step: NextStep, argument: &str) -> String {
+    let line = sudo_line_with(binary, step);
+    match line.rfind(" <") {
+        Some(at) if line.ends_with('>') => format!("{} {argument}", &line[..at]),
+        _ => format!("{line} {argument}"),
+    }
 }
 
 #[cfg(test)]
@@ -124,6 +146,37 @@ mod tests {
         assert_eq!(NextStep::RehearsePlant.command(), "rehearse plant");
         assert_eq!(NextStep::RehearseScan.command(), "rehearse scan");
         assert_eq!(NextStep::RehearseReset.command(), "rehearse reset");
+        assert_eq!(NextStep::Discard.command(), "discard <path>");
+    }
+
+    /// A step that takes an argument renders with the argument in place of
+    /// its placeholder, so the line can be pasted as it is.
+    #[test]
+    fn an_argument_takes_the_place_of_the_placeholder() {
+        let binary = Path::new("/mnt/data/nails");
+        assert_eq!(
+            sudo_line_for_with(binary, NextStep::Discard, "/system-update"),
+            "sudo /mnt/data/nails discard /system-update"
+        );
+        assert_eq!(
+            sudo_line_for_with(binary, NextStep::VerifyOffline, "/mnt/image"),
+            "sudo /mnt/data/nails verify --offline --root /mnt/image"
+        );
+        // A step without a placeholder takes the argument after its words,
+        // also when the binary's own path holds something like one.
+        assert_eq!(
+            sudo_line_for_with(binary, NextStep::Verify, "--deep"),
+            "sudo /mnt/data/nails verify --deep"
+        );
+        assert_eq!(
+            sudo_line_for_with(Path::new("/mnt/a <b>/nails"), NextStep::Verify, "--deep"),
+            "sudo /mnt/a <b>/nails verify --deep"
+        );
+        // The running binary, as `sudo_line` names it.
+        assert_eq!(
+            sudo_line_for(NextStep::Discard, "/etc/system-update"),
+            sudo_line_for_with(&running_binary(), NextStep::Discard, "/etc/system-update")
+        );
     }
 
     /// The hint resolves to the process's own executable, a real non-empty path,
