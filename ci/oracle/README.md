@@ -19,15 +19,16 @@ Three images of one host are scanned:
 A difference between `after` and `before` is a leak **unless** it also appears
 in the `control` cycle (then it is ordinary boot noise, subtracted) or a cited
 allowlist entry explains it. The verdict is `clean` only when every difference
-is accounted for, the scan proved it is not blind (the positive controls), and
-it proved it read the image (the canary).
+is accounted for, the scan proved it is not blind (the positive controls, and
+every analysis channel reporting on every image), and it proved it read the
+image (the canary).
 
 ## The outputs/ tree it consumes
 
 The scan writes one subtree per tool, per image label:
 
 ```
-outputs/restore/<label>/...            btrfs restore file tree
+outputs/restore/<label>/...            restored file tree
 outputs/bulk_extractor/<label>/*.txt   bulk_extractor feature files
 outputs/plaso/<label>.jsonl            plaso timeline, one JSON event per line
 ```
@@ -37,17 +38,45 @@ lines (for example `psort -o json_line`) so the verdict tool can read it without
 a plaso runtime. Each tool normalizes to findings keyed by `(tool, path,
 field)`:
 
-- restore — `path` is the recovered file's absolute on-image path; `field` is
-  empty. The file tree is carved with `btrfs restore` for btrfs and `debugfs
-  rdump` for ext{2,3,4}. A filesystem with no carver here (xfs, f2fs, bcachefs,
-  zfs) fails the run closed rather than leaving this channel empty: a silently
-  empty restore channel could pass a decoy that carries a path-keyed trace (a
-  new leftover file, an empty directory, a symlink) as clean. Add a carver to
-  `carve_restore` in `run-scan.sh` to certify such a decoy.
+- restore — `path` is the recovered entry's absolute on-image path; `field` is
+  its kind: empty for a file, `dir` for a directory, `symlink` for a symbolic
+  link. An empty directory or a symlink (a unit's enablement link, say) is a
+  trace in its own right. The rotating journal files under `/var/log/journal`
+  are left to plaso, which compares them by content; the directories that hold
+  them are still reported.
 - bulk_extractor — `path` is the feature type (`email`, `url`, ...); `field` is
   the feature value. This channel still sees a deleted-but-not-overwritten
   trace in free space.
 - plaso — `path` is the event's source path; `field` is the event descriptor.
+
+Every channel must report at least one finding on every image. A channel that
+reported nothing for an image (its tool was missing, failed, timed out or read
+nothing) fails the run as `channel_missing` and marks it blind, never `clean`.
+No channel stands in for another: the restore channel leaves the journal files
+to plaso, and every shipped self-check is a bulk_extractor finding.
+`run-scan.sh` drops the plaso channel whole when docker is missing, its pinned
+image cannot be pulled, or any image's timeline fails or runs past 20 minutes,
+so such a run fails. There is no switch to skip a channel; the verdict is still
+written, so a local run without docker can read what the other channels found.
+
+### Carving the restore channel
+
+`run-scan.sh` carves the file tree with `btrfs restore` for btrfs (snapshots and
+symlinks included) and `debugfs rdump` for ext{2,3,4}. An image is a bare
+filesystem, or a whole-disk image with exactly one btrfs or ext{2,3,4}
+partition. A disk with several (a separate `/boot` or `/home`) fails the run,
+because the root cannot be told apart safely: scan the root filesystem's own
+image instead.
+
+A carve must report no error and must hold the canary's file
+(`/var/lib/nails-oracle/canary.txt` on the synthetic images,
+`/var/lib/nails-oracle/canary` on the real ones), or the run fails: debugfs
+exits 0 even when it cannot open the image, so its own status proves nothing. A
+filesystem with no carver here (xfs, f2fs, bcachefs, zfs) fails the run closed
+rather than leaving this channel empty: a silently empty restore channel could
+pass a decoy that carries a path-keyed trace (a new leftover file, an empty
+directory, a symlink) as clean. Add a carver to `carve_restore` in
+`run-scan.sh` to certify such a decoy.
 
 ## allowlist.json — the citation rule
 
@@ -128,5 +157,5 @@ nails-oracle <outputs-dir> [--allowlist FILE] [--controls FILE]
 ```
 
 It prints the verdict as JSON to stdout and a one-line summary to stderr. Exit
-codes: `0` clean, `1` fail (residue, blind, canary or a bad allowlist), `2`
-usage or I/O error.
+codes: `0` clean, `1` fail (residue, a blind scan or a missing channel, canary
+or a bad allowlist), `2` usage or I/O error.

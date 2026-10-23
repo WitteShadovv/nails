@@ -469,14 +469,21 @@ def run_strings_scan(image: str | os.PathLike[str], tokens: Iterable[str]) -> se
     return found
 
 
+def _debugfs_quote(arg: str | os.PathLike[str]) -> str:
+    """One argument of a debugfs request, which debugfs splits on blanks.
+
+    Double quotes keep a path with a space whole; a quote inside is doubled.
+    """
+    return '"' + str(arg).replace('"', '""') + '"'
+
+
 def _rdump(image: str, offset: int, src: str, dest: Path) -> None:
     dest.mkdir(parents=True, exist_ok=True)
-    args = [DEBUGFS]
-    if offset:
-        # debugfs wants a byte offset into the whole-disk image.
-        args += ["-o", str(offset * 512)]
-    args += ["-R", f"rdump {src} {dest}", str(image)]
-    _run(args)
+    # debugfs has no offset option: e2fsprogs opens a filesystem at a byte
+    # offset into a whole-disk image through the "<image>?offset=<bytes>" form.
+    device = f"{image}?offset={offset * 512}" if offset else image
+    request = f"rdump {_debugfs_quote(src)} {_debugfs_quote(dest)}"
+    _run([DEBUGFS, "-R", request, device])
 
 
 def run_journal_scan(

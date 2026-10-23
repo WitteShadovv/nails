@@ -7,7 +7,8 @@
 //! asserts a real outcome of the decision logic: a clean pass only on noise and
 //! cited differences, a fail on an uncited leak, a rejected wholesale or
 //! uncitable allowlist, a blind-fail on a missing positive control, a fail on a
-//! missing canary, and that control noise is actually subtracted.
+//! missing canary, a blind-fail on a channel that reported nothing for an
+//! image, and that control noise is actually subtracted.
 
 use crate::catalog::{Catalog, CatalogRow};
 use crate::model::{
@@ -974,4 +975,155 @@ fn a_configured_but_rejected_control_fails_rather_than_passing_clean() {
         "a configured-but-rejected control must not read as none configured: {:?}",
         v.failures
     );
+}
+
+// --- a real scan must hear from every channel on every image -----------------
+
+/// The shipped self-check shape: a bulk_extractor e-mail sentinel planted on
+/// `after`.
+fn planted_finding() -> Finding {
+    Finding::new(Tool::BulkExtractor, "email", "planted@oracle.example")
+}
+
+fn planted_cfg() -> PositiveControl {
+    PositiveControl {
+        name: "planted".into(),
+        tool: Some(Tool::BulkExtractor),
+        path: "email".into(),
+        field: Some("planted@oracle.example".into()),
+        note: None,
+    }
+}
+
+/// A clean real scan: every channel reports the same baseline on every image,
+/// and `after` adds only the planted bulk_extractor control.
+fn complete_scans() -> Scans {
+    let baseline = set([
+        restore("/etc/hostname"),
+        canary_finding(),
+        Finding::new(Tool::Plaso, "/var/log/app.log", "syslog:line"),
+    ]);
+    let mut after = baseline.clone();
+    after.insert(planted_finding());
+    Scans {
+        before: baseline.clone(),
+        control: baseline,
+        after,
+    }
+}
+
+fn complete_policy() -> OraclePolicy {
+    OraclePolicy {
+        allowlist: allow(vec![]),
+        controls: controls(vec![planted_cfg()]),
+    }
+}
+
+fn decide_scan(scans: &Scans, policy: &OraclePolicy) -> Verdict {
+    verdict::scan_verdict(scans, policy, &catalog())
+}
+
+/// `scans` with every finding of `tool` removed from the images named.
+fn without(mut scans: Scans, tool: Tool, images: &[&str]) -> Scans {
+    for (name, image) in [
+        ("before", &mut scans.before),
+        ("control", &mut scans.control),
+        ("after", &mut scans.after),
+    ] {
+        if images.contains(&name) {
+            image.retain(|f| f.tool != tool);
+        }
+    }
+    scans
+}
+
+fn channel_missing(tool: Tool, image: &str) -> Failure {
+    Failure::ChannelMissing {
+        tool,
+        image: image.into(),
+    }
+}
+
+#[test]
+fn a_scan_verdict_over_every_channel_is_the_plain_verdict() {
+    // With every channel reporting on every image the channel rule adds
+    // nothing: the run is clean, and exactly what the bare engine decides.
+    let v = decide_scan(&complete_scans(), &complete_policy());
+    assert_eq!(v.status, Status::Clean, "{:?}", v.failures);
+    assert!(!v.blind);
+    assert_eq!(v, decide(&complete_scans(), &complete_policy()));
+}
+
+#[test]
+fn a_dropped_plaso_channel_fails_the_scan_blind() {
+    // run-scan.sh drops plaso whole when docker is absent, its image cannot be
+    // pulled or one image's timeline fails. Nothing else is wrong, so the bare
+    // engine calls this clean; the scan verdict fails it blind, naming plaso on
+    // every image.
+    let scans = without(
+        complete_scans(),
+        Tool::Plaso,
+        &["before", "control", "after"],
+    );
+    assert_eq!(decide(&scans, &complete_policy()).status, Status::Clean);
+
+    let v = decide_scan(&scans, &complete_policy());
+    assert_eq!(v.status, Status::Fail);
+    assert!(v.blind, "a scan that could not look is blind");
+    assert_eq!(
+        v.failures,
+        [
+            channel_missing(Tool::Plaso, "before"),
+            channel_missing(Tool::Plaso, "control"),
+            channel_missing(Tool::Plaso, "after"),
+        ]
+    );
+    assert!(v.summary.starts_with("FAIL (BLIND)"), "{}", v.summary);
+}
+
+#[test]
+fn a_channel_silent_on_one_image_fails_for_that_image_alone() {
+    // A carve that recovered nothing for `after` leaves the restore channel
+    // silent there only: the failure names that channel and that image.
+    let scans = without(complete_scans(), Tool::BtrfsRestore, &["after"]);
+    let v = decide_scan(&scans, &complete_policy());
+    assert_eq!(v.status, Status::Fail);
+    assert_eq!(v.failures, [channel_missing(Tool::BtrfsRestore, "after")]);
+}
+
+#[test]
+fn every_channel_is_required_on_every_image() {
+    // Each channel, silent on one image, fails the run on its own; a
+    // finding of another channel never stands in for it.
+    for tool in Tool::ALL {
+        for image in ["before", "control", "after"] {
+            let scans = without(complete_scans(), tool, &[image]);
+            let v = decide_scan(&scans, &complete_policy());
+            assert!(
+                v.failures.contains(&channel_missing(tool, image)),
+                "{tool:?} silent on {image}: {:?}",
+                v.failures
+            );
+            assert_eq!(v.status, Status::Fail, "{tool:?} silent on {image}");
+        }
+    }
+}
+
+#[test]
+fn a_missing_channel_is_reported_alongside_a_leak() {
+    // The channel rule adds its failures to the verdict's own: a leak in the
+    // channels that did report still surfaces.
+    let mut scans = without(
+        complete_scans(),
+        Tool::Plaso,
+        &["before", "control", "after"],
+    );
+    scans.after.insert(restore("/home/user/secret.txt"));
+    let v = decide_scan(&scans, &complete_policy());
+    assert!(has_unexplained(&v, "/home/user/secret.txt"), "{v:?}");
+    assert!(
+        v.failures.contains(&channel_missing(Tool::Plaso, "after")),
+        "{v:?}"
+    );
+    assert_eq!(v.counts.unexplained, 1);
 }

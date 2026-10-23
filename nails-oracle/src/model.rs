@@ -33,6 +33,12 @@ pub enum Tool {
     Plaso,
 }
 
+impl Tool {
+    /// Every analysis channel. A real scan must hear from each of them on every
+    /// image (see [`crate::verdict::scan_verdict`]).
+    pub const ALL: [Tool; 3] = [Tool::BtrfsRestore, Tool::BulkExtractor, Tool::Plaso];
+}
+
 /// One normalized observation from one tool over one image.
 ///
 /// Findings compare as a set keyed by every field here, so the same trace seen
@@ -40,8 +46,8 @@ pub enum Tool {
 /// meaning of `path` and `field` depends on `tool`:
 ///
 /// - [`Tool::BtrfsRestore`]: `path` is the absolute on-image path of a
-///   recovered file; `field` is empty (its mere presence) or, later, a content
-///   digest.
+///   recovered entry; `field` is its kind: empty for a file (its mere
+///   presence), `dir` for a directory, `symlink` for a symbolic link.
 /// - [`Tool::BulkExtractor`]: `path` is the feature *type* (`email`, `url`,
 ///   ...); `field` is the feature *value*.
 /// - [`Tool::Plaso`]: `path` is the event's source path; `field` is the event
@@ -101,6 +107,17 @@ pub struct Scans {
     pub control: BTreeSet<Finding>,
     /// Findings from the `after` image under test.
     pub after: BTreeSet<Finding>,
+}
+
+impl Scans {
+    /// The findings of the image `label` names.
+    pub fn image(&self, label: ImageLabel) -> &BTreeSet<Finding> {
+        match label {
+            ImageLabel::Before => &self.before,
+            ImageLabel::Control => &self.control,
+            ImageLabel::After => &self.after,
+        }
+    }
 }
 
 /// One cited exemption: a location that is expected to differ in `after`, and
@@ -210,6 +227,21 @@ mod tests {
         assert_eq!(ImageLabel::Before.dir_name(), "before");
         assert_eq!(ImageLabel::Control.dir_name(), "control");
         assert_eq!(ImageLabel::After.dir_name(), "after");
+    }
+
+    #[test]
+    fn image_returns_the_findings_of_the_named_label() {
+        // The channel check walks the three images by label; each label must
+        // reach its own set, or one image's findings would vouch for another's.
+        let one = |path: &str| BTreeSet::from([Finding::new(Tool::BtrfsRestore, path, "")]);
+        let scans = Scans {
+            before: one("/before"),
+            control: one("/control"),
+            after: one("/after"),
+        };
+        assert_eq!(scans.image(ImageLabel::Before), &one("/before"));
+        assert_eq!(scans.image(ImageLabel::Control), &one("/control"));
+        assert_eq!(scans.image(ImageLabel::After), &one("/after"));
     }
 
     #[test]
