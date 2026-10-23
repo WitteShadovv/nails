@@ -135,6 +135,7 @@ fn unmounted_target_refused_with_zero_writes() {
 fn obstructing_file_refused_before_any_write() {
     let root = Path::new("/mnt/data");
     let fs = attached_mock(root);
+    mark_host_debian(&fs);
     // A file sits where the layout needs the config directory.
     fs.mock_set_path_exists("/mnt/data/config", true);
     fs.mock_set_path_type("/mnt/data/config", PathKind::File);
@@ -167,12 +168,15 @@ fn obstructing_file_refused_before_any_write() {
         None,
         "the obstructing file's permissions must be left alone"
     );
+    // The obstruction is found by reading: the target is not even probed.
+    assert!(probes(&fs).is_empty(), "{:?}", fs.mock_ops());
 }
 
 #[test]
 fn directory_in_place_of_the_state_file_is_refused() {
     let root = Path::new("/mnt/data");
     let fs = attached_mock(root);
+    mark_host_debian(&fs);
     fs.mock_set_path_exists("/mnt/data/state.json", true);
     fs.mock_set_path_type("/mnt/data/state.json", PathKind::Dir);
 
@@ -284,6 +288,7 @@ fn bind_mock(root: &Path) -> MockFilesystem {
 fn allow_decoy_storage_proceeds_on_decoy_storage_with_a_warning() {
     let root = Path::new("/mnt/data");
     let fs = bind_mock(root);
+    mark_host_debian(&fs);
     let args = InitArgs {
         path: root.to_path_buf(),
         allow_decoy_storage: false,
@@ -298,7 +303,8 @@ fn allow_decoy_storage_proceeds_on_decoy_storage_with_a_warning() {
     }
     assert!(probes(&fs).is_empty());
 
-    // The same target passes the gate once overridden, and only then is probed.
+    // The same target passes the gate once overridden. Planning still writes
+    // nothing: the probes are the first thing `apply` does.
     let plan = plan(
         &fs,
         &InitArgs {
@@ -315,7 +321,7 @@ fn allow_decoy_storage_proceeds_on_decoy_storage_with_a_warning() {
                 .to_string()
         ]
     );
-    assert_eq!(probes(&fs).len(), 2, "{:?}", fs.mock_ops());
+    assert!(probes(&fs).is_empty(), "{:?}", fs.mock_ops());
 }
 
 #[test]
@@ -495,34 +501,78 @@ fn debian_host_init_creates_no_nixos_paths() {
 #[test]
 fn unsupported_host_is_refused_before_any_write() {
     let root = Path::new("/mnt/data");
-    let fs = attached_mock(root);
-    // A non-systemd PID 1: an unsupported host the platform seam refuses.
-    fs.mock_set_file_content("/etc/os-release", "ID=debian\nVERSION_ID=\"13\"\n");
-    fs.mock_set_file_content("/proc/1/comm", "openrc-init\n");
+    let hardware = "/seed/hardware-configuration.nix";
+    // Every mode: the flags pick where the hidden NixOS layout comes from,
+    // never whether the host runs NAILS.
+    for (no_hardware_config, hardware_config) in [
+        (false, None),
+        (true, None),
+        (false, Some(PathBuf::from(hardware))),
+    ] {
+        let fs = attached_mock(root);
+        // A non-systemd PID 1: an unsupported host the platform seam refuses.
+        fs.mock_set_file_content("/etc/os-release", "ID=debian\nVERSION_ID=\"13\"\n");
+        fs.mock_set_file_content("/proc/1/comm", "openrc-init\n");
+        fs.mock_set_path_exists(hardware, true);
+        fs.mock_set_readable(hardware, true);
 
+        let args = InitArgs {
+            path: root.to_path_buf(),
+            allow_decoy_storage: false,
+            hardware_config,
+            no_hardware_config,
+        };
+        let mode = format!("{:?} {:?}", args.no_hardware_config, args.hardware_config);
+
+        match plan(&fs, &args) {
+            Err(InitFailure::Unsupported(error)) => {
+                assert!(error.to_string().contains("systemd"), "{mode}: {error}")
+            }
+            other => panic!(
+                "{mode}: expected an unsupported-host refusal, got {:?}",
+                other.err()
+            ),
+        }
+        // The unsupported-platform exit, with nothing probed or written.
+        assert_eq!(
+            run(&OutputSettings::default(), &fs, &args),
+            ExitStatus::Unsupported,
+            "{mode}"
+        );
+        assert!(probes(&fs).is_empty(), "{mode}: {:?}", fs.mock_ops());
+        for rel in COMMON_SUBDIRS.iter().chain(NIXOS_SUBDIRS) {
+            assert!(
+                !fs.path_exists(&root.join(rel)).unwrap(),
+                "{mode}: {rel} must not be created when the host is refused"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_target_that_takes_no_file_is_refused_before_the_layout() {
+    let root = Path::new("/mnt/data");
+    let fs = attached_mock(root);
+    mark_host_debian(&fs);
+    fs.mock_set_writable(root.to_str().unwrap(), false);
     let args = InitArgs {
         path: root.to_path_buf(),
         allow_decoy_storage: false,
         hardware_config: None,
-        no_hardware_config: false,
+        no_hardware_config: true,
     };
 
-    match plan(&fs, &args) {
-        Err(InitFailure::Preconditions(failures)) => assert!(
-            failures.iter().any(|reason| reason.contains("systemd")),
-            "{failures:?}"
-        ),
-        other => panic!(
-            "expected an unsupported-host refusal, got {:?}",
-            other.is_ok()
-        ),
-    }
-
-    // Nothing was written during planning.
-    for rel in COMMON_SUBDIRS.iter().chain(NIXOS_SUBDIRS) {
+    // The plan reads only; the probe in `apply` refuses with the
+    // precondition exit, and nothing of the layout is written.
+    assert_eq!(
+        run(&OutputSettings::default(), &fs, &args),
+        ExitStatus::PreflightRefused
+    );
+    assert_eq!(probes(&fs).len(), 2, "{:?}", fs.mock_ops());
+    for rel in COMMON_SUBDIRS {
         assert!(
             !fs.path_exists(&root.join(rel)).unwrap(),
-            "{rel} must not be created when the host is refused"
+            "{rel} must not be created when the probe refuses"
         );
     }
 }
@@ -616,9 +666,21 @@ mod kernel_tests {
     use nails_core::test_path;
     use nails_core::test_support::{Rerun, ScratchTmpfs};
 
-    /// Run `body` with a fresh tmpfs volume as its root, in a namespace.
+    /// Run `body` with a fresh tmpfs volume as its root, in a namespace whose
+    /// `/etc/os-release` names NixOS, so the platform gate init runs with
+    /// every flag admits the host whatever distribution runs the test.
     fn on_a_volume(test: &str, body: impl FnOnce(&Path)) {
         let _ = Rerun::new(test).in_user_mount_ns().run(|| {
+            let release = tempfile::NamedTempFile::new().unwrap();
+            fs::write(release.path(), "ID=nixos\nVERSION_ID=\"26.05\"\n").unwrap();
+            nix::mount::mount(
+                Some(release.path()),
+                "/etc/os-release",
+                None::<&str>,
+                nix::mount::MsFlags::MS_BIND,
+                None::<&str>,
+            )
+            .expect("bind a NixOS os-release over /etc/os-release");
             let volume = ScratchTmpfs::new("");
             body(volume.path());
         });

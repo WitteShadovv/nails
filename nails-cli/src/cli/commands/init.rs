@@ -43,6 +43,7 @@ fn options(args: &InitArgs) -> InitOptions {
 /// - [`ExitStatus::Config`] when the global `--config` was passed
 /// - [`ExitStatus::PreflightRefused`] when the attach gate refuses the target
 ///   or a precondition is not met
+/// - [`ExitStatus::Unsupported`] on a host NAILS refuses, whatever the flags
 /// - [`ExitStatus::Failed`] when a filesystem operation fails
 pub fn execute(
     settings: &OutputSettings,
@@ -74,44 +75,38 @@ pub fn execute(
 /// Drive init against a filesystem: validate, apply, report.
 fn run<F: Filesystem>(settings: &OutputSettings, fs: &F, args: &InitArgs) -> ExitStatus {
     let json = settings.is_json();
+    match plan(fs, args).and_then(|plan| apply(fs, &args.path, plan)) {
+        Ok(report) => {
+            render_report(settings, &report);
+            ExitStatus::Ok
+        }
+        Err(failure) => report_failure(json, failure),
+    }
+}
 
-    let plan = match plan(fs, args) {
-        Ok(plan) => plan,
-        Err(InitFailure::NotSeparate(refusal)) => {
-            return report_refusal(json, "init", &refusal);
-        }
-        Err(InitFailure::Preconditions(failures)) => {
-            return report_error(
-                json,
-                "init",
-                ExitStatus::PreflightRefused,
-                ErrorBody::new("preconditions", failures.join("; ")),
-            );
-        }
-        Err(InitFailure::Io(error)) => {
-            return report_error(
-                json,
-                "init",
-                ExitStatus::Failed,
-                ErrorBody::new("io", error.to_string()),
-            );
-        }
-    };
-
-    let report = match apply(fs, &args.path, plan) {
-        Ok(report) => report,
-        Err(error) => {
-            return report_error(
-                json,
-                "init",
-                ExitStatus::Failed,
-                ErrorBody::new("io", error.to_string()),
-            );
-        }
-    };
-
-    render_report(settings, &report);
-    ExitStatus::Ok
+/// Report why init refused or failed, and the exit status it earns.
+fn report_failure(json: bool, failure: InitFailure) -> ExitStatus {
+    match failure {
+        InitFailure::NotSeparate(refusal) => report_refusal(json, "init", &refusal),
+        InitFailure::Unsupported(error) => report_error(
+            json,
+            "init",
+            ExitStatus::Unsupported,
+            ErrorBody::new("unsupported", error.to_string()),
+        ),
+        InitFailure::Preconditions(failures) => report_error(
+            json,
+            "init",
+            ExitStatus::PreflightRefused,
+            ErrorBody::new("preconditions", failures.join("; ")),
+        ),
+        InitFailure::Io(error) => report_error(
+            json,
+            "init",
+            ExitStatus::Failed,
+            ErrorBody::new("io", error.to_string()),
+        ),
+    }
 }
 
 /// Plan the layout for `args`: the facade operation with the clap arguments
@@ -120,8 +115,12 @@ fn plan<F: Filesystem>(fs: &F, args: &InitArgs) -> std::result::Result<InitPlan,
     init::plan(fs, &options(args))
 }
 
-/// Write the planned layout.
-fn apply<F: Filesystem>(fs: &F, base: &Path, plan: InitPlan) -> nails_core::Result<InitReport> {
+/// Probe the target and write the planned layout.
+fn apply<F: Filesystem>(
+    fs: &F,
+    base: &Path,
+    plan: InitPlan,
+) -> std::result::Result<InitReport, InitFailure> {
     init::apply(fs, base, plan)
 }
 

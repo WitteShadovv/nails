@@ -427,6 +427,45 @@ mod kernel_tests {
                 "a refused host wrote to the hidden volume: {:?}",
                 entries(refused_volume.path())
             );
+
+            // init refuses the same host with exit 8 too, whichever flag picks
+            // where the hidden NixOS layout comes from, and before it probes
+            // or writes anything: the target keeps its timestamps.
+            let base_config = dir.path().join("hardware-configuration.nix");
+            std::fs::write(&base_config, "{ ... }: { }\n").unwrap();
+            let base_config = base_config.display().to_string();
+            for flags in [
+                vec![],
+                vec!["--no-hardware-config"],
+                vec!["--hardware-config", base_config.as_str()],
+            ] {
+                use std::os::unix::fs::MetadataExt;
+                let target = ScratchTmpfs::new("");
+                let stamp = |path: &Path| {
+                    let meta = std::fs::metadata(path).unwrap();
+                    (
+                        meta.mtime(),
+                        meta.mtime_nsec(),
+                        meta.ctime(),
+                        meta.ctime_nsec(),
+                    )
+                };
+                let before = stamp(target.path());
+                let init = Command::new(assert_cmd::cargo::cargo_bin!("nails"))
+                    .args(["--no-log-file", "init"])
+                    .args(&flags)
+                    .arg(target.path())
+                    .output()
+                    .expect("run nails init");
+                assert_eq!(init.status.code(), Some(8), "{flags:?}: {init:?}");
+                let stderr = String::from_utf8_lossy(&init.stderr);
+                assert!(
+                    stderr.contains("Fedora is not yet a validated platform"),
+                    "{flags:?}: {stderr}"
+                );
+                assert!(entries(target.path()).is_empty(), "{flags:?}");
+                assert_eq!(stamp(target.path()), before, "{flags:?}: probed");
+            }
         });
     }
 }
