@@ -114,7 +114,8 @@ impl Layer {
     }
 
     /// A RAM-only zram block device (`zram0`, `zram1`, …), whose discards never
-    /// reach persistent storage, so the discard refusal does not apply.
+    /// reach persistent storage. The discard refusal does not apply to a stack
+    /// that rests on such devices alone ([`rests_on_ram_only`]).
     fn is_ram_backed(&self) -> bool {
         self.name
             .strip_prefix("zram")
@@ -165,9 +166,10 @@ impl Layer {
 ///   TRIM, at runtime or through a stored LUKS2 flag). TRIM leaves a readable
 ///   used/free map where the volume should look like uniform random data,
 ///   hole-punches a loop-backed container, and an outer volume opened with
-///   discards can destroy a hidden volume inside it. This fails closed, so a
-///   RAM-only zram device is excepted; the operator accepts the risk for one
-///   run with `--allow-discards`, which turns the refusal into a warning.
+///   discards can destroy a hidden volume inside it. This fails closed; only a
+///   stack that rests on RAM-only zram devices alone is excepted, and the
+///   operator accepts the risk for one run with `--allow-discards`, which
+///   turns the refusal into a warning.
 /// - **File containers.** Every read-write session updates the container's
 ///   mtime and ctime, and ctime cannot be restored.
 /// - **File containers on a copy-on-write decoy** (btrfs, zfs, bcachefs),
@@ -340,12 +342,22 @@ const DISCARD_ACCEPTED: &str = "Discards are enabled over the hidden volume, acc
 
 /// Whether discards reach the physical device under the hidden volume: a
 /// cryptsetup mapping forwards TRIM (at runtime or through a stored LUKS2 flag)
-/// and the stack is not a RAM-only zram device.
+/// and the stack does not rest on RAM-only zram devices alone.
 fn discards_over_hidden(layers: &[Layer]) -> bool {
-    if layers.iter().any(Layer::is_ram_backed) {
-        return false;
-    }
-    layers.iter().any(Layer::forwards_discards)
+    layers.iter().any(Layer::forwards_discards) && !rests_on_ram_only(layers)
+}
+
+/// Whether every device at the bottom of the stack (one without devices below
+/// it) is a RAM-only zram device, so TRIM reaches no persistent storage. A
+/// zram device anywhere in a stack that also rests on a disk (the cache of a
+/// cached logical volume, say) excepts nothing, and neither does a layer whose
+/// devices below could not be read.
+fn rests_on_ram_only(layers: &[Layer]) -> bool {
+    let mut bottom = layers
+        .iter()
+        .filter(|layer| layer.slaves.is_empty())
+        .peekable();
+    bottom.peek().is_some() && bottom.all(Layer::is_ram_backed)
 }
 
 // ============================================================================

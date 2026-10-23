@@ -573,6 +573,7 @@ fn discards_over_a_ram_only_zram_device_are_excepted() {
                 is_dm: true,
                 crypt: Some(CryptType::Luks),
                 discard_max_bytes: 4096,
+                slaves: vec![leaf.into()],
                 ..Layer::default()
             },
             Layer {
@@ -587,6 +588,60 @@ fn discards_over_a_ram_only_zram_device_are_excepted() {
     assert!(discards_over_hidden(&crypt_on("vdb")));
     // "zram" must be followed by a device number, not any suffix.
     assert!(discards_over_hidden(&crypt_on("zrama")));
+}
+
+#[test]
+fn a_zram_device_beside_a_disk_in_the_stack_excepts_nothing() {
+    // LUKS with discards on a logical volume cached with dm-cache, its cache
+    // on zram0 and its origin on an SSD partition: the walk lists every device
+    // of the stack, and dm-cache passes the discards down to the SSD.
+    let layer = |name: &str, slaves: &[&str]| Layer {
+        name: name.into(),
+        is_dm: name.starts_with("dm-"),
+        slaves: slaves.iter().map(|s| (*s).into()).collect(),
+        ..Layer::default()
+    };
+    let layers = [
+        Layer {
+            crypt: Some(CryptType::Luks),
+            discard_max_bytes: 4096,
+            ..layer("dm-4", &["dm-3"])
+        },
+        layer("dm-3", &["dm-1", "dm-2", "dm-0"]),
+        layer("dm-1", &["zram0"]),
+        layer("dm-2", &["zram0"]),
+        layer("dm-0", &["nvme0n1p3"]),
+        layer("zram0", &[]),
+        layer("nvme0n1p3", &[]),
+    ];
+    assert!(
+        discards_over_hidden(&layers),
+        "the SSD below the cache takes the discards"
+    );
+
+    // The same stack resting on zram alone reaches no persistent storage.
+    let mut on_ram = layers.clone();
+    on_ram[4] = layer("dm-0", &["zram1"]);
+    on_ram[6] = layer("zram1", &[]);
+    assert!(!discards_over_hidden(&on_ram));
+
+    // A forwarding mapping whose devices below could not be read is no
+    // proof of RAM: it fails closed.
+    let unread = [Layer {
+        crypt: Some(CryptType::Luks),
+        discard_max_bytes: 4096,
+        ..layer("dm-4", &[])
+    }];
+    assert!(discards_over_hidden(&unread));
+
+    // Nor is a walk that ended before any device at the bottom: with no
+    // bottom device seen, nothing shows the stack rests on RAM.
+    let cut_short = [Layer {
+        crypt: Some(CryptType::Luks),
+        discard_max_bytes: 4096,
+        ..layer("dm-4", &["dm-3"])
+    }];
+    assert!(discards_over_hidden(&cut_short));
 }
 
 #[test]
