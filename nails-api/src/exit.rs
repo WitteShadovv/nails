@@ -51,10 +51,12 @@ pub enum ExitStatus {
     VerifyWarning,
     /// `verify` found critical artifacts.
     VerifyCritical,
-    /// The operation was cancelled by a signal (SIGINT/SIGTERM). The code is 130,
-    /// the conventional "terminated by Ctrl-C" value (128 + SIGINT), so a caller
-    /// can tell a deliberate cancellation apart from an ordinary failure. The
-    /// overlays were rolled back and the state returned to its previous value.
+    /// The operation was cancelled: the operator declined a confirmation
+    /// prompt, or a signal (SIGINT/SIGTERM) stopped an activation. The code is
+    /// 130, the conventional "terminated by Ctrl-C" value (128 + SIGINT), so a
+    /// caller can tell a deliberate cancellation apart from an ordinary failure.
+    /// A declined prompt changed nothing; an entry in progress is rolled back
+    /// and the state returned to its previous value.
     Cancelled,
 }
 
