@@ -7,8 +7,15 @@
 //! The four steps (status, plant, scan, reset) and the preconditions, state
 //! transitions, same-boot refusal, target selection and guided next step live
 //! here as a small service; a front end renders the outcome and never holds the
-//! orchestration. The token never leaves this crate's state file: an outcome
-//! carries only the fingerprint and the redacted channels.
+//! orchestration.
+//!
+//! The outcomes carry the canary token: each holds the recorded
+//! [`RehearsalState`], whose `token` field is public and goes with it into
+//! `Debug` and `Serialize`, and [`ResetOutcome::removed`] lists paths with the
+//! token in them. A front end shows only [`RehearsalState::fingerprint`] and
+//! [`RehearsalState::redacted_channels`], redacts the token from the removed
+//! paths, and never logs, serializes or forwards an outcome's state: a token
+//! that reaches a log on the decoy is a canary the next scan finds there.
 
 use std::path::PathBuf;
 
