@@ -195,12 +195,23 @@ volume, and in no other way. No package, registry or decoy-side install is
 supported; [docs/distribution.md](docs/distribution.md) explains why.
 
 1. Outside the decoy system (a live environment that keeps nothing, such as
-   [Tails](docs/install-from-tails.md), or a separate machine), download the
-   latest bundle from
+   [Tails](docs/install-from-tails.md), or a separate machine), download a
+   release bundle from
    [GitHub Releases](https://github.com/WitteShadovv/nails/releases) and verify
    it as [docs/verify-release.md](docs/verify-release.md) describes (checksum
    and build provenance). For more assurance, rebuild it:
    [docs/release-artifact-reproducibility.md](docs/release-artifact-reproducibility.md).
+
+   This README and the docs describe NAILS 0.3.0. Until 0.3.0 is released, it
+   exists only as release candidates (`v0.3.0-rc.N`, marked *Pre-release*),
+   and the newest one can lack changes that
+   [CHANGELOG.md](CHANGELOG.md) lists under *Unreleased*. Until then the
+   release marked *Latest* is 0.2.0, the earlier per-directory live-overlay
+   design for NixOS, which these docs do not describe: its documentation,
+   including how to check its provenance, is at the
+   [v0.2.0 tag](https://github.com/WitteShadovv/nails/tree/v0.2.0).
+   [SECURITY.md](SECURITY.md#supported-versions) says which release line is
+   supported.
 2. Unlock and mount the hidden volume, then put the binary directly on it. Never
    leave a copy on the decoy disk:
 

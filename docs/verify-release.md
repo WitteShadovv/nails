@@ -17,7 +17,9 @@ files:
 The three `.sigstore.json` files are Sigstore bundles. Each holds one attestation, the signature
 over it, the certificate of the release run that signed it and the proof that the signature is in
 Sigstore's public transparency log. With them, checking a release needs no GitHub account.
-Releases 0.2.0 and older have no bundles, so step 3 does not apply to them.
+Releases 0.2.0 and older have none of these three: their provenance is `nails.intoto.jsonl`, made
+by the SLSA GitHub generator in an older format, so step 3 does not apply to them. The
+documentation at their tag says how to check it.
 
 This page is the only place that describes how to check them. Other documents link here.
 
