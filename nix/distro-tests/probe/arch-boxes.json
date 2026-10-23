@@ -17,18 +17,22 @@
       }
     ],
     "tools": {
+      "systemctl": "/usr/bin/systemctl",
+      "loginctl": "/usr/bin/loginctl",
+      "busctl": "/usr/bin/busctl",
+      "journalctl": "/usr/bin/journalctl",
+      "dmsetup": "/usr/bin/dmsetup",
+      "ip": "/usr/bin/ip",
       "cryptsetup": "/usr/bin/cryptsetup",
-      "mke2fs": "/usr/bin/mke2fs",
+      "sh": "/usr/bin/sh",
+      "mount": "/usr/bin/mount",
+      "sync": "/usr/bin/sync",
       "swapoff": "/usr/bin/swapoff",
+      "kill": "/usr/bin/kill",
       "systemd-run": "/usr/bin/systemd-run",
       "modprobe": "/usr/bin/modprobe",
-      "findmnt": "/usr/bin/findmnt",
-      "mount": "/usr/bin/mount",
-      "umount": "/usr/bin/umount",
       "cp": "/usr/bin/cp",
-      "chown": "/usr/bin/chown",
-      "kill": "/usr/bin/kill",
-      "sync": "/usr/bin/sync"
+      "chown": "/usr/bin/chown"
     },
     "journaldVendorConfig": {
       "storage": "persistent",
