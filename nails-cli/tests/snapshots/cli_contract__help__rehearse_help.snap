@@ -63,9 +63,10 @@ EXAMPLES:
   nails rehearse plant --user alice   Plant the canary for alice's session
   nails rehearse scan                 Scan the mounted decoy devices
   nails rehearse scan --offline --image decoy.raw
-                                      Scan a disk image instead
+                                      Scan an image of the unlocked decoy
 
 The scan exits 0 when no canary is found, 11 when one is, and 9 when a device
-could not be scanned completely.
+could not be scanned completely or its storage can hide the canary from a raw
+scan (reported not checked).
 
 ----- stderr -----
