@@ -10,8 +10,13 @@
 //! profile would be built and the decoy persona state the hidden session would
 //! inherit. The whole picture is one [`ReadinessReport`] a front end renders;
 //! `activate --dry-run` runs this same operation, so the two always agree.
+//!
+//! The operation is split like activation: [`prepare`] builds the manager and
+//! asks the attach gate about the hidden root, and [`Readiness::run`] runs the
+//! checks. A front end reports a refused root ([`Readiness::refusal`]) first,
+//! before any check runs and also when the checks cannot be assembled.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nails_api::ErrorBody;
 use serde::Serialize;
@@ -19,8 +24,8 @@ use serde::Serialize;
 use crate::config::{PersonaConfig, PersonaMode};
 use crate::hidden_root::{Allow, Assessment};
 use crate::{
-    CheckResult, Config, EntryStatus, Filesystem, HostTarget, PersonaInventory, PreflightOptions,
-    Result, RuntimeEnv, TargetUser, collect_inherited_persona,
+    CheckResult, Config, EntryStatus, Filesystem, HostTarget, NailsManager, PersonaInventory,
+    PreflightOptions, RealFilesystem, Result, RuntimeEnv, TargetUser, collect_inherited_persona,
 };
 
 /// One pre-flight check result as it appears in the report.
@@ -248,66 +253,103 @@ impl ReadinessReport {
     }
 }
 
-/// Run the readiness check for the resolved configuration and options.
+/// A readiness check whose manager is built and whose hidden root the attach
+/// gate has judged, ready to run the checks.
+pub struct Readiness {
+    manager: NailsManager<RealFilesystem>,
+    env: RuntimeEnv,
+    config_path: PathBuf,
+    options: PreflightOptions,
+    refusal: Option<ErrorBody>,
+}
+
+/// Prepare the readiness check for the resolved configuration and options:
+/// build the manager with the NixOS target activation would pick and ask the
+/// attach gate about the hidden root. Nothing runs or is written yet.
 ///
-/// Builds the manager with the NixOS target activation would pick, assembles the
-/// same pre-flight registry (read-only to run; no staging happens here), runs it
-/// and gathers the whole readiness picture. `config_path` is the configuration
-/// file that was consulted, named in the report when it exists. An error means
-/// the checks could not be assembled; everything else is reported in the result.
-pub fn readiness(
+/// `config_path` is the configuration file that was consulted, named in the
+/// report when it exists.
+pub fn prepare(
     env: &RuntimeEnv,
     config_path: &Path,
     config: Config,
     options: &PreflightOptions,
-) -> Result<ReadinessReport> {
-    let overlay_only = options.overlay_only;
+) -> Readiness {
     let state_path = config.state_file_path.clone();
-    let manager = super::engine::build_nixos_manager(config, state_path, overlay_only, env);
-    // Only a NixOS host carries a config layer; the rendered report shows the
-    // NixOS-profile section on NixOS and hides it elsewhere.
-    let nixos_host = manager
-        .host_profile()
-        .is_some_and(|profile| profile.has_config_layer());
-
+    let manager = super::engine::build_nixos_manager(config, state_path, options.overlay_only, env);
     let refusal = attach_refusal(
         manager.filesystem(),
         &manager.config().hidden_volume_root,
         options,
     );
+    Readiness {
+        manager,
+        env: env.clone(),
+        config_path: config_path.to_path_buf(),
+        options: options.clone(),
+        refusal,
+    }
+}
 
-    let registry = manager.preflight_registry(options)?;
-    let (results, _) = registry.run_all_detailed(manager.filesystem());
-    let checks: Vec<CheckRow> = results
-        .iter()
-        .map(|(name, result)| CheckRow::from_result(name.clone(), result))
-        .collect();
+impl Readiness {
+    /// Why the attach gate refused the hidden root, as `activate` would report
+    /// it: what a front end says first, before the checks run and also when
+    /// [`run`](Self::run) cannot assemble them. The report carries it too.
+    pub fn refusal(&self) -> Option<&ErrorBody> {
+        self.refusal.as_ref()
+    }
 
-    let config = manager.config();
-    let config_summary = ConfigSummary {
-        config_file: config_path
-            .exists()
-            .then(|| config_path.display().to_string()),
-        hidden_volume_root: config.hidden_volume_root.display().to_string(),
-        state_file: config.state_file_path.display().to_string(),
-        log_path: config.log_path.display().to_string(),
-        persona_mode: config.persona.mode.as_str(),
-        minimum_space_mb: config.minimum_space_mb,
-    };
+    /// Assemble the same pre-flight registry activation would run (read-only
+    /// to run; no staging happens here), run it and gather the whole readiness
+    /// picture. An error means the checks could not be assembled; everything
+    /// else is reported in the result.
+    pub fn run(self) -> Result<ReadinessReport> {
+        let Self {
+            manager,
+            env,
+            config_path,
+            options,
+            refusal,
+        } = self;
+        // Only a NixOS host carries a config layer; the rendered report shows
+        // the NixOS-profile section on NixOS and hides it elsewhere.
+        let nixos_host = manager
+            .host_profile()
+            .is_some_and(|profile| profile.has_config_layer());
 
-    let filesystems = decoy_filesystems(&config.hidden_volume_root);
-    let profile = profile_summary(
-        manager
-            .discover_host_target(overlay_only)
-            .unwrap_or(HostTarget::None),
-    );
-    let inherited = inherited_summary(config, manager.filesystem(), env);
+        let registry = manager.preflight_registry(&options)?;
+        let (results, _) = registry.run_all_detailed(manager.filesystem());
+        let checks: Vec<CheckRow> = results
+            .iter()
+            .map(|(name, result)| CheckRow::from_result(name.clone(), result))
+            .collect();
 
-    let mut report =
-        ReadinessReport::finalize(checks, config_summary, filesystems, profile, inherited);
-    report.refusal = refusal;
-    report.nixos_host = nixos_host;
-    Ok(report)
+        let config = manager.config();
+        let config_summary = ConfigSummary {
+            config_file: config_path
+                .exists()
+                .then(|| config_path.display().to_string()),
+            hidden_volume_root: config.hidden_volume_root.display().to_string(),
+            state_file: config.state_file_path.display().to_string(),
+            log_path: config.log_path.display().to_string(),
+            persona_mode: config.persona.mode.as_str(),
+            minimum_space_mb: config.minimum_space_mb,
+        };
+
+        let filesystems = decoy_filesystems(&config.hidden_volume_root);
+        let profile = profile_summary(
+            manager
+                .discover_host_target(options.overlay_only)
+                .unwrap_or(HostTarget::None),
+        );
+        let inherited = inherited_summary(config, manager.filesystem(), &env);
+
+        let mut report =
+            ReadinessReport::finalize(checks, config_summary, filesystems, profile, inherited);
+        report.refusal = refusal;
+        report.nixos_host = nixos_host;
+        Ok(report)
+    }
 }
 
 /// The attach gate's refusal of the hidden root, as `activate` would report it,
@@ -621,6 +663,31 @@ mod tests {
             "message should name the missing-root reason: {}",
             body.message
         );
+    }
+
+    /// `prepare` asks the attach gate before anything runs, so a front end has
+    /// the refusal to report first, and still has it when `run` then cannot
+    /// assemble the checks.
+    #[test]
+    fn prepare_holds_the_refusal_before_any_check_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("not-mounted");
+        let config = Config {
+            hidden_volume_root: root.clone(),
+            state_file_path: root.join("state.json"),
+            log_path: root.join("logs"),
+            ..Config::test_default()
+        };
+        let readiness = prepare(
+            &RuntimeEnv::empty(),
+            &dir.path().join("nails.toml"),
+            config,
+            &PreflightOptions::default(),
+        );
+        let refusal = readiness
+            .refusal()
+            .expect("a root that does not exist is refused");
+        assert_eq!(refusal.code, "not_separate_volume");
     }
 
     /// Every line `decoy_filesystems` reports is a real, structured decision
