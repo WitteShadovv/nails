@@ -363,6 +363,8 @@ before the switch:
   on the decoy disk;
 - gives the kernel back the decoy's module loader, hotplug helper and firmware
   path, which a hidden NixOS activation pointed at its own store;
+- puts back most of the network state the hidden session changed, as the
+  network bullet of "What a soft-reboot leaves" below lists;
 - rewrites libmount's `utab` to the lines the decoy had at entry, each under
   the kernel mount ID of the mount the way back made in its mount's place,
   also where mounts are stacked at one place: the decoy's mounts come back as
@@ -386,33 +388,68 @@ journal that starts late:
 - `SoftRebootsCount`, two per session, readable with `systemctl show` on
   systemd 256 and newer;
 - the same boot ID and continuous uptime across both transitions;
-- the network state the hidden session set up: the clean way back now restores
-  it before the switch, so a normal `deactivate` leaves none of it on the
-  decoy, with the one exception below. The way back deletes the virtual links
-  the session brought up (a tunnel, a dummy or a bridge), sets each device's
-  MAC address back where the session changed it, restores the hostname on a
-  decoy without `/etc/hostname`, and puts the per-link NetworkManager and
-  systemd-resolved state below `/run` back as it was at entry. Many drivers
-  refuse to change the MAC address of a device that is up (USB Ethernet
-  adapters such as the ASIX AX88179, and many Wi-Fi cards); for those the way
-  back takes the device down for the change and brings it up again, as
-  NetworkManager does, and then reads the address back. The decoy's
-  NetworkManager therefore does not adopt a session link as connected
-  externally or record a profile for it in `/var/lib/NetworkManager/timestamps`
-  on the decoy disk. A plain `emergency` leaves none of it either: by default
-  it returns through the same clean way back and restores the network just as
-  `deactivate` does, and the variants that end otherwise (`--poweroff`,
-  `--reboot`, or a degraded reboot) power off or reboot instead, where the
-  decoy's NetworkManager starts fresh and nothing the session changed lingers.
-  The exception is a device whose MAC address the way back still cannot set
-  back, because its driver refuses the change even with the device down, or
-  because `ip` (iproute2) is not installed: it keeps the session's address
-  until the machine powers off or reboots. The decoy's NetworkManager goes on
-  using that address unless the decoy's profile sets one, so it can reach the
-  decoy disk (in a DHCP lease, for one). The way back runs with no output after
-  the session has ended, so nothing tells you: end a session that changed a
-  MAC address with `deactivate --poweroff` (or `emergency --poweroff`) when the
-  address must never reach the decoy.
+- the network state the hidden session set up, as far as the way back does
+  not put it back. Before the switch it puts back:
+  - the links: it deletes the virtual links the session brought up (a tunnel,
+    a dummy, the bridges and virtual ports of containers and virtual machines)
+    and the Wi-Fi interfaces it added on one of the decoy's radios (a monitor
+    or access point interface; this needs `iw`). A link counts as the decoy's
+    only with the name and the index it had at entry, so a tunnel the session
+    brought up under the name of one of the decoy's, which the decoy's own
+    stop took down, goes too;
+  - the MAC address of each of the decoy's devices, where the session changed
+    it. Many drivers refuse to change the MAC address of a device that is up
+    (USB Ethernet adapters such as the ASIX AX88179, and many Wi-Fi cards);
+    for those the way back takes the device down for the change and brings it
+    up again, as NetworkManager does, and then reads the address back;
+  - the hostname, wherever it differs from the decoy's at entry;
+  - the policy-routing rules (`ip rule`, IPv4 and IPv6) and the nftables
+    firewall tables the session added, such as those of a WireGuard full
+    tunnel (wg-quick or NetworkManager), a VPN app, a container runtime or
+    libvirt. It reads the tables with `nft`, so this needs nftables installed
+    on the decoy;
+  - the network settings for all devices and for new ones
+    (`net.ipv4.ip_forward`, `net.ipv4.conf.all.*`, `net.ipv4.conf.default.*`,
+    `net.ipv6.conf.all.*` and `net.ipv6.conf.default.*`), such as the
+    forwarding a container runtime turns on or the `arp_ignore` and
+    `src_valid_mark` a VPN app sets;
+  - the per-link state NetworkManager and systemd-resolved keep below `/run`
+    (NetworkManager's device state and the profiles it keeps only in memory,
+    resolved's per-link DNS settings), rewritten in place, so each file keeps
+    its owner and mode.
+
+  The decoy's NetworkManager therefore does not adopt a session link as
+  connected externally or record a profile for it in
+  `/var/lib/NetworkManager/timestamps` on the decoy disk. A plain `emergency`
+  puts back the same: by default it returns through the same way back as
+  `deactivate`, and the variants that end otherwise (`--poweroff`, `--reboot`,
+  or a degraded reboot) power off or reboot instead, where the decoy starts
+  fresh and nothing the session changed lingers.
+
+  The rest stays until the machine powers off or reboots: the addresses and
+  routes the session gave the decoy's own devices; what it added inside a
+  firewall table the decoy already had (a container runtime's chains in a
+  table the decoy's own firewall uses) and the firewall rules it made with
+  legacy iptables, outside nftables; every firewall table it added on a decoy
+  without `nft`, where the way back cannot tell the session's tables from the
+  decoy's, so a VPN app's table that blocks all traffic outside its tunnel
+  keeps the decoy offline; the settings of a single device
+  (`net.ipv4.conf.eth0.*`) and the network settings not listed above; any
+  link, rule or table the session deleted, which is not made again; a Wi-Fi
+  interface it added where `iw` is not installed, and its links and rules
+  where `ip` (iproute2) is not; and a MAC address the way back cannot set
+  back, because the driver refuses the change even with the device down,
+  because `ip` is not installed, or because the device was unplugged and
+  plugged in again during the session, which makes it a new link. The decoy's NetworkManager goes on using such an address
+  unless the decoy's profile sets one, so it can reach the decoy disk (in a
+  DHCP lease, for one). The way back also leaves alone a part of the network
+  state that activation could not read in full, rather than take the decoy's
+  for the session's. It runs with no output after the session has ended, so
+  nothing tells you what it left: take a VPN connection down with its own
+  tool (`wg-quick down`, `nmcli connection down`, the app's disconnect) and
+  stop the containers and virtual machines of the session before you
+  deactivate, and end a session with `deactivate --poweroff` (or
+  `emergency --poweroff`) when none of its network state may reach the decoy.
 - on a volatile decoy, a journal that starts at the return. The way back
   deletes the runtime journal the decoy shared with the hidden session, so the
   decoy's own records from before the session (the activation's sudo line, the
@@ -1269,16 +1306,15 @@ global VPN-autoconnect switch, so disable it per profile with `nmcli connection
 modify <vpn> connection.autoconnect no`. The clean way back now undoes what the
 snippet changed on the running system: it sets each device's MAC address back
 to the decoy's, taking the device down for the change when its driver refuses
-it while the device is up, and restores the hostname on a decoy without
-`/etc/hostname`, so a normal `deactivate` leaves neither on the decoy. A plain
-`emergency` restores them the same way, returning through the clean way back by
-default; `--poweroff` and `--reboot` power off or reboot instead, where the
-decoy starts fresh. The one exception is a device whose MAC address the way
-back still cannot set back: it keeps the random address until the machine
-powers off or reboots, and nothing tells you so (see
-[How it works](#how-it-works)). When the random address must never reach the
-decoy, end a session that used the snippet with `nails deactivate --poweroff`
-(or `nails emergency --poweroff`).
+it while the device is up, and sets the hostname back, so a normal
+`deactivate` leaves neither on the decoy. A plain `emergency` puts them back
+the same way, returning through the clean way back by default; `--poweroff`
+and `--reboot` power off or reboot instead, where the decoy starts fresh. The
+one exception is a device whose MAC address the way back still cannot set
+back: it keeps the random address until the machine powers off or reboots,
+and nothing tells you so (see [How it works](#how-it-works)). When the random
+address must never reach the decoy, end a session that used the snippet with
+`nails deactivate --poweroff` (or `nails emergency --poweroff`).
 
 ### Network anonymity and Tor
 
@@ -1291,10 +1327,13 @@ a Wi-Fi operator or a remote service, use a tool built for it — Tor Browser,
 Tails or Whonix. NAILS is itself installed from [Tails](install-from-tails.md).
 
 You may run Tor Browser, or route the hidden session through a Whonix gateway,
-inside the session if you choose. Run it from inside the session so it lives in
-the upper and never touches the decoy: a Tor Browser bundle or flatpak in the
-hidden home, Tor Browser added to the hidden NixOS generation, or a Whonix
-gateway VM the session routes through. One caveat, and it matters: doing so is
+inside the session if you choose. Run it from inside the session so its files
+live in the upper and never reach the decoy disk: a Tor Browser bundle or
+flatpak in the hidden home, Tor Browser added to the hidden NixOS generation,
+or a Whonix gateway VM the session routes through. A gateway VM's virtual
+network is kernel state, which the way back puts back only in part (see
+[How it works](#how-it-works)): shut the VM down and stop its network before
+you deactivate. One caveat, and it matters: doing so is
 deniability-neutral only if the decoy plausibly uses Tor too. Tor traffic is
 recognisable on the wire, so if the decoy never touches Tor, even occasional Tor
 use from the hidden session leaves an ISP-visible "Tor from this machine, at
@@ -1392,6 +1431,9 @@ real hardware:
 - the way back setting a MAC address back on a USB Ethernet adapter or Wi-Fi
   card whose driver refuses the change while the device is up: taking the
   device down for it is tested against a simulated driver, not a real one;
+- the way back deleting a Wi-Fi interface the session added on one of the
+  decoy's radios (a monitor or access point interface): tested against a
+  simulated `iw` and radio, not a real card;
 - decoy roots unlocked with a TPM-sealed key (the mapping survives the
   soft-reboot, but anything in the hidden session that measures into PCRs changes
   them for the rest of the uptime);

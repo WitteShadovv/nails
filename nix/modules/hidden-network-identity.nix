@@ -28,12 +28,11 @@
 # The way back to the decoy undoes what this changes on the running system: it
 # sets each device's MAC address back to the decoy's, taking the device down for
 # the change when its driver refuses it while the device is up, and sets the
-# hostname back on a decoy without /etc/hostname. A device whose address it
-# still cannot set back keeps the random one until power-off (a device keeps its
-# current MAC address when the decoy's profile sets none), and nothing tells you
-# so. When the random address must never reach the decoy, end a session that
-# used this module with `nails deactivate --poweroff` (or
-# `nails emergency --poweroff`).
+# hostname back. A device whose address it still cannot set back keeps the
+# random one until power-off (a device keeps its current MAC address when the
+# decoy's profile sets none), and nothing tells you so. When the random address
+# must never reach the decoy, end a session that used this module with
+# `nails deactivate --poweroff` (or `nails emergency --poweroff`).
 
 { lib, ... }:
 {
