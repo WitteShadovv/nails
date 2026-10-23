@@ -1099,7 +1099,9 @@ disk. The next `activate` or `deactivate` clears it.
   and its mapping closed. Open the volume again: `nails status` shows
   `Last switch: refused at <time>` with the reason, which was kept on the
   hidden volume (`switch_refused` in `status --json`). The record still says
-  active, so run `nails recover` once, fix the cause and activate again.
+  active, so run `nails recover` once, fix the cause and activate again. A
+  hidden root accepted on the decoy's own storage (`--allow-decoy-storage`)
+  keeps no reason: the switch writes nothing to the decoy's disk.
 - Leaving: the hidden session starts again, but its shutdown has unmounted the
   hidden volume from its path, and the binary on it with it. The reason was
   kept in RAM: `sudo /run/overlay-runtime/control status` shows it, and `sudo
