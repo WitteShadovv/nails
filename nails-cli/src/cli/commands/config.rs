@@ -425,8 +425,9 @@ mod tests {
         assert_eq!(
             outcome.stderr,
             format!(
-                "error: config file not found: {} (run `nails init <root>` or pass --config)\n",
-                missing.display()
+                "error: config file not found: {} (run `{}` or pass --config)\n",
+                missing.display(),
+                nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Init)
             )
         );
     }

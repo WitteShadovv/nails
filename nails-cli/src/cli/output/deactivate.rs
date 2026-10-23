@@ -54,7 +54,7 @@ pub fn deactivate_error_body(error: &NailsError) -> ErrorBody {
         .with_hint("check if the overlay is in use and retry"),
         NailsError::InvalidState(msg) => ErrorBody::new("invalid_state", msg.clone())
             .with_hint(format!(
-                "'{}' kills the hidden session and returns, or powers off with --poweroff",
+                "`{}` kills the hidden session and returns, or powers off with --poweroff",
                 nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Emergency)
             ))
             .with_next(NextStep::new("emergency")),

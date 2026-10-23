@@ -10,6 +10,12 @@ use crate::{Filesystem, NixParser, RealNixParser, Result, parse_check_composed_c
 use std::path::PathBuf;
 use std::sync::Arc;
 
+/// The `init` line that stages the hidden NixOS layout, with the real binary
+/// path.
+fn init_line() -> String {
+    nails_base::next_step::sudo_line(nails_base::next_step::NextStep::Init)
+}
+
 /// Validates NixOS configuration overlay structure in hidden storage
 ///
 /// Ensures the hidden storage contains all required NixOS configuration files
@@ -127,8 +133,9 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
         let modified_config = hidden_etc_nixos.join("hardware-configuration.nix");
         if !fs.path_exists(&modified_config)? {
             return Ok(CheckResult::fail(format!(
-                "Modified hardware-configuration.nix not found at {}. Run `nails init <root>` to stage the hidden NixOS layout.",
-                modified_config.display()
+                "Modified hardware-configuration.nix not found at {}. Run `{}` to stage the hidden NixOS layout.",
+                modified_config.display(),
+                init_line()
             )));
         }
 
@@ -152,8 +159,9 @@ impl<F: Filesystem> PreFlightCheck<F> for NixOSConfigCheck {
             .join("config/nixos/configuration.nix");
         if !fs.path_exists(&hidden_config)? {
             return Ok(CheckResult::fail(format!(
-                "Hidden configuration.nix not found at {}. Run `nails init <root>` to stage the hidden NixOS layout.",
-                hidden_config.display()
+                "Hidden configuration.nix not found at {}. Run `{}` to stage the hidden NixOS layout.",
+                hidden_config.display(),
+                init_line()
             )));
         }
 

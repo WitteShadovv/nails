@@ -164,7 +164,15 @@ fn test_nixos_config_check_missing_modified_hardware_config() {
             .message()
             .contains("Modified hardware-configuration.nix not found")
     );
-    assert!(result.message().contains("nails init"));
+    // The fix names the real binary, never a bare `nails init`.
+    assert!(
+        result.message().contains(&format!(
+            "Run `{}` to stage",
+            nails_base::next_step::sudo_line(nails_base::next_step::NextStep::Init)
+        )),
+        "{}",
+        result.message()
+    );
     // Read-only: the check must not have created the file.
     assert!(
         fs.get_written_content(&PathBuf::from(
@@ -302,7 +310,15 @@ fn test_nixos_config_check_missing_hidden_configuration_fails_read_only() {
             .message()
             .contains("Hidden configuration.nix not found")
     );
-    assert!(result.message().contains("nails init"));
+    // The fix names the real binary, never a bare `nails init`.
+    assert!(
+        result.message().contains(&format!(
+            "Run `{}` to stage",
+            nails_base::next_step::sudo_line(nails_base::next_step::NextStep::Init)
+        )),
+        "{}",
+        result.message()
+    );
     // Read-only: the check must not have created the module.
     assert!(
         fs.get_written_content(&PathBuf::from("/mnt/hidden/config/nixos/configuration.nix"))

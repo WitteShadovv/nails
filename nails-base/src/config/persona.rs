@@ -96,7 +96,8 @@ fn entry_names<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<String>
         .find(|name| name.as_str() != "*" && !is_entry_name(name))
     {
         return Err(serde::de::Error::custom(format!(
-            "{bad:?} is not an entry name: use a name as `nails check` lists it, without `/`"
+            "{bad:?} is not an entry name: use a name as `{}` lists it, without `/`",
+            crate::next_step::sudo_line(crate::next_step::NextStep::Check)
         )));
     }
     Ok(names)

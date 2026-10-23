@@ -287,11 +287,13 @@ fn execute_exits_3_with_one_line_for_missing_explicit_config() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(output.status.code(), Some(3), "stderr={stderr}");
+    // The child is this test binary, so it names this binary's path.
     assert_eq!(
         stderr.trim(),
         format!(
-            "error: config file not found: {} (run `nails init <root>` or pass --config)",
-            missing.display()
+            "error: config file not found: {} (run `{}` or pass --config)",
+            missing.display(),
+            nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Init)
         )
     );
 }

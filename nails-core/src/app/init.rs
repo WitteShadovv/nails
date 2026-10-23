@@ -444,8 +444,9 @@ fn write_state_file(base: &Path) -> Result<InitItem> {
 /// `<root>/nails` already, and the `binary-location` check warns at `check`
 /// and `activate` when it runs from anywhere else.
 pub fn next_steps(base: &Path) -> Vec<String> {
-    let root = base.display();
+    use crate::next_step::{NextStep, sudo_line_with};
     let config = base.join("config").join(CONFIG_FILE_NAME);
+    let binary = base.join("nails");
     vec![
         format!(
             "optionally change the configuration, but not on the decoy: prepare {config} on \
@@ -453,8 +454,14 @@ pub fn next_steps(base: &Path) -> Vec<String> {
              place afterwards",
             config = config.display()
         ),
-        format!("check readiness without changing anything: sudo {root}/nails check"),
-        format!("activate the hidden environment: sudo {root}/nails activate"),
+        format!(
+            "check readiness without changing anything: {}",
+            sudo_line_with(&binary, NextStep::Check)
+        ),
+        format!(
+            "activate the hidden environment: {}",
+            sudo_line_with(&binary, NextStep::Activate)
+        ),
     ]
 }
 
@@ -846,6 +853,20 @@ mod tests {
         assert!(steps[1].contains("sudo /mnt/data/nails check"), "{steps:?}");
         assert!(
             steps[2].contains("sudo /mnt/data/nails activate"),
+            "{steps:?}"
+        );
+    }
+
+    /// A volume mounted at a path with a space still gives lines that paste.
+    #[test]
+    fn next_steps_quote_a_root_a_shell_would_split() {
+        let steps = next_steps(Path::new("/run/media/alice/My Data"));
+        assert!(
+            steps[1].ends_with(": sudo '/run/media/alice/My Data/nails' check"),
+            "{steps:?}"
+        );
+        assert!(
+            steps[2].ends_with(": sudo '/run/media/alice/My Data/nails' activate"),
             "{steps:?}"
         );
     }

@@ -222,7 +222,7 @@ pub fn execute(
                 "invalid_state",
                 format!(
                     "refusing to activate: the state file is corrupt or unreadable, so the \
-                     current state is unknown. Run '{}' and recover the hidden volume first.",
+                     current state is unknown. Run `{}` and recover the hidden volume first.",
                     nails_core::next_step::sudo_line(nails_core::next_step::NextStep::Verify)
                 ),
             ),

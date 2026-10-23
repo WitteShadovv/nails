@@ -163,13 +163,14 @@ impl<F: Filesystem> Verifier<F> {
                     Finding::new(
                         Severity::Warn,
                         "state",
-                        "The state file records an active session: a session ended without \
-                         `nails deactivate` (a hard reset, a power-off or an emergency that could \
-                         not record it)",
+                        "The state file records an active session: a session ended without a \
+                         deactivation (a hard reset, a power-off or an emergency that could not \
+                         record it)",
                     )
-                    .with_fix_guidance(
-                        "The next activation records a new session; check `nails status` first",
-                    ),
+                    .with_fix_guidance(format!(
+                        "The next activation records a new session; check `{}` first",
+                        nails_base::next_step::sudo_line(nails_base::next_step::NextStep::Status)
+                    )),
                 );
             }
             crate::SystemState::Degraded { reason, .. } => {
@@ -182,7 +183,7 @@ impl<F: Filesystem> Verifier<F> {
                     .with_fix_guidance({
                         use nails_base::next_step::{NextStep, sudo_line};
                         format!(
-                            "Run '{}', then '{} --deep'",
+                            "Run `{}`, then `{} --deep`",
                             sudo_line(NextStep::Recover),
                             sudo_line(NextStep::Verify)
                         )

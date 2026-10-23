@@ -223,9 +223,11 @@ pub enum NailsError {
     /// writes cannot land on the decoy disk. The operator finishes the job with
     /// `nails emergency` or `nails recover`.
     #[error(
-        "Deactivation incomplete: {} still live: {}\nRun `nails emergency` or `nails recover` to finish the teardown.",
+        "Deactivation incomplete: {} still live: {}\nRun `{}` or `{}` to finish the teardown.",
         crate::output::count_noun(.remaining_mounts.len(), "NAILS mount", "NAILS mounts"),
-        format_remaining_mounts(.remaining_mounts)
+        format_remaining_mounts(.remaining_mounts),
+        crate::next_step::sudo_line(crate::next_step::NextStep::Emergency),
+        crate::next_step::sudo_line(crate::next_step::NextStep::Recover)
     )]
     DeactivationIncomplete {
         remaining_mounts: Vec<std::path::PathBuf>,
@@ -393,38 +395,42 @@ impl NailsError {
     /// went wrong but what to do about it. Errors whose message is already fully
     /// actionable, or for which no general advice applies, return `None` and are
     /// shown without a hint rather than with filler guidance.
-    pub fn hint(&self) -> Option<&'static str> {
-        match self {
-            NailsError::PermissionDenied(_) => Some("Re-run the command as root (sudo)."),
-            NailsError::OperationInProgress { .. } => Some(
-                "Wait for the running operation to finish, or clear a stale lock if none is running.",
-            ),
-            NailsError::LockPoisoned(_) => Some(
-                "A previous run crashed while holding the lock; re-run once no nails process is active.",
-            ),
-            NailsError::SwapDisableFailed => Some("Disable swap manually: sudo swapoff -a"),
+    pub fn hint(&self) -> Option<String> {
+        let hint = match self {
+            NailsError::PermissionDenied(_) => "Re-run the command as root (sudo).",
+            NailsError::OperationInProgress { .. } => {
+                "Wait for the running operation to finish, or clear a stale lock if none is running."
+            }
+            NailsError::LockPoisoned(_) => {
+                "A previous run crashed while holding the lock; re-run once no nails process is active."
+            }
+            NailsError::SwapDisableFailed => "Disable swap manually: sudo swapoff -a",
             NailsError::ConfigNotFound { .. } => {
-                Some("Create nails.toml or pass its path with --config.")
+                "Create nails.toml or pass its path with --config."
             }
-            NailsError::UnsafeConfigPath { .. } => Some(
-                "Point the configuration paths at the hidden volume, not a decoy or world-writable location.",
-            ),
+            NailsError::UnsafeConfigPath { .. } => {
+                "Point the configuration paths at the hidden volume, not a decoy or world-writable location."
+            }
             NailsError::UnsupportedPlatform { .. } => {
-                Some("This host is not a supported platform; see the platform requirements.")
+                "This host is not a supported platform; see the platform requirements."
             }
-            NailsError::UnsupportedFilesystem { .. } => Some(
-                "Format the hidden volume with a Linux filesystem such as ext4; FAT32 and exFAT cannot hold the required symlinks.",
-            ),
+            NailsError::UnsupportedFilesystem { .. } => {
+                "Format the hidden volume with a Linux filesystem such as ext4; FAT32 and exFAT cannot hold the required symlinks."
+            }
             NailsError::DeactivationIncomplete { .. } => {
-                Some("Reboot to clear the remaining mounts, then verify with `nails status`.")
+                return Some(format!(
+                    "Reboot to clear the remaining mounts, then check with `{}`.",
+                    crate::next_step::sudo_line(crate::next_step::NextStep::Status)
+                ));
             }
-            NailsError::RefusedUnmanagedUnmount { .. } => Some(
-                "Unmount the path yourself if it is safe to do so; nails will not touch a mount it did not create.",
-            ),
+            NailsError::RefusedUnmanagedUnmount { .. } => {
+                "Unmount the path yourself if it is safe to do so; nails will not touch a mount it did not create."
+            }
             // Pre-flight failures carry their own per-check remediation list, and
             // the remaining variants are already specific about the fault.
-            _ => None,
-        }
+            _ => return None,
+        };
+        Some(hint.to_string())
     }
 }
 

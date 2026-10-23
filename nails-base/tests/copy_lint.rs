@@ -13,6 +13,11 @@
 //! The rule logic is exercised on seeded bad input below, so each check is
 //! known to fire; `the_catalogue_passes_the_copy_lint` then proves the real
 //! catalogue is clean.
+//!
+//! The bare-command rule also runs over the source of every crate, outside the
+//! catalogue: `no_source_names_a_bare_nails_command` refuses a `nails <command>`
+//! in any string a command can print, so a next step is always rendered
+//! through `nails_base::next_step` with the real binary path.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -263,6 +268,126 @@ fn the_catalogue_passes_the_copy_lint() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+}
+
+/// Where the source may name a bare `nails <command>`, and why: text nobody
+/// pastes a command from, or where the binary's path is not known. An entry
+/// ending in `/` covers a directory.
+const BARE_COMMAND_ALLOWED: &[(&str, &str)] = &[
+    (
+        "nails-cli/src/cli/args.rs",
+        "the --help text, whose examples follow clap's `Usage: nails <command>` line",
+    ),
+    (
+        "nails-base/src/config/loading.rs",
+        "the comments of the configuration template, the file init writes",
+    ),
+    (
+        "nails-forensics/src/residue_catalog/rows/",
+        "the residue catalogue, reference text the threat model and the decoy requirements \
+         are generated from, which verify and check quote as it is",
+    ),
+];
+
+/// A source file that holds only tests or test fixtures, which print nothing
+/// a person reads.
+fn is_test_source(relative: &str) -> bool {
+    let name = relative.rsplit('/').next().unwrap_or(relative);
+    relative.contains("/tests/")
+        || relative.contains("/mock/")
+        || relative.contains("/test_support")
+        || name.ends_with("tests.rs")
+        || name.starts_with("tests_")
+        || name == "fake.rs"
+}
+
+/// Every `.rs` file below `dir`, as paths relative to `root`.
+fn rust_sources(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<String>) {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .unwrap_or_else(|e| panic!("read {}: {e}", dir.display()))
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            rust_sources(root, &path, out);
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
+            let relative = path.strip_prefix(root).unwrap().to_string_lossy();
+            out.push(relative.into_owned());
+        }
+    }
+}
+
+/// The lines of `text` a command can print: the code before an inline test
+/// module, without its comments.
+fn printable_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    let end = text
+        .find("\n#[cfg(test)]\nmod tests")
+        .or_else(|| text.find("\n#[cfg(test)]\n#[path"))
+        .unwrap_or(text.len());
+    text[..end]
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .map(|(index, line)| (index + 1, line))
+}
+
+/// No string a command prints names a bare `nails <command>`: the binary is
+/// not on `PATH`, so such a hint cannot be pasted. A next step is rendered
+/// through `nails_base::next_step` with the real binary path instead.
+#[test]
+fn no_source_names_a_bare_nails_command() {
+    let rules = load_rules();
+    let root = rules_path().parent().unwrap().to_path_buf();
+    let mut sources = Vec::new();
+    let mut crates: Vec<_> = std::fs::read_dir(&root)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("nails-"))
+                && path.join("src").is_dir()
+        })
+        .collect();
+    crates.sort();
+    assert!(crates.len() > 5, "the crates were found: {crates:?}");
+    for krate in &crates {
+        rust_sources(&root, &krate.join("src"), &mut sources);
+    }
+    let mut found = Vec::new();
+    for relative in &sources {
+        if is_test_source(relative)
+            || BARE_COMMAND_ALLOWED
+                .iter()
+                .any(|(allowed, _)| relative.starts_with(allowed))
+        {
+            continue;
+        }
+        let text = std::fs::read_to_string(root.join(relative)).unwrap();
+        for (number, line) in printable_lines(&text) {
+            if has_bare_nails_command(line, &rules.commands) {
+                found.push(format!("{relative}:{number}: {}", line.trim()));
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "a bare `nails <command>`; render the next step through \
+         nails_base::next_step::sudo_line:\n{}",
+        found.join("\n")
+    );
+}
+
+#[test]
+fn the_source_scan_reads_only_the_printable_lines() {
+    let text = "let a = \"run nails recover\";\n// nails status in a comment\n\
+                #[cfg(test)]\nmod tests {\n    \"nails verify\"\n}\n";
+    let lines: Vec<(usize, &str)> = printable_lines(text).collect();
+    assert_eq!(lines, vec![(1, "let a = \"run nails recover\";")]);
+    assert!(is_test_source("nails-cli/src/cli/output/status/tests.rs"));
+    assert!(is_test_source("nails-base/src/filesystem/mock/state.rs"));
+    assert!(!is_test_source("nails-cli/src/cli/commands/recover.rs"));
 }
 
 #[test]

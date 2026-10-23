@@ -60,17 +60,22 @@ const IOMMU_GROUPS: &str = "/sys/kernel/iommu_groups";
 /// older kernels, which do not expose it.
 const IOMMU_GROUP_TYPE: &str = "type";
 
-/// Why NAILS cannot turn DMA protection on, and the only reliable mitigation.
+/// Why NAILS cannot turn DMA protection on, and the only reliable mitigation,
+/// the power-off named with the real binary path.
 ///
 /// It rides on the warning's fix line, as the memory-wipe check's fix does.
-const FIRMWARE_ADVICE: &str = "NAILS cannot turn DMA protection on for you: it lives in firmware — enable VT-d or AMD-Vi \
-     and \"Kernel DMA Protection\" in BIOS/UEFI setup, and, if the kernel still does not remap \
-     DMA, add the IOMMU flag to the decoy kernel command line and reboot. Those are NVRAM and \
-     boot-configuration changes NAILS refuses to make on your behalf, the same boundary that \
-     stops it setting the TCG Memory Overwrite Request (MOR) bit. No IOMMU makes a machine left \
-     powered on and unlocked safe against seizure, because a DMA peripheral reads RAM straight \
-     off the bus without the CPU; power off (nails emergency --poweroff) before the machine \
-     leaves your control.";
+fn firmware_advice() -> String {
+    format!(
+        "NAILS cannot turn DMA protection on for you: it lives in firmware — enable VT-d or AMD-Vi \
+         and \"Kernel DMA Protection\" in BIOS/UEFI setup, and, if the kernel still does not remap \
+         DMA, add the IOMMU flag to the decoy kernel command line and reboot. Those are NVRAM and \
+         boot-configuration changes NAILS refuses to make on your behalf, the same boundary that \
+         stops it setting the TCG Memory Overwrite Request (MOR) bit. No IOMMU makes a machine left \
+         powered on and unlocked safe against seizure, because a DMA peripheral reads RAM straight \
+         off the bus without the CPU; power off (`{}`) before the machine leaves your control.",
+        crate::next_step::sudo_line(crate::next_step::NextStep::EmergencyPoweroff)
+    )
+}
 
 /// Advisory for a DMA-hardened machine whose kernel `lockdown` is already
 /// `confidentiality`: the software memory-read paths are closed too.
@@ -261,7 +266,7 @@ fn exposed_warning(iommu: IommuState, lockdown: Lockdown) -> CheckResult {
     } else {
         ""
     };
-    CheckResult::warn_with(format!("{risk}{lockdown_note}"), FIRMWARE_ADVICE)
+    CheckResult::warn_with(format!("{risk}{lockdown_note}"), firmware_advice())
 }
 
 /// The pass (with an optional lockdown advisory) for a machine whose hardware DMA
@@ -339,7 +344,7 @@ fn verdict(
              DMA-capable device read all of RAM. This also happens inside a virtual-machine or \
              container guest, whose view does not reflect the host's physical DMA exposure; \
              assess it on the host.",
-            FIRMWARE_ADVICE,
+            firmware_advice(),
         );
     }
 
@@ -490,6 +495,15 @@ mod tests {
     use crate::filesystem::MockFilesystem;
     use std::path::{Path, PathBuf};
 
+    /// The power-off the fix names, with the real binary path (never a bare
+    /// `nails emergency`).
+    fn power_off_line() -> String {
+        format!(
+            "power off (`{}`)",
+            crate::next_step::sudo_line(crate::next_step::NextStep::EmergencyPoweroff)
+        )
+    }
+
     // ----- pure command-line parsing -----
 
     #[test]
@@ -637,7 +651,7 @@ mod tests {
         assert!(result.is_warn());
         assert!(!result.is_fail(), "the check must never block activation");
         assert!(
-            result.message().contains("nails emergency --poweroff"),
+            result.message().contains(&power_off_line()),
             "the fix names the power-off mitigation"
         );
     }
@@ -838,7 +852,7 @@ mod tests {
         let result = DmaProtectionCheck::new().run(&fs).unwrap();
         assert!(result.is_warn(), "{}", result.message());
         assert!(result.message().contains("all of system RAM"));
-        assert!(result.message().contains("nails emergency --poweroff"));
+        assert!(result.message().contains(&power_off_line()));
     }
 
     #[test]
