@@ -56,7 +56,7 @@ logs, because destroying the decoy's log history is itself a deniability tell.
 | Finding | Why it matters |
 |---|---|
 | [Persistent systemd journal](#fail-closed-activation-is-refused) | The decoy journal records the sudo command line (including the hidden-root binary path) before the soft-reboot, and the decoy's own shutdown and start around each transition. |
-| [Classic syslog daemon](#fail-closed-activation-is-refused) | rsyslog or syslog-ng writes every logged line to /var/log on the decoy disk, outside the journal. |
+| [Classic syslog daemon](#fail-closed-activation-is-refused) | A syslog daemon (rsyslog, syslog-ng, a syslogd, metalog or socklog) writes every logged line to /var/log on the decoy disk, outside the journal. |
 | [Audit daemon log](#fail-closed-activation-is-refused) | auditd records executed commands and file access in /var/log/audit, independent of journald. |
 <!-- residue-catalog:end fail-closed -->
 
@@ -98,7 +98,14 @@ volatile can count as persistent. Run them with sudo.
   processing, and with both set it only logs that a program crashed. Keep
   systemd-coredump running with those two settings rather than turning it off:
   without it the kernel writes a `core` file into the crashing program's
-  working directory.
+  working directory. kdump is the one that reaches past the session entirely:
+  if the kernel crashes during a hidden session, kdump's crash kernel mounts
+  the decoy root by its device, outside the session's overlay, and writes a
+  dump of kernel memory, which can hold the hidden volume's encryption key and
+  the names of the files the session used, and the session's kernel log to
+  `/var/crash` on the decoy disk. Ubuntu arms kdump-tools by default from
+  24.10, so 26.04 among them; disable it on the decoy (Ubuntu: `kdump-tools`,
+  Fedora: `kdump`).
 - **Maintenance timers** (NixOS) — `nixos-upgrade.timer`, which rebuilds the
   decoy on its own schedule (and can touch EFI NVRAM). The generated hidden
   module force-disables `system.autoUpgrade`, but with `--overlay-only`, or
@@ -186,7 +193,8 @@ logind.
   fine (the hidden session mounts a fresh tmpfs there, in RAM).
 - **Volatile journald**: `services.journald.storage = "volatile";`.
 - **No classic syslog / audit**: do not enable `services.rsyslogd`,
-  `services.syslog-ng` or `security.auditd` / the audit framework on the decoy.
+  `services.syslog-ng`, `services.syslogd` or `security.auditd` / the audit
+  framework on the decoy.
 - **noatime**: add `"noatime"` to the root filesystem's mount options.
 - **Core dumps kept off the disk**:
   `systemd.coredump.settings.Coredump = { Storage = "none"; ProcessSizeMax = 0; };`.
@@ -287,7 +295,8 @@ logind.
   `/etc/systemd/journald.conf.d/50-volatile.conf`. NAILS resolves the main
   file and every `journald.conf.d/*.conf` drop-in the way systemd does, so a
   drop-in that sets `Storage=persistent` is caught too.
-- Remove or disable `rsyslog` and `auditd` if installed.
+- Remove or disable `rsyslog`, any other syslog daemon and `auditd` if
+  installed.
 - If `systemd-coredump` is installed, set `Storage=none` and `ProcessSizeMax=0`
   under `[Coredump]` in a drop-in such as
   `/etc/systemd/coredump.conf.d/50-discard.conf`.
@@ -300,7 +309,8 @@ logind.
   not supported: the way back mounts the decoy root by device.
 - **Volatile journald**: `Storage=volatile` in `journald.conf` or a
   `journald.conf.d/*.conf` drop-in.
-- Remove or disable `rsyslog`/`syslog-ng` and `auditd`.
+- Remove or disable the syslog daemon (`rsyslog`, `syslog-ng`,
+  `inetutils-syslogd`, `busybox-syslogd`, `sysklogd`) and `auditd`.
 - With `systemd-coredump` installed, `Storage=none` and `ProcessSizeMax=0` in a
   `coredump.conf.d/*.conf` drop-in.
 - `noatime`; no swap; no hibernation.
@@ -514,7 +524,7 @@ check. A row with "none" in the VM-test column says why no VM test asserts it.
 | [Persistent systemd journal](#fail-closed-activation-is-refused) (`persistent-journal`) | `/var/log/journal` | all | `decoy-persistence` (refuses) | `journal-scan` | Set Storage=volatile under [Journal] in journald.conf or a journald.conf.d drop-in. | `decoy-persistence-preflight` |
 | [Journal window around each soft-reboot](#what-the-decoy-journal-keeps) (`pre-entry-journal-window`) | journald records of `sudo nails activate`, the decoy shutdown before the soft-reboot and the decoy start after the way back | all | `decoy-persistence` (refuses) | `journal-scan` | Run on a volatile journal, so the window never reaches the decoy disk; keep the binary at a neutral path. | `decoy-journal-leak` |
 | [Decoy journal reset by the way back](#what-the-decoy-journal-keeps) (`runtime-journal-reset`) | the runtime journal below /run/log/journal, which the decoy and the hidden journald write alike and the way back deletes | all | none: the scrub causes it, as the last step before the switch back | none: RAM only, gone at power-off | Power off after the session. | `session-lifecycle` |
-| [Classic syslog daemon](#fail-closed-activation-is-refused) (`classic-syslog`) | `/var/log/syslog`, `/var/log/messages`, `/var/log/auth.log` | all | `decoy-persistence` (refuses) | `deep-scan-files` | Remove or disable rsyslog and syslog-ng on the decoy. | `decoy-persistence-preflight` |
+| [Classic syslog daemon](#fail-closed-activation-is-refused) (`classic-syslog`) | `/var/log/syslog`, `/var/log/messages`, `/var/log/auth.log` | all | `decoy-persistence` (refuses) | `deep-scan-files` | Remove or disable the syslog daemon on the decoy. | `decoy-persistence-preflight` |
 | [Audit daemon log](#fail-closed-activation-is-refused) (`auditd`) | `/var/log/audit` | all | `decoy-persistence` (refuses) | path probe (warn) | Disable auditd and the audit framework on the decoy. | `decoy-persistence-preflight` |
 | [sudo log file](#the-sudo-log-exposure-and-its-mitigation) (`sudo-logfile`) | `/var/log/sudo.log` | all | `decoy-persistence` | path probe (warn) | Remove `Defaults logfile=` from sudoers and sudoers.d. | `examiner-audit` |
 | [sudo I/O logging](#the-sudo-log-exposure-and-its-mitigation) (`sudo-io-log`) | `/var/log/sudo-io` | all | `decoy-persistence` | path probe (warn) | Remove every I/O logging option and tag from sudoers and sudoers.d. | `examiner-audit` |
