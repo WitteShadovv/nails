@@ -3,15 +3,19 @@
 # runs several soft-reboots at once. The re-entry hang was found only by paired,
 # repeated activations under that kind of host load, never by a one-shot test,
 # so this lane exists to keep it closed: it asserts that every re-entry reaches
-# the hidden root's backdoor within the deadline and that the decoy never sees
-# the hidden canary, over hundreds of cycles.
+# the hidden root's backdoor within the deadline, and that every canary a
+# hidden session wrote stays in the upper and never reaches the decoy disk,
+# over hundreds of cycles.
 #
 # It is heavy (a cycle is ~10-15 s, so the soaker alone runs well over an hour)
 # and is not a gate: the `soak` tag keeps it out of `all`, the tag groups, the
 # CI shards and `--affected` (see default.nix), and its own workflow runs it on
-# a hosted runner weekly and before a release. Build or run it by name:
+# a hosted runner weekly and before a release. Build (and so run) it by name:
 #
-#   just e2e-tests run soak-reentry
+#   nix build -L .#legacyPackages.x86_64-linux.e2e.soak-reentry
+#
+# Its driver alone (`...e2e.soak-reentry.driver`) builds without KVM and lints
+# and type-checks the script, which is the quick check after an edit.
 #
 # The stall diagnosis (a job-queue report on Alt+ArrowUp and the SysRq dumps) is
 # already on every node through vm-config.nix, so a switch that never settles
@@ -32,14 +36,6 @@ let
   # A re-entry that takes longer than this is the hang, not a slow host: the
   # lifecycle's generous backdoor deadline, which the stall report fires before.
   deadlineSeconds = 600;
-
-  # How many neighbour VMs cycle beside the soaker (one or two). Each
-  # self-drives a plain activate/deactivate churn so the host carries several
-  # soft-reboots at once, the condition under which the hang appeared.
-  neighbours = [
-    "neighbourOne"
-    "neighbourTwo"
-  ];
 
   nailsPackage = self.packages.${pkgs.stdenv.hostPlatform.system}.nails;
 
@@ -98,16 +94,18 @@ let
     };
   };
 
+  # The soaker and the neighbour VMs that cycle beside it (one or two). Each
+  # neighbour self-drives a plain activate/deactivate churn so the host carries
+  # several soft-reboots at once, the condition under which the hang appeared.
+  # The nodes are named in the literal, so ci/tests/test_e2e_run.py holds each
+  # name to the 11 bytes a node name may take in the drivers' socket paths.
   nodes = {
     soaker = _: decoyNode;
-  }
-  // builtins.listToAttrs (
-    map (name: {
-      inherit name;
-      value = _: neighbourNode;
-    }) neighbours
-  );
+    neighbourA = _: neighbourNode;
+    neighbourB = _: neighbourNode;
+  };
 
+  neighbours = pkgs.lib.remove "soaker" (builtins.attrNames nodes);
   neighbourList = pkgs.lib.concatMapStringsSep ", " (name: "\"${name}\"") neighbours;
 in
 {
@@ -155,6 +153,20 @@ in
         )
 
 
+    def names_in(node, directory):
+        """The entries of a directory, one backdoor call however many."""
+        return set(node.succeed(f"ls -A {directory}").split())
+
+
+    def canaries_persisted(node, canaries):
+        """Fail unless every canary a hidden session wrote is in the upper.
+
+        A canary written to /root in the hidden root lands at root/<canary>
+        below the whole-root upper, and stays there across sessions."""
+        missing = sorted(set(canaries) - names_in(node, f"{UPPER}/root"))
+        assert not missing, f"hidden canaries missing from the upper: {missing}"
+
+
     def decoy_is_clean(node, canaries):
         """Fail if any hidden canary reached the decoy root filesystem.
 
@@ -166,13 +178,17 @@ in
             f"mkdir -p {PEEK} && mount {decoy_dev} {PEEK} && mount -o remount,bind,ro {PEEK}"
         )
         try:
-            for canary in canaries:
-                node.fail(f"test -e {PEEK}/root/{canary}")
+            leaked = sorted(set(canaries) & names_in(node, f"{PEEK}/root"))
         finally:
             node.succeed(f"umount {PEEK} && rmdir {PEEK}")
+        assert not leaked, f"hidden canaries reached the decoy disk: {leaked}"
 
 
-    # The driver injects each node under its name (soaker, neighbourOne, ...).
+    # The canonical activate/deactivate helpers drive a `machine` global, which
+    # the driver defines only for a test with a single node: point it at the
+    # soaker. The driver injects each node under its name (soaker, neighbourA,
+    # ...).
+    machine = soaker
     start_all()
     for node in [soaker] + [globals()[name] for name in neighbours]:
         node.wait_for_unit("multi-user.target")
@@ -189,6 +205,9 @@ in
     setup(soaker)
 
     reached = 0
+    # Every canary of every cycle so far. A leak a race lets through in one
+    # cycle stays on the decoy, so each deep check looks for all of them.
+    written: list[str] = []
     with subtest(f"the soaker re-enters the hidden root {CYCLES} times"):
         for cycle in range(CYCLES):
             if cycle > 0:
@@ -204,15 +223,20 @@ in
             # never on the decoy disk.
             canary = "soak-" + secrets.token_hex(6)
             soaker.succeed(f"echo {canary} > /root/{canary} && sync")
+            written.append(canary)
             canonical_deactivate(CONFIG, f"soak-{cycle}-back")
             deep = (cycle + 1) % DEEP_CHECK_EVERY == 0 or cycle + 1 == CYCLES
             if deep:
                 soaker.succeed("""${hiddenVolume.reopenHiddenVolume}""")
-                assert canary in soaker.succeed(f"cat {UPPER}/{canary}"), (
-                    "the hidden canary did not persist in the upper"
+                assert canary in soaker.succeed(f"cat {UPPER}/root/{canary}"), (
+                    "the hidden canary's content did not persist in the upper"
                 )
-                decoy_is_clean(soaker, [canary])
-                soaker.log(f"soak cycle {cycle + 1}/{CYCLES}: re-entry and decoy clean")
+                canaries_persisted(soaker, written)
+                decoy_is_clean(soaker, written)
+                soaker.log(
+                    f"soak cycle {cycle + 1}/{CYCLES}: re-entry clean, "
+                    f"{len(written)} canaries in the upper and none on the decoy"
+                )
 
     assert reached == CYCLES, f"only {reached} of {CYCLES} re-entries reached the backdoor"
     soaker.log(f"soak complete: {reached} re-entries, decoy clean")
