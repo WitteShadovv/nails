@@ -34,6 +34,9 @@ pub mod verdict;
 #[cfg(test)]
 mod tests;
 
+#[cfg(test)]
+mod verdict_proptest;
+
 pub use catalog::{Catalog, CatalogRow};
 pub use model::{
     AllowEntry, Allowlist, Canary, Controls, Finding, ImageLabel, OraclePolicy, PositiveControl,
