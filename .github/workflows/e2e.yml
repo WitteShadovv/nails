@@ -347,6 +347,12 @@ jobs:
       # runner keeps its own substituters and its store, which may hold a
       # pass from an earlier run; --require-boot fails such a test instead of
       # counting it.
+      #
+      # --job-timeout is this job's timeout-minutes. ci.e2e ends the run five
+      # minutes before it and stops a test after half of the rest (the other
+      # half is for its retry), so a test that hangs fails by name, its driver
+      # and VMs stopped and its log kept for the upload below, instead of the
+      # job being cancelled with nothing recorded.
       - name: Run tests
         env:
           MODE: ${{ needs.plan.outputs.mode }}
@@ -354,6 +360,7 @@ jobs:
           TESTS: ${{ join(matrix.tests, ' ') }}
           INDEX: ${{ matrix.index }}
           COUNT: ${{ matrix.count }}
+          JOB_TIMEOUT: ${{ matrix.timeout }}
         run: |
           set -euo pipefail
           if [ "$MODE" = execute ]; then
@@ -374,6 +381,7 @@ jobs:
           args=(
             run "${tests[@]}"
             --retries 1
+            --job-timeout "$JOB_TIMEOUT"
             --durations-out "$RUNNER_TEMP/e2e-durations/shard-$INDEX.jsonl"
             --log-dir "$RUNNER_TEMP/e2e-logs"
             --summary "$GITHUB_STEP_SUMMARY"
@@ -447,8 +455,9 @@ jobs:
         with:
           cache: ${{ needs.plan.outputs.cache }}
 
-      # The same open-file limit and record as an execute shard's (see the
-      # shard's Run tests step).
+      # The same open-file limit and record as an execute shard's, and the
+      # same time limit, from this job's timeout-minutes (see the shard's Run
+      # tests step).
       - name: Run the performance tests
         run: |
           if ! sudo -n prlimit --pid $$ --nofile=1048576:1048576; then
@@ -459,7 +468,7 @@ jobs:
           free -m || true
           echo "Open files: soft $(ulimit -Sn), hard $(ulimit -Hn)"
           echo "::endgroup::"
-          python3 -m ci.e2e run performance --execute \
+          python3 -m ci.e2e run performance --execute --job-timeout 60 \
             --durations-out "$RUNNER_TEMP/e2e-durations/performance.jsonl" \
             --log-dir "$RUNNER_TEMP/e2e-logs" \
             --summary "$GITHUB_STEP_SUMMARY" \

@@ -17,6 +17,12 @@ fails a test that was not built in it, because the store or a binary cache
 already held its output, rather than count an earlier run's pass. Durations
 are written as the same ``{"test","result","seconds"}`` JSON lines the weight
 tools read.
+
+Either way can run under a :class:`TimeLimit`, as a CI shard does: one attempt
+of a test runs at most a share of the run's time, so a test that hangs is
+stopped by name, its driver and VMs with it, and its log kept; and the run
+itself ends before the CI job would be cancelled, stopping whatever still
+runs, so the job can still upload the logs instead of losing them all.
 """
 
 from __future__ import annotations
@@ -25,23 +31,39 @@ import json
 import os
 import resource
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TextIO
 
 from . import evaluate
 
 # nix activity type for a derivation build (`Logger::Fields`, actBuild).
 ACT_BUILD = 105
+# nix result type of one line a build logged (resBuildLogLine).
+RES_BUILD_LOG_LINE = 101
 _NIX_PREFIX = "@nix "
 DEFAULT_ATTR_PREFIX = ".#legacyPackages.x86_64-linux.e2e"
 # Extra time a directly executed driver gets beyond its own globalTimeout, so
 # the driver reports the timeout itself before it is killed.
 DRIVER_GRACE_SECONDS = 120
+# Of a CI job's timeout, the minutes kept for the steps around the run:
+# checking out and setting up Nix before it, and after it the drift report and
+# the upload of the durations and of the logs of failed tests.
+JOB_RESERVE_MINUTES = 5
+# No test starts or is retried with less than this left before the run's time
+# limit: a VM test could not boot and finish in it.
+MIN_TEST_SECONDS = 60
+# A failed test that ran at least its timeout less this had run out of time.
+TIMEOUT_SLACK_SECONDS = 5
+# How long a stopped nix build or driver gets to exit before it is killed.
+STOP_GRACE_SECONDS = 30
 # Lines of a failed driver's log repeated on stderr, so the cause shows in the
 # job log without downloading the artifact.
 LOG_TAIL_LINES = 60
@@ -82,6 +104,55 @@ class TestOutcome:
     # A failure only because the test did not boot in a run that requires it:
     # the store or a binary cache already held its output.
     not_booted: bool = False
+    # The test ran out of time, its own or its share of the run's, and was
+    # stopped.
+    timed_out: bool = False
+    # The run reached its time limit before the test could start.
+    not_run: bool = False
+
+
+@dataclass(frozen=True)
+class TimeLimit:
+    """How long a run may take, and one attempt of one test in it.
+
+    ``deadline`` is a :func:`time.monotonic` reading: there the run stops what
+    still runs, starts nothing more and reports. ``test_seconds`` bounds one
+    attempt of one test.
+    """
+
+    deadline: float
+    test_seconds: int
+
+    def left(self) -> float:
+        """Seconds until the deadline, never below zero."""
+        return max(0.0, self.deadline - time.monotonic())
+
+    def for_test(self) -> int:
+        """The most one attempt of a test started now may take."""
+        return max(1, min(self.test_seconds, int(self.left())))
+
+
+def job_time_limit(job_minutes: int, retries: int) -> TimeLimit:
+    """The time limit of a run in a CI job whose timeout is ``job_minutes``.
+
+    The run ends JOB_RESERVE_MINUTES before the job would be cancelled, so it
+    still reports the tests it stopped and the job still uploads their logs.
+    One attempt of a test gets an equal share of the rest per attempt, half of
+    it with one retry, so a test that hangs is stopped well inside the job and
+    its retry can follow.
+    """
+    seconds = (job_minutes - JOB_RESERVE_MINUTES) * 60
+    if seconds < MIN_TEST_SECONDS:
+        raise RunError(
+            f"a {job_minutes}-minute job leaves no time to run a test: "
+            f"{JOB_RESERVE_MINUTES} minutes are kept for the steps around the run"
+        )
+    return TimeLimit(time.monotonic() + seconds, seconds // (retries + 1))
+
+
+def ran_out(seconds: int, timeout: int | None) -> bool:
+    """Whether a failed test that ran ``seconds`` failed by its ``timeout``."""
+    return timeout is not None and seconds + TIMEOUT_SLACK_SECONDS >= timeout
 
 
 def _drv_from_fields(payload: Mapping[str, object]) -> str | None:
@@ -99,69 +170,129 @@ def _drv_from_fields(payload: Mapping[str, object]) -> str | None:
     return None
 
 
+class BuildWatch:
+    """Follow the ``--log-format internal-json`` stream of a ``nix build``.
+
+    A test that starts and stops a build is a timed ``pass``; one that starts
+    without stopping (killed or failed build) is a ``fail``; a test with no
+    build activity was served from the store and gets no outcome here. Nix also
+    stops the activity of a failed build, so the caller corrects the result
+    from the store afterwards (see ``missing_outputs``).
+
+    The lines carry no time of their own: ``clock`` is read as each start and
+    stop line is fed. Feed the live stream of a running ``nix build``, never
+    lines collected after it exited, in which every build would take the same
+    instant and last zero seconds.
+
+    With ``logs``, each line a test's build logs goes to ``<logs>/<test>.log``
+    as it arrives, so a test stopped part way keeps its log so far. With
+    ``progress``, a line there says when each test starts and stops, and nix's
+    errors and warnings are copied there, so a job log shows what ran and what
+    never ended even when the job itself is cut short.
+    """
+
+    def __init__(
+        self,
+        drv_to_test: Mapping[str, str],
+        clock: Callable[[], float] = time.monotonic,
+        logs: Path | None = None,
+        progress: TextIO | None = None,
+    ) -> None:
+        self.outcomes: dict[str, TestOutcome] = {}
+        self._drv_to_test = drv_to_test
+        self._clock = clock
+        self._logs = logs
+        self._progress = progress
+        self._started: dict[int, tuple[str, float]] = {}
+        self._files: dict[int, TextIO] = {}
+
+    def feed(self, line: str) -> None:
+        if not line.startswith(_NIX_PREFIX):
+            return
+        try:
+            payload = json.loads(line[len(_NIX_PREFIX) :])
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+        action = payload.get("action")
+        activity = payload.get("id")
+        if action == "msg":
+            self._relay(payload)
+        elif not isinstance(activity, int):
+            return
+        elif action == "start" and payload.get("type") == ACT_BUILD:
+            self._start(activity, payload)
+        elif action == "result" and payload.get("type") == RES_BUILD_LOG_LINE:
+            handle = self._files.get(activity)
+            fields = payload.get("fields")
+            if handle is not None and isinstance(fields, list) and fields:
+                handle.write(f"{fields[0]}\n")
+        elif action == "stop" and activity in self._started:
+            test, start = self._started.pop(activity)
+            seconds = round(self._clock() - start)
+            self.outcomes[test] = TestOutcome("pass", seconds)
+            self._close(activity)
+            self._say(f"{test}: finished after {seconds}s")
+
+    def finish(self) -> set[str]:
+        """End the stream: each build that never stopped is a failure.
+
+        Returns those tests, timed up to now.
+        """
+        unfinished: set[str] = set()
+        now = self._clock() if self._started else 0.0
+        for activity, (test, start) in self._started.items():
+            self.outcomes.setdefault(test, TestOutcome("fail", round(now - start)))
+            unfinished.add(test)
+            self._close(activity)
+        self._started.clear()
+        return unfinished
+
+    def _start(self, activity: int, payload: Mapping[str, object]) -> None:
+        drv = _drv_from_fields(payload)
+        test = self._drv_to_test.get(drv) if drv is not None else None
+        if test is None:
+            return
+        self._started[activity] = (test, self._clock())
+        if self._logs is not None:
+            path = self._logs / f"{test}.log"
+            # Line-buffered, so the log is on disk however the run ends.
+            self._files[activity] = path.open("w", encoding="utf-8", buffering=1)
+        self._say(f"{test}: started")
+
+    def _close(self, activity: int) -> None:
+        handle = self._files.pop(activity, None)
+        if handle is not None:
+            handle.close()
+
+    def _relay(self, payload: Mapping[str, object]) -> None:
+        level = payload.get("level")
+        message = payload.get("msg")
+        # Levels 0 and 1 are errors and warnings; the rest is chatter that the
+        # failure logs hold anyway.
+        if isinstance(level, int) and level <= 1 and isinstance(message, str):
+            self._say(message)
+
+    def _say(self, text: str) -> None:
+        if self._progress is not None:
+            print(text, file=self._progress, flush=True)
+
+
 def durations_from_internal_json(
     lines: Iterable[str],
     drv_to_test: Mapping[str, str],
     clock: Callable[[], float] = time.monotonic,
 ) -> dict[str, TestOutcome]:
-    """Derive each test's outcome from a ``--log-format internal-json`` stream.
+    """Each test's outcome in a ``--log-format internal-json`` stream.
 
-    A test that starts and stops a build is a timed ``pass``; one that starts
-    without stopping (killed or failed build) is a ``fail``; a test with no
-    build activity was served from the store and is a zero-second ``pass``.
-    Nix also stops the activity of a failed build, so the caller corrects the
-    result from the store afterwards (see ``missing_outputs``).
-
-    The lines carry no time of their own: ``clock`` is read as each start and
-    stop line is parsed. Pass the live stream of a running ``nix build``,
-    never lines collected after it exited, in which every build would take
-    the same instant and last zero seconds.
+    See :class:`BuildWatch`, which this feeds every line and finishes.
     """
-    started: dict[int, tuple[str, float]] = {}
-    outcomes: dict[str, TestOutcome] = {}
+    watch = BuildWatch(drv_to_test, clock)
     for line in lines:
-        if not line.startswith(_NIX_PREFIX):
-            continue
-        try:
-            payload = json.loads(line[len(_NIX_PREFIX) :])
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        action = payload.get("action")
-        if action == "start" and payload.get("type") == ACT_BUILD:
-            drv = _drv_from_fields(payload)
-            test = drv_to_test.get(drv) if drv is not None else None
-            activity_id = payload.get("id")
-            if test is not None and isinstance(activity_id, int):
-                started[activity_id] = (test, clock())
-        elif action == "stop":
-            activity_id = payload.get("id")
-            if isinstance(activity_id, int) and activity_id in started:
-                test, start_time = started.pop(activity_id)
-                outcomes[test] = TestOutcome("pass", round(clock() - start_time))
-    for test, _start in started.values():
-        outcomes.setdefault(test, TestOutcome("fail", 0))
-    return outcomes
-
-
-def _progress_line(line: str) -> str | None:
-    """Return the human-readable text of a nix error or warning message."""
-    if not line.startswith(_NIX_PREFIX):
-        return None
-    try:
-        payload = json.loads(line[len(_NIX_PREFIX) :])
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(payload, dict) or payload.get("action") != "msg":
-        return None
-    level = payload.get("level")
-    message = payload.get("msg")
-    # Levels 0 and 1 are errors and warnings; the rest is chatter that the
-    # failure logs hold anyway.
-    if isinstance(level, int) and level <= 1 and isinstance(message, str):
-        return message
-    return None
+        watch.feed(line)
+    watch.finish()
+    return watch.outcomes
 
 
 def write_durations(
@@ -171,8 +302,10 @@ def write_durations(
 
     A test with no recorded outcome was served from the Nix store, so it counts
     as a zero-second pass rather than being dropped. A flaky pass carries
-    ``"flaky": true`` next to the duration of the passing attempt, and a test
-    that failed only because it did not boot carries ``"not_booted": true``.
+    ``"flaky": true`` next to the duration of the passing attempt, a test that
+    failed only because it did not boot carries ``"not_booted": true``, one
+    stopped for running out of time ``"timed_out": true``, and one the run's
+    time limit kept from starting ``"not_run": true``.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as handle:
@@ -183,10 +316,9 @@ def write_durations(
                 "result": outcome.result,
                 "seconds": outcome.seconds,
             }
-            if outcome.flaky:
-                record["flaky"] = True
-            if outcome.not_booted:
-                record["not_booted"] = True
+            for flag in ("flaky", "not_booted", "timed_out", "not_run"):
+                if getattr(outcome, flag):
+                    record[flag] = True
             handle.write(json.dumps(record) + "\n")
 
 
@@ -276,12 +408,29 @@ def missing_outputs(drv_to_test: Mapping[str, str]) -> list[str]:
     ]
 
 
+@dataclass
+class _Attempt:
+    """One ``nix build`` of a set of tests."""
+
+    status: int
+    # The tests whose build started, timed (see BuildWatch).
+    outcomes: dict[str, TestOutcome]
+    # Started and still building when the stream ended.
+    unfinished: set[str] = field(default_factory=set)
+    # The run's time limit stopped the build.
+    stopped: bool = False
+    # The most any one build could run (nix --timeout), if bounded.
+    timeout: int | None = None
+
+
 def _build_once(
     tests: Sequence[str],
     drv_to_test: Mapping[str, str],
     jobs: int | None,
     clock: Callable[[], float],
-) -> tuple[int, dict[str, TestOutcome]]:
+    logs: Path | None = None,
+    limit: TimeLimit | None = None,
+) -> _Attempt:
     # Build by derivation path, not by flake attribute: the paths were already
     # evaluated in bounded batches, so this nix process evaluates nothing and
     # its memory stays small however many tests it runs.
@@ -289,32 +438,84 @@ def _build_once(
     command = ["nix", "build", "--keep-going", "-L", "--log-format", "internal-json"]
     if jobs is not None:
         command += ["--max-jobs", str(jobs)]
+    timeout = None
+    if limit is not None:
+        # nix stops any build that runs longer, a test's or another, and fails
+        # it: the test's share of the run, or what is left of the run.
+        timeout = limit.for_test()
+        command += ["--timeout", str(timeout)]
     command += ["--no-link", *(f"{drv}^*" for drv in wanted)]
 
+    watch = BuildWatch(wanted, clock, logs, sys.stderr)
+    stopped = threading.Event()
     with subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",
     ) as process:
         assert process.stderr is not None
-        # Parsed while nix runs, so each build is timed as its start and stop
-        # lines arrive.
-        outcomes = durations_from_internal_json(
-            _relay_messages(process.stderr), wanted, clock
-        )
-        status = process.wait()
-    return status, outcomes
+        timer = None
+        if limit is not None:
+            timer = threading.Timer(limit.left(), _stop_build, (process, stopped))
+            timer.daemon = True
+            timer.start()
+        try:
+            # Parsed while nix runs, so each build is timed as its start and
+            # stop lines arrive.
+            for raw in process.stderr:
+                watch.feed(raw.rstrip("\n"))
+            status = process.wait()
+        finally:
+            if timer is not None:
+                timer.cancel()
+            unfinished = watch.finish()
+    return _Attempt(status, watch.outcomes, unfinished, stopped.is_set(), timeout)
 
 
-def _relay_messages(stream: Iterable[str]) -> Iterator[str]:
-    """Yield the lines of a nix log stream, printing its errors and warnings."""
-    for raw in stream:
-        line = raw.rstrip("\n")
-        message = _progress_line(line)
-        if message is not None:
-            print(message, file=sys.stderr)
-        yield line
+def _stop_build(process: subprocess.Popen[str], stopped: threading.Event) -> None:
+    """Stop a nix build at the run's time limit, as Ctrl+C would.
+
+    Interrupted, nix ends its builds and exits; one that lingers is killed,
+    which the daemon also takes as the end of the builds it ran for it.
+    """
+    if process.poll() is not None:
+        return
+    stopped.set()
+    print("the run reached its time limit: stopping the build", file=sys.stderr)
+    process.send_signal(signal.SIGINT)
+    deadline = time.monotonic() + STOP_GRACE_SECONDS
+    while process.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.5)
+    if process.poll() is None:
+        process.kill()
+
+
+def _failure(
+    test: str, attempt: _Attempt, timeouts: Mapping[str, int] | None
+) -> TestOutcome:
+    """The outcome of a test whose output ``attempt`` left missing.
+
+    A test that never started failed with a dependency, or, when the time limit
+    stopped the build, was not run. One still running when it was stopped timed
+    out, and so did one that ran into its own timeout or nix's.
+    """
+    built = attempt.outcomes.get(test)
+    if built is None:
+        return TestOutcome("fail", 0, not_run=attempt.stopped)
+    limits = [t for t in ((timeouts or {}).get(test), attempt.timeout) if t]
+    timed_out = (attempt.stopped and test in attempt.unfinished) or ran_out(
+        built.seconds, min(limits, default=None)
+    )
+    return TestOutcome("fail", built.seconds, timed_out=timed_out)
+
+
+def _has_text(path: Path) -> bool:
+    try:
+        return path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 def _write_nix_log(drv: str, path: Path) -> None:
@@ -337,36 +538,53 @@ def run_build(
     eval_batch: int | None = None,
     eval_workers: int | None = None,
     require_boot: bool = False,
+    timeouts: Mapping[str, int] | None = None,
+    limit: TimeLimit | None = None,
 ) -> int:
     """Build every resolved test in one ``nix build`` and record outcomes.
 
     The derivations are evaluated first, ``eval_batch`` tests per ``nix eval``
     process and ``eval_workers`` processes at once (see :func:`eval_drvs`),
-    and then built by path with at most ``jobs`` VM tests at a time.
+    and then built by path with at most ``jobs`` VM tests at a time. Each
+    test's build log is kept as it runs, and a line on stderr says when each
+    test starts and finishes.
 
     Failed tests are rebuilt up to ``retries`` more times (Nix does not cache a
     failure); a test that passes on a retry is a flaky pass. With
     ``require_boot``, a test that passed without being built, because the
     store or a binary cache already held its output, fails as not booted, so
     that a runner whose own Nix settings or store hold an earlier run's pass
-    cannot pass it off as this run's. Returns 0 when every test passed, 1 when
-    a test still fails or did not boot, and the ``nix build`` status when the
-    build failed without a failed test to blame (an evaluation error, for
-    example), which is never retried. Nix is required; this is reached only
-    through the ``run`` subcommand.
+    cannot pass it off as this run's.
+
+    With a ``limit``, nix stops any build that runs longer than one test's
+    share of it, and the build is stopped when the run reaches its deadline: a
+    test still running then timed out, one that had not started was not run,
+    and no retry starts with less than MIN_TEST_SECONDS left. ``timeouts``
+    (each test's own, from the metadata) tell a test that its driver stopped
+    for running out of time from one that failed. The log of every failed test
+    is kept in ``log_dir``, and the tail of a timed-out test's is printed.
+
+    Returns 0 when every test passed, 1 when a test still fails, timed out,
+    was not run or did not boot, and the ``nix build`` status when the build
+    failed without a failed test to blame (an evaluation error, for example),
+    which is never retried. Nix is required; this is reached only through the
+    ``run`` subcommand.
     """
     if not tests:
         return 0
     test_to_drv = eval_drvs(tests, attr_prefix, eval_batch, eval_workers)
     drv_to_test = {drv: test for test, drv in test_to_drv.items()}
+    keep_logs = log_dir is not None
+    logs = log_dir if log_dir is not None else Path(tempfile.mkdtemp(prefix="e2e-"))
+    logs.mkdir(parents=True, exist_ok=True)
 
-    status, outcomes = _build_once(tests, drv_to_test, jobs, clock)
+    attempt = _build_once(tests, drv_to_test, jobs, clock, logs, limit)
+    status, outcomes, stopped = attempt.status, dict(attempt.outcomes), attempt.stopped
     failed: list[str] = []
     if status != 0:
         failed = missing_outputs(drv_to_test)
         for test in failed:
-            seconds = outcomes.get(test, TestOutcome("fail", 0)).seconds
-            outcomes[test] = TestOutcome("fail", seconds)
+            outcomes[test] = _failure(test, attempt, timeouts)
     # A test that passed without a build in the attempt that passed it was
     # served from the store or a binary cache: its pass is an earlier run's.
     served = {test for test in tests if test not in outcomes}
@@ -374,19 +592,29 @@ def run_build(
     for _attempt in range(retries):
         if not failed:
             break
+        if limit is not None and limit.left() < MIN_TEST_SECONDS:
+            print(
+                f"no time left to retry {len(failed)} failed test(s): "
+                f"{' '.join(failed)}",
+                file=sys.stderr,
+            )
+            break
         print(
             f"retrying {len(failed)} failed test(s): {' '.join(failed)}",
             file=sys.stderr,
         )
         retry_map = {test_to_drv[test]: test for test in failed}
-        _status, retried = _build_once(failed, retry_map, jobs, clock)
+        retried = _build_once(failed, retry_map, jobs, clock, logs, limit)
+        stopped = stopped or retried.stopped
         still_failed = set(missing_outputs(retry_map))
         for test in failed:
             if test not in still_failed:
-                seconds = retried.get(test, TestOutcome("pass", 0)).seconds
+                seconds = retried.outcomes.get(test, TestOutcome("pass", 0)).seconds
                 outcomes[test] = TestOutcome("pass", seconds, flaky=True)
-                if test not in retried:
+                if test not in retried.outcomes:
                     served.add(test)
+            elif test in retried.outcomes:
+                outcomes[test] = _failure(test, retried, timeouts)
         failed = [test for test in failed if test in still_failed]
 
     not_booted: list[str] = []
@@ -403,19 +631,34 @@ def run_build(
             )
 
     log_paths: dict[str, str] = {}
-    for test in failed:
-        if log_dir is not None:
-            path = log_dir / f"{test}.log"
+    for test in tests:
+        path = logs / f"{test}.log"
+        if test not in failed or outcomes[test].not_run:
+            # Passing logs are removed; only failures are worth uploading.
+            path.unlink(missing_ok=True)
+            continue
+        if not _has_text(path):
             _write_nix_log(test_to_drv[test], path)
-            log_paths[test] = str(path)
-        else:
-            log_paths[test] = f"nix log {test_to_drv[test]}"
+        if outcomes[test].timed_out:
+            print(
+                f"{test} ran out of time after {outcomes[test].seconds}s; the end "
+                f"of its log:\n{_tail(path, LOG_TAIL_LINES)}",
+                file=sys.stderr,
+            )
+        log_paths[test] = str(path) if keep_logs else f"nix log {test_to_drv[test]}"
+    if not keep_logs:
+        shutil.rmtree(logs, ignore_errors=True)
     if durations_out is not None:
         write_durations(durations_out, tests, outcomes)
     print(format_console_summary(tests, outcomes, log_paths), file=sys.stderr)
     if report is not None:
         report(tests, outcomes)
-    if status != 0 and not failed and not any(o.flaky for o in outcomes.values()):
+    if (
+        status != 0
+        and not failed
+        and not stopped
+        and not any(o.flaky for o in outcomes.values())
+    ):
         # The build failed, yet every test output exists: nothing to retry and
         # nothing to blame, so pass the original status on.
         return status
@@ -435,13 +678,14 @@ def build_drivers(
     attr_prefix: str,
     batch_size: int | None = None,
     workers: int | None = None,
+    limit: TimeLimit | None = None,
 ) -> dict[str, Path]:
     """Build the driver of every test and return each one's store path.
 
     The drivers are evaluated in parallel batches like the tests themselves
     (see :func:`eval_drvs`), then built in one ``nix build``, which builds
     what they share once and the rest side by side. A driver that does not
-    build is a RunError.
+    build, or not before the ``limit``'s deadline, is a RunError.
     """
     drvs = evaluate.evaluate(
         attr_prefix,
@@ -450,12 +694,24 @@ def build_drivers(
         workers=workers or evaluate.auto_workers(),
         batch_size=batch_size,
     )
-    completed = subprocess.run(
-        ["nix", "build", "--no-link", "--json", *(f"{drv}^*" for drv in drvs.values())],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    try:
+        completed = subprocess.run(
+            [
+                "nix",
+                "build",
+                "--no-link",
+                "--json",
+                *(f"{drv}^*" for drv in drvs.values()),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=None if limit is None else limit.left(),
+        )
+    except subprocess.TimeoutExpired:
+        raise RunError(
+            "the test drivers did not build before the run's time limit"
+        ) from None
     if completed.returncode != 0:
         detail = completed.stderr.strip().splitlines()[-LOG_TAIL_LINES:]
         raise RunError(
@@ -513,7 +769,7 @@ def open_file_warning(hard_limit: int) -> str | None:
 
 def _execute_driver(
     driver: Path,
-    timeout: int,
+    timeout: float,
     log_path: Path,
     clock: Callable[[], float],
     base: Path,
@@ -527,29 +783,57 @@ def _execute_driver(
     the scratch directory on disk, and removing it after the test removes the
     VM state too. Its name is short, so that the sockets below it stay within
     SOCKET_PATH_MAX.
+
+    The driver runs in a process group of its own, with the QEMU, virtiofsd
+    and VLAN processes it starts. A driver still running after ``timeout``
+    seconds timed out: the whole group is stopped, as it is whenever the driver
+    ends, so no VM outlives its test into the next one.
     """
     log_path.parent.mkdir(parents=True, exist_ok=True)
     scratch = Path(tempfile.mkdtemp(prefix=SCRATCH_PREFIX, dir=base))
     env = {**os.environ, "TMPDIR": str(scratch), "XDG_RUNTIME_DIR": str(scratch)}
     start = clock()
+    timed_out = False
     try:
         with log_path.open("w", encoding="utf-8") as log:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 [str(driver / "bin" / "nixos-test-driver")],
                 cwd=scratch,
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
-                timeout=timeout + DRIVER_GRACE_SECONDS,
-                check=False,
+                start_new_session=True,
             )
-        result = "pass" if completed.returncode == 0 else "fail"
-    except subprocess.TimeoutExpired:
-        result = "fail"
+            try:
+                process.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+            finally:
+                _stop_group(process)
+        result = "pass" if process.returncode == 0 and not timed_out else "fail"
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
-    return TestOutcome(result, round(clock() - start))
+    return TestOutcome(result, round(clock() - start), timed_out=timed_out)
+
+
+def _stop_group(process: subprocess.Popen[bytes]) -> None:
+    """Stop every process left in a driver's process group, the driver too.
+
+    The group keeps its id while any member lives, so it is signalled after
+    the driver itself exited, too.
+    """
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(process.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            break
+        if sig == signal.SIGTERM:
+            try:
+                process.wait(timeout=STOP_GRACE_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+    process.wait()
 
 
 def run_drivers(
@@ -563,15 +847,21 @@ def run_drivers(
     report: Callable[[Sequence[str], Mapping[str, TestOutcome]], None] | None = None,
     eval_batch: int | None = None,
     eval_workers: int | None = None,
+    limit: TimeLimit | None = None,
 ) -> int:
     """Execute every test's driver one after another, ignoring cached results.
 
     The drivers are built first, all at once (see :func:`build_drivers`).
     Logs of failed tests stay in ``log_dir`` (passing logs are removed); the
-    retry and flaky rules match ``run_build``. Returns 0 when every test
-    passed and 1 otherwise. Before any driver is built, a scratch base that
-    is too long for the drivers' sockets, or not a directory, raises RunError,
-    and a hard open-file limit too low for virtiofsd prints a warning.
+    retry and flaky rules match ``run_build``. A driver runs at most its own
+    timeout and a grace beyond it, and with a ``limit`` at most its share of
+    the run and no further than the run's deadline; past that it timed out and
+    is stopped with its VMs. No test starts, and none is retried, with less
+    than MIN_TEST_SECONDS left: one never started was not run. Returns 0 when
+    every test passed and 1 otherwise. Before any driver is built, a scratch
+    base that is too long for the drivers' sockets, or not a directory, raises
+    RunError, and a hard open-file limit too low for virtiofsd prints a
+    warning.
     """
     if not tests:
         return 0
@@ -582,7 +872,7 @@ def run_drivers(
         print(f"warning: {warning}", file=sys.stderr)
     keep_logs = log_dir is not None
     logs = log_dir if log_dir is not None else Path(tempfile.mkdtemp(prefix="e2e-"))
-    drivers = build_drivers(tests, attr_prefix, eval_batch, eval_workers)
+    drivers = build_drivers(tests, attr_prefix, eval_batch, eval_workers, limit)
     outcomes: dict[str, TestOutcome] = {}
     for attempt in range(retries + 1):
         pending = [
@@ -592,23 +882,42 @@ def run_drivers(
         ]
         if not pending:
             break
+        if attempt and limit is not None and limit.left() < MIN_TEST_SECONDS:
+            print(
+                f"no time left to retry {len(pending)} failed test(s): "
+                f"{' '.join(pending)}",
+                file=sys.stderr,
+            )
+            break
         if attempt:
             print(
                 f"retrying {len(pending)} failed test(s): {' '.join(pending)}",
                 file=sys.stderr,
             )
         for test in pending:
+            if limit is not None and limit.left() < MIN_TEST_SECONDS:
+                # A failure keeps its outcome; only a test that never ran is
+                # reported as not run.
+                if test not in outcomes:
+                    outcomes[test] = TestOutcome("fail", 0, not_run=True)
+                    print(f"{test}: not run, out of time", file=sys.stderr)
+                continue
             print(f"running {test}", file=sys.stderr)
             log_path = logs / f"{test}.log"
-            outcome = _execute_driver(
-                drivers[test], timeouts.get(test, 900), log_path, clock, base
-            )
+            own = timeouts.get(test, 900)
+            seconds = own + DRIVER_GRACE_SECONDS
+            if limit is not None:
+                seconds = min(seconds, limit.for_test())
+            outcome = _execute_driver(drivers[test], seconds, log_path, clock, base)
             if outcome.result == "pass":
                 outcome.flaky = attempt > 0
                 log_path.unlink(missing_ok=True)
             else:
+                # The driver's own global timeout ends it with a failure too.
+                outcome.timed_out = outcome.timed_out or ran_out(outcome.seconds, own)
                 print(_tail(log_path, LOG_TAIL_LINES), file=sys.stderr)
-            print(f"{test}: {outcome.result} in {outcome.seconds}s", file=sys.stderr)
+            shown = "timed out" if outcome.timed_out else outcome.result
+            print(f"{test}: {shown} in {outcome.seconds}s", file=sys.stderr)
             outcomes[test] = outcome
     if not keep_logs:
         shutil.rmtree(logs, ignore_errors=True)
@@ -622,6 +931,10 @@ def run_drivers(
 def _label(outcome: TestOutcome) -> str:
     if outcome.not_booted:
         return "FAIL (not booted)"
+    if outcome.not_run:
+        return "FAIL (not run)"
+    if outcome.timed_out:
+        return "FAIL (timed out)"
     if outcome.result == "fail":
         return "FAIL"
     if outcome.flaky:
@@ -693,6 +1006,17 @@ def format_annotations(
                 f"::error title=E2E test not booted::{test} did not boot: the "
                 "store or a binary cache already held its result, and this run "
                 "must boot every test"
+            )
+        elif outcome.not_run:
+            annotations.append(
+                f"::error title=E2E test not run::{test} did not start: the run "
+                "reached its time limit first"
+            )
+        elif outcome.timed_out:
+            annotations.append(
+                f"::error title=E2E test timed out::{test} ran out of time after "
+                f"{outcome.seconds}s and was stopped; its log so far is kept with "
+                "the logs of the failed tests"
             )
         elif outcome.result == "fail":
             annotations.append(f"::error title=E2E test failed::{test} failed")

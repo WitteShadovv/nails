@@ -12,15 +12,33 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from collections.abc import Iterator
 from pathlib import Path
 from unittest import mock
 
-from ci.e2e import evaluate, run
+from ci.e2e import evaluate, plan, run
 from ci.e2e.metadata import Metadata
 
 DRV_TO_TEST = {"/nix/store/a.drv": "a", "/nix/store/b.drv": "b"}
+
+
+def _running(pid: int, wait: float = 5.0) -> bool:
+    """Whether a process is still alive (not gone, and not a zombie) after
+    up to ``wait`` seconds."""
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except OSError:
+            return False
+        # The state follows the command name, which is in parentheses.
+        if stat.rpartition(")")[2].split()[0] == "Z":
+            return False
+        if time.monotonic() > deadline:
+            return True
+        time.sleep(0.1)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 E2E_ROOT = REPO_ROOT / "nix" / "e2e-tests"
 # A Nix identifier, such as a node name.
@@ -106,10 +124,11 @@ class DurationParserTest(unittest.TestCase):
         lines = [
             '@nix {"action":"start","type":105,"id":1,"fields":["/nix/store/a.drv"]}',
         ]
+        # Timed up to the end of the stream.
         outcomes = run.durations_from_internal_json(
-            lines, DRV_TO_TEST, iter([0.0]).__next__
+            lines, DRV_TO_TEST, iter([0.0, 42.0]).__next__
         )
-        self.assertEqual(outcomes, {"a": run.TestOutcome("fail", 0)})
+        self.assertEqual(outcomes, {"a": run.TestOutcome("fail", 42)})
 
     def test_unknown_derivations_and_other_activities_are_ignored(self) -> None:
         lines = [
@@ -153,15 +172,26 @@ class LiveTimingTest(unittest.TestCase):
         ):
             # Ten seconds pass between two lines. Lines read to the end before
             # any was parsed would all carry the time of the last one.
-            status, outcomes = run._build_once(
+            attempt = run._build_once(
                 ["a", "b"], DRV_TO_TEST, None, lambda: arrived * 10.0
             )
-        self.assertEqual(status, 0)
+        self.assertEqual(attempt.status, 0)
         self.assertEqual(
-            outcomes,
+            attempt.outcomes,
             {"a": run.TestOutcome("pass", 20), "b": run.TestOutcome("pass", 30)},
         )
-        self.assertEqual(stderr.getvalue(), "error: a warning of b\n")
+        self.assertFalse(attempt.stopped)
+        # Each test's start and finish, and nix's own errors and warnings.
+        self.assertEqual(
+            stderr.getvalue().splitlines(),
+            [
+                "a: started",
+                "b: started",
+                "a: finished after 20s",
+                "error: a warning of b",
+                "b: finished after 30s",
+            ],
+        )
 
 
 class WriteDurationsTest(unittest.TestCase):
@@ -187,6 +217,21 @@ class WriteDurationsTest(unittest.TestCase):
             ],
         )
 
+    def test_a_test_out_of_time_or_never_run_says_so(self) -> None:
+        path = self.tmp / "e2e-durations.json"
+        outcomes = {
+            "h": run.TestOutcome("fail", 750, timed_out=True),
+            "q": run.TestOutcome("fail", 0, not_run=True),
+        }
+        run.write_durations(path, ["h", "q"], outcomes)
+        self.assertEqual(
+            [json.loads(line) for line in path.read_text().splitlines()],
+            [
+                {"test": "h", "result": "fail", "seconds": 750, "timed_out": True},
+                {"test": "q", "result": "fail", "seconds": 0, "not_run": True},
+            ],
+        )
+
 
 class RunBuildTest(unittest.TestCase):
     """run_build against a stand-in `nix` that serves drvPaths and build logs."""
@@ -203,7 +248,9 @@ class RunBuildTest(unittest.TestCase):
             # The interpreter running these tests, by its path: the hermetic Nix
             # build sandbox the ci-python check runs in has no /usr/bin/env.
             f"#!{sys.executable}\n"
-            "import json, os, sys\n"
+            "import json, os, sys, time\n"
+            "def emit(payload):\n"
+            "    print('@nix ' + json.dumps(payload), file=sys.stderr, flush=True)\n"
             "args = sys.argv[1:]\n"
             "if args[0] == 'eval':\n"
             "    expression = args[args.index('--apply') + 1]\n"
@@ -222,11 +269,18 @@ class RunBuildTest(unittest.TestCase):
             "            if name in served:\n"
             "                continue\n"
             "            ident += 1\n"
-            "            start = {'action': 'start', 'type': 105, 'id': ident,\n"
-            "                     'fields': [drv]}\n"
-            "            print('@nix ' + json.dumps(start), file=sys.stderr)\n"
-            "            stop = {'action': 'stop', 'id': ident}\n"
-            "            print('@nix ' + json.dumps(stop), file=sys.stderr)\n",
+            "            emit({'action': 'start', 'type': 105, 'id': ident,\n"
+            "                  'fields': [drv]})\n"
+            "            emit({'action': 'result', 'type': 101, 'id': ident,\n"
+            "                  'fields': [name + ' logged this']})\n"
+            # The test FAKE_NIX_HANG names never finishes: the build waits
+            # until it is stopped, and the tests after it never start.
+            "            if name == os.environ.get('FAKE_NIX_HANG'):\n"
+            "                time.sleep(60)\n"
+            "            emit({'action': 'stop', 'id': ident})\n"
+            # FAKE_NIX_FAIL fails the build, as a failed test does.
+            "    if os.environ.get('FAKE_NIX_FAIL'):\n"
+            "        sys.exit(1)\n",
             encoding="utf-8",
         )
         fake.chmod(0o755)
@@ -300,6 +354,151 @@ class RunBuildTest(unittest.TestCase):
             self.assertEqual(records[0]["result"], "pass")
             self.assertEqual(records[1]["result"], "fail" if require_boot else "pass")
             self.assertEqual(records[1].get("not_booted", False), require_boot)
+
+
+    def environ(self, **extra: str) -> dict[str, str]:
+        return {
+            **os.environ,
+            "PATH": f"{self.bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "FAKE_NIX_LOG": str(self.log),
+            **extra,
+        }
+
+    def test_the_log_of_a_failed_test_is_kept_as_it_was_built(self) -> None:
+        logs = self.tmp / "logs"
+        with (
+            mock.patch.dict(os.environ, self.environ(FAKE_NIX_FAIL="1"), clear=True),
+            mock.patch.object(run, "missing_outputs", return_value=["verify"]),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            status = run.run_build(["basic-workflow", "verify"], log_dir=logs)
+        self.assertEqual(status, 1)
+        self.assertEqual(
+            (logs / "verify.log").read_text(encoding="utf-8"), "verify logged this\n"
+        )
+        # Passing logs are removed; only failures are worth uploading.
+        self.assertFalse((logs / "basic-workflow.log").exists())
+
+    def test_the_time_limit_stops_a_hung_test_and_keeps_its_log(self) -> None:
+        logs = self.tmp / "logs"
+        durations = self.tmp / "durations.jsonl"
+        limit = run.TimeLimit(time.monotonic() + 1.0, 600)
+        with (
+            mock.patch.dict(
+                os.environ, self.environ(FAKE_NIX_HANG="verify"), clear=True
+            ),
+            mock.patch.object(run, "STOP_GRACE_SECONDS", 5),
+            mock.patch.object(
+                run, "missing_outputs", return_value=["verify", "lifecycle"]
+            ),
+            contextlib.redirect_stderr(io.StringIO()) as stderr,
+        ):
+            status = run.run_build(
+                ["basic-workflow", "verify", "lifecycle"],
+                durations_out=durations,
+                log_dir=logs,
+                retries=1,
+                limit=limit,
+            )
+        self.assertEqual(status, 1)
+        records = {
+            record["test"]: record
+            for record in map(json.loads, durations.read_text().splitlines())
+        }
+        self.assertEqual(records["basic-workflow"]["result"], "pass")
+        self.assertEqual(records["verify"]["result"], "fail")
+        self.assertTrue(records["verify"]["timed_out"])
+        self.assertTrue(records["lifecycle"]["not_run"])
+        # The hung test's log up to the stop, and nothing for the others.
+        self.assertEqual(
+            (logs / "verify.log").read_text(encoding="utf-8"), "verify logged this\n"
+        )
+        self.assertFalse((logs / "basic-workflow.log").exists())
+        self.assertFalse((logs / "lifecycle.log").exists())
+        # nix was told the test's share, and nothing was retried: the run was
+        # out of time.
+        (call,) = self.log.read_text(encoding="utf-8").splitlines()
+        self.assertIn("--timeout", call.split())
+        text = stderr.getvalue()
+        self.assertIn("verify: started", text)
+        self.assertIn("the run reached its time limit: stopping the build", text)
+        self.assertIn("verify ran out of time after", text)
+        self.assertIn("verify logged this", text)
+        self.assertIn("no time left to retry 2 failed test(s)", text)
+
+
+class FailureTest(unittest.TestCase):
+    """How run_build tells a test that failed from one that ran out of time."""
+
+    def test_a_build_still_running_at_the_stop_timed_out(self) -> None:
+        attempt = run._Attempt(
+            1, {"a": run.TestOutcome("fail", 30)}, unfinished={"a"}, stopped=True
+        )
+        self.assertEqual(
+            run._failure("a", attempt, None),
+            run.TestOutcome("fail", 30, timed_out=True),
+        )
+
+    def test_a_test_the_stop_kept_from_starting_was_not_run(self) -> None:
+        attempt = run._Attempt(1, {}, stopped=True)
+        self.assertEqual(
+            run._failure("a", attempt, None), run.TestOutcome("fail", 0, not_run=True)
+        )
+
+    def test_a_test_that_never_started_otherwise_failed(self) -> None:
+        # A dependency failed, so its build never started.
+        self.assertEqual(
+            run._failure("a", run._Attempt(1, {}), None), run.TestOutcome("fail", 0)
+        )
+
+    def test_a_build_nix_stopped_at_its_timeout_timed_out(self) -> None:
+        attempt = run._Attempt(101, {"a": run.TestOutcome("pass", 750)}, timeout=750)
+        self.assertTrue(run._failure("a", attempt, {"a": 900}).timed_out)
+
+    def test_a_driver_stopped_by_its_own_timeout_timed_out(self) -> None:
+        attempt = run._Attempt(1, {"a": run.TestOutcome("pass", 902)}, timeout=1500)
+        self.assertTrue(run._failure("a", attempt, {"a": 900}).timed_out)
+
+    def test_a_failure_well_inside_its_time_is_a_plain_failure(self) -> None:
+        attempt = run._Attempt(1, {"a": run.TestOutcome("pass", 120)}, timeout=750)
+        self.assertEqual(
+            run._failure("a", attempt, {"a": 900}), run.TestOutcome("fail", 120)
+        )
+
+
+class TimeLimitTest(unittest.TestCase):
+    def test_a_job_keeps_its_reserve_and_shares_the_rest_per_attempt(self) -> None:
+        with mock.patch.object(run.time, "monotonic", return_value=1000.0):
+            limit = run.job_time_limit(30, retries=1)
+            self.assertEqual(limit.deadline, 1000.0 + 25 * 60)
+            self.assertEqual(limit.test_seconds, 750)
+            self.assertEqual(limit.for_test(), 750)
+        self.assertEqual(run.job_time_limit(30, retries=0).test_seconds, 1500)
+
+    def test_a_test_is_stopped_well_before_its_shard_job(self) -> None:
+        # The shortest shard job the planner gives, and longer ones: one
+        # attempt of a test, even with its retry after it, ends with time to
+        # spare for the reporting and the uploads.
+        for minutes in (plan.MIN_SHARD_TIMEOUT_MINUTES, 45, 120):
+            with self.subTest(minutes=minutes):
+                limit = run.job_time_limit(minutes, retries=1)
+                self.assertLessEqual(limit.test_seconds, minutes * 60 / 2)
+                self.assertLessEqual(
+                    2 * limit.test_seconds, (minutes - run.JOB_RESERVE_MINUTES) * 60
+                )
+
+    def test_a_test_never_runs_past_the_deadline(self) -> None:
+        limit = run.TimeLimit(deadline=1100.0, test_seconds=750)
+        with mock.patch.object(run.time, "monotonic", return_value=1000.0):
+            self.assertEqual(limit.left(), 100.0)
+            self.assertEqual(limit.for_test(), 100)
+        with mock.patch.object(run.time, "monotonic", return_value=1200.0):
+            self.assertEqual(limit.left(), 0.0)
+            self.assertEqual(limit.for_test(), 1)
+
+    def test_a_job_too_short_for_its_reserve_is_refused(self) -> None:
+        with self.assertRaisesRegex(run.RunError, "leaves no time to run a test"):
+            run.job_time_limit(run.JOB_RESERVE_MINUTES, retries=1)
 
 
 class EvalDrvsTest(unittest.TestCase):
@@ -454,7 +653,8 @@ class RetryTest(unittest.TestCase):
 
         def fake_build(tests, *_args):
             built.append(list(tests))
-            return builds.pop(0)
+            status, outcomes = builds.pop(0)
+            return run._Attempt(status, outcomes)
 
         durations = self.tmp / "d.jsonl"
         with (
@@ -652,6 +852,30 @@ class ReportTest(unittest.TestCase):
             annotation,
         )
 
+    def test_a_test_out_of_time_and_one_never_run_are_named_as_such(self) -> None:
+        outcomes = {
+            "h": run.TestOutcome("fail", 750, timed_out=True),
+            "q": run.TestOutcome("fail", 0, not_run=True),
+        }
+        summary = run.format_summary("E2E shard 1/1", ["h", "q"], outcomes)
+        self.assertIn("| `h` | FAIL (timed out) | 750 |", summary)
+        self.assertIn("| `q` | FAIL (not run) | 0 |", summary)
+        self.assertIn("2 test(s): 0 passed (0 FLAKY), 2 failed.", summary)
+        timed_out, not_run = run.format_annotations(["h", "q"], outcomes)
+        self.assertTrue(
+            timed_out.startswith(
+                "::error title=E2E test timed out::h ran out of time after 750s"
+            ),
+            timed_out,
+        )
+        self.assertTrue(
+            not_run.startswith("::error title=E2E test not run::q did not start"),
+            not_run,
+        )
+        console = run.format_console_summary(["h", "q"], outcomes, {"h": "/l/h.log"})
+        self.assertIn("FAIL (timed out)", console)
+        self.assertTrue(console.splitlines()[0].endswith("h  log: /l/h.log"))
+
 
 class ExecuteEnvironmentTest(unittest.TestCase):
     """Where the drivers' scratch directories go and what the host must allow."""
@@ -823,6 +1047,11 @@ class RunDriversTest(unittest.TestCase):
             "broken": f'echo "scratch=$TMPDIR"\n{vm_state}exit 3\n',
             # Hangs until it is killed.
             "hung": f"{vm_state}echo started\nexec sleep 5\n",
+            # Starts a stand-in for its VM, then hangs.
+            "vm": (
+                f'sleep 300 &\necho $! > "{self.tmp}/vm.pid"\n'
+                "echo started\nexec sleep 300\n"
+            ),
             # Records its directories.
             "probe": (
                 'printf "%s\\n" "$TMPDIR" "$XDG_RUNTIME_DIR" '
@@ -843,6 +1072,7 @@ class RunDriversTest(unittest.TestCase):
         retries: int,
         environ: dict[str, str] | None = None,
         timeout: int = 900,
+        limit: run.TimeLimit | None = None,
     ) -> tuple[int, dict[str, run.TestOutcome], Path]:
         reported: dict[str, run.TestOutcome] = {}
         logs = self.tmp / "logs"
@@ -870,6 +1100,7 @@ class RunDriversTest(unittest.TestCase):
                 retries=retries,
                 log_dir=logs,
                 report=report,
+                limit=limit,
             )
         self.stderr = stderr.getvalue()
         return status, reported, logs
@@ -900,6 +1131,8 @@ class RunDriversTest(unittest.TestCase):
             status, outcomes, logs = self.execute(["hung"], retries=0, timeout=1)
         self.assertEqual(status, 1)
         self.assertEqual(outcomes["hung"].result, "fail")
+        self.assertTrue(outcomes["hung"].timed_out)
+        self.assertIn("hung: timed out in", self.stderr)
         # It was killed after it had written its VM state, and that is gone.
         self.assertIn("started", (logs / "hung.log").read_text(encoding="utf-8"))
         self.assertEqual(list(self.runner_temp.iterdir()), [])
@@ -938,6 +1171,37 @@ class RunDriversTest(unittest.TestCase):
             status, _outcomes, _logs = self.execute(["steady"], retries=0)
         self.assertEqual(status, 0)
         self.assertNotIn("warning:", self.stderr)
+
+    def test_a_driver_out_of_time_is_stopped_with_its_vms(self) -> None:
+        with mock.patch.object(run, "DRIVER_GRACE_SECONDS", 0):
+            status, outcomes, logs = self.execute(["vm"], retries=0, timeout=1)
+        self.assertEqual(status, 1)
+        self.assertTrue(outcomes["vm"].timed_out)
+        self.assertIn("started", (logs / "vm.log").read_text(encoding="utf-8"))
+        # The stand-in VM went with the driver: none outlives its test.
+        pid = int((self.tmp / "vm.pid").read_text(encoding="utf-8"))
+        self.assertFalse(_running(pid), f"process {pid} outlived its driver")
+
+    def test_a_test_gets_no_more_than_its_share_of_the_run(self) -> None:
+        # Its own timeout is long; its share of the run's time is a second.
+        limit = run.TimeLimit(time.monotonic() + 600, 1)
+        status, outcomes, _logs = self.execute(
+            ["hung"], retries=0, timeout=900, limit=limit
+        )
+        self.assertEqual(status, 1)
+        self.assertTrue(outcomes["hung"].timed_out)
+        self.assertLess(outcomes["hung"].seconds, 30)
+
+    def test_no_test_starts_too_close_to_the_deadline(self) -> None:
+        limit = run.TimeLimit(time.monotonic() + run.MIN_TEST_SECONDS / 2, 600)
+        status, outcomes, _logs = self.execute(
+            ["steady", "wobbly"], retries=1, limit=limit
+        )
+        self.assertEqual(status, 1)
+        for test in ("steady", "wobbly"):
+            self.assertEqual(outcomes[test], run.TestOutcome("fail", 0, not_run=True))
+        self.assertIn("steady: not run, out of time", self.stderr)
+        self.assertFalse((self.tmp / "wobbly.seen").exists())
 
     def test_an_unusable_base_stops_the_run_before_any_build(self) -> None:
         too_long = "/" + "x" * (run.SOCKET_PATH_MAX - run.SOCKET_TAIL_BYTES)
