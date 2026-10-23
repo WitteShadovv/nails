@@ -40,6 +40,7 @@
 //! store copy ask [`crate::cancel`], and the entry stops at the first one
 //! after the signal.
 
+use super::fstab::FstabEntry;
 use super::layout::{Layout, Paths};
 use super::network_state;
 use super::nixos;
@@ -494,17 +495,34 @@ fn build(
     .map_err(|e| io(&nextroot, e))?;
 
     activation_step(ActivationPhase::MountPolicy, building);
-    // The decoy's own fstab first, read the way the decoy resolves it: its
-    // filesystems (a separate /nix, the VM store) must be in place inside the
-    // next root before anything reads the next root's store.
-    let decoy_fstab = super::fstab::read_in_root(&paths.root)
+    // The decoy's own fstab first, read and resolved the way the decoy resolves
+    // it: its filesystems (a separate /nix, the VM store) must be in place
+    // inside the next root before anything reads the next root's store.
+    let decoy_text = super::fstab::read_in_root(&paths.root)
         .map_err(|e| io(&paths.root.join("etc/fstab"), e))?;
-    let mut decisions = decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root, &paths.root)?;
-    let decoy_fstab = super::fstab::parse_fstab(&String::from_utf8_lossy(&decoy_fstab));
-    // Every entry the hidden systemd may read: the decoy's, and those of the
-    // hidden generation once it is built.
-    let mut fstab = decoy_fstab.clone();
-    plan.policy_mounts = apply_mounts(paths, &layout, &decisions, inputs.hidden_root, &[])?;
+    let decoy_fstab = super::fstab::parse_in_root(&decoy_text, &paths.root);
+    let mut decided = Decided {
+        decisions: decide_fstab(&decoy_fstab, &decoy_mounts, inputs.hidden_root)?,
+        fstab: decoy_fstab.clone(),
+    };
+    plan.policy_mounts = apply_mounts(paths, &layout, &decided.decisions, inputs.hidden_root, &[])?;
+    // The hidden systemd resolves the same entries in the next root, where the
+    // hidden session's own changes to a symlink on a mount point's path can
+    // lead elsewhere: an entry that resolves to another mount point there is
+    // decided at that one too, so what the hidden systemd would mount there is
+    // masked or put in place as well.
+    let elsewhere = resolved_elsewhere(
+        &decoy_fstab,
+        super::fstab::parse_in_root(&decoy_text, &nextroot),
+    );
+    decided.add(
+        paths,
+        &layout,
+        &mut plan,
+        elsewhere,
+        &decoy_mounts,
+        inputs.hidden_root,
+    )?;
     crate::cancel::checkpoint()?;
 
     let mut warnings = Vec::new();
@@ -546,30 +564,24 @@ fn build(
             system: Some(system),
         };
         // The hidden generation brings its own /etc/fstab: decide its entries
-        // too, and put in place what the decoy's fstab did not already cover.
-        let hidden_fstab = super::fstab::read_in_root(&nextroot)
+        // too, resolved in the next root as the hidden systemd resolves them,
+        // and put in place what the decoy's fstab did not already cover.
+        let hidden_text = super::fstab::read_in_root(&nextroot)
             .map_err(|e| io(&nextroot.join("etc/fstab"), e))?;
-        let hidden = decide_fstab(&hidden_fstab, &decoy_mounts, inputs.hidden_root, &nextroot)?;
-        fstab.extend(super::fstab::parse_fstab(&String::from_utf8_lossy(
-            &hidden_fstab,
-        )));
-        let done: Vec<PathBuf> = plan
-            .policy_mounts
-            .iter()
-            .map(|m| m.target.clone())
-            .collect();
-        let added = apply_mounts(paths, &layout, &hidden, inputs.hidden_root, &done)?;
-        plan.policy_mounts.extend(added);
-        for decision in hidden {
-            if !decisions.contains(&decision) {
-                decisions.push(decision);
-            }
-        }
+        let hidden_fstab = super::fstab::parse_in_root(&hidden_text, &nextroot);
+        decided.add(
+            paths,
+            &layout,
+            &mut plan,
+            hidden_fstab,
+            &decoy_mounts,
+            inputs.hidden_root,
+        )?;
     } else if !inputs.nixos {
         plan.hidden.init = fhs_init(&nextroot);
     }
     activation_step(ActivationPhase::MaskUnits, building);
-    plan.masks = policy::masks(&fstab, &decisions);
+    plan.masks = policy::masks(&decided.fstab, &decided.decisions);
     plan.boot_masks = super::systemd::units_in_root(&nextroot, policy::BOOT_WRITER_UNITS)
         .into_iter()
         .filter(|unit| !plan.masks.contains(unit))
@@ -608,7 +620,7 @@ fn build(
         .map_err(|e| io(&paths.plan(), e))?;
     Ok(Entry {
         plan,
-        decisions,
+        decisions: decided.decisions,
         warnings,
     })
 }
@@ -722,23 +734,16 @@ fn relative_mounts(mounts: &[MountEntry], root: &Path) -> Vec<MountEntry> {
         .collect()
 }
 
-/// Parse `fstab` and decide every entry; an entry with no safe decision
-/// refuses the entry. Each absolute mount point is resolved inside `root`
-/// first, so a `/home` that the decoy keeps at `var/home` is decided, mounted
-/// and masked as `var/home` (`var-home.mount`), the way systemd mounts it.
+/// Decide every entry; an entry with no safe decision refuses the entry. The
+/// entries come resolved ([`super::fstab::parse_in_root`]), so a `/home` that
+/// the decoy keeps at `var/home` is decided, mounted and masked as `var/home`
+/// (`var-home.mount`), the way systemd mounts it.
 fn decide_fstab(
-    fstab: &[u8],
+    entries: &[FstabEntry],
     mounts: &[MountEntry],
     hidden_root: &Path,
-    root: &Path,
 ) -> Result<Vec<Decision>> {
-    let mut entries = super::fstab::parse_fstab(&String::from_utf8_lossy(fstab));
-    for entry in &mut entries {
-        if entry.file.is_absolute() {
-            entry.file = nextroot::canonical_in_root(root, &entry.file);
-        }
-    }
-    let decisions = policy::decide_all(&entries, mounts, hidden_root);
+    let decisions = policy::decide_all(entries, mounts, hidden_root);
     if let Some(Decision::Refuse { target, reason }) = decisions
         .iter()
         .find(|d| matches!(d, Decision::Refuse { .. }))
@@ -749,6 +754,55 @@ fn decide_fstab(
         )));
     }
     Ok(decisions)
+}
+
+/// The entries of `in_nextroot`, the fstab `decoy` came from resolved in the
+/// next root, whose mount point resolves elsewhere than in the decoy root.
+fn resolved_elsewhere(decoy: &[FstabEntry], in_nextroot: Vec<FstabEntry>) -> Vec<FstabEntry> {
+    in_nextroot
+        .into_iter()
+        .zip(decoy)
+        .filter(|(there, here)| there.file != here.file)
+        .map(|(there, _)| there)
+        .collect()
+}
+
+/// The fstab decisions the entry made, and every entry the hidden systemd may
+/// read, resolved: the decoy's, those the next root resolves elsewhere, and
+/// those of the hidden generation. The masks are named from these.
+struct Decided {
+    decisions: Vec<Decision>,
+    fstab: Vec<FstabEntry>,
+}
+
+impl Decided {
+    /// Decide `entries` as well and put in place what they call for that is
+    /// not in place yet, recording it in `plan`.
+    fn add(
+        &mut self,
+        paths: &Paths,
+        layout: &Layout,
+        plan: &mut Plan,
+        entries: Vec<FstabEntry>,
+        mounts: &[MountEntry],
+        hidden_root: &Path,
+    ) -> Result<()> {
+        let more = decide_fstab(&entries, mounts, hidden_root)?;
+        let done: Vec<PathBuf> = plan
+            .policy_mounts
+            .iter()
+            .map(|m| m.target.clone())
+            .collect();
+        let added = apply_mounts(paths, layout, &more, hidden_root, &done)?;
+        plan.policy_mounts.extend(added);
+        for decision in more {
+            if !self.decisions.contains(&decision) {
+                self.decisions.push(decision);
+            }
+        }
+        self.fstab.extend(entries);
+        Ok(())
+    }
 }
 
 /// The mount point `target` (absolute, as the hidden root sees it) inside the
@@ -837,247 +891,5 @@ fn apply_mounts(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use nails_teardown::mountinfo::parse_mountinfo;
-
-    #[test]
-    fn the_decoy_root_is_read_from_the_mount_table() {
-        let ext4 = parse_mountinfo("1 0 8:2 / / rw - ext4 /dev/vda2 rw\n");
-        let root = decoy_root_of(&ext4, Path::new("/")).unwrap();
-        assert_eq!(root.source, Path::new("/dev/vda2"));
-        assert_eq!(root.fstype, "ext4");
-        assert_eq!(root.data, None);
-        let btrfs = parse_mountinfo("1 0 0:30 /@ / rw - btrfs /dev/nvme0n1p2 rw,subvol=/@\n");
-        assert_eq!(
-            decoy_root_of(&btrfs, Path::new("/"))
-                .unwrap()
-                .data
-                .as_deref(),
-            Some("subvol=/@")
-        );
-    }
-
-    /// A host that only answers the stop-command query.
-    struct StopHost(&'static str);
-
-    impl EntryHost for StopHost {
-        fn daemon_reload(&self) -> Result<()> {
-            Ok(())
-        }
-        fn build_hidden_system(&self, _: &NixOSBuilder, _: &Path, _: &Path) -> Result<PathBuf> {
-            unreachable!("not used by the stop-guard check")
-        }
-        fn keep_hidden_closure(&self, _: &Path, _: &Path, _: &Path) -> Result<store::KeepReport> {
-            unreachable!("not used by the stop-guard check")
-        }
-        fn activate_hidden_system(&self, _: &Path, _: &Path) -> Result<()> {
-            unreachable!("not used by the stop-guard check")
-        }
-        fn unit_stop_commands(&self, _: &str) -> Result<String> {
-            Ok(self.0.to_string())
-        }
-    }
-
-    #[test]
-    fn a_prefix_guard_is_not_asked_about_by_name() {
-        /// Answers with a stop command for anything but blk-availability.
-        struct PrefixOnly;
-        impl EntryHost for PrefixOnly {
-            fn daemon_reload(&self) -> Result<()> {
-                Ok(())
-            }
-            fn build_hidden_system(&self, _: &NixOSBuilder, _: &Path, _: &Path) -> Result<PathBuf> {
-                unreachable!()
-            }
-            fn keep_hidden_closure(
-                &self,
-                _: &Path,
-                _: &Path,
-                _: &Path,
-            ) -> Result<store::KeepReport> {
-                unreachable!()
-            }
-            fn activate_hidden_system(&self, _: &Path, _: &Path) -> Result<()> {
-                unreachable!()
-            }
-            fn unit_stop_commands(&self, unit: &str) -> Result<String> {
-                assert!(
-                    !unit.ends_with("-.service"),
-                    "asked about the prefix {unit}"
-                );
-                Ok(if unit == "blk-availability.service" {
-                    String::new()
-                } else {
-                    "{ path=/bin/true }".to_string()
-                })
-            }
-        }
-        assert!(check_stop_guards(&PrefixOnly).is_ok());
-    }
-
-    #[test]
-    fn a_stop_command_left_after_the_guard_refuses_the_entry() {
-        assert!(check_stop_guards(&StopHost("\n")).is_ok());
-        let error = check_stop_guards(&StopHost(
-            "{ path=/usr/sbin/blkdeactivate ; argv[]=/usr/sbin/blkdeactivate -u ; }\n",
-        ))
-        .unwrap_err();
-        let text = error.to_string();
-        assert!(text.contains("blk-availability.service"), "{text}");
-        assert!(text.contains("zz-overlay-runtime.conf"), "{text}");
-        assert!(matches!(error, NailsError::PreFlightCheckFailed(_)));
-    }
-
-    #[test]
-    fn a_build_is_refused_below_the_space_floor() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(ensure_build_space(dir.path(), 0).is_ok());
-        let error = ensure_build_space(dir.path(), u64::MAX).unwrap_err();
-        assert!(error.to_string().contains("rebuild_space_mb"), "{error}");
-    }
-
-    #[test]
-    fn a_root_that_cannot_be_mounted_again_is_refused() {
-        for table in [
-            "1 0 0:20 / / rw - tmpfs none rw\n",
-            "1 0 0:21 / / rw - overlay overlay rw,lowerdir=/a\n",
-            "1 0 0:22 / / rw - zfs /dev/zd0 rw\n",
-            "1 0 8:2 /sub / rw - ext4 /dev/vda2 rw\n",
-            // A btrfs bind of a plain folder inside the subvolume /@: the mount
-            // root (/@/srv) is not the subvolume (subvol=/@), so the way back
-            // cannot mount it again by subvol.
-            "1 0 0:30 /@/srv / rw - btrfs /dev/nvme0n1p2 rw,subvolid=256,subvol=/@\n",
-        ] {
-            let entries = parse_mountinfo(table);
-            assert!(decoy_root_of(&entries, Path::new("/")).is_err(), "{table}");
-        }
-    }
-
-    #[test]
-    fn a_btrfs_bind_of_a_plain_folder_is_refused_by_path() {
-        // The refusal names the folder, never the device-mapper node or device.
-        let table = "1 0 0:30 /@/srv / rw - btrfs /dev/nvme0n1p2 rw,subvolid=256,subvol=/@\n";
-        let err = decoy_root_of(&parse_mountinfo(table), Path::new("/")).unwrap_err();
-        assert!(err.to_string().contains("/@/srv"), "{err}");
-
-        // A genuine subvolume mount, whose root equals its subvol=, is accepted
-        // even when the subvolume lives at a deeper path.
-        let table =
-            "1 0 0:30 /@/snapshots/root / rw - btrfs /dev/nvme0n1p2 rw,subvol=/@/snapshots/root\n";
-        assert_eq!(
-            decoy_root_of(&parse_mountinfo(table), Path::new("/"))
-                .unwrap()
-                .data
-                .as_deref(),
-            Some("subvol=/@/snapshots/root")
-        );
-    }
-
-    /// A minimal `EntryInputs` for the helpers that do not build a system:
-    /// no builder, no operator, the persona at its default.
-    fn minimal_inputs<'a>(
-        hidden_root: &'a Path,
-        binary: &'a Path,
-        config_toml: Option<String>,
-    ) -> EntryInputs<'a> {
-        EntryInputs {
-            hidden_root,
-            decoy_root: DecoyRoot {
-                source: PathBuf::from("/dev/vda2"),
-                fstype: "ext4".into(),
-                data: None,
-            },
-            nixos: false,
-            builder: None,
-            binary,
-            config_toml,
-            session_units: Vec::new(),
-            backend: Vec::new(),
-            persona: Default::default(),
-            operator: None,
-            rebuild_space_mb: 0,
-            read_only_disks: false,
-            accepted_decoy_storage: None,
-        }
-    }
-
-    #[test]
-    fn write_runtime_populates_the_runtime_directory() {
-        let run = tempfile::tempdir().unwrap();
-        let hidden = tempfile::tempdir().unwrap();
-        let binary = run.path().join("nails-running-binary");
-        std::fs::write(&binary, b"the running binary bytes").unwrap();
-        let paths = Paths {
-            root: PathBuf::from("/"),
-            run: run.path().to_path_buf(),
-        };
-        // A scratch tree, not the real system, so the runtime lands under it.
-        assert!(!paths.is_system());
-        let toml = "hidden_volume_root = \"/x\"\n".to_string();
-        let inputs = minimal_inputs(hidden.path(), &binary, Some(toml.clone()));
-        let snapshot = Snapshot::take(&paths.run);
-
-        write_runtime(&paths, &inputs, &snapshot).unwrap();
-
-        let runtime = paths.runtime();
-        // The RAM copy of the binary is the running binary, byte for byte: the
-        // whole point of write_runtime, skipped by a body replaced with Ok(()).
-        assert_eq!(
-            std::fs::read(paths.binary_copy()).unwrap(),
-            std::fs::read(&binary).unwrap()
-        );
-        // The `/run` snapshot and the saved utab the way back reads are written.
-        assert!(runtime.join(SNAPSHOT_NAME).exists());
-        assert!(runtime.join(UTAB_NAME).exists());
-        assert!(runtime.join(UTAB_MOUNTS_NAME).exists());
-        // The configuration copy carries the effective TOML verbatim.
-        assert_eq!(
-            std::fs::read_to_string(runtime.join(CONFIG_COPY_NAME)).unwrap(),
-            toml
-        );
-        // The runtime directory is private (0o700), as write_runtime sets it.
-        let mode = std::fs::metadata(&runtime).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
-    }
-
-    #[test]
-    fn fresh_home_without_the_operator_is_refused() {
-        let run = tempfile::tempdir().unwrap();
-        let hidden = tempfile::tempdir().unwrap();
-        let binary = run.path().join("nails-running-binary");
-        std::fs::write(&binary, b"bin").unwrap();
-        let paths = Paths {
-            root: run.path().join("root"),
-            run: run.path().to_path_buf(),
-        };
-        let layout = Layout::new(hidden.path());
-        // Fresh-home needs the operator (the sudo user) whose home is reset; with
-        // none, the entry must refuse rather than silently do nothing. A body
-        // replaced with Ok(()) would accept it.
-        let inputs = minimal_inputs(hidden.path(), &binary, None);
-        assert!(inputs.operator.is_none());
-
-        let error = fresh_home(&paths, &inputs, &layout, &[]).unwrap_err();
-
-        let text = error.to_string();
-        assert!(text.contains("fresh-home"), "{text}");
-        assert!(text.contains("operator"), "{text}");
-        assert!(matches!(error, NailsError::InvalidState(_)));
-    }
-
-    #[test]
-    fn a_symlinked_fstab_mount_point_is_decided_at_its_real_path() {
-        // The decoy keeps /home at var/home (an ostree layout).
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(root.path().join("var/home")).unwrap();
-        std::os::unix::fs::symlink("var/home", root.path().join("home")).unwrap();
-
-        // fstab names /home; nothing is mounted there now, so it is masked. The
-        // masked unit is the one systemd generates for the real mount point,
-        // var-home.mount, not home.mount, so the hidden session really masks it.
-        let fstab = b"/dev/sdb1 /home ext4 defaults 0 2\n";
-        let decisions = decide_fstab(fstab, &[], Path::new("/mnt/data"), root.path()).unwrap();
-        assert_eq!(policy::masked_units(&decisions), ["var-home.mount"]);
-    }
-}
+#[path = "entry_tests.rs"]
+mod tests;

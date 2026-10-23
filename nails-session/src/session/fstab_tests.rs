@@ -47,6 +47,36 @@ fn a_swap_on_a_label_is_the_unit_of_its_link() {
     );
 }
 
+/// Every absolute mount point is resolved inside the root, through a symlink
+/// to its real path; a swap's `none` and a relative target are kept as they are.
+#[test]
+fn entries_are_resolved_inside_the_root() {
+    let root = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(root.path().join("var/home")).unwrap();
+    std::os::unix::fs::symlink("var/home", root.path().join("home")).unwrap();
+    let entries = parse_in_root(
+        b"UUID=a /home ext4 defaults,x-systemd.automount 0 2\n\
+          /dev/sdb1 /srv/data ext4 defaults 0 2\n\
+          /dev/vda3 none swap sw 0 0\n\
+          /dev/sdc1 relative ext4 defaults 0 2\n",
+        root.path(),
+    );
+    let files: Vec<&Path> = entries.iter().map(|entry| entry.file.as_path()).collect();
+    assert_eq!(
+        files,
+        [
+            Path::new("/var/home"),
+            Path::new("/srv/data"),
+            Path::new("none"),
+            Path::new("relative"),
+        ]
+    );
+    // Everything else of an entry is as the fstab wrote it.
+    assert_eq!(entries[0].spec, "UUID=a");
+    assert!(entries[0].is_automount());
+    assert_eq!(automount_unit(&entries[0].file), "var-home.automount");
+}
+
 /// A missing fstab has no entries; one that cannot be read is an error.
 #[test]
 fn only_a_missing_fstab_reads_as_empty() {

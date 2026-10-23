@@ -25,6 +25,23 @@ pub fn read_in_root(root: &Path) -> std::io::Result<Vec<u8>> {
     }
 }
 
+/// The entries of the fstab `text` with every absolute mount point resolved
+/// inside `root`, the way systemd's fstab generator resolves it: each symlink
+/// on the way followed inside the root, a tail that does not exist yet kept
+/// ([`canonical_in_root`](nails_teardown::whole_root::nextroot::canonical_in_root)).
+/// A `/home` that the root keeps at `var/home` reads as `/var/home`, the path
+/// of `var-home.mount` and `var-home.automount`. The decisions, the masks, the
+/// way back and the `fstab-policy` check all take entries resolved here, so
+/// they name the same mount points.
+pub fn parse_in_root(text: &[u8], root: &Path) -> Vec<FstabEntry> {
+    let mut entries = parse_fstab(&String::from_utf8_lossy(text));
+    for entry in &mut entries {
+        // A relative mount point (swap's `none`) comes back as it is.
+        entry.file = nails_teardown::whole_root::nextroot::canonical_in_root(root, &entry.file);
+    }
+    entries
+}
+
 /// The `.mount` unit for a mount point.
 pub fn mount_unit(path: &Path) -> String {
     format!("{}.mount", escape_path(path))

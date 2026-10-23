@@ -16,7 +16,7 @@
 //! Each check reads the live system in `run` and judges through a pure
 //! function, which the tests exercise directly.
 
-use super::fstab::{parse_fstab, read_in_root as read_fstab};
+use super::fstab::{parse_in_root, read_in_root as read_fstab};
 use super::layout::Paths;
 use super::policy::{self, Decision};
 use super::probe::{self, SessionView};
@@ -288,7 +288,8 @@ impl<F: Filesystem> PreFlightCheck<F> for FstabPolicyCheck {
                 ));
             }
         };
-        let entries = parse_fstab(&String::from_utf8_lossy(&text));
+        // Resolved in the decoy root, as activation decides them first.
+        let entries = parse_in_root(&text, &self.root);
         let decisions = policy::decide_all(
             &entries,
             &read_mountinfo().unwrap_or_default(),

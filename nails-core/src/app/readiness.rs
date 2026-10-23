@@ -373,13 +373,14 @@ fn attach_refusal<F: Filesystem>(
     }
 }
 
-/// What the fstab policy would do with each decoy filesystem.
+/// What the fstab policy would do with each decoy filesystem, its mount points
+/// resolved in the decoy root as activation resolves them.
 fn decoy_filesystems(hidden_root: &Path) -> Vec<String> {
     use crate::session::{fstab, policy};
     let text =
         nails_teardown::whole_root::nextroot::read_in_root(Path::new("/"), Path::new("/etc/fstab"))
             .unwrap_or_default();
-    let entries = fstab::parse_fstab(&String::from_utf8_lossy(&text));
+    let entries = fstab::parse_in_root(&text, Path::new("/"));
     let mounts = nails_teardown::mountinfo::read_mountinfo().unwrap_or_default();
     policy::decide_all(&entries, &mounts, hidden_root)
         .iter()
