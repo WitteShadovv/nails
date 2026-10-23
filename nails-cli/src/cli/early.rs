@@ -23,6 +23,9 @@
 //!   FHS decoy's first start: `nails_teardown::whole_root::boot_records` makes
 //!   the login and boot records read as a clean power cycle and removes itself,
 //!   then the process ends at once, with no output and no log.
+//! - **`boot-writer`**, run in place of the decoy's wtmpdb boot writer on that
+//!   start: `nails_teardown::whole_root::boot_writer` starts the writer in
+//!   this process's place, so that it records the way back as a power cycle.
 //!
 //! In every other case `dispatch` does nothing and the normal path runs.
 //!
@@ -33,6 +36,7 @@
 
 use std::ffi::OsString;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use nails_teardown::whole_root::emergency::{self, Finish, HotReport};
 
@@ -184,14 +188,48 @@ pub fn is_transition(argv: &[OsString]) -> bool {
     argv.len() == 2 && argv[1] == nails_teardown::whole_root::transition::TRANSITION_ARG
 }
 
+/// The boot-record reconcile step's command line, as its one-shot unit gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReconcileArgs {
+    /// The boot clock at the switch back to the decoy.
+    pub switched_at: Duration,
+    /// Whether to make `/run` `noexec` again (the flag is present only when
+    /// the way back cleared it).
+    pub restore_noexec: bool,
+}
+
 /// Whether `argv` is exactly the boot-record reconcile step the way back leaves
-/// for an FHS decoy's first start, and whether it must make `/run` `noexec`
-/// again (the flag is present only when the way back cleared it).
-pub fn reconcile_records(argv: &[OsString]) -> Option<bool> {
-    use nails_teardown::whole_root::boot_records::{NOEXEC_FLAG, RECONCILE_ARG};
-    match &argv[1..] {
-        [verb] if verb == RECONCILE_ARG => Some(false),
-        [verb, flag] if verb == RECONCILE_ARG && flag == NOEXEC_FLAG => Some(true),
+/// for an FHS decoy's first start
+/// (`nails_teardown::whole_root::boot_records::reconcile_args`).
+pub fn reconcile_records(argv: &[OsString]) -> Option<ReconcileArgs> {
+    use nails_teardown::whole_root::boot_records::{NOEXEC_FLAG, RECONCILE_ARG, parse_clock_arg};
+    let (clock, restore_noexec) = match argv.get(1..)? {
+        [verb, clock] if verb == RECONCILE_ARG => (clock, false),
+        [verb, clock, flag] if verb == RECONCILE_ARG && flag == NOEXEC_FLAG => (clock, true),
+        _ => return None,
+    };
+    Some(ReconcileArgs {
+        switched_at: parse_clock_arg(clock)?,
+        restore_noexec,
+    })
+}
+
+/// Whether `argv` is exactly the start of the decoy's wtmpdb boot writer that
+/// the way back's drop-in gives (`nails_teardown::whole_root::boot_writer::writer_args`):
+/// the boot clock at the switch and the writer's command, an absolute path
+/// and its arguments.
+pub fn boot_writer(argv: &[OsString]) -> Option<(Duration, &[OsString])> {
+    use nails_teardown::whole_root::boot_records::parse_clock_arg;
+    use nails_teardown::whole_root::boot_writer::WRITER_ARG;
+    match argv.get(1..)? {
+        [verb, clock, writer @ ..]
+            if verb == WRITER_ARG
+                && writer
+                    .first()
+                    .is_some_and(|program| program.as_encoded_bytes().starts_with(b"/")) =>
+        {
+            Some((parse_clock_arg(clock)?, writer))
+        }
         _ => None,
     }
 }
@@ -240,15 +278,28 @@ pub fn dispatch() -> bool {
         guard_device(node);
         crate::cli::chokepoint::exit_process(0);
     }
-    if let Some(restore_noexec) = reconcile_records(&argv)
+    if let Some(args) = reconcile_records(&argv)
         && may_run()
     {
         nails_teardown::whole_root::boot_records::run(
             std::path::Path::new("/run"),
             std::path::Path::new("/"),
-            restore_noexec,
+            args.switched_at,
+            args.restore_noexec,
         );
         crate::cli::chokepoint::exit_process(0);
+    }
+    if let Some((switched_at, writer)) = boot_writer(&argv)
+        && may_run()
+    {
+        // Only a writer that could not be started comes back: the unit then
+        // fails, as it would if its own command were missing.
+        let _ = nails_teardown::whole_root::boot_writer::run(
+            std::path::Path::new("/run"),
+            switched_at,
+            writer,
+        );
+        crate::cli::chokepoint::exit_process(1);
     }
     let Some(args) = recognise(&argv) else {
         return false;

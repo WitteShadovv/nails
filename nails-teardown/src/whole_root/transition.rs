@@ -486,18 +486,6 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
         ),
     };
     run_records::restore(&env.run, records.as_deref());
-    // A process exec'd from /run keeps running once it turns noexec again. On an
-    // FHS decoy whose login or boot records a soft-reboot would give away, the
-    // reconcile one-shot runs the binary copy from /run on the decoy's first
-    // start and turns noexec back on itself, so /run stays executable until then.
-    // Everything else sets noexec here, and so does a failed install.
-    let fixup_installed = fixup_binary
-        .as_deref()
-        .filter(|_| boot_records::decoy_keeps_records(&env.nextroot))
-        .is_some_and(|binary| boot_records::install(&env.run, binary, plan.run_noexec).is_ok());
-    if plan.run_noexec && !fixup_installed {
-        let _ = nextroot::set_noexec(&env.run, true);
-    }
     // A hidden unit that is not ordered before the shutdown can still be
     // stopping now: its unmount rewrites utab, it may write to the kernel log
     // after a cursor taken at once, and PID 1 logs its end. Wait, bounded,
@@ -539,6 +527,23 @@ fn leave(env: &Env, plan: &Plan) -> Outcome {
                 &env.nextroot,
             )
         });
+    }
+    // A process exec'd from /run keeps running once it turns noexec again. On an
+    // FHS decoy whose login or boot records a soft-reboot would give away, the
+    // pieces left for the decoy's first start run the binary copy from /run,
+    // and the reconcile one-shot turns noexec back on once they have, so /run
+    // stays executable until then. Everything else sets noexec here, and so
+    // does a failed install. Done this late so the boot clock read now dates
+    // the switch itself, which comes next.
+    let fixup_installed = fixup_binary
+        .as_deref()
+        .and_then(|binary| Some((binary, boot_records::Fix::for_decoy(&env.nextroot)?)))
+        .is_some_and(|(binary, fix)| {
+            let switched_at = boot_records::boot_clock();
+            boot_records::install(&env.run, binary, &fix, switched_at, plan.run_noexec).is_ok()
+        });
+    if plan.run_noexec && !fixup_installed {
+        let _ = nextroot::set_noexec(&env.run, true);
     }
     // Last: anything logged after this is imported by the decoy journald.
     if let Some(next) = run_scrub::next_kernel_seqnum(&env.kmsg) {

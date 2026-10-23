@@ -4,10 +4,15 @@
 //! The strict recogniser never runs the hot path for a command line clap would
 //! refuse or parse as something else.
 
-use super::{EarlyArgs, guarded_device, is_transition, recognise};
+use super::{
+    EarlyArgs, ReconcileArgs, boot_writer, guarded_device, is_transition, recognise,
+    reconcile_records,
+};
 use crate::cli::args::{Cli, Commands};
 use nails_teardown::whole_root::emergency::Finish;
+use nails_teardown::whole_root::{boot_records, boot_writer as writer};
 use std::ffi::OsString;
+use std::time::Duration;
 
 fn argv(words: &[&str]) -> Vec<OsString> {
     std::iter::once("nails")
@@ -171,6 +176,69 @@ fn only_a_device_node_after_the_bare_guard_word_is_the_device_guard() {
     }
     let cli = Cli::try_parse_checked_from(argv(&["guard-device", "/dev/sdb1"])).unwrap();
     assert!(matches!(cli.command, Commands::GuardDevice { .. }));
+}
+
+#[test]
+fn the_reconcile_step_is_recognised_exactly_as_its_unit_starts_it() {
+    // The command line comes from the same function the unit text uses, so a
+    // change to one cannot leave the other behind: the step would then never
+    // run, and /run would stay executable.
+    for (switched_at, restore_noexec) in [
+        (Duration::ZERO, false),
+        (Duration::from_micros(1_234_567_890), true),
+    ] {
+        let args = boot_records::reconcile_args(switched_at, restore_noexec);
+        let words: Vec<&str> = args.iter().map(String::as_str).collect();
+        assert_eq!(
+            reconcile_records(&argv(&words)),
+            Some(ReconcileArgs {
+                switched_at,
+                restore_noexec
+            }),
+            "{words:?}"
+        );
+        let cli = Cli::try_parse_checked_from(argv(&words)).unwrap();
+        assert!(matches!(cli.command, Commands::ReconcileRecords { .. }));
+    }
+    for words in [
+        vec!["reconcile-records"],
+        vec!["reconcile-records", "--restore-noexec"],
+        vec!["reconcile-records", "12x"],
+        vec!["reconcile-records", "-1"],
+        vec!["reconcile-records", "1", "--bogus"],
+        vec!["reconcile-records", "1", "--restore-noexec", "x"],
+        vec!["-v", "reconcile-records", "1"],
+        vec!["transition", "1"],
+    ] {
+        assert_eq!(reconcile_records(&argv(&words)), None, "{words:?}");
+    }
+    assert_eq!(reconcile_records(&[]), None, "an empty command line");
+}
+
+#[test]
+fn the_writer_start_is_recognised_exactly_as_its_drop_in_gives_it() {
+    let switched_at = Duration::from_micros(987_654_321);
+    let command = ["/usr/bin/wtmpdb".to_string(), "boot".to_string()];
+    let args = writer::writer_args(switched_at, &command);
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let line = argv(&words);
+    let (clock, started) = boot_writer(&line).expect("the drop-in's command line");
+    assert_eq!(clock, switched_at);
+    assert_eq!(started, [OsString::from("/usr/bin/wtmpdb"), "boot".into()]);
+    let cli = Cli::try_parse_checked_from(argv(&words)).unwrap();
+    assert!(matches!(cli.command, Commands::BootWriter { .. }));
+
+    for words in [
+        vec!["boot-writer"],
+        vec!["boot-writer", "1"],
+        vec!["boot-writer", "1", "wtmpdb", "boot"],
+        vec!["boot-writer", "x", "/usr/bin/wtmpdb", "boot"],
+        vec!["-v", "boot-writer", "1", "/usr/bin/wtmpdb"],
+        vec!["reconcile-records", "1", "/usr/bin/wtmpdb"],
+    ] {
+        assert_eq!(boot_writer(&argv(&words)), None, "{words:?}");
+    }
+    assert_eq!(boot_writer(&[]), None, "an empty command line");
 }
 
 #[test]
