@@ -415,11 +415,13 @@ the exit codes, and [docs/schemas/](docs/schemas/) has a schema per command.
   unchanged boot ID and uptime.
   Power off after a session when that matters. A warm reboot does not clear RAM
   either.
-- **The way back keeps the session's network state**: the links, addresses,
-  routes and VPN tunnels it set up stay up in the decoy, and the decoy's
-  NetworkManager records a link it adopts on the decoy disk as soon as the
-  decoy starts. Take down what you brought up and delete the links you created
-  before you deactivate, or end with `deactivate --poweroff`. See the
+- **The way back puts only part of the session's network state back**: it
+  deletes the links, policy-routing rules and firewall tables the session
+  added and sets MAC addresses, the hostname and the network settings back,
+  but the addresses and routes the session gave the decoy's own devices, and
+  the other cases the operator guide lists, stay until power-off. Take VPN
+  connections down and stop containers and virtual machines before you
+  deactivate, or end with `deactivate --poweroff`. See the
   [operator guide](docs/operator-guide.md#how-it-works).
 - **Do not suspend during a session.** Suspend keeps the whole hidden session
   and the volume key in RAM. Set the lid switch to `lock` and
