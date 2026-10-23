@@ -1,13 +1,37 @@
 {
   "image": "arch-boxes",
   "osId": "arch",
-  "recorded": false,
+  "recorded": true,
   "facts": {
     "selinuxBackdoorDomain": null,
-    "mounts": [],
-    "tools": {},
+    "mounts": [
+      {
+        "target": "/",
+        "fstype": "btrfs",
+        "options": "rw,relatime,compress=zstd:1,discard=async,space_cache=v2,subvolid=5,subvol=/"
+      },
+      {
+        "target": "/efi",
+        "fstype": "vfat",
+        "options": "rw,nosuid,nodev,noexec,relatime,nosymfollow,fmask=0177,dmask=0077,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro"
+      }
+    ],
+    "tools": {
+      "cryptsetup": "/usr/bin/cryptsetup",
+      "mke2fs": "/usr/bin/mke2fs",
+      "swapoff": "/usr/bin/swapoff",
+      "systemd-run": "/usr/bin/systemd-run",
+      "modprobe": "/usr/bin/modprobe",
+      "findmnt": "/usr/bin/findmnt",
+      "mount": "/usr/bin/mount",
+      "umount": "/usr/bin/umount",
+      "cp": "/usr/bin/cp",
+      "chown": "/usr/bin/chown",
+      "kill": "/usr/bin/kill",
+      "sync": "/usr/bin/sync"
+    },
     "journaldVendorConfig": {
-      "storage": null,
+      "storage": "persistent",
       "sources": []
     },
     "failedBootUnits": [],
