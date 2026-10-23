@@ -14,17 +14,11 @@ fn plan(target: &str, removals: &[&str]) -> nails_core::ResetUpperPlan {
     }
 }
 
-/// Run the confirmation with `answer` typed, returning the verdict and the
-/// text shown.
-fn confirm(plan: &nails_core::ResetUpperPlan, answer: &[u8]) -> (bool, String) {
+/// The prompt as it is shown before the answer.
+fn prompt(plan: &nails_core::ResetUpperPlan) -> String {
     let mut out = Vec::new();
-    let verdict = confirm_discard(
-        &OutputSettings::default(),
-        plan,
-        &mut out,
-        &mut std::io::Cursor::new(answer),
-    );
-    (verdict, String::from_utf8(out).unwrap())
+    write_prompt(&OutputSettings::default(), plan, &mut out);
+    String::from_utf8(out).unwrap()
 }
 
 #[test]
@@ -36,9 +30,8 @@ fn the_prompt_lists_every_removal_before_asking() {
             "/mnt/data/root/mounts/srv-data",
         ],
     );
-    let (_, shown) = confirm(&plan, b"n\n");
     assert_eq!(
-        shown,
+        prompt(&plan),
         "\u{26a0} This permanently deletes the hidden upper for /srv/data.\n\
          \x20   remove /mnt/data/root/upper/srv/data\n\
          \x20   remove /mnt/data/root/mounts/srv-data\n\
@@ -48,51 +41,35 @@ fn the_prompt_lists_every_removal_before_asking() {
 
 #[test]
 fn discarding_nix_warns_about_the_store_and_database() {
-    let (_, shown) = confirm(&plan("/nix", &["/mnt/data/root/upper/nix"]), b"\n");
+    let shown = prompt(&plan("/nix", &["/mnt/data/root/upper/nix"]));
     assert!(
         shown.contains("WARNING: discarding /nix drops the hidden Nix database"),
         "{shown}"
     );
 }
 
-#[test]
-fn only_yes_in_any_case_confirms_the_discard() {
-    let plan = plan("/srv/data", &["/mnt/data/root/upper/srv/data"]);
-    for answer in ["y\n", "YES\n", "  Yes  \n"] {
-        assert!(confirm(&plan, answer.as_bytes()).0, "{answer:?}");
-    }
-    for answer in ["\n", "n\n", "yep\n", ""] {
-        assert!(!confirm(&plan, answer.as_bytes()).0, "{answer:?}");
-    }
-    // Input that is not UTF-8 is a read error, and declines.
-    assert!(!confirm(&plan, b"\xff\n").0);
-}
-
 /// An answer other than yes reads as `activate`'s cancel: the neutral notice
-/// after the prompt, no error, and exit 130. A yes goes on without one.
+/// after the prompt, no error, and exit 130. Ctrl+C at the prompt is one too,
+/// its notice on a line of its own. A yes goes on without one.
 #[test]
-fn a_declined_discard_is_a_neutral_notice_and_exits_130() {
+fn a_declined_or_interrupted_discard_is_a_neutral_notice_and_exits_130() {
     let plan = plan("/srv/data", &["/mnt/data/root/upper/srv/data"]);
-    let ask = |answer: &[u8]| {
+    let ask = |answer: Answer| {
         let mut err = Vec::new();
-        let status = confirm_or_cancel(
-            &OutputSettings::default(),
-            &plan,
-            &mut err,
-            &mut std::io::Cursor::new(answer),
-        );
+        let status = confirm_or_cancel(&OutputSettings::default(), &plan, &mut err, || answer);
         (status, String::from_utf8(err).unwrap())
     };
-    for answer in ["n\n", "\n", ""] {
-        let (status, shown) = ask(answer.as_bytes());
+    let notice = "\u{25cb} Discard cancelled; nothing was removed.\n";
+    for (answer, ending) in [
+        (Answer::No, format!("Continue? [y/N]: {notice}")),
+        (Answer::Cancelled, format!("Continue? [y/N]: \n{notice}")),
+    ] {
+        let (status, shown) = ask(answer);
         assert_eq!(status, Some(ExitStatus::Cancelled), "{answer:?}");
-        assert!(
-            shown.ends_with("Continue? [y/N]: \u{25cb} Discard cancelled; nothing was removed.\n"),
-            "{shown}"
-        );
+        assert!(shown.ends_with(&ending), "{answer:?}: {shown}");
         assert!(!shown.contains("error:"), "{shown}");
     }
-    let (status, shown) = ask(b"y\n");
+    let (status, shown) = ask(Answer::Yes);
     assert_eq!(status, None);
     assert!(!shown.contains("cancelled"), "{shown}");
 }

@@ -199,10 +199,10 @@ const SUBCOMMAND_NAMES: &[&str] = &[
     "completions",
 ];
 
-/// The subcommand a raw argument list names, for the usage-error envelope's
-/// `command` field. When no subcommand is present (a bad global option on its
-/// own), the envelope names the tool itself.
-fn command_from_argv(argv: &[std::ffi::OsString]) -> &'static str {
+/// The subcommand a raw argument list names, for the `command` field of the
+/// envelope of a usage error or a panic. When no subcommand is present (a bad
+/// global option on its own), the envelope names the tool itself.
+pub(crate) fn command_from_argv(argv: &[std::ffi::OsString]) -> &'static str {
     for arg in argv {
         if let Some(word) = arg.to_str()
             && let Some(name) = SUBCOMMAND_NAMES.iter().find(|n| **n == word)
@@ -219,21 +219,45 @@ fn command_from_argv(argv: &[std::ffi::OsString]) -> &'static str {
 /// own exit handles them. A real usage error exits 2; under `--json` it prints
 /// one error envelope on stdout (code `usage`) naming the command it was about,
 /// so a script sees the same one-document contract every other command gives.
+/// A command that needs a subcommand of its own and got none (`nails --json
+/// config`) is one of them: clap shows its help for it, but on stderr and with
+/// exit 2, so under `--json` it is the usage envelope too.
 pub fn exit_on_clap_error(error: clap::Error) -> ! {
     use clap::error::ErrorKind;
-    let is_usage = !matches!(
-        error.kind(),
-        ErrorKind::DisplayHelp
-            | ErrorKind::DisplayVersion
-            | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand
-    );
     let json = std::env::args_os().any(|arg| arg == "--json");
-    if is_usage && json {
-        let command = command_from_argv(&invocation_args());
-        error_envelope(command, ErrorBody::new("usage", error.to_string())).print();
-        crate::cli::chokepoint::exit_process(2);
+    if !json
+        || matches!(
+            error.kind(),
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+        )
+    {
+        error.exit()
     }
-    error.exit()
+    let command = command_from_argv(&invocation_args());
+    let message = match error.kind() {
+        ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => missing_subcommand(command),
+        _ => error.to_string(),
+    };
+    error_envelope(command, ErrorBody::new("usage", message)).print();
+    crate::cli::chokepoint::exit_process(ExitStatus::Usage.code())
+}
+
+/// The usage message for `command` run without the subcommand it needs, naming
+/// the ones it takes: `config needs a subcommand: path, show or validate`.
+fn missing_subcommand(command: &str) -> String {
+    let cli = <crate::cli::Cli as clap::CommandFactory>::command();
+    let parent = cli.find_subcommand(command).unwrap_or(&cli);
+    let names: Vec<&str> = parent
+        .get_subcommands()
+        .filter(|sub| !sub.is_hide_set() && sub.get_name() != "help")
+        .map(clap::Command::get_name)
+        .collect();
+    let list = match names.split_last() {
+        Some((last, [])) => (*last).to_string(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+        None => String::new(),
+    };
+    format!("{command} needs a subcommand: {list}")
 }
 
 #[cfg(test)]
@@ -296,6 +320,26 @@ mod tests {
     fn message_falls_back_to_bare_name_without_argv0_or_arguments() {
         let msg = needs_root_message(None, "deactivate", &[]);
         assert!(msg.contains("sudo nails deactivate"));
+    }
+
+    /// `nails --json config` names the subcommands `config` takes, as the
+    /// usage envelope's message, instead of clap's help on stderr.
+    #[test]
+    fn a_missing_subcommand_names_the_ones_the_command_takes() {
+        assert_eq!(
+            missing_subcommand("config"),
+            "config needs a subcommand: path, show or validate"
+        );
+        let top = missing_subcommand("nails");
+        assert!(
+            top.starts_with("nails needs a subcommand: activate, deactivate, "),
+            "{top}"
+        );
+        assert!(top.ends_with(" or completions"), "{top}");
+        assert!(
+            !top.contains("watch"),
+            "a hidden command is not named: {top}"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/discard.schema.json",
   "title": "NAILS discard --json",
-  "description": "Machine-readable discard envelope (contract version 2): one document with schema_version, command, ok, and either data (the hidden upper removed for a path) or error. The envelope frame and error body are strict; the data is this command's own payload. ok is true only when the exit code is 0 or 9.",
+  "description": "Machine-readable discard envelope (contract version 2): one document with schema_version, command, ok, and either data (the hidden upper removed for a path) or error. The envelope frame, the data and the error body are strict. ok is true only when the exit code is 0 or 9. A declined prompt, or Ctrl+C at it, is the shared cancel shape: the error `cancelled`, no data, exit 130. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],
@@ -10,7 +10,23 @@
     "schema_version": { "const": 2 },
     "command": { "const": "discard" },
     "ok": { "type": "boolean" },
-    "data": { "type": "object" },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "removed"],
+      "properties": {
+        "target": {
+          "description": "The path whose hidden copy was discarded.",
+          "type": "string",
+          "pattern": "^/"
+        },
+        "removed": {
+          "description": "The directories removed from the hidden volume; empty when there was nothing to discard.",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/" }
+        }
+      }
+    },
     "error": {
       "type": "object",
       "additionalProperties": false,

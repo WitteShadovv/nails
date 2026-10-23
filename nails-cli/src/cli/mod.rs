@@ -5,13 +5,14 @@ pub mod args;
 pub(crate) mod chokepoint;
 pub mod commands;
 pub mod early;
+pub(crate) mod interrupt;
 pub mod logging;
 pub mod main_guard;
 pub mod output;
 
 // Re-export main types for convenience
 pub use args::{Cli, Commands, ConfigCommand, GlobalArgs};
-pub use chokepoint::install_panic_hook;
+pub use chokepoint::{exit_code_catching_panics, install_panic_hook};
 pub use logging::init_subscriber;
 pub use output::{ExitStatus, OutputSettings};
 
@@ -21,17 +22,36 @@ pub use output::{ExitStatus, OutputSettings};
 /// The mutating commands take overlays up or down and run a chain of rollback
 /// guards that a signal's default action would skip; for them we install the
 /// cancellation handlers and bias the process away from the OOM killer. Read-only
-/// commands (`status`, `verify`, `check`, `config`) and `init`
-/// touch no live overlay, so they keep the default signal behaviour.
+/// commands (`status`, `verify`, `check` and its alias `activate --dry-run`,
+/// `config`) and `init` touch no live overlay, so they keep the default signal
+/// behaviour, which `--json` replaces with the cancel envelope
+/// ([`interrupt::report_signals_as_cancel`]).
 fn command_is_mutating(command: &Commands) -> bool {
-    matches!(
-        command,
-        Commands::Activate(_)
-            | Commands::Deactivate(_)
-            | Commands::Emergency(_)
-            | Commands::Recover(_)
-            | Commands::Discard(_)
-    )
+    match command {
+        Commands::Activate(args) => !args.dry_run,
+        Commands::Deactivate(_)
+        | Commands::Emergency(_)
+        | Commands::Recover(_)
+        | Commands::Discard(_) => true,
+        _ => false,
+    }
+}
+
+/// The `command` of the envelope a command that keeps the default signal
+/// behaviour prints under `--json`, or `None` for one that prints none (the
+/// completion script and the runtime units). `activate --dry-run` runs `check`
+/// and prints its envelope.
+fn envelope_command(command: &Commands) -> Option<&'static str> {
+    match command {
+        Commands::Activate(args) if args.dry_run => Some(output::check::COMMAND),
+        Commands::Status(_) => Some("status"),
+        Commands::Verify(_) => Some("verify"),
+        Commands::Rehearse(_) => Some("rehearse"),
+        Commands::Check(_) => Some(output::check::COMMAND),
+        Commands::Init(_) => Some("init"),
+        Commands::Config(_) => Some("config"),
+        _ => None,
+    }
 }
 
 /// Bias this process away from the OOM killer, best-effort.
@@ -76,10 +96,15 @@ pub fn execute_command(
     // Before dispatching a mutating command, install the signal handlers so an
     // interrupt rolls back cleanly instead of killing the process mid-teardown,
     // and bias the process away from the OOM killer. Both are process-wide and
-    // best-effort; read-only commands keep the default behaviour.
+    // best-effort; read-only commands keep the default behaviour, except that
+    // under --json a signal ends them with the one cancel envelope.
     if command_is_mutating(&cli.command) {
         nails_core::cancel::install_handlers();
         lower_oom_score();
+    } else if settings.is_json()
+        && let Some(command) = envelope_command(&cli.command)
+    {
+        interrupt::report_signals_as_cancel(command);
     }
 
     match cli.command {

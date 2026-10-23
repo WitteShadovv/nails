@@ -18,6 +18,7 @@ use nails_core::app::deactivate::Prepared;
 use nails_core::output::Mark;
 use nails_core::session::{LeaveReport, LeaveTo};
 
+use super::prompt::{Answer, read_answer_from_stdin};
 use crate::cli::args::DeactivateArgs;
 use crate::cli::output::deactivate::{deactivate_error_body, print_deactivate_json};
 use crate::cli::output::envelope::{ErrorBody, NextStep, report_cancelled, report_error};
@@ -33,7 +34,9 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// - [`ExitStatus::Ok`] once the soft-reboot (or power-off) was enqueued
 /// - [`ExitStatus::Usage`] when confirmation is needed but stdin is not a terminal
 /// - [`ExitStatus::InvalidState`] outside a hidden session
-/// - [`ExitStatus::Failed`] when the operator declines or the way back fails
+/// - [`ExitStatus::Cancelled`] when the operator declines at the prompt or
+///   presses Ctrl+C there
+/// - [`ExitStatus::Failed`] when the way back fails
 pub fn execute(
     settings: &OutputSettings,
     env: &nails_core::RuntimeEnv,
@@ -78,7 +81,7 @@ pub fn execute(
             settings,
             args.poweroff,
             &mut std::io::stderr(),
-            &mut std::io::stdin().lock(),
+            read_answer_from_stdin,
         ) {
             return status;
         }
@@ -164,8 +167,9 @@ fn leave_and_report(
 /// The notice of an answer other than yes at the prompt, from the catalogue.
 const CANCELLED: &str = nails_core::catalog::CANCEL_DEACTIVATE.text;
 
-/// Ask before deactivating ([`confirm_deactivate`]), on stderr (`err`) so
-/// stdout stays clean. On an answer other than yes, report the cancel, which
+/// Ask before deactivating ([`write_prompt`]), on stderr (`err`) so stdout
+/// stays clean, and take the `answer`. On an answer other than yes (a "no",
+/// the end of the input, or Ctrl+C at the prompt), report the cancel, which
 /// changed nothing, and return the status to exit with: the neutral notice
 /// `activate` gives on `err`, or under `--json` the error envelope with the
 /// code `cancelled` on stdout. `None` when the operator confirmed.
@@ -173,10 +177,16 @@ fn confirm_or_cancel(
     settings: &OutputSettings,
     poweroff: bool,
     err: &mut impl std::io::Write,
-    input: &mut impl std::io::BufRead,
+    answer: impl FnOnce() -> Answer,
 ) -> Option<ExitStatus> {
-    if confirm_deactivate(settings, poweroff, err, input) {
-        return None;
+    write_prompt(settings, poweroff, err);
+    match answer() {
+        Answer::Yes => return None,
+        // Ctrl+C leaves the cursor after the prompt: end its line first.
+        Answer::Cancelled => {
+            let _ = writeln!(err);
+        }
+        Answer::No => {}
     }
     Some(report_cancelled(
         err,
@@ -187,15 +197,9 @@ fn confirm_or_cancel(
     ))
 }
 
-/// Prompt before deactivating, returning whether the operator confirmed: the
-/// warning goes to `out`, the answer is read from `input`. Only `y` or `yes`
-/// (any case) confirms; anything else, or a read error, declines.
-fn confirm_deactivate(
-    settings: &OutputSettings,
-    poweroff: bool,
-    out: &mut impl std::io::Write,
-    input: &mut impl std::io::BufRead,
-) -> bool {
+/// Write the prompt before deactivating to `out`: where the session ends,
+/// and the question.
+fn write_prompt(settings: &OutputSettings, poweroff: bool, out: &mut impl std::io::Write) {
     let style = settings.stderr_style();
     let (headline, detail) = if poweroff {
         (
@@ -212,12 +216,6 @@ fn confirm_deactivate(
     let _ = writeln!(out, "{detail}");
     let _ = write!(out, "    Continue? [y/N]: ");
     let _ = out.flush();
-
-    let mut answer = String::new();
-    if input.read_line(&mut answer).is_err() {
-        return false;
-    }
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 #[cfg(test)]

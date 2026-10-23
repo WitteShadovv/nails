@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/recover.schema.json",
   "title": "NAILS recover --json",
-  "description": "Machine-readable recover envelope (contract version 2): one document with schema_version, command, ok, and either data (what an interrupted activation left and what was removed; a mount left below /run/nextroot is exit 7) or error. The envelope frame and error body are strict; the data is this command's own payload. ok is true only when the exit code is 0 or 9.",
+  "description": "Machine-readable recover envelope (contract version 2): one document with schema_version, command, ok, and either data (what an interrupted activation left and what was removed; a mount left below /run/nextroot is exit 7) or error: `invalid_state` (exit 6) in the hidden session, with the next step `deactivate`, or while an activation is entering, with no next step (wait for its soft-reboot); `recover_failed` (exit 1) when the recovery itself failed. The envelope frame, the data and the error body are strict. ok is true only when the exit code is 0 or 9. A recovery runs to the end once it has begun; a signal does not stop it. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],
@@ -10,7 +10,35 @@
     "schema_version": { "const": 2 },
     "command": { "const": "recover" },
     "ok": { "type": "boolean" },
-    "data": { "type": "object" },
+    "data": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["outcome", "remaining_mounts", "backend"],
+      "properties": {
+        "outcome": {
+          "description": "`clean` when an interrupted activation left nothing, `rolled_back` when its leftovers were removed.",
+          "enum": ["clean", "rolled_back"]
+        },
+        "remaining_mounts": {
+          "description": "Mounts still below /run/nextroot, which a reboot clears (exit 7 when any is left).",
+          "type": "array",
+          "items": { "type": "string", "pattern": "^/" }
+        },
+        "backend": {
+          "description": "The hidden backend's device-mapper devices that were still open: `closed` now, or `in_use` and left open, with its key in RAM.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "state"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "state": { "enum": ["closed", "in_use"] }
+            }
+          }
+        }
+      }
+    },
     "error": {
       "type": "object",
       "additionalProperties": false,

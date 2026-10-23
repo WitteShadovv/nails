@@ -93,7 +93,12 @@ pub fn execute(
     command: &ConfigCommand,
 ) -> ExitStatus {
     let outcome = run(config_override, command, settings.is_json());
-    crate::cli::output::print_tolerating_broken_pipe(&outcome.stdout);
+    if settings.is_json() {
+        // Under --json the whole of stdout is the one envelope line.
+        crate::cli::output::envelope::print_envelope_line(outcome.stdout.trim_end());
+    } else {
+        crate::cli::output::print_tolerating_broken_pipe(&outcome.stdout);
+    }
     crate::cli::output::eprint_tolerating_broken_pipe(&outcome.stderr);
     match outcome.code {
         0 => ExitStatus::Ok,
@@ -136,7 +141,9 @@ fn path(config_override: Option<&Path>, json: bool) -> Outcome {
     let exists = path.is_file();
 
     if json {
-        return Outcome::ok(envelope_line(json!({ "path": path, "exists": exists })));
+        return Outcome::ok(envelope_line(
+            json!({ "path": path.display().to_string(), "exists": exists }),
+        ));
     }
 
     let status = match (exists, config_override.is_some()) {
@@ -179,7 +186,9 @@ fn validate(config_override: Option<&Path>, explicit: Option<&Path>, json: bool)
         None => "config validate".to_string(),
     };
     match LoadedConfig::load(&path) {
-        Ok(_) if json => Outcome::ok(envelope_line(json!({ "path": path, "valid": true }))),
+        Ok(_) if json => Outcome::ok(envelope_line(
+            json!({ "path": path.display().to_string(), "valid": true }),
+        )),
         Ok(_) => Outcome::ok(format!("{}: valid\n", path.display())),
         Err(error) if json => json_load_error(&error, &command, EXIT_CONFIG_ERROR),
         Err(error) => Outcome::load_error(&error, &command),

@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/check.schema.json",
   "title": "NAILS check --json",
-  "description": "Machine-readable check envelope (contract version 2): one document with schema_version, command, ok, and either data (readiness report (the checks, the effective configuration, the overlay targets and the NixOS profile); ok is whether the host is ready (a refused check is exit 4)) or error. The envelope frame and error body are strict; the data is this command's own payload. ok is true only when the exit code is 0 or 9.",
+  "description": "Machine-readable check envelope (contract version 2): one document with schema_version, command, ok, and either data (readiness report (the checks, the effective configuration, the overlay targets and the NixOS profile); ok is whether the host is ready (a refused check is exit 4)) or error. The envelope frame and error body are strict; the data is this command's own payload. ok is true only when the exit code is 0 or 9. A Ctrl+C or SIGTERM before the result is the shared cancel shape: the error `cancelled`, no data, exit 130. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],

@@ -18,12 +18,16 @@
 //! state as inactive while the hidden volume is still reachable.
 
 use nails_core::app::emergency as app;
-use nails_core::output::Mark;
+use nails_core::output::{Mark, Style};
 use nails_teardown::whole_root::emergency::{self, Finish, HotReport, Side};
 
 use crate::cli::args::EmergencyArgs;
-use crate::cli::output::envelope::Envelope;
+use crate::cli::output::envelope::{Envelope, EnvelopePrint, report_cancelled};
 use crate::cli::output::{ExitStatus, OutputSettings};
+
+/// What an emergency stopped during its countdown reports, from the
+/// catalogue: it had done nothing yet.
+const CANCELLED: &str = nails_core::catalog::CANCEL_EMERGENCY.text;
 
 /// The finish the arguments ask for.
 fn requested_finish(args: &EmergencyArgs) -> Finish {
@@ -45,6 +49,8 @@ fn requested_finish(args: &EmergencyArgs) -> Finish {
 /// - [`ExitStatus::DegradedReboot`] when a decoy-side cleanup left mounts below
 ///   `/run/nextroot`, or only the kernel could be asked to power off
 /// - [`ExitStatus::Failed`] when nothing at all could be dispatched
+/// - [`ExitStatus::Cancelled`] when Ctrl+C stopped the countdown, before it
+///   acted
 pub fn execute(
     settings: &OutputSettings,
     env: &nails_core::RuntimeEnv,
@@ -56,8 +62,10 @@ pub fn execute(
         None => {
             // The early path did not run (not root): run it here. The countdown
             // is terminal UX and stays in the CLI; the hot path is the facade's.
-            if let Some(secs) = args.countdown {
-                run_countdown(secs);
+            if let Some(status) =
+                countdown(args.countdown, settings.is_json(), settings.stderr_style())
+            {
+                return status;
             }
             app::run_hot_path(requested_finish(args))
         }
@@ -105,20 +113,75 @@ fn log_report(report: &HotReport) {
     );
 }
 
+/// Wait out `--countdown`, if one was given, before the hot path acts.
+///
+/// Ctrl+C (or SIGTERM) during the countdown cancels the emergency before it
+/// did anything: the cancel is reported as every command reports one (under
+/// `--json` the cancel envelope, otherwise a neutral notice on stderr) and its
+/// status returned. `None` when the countdown ran out, or there was none.
+fn countdown(secs: Option<u64>, json: bool, style: Style) -> Option<ExitStatus> {
+    let secs = secs?;
+    // The handlers set the cancel flag the countdown watches, instead of the
+    // default action ending the process with nothing reported.
+    nails_core::cancel::install_handlers();
+    if run_countdown(secs, nails_core::cancel::is_cancelled) {
+        return None;
+    }
+    // End the countdown's line before the notice.
+    crate::cli::output::eprintln_tolerating_broken_pipe("");
+    let mut stderr = std::io::stderr();
+    Some(report_cancelled(
+        &mut stderr,
+        json,
+        style,
+        "emergency",
+        CANCELLED,
+    ))
+}
+
+/// The countdown of the early path, which runs before the CLI exists: as
+/// [`countdown`], with the style read from `--ascii` (no colour), and a cancel
+/// ends the process with its exit code.
+pub(crate) fn early_countdown(secs: Option<u64>, json: bool, ascii: bool) {
+    let style = Style {
+        color: false,
+        ascii,
+    };
+    if let Some(status) = countdown(secs, json, style) {
+        crate::cli::output::flush_stdio();
+        crate::cli::chokepoint::exit_process(status.code());
+    }
+}
+
+/// How often the countdown looks at the cancel flag while it waits.
+const COUNTDOWN_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
 /// Print an abortable countdown to stderr, one line per second, always ending
-/// with a Ctrl+C hint. Never gated by `--quiet`/`--json`.
-pub(crate) fn run_countdown(secs: u64) {
+/// with a Ctrl+C hint. Never gated by `--quiet`/`--json`. Returns false as soon
+/// as `cancelled` says so, true once the countdown ran out.
+pub(crate) fn run_countdown(secs: u64, cancelled: impl Fn() -> bool) -> bool {
     for remaining in (1..=secs).rev() {
         crate::cli::output::eprint_tolerating_broken_pipe(&format!(
             "\r  Emergency in {remaining}... (Ctrl+C to abort) "
         ));
-        std::thread::sleep(std::time::Duration::from_secs(1));
+        let second = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            if cancelled() {
+                return false;
+            }
+            let left = second.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            std::thread::sleep(left.min(COUNTDOWN_POLL));
+        }
     }
     if secs > 0 {
         crate::cli::output::eprintln_tolerating_broken_pipe(
             "\r  Emergency starting now!                ",
         );
     }
+    true
 }
 
 fn print_json(report: &HotReport) {
@@ -126,8 +189,7 @@ fn print_json(report: &HotReport) {
     // degraded one (mounts left below /run/nextroot, or only the kernel could
     // be asked to power off) is not.
     let ok = app::exit_status(report).is_success();
-    let envelope = Envelope::outcome("emergency", ok, app::data(report));
-    crate::cli::output::println_tolerating_broken_pipe(&envelope.to_line());
+    Envelope::outcome("emergency", ok, app::data(report)).print();
 }
 
 fn human_lines(settings: &OutputSettings, report: &HotReport) -> Vec<String> {
@@ -261,10 +323,24 @@ mod tests {
     #[test]
     fn countdown_waits_the_requested_seconds() {
         let start = Instant::now();
-        run_countdown(1);
+        assert!(run_countdown(1, || false));
         assert!(start.elapsed().as_millis() >= 1000);
         let start = Instant::now();
-        run_countdown(0);
+        assert!(run_countdown(0, || false));
         assert!(start.elapsed().as_millis() < 500);
+    }
+
+    /// Ctrl+C ends the countdown at once, before the hot path would act.
+    #[test]
+    fn a_cancel_ends_the_countdown_without_waiting_it_out() {
+        let start = Instant::now();
+        let asked = std::cell::Cell::new(0);
+        let ran_out = run_countdown(5, || {
+            asked.set(asked.get() + 1);
+            asked.get() > 3
+        });
+        assert!(!ran_out, "a cancel stops the countdown");
+        assert!(asked.get() > 3, "the flag was read while it waited");
+        assert!(start.elapsed().as_millis() < 2000, "{:?}", start.elapsed());
     }
 }

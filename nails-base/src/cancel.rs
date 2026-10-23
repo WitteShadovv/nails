@@ -31,6 +31,12 @@
 //! SIGKILL and power loss remain out of scope by design — no handler can run for
 //! them — and are covered instead by state reconciliation on the next run.
 //!
+//! A command that does not install these handlers keeps the default actions,
+//! but may still have to answer a signal with something of its own:
+//! [`watch_signals`] runs an action on a thread the first time SIGINT or
+//! SIGTERM arrives (the CLI prints its cancel envelope under `--json` and
+//! exits 130).
+//!
 //! ## A caller's cancel token
 //!
 //! A signal is not the only way an operation is asked to stop. A front end that
@@ -100,6 +106,52 @@ pub fn install_handlers() {
             );
         }
     });
+}
+
+/// Run `action` on a thread of its own the first time SIGINT or SIGTERM
+/// arrives, in place of the signal's default action (ending the process).
+///
+/// For a command that never reads the cancel flag but must still answer a
+/// signal with something of its own (under `--json`, the one cancel envelope
+/// instead of an empty stdout). The handler only writes a byte to a socket, so
+/// it is async-signal-safe; the watcher thread does the work. A signal after
+/// the first one is ignored, so `action` decides whether the process ends.
+///
+/// Best-effort, like [`install_handlers`]: when the watcher cannot be set up,
+/// a signal keeps its default action.
+pub fn watch_signals(action: impl FnOnce() + Send + 'static) {
+    use std::os::unix::net::UnixStream;
+    let Ok((wake, mut watch)) = UnixStream::pair() else {
+        return;
+    };
+    let Ok(wake_on_term) = wake.try_clone() else {
+        return;
+    };
+    let spawned = std::thread::Builder::new()
+        .name("signal-watch".to_string())
+        .spawn(move || {
+            // Only a handler writes here, and the write ends stay open for the
+            // life of the process, so a read returns when a signal arrives.
+            let mut byte = [0u8; 1];
+            if matches!(watch.read(&mut byte), Ok(read) if read > 0) {
+                action();
+            }
+        });
+    if spawned.is_err() {
+        return;
+    }
+    for (signal, wake) in [
+        (signal_hook::consts::SIGINT, wake),
+        (signal_hook::consts::SIGTERM, wake_on_term),
+    ] {
+        if let Err(err) = signal_hook::low_level::pipe::register(signal, wake) {
+            tracing::warn!(
+                signal,
+                error = %err,
+                "could not watch this signal; it keeps its default action"
+            );
+        }
+    }
 }
 
 // A thread-local cancellation override for tests.

@@ -218,7 +218,7 @@ impl LoadedConfig {
             .collect();
 
         Ok(serde_json::json!({
-            "path": self.path,
+            "path": self.path.display().to_string(),
             "exists": self.file_found,
             "config": config,
             "sources": sources,

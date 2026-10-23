@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/status.schema.json",
   "title": "NAILS status --json",
-  "description": "Machine-readable status envelope (contract version 2): one document with schema_version, command, ok, and either data (a report) or error (the record could not be read). `place` is where the machine is; `attention` names the one thing, if any, that needs the operator. `ok` is true only when the exit code is 0 or 9.",
+  "description": "Machine-readable status envelope (contract version 2): one document with schema_version, command, ok, and data (a report), or error together with data when reading the record was refused, so no report could be built. `place` is where the machine is, `unknown` in that second case; `attention` names the one thing, if any, that needs the operator. `ok` is true only when the exit code is 0 or 9. A Ctrl+C or SIGTERM before the result is the shared cancel shape: the error `cancelled`, no data, exit 130. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "command", "ok"],
@@ -16,12 +16,12 @@
       "required": ["place", "attention"],
       "properties": {
         "place": {
-          "description": "Where the machine is: the plain decoy, the hidden session, or an activation in flight.",
+          "description": "Where the machine is: the plain decoy, the hidden session, or an activation in flight. `unknown` only with an error: reading the record was refused, so nothing was established.",
           "type": "string",
-          "enum": ["decoy", "hidden", "activating"]
+          "enum": ["decoy", "hidden", "activating", "unknown"]
         },
         "attention": {
-          "description": "The one thing that needs the operator, or null when nothing does.",
+          "description": "The one thing that needs the operator, or null when nothing does. `record_unreadable` (the state file could not be read or trusted) outranks the rest, in every place.",
           "type": ["string", "null"],
           "enum": [
             "interrupted",

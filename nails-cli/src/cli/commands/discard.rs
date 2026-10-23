@@ -9,6 +9,7 @@ use std::path::Path;
 use nails_core::app::discard_upper::DiscardData;
 use nails_core::output::Mark;
 
+use super::prompt::{Answer, read_answer_from_stdin};
 use crate::cli::args::DiscardArgs;
 use crate::cli::output::envelope::{
     Envelope, EnvelopePrint, ErrorBody, report_cancelled, report_error,
@@ -30,7 +31,8 @@ use crate::cli::output::{ExitStatus, OutputSettings};
 /// - [`ExitStatus::Config`] when the configuration file could not be loaded
 /// - [`ExitStatus::InvalidState`] in the hidden session
 /// - [`ExitStatus::Usage`] when confirmation is needed but stdin is not a terminal
-/// - [`ExitStatus::Cancelled`] when the operator declines
+/// - [`ExitStatus::Cancelled`] when the operator declines at the prompt or
+///   presses Ctrl+C there
 /// - [`ExitStatus::Failed`] on a lock or removal failure
 pub fn execute(
     settings: &OutputSettings,
@@ -103,7 +105,7 @@ pub fn execute(
                 settings,
                 &plan,
                 &mut std::io::stderr(),
-                &mut std::io::stdin().lock(),
+                read_answer_from_stdin,
             ) {
                 return status;
             }
@@ -165,19 +167,26 @@ fn allow(args: &DiscardArgs) -> nails_core::hidden_root::Allow {
     }
 }
 
-/// Ask before deleting ([`confirm_discard`]), on stderr (`err`) so stdout stays
-/// clean for `--json`. On an answer other than yes, report the cancel, which
-/// removed nothing, and return the status to exit with: the neutral notice
-/// `activate` gives on `err`, or under `--json` the error envelope with the
-/// code `cancelled` on stdout. `None` when the operator confirmed.
+/// Ask before deleting ([`write_prompt`]), on stderr (`err`) so stdout stays
+/// clean for `--json`, and take the `answer`. On an answer other than yes (a
+/// "no", the end of the input, or Ctrl+C at the prompt), report the cancel,
+/// which removed nothing, and return the status to exit with: the neutral
+/// notice `activate` gives on `err`, or under `--json` the error envelope with
+/// the code `cancelled` on stdout. `None` when the operator confirmed.
 fn confirm_or_cancel(
     settings: &OutputSettings,
     plan: &nails_core::ResetUpperPlan,
     err: &mut impl std::io::Write,
-    input: &mut impl std::io::BufRead,
+    answer: impl FnOnce() -> Answer,
 ) -> Option<ExitStatus> {
-    if confirm_discard(settings, plan, err, input) {
-        return None;
+    write_prompt(settings, plan, err);
+    match answer() {
+        Answer::Yes => return None,
+        // Ctrl+C leaves the cursor after the prompt: end its line first.
+        Answer::Cancelled => {
+            let _ = writeln!(err);
+        }
+        Answer::No => {}
     }
     Some(report_cancelled(
         err,
@@ -188,16 +197,13 @@ fn confirm_or_cancel(
     ))
 }
 
-/// Prompt before deleting, returning whether the operator confirmed: the
-/// warning and the list of directories go to `out`, the answer is read from
-/// `input`. Only `y` or `yes` (any case) confirms; anything else, or a read
-/// error, declines.
-fn confirm_discard(
+/// Write the prompt before deleting to `out`: the warning, the list of
+/// directories, and the question.
+fn write_prompt(
     settings: &OutputSettings,
     plan: &nails_core::ResetUpperPlan,
     out: &mut impl std::io::Write,
-    input: &mut impl std::io::BufRead,
-) -> bool {
+) {
     let style = settings.stderr_style();
     let _ = writeln!(
         out,
@@ -221,12 +227,6 @@ fn confirm_discard(
     }
     let _ = write!(out, "    Continue? [y/N]: ");
     let _ = out.flush();
-
-    let mut answer = String::new();
-    if input.read_line(&mut answer).is_err() {
-        return false;
-    }
-    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
 }
 
 #[cfg(test)]

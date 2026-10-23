@@ -882,10 +882,12 @@ boot the decoy again before the scan. Exit `0` means the token was not found,
 `11` that it was (with the device and byte offset of each hit), `9` that a
 device could not be scanned completely (it could not be read, it is empty, or
 `--max-bytes` stopped it) or that its storage can hide the token from a raw
-scan, which the result reports as not checked. A channel the canary could not be
-planted in (a notification with no desktop session to show it, say) is listed
-with the result as not tested. `nails rehearse` alone shows where you are and
-the next step.
+scan, which the result reports as not checked. Exit `9` is not a clean result,
+although under `--json` its `ok` is `true` as for `0`: `ok` says only that the
+scan ran to its end, so tell a clean result by the exit code. A channel the
+canary could not be planted in (a notification with no desktop session to show
+it, say) is listed with the result as not tested. `nails rehearse` alone shows
+where you are and the next step.
 
 A raw scan finds the token only where the decoy stores file contents as they
 are. Where the storage can hide it, the result reports the device as not

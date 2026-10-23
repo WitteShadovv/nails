@@ -78,8 +78,8 @@ pub const CANCEL_ACTIVATE: Message = Message {
 pub const CANCEL_DEACTIVATE: Message = Message {
     id: "deactivate.cancelled",
     text: "Deactivation cancelled; nothing was changed.",
-    note: "Shown when the operator answers no at the deactivation prompt. The same text is \
-           the --json error message.",
+    note: "Shown when the operator answers no at the deactivation prompt, or presses Ctrl+C \
+           there. The same text is the --json error message.",
     placeholders: &[],
     surface: Surface::Cli,
 };
@@ -90,9 +90,34 @@ pub const CANCEL_DISCARD: Message = Message {
     id: "discard.cancelled",
     text: "Discard cancelled; nothing was removed.",
     note: "Shown when the operator answers no at the prompt that discards a path's hidden \
-           changes. The same text is the --json error message.",
+           changes, or presses Ctrl+C there. The same text is the --json error message.",
     placeholders: &[],
     surface: Surface::Cli,
+};
+
+/// The notice an emergency stopped during its countdown prints, before it
+/// acted.
+pub const CANCEL_EMERGENCY: Message = Message {
+    id: "emergency.cancelled",
+    text: "Emergency cancelled; nothing was changed.",
+    note: "Shown when the operator presses Ctrl+C during the countdown of \
+           `emergency --countdown`, before anything was done. The same text is the --json \
+           error message.",
+    placeholders: &[],
+    surface: Surface::Cli,
+};
+
+/// The `--json` error message of a command a signal ended before it printed
+/// its result.
+pub const CANCEL_INTERRUPTED: Message = Message {
+    id: "command.interrupted",
+    text: "Interrupted before it finished.",
+    note: "The --json error message (code `cancelled`) of a command that a Ctrl+C or a \
+           SIGTERM ended before it printed its result: status, verify, check, config, init or \
+           rehearse. The commands that only read changed nothing; init and the rehearse steps \
+           that write may have done part of their work.",
+    placeholders: &[],
+    surface: Surface::Json,
 };
 
 /// Every catalogue entry, for the copy lint and any front end that walks them.
@@ -105,4 +130,6 @@ pub const CATALOG: &[Message] = &[
     CANCEL_ACTIVATE,
     CANCEL_DEACTIVATE,
     CANCEL_DISCARD,
+    CANCEL_EMERGENCY,
+    CANCEL_INTERRUPTED,
 ];

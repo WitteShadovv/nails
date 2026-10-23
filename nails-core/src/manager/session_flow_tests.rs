@@ -270,6 +270,7 @@ fn recovery_refuses_while_an_activation_is_still_entering() {
         .recover_session_on(&machine, &FakeEntryHost::default())
         .unwrap_err();
 
+    assert!(matches!(error, RecoverError::Entering), "{error:?}");
     assert!(
         error
             .to_string()
@@ -293,6 +294,7 @@ fn recovery_in_the_hidden_root_points_to_deactivate() {
         .recover_session_on(&machine(dir.path(), &table), &FakeEntryHost::default())
         .unwrap_err();
 
+    assert!(matches!(error, RecoverError::HiddenSession), "{error:?}");
     let error = error.to_string();
     assert!(
         error.contains("sudo ") && error.contains("deactivate"),

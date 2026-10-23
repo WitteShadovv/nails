@@ -22,7 +22,8 @@ use std::process::ExitCode;
 pub enum ExitStatus {
     /// The command produced its result.
     Ok,
-    /// The command ran but the operation failed.
+    /// The command ran but the operation failed, or it stopped on an internal
+    /// error (a panic, which the CLI reports as the error `internal_error`).
     Failed,
     /// The command line was used incorrectly (clap owns most of these).
     Usage,
@@ -44,19 +45,26 @@ pub enum ExitStatus {
     Unsupported,
     /// The operation completed but with a warning the caller should act on: an
     /// activation whose soft-reboot was enqueued with entry warnings, or a
-    /// rehearsal scan that could not read every target. Distinct from success so a
-    /// script can tell a clean run from one that needs a look.
+    /// rehearsal scan that could not read every target or whose storage hides
+    /// data from a raw scan. Distinct from success so a script can tell a clean
+    /// run from one that needs a look: the envelope's `ok` is true for both, so
+    /// a scan that is not clean is told apart by this code, never by `ok`.
     SuccessWithWarnings,
     /// `verify` found warnings.
     VerifyWarning,
     /// `verify` found critical artifacts.
     VerifyCritical,
     /// The operation was cancelled: the operator declined a confirmation
-    /// prompt, or a signal (SIGINT/SIGTERM) stopped an activation. The code is
-    /// 130, the conventional "terminated by Ctrl-C" value (128 + SIGINT), so a
-    /// caller can tell a deliberate cancellation apart from an ordinary failure.
-    /// A declined prompt changed nothing; an entry in progress is rolled back
-    /// and the state returned to its previous value.
+    /// prompt, or a signal (SIGINT/SIGTERM) stopped it at a prompt, during an
+    /// emergency's countdown, or in an activation before its point of no
+    /// return; under `--json`, a signal also stops a command that only reads
+    /// (`init` and the writing `rehearse` steps too, partway through). A
+    /// teardown that has begun runs to its end and does not report this. The
+    /// code is 130, the conventional "terminated by Ctrl-C" value (128 +
+    /// SIGINT), so a caller can tell a deliberate cancellation apart from an
+    /// ordinary failure. A declined prompt or a stopped countdown changed
+    /// nothing; an entry in progress is rolled back and the state returned to
+    /// its previous value.
     Cancelled,
 }
 

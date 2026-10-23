@@ -5,22 +5,12 @@
 
 use super::*;
 
-/// The one-line envelope `activate --json` prints for `result`, as a value.
+/// The one-line envelope `activate --json` prints for `result`, built by the
+/// function the printer uses, as a value checked against the committed schema.
 fn envelope_value(result: &ActivateResult<'_>, duration: f64) -> serde_json::Value {
-    let line = match result {
-        ActivateResult::Failed(NailsError::Cancelled) => {
-            error_envelope("activate", ErrorBody::new("cancelled", CANCELLED)).to_line()
-        }
-        ActivateResult::Failed(error) => Envelope::failure_with_data(
-            "activate",
-            failure_error(error),
-            activate_data(result, duration),
-        )
-        .to_line(),
-        _ => Envelope::outcome("activate", true, activate_data(result, duration)).to_line(),
-    };
+    let line = activate_envelope_line(result, duration);
     assert_eq!(line.lines().count(), 1, "one physical line: {line}");
-    serde_json::from_str(&line).unwrap()
+    crate::cli::output::test_support::envelope("activate", &line)
 }
 
 #[test]

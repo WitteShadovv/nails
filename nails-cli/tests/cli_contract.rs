@@ -222,7 +222,8 @@ fn run(config: &Path, envs: &[(&str, &str)], args: &[&str]) -> Output {
     cmd.output().expect("run nails")
 }
 
-/// Run a `--json` command and return (exit code, the single parsed document).
+/// Run a `--json` command and return (exit code, the one parsed document): the
+/// contract is exactly one envelope line on stdout, so anything more fails.
 fn run_json(config: &Path, args: &[&str]) -> (i32, Value) {
     let output = run(config, &[], &{
         let mut v = args.to_vec();
@@ -230,8 +231,9 @@ fn run_json(config: &Path, args: &[&str]) -> (i32, Value) {
         v
     });
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let last = stdout.trim().lines().next_back().unwrap_or("");
-    let value: Value = serde_json::from_str(last)
+    let lines: Vec<&str> = stdout.lines().filter(|l| !l.trim().is_empty()).collect();
+    assert_eq!(lines.len(), 1, "exactly one envelope line: {output:?}");
+    let value: Value = serde_json::from_str(lines[0])
         .unwrap_or_else(|e| panic!("stdout is not one JSON document ({e}): {stdout}"));
     (output.status.code().unwrap_or(-1), value)
 }
@@ -689,11 +691,13 @@ fn verify_offline_examiner_json_matches_schema_and_groups_traces() {
 }
 
 // ---------------------------------------------------------------------------
-// activate / deactivate / emergency schemas: representative-document round-trip
+// activate: the schema refuses the version-1 shapes
 //
-// These commands need root and a live overlay to run for real (covered in the
-// VM tier), so here we only guard that the committed schemas compile and accept
-// the exact documents the renderers emit, and reject a malformed one.
+// The envelope `activate --json` prints is checked against this schema where it
+// is built (`activate_envelope_line`, for every kind of result) and, from the
+// real binary, by the kernel test in `activate_gate.rs`. Here the schema itself
+// is pinned: it accepts each documented shape and refuses the version-1 line
+// stream.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -754,170 +758,89 @@ fn activate_schema_accepts_one_result_or_error_envelope() {
     );
 }
 
-#[test]
-fn deactivate_schema_accepts_the_success_and_error_envelopes() {
-    let schema = load_schema("deactivate");
-    for status in ["return_requested", "poweroff_requested"] {
-        let value = serde_json::json!({
-            "schema_version": 2, "command": "deactivate", "ok": true,
-            "data": {"status": status}
-        });
-        assert_matches_schema(&schema, &value);
-    }
-    // An error with a typed next step.
-    let error = serde_json::json!({
-        "schema_version": 2, "command": "deactivate", "ok": false,
-        "error": {"code": "invalid_state", "message": "not in a hidden session", "next": {"command": "recover"}}
-    });
-    assert_matches_schema(&schema, &error);
-    // The one cancel shape.
-    let cancelled = serde_json::json!({
-        "schema_version": 2, "command": "deactivate", "ok": false,
-        "error": {"code": "cancelled", "message": "Deactivation cancelled; nothing was changed.", "next": null}
-    });
-    assert_matches_schema(&schema, &cancelled);
-}
-
-#[test]
-fn emergency_schema_accepts_the_hot_path_report() {
-    let schema = load_schema("emergency");
-    let hidden = serde_json::json!({
-        "schema_version": 2, "command": "emergency", "ok": true,
-        "data": {
-            "side": "hidden",
-            "requested": "return_to_decoy",
-            "dispatched": "return_to_decoy",
-            "fallback": null,
-            "kernel_power_off": false,
-            "backend_closing": ["data"],
-            "cgroups_killed": 14,
-            "processes_killed": 2,
-            "remaining_mounts": [],
-            "phases": [
-                {"name": "prepare-return", "ms": 41},
-                {"name": "close-backend", "ms": 9},
-                {"name": "arm", "ms": 1},
-                {"name": "enqueue", "ms": 22},
-                {"name": "kill", "ms": 6}
-            ],
-            "elapsed_ms": 80
-        }
-    });
-    assert_matches_schema(&schema, &hidden);
-    let fallback = serde_json::json!({
-        "schema_version": 2, "command": "emergency", "ok": true,
-        "data": {
-            "side": "hidden", "requested": "return_to_decoy", "dispatched": "poweroff",
-            "fallback": "could not mount the decoy root: EBUSY; powering off instead",
-            "kernel_power_off": false, "backend_closing": [], "cgroups_killed": 3,
-            "processes_killed": 0, "remaining_mounts": [], "phases": [], "elapsed_ms": 5
-        }
-    });
-    assert_matches_schema(&schema, &fallback);
-}
-
 // ---------------------------------------------------------------------------
-// init / recover / discard schemas: representative-document round-trip
+// deactivate / emergency / recover / init / discard: real output, against the
+// schema
 //
-// These commands write to the hidden volume, or act on a live next root, and
-// need a real target to run for real (covered in the VM tier). Here we only
-// guard that the committed schemas compile and accept the exact documents the
-// handlers emit — a success payload and a typed error — while the frame and the
-// error body stay strict. The data shape itself is deliberately frame-only in
-// these schemas (a follow-up may tighten it).
+// Each runs the real binary along a path that is safe without root and
+// validates what it printed. The paths that need a hidden session or root are
+// covered where their envelope is built: deactivate's success and failure in
+// `commands/deactivate/tests.rs`, from the real reporting code in a child
+// process.
 // ---------------------------------------------------------------------------
 
-#[test]
-fn init_schema_accepts_the_layout_report_and_an_error() {
-    let schema = load_schema("init");
-    // A completed layout: the report `init` renders (InitReport), with warnings
-    // and notes present as they are on a real untested-release run.
-    let report = serde_json::json!({
-        "schema_version": 2, "command": "init", "ok": true,
-        "data": {
-            "root": "/mnt/data",
-            "items": [
-                {"path": "/mnt/data/config", "status": "created"},
-                {"path": "/mnt/data/logs", "status": "already_present"}
-            ],
-            "warnings": ["Ubuntu 28.04 is not a release NAILS has been tested on"],
-            "notes": ["The hidden NixOS layout was skipped on a non-NixOS host"],
-            "next_steps": ["Review config/nails.toml", "Run activate to enter"]
-        }
-    });
-    assert_matches_schema(&schema, &report);
-
-    // A precondition refusal: one error body, no data.
-    let refused = serde_json::json!({
-        "schema_version": 2, "command": "init", "ok": false,
-        "error": {"code": "preconditions", "message": "the target is not empty", "next": null}
-    });
-    assert_matches_schema(&schema, &refused);
+/// Whether this test process runs as root, where `emergency` and `recover`
+/// would act on the host: their real-output cases run only without it.
+fn running_as_root() -> bool {
+    nix::unistd::geteuid().is_root()
 }
 
 #[test]
-fn recover_schema_accepts_the_clean_degraded_and_error_envelopes() {
-    let schema = load_schema("recover");
-    // Nothing to recover: a clean, ok outcome (RecoverData).
-    let clean = serde_json::json!({
-        "schema_version": 2, "command": "recover", "ok": true,
-        "data": {"outcome": "clean", "remaining_mounts": [], "backend": []}
-    });
-    assert_matches_schema(&schema, &clean);
-
-    // A rollback that left a mount below /run/nextroot is degraded (exit 7): ok
-    // is false, but the outcome still rides in data, not an error body.
-    let degraded = serde_json::json!({
-        "schema_version": 2, "command": "recover", "ok": false,
-        "data": {
-            "outcome": "rolled_back",
-            "remaining_mounts": ["/run/nextroot/home"],
-            "backend": [
-                {"name": "hidden-crypt", "state": "closed"},
-                {"name": "hidden-loop", "state": "in_use"}
-            ]
-        }
-    });
-    assert_matches_schema(&schema, &degraded);
-
-    // Run in the hidden session, recover refuses with a typed next step.
-    let error = serde_json::json!({
-        "schema_version": 2, "command": "recover", "ok": false,
-        "error": {
-            "code": "invalid_state",
-            "message": "recover runs on the decoy, not in the hidden session",
-            "next": {"command": "emergency"}
-        }
-    });
-    assert_matches_schema(&schema, &error);
+fn deactivate_json_off_the_hidden_root_is_its_schema() {
+    // Off the hidden root deactivate refuses before it asks or touches
+    // anything, root or not, and names `recover` as the next step.
+    let harness = Harness::new();
+    let (code, value) = run_json(&harness.config, &["deactivate", "-y"]);
+    assert_eq!(code, 6, "{value}");
+    assert_matches_schema(&load_schema("deactivate"), &value);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "invalid_state", "{value}");
+    assert_eq!(value["error"]["next"]["command"], "recover", "{value}");
+    assert!(value.get("data").is_none(), "{value}");
 }
 
 #[test]
-fn discard_schema_accepts_the_removal_and_cancel_envelopes() {
-    let schema = load_schema("discard");
-    // A completed discard: the removed directories ride in data (DiscardData).
-    let removed = serde_json::json!({
-        "schema_version": 2, "command": "discard", "ok": true,
-        "data": {
-            "target": "/home",
-            "removed": ["/mnt/data/root-upper/home", "/mnt/data/mounts/home"]
-        }
-    });
-    assert_matches_schema(&schema, &removed);
+fn emergency_json_without_a_session_is_its_schema() {
+    if running_as_root() {
+        eprintln!("skipped: as root emergency would act on this host");
+        return;
+    }
+    // Without root the hot path only reports what it would do: with no session
+    // plan on this host there is nothing to tear down, and a power action is
+    // reported as dispatched without being enqueued.
+    let harness = Harness::new();
+    let schema = load_schema("emergency");
+    for (args, requested) in [
+        (&["emergency"][..], "return_to_decoy"),
+        (&["emergency", "--poweroff"], "poweroff"),
+    ] {
+        let (code, value) = run_json(&harness.config, args);
+        assert_eq!(code, 0, "{args:?}: {value}");
+        assert_matches_schema(&schema, &value);
+        assert_eq!(value["ok"], true, "{value}");
+        assert_eq!(value["data"]["side"], "none", "{value}");
+        assert_eq!(value["data"]["requested"], requested, "{value}");
+    }
+}
 
-    // Nothing to discard: an ok envelope with an empty removal list.
-    let nothing = serde_json::json!({
-        "schema_version": 2, "command": "discard", "ok": true,
-        "data": {"target": "/home", "removed": []}
-    });
-    assert_matches_schema(&schema, &nothing);
+#[test]
+fn recover_json_on_the_plain_decoy_is_its_schema() {
+    if running_as_root() {
+        eprintln!("skipped: as root recover would act on this host");
+        return;
+    }
+    // On the plain decoy, with no record to reset, there is nothing to
+    // recover: a clean, ok outcome.
+    let harness = Harness::new();
+    let (code, value) = run_json(&harness.config, &["recover"]);
+    assert_eq!(code, 0, "{value}");
+    assert_matches_schema(&load_schema("recover"), &value);
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(
+        value["data"],
+        serde_json::json!({"outcome": "clean", "remaining_mounts": [], "backend": []})
+    );
+}
 
-    // A declined confirmation is the one cancel shape: an error, no data.
-    let cancelled = serde_json::json!({
-        "schema_version": 2, "command": "discard", "ok": false,
-        "error": {"code": "cancelled", "message": "Discard cancelled; nothing was removed.", "next": null}
-    });
-    assert_matches_schema(&schema, &cancelled);
+#[test]
+fn discard_json_refusing_a_folder_root_is_its_schema() {
+    // The state lock refuses a hidden root that is a plain folder.
+    let harness = Harness::new();
+    let (code, value) = run_json(&harness.config, &["discard", CONTRACT_TARGET, "-y"]);
+    assert_eq!(code, 4, "{value}");
+    assert_matches_schema(&load_schema("discard"), &value);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["error"]["code"], "not_separate_volume", "{value}");
 }
 
 // ---------------------------------------------------------------------------
@@ -936,6 +859,61 @@ fn config_failure_is_one_error_envelope_on_stdout() {
     insta::assert_json_snapshot!("error_envelope_config", value, {
         ".error.message" => "[message]",
     });
+}
+
+#[test]
+fn config_without_a_subcommand_is_the_usage_envelope_in_either_position() {
+    // Before `config`, --json is a flag of the top level, and clap would print
+    // the help of `config` on stderr; it is the usage envelope all the same.
+    let schema = load_schema("config");
+    for args in [&["--json", "config"][..], &["config", "--json"]] {
+        let output = nails().arg("--no-log-file").args(args).output().unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert_eq!(stdout.lines().count(), 1, "{args:?}: {output:?}");
+        let value: Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_matches_schema(&schema, &value);
+        assert_eq!(value["ok"], false, "{value}");
+        assert_eq!(value["error"]["code"], "usage", "{value}");
+    }
+    let output = nails()
+        .args(["--no-log-file", "--json", "config"])
+        .output()
+        .unwrap();
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["error"]["message"],
+        "config needs a subcommand: path, show or validate"
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[test]
+fn status_json_with_a_record_it_may_not_read_claims_no_place() {
+    use std::os::unix::fs::PermissionsExt;
+    if nix::unistd::geteuid().is_root() {
+        eprintln!("skipped: root reads the state file whatever its mode");
+        return;
+    }
+    // The record is root's alone on a real volume; run without root, the read
+    // is refused. Nothing was established about where the machine is, so the
+    // place is unknown, never the decoy by default.
+    let harness = write_active_harness();
+    std::fs::set_permissions(&harness.state_path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let (code, value) = run_json(&harness.config, &["status"]);
+    assert_eq!(code, 6, "an unreadable record exits InvalidState: {value}");
+    assert_matches_schema(&load_schema("status"), &value);
+    assert_eq!(value["ok"], false, "{value}");
+    assert_eq!(value["data"]["place"], "unknown", "{value}");
+    assert_eq!(value["data"]["attention"], "record_unreadable", "{value}");
+    assert_eq!(value["error"]["code"], "record_unreadable", "{value}");
+    assert!(
+        value["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("\nrun it as root: sudo "),
+        "{value}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1078,6 +1056,7 @@ fn init_refuses_a_folder_with_not_separate_volume_and_writes_nothing() {
         .expect("run nails");
     assert_eq!(output.status.code(), Some(4));
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_matches_schema(&load_schema("init"), &value);
     assert_eq!(value["error"]["code"], "not_separate_volume", "{value}");
     // "Nothing was written." ends the first line; the attach gate's guidance
     // folds in below it, so it is now in the message rather than at its end.
@@ -1211,8 +1190,36 @@ mod kernel_tests {
             let harness = write_active(Harness::on_a_volume());
             let (code, value) = run_json(&harness.config, &["discard", CONTRACT_TARGET, "-y"]);
             assert_eq!(code, 0, "{value:#}");
+            assert_matches_schema(&load_schema("discard"), &value);
             assert_eq!(value["command"], "discard");
             assert_eq!(value["ok"], true);
+            assert_eq!(value["data"]["target"], CONTRACT_TARGET, "{value:#}");
         });
+    }
+
+    #[test]
+    fn init_json_on_a_volume_is_its_schema() {
+        let _ = Rerun::new(test_path!(init_json_on_a_volume_is_its_schema))
+            .in_user_mount_ns()
+            .run(|| {
+                let volume = nails_core::test_support::ScratchTmpfs::new("");
+                let output = nails()
+                    .args(["--no-log-file", "init", "--no-hardware-config", "--json"])
+                    .arg(volume.path())
+                    .output()
+                    .expect("run nails init");
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                assert_eq!(stdout.lines().count(), 1, "one envelope: {output:?}");
+                let value: Value = serde_json::from_str(stdout.trim()).unwrap();
+                assert_eq!(output.status.code(), Some(0), "{value:#}");
+                assert_matches_schema(&load_schema("init"), &value);
+                assert_eq!(value["ok"], true, "{value:#}");
+                assert!(
+                    value["data"]["items"]
+                        .as_array()
+                        .is_some_and(|items| !items.is_empty()),
+                    "{value:#}"
+                );
+            });
     }
 }

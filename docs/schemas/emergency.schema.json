@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://nails.local/schemas/emergency.schema.json",
   "title": "NAILS emergency --json",
-  "description": "Machine-readable emergency envelope (contract version 2). The hot path runs before the CLI is initialised; this envelope reports it afterwards, best-effort: the soft-reboot it enqueued may end the process first. `ok` follows the exit code: a degraded teardown (code 7) reads as ok false.",
+  "description": "Machine-readable emergency envelope (contract version 2). The hot path runs before the CLI is initialised; this envelope reports it afterwards, best-effort: the soft-reboot it enqueued may end the process first. `ok` follows the exit code: a degraded teardown (code 7) reads as ok false. Ctrl+C during `--countdown`, before anything was done, is the shared cancel shape: the error `cancelled`, no data, exit 130. An internal error is the error `internal_error`, exit 1.",
   "type": "object",
   "additionalProperties": false,
   "required": [
