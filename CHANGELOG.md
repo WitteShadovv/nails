@@ -220,8 +220,14 @@ of this changelog for that version becomes the release notes word for word, and
   core-dump path, warns on Ubuntu's default-enabled kdump, and no longer warns about `sudo` logfile
   or I/O-logging settings on systems where sudo-rs (Ubuntu's default sudo since 25.10) ignores them.
 - The `memory-wipe` check reads the decoy kernel's configuration (`CONFIG_INIT_ON_FREE_DEFAULT_ON`)
-  when the kernel command line is silent, warns when the decoy kernel does not zero freed memory, and
-  notes a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe` module) when one is installed.
+  when the kernel command line is silent, from the running kernel's own `/proc/config.gz` (NixOS and
+  Arch) or the copy in `/boot` or `/usr/lib/modules`, warns when the decoy kernel does not zero freed
+  memory, and notes a RAM-wipe-on-shutdown mechanism (the dracut `ram-wipe` module) when one is
+  installed. It counts `init_on_free` as off when `page_poison=1` takes precedence over it, and reads
+  `init_on_free=enable` and `=disable` as the kernel does from Linux 6.16. The operator guide of the
+  0.3.0 pre-releases advised `init_on_free=1 page_poison=1`; if you followed it, remove
+  `page_poison=1`: on a kernel built with page poisoning, the NixOS kernel among them, it turns
+  `init_on_free` off, and freed slab objects keep their contents.
 - `nails activate` refuses a host NAILS does not support before it writes anything to the hidden
   volume, so a refused host is left byte-identical, with no state lock and no log line, and the
   command exits with the unsupported-platform status (8). The refusal previously came after the state
