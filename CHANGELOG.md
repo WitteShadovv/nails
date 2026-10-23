@@ -34,8 +34,6 @@ of this changelog for that version becomes the release notes word for word, and
 - `status` reports why the last session switch was refused. When a soft-reboot cannot switch root,
   the reason is kept on the hidden volume and shown the next time, instead of a refused switch going
   unexplained; a later successful switch clears it.
-- Ubuntu 26.10 is a validated target: `check` and activation name it as a tested release rather than
-  warning that it is untested.
 - `check` and `rehearse` document and probe more of the cross-distro residue surface a session can
   leave on a persistent decoy: chrony's drift and real-time-clock files, NetworkManager connection
   records, the Plymouth boot log, snapper timeline snapshots, copy-on-write and compressed storage

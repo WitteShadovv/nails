@@ -401,28 +401,24 @@ mod tests {
     }
 
     #[test]
-    fn ubuntu_2610_is_a_validated_release() {
-        let profile = detect(&host(UBUNTU2610, "systemd")).unwrap();
-        assert_eq!(profile.kind, PlatformKind::Fhs);
-        assert_eq!(profile.unsupported_reason, None);
-        // 26.10 is a validated target: it runs clean, with no untested warning.
-        assert_eq!(profile.support_warning, None);
-        profile.require_supported().unwrap();
-    }
-
-    #[test]
     fn an_untested_ubuntu_release_runs_with_a_warning() {
-        let profile = detect(&host(UBUNTU2804, "systemd")).unwrap();
-        assert_eq!(profile.kind, PlatformKind::Fhs);
-        assert_eq!(profile.unsupported_reason, None);
-        profile.require_supported().unwrap();
-        let warning = profile
-            .support_warning
-            .expect("28.04 is not a tested release");
-        assert!(
-            warning.starts_with("Ubuntu 28.04 is not a release NAILS has been tested on"),
-            "{warning}"
-        );
+        // 26.10 among them: no run of NAILS on it has passed yet.
+        for (os_release, release) in [(UBUNTU2610, "26.10"), (UBUNTU2804, "28.04")] {
+            let profile = detect(&host(os_release, "systemd")).unwrap();
+            assert_eq!(profile.kind, PlatformKind::Fhs, "{release}");
+            assert_eq!(profile.unsupported_reason, None, "{release}");
+            profile.require_supported().unwrap();
+            let warning = profile
+                .support_warning
+                .unwrap_or_else(|| panic!("{release} is not a tested release"));
+            assert!(
+                warning.starts_with(&format!(
+                    "Ubuntu {release} is not a release NAILS has been tested on \
+                     (tested: Ubuntu 24.04 and 26.04)."
+                )),
+                "{warning}"
+            );
+        }
     }
 
     #[test]

@@ -361,14 +361,10 @@ mod kernel_tests {
                     .unwrap_or_else(|| panic!("no platform row: {output:?}"))
             };
 
-            for release in ["24.04", "26.10"] {
-                host(&format!(
-                    "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"{release}\"\n"
-                ));
-                let row = platform_row();
-                assert_eq!(row["status"], "pass", "{row}");
-                assert_eq!(row["message"], format!("Ubuntu {release}"), "{row}");
-            }
+            host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"24.04\"\n");
+            let row = platform_row();
+            assert_eq!(row["status"], "pass", "{row}");
+            assert_eq!(row["message"], "Ubuntu 24.04", "{row}");
 
             // 26.04 is tested too, but a known upstream issue warns rather than
             // failing: the row is a warn naming the effect, not a plain pass.
@@ -383,9 +379,10 @@ mod kernel_tests {
                 "{row}"
             );
 
-            host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"28.04\"\n");
-            let warning = "Ubuntu 28.04 is not a release NAILS has been tested on \
-                           (tested: Ubuntu 24.04, 26.04 and 26.10).";
+            // 26.10 warns as untested: no run of NAILS on it has passed yet.
+            host("ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"26.10\"\n");
+            let warning = "Ubuntu 26.10 is not a release NAILS has been tested on \
+                           (tested: Ubuntu 24.04 and 26.04).";
             let row = platform_row();
             assert_eq!(row["status"], "warn", "{row}");
             assert!(
