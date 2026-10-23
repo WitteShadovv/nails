@@ -482,6 +482,12 @@ soft-reboots with `py/nails_e2e/session.py`:
 - `session-interrupted-entry`: a killed activation that `status` reports as an
   interrupted entry, a plain reboot that never enters the leftover next root,
   `recover`, Ctrl+C during the build, and emergency during an entry;
+- `session-refused-switch`: an entry the transition refuses (a unit's stop
+  hides the next root's os-release during the decoy's shutdown) coming back to
+  the plain decoy with nothing of the entry left and no record on the decoy's
+  disk, `status` and `status --json` naming the refused switch with its time
+  and reason once the hidden volume is open again, `recover` keeping the
+  reason, and the next activation clearing it;
 - `session-dns-records`: a name server and a search domain that only the hidden
   session's NetworkManager uses stay off the decoy after the way back: out of
   the openresolv records in `/run`, out of the `/etc/resolv.conf` that the
