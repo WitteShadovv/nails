@@ -138,7 +138,7 @@ in
         # `nix-store --add` legitimately changes the store's directories, so the
         # whole of /nix is volatile here.
         volatile = re.compile(
-            r"(^|/)nix/|" + disk_forensics.DEFAULT_IMAGE_VOLATILE.pattern
+            r"^nix/|" + disk_forensics.DEFAULT_IMAGE_VOLATILE.pattern
         )
         result = disk_forensics.mac_diff(
             baseline_state, reboot_state, positive_state, volatile
