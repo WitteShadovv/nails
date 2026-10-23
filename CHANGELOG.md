@@ -241,6 +241,14 @@ of this changelog for that version becomes the release notes word for word, and
 - `nails activate` refuses a state file it is not allowed to read (a permission denied, as an
   SELinux or AppArmor label can cause) as an unknown state, with exit 6, as the 0.3.0-rc.2 notes
   say it refuses an unreadable one. It took such a file for a state it could trust and went on.
+- `nails init` refuses a host NAILS does not support with exit 8, the unsupported-platform status,
+  before it probes or writes anything, also with `--no-hardware-config` or `--hardware-config`, as
+  the 0.3.0-rc.2 notes say unsupported hosts are refused. With either flag it skipped the platform
+  check and wrote the layout on such a host; without them it refused with exit 4, after it had
+  created and removed a probe file and symlink in the target. A release NAILS has not been tested on
+  now warns with either flag too. The probes now come only after every precondition that can be
+  read, so an obstruction or a missing base hardware configuration is refused with the target
+  untouched.
 
 ## [0.3.0-rc.3] - 2026-10-20
 

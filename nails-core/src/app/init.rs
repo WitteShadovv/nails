@@ -6,12 +6,18 @@
 //!
 //! The attach gate decides first: the target must be a volume of its own,
 //! mounted there and not stored on this computer's own storage, so the layout
-//! never lands on the decoy disk where the real volume later hides it. Only then
-//! is anything probed. Every other precondition is checked before the first
-//! write, so a refusal leaves the target untouched. The operation is split into
-//! [`plan`] (check everything, resolve the bootstrap source, write nothing) and
-//! [`apply`] (write the layout, reporting each item), so a front end can show
-//! what it would do before it does it.
+//! never lands on the decoy disk where the real volume later hides it. The
+//! platform gate follows, whatever the flags: a host NAILS refuses is refused
+//! before anything is probed or written, so the layout is only ever written on
+//! a host NAILS can operate on. The operation is split into [`plan`] (check
+//! every precondition that can be read, resolve the bootstrap source, write
+//! nothing) and [`apply`] (probe the target, then write the layout, reporting
+//! each item), so a front end can show what it would do before it does it.
+//!
+//! The probes are the first writes: [`apply`] creates and removes a file
+//! (`.nails_write_test`) and a symlink (`.nails_symlink_probe`) in the target
+//! to learn that it takes both, before the layout. A target that refuses
+//! either is reported with nothing of the layout written.
 
 use std::path::{Path, PathBuf};
 
@@ -135,7 +141,11 @@ pub enum HardwareBootstrap {
 pub enum InitFailure {
     /// The attach gate refused the target; nothing was probed or written.
     NotSeparate(Refusal),
-    /// One or more preconditions were not met; nothing was written.
+    /// The detected host is one NAILS refuses (the unsupported-platform exit);
+    /// nothing was probed or written. Carries the detector's typed reason.
+    Unsupported(NailsError),
+    /// One or more preconditions were not met; nothing of the layout was
+    /// written.
     Preconditions(Vec<String>),
     /// A filesystem query or write failed.
     Io(NailsError),
@@ -155,13 +165,15 @@ pub struct InitPlan {
     pub warnings: Vec<String>,
 }
 
-/// Check every precondition and resolve the hardware bootstrap source.
+/// Check every precondition that can be read and resolve the hardware
+/// bootstrap source. Writes nothing.
 ///
 /// The attach gate runs first and alone: a refused target returns
-/// [`InitFailure::NotSeparate`] before any probe touches it. On any other
-/// precondition failure this returns [`InitFailure::Preconditions`] with every
-/// failing reason and performs no write, so a refusal leaves the target
-/// untouched.
+/// [`InitFailure::NotSeparate`] before anything else touches it. The platform
+/// gate runs next, with every flag: a host NAILS refuses returns
+/// [`InitFailure::Unsupported`]. Any other failing precondition returns
+/// [`InitFailure::Preconditions`] with every failing reason. The probes that
+/// write are [`apply`]'s.
 pub fn plan<F: Filesystem>(
     fs: &F,
     options: &InitOptions,
@@ -179,28 +191,24 @@ pub fn plan<F: Filesystem>(
         Assessment::Refused(refusal) => return Err(InitFailure::NotSeparate(refusal)),
     }
 
+    // The platform gate, whatever the flags ask for: they only pick where the
+    // hidden NixOS layout comes from, so the layout is only ever written on a
+    // host NAILS can operate on. A release NAILS has not been tested on adds its
+    // warning.
+    let profile = detect(fs)?;
+    profile
+        .require_supported()
+        .map_err(InitFailure::Unsupported)?;
+    warnings.extend(profile.support_warning.clone());
+
     let mut failures = Vec::new();
     if !fs.is_directory(base)? {
         failures.push(format!("target {} is not a directory", base.display()));
     }
 
-    if !fs.is_writable(base)? {
-        failures.push(format!("target {} is not writable", base.display()));
-    }
-
-    if !fs.supports_symlinks(base)? {
-        failures.push(format!(
-            "the filesystem at {} does not support symlinks, which the overlay layout needs",
-            base.display()
-        ));
-    }
-
-    // Resolving the bootstrap source consults the platform seam on the auto path
-    // and refuses an unsupported host before any write, so the layout is only ever
-    // written on a host NAILS can operate on, and the NixOS-only subdirectories are
-    // skipped on a host without a config layer. A release NAILS has not been
-    // tested on adds its warning.
-    let bootstrap = resolve_bootstrap(fs, options, &mut warnings)?;
+    // The NixOS-only subdirectories are skipped on a host without a config
+    // layer, unless the operator names a base hardware configuration.
+    let bootstrap = resolve_bootstrap(options, &profile);
     let nixos_layout = matches!(bootstrap, HardwareBootstrap::From(_));
 
     failures.extend(obstructions(fs, base, nixos_layout)?);
@@ -268,47 +276,33 @@ fn obstructions<F: Filesystem>(fs: &F, base: &Path, nixos_layout: bool) -> Resul
     Ok(found)
 }
 
-/// Decide where the hidden NixOS layout's base hardware config comes from.
+/// Decide where the hidden NixOS layout's base hardware config comes from, on
+/// a host the platform gate admitted.
 ///
 /// `--no-hardware-config` skips the layout; `--hardware-config` names the base
-/// explicitly (and asserts NixOS intent, so the platform seam is not consulted);
-/// otherwise the host is resolved through the platform seam ([`detect`]). Only a
-/// host with a declarative config layer (NixOS) is bootstrapped with the hidden
-/// NixOS layout; every other supported host (FHS / Debian) is overlay-only and
-/// the layout is skipped, so init writes no NixOS paths there. An unsupported
-/// host (ostree / image-based, or non-systemd) is refused before any write, and
-/// a release NAILS has not been tested on is admitted with its warning added to
-/// `warnings`.
-fn resolve_bootstrap<F: Filesystem>(
-    fs: &F,
-    options: &InitOptions,
-    warnings: &mut Vec<String>,
-) -> std::result::Result<HardwareBootstrap, InitFailure> {
+/// explicitly (and asserts NixOS intent on any supported host); otherwise the
+/// detected `profile` decides. Only a host with a declarative config layer
+/// (NixOS) is bootstrapped with the hidden NixOS layout; every other supported
+/// host (FHS / Debian) is overlay-only and the layout is skipped, so init writes
+/// no NixOS paths there.
+fn resolve_bootstrap(options: &InitOptions, profile: &HostProfile) -> HardwareBootstrap {
     if options.no_hardware_config {
-        return Ok(HardwareBootstrap::Skip(
+        return HardwareBootstrap::Skip(
             "--no-hardware-config: skipping the hidden NixOS layout".to_string(),
-        ));
+        );
     }
 
     if let Some(path) = &options.hardware_config {
-        return Ok(HardwareBootstrap::From(path.clone()));
+        return HardwareBootstrap::From(path.clone());
     }
 
-    let profile = detect(fs)?;
-    profile
-        .require_supported()
-        .map_err(|error| InitFailure::Preconditions(vec![error.to_string()]))?;
-    warnings.extend(profile.support_warning.clone());
-
     if profile.has_config_layer() {
-        Ok(HardwareBootstrap::From(PathBuf::from(
-            DEFAULT_HARDWARE_CONFIG,
-        )))
+        HardwareBootstrap::From(PathBuf::from(DEFAULT_HARDWARE_CONFIG))
     } else {
-        Ok(HardwareBootstrap::Skip(format!(
+        HardwareBootstrap::Skip(format!(
             "{} has no NixOS config layer (overlay-only); skipping the hidden NixOS layout",
-            platform_label(&profile)
-        )))
+            platform_label(profile)
+        ))
     }
 }
 
@@ -320,8 +314,44 @@ fn platform_label(profile: &HostProfile) -> String {
     }
 }
 
-/// Write the layout, reporting each item's status. Called only after [`plan`].
-pub fn apply<F: Filesystem>(fs: &F, base: &Path, plan: InitPlan) -> Result<InitReport> {
+/// The probes that write: whether the target takes a file and a symlink. Each
+/// creates and removes an entry in `base`, so they run only once [`plan`] has
+/// passed every precondition that reads.
+fn probe_failures<F: Filesystem>(fs: &F, base: &Path) -> Result<Vec<String>> {
+    let mut failures = Vec::new();
+    if !fs.is_writable(base)? {
+        failures.push(format!("target {} is not writable", base.display()));
+    }
+    if !fs.supports_symlinks(base)? {
+        failures.push(format!(
+            "the filesystem at {} does not support symlinks, which the overlay layout needs",
+            base.display()
+        ));
+    }
+    Ok(failures)
+}
+
+/// Probe the target, then write the layout, reporting each item's status.
+/// Called only after [`plan`].
+///
+/// The probes come first (see the module docs): a target that does not take a
+/// file or a symlink returns [`InitFailure::Preconditions`] before any of the
+/// layout is written. A failed filesystem query or write is
+/// [`InitFailure::Io`].
+pub fn apply<F: Filesystem>(
+    fs: &F,
+    base: &Path,
+    plan: InitPlan,
+) -> std::result::Result<InitReport, InitFailure> {
+    let failures = probe_failures(fs, base)?;
+    if !failures.is_empty() {
+        return Err(InitFailure::Preconditions(failures));
+    }
+    Ok(write_layout(fs, base, plan)?)
+}
+
+/// Write the layout, reporting each item's status.
+fn write_layout<F: Filesystem>(fs: &F, base: &Path, plan: InitPlan) -> Result<InitReport> {
     let mut items = Vec::new();
     let mut notes = Vec::new();
 
@@ -452,7 +482,7 @@ mod tests {
     }
 
     /// Options that bootstrap `root` from an explicit base hardware config, which
-    /// pins the NixOS layout without consulting the host detector.
+    /// pins the NixOS layout.
     fn options_from(root: &Path, hardware_config: &str) -> InitOptions {
         InitOptions {
             path: root.to_path_buf(),
@@ -461,10 +491,36 @@ mod tests {
         }
     }
 
+    /// Make the mock host detect from `os_release` with `pid1` as PID 1.
+    fn host(fs: &MockFilesystem, os_release: &str, pid1: &str) {
+        fs.mock_set_file_content("/etc/os-release", os_release);
+        fs.mock_set_file_content("/proc/1/comm", pid1);
+    }
+
+    /// Make the mock host a supported NixOS host.
+    fn nixos_host(fs: &MockFilesystem) {
+        host(fs, "ID=nixos\nVERSION_ID=\"24.11\"\n", "systemd\n");
+    }
+
+    /// The write probes the mock recorded.
+    fn probes(fs: &MockFilesystem) -> Vec<crate::filesystem::MockOp> {
+        fs.mock_ops()
+            .into_iter()
+            .filter(|op| {
+                matches!(
+                    op,
+                    crate::filesystem::MockOp::WritableProbe { .. }
+                        | crate::filesystem::MockOp::SymlinkProbe { .. }
+                )
+            })
+            .collect()
+    }
+
     #[test]
     fn plan_validates_a_mounted_writable_symlink_capable_volume() {
         let root = Path::new("/mnt/data");
         let fs = attached_mock(root);
+        nixos_host(&fs);
         let hardware = "/seed/hardware-configuration.nix";
         fs.mock_set_path_exists(hardware, true);
         fs.mock_set_readable(hardware, true);
@@ -476,12 +532,127 @@ mod tests {
         // The explicit base config pins the NixOS layout, and nothing warns.
         assert!(matches!(plan.bootstrap, HardwareBootstrap::From(_)));
         assert!(plan.warnings.is_empty(), "{:?}", plan.warnings);
+        // Planning writes nothing: the probes are apply's.
+        assert!(probes(&fs).is_empty(), "{:?}", fs.mock_ops());
+    }
+
+    #[test]
+    fn an_unsupported_host_is_refused_with_every_flag_before_any_probe() {
+        // An image-based host the platform gate refuses: the flags only pick
+        // where the hidden NixOS layout comes from, never whether the host
+        // runs NAILS at all.
+        let root = Path::new("/mnt/data");
+        let hardware = "/seed/hardware-configuration.nix";
+        let modes = [
+            InitOptions {
+                path: root.to_path_buf(),
+                ..Default::default()
+            },
+            InitOptions {
+                path: root.to_path_buf(),
+                no_hardware_config: true,
+                ..Default::default()
+            },
+            options_from(root, hardware),
+        ];
+        for options in modes {
+            let fs = attached_mock(root);
+            host(&fs, "ID=debian\nVERSION_ID=\"13\"\n", "systemd\n");
+            fs.mock_set_path_type("/run/ostree-booted", PathKind::File);
+            fs.mock_set_path_exists(hardware, true);
+            fs.mock_set_readable(hardware, true);
+
+            match plan(&fs, &options) {
+                Err(InitFailure::Unsupported(NailsError::UnsupportedPlatform { reason })) => {
+                    assert!(reason.contains("ostree"), "{reason}");
+                }
+                other => panic!(
+                    "{options:?}: expected the platform refusal, got {:?}",
+                    other.err()
+                ),
+            }
+            assert!(probes(&fs).is_empty(), "{options:?}: {:?}", fs.mock_ops());
+        }
+    }
+
+    #[test]
+    fn an_untested_release_warns_with_the_flags_too() {
+        // The platform gate runs with --no-hardware-config as well, so the
+        // warning about a release NAILS has not been tested on is not lost.
+        let root = Path::new("/mnt/data");
+        let fs = attached_mock(root);
+        host(
+            &fs,
+            "ID=ubuntu\nID_LIKE=debian\nVERSION_ID=\"28.04\"\n",
+            "systemd\n",
+        );
+        let options = InitOptions {
+            path: root.to_path_buf(),
+            no_hardware_config: true,
+            ..Default::default()
+        };
+        let plan = plan(&fs, &options).expect("an untested release is admitted");
+        match plan.warnings.as_slice() {
+            [warning] => assert!(
+                warning.starts_with("Ubuntu 28.04 is not a release NAILS has been tested on"),
+                "{warning}"
+            ),
+            other => panic!("expected one warning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn apply_probes_the_target_before_it_writes_the_layout() {
+        // A target that takes no file: apply refuses on the probe, and nothing
+        // of the layout is created.
+        let root = Path::new("/mnt/data");
+        let fs = attached_mock(root);
+        fs.mock_set_writable(root.to_str().unwrap(), false);
+        let skip = InitPlan {
+            bootstrap: HardwareBootstrap::Skip("--no-hardware-config".to_string()),
+            warnings: Vec::new(),
+        };
+        match apply(&fs, root, skip) {
+            Err(InitFailure::Preconditions(failures)) => assert!(
+                failures
+                    .iter()
+                    .any(|reason| reason.contains("/mnt/data is not writable")),
+                "{failures:?}"
+            ),
+            other => panic!("expected a probe refusal, got {:?}", other.is_ok()),
+        }
+        assert_eq!(probes(&fs).len(), 2, "{:?}", fs.mock_ops());
+        for rel in COMMON_SUBDIRS {
+            assert!(
+                !fs.path_exists(&root.join(rel)).unwrap(),
+                "{rel} must not be created when the probe refuses"
+            );
+        }
+
+        // A target without symlinks is refused the same way.
+        let fs = attached_mock(root);
+        fs.mock_set_supports_symlinks(root, false);
+        let skip = InitPlan {
+            bootstrap: HardwareBootstrap::Skip("--no-hardware-config".to_string()),
+            warnings: Vec::new(),
+        };
+        match apply(&fs, root, skip) {
+            Err(InitFailure::Preconditions(failures)) => assert!(
+                failures
+                    .iter()
+                    .any(|reason| reason.contains("does not support symlinks")),
+                "{failures:?}"
+            ),
+            other => panic!("expected a probe refusal, got {:?}", other.is_ok()),
+        }
+        assert!(!fs.path_exists(&root.join("logs")).unwrap());
     }
 
     #[test]
     fn plan_rejects_a_hardware_config_that_exists_but_is_unreadable() {
         let root = Path::new("/mnt/data");
         let fs = attached_mock(root);
+        nixos_host(&fs);
         let hardware = "/seed/hardware-configuration.nix";
         // Present on disk, but not readable: planning must still refuse it, since
         // the layout cannot be seeded from a base config it cannot read.
