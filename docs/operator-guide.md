@@ -687,7 +687,7 @@ session's records (see "What a soft-reboot leaves" under
     on storage of its own (see "Where setup happens"), with nothing mounted
     over it
 [ ] No line in the decoy's /etc/crypttab or /etc/fstab opens or mounts it
-[ ] Neither the outer nor the hidden volume opened with --allow-discards
+[ ] Neither the outer nor the hidden volume opened with cryptsetup's --allow-discards
 [ ] Hidden backend is a local Linux filesystem that can host an overlayfs upper
     (ext4/xfs/btrfs/f2fs; NOT NFS/SMB/9p/FUSE or FAT/exFAT/NTFS)
 [ ] Hidden backend is kernel-managed (dm-crypt, loop), not a FUSE process that
@@ -1245,7 +1245,7 @@ destroy or expose it.
 [backends.md](backends.md) has the support matrix and per-backend guidance.
 Across all setups:
 
-- **Discards destroy or expose hidden volumes.** Never pass `--allow-discards`,
+- **Discards destroy or expose hidden volumes.** Never pass cryptsetup's `--allow-discards`,
   never mount with `-o discard`, never `fstrim` the outer or hidden volume.
 - **File containers expose timestamps.** Using a container updates its
   mtime/ctime; ctime cannot be restored, so it shows when it was last used.
