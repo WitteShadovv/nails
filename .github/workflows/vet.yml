@@ -4,11 +4,11 @@ name: Vet
 # crate in the dependency graph is covered either by an imported public audit
 # (the Bytecode Alliance, Mozilla, Google, Embark, ISRG and Zcash audit sets,
 # recorded in supply-chain/config.toml) or by a recorded exemption under
-# supply-chain/. It never gates the merge: the single required status is
-# ci.yml's `gate`, and this lane is deliberately kept out of it, so a new
-# dependency that is not yet audited surfaces here as a red advisory run
-# without blocking the change. Adopting cargo-vet on more of the graph means
-# replacing exemptions with audits over time, not turning this lane into a gate.
+# supply-chain/. It is not one of the required checks that docs/ci.md lists,
+# so it only reports: a new dependency that is not yet audited surfaces here as
+# a red advisory run without blocking the merge. Adopting cargo-vet on more of
+# the graph means replacing exemptions with audits over time, not making this
+# lane a required check.
 #
 # --locked uses the committed supply-chain/imports.lock, so the result is
 # reproducible and never drifts with an upstream audit update between runs.
